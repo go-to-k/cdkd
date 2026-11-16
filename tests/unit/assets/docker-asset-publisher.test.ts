@@ -23,6 +23,14 @@ vi.mock('@aws-sdk/client-ecr', () => ({
     ...input,
     _type: 'DescribeImages',
   })),
+  DescribeRepositoriesCommand: vi.fn().mockImplementation((input) => ({
+    ...input,
+    _type: 'DescribeRepositories',
+  })),
+  CreateRepositoryCommand: vi.fn().mockImplementation((input) => ({
+    ...input,
+    _type: 'CreateRepository',
+  })),
 }));
 
 // Mock the docker-cmd helpers used by buildDockerImage AND the publisher's
@@ -826,6 +834,82 @@ describe('DockerAssetPublisher', () => {
       expect(countAuthTokenCalls()).toBe(1);
       expect(countLoginExecs()).toBe(1);
       expect(countPushExecs()).toBe(2);
+    });
+  });
+
+  // Issue #6421: a LegacyStackSynthesizer image asset's repository
+  // (`aws-cdk/assets`) is created by no bootstrap, so the push creates it
+  // first, as the CDK CLI's `prepareEcrRepository` does.
+  describe('push with ensureRepository', () => {
+    const legacyAsset = () =>
+      makeDockerAsset({
+        destinations: { d: { repositoryName: 'aws-cdk/assets', imageTag: 'abc123' } },
+      });
+    const typesSent = () =>
+      mockEcrSend.mock.calls.map(([cmd]) => (cmd as { _type?: string })._type);
+
+    it('creates a missing repository, tagged and scanning on push, before pushing', async () => {
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'DescribeRepositories' || cmd._type === 'DescribeImages') {
+          const err = new Error('nope') as Error & { name: string };
+          err.name = 'RepositoryNotFoundException';
+          throw err;
+        }
+        return {};
+      });
+      mockRunDocker.mockResolvedValue({ stdout: '', stderr: '' });
+
+      await publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag', true);
+
+      expect(typesSent().slice(0, 3)).toEqual([
+        'DescribeRepositories',
+        'CreateRepository',
+        'DescribeImages',
+      ]);
+      expect(mockEcrSend.mock.calls[1]![0]).toMatchObject({
+        repositoryName: 'aws-cdk/assets',
+        tags: [{ Key: 'awscdk:asset', Value: 'true' }],
+        imageScanningConfiguration: { scanOnPush: true },
+      });
+    });
+
+    it('tolerates a repository another node created first, and rethrows any other Describe error', async () => {
+      const notFound = Object.assign(new Error('nope'), { name: 'RepositoryNotFoundException' });
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) => {
+        if (cmd._type === 'DescribeRepositories') throw notFound;
+        if (cmd._type === 'CreateRepository') {
+          throw Object.assign(new Error('exists'), { name: 'RepositoryAlreadyExistsException' });
+        }
+        if (cmd._type === 'DescribeImages') return { imageDetails: [{}] };
+        return {};
+      });
+      await publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag', true);
+      expect(typesSent()).toEqual(['DescribeRepositories', 'CreateRepository', 'DescribeImages']);
+
+      mockEcrSend.mockReset();
+      mockEcrSend.mockImplementation(() => {
+        throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+      });
+      await expect(
+        publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag', true)
+      ).rejects.toThrow(/denied/);
+      expect(typesSent()).toEqual(['DescribeRepositories']);
+    });
+
+    it('leaves an existing repository alone and does not ask without the flag', async () => {
+      mockEcrSend.mockImplementation((cmd: { _type?: string }) =>
+        cmd._type === 'DescribeRepositories'
+          ? { repositories: [{ repositoryName: 'aws-cdk/assets' }] }
+          : cmd._type === 'DescribeImages'
+            ? { imageDetails: [{}] }
+            : {}
+      );
+      await publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag', true);
+      expect(typesSent()).toEqual(['DescribeRepositories', 'DescribeImages']);
+
+      mockEcrSend.mockClear();
+      await publisher.push(legacyAsset(), '123456789012', 'us-east-1', 'local-tag');
+      expect(typesSent()).toEqual(['DescribeImages']);
     });
   });
 });

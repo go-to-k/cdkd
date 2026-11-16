@@ -24,7 +24,11 @@ import {
   type LockRecoveryContext,
 } from '../../../state/lock-contention-message.js';
 import { setAwsClients, AwsClients } from '../../../utils/aws-clients.js';
-import { resolveApp, resolveStateBucketWithDefault } from '../../config-loader.js';
+import {
+  resolveApp,
+  resolveStateBucketWithDefault,
+  resolveUseCdkBootstrapAssets,
+} from '../../config-loader.js';
 import { describeStack, renderNoStackMatch } from '../../stack-matcher.js';
 import { type TemplateFormat } from '../../yaml-cfn.js';
 import { type ExportOptions } from './plan-types.js';
@@ -71,6 +75,8 @@ import {
   printPlan,
   scanCrossStackReferences,
 } from './template-overlay.js';
+import type { StackInfo } from '../../../synthesis/assembly-reader.js';
+import { bindLegacyStackAssetParameters } from '../../../assets/legacy-synthesizer-assets.js';
 import { runPerStackImportLoop } from './per-stack-loop.js';
 import { removeExportedStackRecord } from './per-stack-phases.js';
 import {
@@ -153,6 +159,8 @@ export async function exportCommand(
     // body, so synth is required even though we only inspect the cdkd
     // state for physical IDs.
     let template: Record<string, unknown>;
+    // The synthesized stack, when the template came from synth (#6421).
+    let legacyAssetStack: StackInfo | undefined;
     let resolvedStackName: string;
     let synthedRegion: string | undefined;
     // The format we will re-emit the template in when we send phase-1 /
@@ -219,7 +227,7 @@ export async function exportCommand(
       if (result.stacks.length === 0) {
         throw new Error(renderNoStackMatch(stackPatterns, result.stacks));
       }
-      let stackInfo;
+      let stackInfo: StackInfo | undefined;
       if (stackArg) {
         stackInfo = result.stacks.find(
           (s) => s.stackName === stackArg || s.displayName === stackArg
@@ -245,6 +253,7 @@ export async function exportCommand(
       // A failed context lookup blocks only the stack it exports (go-to-k/cdkd#5807).
       refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
       template = stackInfo.template as unknown as Record<string, unknown>;
+      legacyAssetStack = stackInfo;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;
       // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).
@@ -266,6 +275,16 @@ export async function exportCommand(
     logger.info(
       `Migrating cdkd stack ${quotedOrNotShown(resolvedStackName)} (${quotedRegion(targetRegion)}) → CloudFormation stack ${quotedOrNotShown(cfnStackName)}`
     );
+
+    // Issue #6421: bound as `cdkd deploy` bound them; `--parameter` still wins.
+    if (legacyAssetStack) {
+      await bindLegacyStackAssetParameters(legacyAssetStack, targetRegion, {
+        stateBackend,
+        stsRegion: effectiveRegion.region,
+        useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(),
+        ...(options.profile && { profile: options.profile }),
+      });
+    }
 
     // Refuse if a CFn stack with that name already exists. CFn IMPORT's
     // CreateChangeSet either creates a new stack (CHANGE_SET_TYPE=IMPORT

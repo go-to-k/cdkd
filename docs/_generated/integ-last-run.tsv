@@ -118,7 +118,7 @@ docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #61
 drift-revert	2026-11-16T08:22:27Z	PASS	431	verify.sh	rc ok, orph clean (#6374 sweep)
 drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
 drift-revert-vpc	2026-11-05T11:30:20Z	PASS	333	verify.sh	rc ok, VPC/NAT/EIP gone, orph clean
-drift-sg-sibling-rules	2026-11-16T11:53:34Z	PASS	131	verify.sh	rc ok, orph clean
+drift-sg-sibling-rules	2026-11-16T12:54:11Z	PASS	175	verify.sh	rc ok, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-04T07:57:30Z	PASS	120	verify.sh	rc ok, destroy 0 errors, 0 orphans (4 phases incl. #4701 rename; no leaked scalable targets)
@@ -262,6 +262,7 @@ lambda-web-function-revision-replace	2026-11-11T19:34:00Z	PASS	497	verify.sh	rc 
 launchtemplate-asg-inplace	2026-11-06T17:25:56Z	PASS	225	verify.sh	#5897 asg split head; rc ok, orph clean
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
+legacy-synthesizer-assets	2026-11-16T13:58:49Z	PASS	95	verify.sh	rc ok, orph clean
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
 local-aws-emulator	2026-11-16T05:30:35Z	PASS	50	verify.sh	rc ok, phase 2b misplaced-flag refusal (#6382), emulator container + run dir removed, docker sweep clean
 local-ecs-service-connect	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
@@ -274,7 +275,7 @@ local-invoke-container	2026-11-13T07:02:34Z	PASS	40	verify.sh	rc ok, docker swee
 local-invoke-dotnet	2026-11-05T06:48:54Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-from-cfn-stack	2026-11-15T03:12:13Z	PASS	105	verify.sh	rc ok, orph clean, docker sweep clean; cdk-local 0.168.0
 local-invoke-from-cfn-stack-multi-stack	2026-11-15T15:45:32Z	PASS	115	verify.sh	rc ok, orph clean, docker clean
-local-invoke-from-state	2026-11-15T13:15:22Z	PASS	225	verify.sh	rc ok, orph clean, docker clean
+local-invoke-from-state	2026-11-16T12:42:03Z	PASS	238	verify.sh	rc ok, orph clean; HEAD 23a69cc60 Ref-value mapping
 local-invoke-java	2026-11-05T06:48:29Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 3/3 passed
 local-invoke-layers	2026-11-05T06:48:04Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 passed
 local-invoke-nested-stack-from-state	2026-11-15T17:58:02Z	PASS	176	verify.sh	rc ok, orph clean, cloudwatchRoleArn null before/after (nested-stack local targets branch)
@@ -285,14 +286,15 @@ local-invoke-stage	2026-11-05T07:06:46Z	PASS	24	verify.sh	rc ok, docker sweep cl
 local-run-task	2026-11-14T08:17:37Z	PASS	22	verify.sh	rc ok, docker sweep clean, #6288 SIGTERM step 4 (probe SIGINT-only fails)
 local-run-task-awsvpc	2026-11-15T18:31:17Z	PASS	10	verify.sh	rc ok, docker sweep clean
 local-run-task-cdkd-assets	2026-11-13T07:02:34Z	PASS	18	verify.sh	rc ok, docker sweep clean (#6192)
-local-run-task-from-state	2026-11-15T15:45:32Z	PASS	231	verify.sh	rc ok, orph clean, docker clean
+local-run-task-from-state	2026-11-16T12:42:03Z	PASS	257	verify.sh	rc ok, orph clean; HEAD 23a69cc60 Ref-value mapping
 local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, docker sweep clean, #6194
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-alb	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-start-alb-from-state	2026-11-15T15:45:32Z	PASS	351	verify.sh	rc ok, orph clean, docker clean
-local-start-api	2026-11-14T17:45:26Z	PASS	30	verify.sh	rc ok, docker sweep clean
+local-start-api	2026-11-16T12:42:03Z	PASS	32	verify.sh	rc ok; HEAD 23a69cc60 Ref-value mapping
 local-start-api-container	2026-11-07T15:32:43Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-start-api-rest-v1-non-proxy	2026-11-12T11:22:31Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6140
+local-start-api-user-pool-authorizer	2026-11-16T12:29:10Z	PASS	109	verify.sh	rc ok, orph clean; cdk-local 0.168.7, clientIdEnv asserted
 local-start-api-websocket	2026-11-05T06:44:34Z	PASS	105	verify.sh	rc ok, docker sweep clean
 local-start-cloudfront	2026-11-14T12:32:07Z	PASS	7	verify.sh	rc ok, docker sweep clean, orph clean, #6300
 local-start-cloudfront-from-state	2026-11-05T07:01:01Z	PASS	220	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)

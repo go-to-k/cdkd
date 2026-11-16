@@ -21,6 +21,8 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * - `CDKD_TEST_UPDATE=inline` adds a second inline ingress to SgA, so the
  *   group is UPDATED (and its drift baseline re-captured) while the sibling
  *   rules exist.
+ * - `CDKD_TEST_UPDATE=inline,nofrom` (go-to-k/cdkd#6420) removes the 5432
+ *   standalone ingress, whose delete revokes the rule.
  *
  * covers: AWS::EC2::SecurityGroup
  * covers: AWS::EC2::SecurityGroupIngress
@@ -55,7 +57,9 @@ export class DriftSgSiblingRulesStack extends cdk.Stack {
     });
     b.addIngressRule(ec2.Peer.ipv4('10.1.0.0/16'), ec2.Port.tcp(22), 'inline ssh');
 
-    a.connections.allowFrom(b, ec2.Port.tcp(5432), 'from B');
+    if (!modes.includes('nofrom')) {
+      a.connections.allowFrom(b, ec2.Port.tcp(5432), 'from B');
+    }
     a.connections.allowTo(b, ec2.Port.tcp(8080), 'to B');
 
     new cdk.CfnOutput(this, 'GroupA', { value: a.securityGroupId });

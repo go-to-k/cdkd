@@ -153,7 +153,10 @@ describe('AssetPublisher', () => {
       manifest.dockerImages['docker456'],
       '123456789012',
       'us-east-1',
-      'cdkd-asset-docker456'
+      'cdkd-asset-docker456',
+      // A manifest's repository is the bootstrap's; only a legacy-synthesizer
+      // image asset asks the push to create one (#6421).
+      false
     );
   });
 

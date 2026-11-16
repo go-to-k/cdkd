@@ -233,7 +233,7 @@ export interface StoppedSiblingMembers {
 }
 
 /** The minimal record shape {@link membersSiblingsStoppedWriting} reads. */
-interface WriterRecord {
+export interface WriterRecord {
   resourceType: string;
   physicalId?: string;
   properties?: Record<string, unknown>;
@@ -249,9 +249,10 @@ const RETAINS: ReadonlySet<unknown> = new Set(['Retain', 'RetainExceptOnCreate']
  * retaining `DeletionPolicy` drops the record without a provider call, and a
  * replacement under a retaining `UpdateReplacePolicy`, or whose old-resource
  * delete was deferred, skipped or not confirmed (`oldMaySurvive`), leaves the
- * old physical resource attached.
+ * old physical resource attached. Shared with the security-group rule prune
+ * (`sg-sibling-rules.ts`, go-to-k/cdkd#6420).
  */
-function previousMaySurvive(
+export function previousMaySurvive(
   logicalId: string,
   record: WriterRecord,
   next: Readonly<Record<string, WriterRecord>>,

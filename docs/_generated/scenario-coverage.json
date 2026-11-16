@@ -1824,6 +1824,11 @@
       ]
     },
     {
+      "name": "legacy-synthesizer-assets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "list-parameters",
       "annotated": false,
       "scenarios": []
@@ -2034,6 +2039,11 @@
       "scenarios": [
         "local-apigateway-server"
       ]
+    },
+    {
+      "name": "local-start-api-user-pool-authorizer",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "local-start-api-websocket",
@@ -4038,12 +4048,14 @@
     "lambda-runtime-config",
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
+    "legacy-synthesizer-assets",
     "list-parameters",
     "local-aws-emulator",
     "local-engine-role-identity",
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
+    "local-start-api-user-pool-authorizer",
     "local-start-cloudfront",
     "local-start-cloudfront-from-state",
     "local-start-microvm",

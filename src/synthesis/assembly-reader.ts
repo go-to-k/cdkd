@@ -33,7 +33,15 @@ import {
   jsonParseFailureStandIn,
   utf8ByteLength,
 } from '../utils/json-parse-failure.js';
-import { collectStackMessages, type StackMessage } from './stack-messages.js';
+import {
+  readMergedStackMetadata,
+  stackMessagesFromMetadata,
+  type StackMessage,
+} from './stack-messages.js';
+import {
+  legacyAssetEntriesFromMetadata,
+  type LegacyStackAssets,
+} from '../assets/legacy-synthesizer-assets.js';
 import { renderStagePath, stageLoadError, stageScopedError } from './failed-stages.js';
 
 /**
@@ -66,6 +74,14 @@ export interface StackInfo {
 
   /** Asset manifest file path (absolute) */
   assetManifestPath?: string | undefined;
+
+  /**
+   * `LegacyStackSynthesizer` assets (issue #6421): the stack's
+   * `aws:cdk:asset` metadata entries, present only when it has any. Such a
+   * stack has no asset manifest; `prepareLegacyStackAssets` turns these into
+   * an in-memory one plus the template parameter values.
+   */
+  legacyAssets?: LegacyStackAssets | undefined;
 
   /**
    * The TOP-LEVEL assembly directory — the app's `outdir`, which is where
@@ -637,6 +653,8 @@ export class AssemblyReader {
     // `?.` on every hop: the manifest is parsed JSON, so `lookupRole` may be
     // any value, and a non-object simply has no string `arn`.
     const lookupRoleArn: unknown = props?.lookupRole?.arn;
+    const metadata = readMergedStackMetadata(assemblyDir, artifact);
+    const legacyAssetEntries = legacyAssetEntriesFromMetadata(metadata);
 
     return {
       stackName,
@@ -653,7 +671,10 @@ export class AssemblyReader {
       }),
       ...(Object.keys(nestedTemplates).length > 0 && { nestedTemplates }),
       ...(typeof lookupRoleArn === 'string' && { lookupRoleArn }),
-      messages: collectStackMessages(assemblyDir, artifact),
+      ...(legacyAssetEntries.length > 0 && {
+        legacyAssets: { entries: legacyAssetEntries, assemblyDir },
+      }),
+      messages: stackMessagesFromMetadata(metadata),
     };
   }
 

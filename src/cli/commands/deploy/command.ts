@@ -79,7 +79,7 @@ import { deployStackRegion } from '../cross-prefix-gate.js';
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import type { DeployCommandOptions } from './types.js';
 import { prepareStateInfra, fetchCallerIdentity } from './prep.js';
-import { addStacksToWorkGraph } from './work-graph.js';
+import { addStacksToWorkGraph, dryRunPredictsAutoCreatedStorage } from './work-graph.js';
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
 import { checkPinCcApiOptions } from './pin-cc-api-checks.js';
 import { confirmAutoAssetStorageCreate, createDeploySigintHandler } from './helpers.js';
@@ -690,6 +690,12 @@ export async function deployCommand(
       workGraph,
       dependencyStacks,
       inferredCrossStackDeps,
+      dryRunPredictsAutoCreatedStorage: dryRunPredictsAutoCreatedStorage({
+        dryRun: options.dryRun,
+        autoAssetStorage,
+        skipAssets: options.skipAssets,
+        useCdkBootstrapAssets,
+      }),
     });
 
     const summary = workGraph.summary();

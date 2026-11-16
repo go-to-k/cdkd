@@ -526,6 +526,8 @@ describe('the local --from-cfn-stack surface names the API that actually runs (#
     'src/cli/commands/local-start-api/types.ts',
     'src/cli/commands/local-state-source.ts',
     'src/local/local-state-provider.ts',
+    // `withCfnRefPhysicalIds`' JSDoc: what `--from-cfn-stack` hands cdk-local as the physical id (go-to-k/cdkd#6419).
+    'src/local/s3-local-state-provider.ts',
   ];
 
   it('the surface POSITIVELY names the API that runs, not merely nothing', () => {

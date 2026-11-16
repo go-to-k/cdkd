@@ -28,6 +28,12 @@ import {
   repairMalformedResourcesForReadOnly,
 } from '../state/malformed-resources-bag.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
+import type { ResourceState } from '../types/state.js';
+import {
+  cfnRefValueFromPhysicalId,
+  refStateLookupFromResource,
+} from '../deployment/intrinsic-resolver/ref-values.js';
+import { carriesSecretMask } from '../deployment/secret-redaction/mask-only.js';
 import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
@@ -74,6 +80,46 @@ export interface S3LocalStateProviderOptions {
    * AWS ({@link S3LocalStateProvider.resolveTemplateSsmParameters}).
    */
   workload?: AwsEmulatorWorkload;
+}
+
+/**
+ * The resources bag cdk-local substitutes against, with each `physicalId` set
+ * to the value CloudFormation's `Ref` returns (go-to-k/cdkd#6419). cdk-local's
+ * `Ref` reads `physicalId` verbatim — what `--from-cfn-stack`'s
+ * `ListStackResources` hands it — while cdkd records some types under its own
+ * id (a `AWS::Cognito::UserPoolClient` as `<userPoolId>|<clientId>`, an
+ * `AWS::Events::Rule` as its ARN), so a `Ref` to one reached the workload as
+ * cdkd's id. Copies only the rows that change, and returns the bag itself when none do;
+ * the record is never mutated.
+ */
+function withCfnRefPhysicalIds(
+  resources: Record<string, ResourceState>
+): Record<string, ResourceState> {
+  const out: Record<string, ResourceState> = {};
+  let changed = false;
+  for (const [logicalId, resource] of Object.entries(resources)) {
+    // A row without a string id passes through: the repair above keeps it
+    // (it checks `resourceType` only), and the id helpers would throw on it.
+    if (typeof resource.physicalId !== 'string') {
+      out[logicalId] = resource;
+      continue;
+    }
+    const ref = cfnRefValueFromPhysicalId(
+      resource.resourceType,
+      resource.physicalId,
+      refStateLookupFromResource(resource)
+    );
+    // A `Ref` recovered from a redacted attribute would be the mask itself:
+    // keep cdkd's id rather than hand the workload `***`.
+    if (ref === resource.physicalId || carriesSecretMask(ref)) {
+      out[logicalId] = resource;
+    } else {
+      out[logicalId] = { ...resource, physicalId: ref };
+      changed = true;
+    }
+  }
+  // A bag with nothing to map is the record's own, by identity.
+  return changed ? out : resources;
 }
 
 export class S3LocalStateProvider implements LocalStateProvider {
@@ -185,7 +231,7 @@ export class S3LocalStateProvider implements LocalStateProvider {
       else outputs[k] = JSON.stringify(v);
     }
     return {
-      resources: loaded.state.resources,
+      resources: withCfnRefPhysicalIds(loaded.state.resources),
       outputs,
       region: loaded.region,
     };

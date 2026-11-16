@@ -25,6 +25,8 @@ import {
 import { PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
+import type { AssetMode } from '../../assets/asset-storage/marker.js';
+import { prepareLegacyStackAssets } from '../../assets/legacy-synthesizer-assets.js';
 import {
   buildAssetRedirectMap,
   loadPublishableAssetManifest,
@@ -274,6 +276,59 @@ async function publishAssetsCommand(
       let error: Error | undefined;
 
       try {
+        // Issue #6421 — a LegacyStackSynthesizer stack: publish the plan its
+        // `aws:cdk:asset` metadata builds, to the bucket `cdkd deploy` binds.
+        if (stack.legacyAssets) {
+          logger.info(safeMsg`\nPublishing assets for stack: ${describeStack(stack)}`);
+          const stackRegion = await regionForStack(stack);
+          const plan = await prepareLegacyStackAssets(stack, {
+            assetMode: async (): Promise<AssetMode> => {
+              const modeResolver = useCdkBootstrapAssets ? null : await getModeResolver();
+              return modeResolver
+                ? modeResolver.resolve(stack.region || rawNamedRegion || stackRegion)
+                : { mode: 'legacy' };
+            },
+            accountId,
+            region: stackRegion,
+          });
+          const workGraph = new WorkGraph();
+          const nodeIds = plan
+            ? assetPublisher.addManifestToGraph(workGraph, plan.manifest, {
+                accountId,
+                region: stackRegion,
+                ...(options.profile && { profile: options.profile }),
+                nodePrefix: `${stack.stackName}:`,
+                cdkOutputDir: stack.legacyAssets.assemblyDir,
+                ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
+                bucketsChosenByCdkd: true,
+                recognizedImageDestinations: plan.recognizedImageDestinations,
+                repositoriesToEnsure: plan.repositoriesToEnsure,
+              })
+            : [];
+          assetCount = nodeIds.filter((id) => id.startsWith('asset-publish:')).length;
+          if (assetCount === 0) {
+            logger.info('  (no assets to publish)');
+          } else {
+            await workGraph.execute(
+              {
+                'asset-build': options.imageBuildConcurrency,
+                'asset-publish': options.assetPublishConcurrency,
+                stack: 0,
+              },
+              (node) => assetPublisher.executeNode(node)
+            );
+            const seconds = ((Date.now() - startedAt) / 1000).toFixed(2);
+            logger.info(safeMsg`  ✓ Published ${assetCount} asset(s) in ${seconds}s`);
+          }
+          results.push({
+            stackName: stack.stackName,
+            displayName: stack.displayName,
+            assetCount,
+            durationMs: Date.now() - startedAt,
+          });
+          continue;
+        }
+
         if (!stack.assetManifestPath) {
           logger.debug(`Stack ${stack.stackName} has no asset manifest; nothing to publish`);
           results.push({

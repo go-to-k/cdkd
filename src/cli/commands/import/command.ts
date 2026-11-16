@@ -32,8 +32,12 @@ import {
 } from '../../config-loader.js';
 import {
   createAssetRedirectResolver,
+  createLazyAssetModeContext,
   rewriteTemplateAssetReferences,
 } from '../../../assets/asset-redirect.js';
+import { createLegacyAssetParameterBinder } from '../../../assets/legacy-synthesizer-assets.js';
+import { CdkToolkitBucketMissingError } from '../../../assets/cdk-toolkit-bucket.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import {
   getCloudFormationResourceTree,
   tryGetCloudFormationResourceMap,
@@ -241,13 +245,15 @@ export async function importCommand(
     // (design §7.1). Nested child templates in the recursive CFn-migration
     // walk are rewritten at their own load site below. Lazy: asset-less
     // apps / legacy regions add no AWS calls beyond the marker read.
-    const resolveAssetRedirect = createAssetRedirectResolver({
+    const assetModeOptions = {
       stateBackend,
       stsRegion: region,
       ...(options.profile && { profile: options.profile }),
       useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets),
       suppressLegacyNotice: true,
-    });
+    };
+    const assetModeContext = createLazyAssetModeContext(assetModeOptions);
+    const resolveAssetRedirect = createAssetRedirectResolver(assetModeOptions, assetModeContext);
     const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, targetRegion);
     // Issue #1652 — the template whose `Properties` land in `state.properties`.
     // In cdkd-assets mode this is a snapshot taken BEFORE the rewrite, so
@@ -290,6 +296,31 @@ export async function importCommand(
             `state at their pre-rewrite (CDK bootstrap) values, so the next 'cdkd deploy' ` +
             `repoints any resource that still holds them to cdkd asset storage.`
         );
+      }
+    }
+
+    // Issue #6421 — a LegacyStackSynthesizer stack's asset parameters, bound
+    // as `cdkd deploy` binds them. In cdkd-assets mode the STATE snapshot
+    // binds the CDK toolkit bucket instead, for #1652's reason above: that is
+    // the bucket a CloudFormation-deployed resource holds, so the next deploy
+    // repoints it rather than classifying it unchanged.
+    if (stackInfo.legacyAssets) {
+      const bindLegacyAssets = createLegacyAssetParameterBinder(assetModeContext);
+      const legacyMode = await bindLegacyAssets(stackInfo, targetRegion);
+      if (legacyMode?.mode === 'cdkd-assets') {
+        stateTemplate = structuredClone(stackInfo.template);
+        try {
+          await bindLegacyAssets({ ...stackInfo, template: stateTemplate }, targetRegion, {
+            assetMode: { mode: 'legacy' },
+          });
+        } catch (error) {
+          // No CDK toolkit stack (a stack cdkd deployed, re-imported): the
+          // snapshot keeps the cdkd-storage values, which is what AWS holds.
+          if (!(error instanceof CdkToolkitBucketMissingError)) throw error;
+          logger.info(
+            safeMsg`No CDKToolkit stack in ${targetRegion}: recording the cdkd asset storage values for the LegacyStackSynthesizer assets of stack ${stackInfo.stackName}.`
+          );
+        }
       }
     }
 

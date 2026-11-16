@@ -135,6 +135,17 @@ export async function loadStateForRoutedStacks(
       }
     }
   }
+  // A JWT authorizer whose Issuer / Audience waits on state
+  // (go-to-k/cdkd#6419) needs its own stack's state even when no Lambda there
+  // is routed (an HTTP_PROXY or service-integration route, or a Lambda in
+  // another stack).
+  const jwtAuthorizerStacks = new Set<string>();
+  for (const { authorizer } of routesWithAuth) {
+    if (authorizer?.kind === 'jwt' && authorizer.pending) {
+      jwtAuthorizerStacks.add(authorizer.pending.stackName);
+      reachableStackNames.add(authorizer.pending.stackName);
+    }
+  }
   const stackHasIntrinsicEnv = (stackName: string): boolean => intrinsicEnvStacks.has(stackName);
 
   // Issue #606: route through `createLocalStateProvider` so the same
@@ -177,7 +188,10 @@ export async function loadStateForRoutedStacks(
       });
     }
   }
-  for (const { stackName } of lambdas) {
+  for (const { stackName } of [
+    ...lambdas,
+    ...[...jwtAuthorizerStacks].map((n) => ({ stackName: n })),
+  ]) {
     const key = stateBundleKey(stackName, UNNAMED_WORKLOAD);
     if (!loads.has(key)) loads.set(key, { stackName, workload: UNNAMED_WORKLOAD });
   }
