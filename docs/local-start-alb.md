@@ -267,8 +267,38 @@ Two flags save you from sending a token on every request:
   verified on that token.
 - `--no-verify-auth` turns the check off, so every request passes.
 
-When the action that follows an authentication action cannot be served, the
-authentication action is skipped as well, with a warning.
+An authentication action is never skipped. CDK's
+`ListenerAction.authenticateCognito({ userPool, userPoolClient, ... })` writes
+the pool ARN as `Fn::GetAtt` and the client id as `Ref`. With `--from-state`
+or `--from-cfn-stack`, cdkd resolves those references to the deployed values,
+and the token is verified as it would be with literal values. Without a state
+source, or when a value cannot be resolved, cdkd warns at startup and keeps
+the guard: a request without a token still gets a `401`, but a token is
+admitted without verification. When only the client id cannot be resolved,
+the token's signature, issuer and expiry are verified and its audience is not.
+
+A listener rule that carries an authentication action, or may carry one, and
+is attached to a listener in the same stack is never dropped, so its requests
+never fall through to an unguarded rule or to the default action. A rule
+attached to another stack's listener, through a literal ARN, an
+`Fn::ImportValue` or a `Ref` to a parameter, is not served, with a warning.
+When cdkd cannot determine part of a rule on a listener in the stack, it warns
+at startup and widens the rule instead:
+
+- **A condition it cannot evaluate** is dropped, and the rule answers `503`
+  over its remaining conditions, or over every request when none is left. A
+  rule with no condition to route on answers `503` to every request.
+- **An action it cannot serve** makes the rule answer `503`. This covers an
+  authentication action followed by a `forward` to a target group outside the
+  stack, or by an action type that is not served.
+- **A priority that is not a literal** sorts the rule before every other rule.
+
+On the listener's default action, the same cases refuse every request that
+no rule matches.
+
+The guards are resolved once at startup, so restart the command after you
+deploy the stack. `--no-verify-auth` serves every route without a guard, but a
+rule kept as a `503` still answers `503`.
 
 ## State sources
 

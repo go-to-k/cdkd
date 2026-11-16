@@ -290,8 +290,9 @@ local-run-task-cdkd-assets	2026-11-13T07:02:34Z	PASS	18	verify.sh	rc ok, docker 
 local-run-task-from-state	2026-11-16T12:42:03Z	PASS	257	verify.sh	rc ok, orph clean; HEAD 23a69cc60 Ref-value mapping
 local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, docker sweep clean, #6194
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-start-alb	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
-local-start-alb-from-state	2026-11-15T15:45:32Z	PASS	351	verify.sh	rc ok, orph clean, docker clean
+local-start-alb	2026-11-16T18:27:40Z	PASS	25	verify.sh	PR6461 018ba020; rc ok, docker clean
+local-start-alb-cognito-from-state	2026-11-16T18:32:17Z	PASS	100	verify.sh	PR6461 8086f400; rc ok, no-state tampered token 200, orph clean, docker clean
+local-start-alb-from-state	2026-11-16T18:27:40Z	PASS	366	verify.sh	PR6461 018ba020; rc ok, orph clean, docker clean
 local-start-api	2026-11-16T12:42:03Z	PASS	32	verify.sh	rc ok; HEAD 23a69cc60 Ref-value mapping
 local-start-api-container	2026-11-07T15:32:43Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-start-api-rest-v1-non-proxy	2026-11-12T11:22:31Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6140
