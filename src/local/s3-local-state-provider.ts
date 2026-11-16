@@ -89,12 +89,14 @@ export interface S3LocalStateProviderOptions {
  * `ListStackResources` hands it — while cdkd records some types under its own
  * id (a `AWS::Cognito::UserPoolClient` as `<userPoolId>|<clientId>`, an
  * `AWS::Events::Rule` as its ARN), so a `Ref` to one reached the workload as
- * cdkd's id. Copies only the rows that change; the record itself is untouched.
+ * cdkd's id. Copies only the rows that change, and returns the bag itself when none do;
+ * the record is never mutated.
  */
 function withCfnRefPhysicalIds(
   resources: Record<string, ResourceState>
 ): Record<string, ResourceState> {
   const out: Record<string, ResourceState> = {};
+  let changed = false;
   for (const [logicalId, resource] of Object.entries(resources)) {
     // A row without a string id passes through: the repair above keeps it
     // (it checks `resourceType` only), and the id helpers would throw on it.
@@ -109,12 +111,15 @@ function withCfnRefPhysicalIds(
     );
     // A `Ref` recovered from a redacted attribute would be the mask itself:
     // keep cdkd's id rather than hand the workload `***`.
-    out[logicalId] =
-      ref === resource.physicalId || carriesSecretMask(ref)
-        ? resource
-        : { ...resource, physicalId: ref };
+    if (ref === resource.physicalId || carriesSecretMask(ref)) {
+      out[logicalId] = resource;
+    } else {
+      out[logicalId] = { ...resource, physicalId: ref };
+      changed = true;
+    }
   }
-  return out;
+  // A bag with nothing to map is the record's own, by identity.
+  return changed ? out : resources;
 }
 
 export class S3LocalStateProvider implements LocalStateProvider {

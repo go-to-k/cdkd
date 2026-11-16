@@ -168,7 +168,7 @@ fi
 docker version --format '{{.Server.Version}}' >/dev/null
 
 echo "==> Pre-run cleanup of a prior killed run"
-${CDKD} state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null 2>&1 || true
+${CDKD} state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1 || true
 
 echo "==> Phase 1: deploy ${STACK}"
 DEPLOYED=1
