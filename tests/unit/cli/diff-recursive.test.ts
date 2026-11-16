@@ -78,6 +78,7 @@ import {
   type DiffTreeNode,
 } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { STICKY_CC_MIGRATION_EXEMPT } from '../../../src/provisioning/provider-registry.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
@@ -5182,14 +5183,19 @@ describe('buildDiffTree replacement routing and the nested-stack Type-change ref
     expect(node.ccApiRoutes.has('R')).toBe(false);
   });
 
+  // The two `sticky` cases need a type with no sticky-escape exemption.
   it('keeps `sticky` on an IN-PLACE update through the real calculator', async () => {
+    expect(STICKY_CC_MIGRATION_EXEMPT.has('AWS::ECR::Repository')).toBe(false);
     const node = await tree(
       {
         Resources: {
-          R: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q', VisibilityTimeout: 60 } },
+          R: {
+            Type: 'AWS::ECR::Repository',
+            Properties: { RepositoryName: 'r', ImageTagMutability: 'IMMUTABLE' },
+          },
         },
       },
-      { R: ccApi(res('AWS::SQS::Queue', { QueueName: 'q', VisibilityTimeout: 30 })) }
+      { R: ccApi(res('AWS::ECR::Repository', { RepositoryName: 'r', ImageTagMutability: 'MUTABLE' })) }
     );
     expect(node.changes.get('R')?.changeType).toBe('UPDATE');
     expect(node.changes.get('R')?.propertyChanges?.[0]?.requiresReplacement).toBe(false);
@@ -5198,8 +5204,8 @@ describe('buildDiffTree replacement routing and the nested-stack Type-change ref
 
   it('keeps `sticky` on an unchanged cc-api row (the control)', async () => {
     const node = await tree(
-      { Resources: { R: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q' } } } },
-      { R: ccApi(res('AWS::SQS::Queue', { QueueName: 'q' })) }
+      { Resources: { R: { Type: 'AWS::ECR::Repository', Properties: { RepositoryName: 'r' } } } },
+      { R: ccApi(res('AWS::ECR::Repository', { RepositoryName: 'r' })) }
     );
     expect(node.ccApiRoutes.get('R')).toEqual(['sticky']);
   });

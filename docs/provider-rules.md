@@ -2878,7 +2878,7 @@ resources ALREADY deployed. A resource recorded `provisionedBy: 'cc-api'`
 stays on Cloud Control by default, so the backfill you just landed speeds up
 new resources only — every existing one keeps paying Cloud Control latency
 until the type is admitted to `STICKY_CC_MIGRATION_EXEMPT`
-([`src/provisioning/provider-registry.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/provider-registry.ts),
+([`src/provisioning/provider-registry/sticky-exempt.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/provider-registry/sticky-exempt.ts),
 issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)).
 
 Consider admitting a type in the same PR that empties its `sdkUnwired` map, or

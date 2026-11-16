@@ -232,9 +232,9 @@ describe('parseCcBrokenTypes (issue #3713)', () => {
     );
   });
 
-  it('reads exactly the runtime cc-broken set out of the REAL provider-registry.ts', () => {
+  it('reads exactly the runtime cc-broken set out of the REAL provider-registry/sticky-exempt.ts', () => {
     const source = readFileSync(
-      resolve(import.meta.dirname, '../../../src/provisioning/provider-registry.ts'),
+      resolve(import.meta.dirname, '../../../src/provisioning/provider-registry/sticky-exempt.ts'),
       'utf8'
     );
     const runtime = [...STICKY_CC_MIGRATION_EXEMPT]
