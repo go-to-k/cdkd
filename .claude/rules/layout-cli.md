@@ -166,9 +166,10 @@ Index of every area: [code-layout.md](code-layout.md).
   never does. `lstat` does not follow the link, so a symbolic link is refused
   whatever it points at. Do not relax it to a containment test on the target.
 - **src/cli/commands/nested-template-preflight.ts** - `cdkd deploy`'s refusal
-  of a malformed nested-template tree (#3449). The call stays BEFORE macro
-  expansion and the work graph; `NestedStackProvider`'s per-row walk is the
-  backstop, not a duplicate. Not in `AssemblyReader`: `diff` owns its refusal.
+  of a malformed nested tree (#3449) BEFORE macro expansion, of a remote
+  `TemplateURL` row (#6385) AFTER it; both before the work graph.
+  `NestedStackProvider` is the backstop. Not in `AssemblyReader`: diff owns
+  its refusal.
 - **src/cli/commands/pin-cc-api-reachability.ts** - the pure decision behind
   `--pin-cc-api`'s pre-flight: which pinned logical ids match NO stack (an
   error, else invisible) and which match some but not all (normal under

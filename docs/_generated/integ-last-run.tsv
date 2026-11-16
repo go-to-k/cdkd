@@ -134,6 +134,7 @@ dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on ma
 dynamodb-ttl-attr-change	2026-11-10T17:07:47Z	PASS	1894	verify.sh	rc ok, orph clean
 ec2-instance	2026-11-07T11:30:30Z	PASS	764	verify.sh	rc ok, orph clean; EnclaveOptions arm (#5630)
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
+ec2-instance-volume-attachment-drift	2026-11-16T05:58:54Z	PASS	196	verify.sh	rc ok, orph clean
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-11-10T16:20:27Z	PASS	65	verify.sh	rc ok, orph clean
 ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #5967 subnet live GetAtt
@@ -242,7 +243,7 @@ lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc
 lambda-config-field-removal	2026-11-15T17:41:38Z	PASS	152	verify.sh	rc ok, orph clean; #6352 lambda-function RuntimeConfig wiring
 lambda-destinations	2026-11-10T15:32:23Z	PASS	100	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-11-05T03:23:13Z	PASS	125	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
-lambda-env-removal	2026-11-07T14:58:13Z	PASS	112	verify.sh	#6013 deploy-engine update-in-place split head; rc ok, orph clean
+lambda-env-removal	2026-11-16T07:29:03Z	PASS	71	verify.sh	#6403 UpdateInProgress retry head; rc ok, orph clean
 lambda-esm-documentdb	2026-11-02T01:39:49Z	PASS	897	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 lambda-esm-self-managed-kafka	2026-11-01T00:07:49Z	PASS	201	verify.sh	rc ok, orph clean; #3850 Queue create/update, mode refusal, collision, --replace
 lambda-event-invoke-config-update	2026-11-10T15:29:52Z	PASS	161	verify.sh	rc ok, orph clean
@@ -368,6 +369,7 @@ ref-shape-vector-namespace-attachment	2026-11-13T19:37:31Z	PASS	120	verify.sh	rc
 refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 refactor-lambda-version	2026-11-12T11:22:31Z	PASS	477	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 refactor-move	2026-11-05T10:31:22Z	PASS	151	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
+remote-nested-stack-refusal	2026-11-16T07:40:23Z	PASS	20	verify.sh	rc ok, orph clean
 remove-protection	2026-11-16T08:22:27Z	PASS	837	verify.sh	rc ok, orph clean (#6374 sweep)
 remove-protection-compensation	2026-11-08T03:59:38Z	PASS	267	verify.sh	#6039 split head with the #6045 CC-route fixture; rc ok, orph clean
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean

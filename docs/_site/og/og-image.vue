@@ -142,7 +142,7 @@ const viewBox = `0 0 ${MARK_WIDTH} ${MARK_HEIGHT}`;
 
 <template>
   <div class="card" :style="{ background: palette.paper, color: palette.navy }">
-    <component is="style">{{ styles }}</component>
+    <component :is="'style'">{{ styles }}</component>
     <div class="copy">
       <div class="lockup">
         <svg class="lockup-mark" :viewBox aria-hidden="true">

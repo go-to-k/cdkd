@@ -22,6 +22,7 @@ import {
   subnetPrivateDnsOptionsRefusal,
 } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { declaredBlockDeviceNames } from './read-instance-state.js';
 
 /** Recovery must not mistake an in-flight IPv6 association for absence. */
 export function subnetIpv6InTransition(this: EC2Provider, subnet: Subnet): boolean {
@@ -76,8 +77,35 @@ export async function canonicalizeDriftPair(
   this: EC2Provider,
   resourceType: string,
   baseline: Record<string, unknown>,
-  aws: Record<string, unknown>
+  aws: Record<string, unknown>,
+  properties?: Record<string, unknown>
 ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+  if (resourceType === 'AWS::EC2::Instance') {
+    // go-to-k/cdkd#6384: a baseline captured before the readback narrowed a
+    // declared list to its declared devices still holds the others (the AMI's
+    // root volume, an attachment that raced the capture). They are not this
+    // property's, so their absence from the readback is no removal. Only when
+    // the readback itself was narrowed (it holds a declared device): one that
+    // matched none is the whole live list, and stripping the baseline then
+    // would compare an empty list against it on every run.
+    const declared = declaredBlockDeviceNames(properties);
+    const recorded = baseline['BlockDeviceMappings'];
+    const live = aws['BlockDeviceMappings'];
+    const isDeclared = (m: unknown): boolean => {
+      const name = (m as Record<string, unknown> | null)?.['DeviceName'];
+      return declared !== undefined && typeof name === 'string' && declared.has(name);
+    };
+    if (Array.isArray(recorded) && Array.isArray(live) && live.some(isDeclared)) {
+      const kept = recorded.filter((m) => {
+        const name = (m as Record<string, unknown> | null)?.['DeviceName'];
+        return typeof name !== 'string' || isDeclared(m);
+      });
+      if (kept.length !== recorded.length) {
+        return { baseline: { ...baseline, BlockDeviceMappings: kept }, aws };
+      }
+    }
+    return { baseline, aws };
+  }
   const key = 'Ipv6CidrBlock';
   if (resourceType === 'AWS::EC2::Subnet') {
     const old = baseline[key];
@@ -156,7 +184,8 @@ export function canonicalizeUnsettledProperties(
  *    (go-to-k/cdkd#5630), `IamInstanceProfile` (ARN form — v2 fallback
  *    state holding a name will fire one-time drift, resolved via
  *    `cdkd state refresh-observed`), `Tags` (filtered `aws:*`). For
- *    `BlockDeviceMappings`, `DescribeInstances` only returns
+ *    `BlockDeviceMappings` (narrowed to the declared devices when the bag
+ *    declares the list, go-to-k/cdkd#6384), `DescribeInstances` only returns
  *    `(DeviceName, Ebs.VolumeId, Ebs.DeleteOnTermination)`; cdkd
  *    additionally calls `DescribeVolumes` on the attached volume ids to
  *    surface `VolumeType` / `VolumeSize` / `Iops` / `Throughput` /

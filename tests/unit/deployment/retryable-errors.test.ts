@@ -1437,6 +1437,10 @@ describe('isIamPropagationError', () => {
       'SQS cooldown',
     ],
     ['The function could not be updated due to a concurrent update operation', 'Lambda lock'],
+    [
+      'The operation cannot be performed at this time. An update is in progress for resource: arn:aws:lambda:us-east-1:123456789012:function:MyStack-Fn',
+      'Lambda update in progress (#6401)',
+    ],
   ])('does not classify %j as IAM propagation (%s)', (message) => {
     expect(isIamPropagationError(message)).toBe(false);
     expect(isRetryableTransientError(new Error(message), message)).toBe(true);
@@ -2603,3 +2607,50 @@ describe('wrapMaskedAwsError (issue #4244)', () => {
   });
 });
 
+describe('Lambda update-in-progress ResourceConflictException (#6401)', () => {
+  // Lambda's wording, byte-identical from AWS Emulator, for an update sent
+  // while the function's previous update is still `LastUpdateStatus: InProgress`.
+  const IN_PROGRESS =
+    'The operation cannot be performed at this time. An update is in progress for resource: arn:aws:lambda:us-east-1:123456789012:function:MyStack-Fn';
+
+  // The Lambda provider's `wrapMaskedError` shape when AWS's wording is
+  // withheld: only the error name reaches the message, and the stamp tells the
+  // classifier to read the cause chain (what the live `drift --revert` hit).
+  const wrapped = (awsMessage: string): ProvisioningError =>
+    markRedactedCause(
+      new ProvisioningError(
+        'Failed to update Lambda function Fn: ResourceConflictException',
+        'AWS::Lambda::Function',
+        'Fn',
+        'MyStack-Fn',
+        awsSdkError(awsMessage)
+      )
+    );
+
+  it('classifies the bare AWS message as retryable', () => {
+    expect(isRetryableTransientError(awsSdkError(IN_PROGRESS), IN_PROGRESS)).toBe(true);
+  });
+
+  it('retries the provider-wrapped error and succeeds once the update settles', async () => {
+    let calls = 0;
+    const op = async (): Promise<string> => {
+      calls++;
+      if (calls === 1) throw wrapped(IN_PROGRESS);
+      return 'ok';
+    };
+    await expect(withRetry(op, 'Fn', { sleep: () => Promise.resolve() })).resolves.toBe('ok');
+    expect(calls).toBe(2);
+  });
+
+  it('keeps a ResourceConflictException name collision non-retryable', async () => {
+    let calls = 0;
+    const op = async (): Promise<never> => {
+      calls++;
+      throw wrapped('Function already exist: MyStack-Fn');
+    };
+    await expect(withRetry(op, 'Fn', { sleep: () => Promise.resolve() })).rejects.toThrow(
+      'Failed to update Lambda function Fn'
+    );
+    expect(calls).toBe(1);
+  });
+});

@@ -1608,6 +1608,7 @@
         "deletion-ordering-complex",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "getatt-cache-kinesis-lambda-ec2",
         "import-migrate-vpc",
         "propagation-races-2",
@@ -1624,6 +1625,9 @@
         ],
         "ec2-instance-fanout": [
           "l1"
+        ],
+        "ec2-instance-volume-attachment-drift": [
+          "l2"
         ],
         "getatt-cache-kinesis-lambda-ec2": [
           "l1",
@@ -1669,6 +1673,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
@@ -1792,6 +1797,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-route-targets": [
@@ -2001,6 +2009,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -2119,6 +2128,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-vpc": [
@@ -2349,6 +2361,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
@@ -2470,6 +2483,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-route-targets": [
@@ -2675,6 +2691,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
@@ -2797,6 +2814,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-route-targets": [
@@ -3273,6 +3293,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-subnet-dns64",
         "ec2-vpc",
@@ -3409,6 +3430,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-route-targets": [
@@ -3664,6 +3688,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -3782,6 +3807,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-vpc": [
@@ -3977,6 +4005,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-subnet-dns64",
         "ec2-vpc",
@@ -4117,6 +4146,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-route-targets": [
@@ -4389,6 +4421,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-instance-volume-attachment-drift",
         "ec2-route-targets",
         "ec2-vpc",
         "ecs-bluegreen",
@@ -4511,6 +4544,9 @@
           "l2"
         ],
         "ec2-instance-fanout": [
+          "l2"
+        ],
+        "ec2-instance-volume-attachment-drift": [
           "l2"
         ],
         "ec2-route-targets": [
@@ -9969,6 +10005,7 @@
         "local-invoke-from-state",
         "local-run-task-from-state",
         "output-never-resolved-diff",
+        "remote-nested-stack-refusal",
         "replacement-immutable-name",
         "secret-substring-literal",
         "secrets-array-nested",
@@ -10019,6 +10056,9 @@
         "output-never-resolved-diff": [
           "l2",
           "literal"
+        ],
+        "remote-nested-stack-refusal": [
+          "l2"
         ],
         "replacement-immutable-name": [
           "l2",
@@ -10243,6 +10283,7 @@
     "AWS::EC2::VPCCidrBlock",
     "AWS::EC2::VPNGateway",
     "AWS::EC2::Volume",
+    "AWS::EC2::VolumeAttachment",
     "AWS::ECS::Gateway",
     "AWS::ECS::GatewayClusterAssociations",
     "AWS::EKS::Cluster",

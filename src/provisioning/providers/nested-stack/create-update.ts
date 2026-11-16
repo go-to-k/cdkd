@@ -37,8 +37,11 @@ export async function create(
     throw markNonRetryable(
       new Error(
         `Nested template file not found for AWS::CloudFormation::Stack ${displayIdent(logicalId)} ` +
-          `under parent ${displayStackName(ctx.parentStackName)}. Verify the synth output emits ` +
-          `Metadata['aws:asset:path'] on this resource (CDK 2.x cdk.NestedStack does so by default).`
+          `under parent ${displayStackName(ctx.parentStackName)}: the resource has no ` +
+          `Metadata['aws:asset:path']. If it is a cdk.NestedStack synthesized with asset metadata ` +
+          `disabled (aws:cdk:enable-asset-metadata false, or cdk synth --no-asset-metadata), ` +
+          `re-enable it. A nested stack with a remote TemplateURL (such as the one a CDK ` +
+          `HostedRotation generates) is not supported.`
       )
     );
   }

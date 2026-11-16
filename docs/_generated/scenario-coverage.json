@@ -1114,6 +1114,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-instance-volume-attachment-drift",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-route-targets",
       "annotated": false,
       "scenarios": []
@@ -2447,6 +2452,11 @@
     },
     {
       "name": "refactor-move",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "remote-nested-stack-refusal",
       "annotated": false,
       "scenarios": []
     },
@@ -3930,6 +3940,7 @@
     "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",
+    "ec2-instance-volume-attachment-drift",
     "ec2-route-targets",
     "ec2-sg-source-group-name",
     "ec2-subnet-dns64",
@@ -4059,6 +4070,7 @@
     "refactor-command",
     "refactor-lambda-version",
     "refactor-move",
+    "remote-nested-stack-refusal",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",
