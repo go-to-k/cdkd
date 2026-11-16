@@ -33,6 +33,7 @@ import {
   cfnRefValueFromPhysicalId,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-resolver/ref-values.js';
+import { carriesSecretMask } from '../deployment/secret-redaction/mask-only.js';
 import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
@@ -90,17 +91,28 @@ export interface S3LocalStateProviderOptions {
  * `AWS::Events::Rule` as its ARN), so a `Ref` to one reached the workload as
  * cdkd's id. Copies only the rows that change; the record itself is untouched.
  */
-export function withCfnRefPhysicalIds(
+function withCfnRefPhysicalIds(
   resources: Record<string, ResourceState>
 ): Record<string, ResourceState> {
   const out: Record<string, ResourceState> = {};
   for (const [logicalId, resource] of Object.entries(resources)) {
+    // A row without a string id passes through: the repair above keeps it
+    // (it checks `resourceType` only), and the id helpers would throw on it.
+    if (typeof resource.physicalId !== 'string') {
+      out[logicalId] = resource;
+      continue;
+    }
     const ref = cfnRefValueFromPhysicalId(
       resource.resourceType,
       resource.physicalId,
       refStateLookupFromResource(resource)
     );
-    out[logicalId] = ref === resource.physicalId ? resource : { ...resource, physicalId: ref };
+    // A `Ref` recovered from a redacted attribute would be the mask itself:
+    // keep cdkd's id rather than hand the workload `***`.
+    out[logicalId] =
+      ref === resource.physicalId || carriesSecretMask(ref)
+        ? resource
+        : { ...resource, physicalId: ref };
   }
   return out;
 }

@@ -35,12 +35,14 @@ const resources: StackState['resources'] = {
   },
 };
 
-async function load(): Promise<StackState['resources']> {
+async function load(
+  rows: StackState['resources'] = resources
+): Promise<StackState['resources']> {
   const state: StackState = {
     version: 9,
     stackName: 'S',
     region: REGION,
-    resources: structuredClone(resources),
+    resources: structuredClone(rows),
     outputs: {},
     lastModified: 1,
   };
@@ -57,6 +59,27 @@ describe('S3LocalStateProvider.load hands cdk-local CloudFormation Ref values', 
     expect(out['Rule']?.physicalId).toBe('my-rule');
     expect(out['Pool']?.physicalId).toBe('us-east-1_AbC');
     expect(out['Client']?.resourceType).toBe('AWS::Cognito::UserPoolClient');
+  });
+
+  it('passes a row without a string physical id through instead of throwing', async () => {
+    const rows = {
+      Rule: { resourceType: 'AWS::Events::Rule', properties: {} },
+    } as unknown as StackState['resources'];
+    const out = await load(rows);
+    expect(out['Rule']).toEqual(rows['Rule']);
+  });
+
+  it('keeps cdkd\'s id when the Ref would be recovered from a redacted attribute', async () => {
+    const rows: StackState['resources'] = {
+      Table: {
+        physicalId: 'arn:aws:s3tables:us-east-1:111111111111:bucket/b|ns|t',
+        resourceType: 'AWS::S3Tables::Table',
+        properties: {},
+        attributes: { TableARN: '***' },
+      },
+    };
+    const out = await load(rows);
+    expect(out['Table']?.physicalId).toBe(rows['Table']?.physicalId);
   });
 
   it("is what cdk-local's Ref substitution then returns", async () => {

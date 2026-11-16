@@ -1,6 +1,6 @@
 import { rmSync } from 'node:fs';
 import { pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
-import { createWatchPredicates, resolveWatchConfig } from 'cdk-local/internal';
+import { createWatchPredicates, resolveWatchConfig, UNNAMED_WORKLOAD } from 'cdk-local/internal';
 import {
   parseContextOptions,
   normalizeStartApiAssumeRole,
@@ -76,7 +76,7 @@ import {
 } from './servers.js';
 import { onShutdownSignals, shutdownSignalExitCode } from '../../../utils/shutdown-signals.js';
 import { reloadAllServers } from './reload.js';
-import { loadStateForRoutedStacks, type StackStateBundle } from './state.js';
+import { loadStateForRoutedStacks, stateBundleKey, type StackStateBundle } from './state.js';
 import { parseDebugPort, parsePerLambdaConcurrency } from './flags.js';
 
 /**
@@ -298,6 +298,8 @@ export async function localStartApiCommand(
    * resulting `RouteWithAuth[]` carries every route's authorizer info.
    * Hot reload picks up authorizer-config changes via this re-run.
    */
+  // The JWT authorizer intrinsic warnings, once per run across `--watch` reloads.
+  const jwtIntrinsicWarned = new Set<string>();
   const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
     logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app...'));
     const synthesizer = localCommandSynthesizer();
@@ -482,16 +484,21 @@ export async function localStartApiCommand(
     // An HTTP API JWT authorizer's intrinsic Issuer / Audience
     // (`HttpUserPoolAuthorizer`, go-to-k/cdkd#6419) resolves from state;
     // without it the authorizer stays in JWKS pass-through, warned.
-    routesWithAuth = resolveJwtAuthorizerIntrinsics(routesWithAuth, (stackName) => {
-      const bundle = stateByStack.get(stackName);
-      if (!bundle) return undefined;
-      const pseudoParameters =
-        bundle.pseudoParameters ?? derivePseudoParametersFromRegion(bundle.region);
-      return {
-        resources: bundle.state.resources,
-        ...(pseudoParameters && { pseudoParameters }),
-      };
-    });
+    routesWithAuth = resolveJwtAuthorizerIntrinsics(
+      routesWithAuth,
+      (stackName) => {
+        // The stack's shared names, keyed as `loadStateForRoutedStacks` keys them.
+        const bundle = stateByStack.get(stateBundleKey(stackName, UNNAMED_WORKLOAD));
+        if (!bundle) return undefined;
+        const pseudoParameters =
+          bundle.pseudoParameters ?? derivePseudoParametersFromRegion(bundle.region);
+        return {
+          resources: bundle.state.resources,
+          ...(pseudoParameters && { pseudoParameters }),
+        };
+      },
+      jwtIntrinsicWarned
+    );
 
     // Issue #654: resolve `--profile <p>` to a concrete credential set
     // ONCE at boot for forwarding into every Lambda container that
