@@ -288,6 +288,22 @@ export function physicalIdIsNotImportIdentifier(resourceType: string): string | 
 }
 
 /**
+ * Types the measurement in {@link typeIsImportUnsupported}'s doc found without
+ * a `read` handler, which CloudFormation refuses for IMPORT. The schema
+ * snapshot cannot tell (it carries no `handlers`), so these are never
+ * answered from it (go-to-k/cdkd#6411).
+ */
+const MEASURED_WITHOUT_READ_HANDLER: ReadonlySet<string> = new Set([
+  'AWS::AppSync::GraphQLSchema',
+  'AWS::EC2::NetworkAclEntry',
+  'AWS::Glue::Table',
+  'AWS::Route53::RecordSet',
+  'AWS::Route53::RecordSetGroup',
+  'AWS::SNS::TopicPolicy',
+  'AWS::SQS::QueuePolicy',
+]);
+
+/**
  * Fetch the primary identifier field names for a resource type, with a
  * hardcoded single-key fallback when DescribeType is unavailable. Exported
  * for unit testing.
@@ -355,15 +371,21 @@ export async function fetchPrimaryIdentifier(
   // Then cdkd's committed schema snapshot (go-to-k/cdkd#6411), which deploy
   // already falls back to when the registry has no schema (AWS Emulator's
   // lacks many types). The fields are matched by name, so the snapshot's
-  // sorted order is harmless; handlers are again unknown.
+  // sorted order is harmless. The snapshot holds no `handlers`, so a type
+  // measured without a read handler is not answered here: its IMPORT would
+  // fail after the lock, and the refusal below keeps it blocked up front.
   const snapshot = PROPERTY_COVERAGE_BY_TYPE.get(resourceType)?.primaryIdentifier;
-  if (snapshot !== undefined && snapshot.size > 0) {
+  if (
+    snapshot !== undefined &&
+    snapshot.size > 0 &&
+    !MEASURED_WITHOUT_READ_HANDLER.has(resourceType)
+  ) {
     return { fields: [...snapshot], importSupport: 'unknown' };
   }
   throw new Error(
     `primary identifier unknown: DescribeType returned no usable schema for ` +
-      `${quotedOrNotShown(resourceType)}, and cdkd has no offline copy of it. Re-run once ` +
-      `cloudformation:DescribeType can read the type, or destroy the resource first and let ` +
-      `CloudFormation create it fresh.`
+      `${quotedOrNotShown(resourceType)}, and cdkd has no offline copy it can use. Re-run ` +
+      `where cloudformation:DescribeType can read the type, or destroy the resource first and ` +
+      `let CloudFormation create it fresh.`
   );
 }

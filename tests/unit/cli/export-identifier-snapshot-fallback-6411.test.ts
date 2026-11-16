@@ -58,8 +58,21 @@ describe('fetchPrimaryIdentifier falls back to the schema snapshot (go-to-k/cdkd
   });
 
   it('still prefers the hand-kept table', async () => {
-    const entry = await fetchPrimaryIdentifier('AWS::SQS::Queue', registryWithoutSchemas());
-    expect(entry.fields).toEqual(['QueueUrl']);
+    // The one type where the two disagree: the table says GroupId, the snapshot Id.
+    const entry = await fetchPrimaryIdentifier('AWS::EC2::SecurityGroup', registryWithoutSchemas());
+    expect(entry.fields).toEqual(['GroupId']);
+  });
+
+  it('never answers a type measured without a read handler', async () => {
+    // CloudFormation refuses these for IMPORT; answered from the snapshot they
+    // would pass the plan and fail the changeset after the lock.
+    for (const type of ['AWS::SQS::QueuePolicy', 'AWS::SNS::TopicPolicy', 'AWS::Glue::Table']) {
+      const message = await fetchPrimaryIdentifier(type, registryWithoutSchemas()).then(
+        () => 'resolved',
+        (e: unknown) => (e as Error).message
+      );
+      expect(message, type).toContain('primary identifier unknown');
+    }
   });
 
   it('refuses a type the snapshot does not hold, without asking for a source edit', async () => {
