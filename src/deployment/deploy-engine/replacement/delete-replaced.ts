@@ -76,16 +76,18 @@ export async function deleteReplacedAfterCreate(
   /** go-to-k/cdkd#4900: the post-DAG retry, which warns rather than defers. */
   isRetry = false,
   /**
-   * The replacement's new physical id. Equal to the old one (a Glue table
-   * moved to another database keeps its id), the old resource's superseded
-   * record would be dropped at the row's save as held, so it is deleted
-   * inline as before (go-to-k/cdkd#6374).
+   * Whether the new resource has the old one's physical id AND type (a Glue
+   * table moved to another database keeps its id). The old resource's
+   * superseded record would then be dropped at the row's save as held by a
+   * same-type record, so it is deleted inline as before (go-to-k/cdkd#6374).
+   * An equal id under another type (a Type change) is two resources and
+   * defers as usual.
    */
-  newPhysicalId?: string
+  newHoldsOldIdAndType = false
 ): Promise<void> {
   if (
     !isRetry &&
-    newPhysicalId !== currentResource.physicalId &&
+    !newHoldsOldIdAndType &&
     deferToCleanupPhase(run, deps, logicalId, currentResource, updateReplacePolicy, {
       finalSnapshotIdentifier,
       noEchoDeleteValues,

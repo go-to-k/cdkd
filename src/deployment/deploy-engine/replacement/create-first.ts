@@ -222,7 +222,7 @@ export async function createFirstThenDeleteOld(
     input.deleteProvisionedBy,
     input.noEchoDeleteValues,
     false,
-    createResult.physicalId
+    createResult.physicalId === currentResource.physicalId && resourceType === input.oldResourceType
   );
   return createResult;
 }

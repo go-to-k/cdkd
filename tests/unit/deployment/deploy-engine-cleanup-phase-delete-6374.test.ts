@@ -561,7 +561,7 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       resourceType: 'AWS::Glue::Table',
       properties: { DatabaseName: 'db' },
     } as ResourceState;
-    const call = (newPhysicalId: string) =>
+    const call = (newHoldsOldIdAndType: boolean) =>
       deleteReplacedAfterCreate(
         run,
         engine.replacementDeps(),
@@ -576,16 +576,17 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
         'sdk',
         undefined,
         false,
-        newPhysicalId
+        newHoldsOldIdAndType
       );
 
-    await call('db|tbl');
+    await call(true);
     expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['db|tbl']);
     expect(run.deferredReplacedDeletes.size).toBe(0);
 
-    // Control: a new id defers it.
+    // Control: a new id, or an equal id under another type (a Type change),
+    // defers it.
     vi.mocked(provider.delete).mockClear();
-    await call('db2|tbl');
+    await call(false);
     expect(provider.delete).not.toHaveBeenCalled();
     expect(run.deferredReplacedDeletes.has('Table')).toBe(true);
   });

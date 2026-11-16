@@ -497,7 +497,7 @@ export async function replaceCreateFirst(
         oldDeleteRoute.provisionedBy,
         noEchoDeleteValues,
         false,
-        createResult.physicalId
+        createResult.physicalId === currentResource.physicalId && resourceType === oldResourceType
       );
     }
   }
