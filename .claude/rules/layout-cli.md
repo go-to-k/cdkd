@@ -156,8 +156,8 @@ Index of every area: [code-layout.md](code-layout.md).
   `resolveProfileCredentials` in `cli/commands/local-start-api/credentials.ts`, gating an
   `aws sso login --profile <name>` hint, so tightening either half must ask what
   it costs that caller (go-to-k/cdkd#3377).
-- **src/cli/commands/synth.ts** - `resolveVerboseTemplatePath` is the ONE place
-  cdkd turns an assembly-supplied string into a path it WRITES (`--verbose`
+- **src/cli/commands/synth.ts** - `resolveVerboseTemplatePath` turns an
+  assembly-supplied string into a path cdkd WRITES (`--verbose`
   dumps `<stackName>.template.json`, `<stackName>.<region>.template.json` for a
   shared name, #5176). Both parts come from the manifest, so the path is
   containment-checked like every read site, **and then `lstat`ed**

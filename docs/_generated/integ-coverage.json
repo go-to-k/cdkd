@@ -10004,6 +10004,7 @@
         "lambda-esm-self-managed-kafka",
         "local-invoke-from-state",
         "local-run-task-from-state",
+        "nested-stack-transform",
         "output-never-resolved-diff",
         "remote-nested-stack-refusal",
         "replacement-immutable-name",
@@ -10052,6 +10053,9 @@
         "local-run-task-from-state": [
           "l2",
           "literal"
+        ],
+        "nested-stack-transform": [
+          "l2"
         ],
         "output-never-resolved-diff": [
           "l2",
