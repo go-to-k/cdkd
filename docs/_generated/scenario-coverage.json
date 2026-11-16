@@ -633,6 +633,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute-common-types-2",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-to-sdk-reroute-ecs-service",
       "annotated": false,
       "scenarios": []
@@ -3944,6 +3949,7 @@
     "cc-required-name-generation",
     "cc-to-sdk-reroute",
     "cc-to-sdk-reroute-common-types",
+    "cc-to-sdk-reroute-common-types-2",
     "cc-to-sdk-reroute-ecs-service",
     "cc-to-sdk-reroute-hosted-zone",
     "cc-to-sdk-reroute-mount-target",
