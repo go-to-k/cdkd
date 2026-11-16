@@ -270,6 +270,7 @@ for i in "${!SUBJECTS[@]}"; do
     exit 1
   }
   W1[$i]=$(witness "${id}" "${P1[$i]}")
+  [ -n "${W1[$i]}" ] && [ "${W1[$i]}" != "None" ] || { echo "FAIL: no identity witness for ${id} after the recreate" >&2; exit 1; }
   if [ "${id}" = RerouteParameter ]; then
     [ "${W1[$i]}" = 1 ] || { echo "FAIL: the recreated parameter is at version ${W1[$i]}, expected 1; it was not recreated" >&2; exit 1; }
   else

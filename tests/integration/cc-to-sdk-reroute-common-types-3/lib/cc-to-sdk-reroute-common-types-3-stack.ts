@@ -2,7 +2,6 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
-import * as events from 'aws-cdk-lib/aws-events';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
@@ -21,13 +20,13 @@ const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
 };
 
 /**
- * physicalId-parity arm for issue 6454, batch 3: a resource of each of six
+ * physicalId-parity arm for issue 6454, batch 3: a resource of each of five
  * types, recorded `provisionedBy: 'cc-api'`, returns to its SDK provider
  * without churn.
  *
  * covers: AWS::CloudFront::CloudFrontOriginAccessIdentity,
  * AWS::ServiceDiscovery::HttpNamespace, AWS::Glue::Database, AWS::Glue::Job,
- * AWS::Events::EventBus, AWS::ECR::Repository
+ * AWS::ECR::Repository
  *
  * Every resource under test is a LEAF: nothing in the stack references it, so
  * verify.sh's `--recreate-via-cc-api` replaces only that resource and no
@@ -85,11 +84,6 @@ export class CcToSdkRerouteCommonTypes3Stack extends cdk.Stack {
         maxCapacity: 0.0625,
       }),
       'RerouteGlueJob'
-    );
-
-    fixed(
-      new events.CfnEventBus(this, 'EventBus', { name: `${this.stackName}-bus`, description: phase }),
-      'RerouteEventBus'
     );
 
     const repository = new ecr.CfnRepository(this, 'Repository', {

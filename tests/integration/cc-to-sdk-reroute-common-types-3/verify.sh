@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh -- cdkd sticky-CC -> SDK re-route parity integ for six more types (issue 6454, batch 3).
+# verify.sh -- cdkd sticky-CC -> SDK re-route parity integ for five more types (issue 6454, batch 3).
 #
 # Admission evidence for each type's `'sdk-coverage'` sticky exemption. Every
-# phase acts on all six resources at once. Phases: deploy on the SDK route ->
+# phase acts on all five resources at once. Phases: deploy on the SDK route ->
 # force each resource onto Cloud Control (--recreate-via-cc-api) -> the plan
 # announces each return -> --pin-cc-api declines them -> redeploy with a real
 # change: each id unchanged, each record flipped to 'sdk', each update reached
@@ -55,7 +55,6 @@ SUBJECTS=(
   RerouteHttpNamespace
   RerouteGlueDatabase
   RerouteGlueJob
-  RerouteEventBus
   RerouteRepository
 )
 
@@ -100,8 +99,6 @@ live_value() { # usage: live_value <logicalId> <physicalId>
       aws glue get-database --name "$2" --region "${REGION}" --query 'Database.Description' --output text ;;
     RerouteGlueJob)
       aws glue get-job --job-name "$2" --region "${REGION}" --query 'Job.Description' --output text ;;
-    RerouteEventBus)
-      aws events describe-event-bus --name "$2" --region "${REGION}" --query 'Description' --output text ;;
     RerouteRepository)
       aws ecr describe-repositories --repository-names "$2" --region "${REGION}" \
         --query 'repositories[0].imageTagMutability' --output text ;;
@@ -124,8 +121,6 @@ witness() { # usage: witness <logicalId> <physicalId>
       aws glue get-database --name "$2" --region "${REGION}" --query 'Database.CreateTime' --output text ;;
     RerouteGlueJob)
       aws glue get-job --job-name "$2" --region "${REGION}" --query 'Job.CreatedOn' --output text ;;
-    RerouteEventBus)
-      aws events describe-event-bus --name "$2" --region "${REGION}" --query 'CreationTime' --output text ;;
     RerouteRepository)
       aws ecr describe-repositories --repository-names "$2" --region "${REGION}" \
         --query 'repositories[0].createdAt' --output text ;;
@@ -142,7 +137,6 @@ form_ok() { # usage: form_ok <logicalId> <physicalId>
     RerouteHttpNamespace) grep -qE '^ns-[a-z0-9]+$' <<<"$2" ;;
     RerouteGlueDatabase) grep -qE '^cdkd_reroute_common_types_3$' <<<"$2" ;;
     RerouteGlueJob) grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]*$' <<<"$2" ;;
-    RerouteEventBus) grep -qE '^CdkdCcToSdkRerouteCommonTypes3Example-bus$' <<<"$2" ;;
     RerouteRepository) grep -qE '^[a-z0-9][a-z0-9._/-]*$' <<<"$2" ;;
     *) echo "FAIL: form_ok has no arm for $1" >&2; return 1 ;;
   esac
@@ -250,6 +244,7 @@ for i in "${!SUBJECTS[@]}"; do
     exit 1
   }
   W1[$i]=$(witness "${id}" "${P1[$i]}")
+  [ -n "${W1[$i]}" ] && [ "${W1[$i]}" != "None" ] || { echo "FAIL: no identity witness for ${id} after the recreate" >&2; exit 1; }
   [ "${W1[$i]}" != "${W0[$i]}" ] || {
     echo "FAIL: the recreate kept ${id}'s witness (${W0[$i]}); it was not recreated, so the witness cannot prove phase 5" >&2
     exit 1
@@ -349,7 +344,6 @@ OAI_ID=$(record RerouteOriginAccessIdentity '.physicalId')
 NAMESPACE_ID=$(record RerouteHttpNamespace '.physicalId')
 DATABASE_NAME=$(record RerouteGlueDatabase '.physicalId')
 JOB_NAME=$(record RerouteGlueJob '.physicalId')
-BUS_NAME=$(record RerouteEventBus '.physicalId')
 REPOSITORY_NAME=$(record RerouteRepository '.physicalId')
 GLUE_ROLE=$(output GlueRoleName)
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -374,8 +368,6 @@ assert_gone "glue database ${DATABASE_NAME} survived destroy" \
   aws glue get-database --name "${DATABASE_NAME}" --region "${REGION}"
 assert_gone "glue job ${JOB_NAME} survived destroy" \
   aws glue get-job --job-name "${JOB_NAME}" --region "${REGION}"
-assert_gone "event bus ${BUS_NAME} survived destroy" \
-  aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"
 assert_gone "repository ${REPOSITORY_NAME} survived destroy" \
   aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region "${REGION}"
 assert_gone "role ${GLUE_ROLE} survived destroy" aws iam get-role --role-name "${GLUE_ROLE}"

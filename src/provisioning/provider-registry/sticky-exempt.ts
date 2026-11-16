@@ -579,8 +579,8 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   [
     'AWS::CloudFront::CloudFrontOriginAccessIdentity',
     {
-      // Batch 3 of go-to-k/cdkd#6454, admitted with five other types for the
-      // SDK path's speed. Its fixture observed all six flips on live
+      // Batch 3 of go-to-k/cdkd#6454, admitted with four other types for the
+      // SDK path's speed. Its fixture observed all five flips on live
       // resources, each with an identity witness: the AWS-minted id where
       // AWS mints one, else the resource's creation time (an HttpNamespace's
       // too: Cloud Map re-mints the same `ns-...` id for a recreated name).
@@ -611,7 +611,7 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       mode: 'sdk-coverage' as const,
       physicalIdForm:
         'both layers store the bare database name: the schema primaryIdentifier is ' +
-        'DatabaseName and the Glue provider records DatabaseInput.Name',
+        'DatabaseName and the Glue provider records DatabaseInput.Name, else DatabaseName',
       issue: 'https://github.com/go-to-k/cdkd/issues/6454',
       integFixture: 'cc-to-sdk-reroute-common-types-3',
     },
@@ -624,18 +624,6 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       physicalIdForm:
         'both layers store the bare job name: the schema primaryIdentifier is Name ' +
         'and GlueJobProvider.create records the CreateJob Name',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-3',
-    },
-  ],
-  [
-    'AWS::Events::EventBus',
-    {
-      // Admitted with AWS::CloudFront::CloudFrontOriginAccessIdentity (go-to-k/cdkd#6454, batch 3).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare bus name, not the ARN: the schema primaryIdentifier ' +
-        'is Name and EventBridgeBusProvider.create records the bus name',
       issue: 'https://github.com/go-to-k/cdkd/issues/6454',
       integFixture: 'cc-to-sdk-reroute-common-types-3',
     },
