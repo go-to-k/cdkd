@@ -16,7 +16,8 @@
 #   1. Deploy (v1). The Lambda's recorded Code names the EXPECTED bucket --
 #      the cdkd asset bucket from the region's bootstrap marker (key
 #      `<hash>.zip` at its root), else the CDKToolkit stack's BucketName
-#      (`assets/<hash>.zip`, CDK CLI layout) -- and that object exists; the
+#      (`assets/<hash>.zip`, CDK CLI layout; reachable because the deploys pass
+#      --no-auto-asset-storage) -- and that object exists; the
 #      `||`-split key parameter resolved. Invoking the Lambda returns the v1
 #      code marker and the v1 file asset's content, read through the DATA_URL
 #      the file asset's parameters built, in the SAME bucket.
@@ -245,8 +246,8 @@ if [ "$(grep -c . <<<"${OBJECT_NAMES}")" -ne 4 ]; then
   echo "FAIL: premise: expected 4 asset objects (2 assets x 2 versions), got: ${OBJECT_NAMES}" >&2
   exit 1
 fi
-# Before the first deploy no marker may exist yet (the deploy auto-creates an
-# empty bucket then) and no CDKToolkit stack either: nothing to purge.
+# Without a CDKToolkit stack in a region with no marker there is nothing to
+# purge (and the deploy below then fails on the missing toolkit bucket).
 if expected_destination; then
   while read -r name; do
     [ -n "${name}" ] || continue
@@ -256,10 +257,14 @@ if expected_destination; then
 fi
 
 # --- Phase 1: deploy --------------------------------------------------------
+# --no-auto-asset-storage keeps a region with no marker in legacy mode, so the
+# CDKToolkit-bucket path is reachable: without it the first deploy into such a
+# region creates cdkd asset storage and takes the cdkd-assets path instead.
 echo "==> Phase 1: deploy (v1 assets)"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --no-auto-asset-storage \
   --yes
 check_phase cdkd-legacy-synth-code-v1 cdkd-legacy-synth-data-v1
 V1_KEY="${LAST_KEY}"
@@ -269,6 +274,7 @@ echo "==> Phase 2: deploy with CDKD_TEST_UPDATE=true (v2 assets)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
+  --no-auto-asset-storage \
   --yes
 check_phase cdkd-legacy-synth-code-v2 cdkd-legacy-synth-data-v2
 if [ "${LAST_KEY}" = "${V1_KEY}" ]; then
