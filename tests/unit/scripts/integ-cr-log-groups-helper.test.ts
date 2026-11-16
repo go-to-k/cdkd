@@ -293,6 +293,9 @@ describe('autoDeleteObjects fixtures sweep their Lambda log groups', () => {
       // ...and the script's own aws calls cannot fall back to a real identity.
       expect(body).toMatch(/^unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN$/m);
       expect(body).toMatch(/^export AWS_ENDPOINT_URL="\$\{EMU\}"$/m);
+      expect(body).toMatch(/^unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_ROLE_SESSION_NAME$/m);
+      expect(body).toMatch(/^unset AWS_REGION AWS_DEFAULT_REGION AWS_IGNORE_CONFIGURED_ENDPOINT_URLS$/m);
+      expect(body).toMatch(/^done < <\(env \| sed -n 's\/\^\\\(AWS_ENDPOINT_URL/m);
     }
   });
 
