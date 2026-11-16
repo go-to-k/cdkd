@@ -1819,6 +1819,11 @@
       "scenarios": []
     },
     {
+      "name": "local-aws-emulator",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-ecs-service-connect",
       "annotated": true,
       "scenarios": [
@@ -3987,6 +3992,7 @@
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "list-parameters",
+    "local-aws-emulator",
     "local-engine-role-identity",
     "local-start-agentcore",
     "local-start-alb",

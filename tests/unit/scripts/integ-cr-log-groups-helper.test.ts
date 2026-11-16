@@ -273,6 +273,32 @@ describe('autoDeleteObjects fixtures sweep their Lambda log groups', () => {
     'local-start-cloudfront': 'serves the synthesized assembly locally; no AWS call',
   };
 
+  /**
+   * Fixtures that deploy ONLY into a local AWS Emulator container: no Lambda
+   * runs in a real account, and removing the container discards the
+   * emulator's log groups with everything else.
+   */
+  const EMULATOR_ONLY: Readonly<Record<string, string>> = {
+    'local-aws-emulator': 'every deploy / destroy passes --aws-emulator; the container is removed on exit',
+  };
+
+  it('every emulator-only exemption is still in the population and passes --aws-emulator on every cdkd call', () => {
+    for (const name of Object.keys(EMULATOR_ONLY)) {
+      expect(population).toContain(name);
+      const body = readFileSync(runnerOf(name)!, 'utf8');
+      // EVERY cdkd invocation, whatever it targets, goes to the emulator...
+      const cdkdLines = body.split('\n').filter((line) => /\bnode "\$\{LOCAL_DIST\}"/.test(line));
+      expect(cdkdLines.length).toBeGreaterThanOrEqual(5);
+      for (const line of cdkdLines) expect(line).toMatch(/--aws-emulator/);
+      // ...and the script's own aws calls cannot fall back to a real identity.
+      expect(body).toMatch(/^unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN$/m);
+      expect(body).toMatch(/^export AWS_ENDPOINT_URL="\$\{EMU\}"$/m);
+      expect(body).toMatch(/^unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_ROLE_SESSION_NAME$/m);
+      expect(body).toMatch(/^unset AWS_REGION AWS_DEFAULT_REGION AWS_IGNORE_CONFIGURED_ENDPOINT_URLS$/m);
+      expect(body).toMatch(/^done < <\(env \| sed -n 's\/\^\\\(AWS_ENDPOINT_URL/m);
+    }
+  });
+
   it('finds the population (floor), and every exemption is still in it and still never deploys', () => {
     // A drop below the population measured when this landed means the scan
     // stopped seeing fixtures, not that they stopped needing the sweep.
@@ -285,7 +311,7 @@ describe('autoDeleteObjects fixtures sweep their Lambda log groups', () => {
 
   it('each sources the shared helper and calls it with its stack, or keeps its own /aws/lambda/ sweep', () => {
     const missing = population.filter((name) => {
-      if (name in NEVER_DEPLOYS) return false;
+      if (name in NEVER_DEPLOYS || name in EMULATOR_ONLY) return false;
       const body = readFileSync(runnerOf(name)!, 'utf8');
       const helper =
         HELPER_SOURCE.test(body) && body.split('\n').some((line) => HELPER_CALL.test(line));
