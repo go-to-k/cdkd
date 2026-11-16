@@ -39,6 +39,7 @@ import {
   unaddressableServiceTokenRemedy,
 } from './delete-skip-reasons.js';
 import { asSentence } from './lambda-payload.js';
+import { isUntaggedAutoDeleteBucket } from './s3-auto-delete-untagged.js';
 import { SNS_SERVICE_TOKEN_ARN_RE } from './retry-policy.js';
 
 /**
@@ -271,6 +272,20 @@ export async function deleteImpl(
     // unconditional (no already-gone classifier) and for the compatibility
     // break it carries.
     if (cfnResponse.Status === 'FAILED') {
+      // go-to-k/cdkd#6422: the one FAILED that is DELETED, decided by cdkd's
+      // own S3 read, never by the handler's Reason.
+      if (await isUntaggedAutoDeleteBucket(resourceType, payload)) {
+        this.logger.info(
+          show(
+            `Custom resource ${logicalId} (${resourceType}): the handler answered FAILED, but S3 ` +
+              `reports bucket ${String(payload['BucketName'])} carries no tags, so it is not ` +
+              `tagged for auto-delete and the handler had nothing to empty; treating the ` +
+              `delete as done (CloudFormation's bucket keeps its aws:cloudformation:* tags, so ` +
+              `its handler skips here instead)`
+          )
+        );
+        return;
+      }
       this.logger.warn(
         show(
           `Custom resource delete handler returned FAILED for ${logicalId}: ` +

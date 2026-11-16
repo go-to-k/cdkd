@@ -1671,6 +1671,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -1791,6 +1792,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -2007,6 +2011,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -2122,6 +2127,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -2359,6 +2367,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -2477,6 +2486,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -2689,6 +2701,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -2808,6 +2821,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -3017,6 +3033,7 @@
         "docdb-neptune",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-sg-source-group-name",
@@ -3102,6 +3119,10 @@
         ],
         "drift-revert-vpc": [
           "l2"
+        ],
+        "drift-sg-sibling-rules": [
+          "l2",
+          "literal"
         ],
         "ec2-instance": [
           "l1",
@@ -3242,6 +3263,7 @@
         "alb",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "export",
         "rollback-replay-effective-props",
         "sg-circular-dependency"
@@ -3255,6 +3277,9 @@
         ],
         "drift-revert-vpc": [
           "l1"
+        ],
+        "drift-sg-sibling-rules": [
+          "literal"
         ],
         "export": [
           "l1"
@@ -3291,6 +3316,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -3423,6 +3449,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -3686,6 +3715,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -3801,6 +3831,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -4003,6 +4036,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -4140,6 +4174,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -4419,6 +4456,7 @@
         "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-sg-sibling-rules",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -4538,6 +4576,9 @@
           "l2"
         ],
         "drift-revert-vpc": [
+          "l2"
+        ],
+        "drift-sg-sibling-rules": [
           "l2"
         ],
         "ec2-instance": [
@@ -8216,6 +8257,7 @@
         "rollback-command",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
+        "s3-autodelete-objects-disable",
         "s3-bucket-policy-existing",
         "s3-cloudfront",
         "s3-directory-bucket",
@@ -8413,6 +8455,9 @@
         ],
         "s3-analytics-inventory": [
           "l1"
+        ],
+        "s3-autodelete-objects-disable": [
+          "l2"
         ],
         "s3-bucket-policy-existing": [
           "l2",

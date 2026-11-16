@@ -222,14 +222,14 @@ describe('cdkd export renders template- and CLI-derived identifiers (go-to-k/cdk
         () => 'resolved',
         (e: unknown) => (e as Error).message
       );
-      expect(message, value).toContain(`Add ${NOT_SHOWN} to PRIMARY_IDENTIFIER_FALLBACK`);
+      expect(message, value).toContain(`no usable schema for ${NOT_SHOWN}, and cdkd has no offline copy`);
       expect(message, value).not.toContain(value);
     }
     const plain = await fetchPrimaryIdentifier('AWS::Nope::Thing', client).then(
       () => 'resolved',
       (e: unknown) => (e as Error).message
     );
-    expect(plain).toContain("Add 'AWS::Nope::Thing' to PRIMARY_IDENTIFIER_FALLBACK");
+    expect(plain).toContain("no usable schema for 'AWS::Nope::Thing', and cdkd has no offline copy");
   });
 
   it('a cross-stack reference row quotes plain names and describes a non-inert path (G3)', () => {
