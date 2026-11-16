@@ -292,7 +292,7 @@ local-start-cloudfront	2026-11-14T12:32:07Z	PASS	7	verify.sh	rc ok, docker sweep
 local-start-cloudfront-from-state	2026-11-05T07:01:01Z	PASS	220	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-microvm	2026-11-10T16:19:06Z	PASS	25	verify.sh	rc ok, docker clean, orph clean
 local-start-microvm-from-state	2026-11-10T16:18:27Z	PASS	315	verify.sh	rc ok, docker clean, orph clean
-local-start-service	2026-11-15T15:45:32Z	PASS	85	verify.sh	rc ok, orph clean, docker clean
+local-start-service	2026-11-15T19:03:18Z	PASS	91	verify.sh	cdk-local 0.168.6; rc ok, orph clean, docker clean
 local-start-service-watch-fast	2026-11-12T13:54:58Z	PASS	50	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean (earlier FAIL = peer lane port 8087)
 local-start-web-function	2026-11-10T16:12:55Z	PASS	20	verify.sh	rc ok, docker clean, orph clean
 local-start-web-function-from-state	2026-11-10T16:12:16Z	PASS	100	verify.sh	rc ok, docker clean, orph clean
