@@ -54,9 +54,11 @@ says. Edit the body BEFORE the push: an edit re-runs required checks and
 CANCELS in-flight ones (`ship.md` §9, Merge).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
-regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file
-alone, read the failure KIND: a load artifact is all `Test timed out` with no
-`AssertionError`. Under load CI decides; a KILLED run has no verdict.
+regression.** Check `uptime` and `ps -axo command= | grep -cE '(^|/)node .*vitest'`
+(non-zero: a suite runs; a bare `vitest` match also counts waiting shells),
+re-run the file alone, read the failure KIND: a load artifact is all `Test
+timed out` with no `AssertionError`. Under load CI decides; a KILLED run has no
+verdict.
 
 ## 7. If main advanced while you worked
 
