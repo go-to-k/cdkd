@@ -1,7 +1,11 @@
 import type { RolledBackCreate } from '../../state/name-generation.js';
 import type { ForeignHolding } from './journaled-orphans.js';
 import type { DeploymentEvent } from '../../types/deployment-events.js';
-import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  SupersededResourceRecord,
+} from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { type PreDeleteSnapshotClients } from '../../provisioning/final-snapshot.js';
@@ -297,6 +301,16 @@ export interface FailedOperation {
 /** Collaborators the executor needs (no synth-side dependencies). */
 export interface RollbackExecutorContext {
   providerRegistry: ProviderRegistry;
+  /**
+   * go-to-k/cdkd#6399: the state's `supersededResources` when the replay
+   * started, set by the replays of a journal a LATER deploy may have
+   * followed (`cdkd rollback`, a nested child's revert). A `'deferred'` op
+   * re-adopts on an unanswered survivor read only while an entry still names
+   * its old resource: a later deploy's cleanup that deleted it dropped the
+   * entry. Absent (the in-process rollback, whose own deploy sent no
+   * cleanup) keeps the re-adopt.
+   */
+  supersededResources?: readonly SupersededResourceRecord[] | undefined;
   /** Region the resources live in — threaded into each provider delete. */
   region: string;
   logger: Logger;

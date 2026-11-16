@@ -1,3 +1,4 @@
+import type { SupersededResourceRecord } from '../../types/state.js';
 import { nameGenerationOf } from '../../state/name-generation.js';
 import { cdkdRemedy, deployReplaceCommand, proseQuoted } from '../../utils/pasteable-command.js';
 import type { ResourceProvider } from '../../types/resource.js';
@@ -180,14 +181,17 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     if (
       op.oldResourceMaySurvive === 'deferred' &&
       survivor !== 'gone' &&
-      survivor !== 'interrupted'
+      survivor !== 'interrupted' &&
+      (survivor === 'exists' || deferredDeleteStillPending(ctx.supersededResources, prev, oldType))
     ) {
       // go-to-k/cdkd#6374: its delete waited for the deploy's cleanup phase,
       // which a failed deploy never reaches, so it was never sent: the old
       // resource is whole, and taking it back is the CloudFormation rollback.
       // So a read that cannot answer (a type with no `readCurrentState`, a
-      // failed read) still re-adopts; only AWS reporting it gone (deleted out
-      // of band) re-creates it.
+      // failed read) still re-adopts while state still lists the old
+      // resource as awaiting its delete (go-to-k/cdkd#6399: a later deploy's
+      // cleanup may have sent it since); only AWS reporting it gone (deleted
+      // out of band) re-creates it.
       logger.info(
         safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) was not deleted yet — re-adopting it`
       );
@@ -649,5 +653,21 @@ function survivorUnprovenRefusal(
         'REPLACED_SURVIVOR_UNPROVEN'
       )
     )
+  );
+}
+
+/**
+ * go-to-k/cdkd#6399: whether the old resource of a `'deferred'` op still
+ * awaits its delete, per the state the replay started from. No state handed
+ * over (the in-process rollback) answers yes: that deploy sent no cleanup.
+ */
+function deferredDeleteStillPending(
+  superseded: readonly SupersededResourceRecord[] | undefined,
+  prev: { physicalId?: unknown },
+  oldType: string
+): boolean {
+  if (superseded === undefined) return true;
+  return superseded.some(
+    (entry) => entry.state.physicalId === prev.physicalId && entry.state.resourceType === oldType
   );
 }

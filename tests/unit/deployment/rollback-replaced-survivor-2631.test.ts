@@ -174,6 +174,54 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     expect(infos.join('\n')).toContain('Rollback: Topic restored to the surviving old resource');
   });
 
+  // go-to-k/cdkd#6399: a later deploy's cleanup can have deleted the old
+  // resource since this segment journaled `'deferred'`. On a read that
+  // cannot answer, only state still listing the old resource as superseded
+  // licenses the re-adopt.
+  describe('a deferred op whose survivor read cannot answer (#6399)', () => {
+    const entry = (physicalId: string, resourceType = TYPE) => ({
+      logicalId: 'Topic',
+      supersededAt: 1,
+      state: rec(physicalId, { resourceType }),
+    });
+    beforeEach(() => {
+      read.mockImplementation(async () => {
+        throw new Error('ThrottlingException: Rate exceeded');
+      });
+    });
+
+    it('re-adopts while state still lists the old resource as superseded', async () => {
+      ctx.supersededResources = [entry('topic-old')];
+      const s = state();
+      const result = await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], s, 'S', ctx);
+      expect(result.failures).toBe(0);
+      expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
+      expect(s['Topic']!.physicalId).toBe('topic-old');
+    });
+
+    it.each([
+      ['no entry at all', []],
+      ['an entry for another id', [entry('topic-other')]],
+      ['an entry of another type under the id', [entry('topic-old', 'AWS::SQS::Queue')]],
+    ])('refuses, deleting nothing, when state has %s', async (_label, superseded) => {
+      ctx.supersededResources = superseded;
+      const s = state();
+      const result = await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], s, 'S', ctx);
+      expect(result.failures).toBe(1);
+      expect(provider.delete).not.toHaveBeenCalled();
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(s['Topic']!.physicalId).toBe('topic-new');
+    });
+
+    it('an existing survivor re-adopts whatever state lists', async () => {
+      read.mockImplementation(async () => ({ DisplayName: 'old' }));
+      ctx.supersededResources = [];
+      const s = state();
+      await replayRollback([op({ oldResourceMaySurvive: 'deferred' })], s, 'S', ctx);
+      expect(s['Topic']!.physicalId).toBe('topic-old');
+    });
+  });
+
   it('a deferred re-adopt whose new copy is retained records only the retained reason', async () => {
     const events: Array<Record<string, unknown>> = [];
     ctx.recordEvent = (e) => events.push(e as Record<string, unknown>);

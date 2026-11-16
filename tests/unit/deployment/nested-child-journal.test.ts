@@ -792,6 +792,27 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     });
   });
 
+  // go-to-k/cdkd#6399: the child's revert can replay a segment a later deploy
+  // followed, so the executor gets the state's superseded entries to judge a
+  // `'deferred'` op's unanswered survivor read against.
+  it("hands the replay the child state's supersededResources", async () => {
+    const QUEUE = 'AWS::SQS::Queue';
+    const entry = { logicalId: 'Q', supersededAt: 0, state: { physicalId: 'q-old', resourceType: QUEUE, properties: {} } };
+    let seen: unknown;
+    replay.duringReplay = (_run, ctx) => {
+      seen = (ctx as { supersededResources?: unknown }).supersededResources;
+    };
+    const h = harness({
+      segments: [seg('r', ['Q'])],
+      state: {
+        ...childState({ Q: { physicalId: 'q-new', resourceType: QUEUE, properties: {} } }),
+        supersededResources: [entry],
+      } as StackState,
+    });
+    await h.run('r');
+    expect(seen).toEqual([entry]);
+  });
+
   it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {
     const h = harness({ segments: [seg('r', ['Q'])], divergentBodyRegion: 'eu-west-1' });
 
