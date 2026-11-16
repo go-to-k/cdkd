@@ -572,7 +572,8 @@
       "integs": [
         "asset-auto-create",
         "asset-bootstrap",
-        "asset-migration"
+        "asset-migration",
+        "legacy-synthesizer-assets"
       ]
     },
     {
