@@ -334,6 +334,7 @@ const navigation: ScopedNavigationGroup[] = [
         under: '/state-management',
       },
       { title: 'Deployment Event Format', path: '/deployment-events-format' },
+      { title: 'Compatibility Promise', path: '/public-contract' },
     ],
   },
   {
