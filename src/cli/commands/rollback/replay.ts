@@ -501,7 +501,6 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
 
     const ctx: RollbackExecutorContext = {
       providerRegistry,
-      // go-to-k/cdkd#6399: a later deploy may have deleted a deferred old resource.
       supersededResources: supersededResourcesOf(baseState),
       region,
       logger: logger.child('rollback'),
