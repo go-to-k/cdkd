@@ -675,8 +675,12 @@ conditional the escape is:
   `AWS::EC2::RouteTable`, `AWS::ElasticLoadBalancingV2::TargetGroup`,
   `AWS::KMS::Key`, `AWS::SecretsManager::Secret`,
   `AWS::Lambda::EventSourceMapping`, `AWS::IAM::Role`,
-  `AWS::IAM::ManagedPolicy`, `AWS::SQS::Queue` and `AWS::SSM::Parameter` are
-  the members today.
+  `AWS::IAM::ManagedPolicy`, `AWS::SQS::Queue`, `AWS::SSM::Parameter`,
+  `AWS::EC2::VPC`, `AWS::EC2::InternetGateway`, `AWS::EC2::NetworkAcl`,
+  `AWS::IAM::User`, `AWS::IAM::Group`, `AWS::IAM::InstanceProfile`,
+  `AWS::StepFunctions::StateMachine`, `AWS::Lambda::Url`,
+  `AWS::Cognito::UserPool`, `AWS::CloudFront::OriginAccessControl` and
+  `AWS::KMS::Alias` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

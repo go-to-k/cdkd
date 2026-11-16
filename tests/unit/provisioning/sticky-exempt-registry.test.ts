@@ -187,6 +187,18 @@ describe('sticky-CC exemption table', () => {
     ['AWS::IAM::ManagedPolicy', { PolicyDocument: {} }],
     ['AWS::SQS::Queue', { VisibilityTimeout: 30 }],
     ['AWS::SSM::Parameter', { Type: 'String', Value: 'v' }],
+    // Batch 2 of go-to-k/cdkd#6454.
+    ['AWS::EC2::VPC', { CidrBlock: '10.0.0.0/24', Tags: [] }],
+    ['AWS::EC2::InternetGateway', { Tags: [] }],
+    ['AWS::EC2::NetworkAcl', { VpcId: 'vpc-1', Tags: [] }],
+    ['AWS::IAM::User', { Tags: [] }],
+    ['AWS::IAM::Group', { Path: '/a/' }],
+    ['AWS::IAM::InstanceProfile', { Roles: ['r'] }],
+    ['AWS::StepFunctions::StateMachine', { RoleArn: 'arn', DefinitionString: '{}' }],
+    ['AWS::Lambda::Url', { TargetFunctionArn: 'arn', AuthType: 'AWS_IAM', Cors: { MaxAge: 100 } }],
+    ['AWS::Cognito::UserPool', { UserPoolTags: { k: 'v' } }],
+    ['AWS::CloudFront::OriginAccessControl', { OriginAccessControlConfig: { Name: 'n' } }],
+    ['AWS::KMS::Alias', { AliasName: 'alias/a', TargetKeyId: 'k' }],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {
