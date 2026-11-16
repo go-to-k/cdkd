@@ -1948,9 +1948,11 @@ if [ -z "${D3_FAILED_MSG}" ]; then
   echo "[verify] FAIL: no new ROLLBACK_RESOURCE_FAILED / RESOURCE_FAILED event with an error message for OrphanStream under s3://${STATE_BUCKET}/${EVENTS_PREFIX} after step D3 (the #2319 checks below would pass for free)"
   exit 1
 fi
-D3_CLASS_ONLY="Failed to delete Kinesis stream OrphanStream: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."
+# Step D3's destroy is --verbose, so no "Re-run with --verbose" pointer
+# (go-to-k/cdkd#6162): the class ends the message.
+D3_CLASS_ONLY="Failed to delete Kinesis stream OrphanStream: [A-Za-z0-9]+\.$"
 if ! [[ "${D3_FAILED_MSG}" =~ ${D3_CLASS_ONLY} ]]; then
-  echo "[verify] FAIL: OrphanStream's persisted failure is not 'Failed to delete Kinesis stream OrphanStream: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed: ${D3_SHOWN}"
+  echo "[verify] FAIL: OrphanStream's persisted failure is not 'Failed to delete Kinesis stream OrphanStream: <ErrorClass>.' (#2319, #6162); observed: ${D3_SHOWN}"
   exit 1
 fi
 D3_LOWER="$(printf '%s' "${D3_FAILED_MSG}" | tr '[:upper:]' '[:lower:]')"
