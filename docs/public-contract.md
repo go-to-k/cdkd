@@ -24,7 +24,7 @@ cdkd deploy MyStack; echo "exit $?"      # a covered exit code
 | Release | May contain |
 | --- | --- |
 | Patch | Bug fixes that keep every covered item as documented. |
-| Minor | New commands, flags, JSON fields, configuration keys and environment variables; a state schema bump, migrated automatically; dropping an end-of-life Node.js major; deprecations. |
+| Minor | New commands, flags, JSON fields, configuration keys and environment variables; a state schema bump, migrated automatically; a feature that needs a newer bootstrap, or a security fix that needs a re-run of `cdkd bootstrap`; dropping an end-of-life Node.js major; deprecations. |
 | Major | Anything that removes or changes a covered item, including a changed default. |
 
 A bug fix can still change behaviour that contradicts these docs. The docs
@@ -138,11 +138,19 @@ tighten their configuration, such as a bucket policy. An existing resource
 gets the tightened configuration when you run `cdkd bootstrap --force`
 ([Re-running bootstrap](cli-bootstrap.md#re-running-bootstrap)).
 
-Within a major version, upgrading cdkd never requires re-running
-`cdkd bootstrap` for existing deploys to keep working. A minor release may
-add a resource to what bootstrap creates. When it does, cdkd keeps working
-without it, and running `cdkd bootstrap` again adds it
-([Re-running bootstrap](cli-bootstrap.md#re-running-bootstrap)).
+From v1.0.0, re-running `cdkd bootstrap` after an upgrade follows these
+rules:
+
+- A minor release never makes an existing deploy stop working only because
+  you did not re-run `cdkd bootstrap`.
+- A minor release may add a feature that needs a resource or setting newer
+  than your bootstrap. Using that feature without it fails with an error
+  telling you to re-run `cdkd bootstrap`. Deploys that do not use the feature
+  keep working.
+- A minor release may require re-running `cdkd bootstrap` to apply a security
+  fix. Its release notes say so, and cdkd warns you. When the fix cannot
+  wait, cdkd may stop before a deploy changes anything, with an error telling
+  you to re-run `cdkd bootstrap`.
 
 ### The CLI is the interface
 
