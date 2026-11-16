@@ -54,6 +54,7 @@ import type {
   DestroyLogger,
   StackLockBase,
 } from './types.js';
+import { retireUnaddressedChildRecords } from './child-records.js';
 import {
   NESTED_STACK_TYPE,
   purgeStateHistoryIfOptedIn,
@@ -764,6 +765,8 @@ export async function destroyStackUnderLock({
           ctx.exportIndexStore?.removeStack(stackName, regionForState),
         ]);
       }
+      // go-to-k/cdkd#6396: the child records no row of this stack addressed.
+      await retireUnaddressedChildRecords(stackName, regionForState, ctx, logger, refusalRecovery);
     } else {
       // Final authoritative write of the remaining state (not-yet-deleted +
       // failed + retained resources). The incremental persists above are

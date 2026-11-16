@@ -28,6 +28,7 @@ import {
 } from '../../../deployment/superseded-resources.js';
 import type { RecordedSecretValues } from '../../../deployment/secret-redaction.js';
 import type { DestroyRunnerContext, DestroyRunnerResult, StackRegionScope } from './types.js';
+import { retireUnaddressedChildRecords } from './child-records.js';
 import { NOECHO_PRINTING_BIND_CAP_MS } from './types.js';
 import {
   countProtectedResources,
@@ -246,7 +247,7 @@ async function destroyStackInRegion(
     !holdsSupersededResources(state) &&
     journaledOrphans.count === 0
   ) {
-    return destroyEmptyStack({
+    const emptyResult = await destroyEmptyStack({
       stackName,
       ctx,
       logger,
@@ -256,6 +257,12 @@ async function destroyStackInRegion(
       journaledOrphans,
       result,
     });
+    // go-to-k/cdkd#6396: a child whose first deploy failed leaves its record
+    // with no row here to address it; each is re-checked under its own lock.
+    if (emptyResult.stateDeleted) {
+      await retireUnaddressedChildRecords(stackName, regionForState, ctx, logger, refusalRecovery);
+    }
+    return emptyResult;
   }
 
   // Strong-reference check (schema v4): refuse to destroy if any other
