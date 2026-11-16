@@ -47,6 +47,7 @@ import {
 } from 'cdk-local/internal';
 
 import { assertAwsEmulatorValue } from '../local/local-aws-wiring.js';
+import { handleError } from '../utils/error-handler.js';
 import { activateAwsEmulatorForCommand } from './aws-emulator-activation.js';
 import { awsEmulatorOption } from './options/aws-emulator.js';
 import { setAwsEndpointOverrideSource } from '../utils/aws-client-defaults.js';
@@ -85,6 +86,35 @@ export function addAwsEmulatorOptions(cmd: Command): void {
     if (declares('--profile') && !declares('--aws-emulator')) sub.addOption(awsEmulatorOption());
     addAwsEmulatorOptions(sub);
   }
+}
+
+/**
+ * Refuse a malformed `--aws-emulator` value while commander PARSES, on every
+ * declaration in the tree (cdk-local's on the `cdkd local` subtree included).
+ * The URL is optional, so `--aws-emulator MyStack/Handler` takes the target as
+ * the URL; commander checks required arguments before any `preAction` hook, so
+ * a command with a required target would otherwise report only `missing
+ * required argument` and never the placement remedy (go-to-k/cdkd#6382).
+ * `prepareAwsEmulatorForCommand` keeps its check for `CDKD_AWS_EMULATOR`.
+ * Rendered like the hook's refusal: a throw out of the parser would surface as
+ * `Fatal error:` + stack. Like `--stack-region`'s parse-time guard, it is
+ * stricter than a hook: options are parsed before `--help` is answered, and a
+ * repeated flag is checked at every occurrence, not only the last.
+ */
+export function guardAwsEmulatorValues(cmd: Command): void {
+  for (const option of cmd.options) {
+    if (option.long !== '--aws-emulator') continue;
+    const inner = option.parseArg;
+    option.argParser((value: string, previous: unknown) => {
+      try {
+        assertAwsEmulatorValue(value);
+      } catch (err) {
+        handleError(err);
+      }
+      return inner ? inner(value, previous) : value;
+    });
+  }
+  for (const sub of cmd.commands) guardAwsEmulatorValues(sub);
 }
 
 /** Does `cmd` (or an ancestor) declare `--aws-emulator`? */

@@ -15,7 +15,8 @@
 #      runtime image locally. Assert the BucketDeployment's file landed.
 #   2. `cdkd local invoke --from-state --aws-emulator` on a top-level function
 #      and on one inside a NestedStack: each writes an item to the table whose
-#      name --from-state handed in and reads it back.
+#      name --from-state handed in and reads it back. Then the flag BEFORE the
+#      target is refused with the placement remedy (go-to-k/cdkd#6382).
 #   3. `cdkd local start-api --from-state --aws-emulator`: an HTTP API route
 #      sends an SQS message to the deployed queue and receives it back.
 #   4. UPDATE (CDKD_TEST_UPDATE=true): a GSI, more memory, a new env value.
@@ -287,6 +288,38 @@ if ! grep -qE '"stored":"nested","version":"nested"' "${INVOKE_LOG}"; then
   exit 1
 fi
 echo "    OK: both functions reached the emulator's DynamoDB through --from-state names"
+
+# The flag BEFORE the required target (go-to-k/cdkd#6382): the URL is optional,
+# so the target is read as the URL. The run must refuse with the placement
+# remedy, not commander's "missing required argument". "takes an http(s) URL"
+# is the sentinel: present without the remedy means the wording drifted.
+echo "==> Phase 2b: --aws-emulator before the target is refused with the placement remedy"
+if node "${LOCAL_DIST}" local invoke --aws-emulator "${STACK}/TableFn" --event "${EVENT_FILE}" >"${INVOKE_LOG}" 2>&1; then
+  echo "FAIL: local invoke --aws-emulator <target> succeeded; it must refuse the target as a URL" >&2
+  tail -30 "${INVOKE_LOG}" >&2
+  exit 1
+fi
+strip_ansi "${INVOKE_LOG}"
+if grep -qF 'missing required argument' "${INVOKE_LOG}"; then
+  echo "FAIL: the refusal is commander's missing-argument error, not the placement remedy" >&2
+  tail -30 "${INVOKE_LOG}" >&2
+  exit 1
+fi
+if ! grep -qF 'put --aws-emulator after the target, or write --aws-emulator=<url>' "${INVOKE_LOG}"; then
+  if grep -qF 'takes an http(s) URL' "${INVOKE_LOG}"; then
+    echo "FAIL: the refusal's wording drifted; update this check" >&2
+  else
+    echo "FAIL: local invoke --aws-emulator <target> did not print the placement remedy" >&2
+  fi
+  tail -30 "${INVOKE_LOG}" >&2
+  exit 1
+fi
+if grep -qF 'Fatal error:' "${INVOKE_LOG}" || grep -qE '^[[:space:]]+at ' "${INVOKE_LOG}"; then
+  echo "FAIL: the refusal surfaced as a Fatal error with a stack trace" >&2
+  tail -30 "${INVOKE_LOG}" >&2
+  exit 1
+fi
+echo "    OK: the misplaced flag is refused with the placement remedy"
 
 # --- Phase 3: local start-api --from-state ------------------------------------
 echo "==> Phase 3: local start-api --from-state --aws-emulator"
