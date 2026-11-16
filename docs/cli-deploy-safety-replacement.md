@@ -83,11 +83,14 @@ Examples are an `AWS::EFS::FileSystem` `PerformanceMode` change, an
 new `AWS::Lambda::LayerVersion` content.
 
 cdkd creates the new resource first and deletes the old one after the rest of
-the deploy succeeds, which is CloudFormation's order. Four cases delete it
-right after the new one is created: a record holding a NoEcho value, an IAM
-inline policy, `UpdateReplacePolicy: Snapshot` without
-`--skip-final-snapshot`, and an old physical id another resource of the stack
-now records.
+the deploy succeeds, which is CloudFormation's order. Under
+`UpdateReplacePolicy: Snapshot`, that later delete takes the final snapshot.
+Three cases delete it right after the new one is created: an IAM inline
+policy, `UpdateReplacePolicy: Snapshot` on a type snapshotted before its
+delete (an EBS volume, a Redshift cluster, an ElastiCache replication group)
+without `--skip-final-snapshot`, and an old physical id another resource of
+the stack now records. Why each case does, and what a rollback then does, is
+on [cdkd rollback: limitations](cli-rollback-limitations.md#reversing-a-replacement).
 
 Until that delete, the old resource still holds its name. A deploy that gives
 the same name to another resource, such as two resources swapping names, is

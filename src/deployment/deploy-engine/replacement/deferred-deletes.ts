@@ -142,9 +142,14 @@ export async function retryDeferredReplacedDeletes(
   // cycle runs whatever is left at once, as before.
   const pending = new Map(deferred);
   while (pending.size > 0) {
-    // A Ctrl-C between waves sends nothing more: what is left stays recorded
-    // as superseded, for the next deploy or `cdkd destroy`.
-    if (deps.interrupted()) break;
+    // A Ctrl-C between waves sends nothing more: what is left and recorded
+    // as superseded stays for the next deploy or `cdkd destroy`; what was
+    // deferred in memory only (go-to-k/cdkd#6445) is named, as no state
+    // tracks it.
+    if (deps.interrupted()) {
+      warnUnsentUntracked(run, deps, pending);
+      break;
+    }
     const dependedOn = new Set<string>();
     for (const [logicalId, entry] of pending) {
       for (const dep of entry.dependencies ?? []) {
@@ -161,6 +166,26 @@ export async function retryDeferredReplacedDeletes(
           await retryOne(...next);
         }
       })
+    );
+  }
+}
+
+/**
+ * go-to-k/cdkd#6445: the cleanup pass was interrupted before these entries
+ * ran. One no superseded record tracks (an in-memory deferral) is warned
+ * about by id, since nothing else will delete it.
+ */
+function warnUnsentUntracked(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  pending: ReadonlyMap<string, DeferredReplacedDelete>
+): void {
+  for (const [logicalId, entry] of pending) {
+    if (run.supersededEntries.has(logicalId)) continue;
+    withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
+      deps.logger.warn(
+        safeMsg`  ⚠ Old ${logicalId} (${entry.physicalId}) was not deleted: the deploy was interrupted. It is no longer tracked in state, so delete it manually`
+      )
     );
   }
 }
@@ -201,10 +226,16 @@ export function warnUnretriedReplacedDeletes(
           )
         : entry.cleanupPhase === true
           ? // go-to-k/cdkd#6374: never sent; the rollback that follows a failed
-            // deploy re-adopts it. An info line, as nothing went wrong with it.
-            deps.logger.info(
-              safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'it is no longer tracked in state, so delete it manually'}`
-            )
+            // deploy re-adopts it. An info line while state keeps it, as nothing
+            // went wrong with it; a warning for an in-memory deferral
+            // (go-to-k/cdkd#6445), which nothing tracks without that rollback.
+            run.supersededEntries.has(logicalId)
+            ? deps.logger.info(
+                safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise cdkd keeps it in state, and the next deploy deletes it`
+              )
+            : deps.logger.warn(
+                safeMsg`  ⚠ Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise it is no longer tracked in state, so delete it manually`
+              )
           : deps.logger.warn(
               entry.failureMessage === undefined
                 ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the

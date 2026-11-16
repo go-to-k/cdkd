@@ -185,12 +185,29 @@ async function runQueuedNestedCleanup(
         persisted.some((row) => sameSuperseded(row, entry)) &&
         !isSupersededHeld(entry, read.state.resources);
       const run = engine.replacementRun;
-      for (const [logicalId] of run.deferredReplacedDeletes ?? []) {
+      for (const [logicalId, entry] of run.deferredReplacedDeletes ?? []) {
         const recorded = run.supersededEntries.get(logicalId);
         if (recorded !== undefined && !stillOwed(recorded)) {
           run.deferredReplacedDeletes?.delete(logicalId);
           engine.logger.debug(
             safeMsg`Old ${logicalId} of nested stack ${display} is no longer awaiting its delete; not deleting it`
+          );
+        } else if (
+          recorded === undefined &&
+          Object.values(read.state.resources).some(
+            (record) =>
+              typeof record === 'object' &&
+              record !== null &&
+              record.physicalId === entry.physicalId
+          )
+        ) {
+          // go-to-k/cdkd#6445: an in-memory deferral has no superseded entry for
+          // the re-read to vouch for, and the child's lock was released since
+          // its deploy. A record of the child naming the id now (a rollback or
+          // another deploy took it back) is a live resource: never deleted.
+          run.deferredReplacedDeletes?.delete(logicalId);
+          engine.logger.warn(
+            safeMsg`  ⚠ Old ${logicalId} of nested stack ${display} (${entry.physicalId}) was not deleted: a record of that stack names its physical id again, and cdkd never deletes an id a record names`
           );
         }
       }

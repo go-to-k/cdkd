@@ -280,18 +280,32 @@ describe('DeployEngine - NoEcho round 8', () => {
   } as CloudFormationTemplate;
 
   it('reports a create-first replacement whose old-resource delete was skipped as a PARTIAL update, line and summary alike (CODE m1)', async () => {
-    // A record holding a NoEcho mask: `canRecordSuperseded` refuses it, so the
-    // old delete stays INLINE, inside the row whose line this case reads,
-    // rather than waiting for the cleanup phase (go-to-k/cdkd#6374).
+    // Another record holds the old physical id, so the old delete stays
+    // INLINE, inside the row whose line this case reads, rather than waiting
+    // for the cleanup phase (go-to-k/cdkd#6374, #6445 case 4). (A NoEcho mask
+    // no longer keeps it inline: go-to-k/cdkd#6445.)
     const state = replacementState();
     state.resources['Topic']!.noEchoLeaves = [['DisplayName']];
+    const alias = { Name: '/app/alias', Type: 'String', Value: 'v' };
+    state.resources['Alias'] = {
+      physicalId: state.resources['Topic']!.physicalId,
+      resourceType: 'AWS::SSM::Parameter',
+      properties: alias,
+      attributes: {},
+      dependencies: [],
+    };
     stateBackend.getState!.mockResolvedValue({ state, etag: 'etag-old' });
     provider.create!.mockResolvedValue({
       physicalId: 'arn:aws:sns:us-east-1:123456789012:new-name',
       attributes: {},
     });
     provider.delete!.mockResolvedValue({ outcome: 'skipped', reason: 'the delete address is redacted' });
-    const result = await makeEngine({ captureObservedState: false }).deploy(STACK, renamed);
+    const result = await makeEngine({ captureObservedState: false }).deploy(STACK, {
+      Resources: {
+        ...renamed.Resources,
+        Alias: { Type: 'AWS::SSM::Parameter', Properties: alias },
+      },
+    } as CloudFormationTemplate);
     // The deploy command adds `updatePartial` to the unaddressed total that
     // exits 2 unless --allow-unaddressed.
     expect(result.updatePartial).toBe(1);

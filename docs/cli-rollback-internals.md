@@ -140,6 +140,15 @@ older cdkd lacks the mark that says so and keeps the re-create. The default orde
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
+A deferred old resource is re-adopted after the rollback reads AWS for it.
+When that read cannot answer (the type has no read, or the read fails), the
+automatic rollback still re-adopts it, since that deploy sent no delete. A
+later `cdkd rollback` re-adopts it only while state still lists it as
+awaiting its delete, and otherwise refuses, since a later deploy may have sent
+the delete since. The deferred delete of a custom resource or nested stack
+that needs a NoEcho value is never in state, so when its read cannot answer,
+a later `cdkd rollback` refuses it.
+
 On a stack with an instance id, a resource the template does not name is
 re-created under the generated name its OLD record held (that record's name
 generation), not the next-generation name the replacement created, so the two

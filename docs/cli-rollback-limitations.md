@@ -21,18 +21,40 @@ top-level deploy that fails after a child finished still finds the child's old
 resource, and its revert of the child adopts it again.
 The plan labels such an operation `reverse-replace`.
 
-Four cases delete the old resource right after the new one is created: a
-record holding a NoEcho value, an IAM inline policy,
-`UpdateReplacePolicy: Snapshot` without `--skip-final-snapshot`, and an old
-physical id another resource of the stack now records. The rollback
-re-creates the old resource of these, and of a delete-first replacement, from
-the properties the journal saved.
+The same wait applies to a record holding a NoEcho value, and to
+`UpdateReplacePolicy: Snapshot` on a type whose delete call takes the final
+snapshot (RDS, Neptune and DocumentDB clusters, an ElastiCache cache cluster):
+the final snapshot is taken when the old resource is deleted, after the rest
+of the deploy succeeds. When a failed deploy's rollback adopts the old
+resource again, it deletes the new copy under the same `UpdateReplacePolicy`,
+so under `Snapshot` it takes a final snapshot of the new copy first: the new
+copy may already hold writes.
+
+Three cases delete the old resource right after the new one is created:
+
+| Case | Why |
+| --- | --- |
+| An IAM inline policy | Both policies attached until the deploy ends would grant the union of their permissions. Nothing is lost: the rollback re-creates the policy document exactly. |
+| `UpdateReplacePolicy: Snapshot` on an EBS volume, a Redshift cluster or an ElastiCache replication group, without `--skip-final-snapshot` | Its snapshot is taken before the delete, so a later delete would let data written meanwhile miss the snapshot. |
+| An old physical id another resource of the stack now records | The other resource must be able to move off the id, and cdkd never leaves a delete pending for an id a record names. |
+
+The rollback re-creates the old resource of these, and of a delete-first
+replacement, from the properties the journal saved.
 
 > [!WARNING]
 > For a type that holds data (DynamoDB, RDS, S3 and so on), an old resource
 > that was deleted right away, or first, lost its data. The rollback does not
 > recover it: the re-created resource starts empty. This does not apply under
 > `UpdateReplacePolicy: Retain`, where the old resource was kept.
+
+A waiting delete is kept in state, so a deploy that stops before its end
+leaves the old resource for the next `cdkd deploy` or `cdkd destroy` to
+delete. A custom resource or nested stack whose delete needs a NoEcho value
+is the exception: cdkd never writes that value to state, so its delete waits
+in memory only. A deploy killed before its end (SIGKILL, a power loss) leaves
+that old custom resource's physical id, or that old nested stack, in AWS,
+untracked; a deploy that fails or is stopped with Ctrl-C says so in its
+output.
 
 The rollback works in the same order the deploy did:
 
