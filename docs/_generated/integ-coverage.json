@@ -1179,6 +1179,7 @@
         "cognito-identity-pool",
         "cognito-lambda-triggers",
         "cognito-resource-server",
+        "cognito-schema-rollback",
         "cognito-userpool-user-ref",
         "import-attribute-readback-final",
         "propagation-races-2",
@@ -1217,6 +1218,9 @@
           "literal"
         ],
         "cognito-resource-server": [
+          "l2"
+        ],
+        "cognito-schema-rollback": [
           "l2"
         ],
         "cognito-userpool-user-ref": [
@@ -8901,6 +8905,7 @@
         "cc-getatt-readback",
         "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
+        "cognito-schema-rollback",
         "composite-stack",
         "conditions-update-2",
         "cross-backend-same-stack",
@@ -9000,6 +9005,9 @@
         ],
         "cloudwatch-anomaly-detector": [
           "l2"
+        ],
+        "cognito-schema-rollback": [
+          "l1"
         ],
         "composite-stack": [
           "l2",

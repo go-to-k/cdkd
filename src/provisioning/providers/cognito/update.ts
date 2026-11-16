@@ -290,6 +290,48 @@ export async function update(
     }
   }
 
+  // The Schema pre-flight (go-to-k/cdkd#6375): AWS can only ADD custom
+  // attributes, so a removed / modified attribute (or an added standard one)
+  // is decided here, before any call. Refused after `UpdateUserPool`, the
+  // rest of the update had already landed: on a rollback, which then failed,
+  // the pool held the reverted MFA / password policy while state kept the
+  // failed deploy's record, and every later deploy diffed NO_CHANGE.
+  //
+  // A template-path update refuses with the typed error the engine's
+  // `--replace` fallback catches. Nothing has been applied, so the pool holds
+  // the RECORDED `DeletionProtection`, as at the create-time-only refusal
+  // above. The two state-borne callers WARN instead and apply everything
+  // else: the attributes stay on the pool, and `effectiveProperties` records
+  // the Schema the pool holds (`heldSchema`).
+  const schemaPlan = planSchemaCustomAttributes(
+    logicalId,
+    physicalId,
+    resourceType,
+    properties['Schema'] as SchemaAttributeType[] | undefined,
+    previousProperties['Schema'] as SchemaAttributeType[] | undefined
+  );
+  let keptSchema: SchemaAttributeType[] | undefined;
+  if (schemaPlan.immutableChanges.length > 0) {
+    const changes = schemaPlan.immutableChanges.join('; ');
+    if (stateBorneDesired) {
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the Schema change (${changes}) ` +
+          safeMsg`cannot be made in place (AWS can only ADD custom attributes), so the pool keeps ` +
+          safeMsg`those attributes and cdkd records them.`
+      );
+      keptSchema = schemaPlan.heldSchema;
+    } else {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        `the Schema change (${changes}) is immutable on AWS — AWS can only ADD custom ` +
+          `attributes in place, so removing or modifying an attribute requires recreating the ` +
+          `pool. Nothing was applied to the user pool. ` +
+          this.replacementRemedy(physicalId, previousProperties['DeletionProtection'] === 'ACTIVE')
+      );
+    }
+  }
+
   // The pre-flight (issues #1975 / #1977), and THIS is the path it exists
   // for. Placed ahead of `readLiveMfaConfiguration` below -- a READ, not a
   // mutation, but the requirement is "before the first API call", and a
@@ -522,39 +564,10 @@ export async function update(
     // Schema (custom attributes): UpdateUserPool does NOT accept Schema, so a
     // template that adds a custom attribute on redeploy would otherwise be a
     // silent drop (the deploy reports success, AWS keeps the old schema, and
-    // the next diff sees the change again with nothing applied). AWS lets you
-    // ADD custom attributes in place via AddCustomAttributes, but it cannot
-    // modify or remove an existing one. Reconcile the added attributes here;
-    // reject a removal / modification of an existing attribute with a typed
-    // error (replacement required).
-    await this.reconcileSchemaCustomAttributes(
-      logicalId,
-      physicalId,
-      resourceType,
-      properties['Schema'] as SchemaAttributeType[] | undefined,
-      previousProperties['Schema'] as SchemaAttributeType[] | undefined,
-      // Issue [#2610] site 4. Which bag answers "is this pool protected right
-      // now" is decided by ORDER, and this site is the one exception to the
-      // read-the-recorded-bag rule in
-      // `../replacement-protection-advice.ts`: the `UpdateUserPool` call a
-      // few lines above has ALREADY applied a DECLARED `DeletionProtection`,
-      // so by the time the schema refusal fires AWS holds the DESIRED value.
-      // That half is measured — the gate up there is a TRUTHINESS test
-      // (`if (properties['DeletionProtection'])`), so an absent / empty
-      // desired value is never put on the wire, which is why this mirrors
-      // that gate rather than using `??`, and
-      // `tests/unit/provisioning/cognito-schema-replace-remedy.test.ts`
-      // asserts the SENT input in all three arms.
-      //
-      // The FALLBACK's other half -- that AWS KEEPS the recorded value when
-      // the desired bag omits it -- is now MEASURED too (issue #2675; the
-      // entry is in `readLiveMfaConfiguration`'s ledger): omitting
-      // `DeletionProtection` from `UpdateUserPool` does NOT reset it, so the
-      // recorded `ACTIVE` is still what the pool holds when this fires.
-      (properties['DeletionProtection']
-        ? properties['DeletionProtection']
-        : previousProperties['DeletionProtection']) === 'ACTIVE'
-    );
+    // the next diff sees the change again with nothing applied). Add the
+    // attributes the pre-flight planned; its refusal of an immutable change
+    // ran before the first write.
+    await this.reconcileSchemaCustomAttributes(physicalId, schemaPlan.addedCustom);
 
     // EnabledMfas / email-OTP message+subject / WebAuthn config are NOT on
     // UpdateUserPool — apply them via SetUserPoolMfaConfig after the main
@@ -597,11 +610,13 @@ export async function update(
     // `cdkd drift --revert` and the rollback executor's revert arms, so
     // without it a `--revert` re-issued the same substitution forever while
     // the record kept describing a value AWS does not hold.
-    const effectiveProperties = withPreviousCreateTimeOnly(
+    const narrowed = withPreviousCreateTimeOnly(
       narrowMfaConfiguration(properties),
       previousProperties,
       keptCreateTimeOnly
     );
+    const effectiveProperties =
+      keptSchema === undefined ? narrowed : { ...narrowed, Schema: keptSchema };
 
     return {
       physicalId,
@@ -703,32 +718,35 @@ export async function untagRemovedUserPoolTags(
 }
 
 /**
- * Reconcile a user pool's Schema custom attributes on update.
+ * What an update does to a user pool's Schema custom attributes.
  *
  * AWS supports ADDING new custom attributes in place (AddCustomAttributes)
  * but cannot modify or remove an existing attribute. Standard attributes are
  * fully immutable. So:
- *  - attributes present only in the new Schema (and custom) are added;
+ *  - attributes present only in the new Schema (and custom) are `addedCustom`;
  *  - removing or modifying an existing attribute, or adding a standard
- *    attribute, requires replacement -> ResourceUpdateNotSupportedError.
- * A byte-identical Schema is a no-op (no AddCustomAttributes call).
+ *    attribute, is an `immutableChanges` entry, which the caller refuses
+ *    (replacement required) or, on a state-borne update, keeps;
+ *  - `heldSchema` is the Schema the pool holds once `addedCustom` is applied
+ *    and every immutable change is left alone: the old attributes as they
+ *    were, then the added custom ones.
+ * A byte-identical Schema plans nothing.
+ *
+ * Pure, so `update()` decides the refusal before its first write
+ * (go-to-k/cdkd#6375): a refusal after `UpdateUserPool` had already applied
+ * the rest, and on a rollback that left state recording what AWS never held.
  */
-export async function reconcileSchemaCustomAttributes(
-  this: CognitoUserPoolProvider,
+export function planSchemaCustomAttributes(
   logicalId: string,
   physicalId: string,
   resourceType: string,
   newSchema: SchemaAttributeType[] | undefined,
-  oldSchema: SchemaAttributeType[] | undefined,
-  /**
-   * Whether `DeletionProtection` is `ACTIVE` on the pool AWS holds at the
-   * moment the immutable-Schema refusal below fires. Defaults to `false` so
-   * the short advice is the fallback for any future caller that cannot
-   * answer — the same direction issue [#2579] took for protection enabled
-   * out of band.
-   */
-  deletionProtected = false
-): Promise<void> {
+  oldSchema: SchemaAttributeType[] | undefined
+): {
+  addedCustom: SchemaAttributeType[];
+  immutableChanges: string[];
+  heldSchema: SchemaAttributeType[];
+} {
   const newAttrs = newSchema ?? [];
   const oldAttrs = oldSchema ?? [];
 
@@ -780,19 +798,18 @@ export async function reconcileSchemaCustomAttributes(
     ...modified.map((n) => `modified attribute '${n}'`),
     ...addedStandard.map((n) => `added standard attribute '${n}'`),
   ];
-  if (immutableChanges.length > 0) {
-    throw new ResourceUpdateNotSupportedError(
-      resourceType,
-      logicalId,
-      `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
-        `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
-        `pool. ${this.replacementRemedy(physicalId, deletionProtected)}`
-    );
-  }
-
   const addedCustom = added.filter(
     (a) => a.Name !== undefined && !STANDARD_USER_POOL_ATTRIBUTES.has(a.Name)
   );
+  return { addedCustom, immutableChanges, heldSchema: [...oldAttrs, ...addedCustom] };
+}
+
+/** Apply a planned Schema change: AddCustomAttributes for the added custom attributes. */
+export async function reconcileSchemaCustomAttributes(
+  this: CognitoUserPoolProvider,
+  physicalId: string,
+  addedCustom: SchemaAttributeType[]
+): Promise<void> {
   if (addedCustom.length === 0) return;
 
   this.logger.debug(
