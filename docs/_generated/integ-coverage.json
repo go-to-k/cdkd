@@ -9015,6 +9015,7 @@
         "microservices",
         "migrate-from-cfn",
         "multi-resource",
+        "nested-child-first-deploy-failure",
         "nested-required-preflight",
         "nested-stack-rollback",
         "noecho-named-producer",
@@ -9197,6 +9198,9 @@
         ],
         "multi-resource": [
           "l2"
+        ],
+        "nested-child-first-deploy-failure": [
+          "l1"
         ],
         "nested-required-preflight": [
           "l1",
@@ -9445,6 +9449,7 @@
         "macro-expansion",
         "microservices",
         "multi-region-same-stack",
+        "nested-child-first-deploy-failure",
         "nested-stack",
         "nested-stack-3level",
         "nested-stack-deep",
@@ -9736,6 +9741,9 @@
           "l2"
         ],
         "multi-region-same-stack": [
+          "l2"
+        ],
+        "nested-child-first-deploy-failure": [
           "l2"
         ],
         "nested-stack": [
