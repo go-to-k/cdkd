@@ -531,9 +531,10 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // Admitted with AWS::EC2::VPC (go-to-k/cdkd#6454, batch 2).
       mode: 'sdk-coverage' as const,
       physicalIdForm:
-        'both layers store the unqualified target function ARN: the schema ' +
-        'primaryIdentifier is FunctionArn and LambdaUrlProvider.create records the ' +
-        'CreateFunctionUrlConfig FunctionArn',
+        'both layers store the function ARN the URL is on, alias-qualified when ' +
+        'Qualifier is set: the schema primaryIdentifier is FunctionArn and ' +
+        'LambdaUrlProvider.create records the CreateFunctionUrlConfig FunctionArn ' +
+        '(the fixture observed both the unqualified and the qualified form)',
       issue: 'https://github.com/go-to-k/cdkd/issues/6454',
       integFixture: 'cc-to-sdk-reroute-common-types-2',
     },

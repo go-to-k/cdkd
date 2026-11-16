@@ -19,6 +19,9 @@ const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
   seed: 'b',
   pinned: 'a',
   flip: 'b',
+  // flip's values with both function URLs gone from the template: their
+  // delete runs on the SDK route while the function still exists.
+  'urls-removed': 'b',
 };
 
 /**
@@ -41,7 +44,8 @@ export class CcToSdkRerouteCommonTypes2Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const value = VALUE_BY_PHASE[process.env.CDKD_TEST_PHASE ?? 'base'] ?? 'a';
+    const phaseName = process.env.CDKD_TEST_PHASE ?? 'base';
+    const value = VALUE_BY_PHASE[phaseName] ?? 'a';
     const phase = `phase-${value}`;
     const phaseTags = [{ key: 'cdkd-phase', value: phase }];
     const fixed = (resource: cdk.CfnResource, logicalId: string): void => {
@@ -94,15 +98,26 @@ export class CcToSdkRerouteCommonTypes2Stack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromInline('exports.handler = async () => ({ statusCode: 200 });'),
     });
-    fixed(
-      new lambda.CfnUrl(this, 'FunctionUrl', {
+    // One URL on the unqualified function and one on an alias: the SDK
+    // provider addresses a URL by its recorded FunctionArn alone, so the
+    // qualified one shows Cloud Control records the alias-qualified ARN too.
+    const live = new lambda.Alias(this, 'Live', { aliasName: 'live', version: handler.currentVersion });
+    if (phaseName !== 'urls-removed') {
+      // AWS refuses a Cors block without AllowOrigins.
+      const cors = { allowOrigins: ['https://example.com'], maxAge: value === 'a' ? 100 : 200 };
+      fixed(
+        new lambda.CfnUrl(this, 'FunctionUrl', { targetFunctionArn: handler.functionArn, authType: 'AWS_IAM', cors }),
+        'RerouteFunctionUrl'
+      );
+      const qualifiedUrl = new lambda.CfnUrl(this, 'QualifiedFunctionUrl', {
         targetFunctionArn: handler.functionArn,
+        qualifier: live.aliasName,
         authType: 'AWS_IAM',
-        // AWS refuses a Cors block without AllowOrigins.
-        cors: { allowOrigins: ['https://example.com'], maxAge: value === 'a' ? 100 : 200 },
-      }),
-      'RerouteFunctionUrl'
-    );
+        cors,
+      });
+      qualifiedUrl.node.addDependency(live);
+      fixed(qualifiedUrl, 'RerouteQualifiedFunctionUrl');
+    }
 
     const userPool = new cognito.CfnUserPool(this, 'UserPool', { userPoolTags: { 'cdkd-phase': phase } });
     userPool.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;

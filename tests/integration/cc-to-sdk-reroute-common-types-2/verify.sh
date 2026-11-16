@@ -6,7 +6,8 @@
 # force each resource onto Cloud Control (--recreate-via-cc-api) -> the plan
 # announces each return -> --pin-cc-api declines them -> redeploy with a real
 # change: each id unchanged, each record flipped to 'sdk', each update reached
-# AWS on the same resource -> no drift -> destroy.
+# AWS on the same resource -> no drift -> the two function URLs (one on the
+# function, one on an alias) deleted alone by their recorded ids -> destroy.
 
 set -euo pipefail
 
@@ -59,6 +60,7 @@ SUBJECTS=(
   RerouteInstanceProfile
   RerouteStateMachine
   RerouteFunctionUrl
+  RerouteQualifiedFunctionUrl
   RerouteUserPool
   RerouteOriginAccessControl
   RerouteAlias
@@ -90,7 +92,7 @@ expected() { # usage: expected <logicalId> <a|b>
   case "$1" in
     RerouteGroup) printf '/phase-%s/' "$2" ;;
     RerouteInstanceProfile) [ "$2" = a ] && output ProfileRoleAName || output ProfileRoleBName ;;
-    RerouteFunctionUrl) [ "$2" = a ] && printf '100' || printf '200' ;;
+    RerouteFunctionUrl | RerouteQualifiedFunctionUrl) [ "$2" = a ] && printf '100' || printf '200' ;;
     RerouteAlias) [ "$2" = a ] && output AliasKeyAId || output AliasKeyBId ;;
     *) printf 'phase-%s' "$2" ;;
   esac
@@ -120,7 +122,7 @@ live_value() { # usage: live_value <logicalId> <physicalId>
       definition=$(aws stepfunctions describe-state-machine --state-machine-arn "$2" --region "${REGION}" \
         --query 'definition' --output text) || return 1
       printf '%s' "${definition}" | jq -r '.States.Done.Result' ;;
-    RerouteFunctionUrl)
+    RerouteFunctionUrl | RerouteQualifiedFunctionUrl)
       aws lambda get-function-url-config --function-name "$2" --region "${REGION}" \
         --query 'Cors.MaxAge' --output text ;;
     RerouteUserPool)
@@ -130,8 +132,7 @@ live_value() { # usage: live_value <logicalId> <physicalId>
       aws cloudfront get-origin-access-control --id "$2" \
         --query 'OriginAccessControl.OriginAccessControlConfig.Description' --output text ;;
     RerouteAlias)
-      aws kms list-aliases --region "${REGION}" \
-        --query "Aliases[?AliasName=='$2'].TargetKeyId | [0]" --output text ;;
+      aws kms describe-key --key-id "$2" --region "${REGION}" --query 'KeyMetadata.KeyId' --output text ;;
     *) echo "FAIL: live_value has no arm for $1" >&2; return 1 ;;
   esac
 }
@@ -141,6 +142,7 @@ live_value() { # usage: live_value <logicalId> <physicalId>
 # survived" in phase 5 mean "the resource was never replaced". Where AWS mints
 # the id itself, the id is the witness.
 witness() { # usage: witness <logicalId> <physicalId>
+  local target
   case "$1" in
     RerouteUser) aws iam get-user --user-name "$2" --query 'User.UserId' --output text ;;
     RerouteGroup) aws iam get-group --group-name "$2" --query 'Group.GroupId' --output text ;;
@@ -150,11 +152,14 @@ witness() { # usage: witness <logicalId> <physicalId>
     RerouteStateMachine)
       aws stepfunctions describe-state-machine --state-machine-arn "$2" --region "${REGION}" \
         --query 'creationDate' --output text ;;
-    RerouteFunctionUrl)
+    RerouteFunctionUrl | RerouteQualifiedFunctionUrl)
       aws lambda get-function-url-config --function-name "$2" --region "${REGION}" \
         --query 'CreationTime' --output text ;;
     RerouteAlias)
-      aws kms list-aliases --region "${REGION}" \
+      # Listed by the target key, so the answer is one page: a --query over
+      # an account-wide listing applies per page.
+      target=$(aws kms describe-key --key-id "$2" --region "${REGION}" --query 'KeyMetadata.KeyId' --output text) || return 1
+      aws kms list-aliases --key-id "${target}" --region "${REGION}" \
         --query "Aliases[?AliasName=='$2'].CreationDate | [0]" --output text ;;
     *) printf '%s' "$2" ;;
   esac
@@ -172,6 +177,9 @@ form_ok() { # usage: form_ok <logicalId> <physicalId>
     RerouteUser | RerouteGroup | RerouteInstanceProfile) grep -qE "${iam_name}" <<<"$2" ;;
     RerouteStateMachine) grep -qE '^arn:aws[a-z-]*:states:[^:]+:[0-9]{12}:stateMachine:[A-Za-z0-9_-]+$' <<<"$2" ;;
     RerouteFunctionUrl) grep -qE '^arn:aws[a-z-]*:lambda:[^:]+:[0-9]{12}:function:[A-Za-z0-9_-]+$' <<<"$2" ;;
+    # A URL on an alias: both layers must record the alias-qualified ARN, the
+    # one the SDK provider then addresses it by.
+    RerouteQualifiedFunctionUrl) grep -qE '^arn:aws[a-z-]*:lambda:[^:]+:[0-9]{12}:function:[A-Za-z0-9_-]+:live$' <<<"$2" ;;
     RerouteUserPool) grep -qE '^[a-z]{2}(-[a-z]+)+-[0-9]_[A-Za-z0-9]+$' <<<"$2" ;;
     RerouteOriginAccessControl) grep -qE '^[A-Z0-9]+$' <<<"$2" ;;
     RerouteAlias) grep -qE '^alias/[A-Za-z0-9/_-]+$' <<<"$2" ;;
@@ -376,7 +384,33 @@ done
 rm -f "${DRIFT_JSON}"
 echo "    OK: cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0)"
 
-echo "==> Phase 7: Destroy on the flipped records + gone-probes"
+echo "==> Phase 7: the SDK provider deletes each flipped function URL by its recorded id"
+# Through destroy the URLs would vanish with their function anyway, so a delete
+# sent to the wrong id would pass a gone-probe there. Removing only the URLs
+# from the template deletes them while the function still exists.
+URL_ARN=$(record RerouteFunctionUrl '.physicalId')
+QUALIFIED_URL_ARN=$(record RerouteQualifiedFunctionUrl '.physicalId')
+HANDLER_NAME=$(output HandlerName)
+env CDKD_TEST_PHASE=urls-removed \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+load_state
+for id in RerouteFunctionUrl RerouteQualifiedFunctionUrl; do
+  if printf '%s' "${STATE_JSON}" | jq -e --arg k "${id}" '.resources[$k]' >/dev/null; then
+    echo "FAIL: ${id} is still recorded after its removal deploy" >&2
+    exit 1
+  fi
+done
+aws lambda get-function --function-name "${HANDLER_NAME}" --region "${REGION}" >/dev/null || {
+  echo "FAIL: function ${HANDLER_NAME} is gone, so the URL probes below cannot tell a wrong delete from a right one" >&2
+  exit 1
+}
+assert_gone "function url ${URL_ARN} survived its removal deploy" \
+  aws lambda get-function-url-config --function-name "${URL_ARN}" --region "${REGION}"
+assert_gone "function url ${QUALIFIED_URL_ARN} survived its removal deploy" \
+  aws lambda get-function-url-config --function-name "${QUALIFIED_URL_ARN}" --region "${REGION}"
+echo "    OK: both function URLs deleted by their recorded ids, function intact"
+
+echo "==> Phase 8: Destroy + gone-probes"
 VPC_ID=$(record RerouteVpc '.physicalId')
 IGW_ID=$(record RerouteInternetGateway '.physicalId')
 ACL_ID=$(record RerouteNetworkAcl '.physicalId')
@@ -384,7 +418,6 @@ USER_NAME=$(record RerouteUser '.physicalId')
 GROUP_NAME=$(record RerouteGroup '.physicalId')
 PROFILE_NAME=$(record RerouteInstanceProfile '.physicalId')
 STATE_MACHINE_ARN=$(record RerouteStateMachine '.physicalId')
-URL_FUNCTION_ARN=$(record RerouteFunctionUrl '.physicalId')
 USER_POOL_ID=$(record RerouteUserPool '.physicalId')
 OAC_ID=$(record RerouteOriginAccessControl '.physicalId')
 ALIAS_NAME=$(record RerouteAlias '.physicalId')
@@ -392,7 +425,6 @@ HOST_VPC_ID=$(output HostVpcId)
 ROLE_A=$(output ProfileRoleAName)
 ROLE_B=$(output ProfileRoleBName)
 STATES_ROLE=$(output StatesRoleName)
-HANDLER_NAME=$(output HandlerName)
 KEY_A=$(output AliasKeyAId)
 KEY_B=$(output AliasKeyBId)
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -425,8 +457,6 @@ assert_gone "role ${ROLE_B} survived destroy" aws iam get-role --role-name "${RO
 assert_gone "role ${STATES_ROLE} survived destroy" aws iam get-role --role-name "${STATES_ROLE}"
 assert_gone_within "state machine ${STATE_MACHINE_ARN} survived destroy" \
   aws stepfunctions describe-state-machine --state-machine-arn "${STATE_MACHINE_ARN}" --region "${REGION}"
-assert_gone "function url on ${URL_FUNCTION_ARN} survived destroy" \
-  aws lambda get-function-url-config --function-name "${URL_FUNCTION_ARN}" --region "${REGION}"
 assert_gone "function ${HANDLER_NAME} survived destroy" \
   aws lambda get-function --function-name "${HANDLER_NAME}" --region "${REGION}"
 assert_gone "user pool ${USER_POOL_ID} survived destroy" \
