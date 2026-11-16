@@ -246,7 +246,10 @@ s3://<state-bucket>/<state-prefix>/<stack>/<region>/deployments/
 
 A run id starts with its timestamp, so the run files sort by time.
 `index.json` is a summary cdkd derives from the run files: run id, command,
-cdkd version, start and end, result, and event count. The run files hold the
+cdkd version, start and end, result, and event count. Those seven fields
+(`runId`, `command`, `cdkdVersion`, `startedAt`, `finishedAt`, `result` and
+`eventCount`) are the run summary that
+[`cdkd events --json`](cli-events.md#the-run-list) prints for each run. The run files hold the
 truth, and `cdkd events` copes when the summary or a file is incomplete:
 
 - **`index.json` is missing or unreadable.** cdkd lists the run files and
