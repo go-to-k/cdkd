@@ -730,6 +730,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-schema-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cognito-userpool-user-ref",
       "annotated": false,
       "scenarios": []
@@ -3886,6 +3891,7 @@
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
     "cognito-lambda-triggers",
+    "cognito-schema-rollback",
     "cognito-userpool-user-ref",
     "created-before-failure-revert",
     "cross-backend-same-stack",

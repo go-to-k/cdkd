@@ -4,10 +4,9 @@
  * whether the pool carries `DeletionProtection: ACTIVE`, which no deploy-side
  * flag can clear.
  *
- * This site is the module header's one exception to "read the RECORDED bag":
- * `UpdateUserPool` runs BEFORE the schema refusal, so at refusal time AWS holds
- * the DESIRED value — and the gate up there is a truthiness test, so an absent
- * desired value leaves the recorded one standing. Both halves are pinned.
+ * The refusal fires before the first write (go-to-k/cdkd#6375), so the pool
+ * AWS holds still carries the RECORDED `DeletionProtection`, whatever the
+ * desired bag declares. Both directions are pinned, and so is "nothing sent".
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
@@ -87,8 +86,8 @@ async function schemaRefusal(
 describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
   beforeEach(() => {
     mockSend.mockReset();
-    // Everything before the refusal must succeed; the refusal itself issues no
-    // call, so an unconditional empty response is enough.
+    // The refusal issues no call; an empty response keeps a regression that
+    // sends one from failing for an unrelated reason.
     mockSend.mockResolvedValue({});
   });
 
@@ -96,8 +95,8 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     expect(STATEFUL_TYPES.has(TYPE)).toBe(true);
   });
 
-  it('names the deletion-protection dead end when the DESIRED bag declares ACTIVE', async () => {
-    const message = await schemaRefusal({ DeletionProtection: 'ACTIVE' }, {});
+  it('names the deletion-protection dead end when the RECORDED bag holds ACTIVE', async () => {
+    const message = await schemaRefusal({}, { DeletionProtection: 'ACTIVE' });
     expect(message).toContain('DeletionProtection: ACTIVE');
     expect(message).toContain('cdkd deploy has no --remove-protection flag');
     expect(message).toContain(`--user-pool-id ${POOL_ID} --deletion-protection INACTIVE`);
@@ -126,7 +125,7 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
   it('routes a planted pool id through the gate: withheld, and nothing runs when pasted (go-to-k/cdkd#4205)', async () => {
     const messages: Array<[string, string]> = [];
     for (const { label, value } of PASTE_PAYLOADS) {
-      const message = await schemaRefusal({ DeletionProtection: 'ACTIVE' }, {}, `${POOL_ID}${value}`);
+      const message = await schemaRefusal({}, { DeletionProtection: 'ACTIVE' }, `${POOL_ID}${value}`);
       expect(message, label).toContain(UNNAMEABLE_ID_CLAUSE);
       expect(message, label).not.toContain('update-user-pool');
       messages.push([label, message]);
@@ -136,19 +135,22 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     });
   }, 120_000);
 
-  it('falls back to the RECORDED bag when the desired value is absent', async () => {
-    // Absent desired => `if (properties['DeletionProtection'])` never sends it
-    // => AWS still holds what the record says (omission does not reset it --
-    // measured, issue go-to-k/cdkd#2675).
+  it('reads the RECORDED bag when the desired value is absent', async () => {
     const message = await schemaRefusal({}, { DeletionProtection: 'ACTIVE' });
     expect(message).toContain('DeletionProtection: ACTIVE');
   });
 
-  it('honours a desired INACTIVE over a recorded ACTIVE — UpdateUserPool already sent it', async () => {
+  it('a desired INACTIVE was never sent, so a recorded ACTIVE still governs', async () => {
     const message = await schemaRefusal(
       { DeletionProtection: 'INACTIVE' },
       { DeletionProtection: 'ACTIVE' }
     );
+    expect(message).toContain('DeletionProtection: ACTIVE');
+    expect(message).toContain('cdkd deploy has no --remove-protection flag');
+  });
+
+  it('a desired ACTIVE was never sent, so an unprotected record keeps the short advice', async () => {
+    const message = await schemaRefusal({ DeletionProtection: 'ACTIVE' }, {});
     expect(message).not.toContain('--remove-protection');
     expect(message).toContain(
       'AWS::Cognito::UserPool is a stateful type, so re-run with cdkd deploy --replace --force-stateful-recreation'
@@ -175,36 +177,18 @@ describe('Cognito UserPool immutable-Schema refusal (site 4)', () => {
     expect(message).not.toContain('update-user-pool');
   });
 
-  /** The `UpdateUserPool` request this run actually sent, if any. */
-  const updateUserPoolInput = (): Record<string, unknown> | undefined => {
-    const call = mockSend.mock.calls.find(
-      (c) => (c[0] as { constructor: { name: string } }).constructor.name === 'UpdateUserPoolCommand'
-    );
-    return call
-      ? ((call[0] as { input: Record<string, unknown> }).input satisfies Record<string, unknown>)
-      : undefined;
-  };
-
-  it('proves the premise: UpdateUserPool ran AND carried the desired DeletionProtection', async () => {
-    // The command NAME alone is not the premise. What licenses reading the
-    // DESIRED bag is that `UpdateUserPool` already SENT that value — if the
-    // truthiness gate at `cognito-provider.ts` stopped forwarding it, the
-    // advice would silently start describing a pool state AWS does not hold
-    // while a name-only assertion stayed green.
-    await schemaRefusal({ DeletionProtection: 'ACTIVE' }, {});
-    expect(updateUserPoolInput()?.['DeletionProtection']).toBe('ACTIVE');
-  });
-
-  it('the INACTIVE case is licensed by the same send', async () => {
-    // This is the arm where a wrong answer actively misleads: cdkd says the
-    // pool is unprotected because it just made it so.
-    await schemaRefusal({ DeletionProtection: 'INACTIVE' }, { DeletionProtection: 'ACTIVE' });
-    expect(updateUserPoolInput()?.['DeletionProtection']).toBe('INACTIVE');
-  });
-
-  it('an ABSENT desired value is NOT sent, which is why the recorded one still stands', async () => {
-    await schemaRefusal({}, { DeletionProtection: 'ACTIVE' });
-    expect(updateUserPoolInput()).toBeDefined();
-    expect(updateUserPoolInput()?.['DeletionProtection']).toBeUndefined();
+  it('refuses before the first write, in every DeletionProtection arm (go-to-k/cdkd#6375)', async () => {
+    const arms: Array<[Record<string, unknown>, Record<string, unknown>]> = [
+      [{ DeletionProtection: 'ACTIVE' }, {}],
+      [{ DeletionProtection: 'INACTIVE' }, { DeletionProtection: 'ACTIVE' }],
+      [{}, { DeletionProtection: 'ACTIVE' }],
+      [{}, {}],
+    ];
+    for (const [desired, previous] of arms) {
+      mockSend.mockClear();
+      const message = await schemaRefusal(desired, previous);
+      expect(message).toContain('Nothing was applied to the user pool.');
+      expect(mockSend).not.toHaveBeenCalled();
+    }
   });
 });
