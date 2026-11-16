@@ -153,8 +153,8 @@ release. Do not import them from a program.
 Dropping a Node.js major that has reached end of life is a minor release, and
 its release notes say so.
 
-A cloud assembly whose schema version is newer than the one the cdkd release
-declares to the CDK app is outside the supported range. cdkd does not check
+A cloud assembly whose schema version is newer than any the cdkd release was
+tested with is outside the supported range. cdkd does not check
 the version of the assembly it reads, so such an assembly may deploy, fail or
 behave differently, and the result is not covered by this page.
 
