@@ -426,7 +426,8 @@ The types above hold for a record cdkd wrote. `logicalId`, `dependencies` and
 `attributes` are always present. For a hand-edited or damaged record,
 `resourceType`, `physicalId` and `dependencies` are printed as stored, so they
 can hold another type, and `resourceType` and `physicalId` are absent when the
-record lacks them. Only `attributes` is repaired to an object.
+record lacks them. A missing or `null` `dependencies` prints as `[]`. Only
+`attributes` is repaired to an object.
 [cdkd state: malformed records](cli-state-malformed.md) lists what each mode
 prints for one. The [AppSync API key masking](#appsync-api-keys-are-masked) applies to `physicalId`
 and `attributes`.

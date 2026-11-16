@@ -173,7 +173,7 @@ The fields depend on the flags:
 | `name` | string | The stack's physical CloudFormation name. |
 | `environment.account` | string | The AWS account id. It is the string `unknown-account` when the stack is environment-agnostic and has no account. |
 | `environment.region` | string | The region. It is the string `unknown-region` when the stack has none. |
-| `dependencies` | array of strings | The physical `stackName` of each stack this stack depends on, or that stack's artifact id when the assembly records no name. A dependency on itself and a dependency that is not a stack, such as an asset manifest, are left out. The array is empty for a stack with no dependency. |
+| `dependencies` | array of strings | The physical `stackName` of each stack this stack depends on, or that stack's artifact id when the assembly records no name. A dependency whose name equals this stack's own name and a dependency that is not a stack, such as an asset manifest, are left out. The array is empty for a stack with no dependency. |
 
 `dependencies` is present only when `--show-dependencies` is set. `name` and
 `environment` are present only under `--long`. A key that a flag combination
