@@ -123,6 +123,16 @@ secret): it does not match the name the stack writes, so cdkd leaves it. Run
 `cdkd state refresh-observed --yes` once to re-read either. As in CloudFormation, an
 out-of-band change to a list your template does not set is not reported.
 
+Security-group rules work the same way. CDK writes a rule between two
+security groups (`connections.allowFrom(otherGroup, ...)`,
+`db.connections.allowDefaultPortFrom(fn)`) as a separate
+`AWS::EC2::SecurityGroupIngress` or `AWS::EC2::SecurityGroupEgress`, and
+keeps CIDR rules in the group's own `SecurityGroupIngress` /
+`SecurityGroupEgress`. Drift leaves out of the group's lists every rule such a
+resource in the same stack adds, unless the group's template lists it too, so
+`--revert` never revokes it. A rule nothing in the stack declares is still
+reported, as in CloudFormation, and `--revert` revokes only that one.
+
 An `AWS::Lambda::EventSourceMapping` deployed by an older cdkd can hold
 `Enabled: false` in its recorded snapshot even though the mapping is enabled.
 Drift does not report that difference while your template leaves `Enabled`

@@ -270,7 +270,7 @@ export async function readCurrentStateOnce(
       case 'AWS::EC2::RouteTable':
         return await this.readRouteTableCurrentState(physicalId);
       case 'AWS::EC2::SecurityGroup':
-        return await this.readSecurityGroupCurrentState(physicalId, properties);
+        return await this.readSecurityGroupCurrentState(physicalId, properties, context);
       case 'AWS::EC2::Instance':
         return await this.readInstanceCurrentState(physicalId, properties);
       case 'AWS::EC2::NetworkAcl':

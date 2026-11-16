@@ -35,6 +35,7 @@ import {
   withoutStoppedSiblingMembers,
 } from '../../provisioning/iam-sibling-managed-policies.js';
 import { producerRegionsFromState } from '../rollback-executor.js';
+import { buildSgRuleCaptureSiblings } from './observed-capture-sg-siblings.js';
 import {
   createUnionSecretMasker,
   carryRedactionMarks,
@@ -723,7 +724,10 @@ export interface ObservedCaptureSiblingsDeps {
  * too, keyed by its recorded ARN, so its attachment stays out of the
  * captured `ManagedPolicyArns` (go-to-k/cdkd#6324).
  *
- * Returns `undefined` (no context) for non-IAM-principal types and when
+ * An `AWS::EC2::SecurityGroup` gets its standalone rule siblings instead
+ * (`buildSgRuleCaptureSiblings`, go-to-k/cdkd#6418).
+ *
+ * Returns `undefined` (no context) for other types and when
  * no sibling policy attaches to the captured principal — both leave the
  * capture behaving exactly as before.
  */
@@ -741,6 +745,18 @@ export async function buildObservedCaptureSiblings(
   // Capture disabled (kickOffObservedCapture would ignore the context) —
   // skip the template walk / resolver work entirely.
   if (deps.options.captureObservedState !== true) return undefined;
+  if (resourceType === 'AWS::EC2::SecurityGroup') {
+    return buildSgRuleCaptureSiblings(
+      deps,
+      capturedLogicalId,
+      capturedPhysicalId,
+      template,
+      stateResources,
+      stackName,
+      parameterValues,
+      conditions
+    );
+  }
   const attachmentField = managedPolicyAttachmentField(resourceType);
   if (!attachmentField) return undefined;
   const resources = template?.Resources;

@@ -1028,6 +1028,11 @@
       ]
     },
     {
+      "name": "drift-sg-sibling-rules",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dsql",
       "annotated": true,
       "scenarios": []
@@ -3944,6 +3949,7 @@
     "docdb-fix-forward-orphan",
     "docdb-global-cluster",
     "docdb-restore",
+    "drift-sg-sibling-rules",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",

@@ -118,6 +118,7 @@ docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #61
 drift-revert	2026-11-16T08:22:27Z	PASS	431	verify.sh	rc ok, orph clean (#6374 sweep)
 drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
 drift-revert-vpc	2026-11-05T11:30:20Z	PASS	333	verify.sh	rc ok, VPC/NAT/EIP gone, orph clean
+drift-sg-sibling-rules	2026-11-16T11:53:34Z	PASS	131	verify.sh	rc ok, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-04T07:57:30Z	PASS	120	verify.sh	rc ok, destroy 0 errors, 0 orphans (4 phases incl. #4701 rename; no leaked scalable targets)
