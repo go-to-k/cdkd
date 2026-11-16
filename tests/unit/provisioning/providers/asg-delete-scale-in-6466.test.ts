@@ -633,6 +633,38 @@ describe('ASG delete of a group with running instances (#6466)', () => {
     }
   });
 
+  it('refuses, deleting nothing, when the group is replaced by another of the same name while it drains (#6468)', async () => {
+    const ARN = (uuid: string): string =>
+      `arn:aws:autoscaling:us-east-1:123456789012:autoScalingGroup:${uuid}:autoScalingGroupName/${ASG}`;
+    // A clock, so a missing check ends in a wait timeout instead of spinning.
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    sleep.mockImplementation(async (ms: number) => {
+      now += ms;
+    });
+    script({ group: { ...RUNNING, AutoScalingGroupARN: ARN('mine') } as Group, drain: [[]] });
+    let describes = 0;
+    const base = asgSend.getMockImplementation()!;
+    asgSend.mockImplementation((command: Cmd) => {
+      // 1: the plain delete's pre-read, 2: the scale-in's read, 3: the first poll.
+      if (command.constructor.name === 'DescribeAutoScalingGroupsCommand' && ++describes >= 3) {
+        return Promise.resolve({
+          AutoScalingGroups: [
+            { ...RUNNING, MinSize: 0, MaxSize: 0, DesiredCapacity: 0, Instances: [], AutoScalingGroupARN: ARN('other') },
+          ],
+        });
+      }
+      return base(command);
+    });
+    const error = await new ASGProvider()
+      .delete('Asg', ASG, RESOURCE_TYPE, undefined, { recordedAttributes: { Arn: ARN('mine') } })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ScaleInRefusal);
+    expect((error as Error).message).toContain('not the one cdkd created');
+    // Only the first, refused, delete: none after the swap.
+    expect(names().filter((n) => n === 'DeleteAutoScalingGroup')).toHaveLength(1);
+  });
+
   it('returns when the group goes while it drains', async () => {
     script({ group: RUNNING });
     let describes = 0;

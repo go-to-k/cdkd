@@ -147,7 +147,9 @@ these cases:
 
 The group then stays at capacity `0`, and cdkd does not put the old capacity
 back. The error states the minimum, maximum and desired capacity the group
-had before cdkd scaled it in.
+had before cdkd scaled it in. Only the first failed delete can state it: a
+re-run finds the group already at `0`, so its error has no capacity to
+report. Note the values from the first error.
 
 In `cdkd destroy` the group's state record is kept, and a re-run continues
 the delete. In a deploy (a replacement that deletes the old group first, or a

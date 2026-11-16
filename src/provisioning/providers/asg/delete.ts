@@ -834,6 +834,9 @@ export async function scaleInThenDelete(
     await pause();
     const current = await provider.describeGroup(physicalId);
     if (!current) return;
+    // The delete below goes by name: the group read now must still be the
+    // stack's (it may have been replaced while it drained, issue #6468).
+    assertRecordedGroup(current, context, logicalId, resourceType, physicalId, refusalCause);
     // Raised out of band (a scheduled action, another tool): waiting would
     // only watch it launch again.
     // Seen on two polls in a row: one read can still lag the update.
