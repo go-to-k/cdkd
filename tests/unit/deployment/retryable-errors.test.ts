@@ -2607,7 +2607,6 @@ describe('wrapMaskedAwsError (issue #4244)', () => {
   });
 });
 
-
 describe('Lambda update-in-progress ResourceConflictException (#6401)', () => {
   // Lambda's wording, byte-identical from AWS Emulator, for an update sent
   // while the function's previous update is still `LastUpdateStatus: InProgress`.

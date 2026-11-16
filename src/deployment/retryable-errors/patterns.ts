@@ -614,8 +614,9 @@ const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // refused with `ResourceConflictException: The operation cannot be performed
   // at this time. An update is in progress for resource: <arn>`. cdkd waits
   // after its own updates, so the in-flight one came from outside the run (a
-  // console change, another pipeline, an interrupted deploy) and settles in
-  // seconds (go-to-k/cdkd#6401). Matched by message, never by the exception
+  // console change, another pipeline, an interrupted deploy) and usually
+  // settles within the retry budget; a longer one still fails after it
+  // (go-to-k/cdkd#6401). Matched by message, never by the exception
   // name: Lambda raises `ResourceConflictException` for a name collision too.
   'An update is in progress for resource',
   // Lambda EventSourceMapping: on destroy, DeleteEventSourceMapping can
