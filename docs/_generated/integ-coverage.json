@@ -8257,6 +8257,7 @@
         "rollback-command",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
+        "s3-autodelete-objects-disable",
         "s3-bucket-policy-existing",
         "s3-cloudfront",
         "s3-directory-bucket",
@@ -8454,6 +8455,9 @@
         ],
         "s3-analytics-inventory": [
           "l1"
+        ],
+        "s3-autodelete-objects-disable": [
+          "l2"
         ],
         "s3-bucket-policy-existing": [
           "l2",

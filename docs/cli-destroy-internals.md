@@ -426,6 +426,8 @@ The custom-resource handler causes attempted the delete. The per-resource
   invoke did not complete**:
   `skipped (Delete handler reported FAILED — resource unproven)` or
   `skipped (Delete request to the handler did not complete — resource unproven)`.
+  The one FAILED that is not skipped is `Custom::S3AutoDeleteObjects` on a bucket
+  S3 confirms has no tags ([cdkd destroy: skipped resources](cli-destroy-skipped.md)).
   cdkd addressed the resource and sent (or attempted to send) the `Delete`, so
   the record is correct and there is nothing to repair in `state.json`. The
   same destroy usually deletes the handler's Lambda too, so the next destroy

@@ -174,6 +174,12 @@ export const CR_DELETE_INVOKE_FAILED_SKIP_REASON =
  * handler writes, so any classifier is a guess, and a wrong guess
  * re-introduces exactly the orphan this arm exists to stop.
  *
+ * The one exception reads no `Reason` (go-to-k/cdkd#6422): a FAILED from CDK's
+ * `Custom::S3AutoDeleteObjects` handler is DELETED when cdkd's OWN
+ * `GetBucketTagging` answers `NoSuchTagSet` — a bucket with no tags is not
+ * tagged for auto-delete, so the handler had nothing to empty
+ * (`isUntaggedAutoDeleteBucket`, `s3-auto-delete-untagged.ts`).
+ *
  * This is therefore a COMPATIBILITY BREAK: a destroy whose delete handler
  * reports FAILED now exits 2 with the record kept, where it used to exit 0
  * with the record dropped.
