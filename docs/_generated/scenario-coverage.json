@@ -1824,6 +1824,11 @@
       ]
     },
     {
+      "name": "legacy-synthesizer-assets",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "list-parameters",
       "annotated": false,
       "scenarios": []
@@ -4038,6 +4043,7 @@
     "lambda-runtime-config",
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
+    "legacy-synthesizer-assets",
     "list-parameters",
     "local-aws-emulator",
     "local-engine-role-identity",

@@ -6,6 +6,10 @@ import {
   rewriteTemplateAssetReferences,
   type AssetRedirectMap,
 } from '../../../assets/asset-redirect.js';
+import {
+  legacyPlanAssetCount,
+  prepareLegacyStackAssets,
+} from '../../../assets/legacy-synthesizer-assets.js';
 import { WorkGraph } from '../../../deployment/work-graph.js';
 import { deployStackRegion } from '../cross-prefix-gate.js';
 import type { DeployCommandOptions } from './types.js';
@@ -109,6 +113,38 @@ export async function addStacksToWorkGraph(args: {
           for (const id of nodeIds) {
             stackDeps.add(id);
           }
+        }
+      }
+    }
+
+    // Issue #6421 — a LegacyStackSynthesizer stack has no asset manifest:
+    // its assets are `aws:cdk:asset` metadata plus template parameters the
+    // deploying tool supplies. Mode first, as above, so the bucket the bound
+    // parameters name is the one the objects go to; bound even under
+    // --skip-assets (the CDK CLI computes them regardless).
+    if (stack.legacyAssets) {
+      const assetRegion = stackRegions.get(stack) ?? deployStackRegion(stack, baseRegion);
+      const assetMode = await assetModeResolver.resolve(
+        stack.region || rawNamedRegion || assetRegion
+      );
+      const plan = await prepareLegacyStackAssets(stack, {
+        assetMode,
+        accountId,
+        region: assetRegion,
+      });
+      if (plan && !options.skipAssets && legacyPlanAssetCount(plan) > 0) {
+        const nodeIds = assetPublisher.addManifestToGraph(workGraph, plan.manifest, {
+          accountId,
+          region: assetRegion,
+          ...(options.profile && { profile: options.profile }),
+          nodePrefix: `${graphKey(stack)}:`,
+          cdkOutputDir: stack.legacyAssets.assemblyDir,
+          ...(stack.assetOutdir !== undefined && { assetOutdir: stack.assetOutdir }),
+          destinationsChosenByCdkd: true,
+          repositoriesToEnsure: plan.repositoriesToEnsure,
+        });
+        for (const id of nodeIds) {
+          stackDeps.add(id);
         }
       }
     }

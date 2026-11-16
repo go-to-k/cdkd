@@ -2,6 +2,8 @@ import {
   ECRClient,
   GetAuthorizationTokenCommand,
   DescribeImagesCommand,
+  DescribeRepositoriesCommand,
+  CreateRepositoryCommand,
 } from '@aws-sdk/client-ecr';
 import type { DockerImageAsset } from '../types/assets.js';
 import {
@@ -184,7 +186,9 @@ export class DockerAssetPublisher {
     asset: DockerImageAsset,
     accountId: string,
     region: string,
-    localTag: string
+    localTag: string,
+    /** Create a missing destination repository first (legacy-synthesizer assets, #6421). */
+    ensureRepository = false
   ): Promise<void> {
     refuseDockerAssetUnderAwsEmulator(asset.displayName || localTag);
     for (const [, dest] of Object.entries(asset.destinations)) {
@@ -200,6 +204,9 @@ export class DockerAssetPublisher {
       const client = new ECRClient({ ...ambientClientDefaults(), region: destRegion });
 
       try {
+        if (ensureRepository) {
+          await this.ensureRepositoryExists(client, repositoryName);
+        }
         if (await this.imageExists(client, repositoryName, imageTag)) {
           this.logger.debug(`Image already exists, skipping: ${ecrUri}`);
           continue;
@@ -211,6 +218,36 @@ export class DockerAssetPublisher {
       } finally {
         client.destroy();
       }
+    }
+  }
+
+  /**
+   * Create `repositoryName` when it does not exist — the CDK CLI's
+   * `prepareEcrRepository`, which a `LegacyStackSynthesizer` image asset
+   * needs because no bootstrap creates its repository (issue #6421). Same
+   * shape as the CLI's: tagged `awscdk:asset=true`, scan on push.
+   */
+  private async ensureRepositoryExists(client: ECRClient, repositoryName: string): Promise<void> {
+    try {
+      const response = await client.send(
+        new DescribeRepositoriesCommand({ repositoryNames: [repositoryName] })
+      );
+      if ((response.repositories?.length ?? 0) > 0) return;
+    } catch (error) {
+      if ((error as { name?: string }).name !== 'RepositoryNotFoundException') throw error;
+    }
+    this.logger.debug(`Creating ECR repository ${displayIdent(repositoryName)}`);
+    try {
+      await client.send(
+        new CreateRepositoryCommand({
+          repositoryName,
+          tags: [{ Key: 'awscdk:asset', Value: 'true' }],
+          imageScanningConfiguration: { scanOnPush: true },
+        })
+      );
+    } catch (error) {
+      // Another asset node of this run created it first.
+      if ((error as { name?: string }).name !== 'RepositoryAlreadyExistsException') throw error;
     }
   }
 

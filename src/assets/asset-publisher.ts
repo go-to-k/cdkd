@@ -57,6 +57,13 @@ export interface DockerPublishNodeData {
   accountId: string;
   region: string;
   localTag: string;
+  /**
+   * Create the destination repository when it is missing — set for a
+   * `LegacyStackSynthesizer` image asset only, whose repository (e.g.
+   * `aws-cdk/assets`) no bootstrap creates; the CDK CLI creates it too
+   * (issue #6421).
+   */
+  ensureRepository?: true;
 }
 
 export type AssetNodeData = FileAssetNodeData | DockerBuildNodeData | DockerPublishNodeData;
@@ -126,9 +133,44 @@ export class AssetPublisher {
     const content = readFileSync(manifestPath, 'utf-8');
     const manifest = parseAssetManifestBody(content, manifestPath);
     const cdkOutputDir = manifestPath.replace(/\/[^/]+$/, '');
+    return this.addManifestToGraph(graph, manifest, { ...options, cdkOutputDir });
+  }
+
+  /**
+   * {@link addAssetsToGraph} for a manifest already in memory — the one a
+   * `LegacyStackSynthesizer` stack's metadata builds (issue #6421), which is
+   * never written into the user's assembly (the CDK CLI keeps it in memory
+   * too).
+   */
+  addManifestToGraph(
+    graph: WorkGraph,
+    manifest: AssetManifest,
+    options: {
+      accountId: string;
+      region: string;
+      profile?: string;
+      nodePrefix?: string;
+      redirect?: AssetRedirectMap;
+      /** The directory `source.path` / `source.directory` resolve against. */
+      cdkOutputDir: string;
+      /** See {@link addAssetsToGraph}; defaults to `cdkOutputDir`. */
+      assetOutdir?: string;
+      /**
+       * Destinations cdkd CHOSE rather than read from a manifest (the legacy
+       * plan's toolkit / cdkd bucket and the synthesizer's fixed repository):
+       * the unrecognized-destination warning, which exists to name a
+       * manifest-chosen destination, does not apply.
+       */
+      destinationsChosenByCdkd?: boolean;
+      /** Docker repositories to create when missing (legacy image assets). */
+      repositoriesToEnsure?: ReadonlySet<string>;
+    }
+  ): string[] {
+    const cdkOutputDir = options.cdkOutputDir;
     const assetOutdir = options.assetOutdir ?? cdkOutputDir;
     const prefix = options.nodePrefix || '';
     const redirect = options.redirect;
+    const warnDestinations = options.destinationsChosenByCdkd !== true;
     const nodeIds: string[] = [];
 
     // File assets: single publish node
@@ -148,7 +190,7 @@ export class AssetPublisher {
       // The DESTINATION half of go-to-k/cdkd#3497, judged AFTER the redirect so
       // a cdkd-managed target is silent. Warn, never refuse: a custom
       // bootstrap is a legitimate configuration.
-      for (const dest of Object.values(asset.destinations)) {
+      for (const dest of warnDestinations ? Object.values(asset.destinations) : []) {
         // The destination's OWN region, not the deploy region.
         // `buildAssetRedirectMap` deliberately skips a cross-region
         // destination, so it arrives here unrewritten, and judging
@@ -200,7 +242,7 @@ export class AssetPublisher {
       // Before the graph runs, so no resource is created first (go-to-k/cdkd#6138).
       refuseDockerAssetUnderAwsEmulator(rawAsset.displayName || hash);
       const asset = redirect ? redirectDockerAsset(rawAsset, redirect) : rawAsset;
-      for (const dest of Object.values(asset.destinations)) {
+      for (const dest of warnDestinations ? Object.values(asset.destinations) : []) {
         // `dest.region` unflattened, self-consistently — the same note as the
         // file-asset arm above, repeated rather than cross-referenced because a
         // future edit that flattens only one side would come in HERE, and the
@@ -245,6 +287,9 @@ export class AssetPublisher {
           accountId: options.accountId,
           region: options.region,
           localTag,
+          ...(Object.values(asset.destinations).some((d) =>
+            options.repositoriesToEnsure?.has(d.repositoryName)
+          ) && { ensureRepository: true as const }),
         } satisfies DockerPublishNodeData,
       });
 
@@ -282,7 +327,13 @@ export class AssetPublisher {
         data.assetOutdir
       );
     } else if (data.kind === 'docker-publish') {
-      await this.dockerPublisher.push(data.asset, data.accountId, data.region, data.localTag);
+      await this.dockerPublisher.push(
+        data.asset,
+        data.accountId,
+        data.region,
+        data.localTag,
+        data.ensureRepository === true
+      );
     }
 
     this.logger.debug(`✅ ${node.id}`);

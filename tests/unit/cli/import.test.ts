@@ -65,6 +65,18 @@ const { mockCreateAssetRedirectResolver } = vi.hoisted(() => ({
 vi.mock('../../../src/assets/asset-redirect.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/assets/asset-redirect.js')>()),
   createAssetRedirectResolver: mockCreateAssetRedirectResolver,
+  // Read only by a LegacyStackSynthesizer stack's parameter binder (#6421):
+  // the redirect resolver above is mocked whole.
+  createLazyAssetModeContext: () => ({
+    accountId: async () => '111111111111',
+    resolveMode: async () => ({
+      mode: 'cdkd-assets',
+      marker: { assetBucket: 'cdkd-assets-111111111111-us-east-1' },
+    }),
+  }),
+}));
+vi.mock('../../../src/assets/cdk-toolkit-bucket.js', () => ({
+  lookupCdkToolkitBucket: vi.fn(async () => 'cdk-hnb659fds-assets-111111111111-us-east-1'),
 }));
 
 // Mock AWS clients. The `sts` field is needed by
@@ -638,6 +650,58 @@ describe('cdkd import', () => {
       String(c[0]).includes('recorded in state at their pre-rewrite')
     );
     expect(noticeCall).toBeDefined();
+  });
+
+  it('binds LegacyStackSynthesizer asset parameters: cdkd storage live, the CDK toolkit bucket in state (#6421)', async () => {
+    const tmpl = {
+      ...template({
+        MyBucket: {
+          Type: 'AWS::S3::Bucket',
+          Properties: { BucketName: 'b', DataBucket: { Ref: 'BucketP' } },
+          Metadata: { 'aws:cdk:path': 'S/MyBucket' },
+        },
+      }),
+      Parameters: { BucketP: { Type: 'String' }, KeyP: { Type: 'String' }, HashP: { Type: 'String' } },
+    } as CloudFormationTemplate;
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        {
+          ...stackInfo('S', tmpl),
+          legacyAssets: {
+            assemblyDir: '/tmp/cdk.out',
+            entries: [
+              {
+                packaging: 'zip',
+                id: 'h',
+                path: 'asset.h',
+                sourceHash: 'h',
+                s3BucketParameter: 'BucketP',
+                s3KeyParameter: 'KeyP',
+                artifactHashParameter: 'HashP',
+              },
+            ],
+          },
+        },
+      ],
+    });
+    mockHasProvider.mockReturnValue(true);
+    mockGetProvider.mockImplementation(() => ({
+      import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+    }));
+
+    await runImport(['import', '--app', 'x', '--yes']);
+
+    const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+      string,
+      string,
+      { resources: Record<string, { properties: Record<string, unknown> }> },
+    ];
+    // #1652's reason: state holds what a CloudFormation-deployed resource
+    // holds, so the next deploy repoints it to cdkd storage.
+    expect(state.resources['MyBucket']!.properties['DataBucket']).toBe(
+      'cdk-hnb659fds-assets-111111111111-us-east-1'
+    );
+    expect(tmpl.Parameters!['BucketP']!.Default).toBe('cdkd-assets-111111111111-us-east-1');
   });
 
   it("ends on a cdkd diff that carries the run's --aws-emulator (go-to-k/cdkd#6245)", async () => {

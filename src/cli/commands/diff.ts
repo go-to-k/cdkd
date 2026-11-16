@@ -29,8 +29,11 @@ import type { LockRecoveryContext } from '../../state/lock-contention-message.js
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
 import {
   createAssetRedirectResolver,
+  createLazyAssetModeContext,
   rewriteTemplateAssetReferences,
 } from '../../assets/asset-redirect.js';
+import { createLegacyAssetParameterBinder } from '../../assets/legacy-synthesizer-assets.js';
+import { displaySafe } from '../../utils/display-safe.js';
 import { setAwsClients, AwsClients, runWithStackAwsClients } from '../../utils/aws-clients.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -530,13 +533,18 @@ async function diffCommand(
     // so the shown plan matches what deploy will do (incl. the one-time
     // migration diff after `cdkd bootstrap`). Lazy: no extra AWS calls for
     // asset-less apps / legacy regions beyond the marker read.
-    const resolveAssetRedirect = createAssetRedirectResolver({
+    const assetModeOptions = {
       stateBackend,
       stsRegion: region,
       ...(options.profile && { profile: options.profile }),
       useCdkBootstrapAssets: resolveUseCdkBootstrapAssets(options.useCdkBootstrapAssets),
       suppressLegacyNotice: true,
-    });
+    };
+    const assetModeContext = createLazyAssetModeContext(assetModeOptions);
+    const resolveAssetRedirect = createAssetRedirectResolver(assetModeOptions, assetModeContext);
+    // Issue #6421: a LegacyStackSynthesizer stack's asset parameters, bound
+    // as deploy binds them, so their values diff as literals.
+    const bindLegacyAssets = createLegacyAssetParameterBinder(assetModeContext);
 
     // 4. Build a diff tree per target stack (nested children only when --recursive).
     const trees: DiffTreeNode[] = [];
@@ -557,6 +565,16 @@ async function diffCommand(
       // then to state the old us-east-1 default wrote (go-to-k/cdkd#2100).
       const stackRegion = await regionForStack(stackInfo.stackName, stackInfo.region);
       const assetRedirect = await resolveAssetRedirect(stackInfo.assetManifestPath, stackRegion);
+      try {
+        await bindLegacyAssets(stackInfo, stackRegion);
+      } catch (error) {
+        // A diff reads; it shows the parameters unresolved rather than fail.
+        logger.warn(
+          `Could not bind the LegacyStackSynthesizer asset parameters of stack ` +
+            `${displaySafe(stackInfo.stackName)}, so values built from them show as unresolved: ` +
+            `${displaySafe(error instanceof Error ? error.message : String(error))}`
+        );
+      }
       if (assetRedirect) {
         const rewritten = rewriteTemplateAssetReferences(stackInfo.template, assetRedirect);
         logger.debug(

@@ -197,6 +197,25 @@ To set it for an app, put this in `cdk.json`:
 }
 ```
 
+### Stacks that use `LegacyStackSynthesizer`
+
+A stack synthesized with `LegacyStackSynthesizer` has no asset manifest. Its
+assets are described in the stack's metadata, and the template declares
+`AssetParameters...` parameters with no default. cdkd publishes those assets
+and supplies the parameters, as the AWS CDK CLI does.
+
+| Asset | Where cdkd publishes it |
+| --- | --- |
+| File or directory, cdkd-assets mode | The cdkd-owned asset bucket, under `assets/` |
+| File or directory, legacy mode | The `BucketName` output of the `CDKToolkit` stack, under `assets/` |
+| Docker image | The repository the synthesizer names (`aws-cdk/assets` by default), created when missing |
+
+In legacy mode the asset bucket comes from the `CDKToolkit` stack, so a custom
+qualifier or bucket name is found. A toolkit stack under another name is not:
+run `cdkd bootstrap` to publish to cdkd-owned storage instead. `deploy`,
+`diff`, `import`, `export`, `refactor` and `publish-assets` all supply the same
+parameter values, and `--skip-assets` still supplies them.
+
 ### Why cdkd owns its asset storage
 
 `cdk gc` decides which assets are in use by scanning CloudFormation stack

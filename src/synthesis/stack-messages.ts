@@ -83,6 +83,19 @@ export function collectStackMessages(
   assemblyDir: string,
   artifact: ArtifactManifest
 ): StackMessage[] {
+  return stackMessagesFromMetadata(readMergedStackMetadata(assemblyDir, artifact));
+}
+
+/**
+ * A stack artifact's metadata from BOTH layouts merged per construct path —
+ * the inline `metadata` plus the `additionalMetadataFile` side file. Shared
+ * by the annotation messages and the `LegacyStackSynthesizer` asset entries
+ * (issue #6421), so the side file is read once and judged one way.
+ */
+export function readMergedStackMetadata(
+  assemblyDir: string,
+  artifact: ArtifactManifest
+): Record<string, MetadataEntry[]> {
   const merged: Record<string, MetadataEntry[]> = { ...(artifact.metadata ?? {}) };
 
   if (artifact.additionalMetadataFile) {
@@ -141,7 +154,11 @@ export function collectStackMessages(
       );
     }
   }
+  return merged;
+}
 
+/** The annotation messages in a stack's merged metadata. */
+export function stackMessagesFromMetadata(merged: Record<string, MetadataEntry[]>): StackMessage[] {
   const messages: StackMessage[] = [];
   for (const [path, entries] of Object.entries(merged)) {
     if (!Array.isArray(entries)) continue;
