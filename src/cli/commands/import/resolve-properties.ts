@@ -14,7 +14,7 @@ import {
   reachableDivergentParameters,
   type ParameterTaint,
 } from '../../../analyzer/parameter-dependence.js';
-import { displayIdent, displayStackName } from '../../../utils/display-safe.js';
+import { displayIdent, displayStackName, safeMsg } from '../../../utils/display-safe.js';
 import {
   cdkdRemedy,
   pasteableCommand,
@@ -23,7 +23,8 @@ import {
 } from '../../../utils/pasteable-command.js';
 import { logicalIdShown, resourceTypeShown } from '../../../provisioning/composite-id.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
-import type { StackState } from '../../../types/state.js';
+import type { StackState, StateImportEntry, StateOutputReadEntry } from '../../../types/state.js';
+import { crossStackReadsForPartialSave } from '../../../deployment/deploy-engine/state-persist.js';
 import { stateSecretNameNeedles } from '../../../deployment/secret-name-needles.js';
 import {
   countDynamicReferenceOpeners,
@@ -400,6 +401,12 @@ export async function resolveImportedProperties(
     }
   }
 
+  const recordedImports: StateImportEntry[] = [];
+  const recordedOutputReads: StateOutputReadEntry[] = [];
+  // Every secret any resolution below recorded, for redacting the names in the
+  // two lists above. An entry carries no logical id to narrow the bag by, the
+  // same reason the deploy's `redactCrossStackReads` takes the union.
+  const allRecordedSecrets = new Map<string, string>();
   const baseContext = {
     template,
     resources: stackState.resources,
@@ -415,12 +422,22 @@ export async function resolveImportedProperties(
     // go-to-k/cdkd#6170: the tail the stack's deploys resolve `AWS::StackId`
     // with, so an imported record holds the value the next deploy compares.
     stackIdTail: () => stackIdTailOf(stackState, stackState.stackName),
+    // go-to-k/cdkd#6400: the cross-stack reads this resolution makes, persisted
+    // onto the record after the loop the way a deploy persists its own. Without
+    // them the destroy-time strong-reference scan cannot see that an imported
+    // consumer still reads a producer's export.
+    recordedImports,
+    recordedOutputReads,
   };
 
   // What the NoEcho positional pass after the loop reads, per record
   // (go-to-k/cdkd#4043 Phase C): the template bag, its resolution, and the
   // attributes as imported, before any redaction.
   const noEchoInputs = new Map<string, NoEchoImportInput>();
+  // A resource whose bag failed to resolve, so its cross-stack reads are
+  // recorded node by node after the loop (go-to-k/cdkd#6400): the throw can
+  // land before the resolver reaches its `Fn::ImportValue`.
+  const unresolvedReadSources: ReadSource[] = [];
 
   for (const [logicalId, resource] of entries) {
     // Fresh PER-RESOURCE secrets map so the imported state persists the
@@ -545,6 +562,16 @@ export async function resolveImportedProperties(
             : '')
       );
       threw = true;
+      unresolvedReadSources.push({
+        label: `resource ${logicalIdShown(logicalId)}`,
+        value: unresolvedProperties,
+      });
+    }
+    // On BOTH arms: a resolution that recorded a cross-stack read and then threw
+    // on a later key still recorded the read, and its name may carry a secret
+    // this bag holds.
+    for (const [plaintext, expression] of recordedSecretValues) {
+      allRecordedSecrets.set(plaintext, expression);
     }
 
     // THE `attributes` CHOKE POINT (issue
@@ -711,5 +738,226 @@ export async function resolveImportedProperties(
     unsafeObservedBaselineLogicalIds,
     logger
   );
+
+  await recordCrossStackReadNodes(
+    [...unresolvedReadSources, ...outputReadSources(template, conditions)],
+    template,
+    conditions,
+    resolver,
+    baseContext,
+    allRecordedSecrets,
+    logger
+  );
+  persistCrossStackReads(stackState, recordedImports, recordedOutputReads, allRecordedSecrets);
   return unsafeObservedBaselineLogicalIds;
+}
+
+/** A template value whose cross-stack reads the import records, and its label. */
+interface ReadSource {
+  label: string;
+  value: unknown;
+}
+
+/**
+ * Every Output whose `Condition` is not false (go-to-k/cdkd#6400). A deploy
+ * resolves Outputs too, so an `Fn::ImportValue` that only an Output reads is a
+ * strong reference CloudFormation protects, and the record has to say so.
+ */
+function outputReadSources(
+  template: CloudFormationTemplate,
+  conditions: Record<string, boolean>
+): ReadSource[] {
+  const outputs = template.Outputs;
+  if (outputs === null || typeof outputs !== 'object') return [];
+  const sources: ReadSource[] = [];
+  for (const [name, output] of Object.entries(outputs)) {
+    if (output === null || typeof output !== 'object') continue;
+    const condition = (output as { Condition?: unknown }).Condition;
+    if (typeof condition === 'string' && conditions[condition] === false) continue;
+    sources.push({
+      label: `Output ${displayIdent(name)}`,
+      value: (output as { Value?: unknown }).Value,
+    });
+  }
+  return sources;
+}
+
+/**
+ * Resolve each `Fn::ImportValue` / `Fn::GetStackOutput` node in the given
+ * values ON ITS OWN, for the read it records (go-to-k/cdkd#6400). The resolved
+ * values are DISCARDED: an Output's because an import derives no outputs
+ * (`buildStackState` carries the previous bag), a resource's because its whole
+ * bag already failed to resolve and is persisted as it was.
+ *
+ * Node by node, never the whole value: an Output such as
+ * `Fn::Join [ImportValue X, Ref <a resource this import skipped>]` must still
+ * record X, and resolving the whole value would throw at the `Ref` first (and
+ * print the resolver's "not found" warning for a pass that only records reads).
+ * A node whose OWN argument names a resource the record does not hold is
+ * skipped at debug for the same warning; an `Fn::If` branch whose condition is
+ * known false is not read, as a deploy would not read it.
+ */
+async function recordCrossStackReadNodes(
+  sources: readonly ReadSource[],
+  template: CloudFormationTemplate,
+  conditions: Record<string, boolean>,
+  resolver: IntrinsicFunctionResolver,
+  baseContext: Parameters<IntrinsicFunctionResolver['resolve']>[1],
+  allRecordedSecrets: Map<string, string>,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  const known = new Set([
+    ...Object.keys(baseContext?.resources ?? {}),
+    ...Object.keys(template.Parameters ?? {}),
+  ]);
+  for (const { label, value } of sources) {
+    for (const node of crossStackReadNodes(value, conditions)) {
+      if (referencedIds(node, conditions).some((id) => !id.startsWith('AWS::') && !known.has(id))) {
+        logger.debug(
+          safeMsg`A cross-stack read in ${label} was not resolved during import: its argument references a resource this record does not hold.`
+        );
+        continue;
+      }
+      const recordedSecretValues = new Map<string, string>();
+      try {
+        await resolver.resolve(node, { ...baseContext, recordedSecretValues });
+      } catch (err) {
+        // The error CLASS only: its text can carry a resolved value.
+        logger.debug(
+          safeMsg`A cross-stack read in ${label} was not resolved during import: ${err instanceof Error ? err.name : typeof err}.`
+        );
+      }
+      for (const [plaintext, expression] of recordedSecretValues) {
+        allRecordedSecrets.set(plaintext, expression);
+      }
+    }
+  }
+}
+
+const MAX_READ_SCAN_DEPTH = 64;
+
+/**
+ * The `{ "Fn::ImportValue": ... }` / `{ "Fn::GetStackOutput": ... }` nodes in a
+ * value. An `Fn::If` with a known verdict contributes only its selected branch;
+ * an unknown verdict contributes both (recording a read the deploy may not
+ * make is the fail-closed side). Bounded: a value deeper than the walk reaches
+ * contributes nothing past that depth.
+ */
+function crossStackReadNodes(value: unknown, conditions: Record<string, boolean>): unknown[] {
+  const nodes: unknown[] = [];
+  const walk = (node: unknown, depth: number): void => {
+    if (depth > MAX_READ_SCAN_DEPTH || node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, depth + 1);
+      return;
+    }
+    const entries = Object.entries(node);
+    if (entries.length === 1) {
+      const [key, arg] = entries[0]!;
+      if (key === 'Fn::ImportValue' || key === 'Fn::GetStackOutput') {
+        nodes.push(node);
+        return;
+      }
+      if (key === 'Fn::If' && Array.isArray(arg) && typeof arg[0] === 'string') {
+        const verdict = conditions[arg[0]];
+        if (verdict !== false) walk(arg[1], depth + 1);
+        if (verdict !== true) walk(arg[2], depth + 1);
+        return;
+      }
+    }
+    for (const [, child] of entries) walk(child, depth + 1);
+  };
+  walk(value, 0);
+  return nodes;
+}
+
+/**
+ * Every logical id a value's `Ref` / `Fn::GetAtt` / `Fn::Sub` names, reading
+ * an `Fn::If` the way {@link crossStackReadNodes} does: a branch the deploy
+ * would not take cannot make a read unresolvable. Bounded like it too.
+ */
+function referencedIds(value: unknown, conditions: Record<string, boolean>): string[] {
+  const targets: string[] = [];
+  const walk = (node: unknown, depth: number): void => {
+    if (depth > MAX_READ_SCAN_DEPTH || node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, depth + 1);
+      return;
+    }
+    const entries = Object.entries(node);
+    if (entries.length === 1) {
+      const [key, arg] = entries[0]!;
+      if (key === 'Fn::If' && Array.isArray(arg) && typeof arg[0] === 'string') {
+        const verdict = conditions[arg[0]];
+        if (verdict !== false) walk(arg[1], depth + 1);
+        if (verdict !== true) walk(arg[2], depth + 1);
+        return;
+      }
+    }
+    for (const [key, child] of entries) {
+      if (key === 'Ref' && typeof child === 'string') targets.push(child);
+      if (key === 'Fn::GetAtt') {
+        const id = Array.isArray(child)
+          ? child[0]
+          : typeof child === 'string'
+            ? child.split('.')[0]
+            : undefined;
+        if (typeof id === 'string') targets.push(id);
+      }
+      if (key === 'Fn::Sub') {
+        // `${Name}` / `${Name.Attr}` in the string, less the names its own
+        // variable map binds; `${!Literal}` is an escape, not a reference.
+        const [body, vars] = Array.isArray(child) ? child : [child, undefined];
+        const bound = vars !== null && typeof vars === 'object' ? Object.keys(vars) : [];
+        if (typeof body === 'string') {
+          for (const m of body.matchAll(/\$\{([^!}][^}]*)\}/g)) {
+            const id = m[1]!.split('.')[0]!;
+            if (!bound.includes(id)) targets.push(id);
+          }
+        }
+      }
+      walk(child, depth + 1);
+    }
+  };
+  walk(value, 0);
+  return targets;
+}
+
+/**
+ * Write this run's cross-stack reads onto the record (go-to-k/cdkd#6400),
+ * unioned with what the record already holds: a selective import resolves only
+ * the resources it imports, so a read a carried resource makes is known only
+ * from the previous record. Never drops an entry, the fail-closed direction
+ * `crossStackReadsForPartialSave` documents. Unioned RAW, then every entry is
+ * redacted, the shape `redactCrossStackReads` gives a deploy's persist: so a
+ * previous record's plaintext spelling (written before #3289) is rewritten
+ * too, rather than kept as the union's first-seen copy.
+ */
+function persistCrossStackReads(
+  stackState: StackState,
+  recordedImports: readonly StateImportEntry[],
+  recordedOutputReads: readonly StateOutputReadEntry[],
+  secrets: Map<string, string>
+): void {
+  const redact = (value: string): string =>
+    redactForState(value, { provenance: 'value-scan', secrets });
+  const reads = crossStackReadsForPartialSave(
+    stackState,
+    recordedImports,
+    recordedOutputReads,
+    redact
+  );
+  if (reads.imports !== undefined) {
+    stackState.imports = reads.imports.map((entry) => ({
+      ...entry,
+      exportName: redact(entry.exportName),
+    }));
+  }
+  if (reads.outputReads !== undefined) {
+    stackState.outputReads = reads.outputReads.map((entry) => ({
+      ...entry,
+      sourceStack: redact(entry.sourceStack),
+      outputName: redact(entry.outputName),
+    }));
+  }
 }

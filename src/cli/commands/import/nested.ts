@@ -421,6 +421,12 @@ export async function importNestedStackChildrenRecursive(args: {
         // and the superseded resources still to delete (#5111): a rebuild
         // from nothing would drop them, leaving live resources unrecorded.
         Object.assign(childStackState, stackInstanceIdCarriedFrom(childPrior.state));
+        // And its cross-stack reads (go-to-k/cdkd#6400), as the root's
+        // `buildStackState` carries them: the resolve below unions this run's
+        // onto them, so a child resource whose resolve fails keeps its row.
+        const { imports, outputReads } = childPrior.state;
+        if (imports !== undefined) childStackState.imports = imports;
+        if (outputReads !== undefined) childStackState.outputReads = outputReads;
       } else if (childStackInstanceId !== undefined) {
         childStackState.stackInstanceId = childStackInstanceId;
       }

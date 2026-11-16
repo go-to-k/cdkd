@@ -83,7 +83,10 @@ export {
   type DeployResult,
 } from './deploy-engine/options.js';
 export { deriveLabelRouting, type LabelRoutingState } from './label-routing.js';
-export { crossStackReadsForPartialSave } from './deploy-engine/state-persist.js';
+export {
+  crossStackReadsAdded,
+  crossStackReadsForPartialSave,
+} from './deploy-engine/state-persist.js';
 
 /**
  * The bag a resource with no recorded secret masks against (issue #2038).

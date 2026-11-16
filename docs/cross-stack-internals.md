@@ -339,11 +339,31 @@ to v4 cdkd:
    no `imports[]` for that consumer → strong-ref check finds nothing
    → producer destroy proceeds (= the previous behavior, no regression).
 2. Once the consumer is re-deployed under v4, its `imports[]` is
-   populated.
+   populated. A diff-clean deploy counts: the no-change save fires
+   whenever the deploy resolved a cross-stack read (`Fn::ImportValue` or
+   `Fn::GetStackOutput`) the record does not list. A nested child's record
+   is reached only by a deploy that runs the child, since a parent skips an
+   unchanged nested-stack row.
 3. Subsequent producer destroy attempts correctly refuse.
 
 This means the enforcement activates **gradually as consumers are
 re-deployed**, with no explicit migration step from the user.
+
+### `cdkd import` records the same reads
+
+`cdkd import` resolves the imported resources' properties and the template's
+Outputs with the same recording bags a deploy uses, so the record it writes
+lists every `Fn::ImportValue` (and `Fn::GetStackOutput`) it resolved. The
+names are redacted the way a deploy's are. An import into an existing record,
+a `--force` rebuild and a nested child's re-import included, keeps the reads
+that record already held and adds this run's, never dropping one: a read the
+template no longer makes stays until the next successful deploy replaces the
+list, the fail-closed direction of every non-final save. In the Outputs, and
+in a resource whose properties failed to resolve, each `Fn::ImportValue` /
+`Fn::GetStackOutput` is resolved on its own, so a read sitting next to a
+reference to an unimported resource is still recorded; an `Fn::If` branch whose
+condition is known false is not read. A record an older binary imported without them is repaired by the
+consumer's next deploy, as in step 2 above.
 
 ### A FAILED consumer deploy used to leave the same hole
 

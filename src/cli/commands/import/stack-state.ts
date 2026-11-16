@@ -593,6 +593,13 @@ export function buildStackState(
     // record built from nothing gets the one its caller resolves before the
     // save (`stackInstanceIdForFirstWrite`).
     ...(existingState ? stackInstanceIdCarriedFrom(existingState) : {}),
+    // The cross-stack reads travel too (go-to-k/cdkd#6400): `state.imports` is
+    // what the destroy-time strong-reference scan refuses a producer destroy
+    // on, and a resource this import keeps or re-imports still makes the reads
+    // its previous record lists. `resolveImportedProperties` unions this run's
+    // reads onto them.
+    ...(existingState?.imports !== undefined && { imports: existingState.imports }),
+    ...(existingState?.outputReads !== undefined && { outputReads: existingState.outputReads }),
     // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
     // even though it describes that same bag. It records what the last DEPLOY
     // could not resolve, and an import refreshes `attributes` for every
