@@ -282,14 +282,17 @@ describe('autoDeleteObjects fixtures sweep their Lambda log groups', () => {
     'local-aws-emulator': 'every deploy / destroy passes --aws-emulator; the container is removed on exit',
   };
 
-  it('every emulator-only exemption is still in the population and passes --aws-emulator on every deploy', () => {
+  it('every emulator-only exemption is still in the population and passes --aws-emulator on every cdkd call', () => {
     for (const name of Object.keys(EMULATOR_ONLY)) {
       expect(population).toContain(name);
-      const deployLines = readFileSync(runnerOf(name)!, 'utf8')
-        .split('\n')
-        .filter((line) => /\b(deploy|destroy) "\$\{STACK\}"/.test(line));
-      expect(deployLines.length).toBeGreaterThanOrEqual(3);
-      for (const line of deployLines) expect(line).toMatch(/--aws-emulator/);
+      const body = readFileSync(runnerOf(name)!, 'utf8');
+      // EVERY cdkd invocation, whatever it targets, goes to the emulator...
+      const cdkdLines = body.split('\n').filter((line) => /\bnode "\$\{LOCAL_DIST\}"/.test(line));
+      expect(cdkdLines.length).toBeGreaterThanOrEqual(5);
+      for (const line of cdkdLines) expect(line).toMatch(/--aws-emulator/);
+      // ...and the script's own aws calls cannot fall back to a real identity.
+      expect(body).toMatch(/^unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN$/m);
+      expect(body).toMatch(/^export AWS_ENDPOINT_URL="\$\{EMU\}"$/m);
     }
   });
 

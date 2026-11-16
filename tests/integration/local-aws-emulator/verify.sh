@@ -85,8 +85,19 @@ case "${PORT}" in
 esac
 
 # Every `aws` call in this script goes to the emulator, never to real AWS.
+# The script's own `aws` calls do not pass through cdkd's --aws-emulator env
+# scrub, so drop every identity source, every per-service endpoint override and
+# the shell's region here. The region then comes from the emulator's config,
+# the same one cdkd falls back to.
 unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-unset CDKD_AWS_EMULATOR CDKD_TEST_UPDATE
+unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_ROLE_SESSION_NAME
+unset AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN
+unset AWS_REGION AWS_DEFAULT_REGION AWS_IGNORE_CONFIGURED_ENDPOINT_URLS
+while IFS= read -r ENDPOINT_VAR; do
+  unset "${ENDPOINT_VAR}"
+done < <(env | sed -n 's/^\(AWS_ENDPOINT_URL[A-Z0-9_]*\)=.*/\1/p')
+unset CDKD_AWS_EMULATOR CDKD_TEST_UPDATE CDKD_ROLE_ARN
+export AWS_EC2_METADATA_DISABLED=true
 export AWS_ENDPOINT_URL="${EMU}"
 export AWS_CA_BUNDLE="${RUN_DIR}/ca.pem"
 export AWS_CONFIG_FILE="${RUN_DIR}/config"
@@ -111,13 +122,23 @@ stop_api() { (
       kill -0 "${API_PID}" 2>/dev/null || break
       sleep 1
     done
-    kill -0 "${API_PID}" 2>/dev/null && kill -TERM "${API_PID}" 2>/dev/null
+    if kill -0 "${API_PID}" 2>/dev/null; then
+      kill -TERM "${API_PID}" 2>/dev/null
+    fi
   fi
+  # A helper called under `set -e`: its status must not depend on the last
+  # probe above.
+  exit 0
 ) }
 
+# The body runs in a subshell: a bare `set +eu` here would leak into the
+# script itself after the pre-run call below and turn every later check off.
 cleanup() {
   [ "${CLEANED_UP}" = 1 ] && return 0
   CLEANED_UP=1
+  cleanup_body
+}
+cleanup_body() { (
   set +eu
   stop_api
   # The emulator keeps every resource in memory, so removing its container
@@ -133,7 +154,8 @@ cleanup() {
     *) echo "WARN: teardown sweep refused: PORT '${PORT}' is not a port number" >&2 ;;
   esac
   rm -f "${DEPLOY_LOG}" "${UPDATE_LOG}" "${DESTROY_LOG}" "${INVOKE_LOG}" "${API_LOG}" "${EVENT_FILE}"
-}
+  exit 0
+) }
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
 trap '(exit 143); cleanup; exit 143' TERM
@@ -223,6 +245,15 @@ TABLE="$(output_value "${DEPLOY_LOG}" TableName)"
 BUCKET="$(output_value "${DEPLOY_LOG}" BucketName)"
 [ -n "${TABLE}" ] && [ -n "${BUCKET}" ] || { echo "FAIL: TableName / BucketName outputs missing from the deploy log" >&2; exit 1; }
 aws s3api head-object --bucket "${BUCKET}" --key index.html >/dev/null
+INNER_TABLE="$(aws dynamodb list-tables --query "TableNames[?starts_with(@, '${STACK}-Inner')] | [0]" --output text)"
+QUEUE_NAME="$(aws sqs list-queues --queue-name-prefix "${STACK}-Queue" --query 'QueueUrls[0]' --output text)"
+QUEUE_NAME="${QUEUE_NAME##*/}"
+API_ID="$(aws apigatewayv2 get-apis --query "Items[?Name=='HttpApi'].ApiId | [0]" --output text)"
+for V in "INNER_TABLE=${INNER_TABLE}" "QUEUE_NAME=${QUEUE_NAME}" "API_ID=${API_ID}"; do
+  case "${V#*=}" in
+    '' | None) echo "FAIL: ${V%%=*} not found in the emulator after deploy" >&2; exit 1 ;;
+  esac
+done
 aws s3api head-object --bucket "${STATE_BUCKET_EMU}" --key "${STATE_KEY}" >/dev/null
 echo "    OK: deployed; both custom resources ran locally; BucketDeployment file and state record present"
 
@@ -298,7 +329,7 @@ if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --aws-emulator
   exit 1
 fi
 strip_ansi "${UPDATE_LOG}"
-grep -q 'Changes: 0 to create, [0-9]* to update, 0 to delete' "${UPDATE_LOG}" || { echo "FAIL: the update was not in place" >&2; grep 'Changes:' "${UPDATE_LOG}" >&2; exit 1; }
+grep -q 'Changes: 0 to create, [1-9][0-9]* to update, 0 to delete' "${UPDATE_LOG}" || { echo "FAIL: the update was not in place" >&2; grep 'Changes:' "${UPDATE_LOG}" >&2; exit 1; }
 CREATED_AFTER="$(aws dynamodb describe-table --table-name "${TABLE}" --query 'Table.CreationDateTime' --output text)"
 [ "${CREATED_BEFORE}" = "${CREATED_AFTER}" ] || { echo "FAIL: table was replaced (CreationDateTime ${CREATED_BEFORE} -> ${CREATED_AFTER})" >&2; exit 1; }
 GSI="$(aws dynamodb describe-table --table-name "${TABLE}" --query 'Table.GlobalSecondaryIndexes[].IndexName' --output text)"
@@ -333,6 +364,9 @@ done
 assert_gone "table ${TABLE} still exists after destroy" aws dynamodb describe-table --table-name "${TABLE}"
 assert_gone "bucket ${BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET}"
 assert_gone "function ${FN} still exists after destroy" aws lambda get-function --function-name "${FN}"
+assert_gone "nested table ${INNER_TABLE} still exists after destroy" aws dynamodb describe-table --table-name "${INNER_TABLE}"
+assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}"
+assert_gone "HTTP API ${API_ID} still exists after destroy" aws apigatewayv2 get-api --api-id "${API_ID}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET_EMU}" --key "${STATE_KEY}"
 LEFT="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET_EMU}" --prefix "cdkd/${STACK}" --query 'Contents[].Key' --output text)"
 if grep -qE '(^|[[:space:]])[^[:space:]]*/state\.json' <<<"${LEFT}"; then
