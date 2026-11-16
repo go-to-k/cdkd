@@ -2031,6 +2031,11 @@
       ]
     },
     {
+      "name": "local-start-api-user-pool-authorizer",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-api-websocket",
       "annotated": true,
       "scenarios": [
@@ -4028,6 +4033,7 @@
     "local-start-agentcore",
     "local-start-alb",
     "local-start-alb-from-state",
+    "local-start-api-user-pool-authorizer",
     "local-start-cloudfront",
     "local-start-cloudfront-from-state",
     "local-start-microvm",

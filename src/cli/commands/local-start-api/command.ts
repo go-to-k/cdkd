@@ -37,7 +37,11 @@ import {
 } from '../../../local/api-server-grouping.js';
 import { describeStack } from '../../stack-matcher.js';
 import { createFileWatcher, type FileWatcher } from '../../../local/file-watcher.js';
-import { attachAuthorizers } from '../../../local/authorizer-resolver.js';
+import {
+  attachAuthorizers,
+  resolveJwtAuthorizerIntrinsics,
+} from '../../../local/authorizer-resolver.js';
+import { derivePseudoParametersFromRegion } from '../../../local/intrinsic-image.js';
 import type { AuthorizerCache } from '../../../local/authorizer-cache.js';
 import { createJwksCache } from '../../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../../local/sigv4-verify.js';
@@ -475,6 +479,19 @@ export async function localStartApiCommand(
     const stateByStack = stateSourceActive
       ? await loadStateForRoutedStacks(targetStacks, routes, routesWithAuth, options)
       : new Map<string, StackStateBundle>();
+    // An HTTP API JWT authorizer's intrinsic Issuer / Audience
+    // (`HttpUserPoolAuthorizer`, go-to-k/cdkd#6419) resolves from state;
+    // without it the authorizer stays in JWKS pass-through, warned.
+    routesWithAuth = resolveJwtAuthorizerIntrinsics(routesWithAuth, (stackName) => {
+      const bundle = stateByStack.get(stackName);
+      if (!bundle) return undefined;
+      const pseudoParameters =
+        bundle.pseudoParameters ?? derivePseudoParametersFromRegion(bundle.region);
+      return {
+        resources: bundle.state.resources,
+        ...(pseudoParameters && { pseudoParameters }),
+      };
+    });
 
     // Issue #654: resolve `--profile <p>` to a concrete credential set
     // ONCE at boot for forwarding into every Lambda container that

@@ -292,6 +292,7 @@ local-start-alb-from-state	2026-11-15T15:45:32Z	PASS	351	verify.sh	rc ok, orph c
 local-start-api	2026-11-14T17:45:26Z	PASS	30	verify.sh	rc ok, docker sweep clean
 local-start-api-container	2026-11-07T15:32:43Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6020 4e09ba1
 local-start-api-rest-v1-non-proxy	2026-11-12T11:22:31Z	PASS	15	verify.sh	rc ok, docker sweep clean; #6140
+local-start-api-user-pool-authorizer	2026-11-16T11:58:07Z	PASS	97	verify.sh	rc ok, orph clean; #6419 Issuer/Audience from state
 local-start-api-websocket	2026-11-05T06:44:34Z	PASS	105	verify.sh	rc ok, docker sweep clean
 local-start-cloudfront	2026-11-14T12:32:07Z	PASS	7	verify.sh	rc ok, docker sweep clean, orph clean, #6300
 local-start-cloudfront-from-state	2026-11-05T07:01:01Z	PASS	220	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)

@@ -28,6 +28,11 @@ import {
   repairMalformedResourcesForReadOnly,
 } from '../state/malformed-resources-bag.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
+import type { ResourceState } from '../types/state.js';
+import {
+  cfnRefValueFromPhysicalId,
+  refStateLookupFromResource,
+} from '../deployment/intrinsic-resolver/ref-values.js';
 import { getLogger } from '../utils/logger.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
@@ -74,6 +79,30 @@ export interface S3LocalStateProviderOptions {
    * AWS ({@link S3LocalStateProvider.resolveTemplateSsmParameters}).
    */
   workload?: AwsEmulatorWorkload;
+}
+
+/**
+ * The resources bag cdk-local substitutes against, with each `physicalId` set
+ * to the value CloudFormation's `Ref` returns (go-to-k/cdkd#6419). cdk-local's
+ * `Ref` reads `physicalId` verbatim — what `--from-cfn-stack`'s
+ * `ListStackResources` hands it — while cdkd records some types under its own
+ * id (a `AWS::Cognito::UserPoolClient` as `<userPoolId>|<clientId>`, an
+ * `AWS::Events::Rule` as its ARN), so a `Ref` to one reached the workload as
+ * cdkd's id. Copies only the rows that change; the record itself is untouched.
+ */
+export function withCfnRefPhysicalIds(
+  resources: Record<string, ResourceState>
+): Record<string, ResourceState> {
+  const out: Record<string, ResourceState> = {};
+  for (const [logicalId, resource] of Object.entries(resources)) {
+    const ref = cfnRefValueFromPhysicalId(
+      resource.resourceType,
+      resource.physicalId,
+      refStateLookupFromResource(resource)
+    );
+    out[logicalId] = ref === resource.physicalId ? resource : { ...resource, physicalId: ref };
+  }
+  return out;
 }
 
 export class S3LocalStateProvider implements LocalStateProvider {
@@ -185,7 +214,7 @@ export class S3LocalStateProvider implements LocalStateProvider {
       else outputs[k] = JSON.stringify(v);
     }
     return {
-      resources: loaded.state.resources,
+      resources: withCfnRefPhysicalIds(loaded.state.resources),
       outputs,
       region: loaded.region,
     };
