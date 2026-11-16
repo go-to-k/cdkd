@@ -343,7 +343,8 @@ The outcome depends on whether the replacement deletes first or creates first.
   existing resource.
 - **Create first: the deploy completes with a warning** that the old resource
   could not be deleted. cdkd deletes the old resource after the rest of the
-  deploy succeeds. Four cases delete it right after the new one is created: a
+  deploy succeeds; in a nested stack, after the whole stack tree's deploy
+  succeeds. Four cases delete it right after the new one is created: a
   record holding a NoEcho value, an IAM inline policy,
   `UpdateReplacePolicy: Snapshot` without `--skip-final-snapshot`, and an old
   physical id another resource of the stack now records. A failed

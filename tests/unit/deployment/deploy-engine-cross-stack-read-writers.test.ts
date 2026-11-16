@@ -220,7 +220,7 @@ describe('every cross-stack-read writer in the engine is accounted for (#2057)',
       };
       walk(sf);
     }
-    expect(calls.length, 'the engine save sites moved or vanished — re-derive').toBe(8);
+    expect(calls.length, 'the engine save sites moved or vanished — re-derive').toBe(9);
     // `this.` in the class file, `engine.` in the split modules that take the
     // engine as their first parameter.
     for (const { where, stateArg } of calls) {

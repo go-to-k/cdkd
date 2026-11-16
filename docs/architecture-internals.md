@@ -609,6 +609,16 @@ synthesized with asset metadata disabled. `cdkd deploy` refuses it after
 macro expansion, before anything is published or provisioned (issue
 [#6385](https://github.com/go-to-k/cdkd/issues/6385)).
 
+A nested stack's cleanup phase runs at the end of the whole stack tree's
+deploy, as CloudFormation's does. A child's replaced resources stay recorded
+in its state while the rest of the tree deploys, because a sibling or the
+parent may still reference them through a parameter. The top-level stack
+deletes its own first, then each child's in the order the children finished,
+each under that child's lock (issue
+[#6398](https://github.com/go-to-k/cdkd/issues/6398)). A top-level deploy that
+fails sends none of these deletes, and its rollback takes the old resources
+back.
+
 Adoption of an existing CFn-managed nested-stack hierarchy uses `cdkd import
 --migrate-from-cloudformation` (issue
 [#464](https://github.com/go-to-k/cdkd/issues/464) PR A — recursive

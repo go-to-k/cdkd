@@ -1,8 +1,13 @@
 import { redactOutputs, rememberRecoverableMaskedOutputs } from './masking.js';
 import { phaseScopeForStack, timePhase } from '../../utils/phase-timings.js';
 import { writeRollbackJournalSegment } from './rollback.js';
-import { retryDeferredReplacedDeletes, warnUnretriedReplacedDeletes } from './replacement.js';
-import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { warnUnretriedReplacedDeletes } from './replacement.js';
+import { queueNestedCleanup, runCleanupPhase } from './nested-cleanup.js';
+import {
+  NestedCleanupQueue,
+  getNestedCleanupQueue,
+  withNestedCleanupQueue,
+} from '../nested-cleanup-scope.js';
 import {
   isSupersededHeldBySameType,
   removeSuperseded,
@@ -22,6 +27,7 @@ import {
   type ResourceState,
   STATE_SCHEMA_VERSION_CURRENT,
   type StackState,
+  type SupersededResourceRecord,
   exportNamesCarriedFrom,
   stackInstanceIdCarriedFrom,
   orphansCarriedFrom,
@@ -60,8 +66,19 @@ import { pruneStoppedSiblingMembersBestEffort } from './observed-capture.js';
  *   siblings in the same "level")
  * - DELETE follows reverse dependency order (a node starts as soon as all
  *   resources that depend ON it have finished deleting)
+ *
+ * A ROOT engine (no `parentStackInfo`) binds the nested cleanup queue its
+ * descendants' cleanup phases wait in (go-to-k/cdkd#6398).
  */
-export async function executeDeployment(
+export function executeDeployment(
+  ...args: Parameters<typeof executeDeploymentBody>
+): ReturnType<typeof executeDeploymentBody> {
+  const [engine] = args;
+  if (engine.options.parentStackInfo !== undefined) return executeDeploymentBody(...args);
+  return withNestedCleanupQueue(new NestedCleanupQueue(), () => executeDeploymentBody(...args));
+}
+
+async function executeDeploymentBody(
   engine: DeployEngine,
   template: CloudFormationTemplate,
   currentState: StackState,
@@ -83,6 +100,9 @@ export async function executeDeployment(
   completedOperations: CompletedOperation[];
 }> {
   const concurrency = engine.options.concurrency!;
+  // go-to-k/cdkd#6398: the queue a root engine drains at its cleanup phase.
+  const nestedCleanups =
+    engine.options.parentStackInfo === undefined ? getNestedCleanupQueue() : undefined;
   engine.deployChanges = changes;
   const newResources: Record<string, ResourceState> = { ...currentState.resources };
   // go-to-k/cdkd#4821: read by a replacement's delete of its old copy.
@@ -423,28 +443,8 @@ export async function executeDeployment(
     // still-unupdated dependent refused inside the DAG.
     if (engine.interrupted) {
       warnUnretriedReplacedDeletes(engine.replacementRun, engine.replacementDeps(), 'interrupted');
+      nestedCleanups?.abandon('interrupted');
     } else {
-      try {
-        await retryDeferredReplacedDeletes(
-          engine.replacementRun,
-          engine.replacementDeps(),
-          stackName,
-          actualCounts
-        );
-      } finally {
-        // go-to-k/cdkd#2631: the ops were journaled with the FIRST failure's
-        // verdict; a retry that failed differently (a waiter that gave up)
-        // must not leave a later rollback re-adopting on the first one —
-        // nor a retry pass that threw before returning.
-        for (const op of completedOperations) {
-          if (op.changeType !== 'UPDATE') continue;
-          const verdict = engine.replacementRun.replacedOldMaySurvive.get(op.logicalId);
-          // A retry that deleted it dropped the verdict: so does the op.
-          if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
-          else delete op.oldResourceMaySurvive;
-        }
-      }
-      // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.
       // go-to-k/cdkd#5111: a deploy that deleted or replaced anything may have
       // just removed what used a carried entry (a deleted load balancer's
       // listeners go asynchronously), so it waits out an "in use" refusal as
@@ -458,9 +458,39 @@ export async function executeDeployment(
             op.physicalId !== undefined &&
             op.physicalId !== op.previousState.physicalId
         );
-      await retryCarriedSupersededResources(engine, currentState, carriedSuperseded, newResources, {
-        waitInUse: releasedSomething,
-      });
+      const cleanup = (
+        carried: readonly SupersededResourceRecord[],
+        counts: { updated: number; updatePartial: number }
+      ): Promise<void> =>
+        runCleanupPhase(engine, {
+          stackName,
+          counts,
+          completedOperations,
+          host: currentState,
+          carried,
+          resources: newResources,
+          releasedSomething,
+        });
+      // go-to-k/cdkd#6398: a nested child's cleanup waits for the ROOT
+      // deploy's success; the root runs its own first, then its children's.
+      const queued = queueNestedCleanup(engine, stackName, currentState, (stillOwed, counts) =>
+        cleanup(carriedSuperseded.filter(stillOwed), counts)
+      );
+      if (queued) {
+        engine.logger.debug(
+          safeMsg`Cleanup of ${stackName} waits for the root stack's deploy to succeed`
+        );
+      } else {
+        await cleanup(carriedSuperseded, actualCounts);
+      }
+      if (nestedCleanups !== undefined) {
+        const { updatePartial } = await nestedCleanups.runAll(
+          { interrupted: () => engine.interrupted },
+          engine.logger
+        );
+        actualCounts.updatePartial += updatePartial;
+        actualCounts.nestedUpdatePartial += updatePartial;
+      }
     }
   } catch (error) {
     // go-to-k/cdkd#5380: again here, for a mark a provider made after its
@@ -472,6 +502,9 @@ export async function executeDeployment(
       engine.replacementDeps(),
       engine.interruptCause === 'user' ? 'interrupted' : 'failed'
     );
+    // go-to-k/cdkd#6398: the children's queued cleanups never run; the
+    // rollback below reverts each child from its journal, re-adopting them.
+    nestedCleanups?.abandon(engine.interruptCause === 'user' ? 'interrupted' : 'failed');
     // `initialDeploy` (issue #1183): the failed deploy was the FIRST deploy
     // (no prior state loaded). Captured BEFORE the partial-state save below,
     // which reassigns `currentEtag`. Recorded on the journal segment so

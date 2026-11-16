@@ -1,4 +1,5 @@
 import { retryCarriedSupersededResources } from '../superseded-retry.js';
+import { queueNestedCleanup } from '../nested-cleanup.js';
 import { supersededResourcesOf } from '../../superseded-resources.js';
 import { redactOutputs } from '../masking.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -89,15 +90,26 @@ export async function deployWithoutChanges(
   engine.logger.info('No changes detected. Stack is up to date.');
   startProvenanceCapture();
   // go-to-k/cdkd#5111: an earlier deploy's superseded resources are
-  // retried by every deploy, an unchanged one included.
-  const supersededChanged = engine.options.dryRun
-    ? false
-    : await retryCarriedSupersededResources(
+  // retried by every deploy, an unchanged one included. A nested child's
+  // waits for the ROOT deploy's success, which persists the drop itself
+  // (go-to-k/cdkd#6398).
+  const supersededChanged =
+    engine.options.dryRun ||
+    queueNestedCleanup(engine, stackName, currentState, async (stillOwed) => {
+      await retryCarriedSupersededResources(
         engine,
         currentState,
-        supersededResourcesOf(currentState),
+        supersededResourcesOf(currentState).filter(stillOwed),
         currentState.resources
       );
+    })
+      ? false
+      : await retryCarriedSupersededResources(
+          engine,
+          currentState,
+          supersededResourcesOf(currentState),
+          currentState.resources
+        );
 
   // The diff only inspects Resources, so an Outputs-only change (a new
   // Export added because a downstream stack now references this one — its
