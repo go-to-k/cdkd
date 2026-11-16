@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # End-to-end real-AWS validation that `cdkd rollback` re-creates an EXPLICITLY
-# named IAM Role under the name its deploy sent (issue #4018), and that the
-# rewritten-name holder proof (issue #4010) refuses a squatter on that name.
+# named IAM Role under the name its deploy sent (issue #4018), or under the
+# name it had when the prefix flag flipped (issue #4024).
 #
 # The IAM Role provider sends `generateResourceNameWithFallback(RoleName)`,
 # which prepends the stack name unless the deploy's user-supplied-name prefix
@@ -11,22 +11,32 @@
 # with no flag in scope, so it re-created `${STACK}-cdkd-integ-rbrw-a`
 # although the deploy had created `cdkd-integ-rbrw-a`.
 #
+# go-to-k/cdkd#6374: a create-first replacement deletes the OLD role only in
+# the deploy's cleanup phase, after every other change succeeded, so a failed
+# deploy leaves it alive and recorded in state (`supersededResources`), and
+# the rollback re-adopts it rather than re-creating it. The re-create under
+# test runs only when the old role is GONE, so after each failed --no-rollback
+# deploy below the old role is first asserted alive and then deleted by hand
+# (out of band): the rollback reads it as gone and must re-create it under the
+# right name. The #4010 squatter phase this fixture used to carry is gone:
+# with the old role never deleted by cdkd, a role under its name is what the
+# rollback reads as the old one, so no re-create collides with it.
+#
 # What this asserts:
 #   PHASE 1 (baseline, default flag = prefix skipped):
 #     1. Deploy v1: role `cdkd-integ-rbrw-a` exists under EXACTLY that name.
 #   PHASE 2 (a failed replacing deploy):
-#     2. Deploy ROLE_SUFFIX=b + INJECT_FAIL --no-rollback: `-b` created, `-a`
-#        deleted, deploy fails; the journal segment records skipPrefix=true.
-#   PHASE 3 (the re-create collides with a squatter -> REFUSED, #4010):
-#     3. Create a squatter role OUT OF BAND under `cdkd-integ-rbrw-a` (the name
-#        the re-create sends). `cdkd rollback` must fail, name that exact sent
-#        name in its refusal, delete NOTHING (the new role `-b` and the
-#        squatter survive), keep the journal, and never create the prefixed
-#        name.
+#     2. Deploy ROLE_SUFFIX=b + INJECT_FAIL --no-rollback: `-b` created, the
+#        deploy fails before its cleanup phase, so `-a` still exists (same
+#        RoleId), state keeps it as NamedRole's superseded resource, the log
+#        says it was not deleted, and the journal segment records
+#        skipPrefix=true. Then `-a` is deleted by hand.
 #   PHASE 4 (the re-create succeeds under the deploy's name):
-#     4. Delete the squatter, re-run `cdkd rollback`: exit 0, `cdkd-integ-rbrw-a`
-#        is the stack's role again (template description, state physical id),
-#        `-b` is deleted, the prefixed name was never created, journal gone.
+#     4. `cdkd rollback`: it reads `-a` as gone and re-creates it; exit 0,
+#        `cdkd-integ-rbrw-a` is the stack's role again (template description,
+#        state physical id, a NEW RoleId), state no longer lists it as
+#        superseded, `-b` is deleted, the prefixed name was never created,
+#        journal gone.
 #   PHASE 4b (an in-place UPDATE revert stays in place):
 #     4b. Change only the role's Description + INJECT_FAIL --no-rollback, then
 #        `cdkd rollback`: `cdkd-integ-rbrw-a` keeps its name and gets its old
@@ -36,23 +46,27 @@
 #     5. Destroy clean.
 #   PHASE 5 (negative control, deploys with --prefix-user-supplied-names):
 #     6. Fresh deploy with the flag: role `${STACK}-cdkd-integ-rbrw-a`.
-#     7. Failing replacing deploy with the flag: the segment records
-#        skipPrefix=false.
+#     7. Failing replacing deploy with the flag: `${STACK}-cdkd-integ-rbrw-a`
+#        survives it; the segment records skipPrefix=false. Then it is deleted
+#        by hand.
 #     8. `cdkd rollback` WITHOUT the flag and without the env: the recorded
 #        flag wins, so the role comes back as `${STACK}-cdkd-integ-rbrw-a` and
 #        the bare `cdkd-integ-rbrw-a` is never created.
 #   PHASE 6 (the flag FLIPPED between the creating and the failed deploy, #4024):
 #     8b. The role `${STACK}-cdkd-integ-rbrw-a` was created with the prefix
 #        KEPT (step 8). A failing replacing deploy WITHOUT the flag
-#        (--no-rollback) creates the bare `cdkd-integ-rbrw-b` and deletes the
-#        prefixed `-a`; the segment records skipPrefix=true.
+#        (--no-rollback) creates the bare `cdkd-integ-rbrw-b`; the prefixed
+#        `-a` survives it; the segment records skipPrefix=true. Then the
+#        prefixed `-a` is deleted by hand.
 #     8c. `cdkd rollback`: the old role comes back as EXACTLY its original
 #        `${STACK}-cdkd-integ-rbrw-a` (before the fix: the bare
 #        `cdkd-integ-rbrw-a`, a name it never had), `-b` is deleted, journal
 #        gone, and the log names the setting it chose.
-#     8d. The same failing deploy WITH the automatic rollback: the in-process
-#        rollback restores `${STACK}-cdkd-integ-rbrw-a` the same way and leaves
-#        only the failed CreateQueue in the journal (#1208).
+#     8d. The same failing deploy WITH the automatic rollback: nothing deletes
+#        the prefixed `-a` this time, so the in-process rollback RE-ADOPTS it
+#        (same RoleId, no re-create, so no setting line), deletes `-b`, never
+#        creates the bare `-a`, and leaves only the failed CreateQueue in the
+#        journal (#1208).
 #     9. Destroy clean; every role name the run could mint is gone.
 #
 # BSD/macOS-portable. Integ-exit-code-capture pattern (bash ...; rc=$?) so a
@@ -101,8 +115,6 @@ PREFIXED_A="${STACK}-${ROLE_A}"
 PREFIXED_B="${STACK}-${ROLE_B}"
 FAILING_QUEUE_NAME="${STACK}-failing-queue"
 ROLE_DESCRIPTION="cdkd-integ rollback-explicit-name-rewrite subject"
-SQUATTER_DESCRIPTION="cdkd-integ rollback-explicit-name-rewrite squatter"
-TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-explicit-name-rewrite"
@@ -122,6 +134,66 @@ echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET} logs
 # The role's description, or a hard failure when the role cannot be read.
 role_description() { # usage: role_description <role-name>
   aws iam get-role --role-name "$1" --query 'Role.Description' --output text
+}
+
+# The role's RoleId (IAM's unique id): a re-created role gets a new one.
+role_id() { # usage: role_id <role-name>
+  aws iam get-role --role-name "$1" --query 'Role.RoleId' --output text
+}
+
+# How many superseded resources state records under physical id "$1".
+state_superseded_count() { # usage: state_superseded_count <physical-id>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg id "$1" '[.supersededResources // [] | .[] | select(.state.physicalId == $id)] | length'
+}
+
+# go-to-k/cdkd#6374: after a failed deploy the replaced role is alive, the
+# same role as before, kept in state as superseded, and the deploy says so.
+# AWS and state before the wording.
+assert_old_role_kept() { # usage: assert_old_role_kept <role-name> <expected-role-id> <deploy-log>
+  local name="$1" want_id="$2" log="$3" got_id n
+  got_id="$(role_id "${name}")" || { echo "[verify] FAIL: old ${name} is gone after the failed deploy -- a failed deploy must never send the replaced role's delete (go-to-k/cdkd#6374)"; exit 1; }
+  if [ "${got_id}" != "${want_id}" ]; then
+    echo "[verify] FAIL: old ${name} has RoleId ${got_id} after the failed deploy (expected ${want_id}: the same role, untouched)"
+    exit 1
+  fi
+  n="$(state_superseded_count "${name}")"
+  if [ "${n}" != "1" ]; then
+    echo "[verify] FAIL: state records ${n} superseded resources named ${name} after the failed deploy (expected 1: kept for a later run to delete)"
+    exit 1
+  fi
+  if ! grep -qF "Old NamedRole (${name}) was not deleted: the deploy failed first" <<<"$(sed 's/\x1b\[[0-9;]*m//g' "${log}")"; then
+    echo "[verify] FAIL: the failed deploy did not say old ${name} was not deleted (output above)"
+    exit 1
+  fi
+}
+
+# Delete the replaced role OUT OF BAND, so the rollback finds it gone and must
+# re-create it: the arm this fixture is about.
+delete_old_role_out_of_band() { # usage: delete_old_role_out_of_band <role-name>
+  aws iam delete-role --role-name "$1"
+  wait_role_gone "old $1 still readable ~20s after its delete by hand" "$1"
+}
+
+# The rollback read the old role as gone (go-to-k/cdkd#2631) before the
+# re-create, and state no longer lists it as superseded (the next deploy would
+# delete the re-created role).
+assert_recreated_from_gone() { # usage: assert_recreated_from_gone <role-name> <old-role-id> <rollback-log>
+  local name="$1" old_id="$2" log="$3" got_id n
+  got_id="$(role_id "${name}")"
+  if [ "${got_id}" = "${old_id}" ]; then
+    echo "[verify] FAIL: ${name} still has the deleted role's RoleId ${old_id}; it was not re-created"
+    exit 1
+  fi
+  n="$(state_superseded_count "${name}")"
+  if [ "${n}" != "0" ]; then
+    echo "[verify] FAIL: state still records ${name} as superseded after the rollback re-created it -- the next deploy would delete the stack's live role"
+    exit 1
+  fi
+  if ! grep -qF "Rollback: the old resource of NamedRole (${name}) is gone — re-creating it" <<<"$(sed 's/\x1b\[[0-9;]*m//g' "${log}")"; then
+    echo "[verify] FAIL: the rollback did not say it read old ${name} as gone before re-creating it (output above)"
+    exit 1
+  fi
 }
 
 # The physical id the stack's state records for NamedRole.
@@ -206,8 +278,7 @@ if [ ! -d node_modules ]; then
 fi
 
 # A leftover (an interrupted earlier run, or a CONCURRENT run of this fixture)
-# would turn the squatter phase into a false collision and the gone-probes
-# below into false leaks. Checked BEFORE the cleanup trap is armed, so a
+# would turn the gone-probes below into false leaks. Checked BEFORE the cleanup trap is armed, so a
 # refusal here never sweeps the roles it just refused to touch.
 for name in "${ROLE_A}" "${ROLE_B}" "${PREFIXED_A}" "${PREFIXED_B}"; do
   if ! gone_probe aws iam get-role --role-name "${name}"; then
@@ -240,6 +311,7 @@ if [ "$(role_description "${ROLE_A}")" != "${ROLE_DESCRIPTION}" ]; then
 fi
 assert_gone "v1 created the PREFIXED ${PREFIXED_A} although the default skips the prefix" \
   aws iam get-role --role-name "${PREFIXED_A}"
+ROLE_A_ID_V1="$(role_id "${ROLE_A}")"
 echo "[verify] step 1 ok: ${ROLE_A} deployed under exactly its declared name"
 
 # ---------------------------------------------------------------------------
@@ -260,80 +332,26 @@ if [ "$(role_description "${ROLE_B}")" != "${ROLE_DESCRIPTION}" ]; then
   echo "[verify] FAIL: ${ROLE_B} missing — the replacement did not land"
   exit 1
 fi
-wait_role_gone "old ${ROLE_A} still exists — the replacement did not delete it" "${ROLE_A}"
+assert_old_role_kept "${ROLE_A}" "${ROLE_A_ID_V1}" "${LOG_DIR}/replace.log"
 J_SKIP="$(journal_skip_prefix)"
 if [ "${J_SKIP}" != "true" ]; then
   echo "[verify] FAIL: the journal segment records skipPrefix=${J_SKIP} (expected true: the deploy skipped the prefix)"
   exit 1
 fi
-echo "[verify] step 2 ok: ${ROLE_B} created, ${ROLE_A} deleted, journal records skipPrefix=true"
-
-# ---------------------------------------------------------------------------
-# PHASE 3: a squatter on the name the re-create sends -> refused (#4010)
-# ---------------------------------------------------------------------------
-echo "[verify] step 3: create a squatter role ${ROLE_A} out of band, then cdkd rollback (expect REFUSAL)"
-aws iam create-role --role-name "${ROLE_A}" --assume-role-policy-document "${TRUST}" \
-  --description "${SQUATTER_DESCRIPTION}" >/dev/null
-set +e
-${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/refused.log" 2>&1
-REFUSED_RC=$?
-set -e
-sed 's/^/  /' "${LOG_DIR}/refused.log" || true
-if [ "${REFUSED_RC}" -eq 0 ]; then
-  echo "[verify] FAIL: cdkd rollback SUCCEEDED over a squatter on ${ROLE_A} — the re-create did not send ${ROLE_A}"
-  exit 1
-fi
-# The refusal names the collision and points at a `Collision diagnosis:` line
-# of its own below it (go-to-k/cdkd#4214), so the parsed marker naming the SENT
-# name lives on THAT line. Its sentinel is the diagnosis line's own opening,
-# independent of the marker. Sentinel without marker = the wording drifted or a
-# different name was sent — never read as "no refusal".
-SENTINEL="Cannot reverse the replacement of NamedRole"
-DIAG_SENTINEL="Collision diagnosis: the re-create asked for RoleName"
-SENT_MARKER="which its provider sends as \"${ROLE_A}\""
-if ! grep -qF "${SENTINEL}" "${LOG_DIR}/refused.log"; then
-  echo "[verify] FAIL: rollback exited ${REFUSED_RC} without the #4010 holder refusal (output above)"
-  exit 1
-fi
-if ! grep -qF "${DIAG_SENTINEL}" "${LOG_DIR}/refused.log"; then
-  echo "[verify] FAIL: the refusal is present but its collision diagnosis line is missing (wording drifted):"
-  grep -F "Collision diagnosis" "${LOG_DIR}/refused.log" | sed 's/^/  /' || true
-  exit 1
-fi
-if ! grep -F "${DIAG_SENTINEL}" "${LOG_DIR}/refused.log" | grep -qF "${SENT_MARKER}"; then
-  echo "[verify] FAIL: the collision diagnosis does not say the re-create sent ${ROLE_A} (wording drifted, or a different name was sent):"
-  grep -F "${DIAG_SENTINEL}" "${LOG_DIR}/refused.log" | sed 's/^/  /'
-  exit 1
-fi
-if [ "$(role_description "${ROLE_A}")" != "${SQUATTER_DESCRIPTION}" ]; then
-  echo "[verify] FAIL: the squatter ${ROLE_A} was replaced or deleted by the refused rollback"
-  exit 1
-fi
-if [ "$(role_description "${ROLE_B}")" != "${ROLE_DESCRIPTION}" ]; then
-  echo "[verify] FAIL: the refused rollback deleted the live new role ${ROLE_B}"
-  exit 1
-fi
-assert_gone "the refused rollback created the PREFIXED ${PREFIXED_A}" \
-  aws iam get-role --role-name "${PREFIXED_A}"
-if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
-  echo "[verify] FAIL: the refused rollback dropped the journal"
-  exit 1
-fi
-echo "[verify] step 3 ok: refused naming ${ROLE_A}, nothing deleted, journal kept"
+delete_old_role_out_of_band "${ROLE_A}"
+echo "[verify] step 2 ok: ${ROLE_B} created, ${ROLE_A} kept by the failed deploy then deleted by hand, journal records skipPrefix=true"
 
 # ---------------------------------------------------------------------------
 # PHASE 4: the re-create succeeds under the deploy's name
 # ---------------------------------------------------------------------------
-echo "[verify] step 4: delete the squatter, re-run cdkd rollback (expect exit 0)"
-aws iam delete-role --role-name "${ROLE_A}"
-wait_role_gone "squatter ${ROLE_A} still readable ~20s after delete-role" "${ROLE_A}"
+echo "[verify] step 4: cdkd rollback (the old role is gone: expect a re-create, exit 0)"
 set +e
 ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${LOG_DIR}/rollback.log" 2>&1
 RB_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/rollback.log" || true
 if [ "${RB_RC}" -ne 0 ]; then
-  echo "[verify] FAIL: cdkd rollback exited ${RB_RC} after the squatter was removed (output above)"
+  echo "[verify] FAIL: cdkd rollback exited ${RB_RC} with the old role gone (output above)"
   exit 1
 fi
 if [ "$(role_description "${ROLE_A}")" != "${ROLE_DESCRIPTION}" ]; then
@@ -345,6 +363,7 @@ if [ "${RB_ID}" != "${ROLE_A}" ]; then
   echo "[verify] FAIL: state records NamedRole as ${RB_ID} after the rollback (expected ${ROLE_A})"
   exit 1
 fi
+assert_recreated_from_gone "${ROLE_A}" "${ROLE_A_ID_V1}" "${LOG_DIR}/rollback.log"
 assert_gone "the rollback re-created the old role under the PREFIXED ${PREFIXED_A}" \
   aws iam get-role --role-name "${PREFIXED_A}"
 wait_role_gone "new ${ROLE_B} still exists — the reverse-replacement did not delete it" "${ROLE_B}"
@@ -414,6 +433,7 @@ if [ "$(role_description "${PREFIXED_A}")" != "${ROLE_DESCRIPTION}" ]; then
   exit 1
 fi
 assert_gone "the prefix-kept deploy created the bare ${ROLE_A}" aws iam get-role --role-name "${ROLE_A}"
+PREFIXED_A_ID_6="$(role_id "${PREFIXED_A}")"
 echo "[verify] step 6 ok"
 
 echo "[verify] step 7: failing replacing deploy with --prefix-user-supplied-names --no-rollback"
@@ -432,13 +452,14 @@ if [ "$(role_description "${PREFIXED_B}")" != "${ROLE_DESCRIPTION}" ]; then
   echo "[verify] FAIL: ${PREFIXED_B} missing — the prefix-kept replacement did not land"
   exit 1
 fi
-wait_role_gone "old ${PREFIXED_A} still exists — the prefix-kept replacement did not delete it" "${PREFIXED_A}"
+assert_old_role_kept "${PREFIXED_A}" "${PREFIXED_A_ID_6}" "${LOG_DIR}/replace-prefixed.log"
 J_SKIP2="$(journal_skip_prefix)"
 if [ "${J_SKIP2}" != "false" ]; then
   echo "[verify] FAIL: the journal segment records skipPrefix=${J_SKIP2} (expected false: the deploy kept the prefix)"
   exit 1
 fi
-echo "[verify] step 7 ok: journal records skipPrefix=false"
+delete_old_role_out_of_band "${PREFIXED_A}"
+echo "[verify] step 7 ok: ${PREFIXED_A} kept by the failed deploy then deleted by hand, journal records skipPrefix=false"
 
 echo "[verify] step 8: cdkd rollback WITHOUT the flag (the recorded flag must win)"
 set +e
@@ -460,6 +481,7 @@ if [ "${RB2_ID}" != "${PREFIXED_A}" ]; then
   echo "[verify] FAIL: state records NamedRole as ${RB2_ID} (expected ${PREFIXED_A})"
   exit 1
 fi
+assert_recreated_from_gone "${PREFIXED_A}" "${PREFIXED_A_ID_6}" "${LOG_DIR}/rollback-prefixed.log"
 assert_gone "the prefix-kept rollback created the bare ${ROLE_A}" aws iam get-role --role-name "${ROLE_A}"
 wait_role_gone "new ${PREFIXED_B} still exists after the prefix-kept rollback" "${PREFIXED_B}"
 assert_gone "rollback journal still present after the prefix-kept rollback" \
@@ -516,18 +538,20 @@ replace_without_flag() { # usage: replace_without_flag <log> [extra deploy args.
 }
 
 echo "[verify] step 8b: failing replacing deploy WITHOUT --prefix-user-supplied-names --no-rollback"
+PREFIXED_A_ID_8="$(role_id "${PREFIXED_A}")"
 replace_without_flag "${LOG_DIR}/replace-flipped.log" --no-rollback
 if [ "$(role_description "${ROLE_B}")" != "${ROLE_DESCRIPTION}" ]; then
   echo "[verify] FAIL: ${ROLE_B} missing — the flag-dropped replacement did not land"
   exit 1
 fi
-wait_role_gone "old ${PREFIXED_A} still exists — the flag-dropped replacement did not delete it" "${PREFIXED_A}"
+assert_old_role_kept "${PREFIXED_A}" "${PREFIXED_A_ID_8}" "${LOG_DIR}/replace-flipped.log"
 J_SKIP3="$(journal_skip_prefix)"
 if [ "${J_SKIP3}" != "true" ]; then
   echo "[verify] FAIL: the journal segment records skipPrefix=${J_SKIP3} (expected true: the deploy dropped the flag)"
   exit 1
 fi
-echo "[verify] step 8b ok: ${ROLE_B} created, ${PREFIXED_A} deleted, journal records skipPrefix=true"
+delete_old_role_out_of_band "${PREFIXED_A}"
+echo "[verify] step 8b ok: ${ROLE_B} created, ${PREFIXED_A} kept by the failed deploy then deleted by hand, journal records skipPrefix=true"
 
 echo "[verify] step 8c: cdkd rollback (the old role must come back as ${PREFIXED_A})"
 set +e
@@ -549,6 +573,7 @@ if [ "${RB3_ID}" != "${PREFIXED_A}" ]; then
   echo "[verify] FAIL: state records NamedRole as ${RB3_ID} after the flag-flipped rollback (expected ${PREFIXED_A})"
   exit 1
 fi
+assert_recreated_from_gone "${PREFIXED_A}" "${PREFIXED_A_ID_8}" "${LOG_DIR}/rollback-flipped.log"
 assert_gone "the flag-flipped rollback re-created the old role under the bare ${ROLE_A}, a name it never had" \
   aws iam get-role --role-name "${ROLE_A}"
 wait_role_gone "new ${ROLE_B} still exists after the flag-flipped rollback" "${ROLE_B}"
@@ -559,9 +584,20 @@ assert_flip_logged "${LOG_DIR}/rollback-flipped.log"
 echo "[verify] step 8c ok: ${PREFIXED_A} restored under its original name, ${ROLE_B} deleted, journal gone"
 
 echo "[verify] step 8d: the same flag-dropped failing deploy WITH the automatic rollback"
+PREFIXED_A_ID_8D="$(role_id "${PREFIXED_A}")"
 replace_without_flag "${LOG_DIR}/replace-flipped-auto.log"
 if [ "$(role_description "${PREFIXED_A}")" != "${ROLE_DESCRIPTION}" ]; then
-  echo "[verify] FAIL: the automatic rollback did not re-create ${PREFIXED_A} under its original name"
+  echo "[verify] FAIL: the automatic rollback did not restore ${PREFIXED_A} under its original name"
+  exit 1
+fi
+# go-to-k/cdkd#6374: the failed deploy never sent the old role's delete, so
+# the rollback takes back the SAME role. AWS and state before the wording.
+if [ "$(role_id "${PREFIXED_A}")" != "${PREFIXED_A_ID_8D}" ]; then
+  echo "[verify] FAIL: ${PREFIXED_A} has a new RoleId after the automatic rollback: it was deleted and re-created, not re-adopted (go-to-k/cdkd#6374)"
+  exit 1
+fi
+if [ "$(state_superseded_count "${PREFIXED_A}")" != "0" ]; then
+  echo "[verify] FAIL: state still records ${PREFIXED_A} as superseded after the automatic rollback re-adopted it -- the next deploy would delete the stack's live role"
   exit 1
 fi
 RB4_ID="$(state_role_id)"
@@ -580,8 +616,18 @@ if [ "${AUTO_SHAPE}" != "1 auto-rollback-clean 0 FailingQueue" ]; then
   echo "[verify] FAIL: journal after the automatic rollback is '${AUTO_SHAPE}' (expected '1 auto-rollback-clean 0 FailingQueue': the rollback did not complete cleanly)"
   exit 1
 fi
-assert_flip_logged "${LOG_DIR}/replace-flipped-auto.log"
-echo "[verify] step 8d ok: the automatic rollback restored ${PREFIXED_A}, ${ROLE_B} deleted, failed-only journal left for destroy"
+# The re-adopt line is the positive marker; the setting line belongs to a
+# re-create, which must not have run.
+if ! grep -qF "Rollback: the old resource of NamedRole (${PREFIXED_A}) was not deleted yet — re-adopting it" \
+  <<<"$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/replace-flipped-auto.log")"; then
+  echo "[verify] FAIL: the automatic rollback did not say it re-adopted ${PREFIXED_A} (output above)"
+  exit 1
+fi
+if grep -qF "${FLIP_SENTINEL}" "${LOG_DIR}/replace-flipped-auto.log"; then
+  echo "[verify] FAIL: the automatic rollback re-created NamedRole although its old role was never deleted (output above)"
+  exit 1
+fi
+echo "[verify] step 8d ok: the automatic rollback re-adopted ${PREFIXED_A}, ${ROLE_B} deleted, failed-only journal left for destroy"
 
 echo "[verify] step 9: cdkd destroy ${STACK} --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

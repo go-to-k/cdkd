@@ -14,6 +14,13 @@ import type { Construct } from 'constructs';
  * - `Holder` is a role `Target` is attached to, so the old policy's delete
  *   detaches it before `DeletePolicy` (go-to-k/cdkd#4946).
  * - `BREAK=true` adds `Breaker`, a managed policy that depends on `Target`.
+ * - `Target`'s `Description` is the NoEcho parameter `TargetNote`, so its
+ *   state record holds a NoEcho value (`noEchoLeaves`). That keeps the old
+ *   policy's delete INLINE, right after the new one is created: a replacement
+ *   otherwise defers that delete to the deploy's cleanup phase, which a failed
+ *   deploy never reaches (go-to-k/cdkd#6374), and there would be no refused
+ *   delete for the rollback to meet. A record holding a NoEcho value cannot be
+ *   left for a later run, whose delete may need the value only this run holds.
  *
  * verify.sh deploys `TARGET_SUFFIX=b BREAK=true` as a role that may not
  * delete `cdkd-rdfr-target-a` nor create `cdkd-rdfr-breaker`: the old
@@ -57,8 +64,18 @@ export class ReplacedDeleteFailedRollbackStack extends cdk.Stack {
       },
     });
 
+    // A value no name, ARN or id of this run contains, so its mask never
+    // hides what verify.sh greps for.
+    const note = new cdk.CfnParameter(this, 'TargetNote', {
+      type: 'String',
+      noEcho: true,
+      default: 'RdfrNoEchoTargetNote7c1e',
+    });
+    note.overrideLogicalId('TargetNote');
+
     const target = new iam.CfnManagedPolicy(this, 'Target', {
       managedPolicyName: `cdkd-rdfr-target-${process.env.TARGET_SUFFIX ?? 'a'}`,
+      description: note.valueAsString,
       policyDocument: document,
       roles: [holder.ref],
     });

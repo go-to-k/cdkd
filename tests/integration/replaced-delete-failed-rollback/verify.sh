@@ -11,26 +11,40 @@
 # re-adopted it attached to nothing and deleted the working new one). The
 # re-adopt arm is step 5's, a certificate whose refused delete changed nothing.
 #
+# go-to-k/cdkd#6374: a create-first replacement now deletes the old resource in
+# the deploy's cleanup phase, which a failed deploy never reaches, so the
+# rollback re-adopts it whole and no delete is ever refused. The delete still
+# runs inline, right after the create, when the old record holds a NoEcho value
+# (a later run could not send it). `Target`'s `Description` is the NoEcho
+# parameter `TargetNote`, which puts step 2's replacement on that inline route.
+# The same NoEcho value is why step 2's `cdkd rollback`, once the old policy is
+# gone, refuses to re-create it: its baseline holds that value only as the mask.
+#
 # Phases:
 #   1. Baseline deploy: `Target` = managed policy `cdkd-rdfr-target-a`,
-#      attached to the role `Holder` (`cdkd-rdfr-holder`).
+#      attached to the role `Holder` (`cdkd-rdfr-holder`). Asserted: state's
+#      `Target` names `Description` in `noEchoLeaves` (the inline route's premise).
 #   2. A role is created that may create, read and delete this run's policies
 #      (`cdkd-rdfr-*`) and use the state bucket, but may NOT delete
 #      `cdkd-rdfr-target-a` nor create `cdkd-rdfr-breaker`. As that role,
 #      `TARGET_SUFFIX=b BREAK=true` deploys with the automatic rollback:
-#      `Target` is replaced by `cdkd-rdfr-target-b`, the old policy's delete is
-#      refused after its detach from `Holder` (deferred to the post-deploy
-#      retry, go-to-k/cdkd#4900), and `Breaker`'s create is refused, failing
-#      the deploy before that retry. Asserted: the deploy failed; it deferred
-#      the refused delete; the rollback did NOT re-adopt the old policy but
-#      refused `Target` (#4946), sending nothing; both target policies exist,
-#      the old one attached to nothing and the new one to `Holder`;
-#      `cdkd-rdfr-breaker` does not; state's `Target` names the new policy and
-#      the journal is kept. Then, as the refusal advises, the old policy is
-#      deleted by hand and `cdkd rollback` re-runs: it re-creates the old
-#      policy on `Holder` and deletes the new one.
-#   3. `cdkd destroy`: every policy, `Holder`, the state file, the journal and
-#      the role are gone.
+#      `Target` is replaced by `cdkd-rdfr-target-b`, the old policy's INLINE
+#      delete (NoEcho record, not the #6374 cleanup phase) is refused after its
+#      detach from `Holder` (left for the post-deploy retry, go-to-k/cdkd#4900),
+#      and `Breaker`'s create is refused, failing the deploy before that retry.
+#      Asserted, AWS first: the deploy failed; the old policy exists, attached
+#      to nothing; then that the delete ran inline and was refused, not
+#      deferred; the rollback did NOT re-adopt the old policy but refused
+#      `Target` (#4946), sending nothing; the new policy stays on `Holder`;
+#      `cdkd-rdfr-breaker` does not exist; state's `Target` names the new
+#      policy and the journal is kept. Then, as the refusal advises, the old
+#      policy is deleted by hand and `cdkd rollback` re-runs: it reads AWS,
+#      finds the old policy gone (#2631) and, since its baseline holds the
+#      NoEcho `Description` only as the mask, refuses to re-create it, sending
+#      nothing: the old policy stays gone, the new one stays on `Holder`,
+#      state still names it and the journal is kept.
+#   3. `cdkd destroy` (it sweeps the kept journal with the state): every
+#      policy, `Holder`, the state file, the journal and the role are gone.
 #   4. go-to-k/cdkd#4911, the provider's own replacement: baseline deploy with
 #      `Cert`, a DNS-validated ACM certificate (`CERT_MODE=dns`).
 #   5. As a role that may not delete that certificate nor create Breaker,
@@ -373,6 +387,14 @@ if [ "${STATE_1_ID}" != "${TARGET_A}" ]; then
   echo "[verify] FAIL: state's Target is '${STATE_1_ID}' after step 1 (expected ${TARGET_A})" >&2
   exit 1
 fi
+# The premise of step 2's inline delete (go-to-k/cdkd#6374): Target's record
+# holds a NoEcho value, so its replacement cannot defer the old policy's delete
+# to the cleanup phase.
+STATE_1_LEAVES="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -c '[.resources.Target.noEchoLeaves // [] | .[] | select(. == ["Description"])] | length')"
+if [ "${STATE_1_LEAVES}" != "1" ]; then
+  echo "[verify] FAIL: precondition -- state's Target does not name Description in noEchoLeaves after step 1, so step 2's delete of the old policy would be deferred to the cleanup phase rather than run inline (go-to-k/cdkd#6374)" >&2
+  exit 1
+fi
 # The premise of step 2: the old policy's delete has something to strip.
 if ! roles_eventually "${TARGET_A}" "${HOLDER}"; then
   echo "[verify] FAIL: ${TARGET_A} is not attached to exactly ${HOLDER} after step 1 (attached: '${ROLES_SEEN}')" >&2
@@ -449,11 +471,34 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   echo "[verify] FAIL: the deploy as ${DENY_ROLE} unexpectedly SUCCEEDED (Breaker's create must be refused)" >&2
   exit 1
 fi
+# AWS first, so a fixture problem (the deny role's Allow not yet bound, say)
+# never reads as a regression: the old policy survived its refused delete, and
+# that delete had already detached it from Holder. Under the #6374 cleanup-phase
+# deferral the delete is never sent: the old policy would still be on Holder.
+if ! present_eventually aws iam get-policy --policy-arn "${TARGET_A}"; then
+  echo "[verify] FAIL: ${TARGET_A} is gone after step 2 (its delete was refused)" >&2
+  exit 1
+fi
+if ! roles_eventually "${TARGET_A}" ""; then
+  echo "[verify] FAIL: precondition -- ${TARGET_A} is still attached to '${ROLES_SEEN}' after step 2: its delete did not run inline and strip it before the refusal (a cleanup-phase deferral, go-to-k/cdkd#6374, never sends it), so the step proves nothing (output above)" >&2
+  exit 1
+fi
 DEPLOY_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy.log" | tr '\n' ' ' | tr -s ' ')"
-# The premise: the replacement ran, and its delete of the old policy was
+# The route: the NoEcho record keeps the delete inline. The deferral's own line
+# names the wrong route outright.
+if grep -qF "Old Target (${TARGET_A}) is deleted after the rest of the deploy succeeds" <<<"${DEPLOY_FLAT}"; then
+  echo "[verify] FAIL: precondition -- the deploy deferred the old Target's delete to the cleanup phase (go-to-k/cdkd#6374): its NoEcho Description did not keep the delete inline, so nothing was refused (output above)" >&2
+  exit 1
+fi
+# The premise: the replacement ran, and its inline delete of the old policy was
 # refused and left for the post-deploy retry the failure then pre-empted.
+# Sentinel: the inline delete's own announcement, on the line before.
 if ! grep -qF "Could not delete old Target (${TARGET_A}) yet" <<<"${DEPLOY_FLAT}"; then
-  echo "[verify] FAIL: precondition -- the deploy did not report the refused delete of the old Target (${TARGET_A}); the replacement or the deny did not happen as designed (output above)" >&2
+  if grep -qF "Deleting old Target (${TARGET_A})..." <<<"${DEPLOY_FLAT}"; then
+    echo "[verify] FAIL: the deploy announced the old Target's inline delete but not its refusal in the expected words -- the 'Could not delete old ... yet' wording drifted (output above)" >&2
+  else
+    echo "[verify] FAIL: precondition -- the deploy did not report the refused delete of the old Target (${TARGET_A}); the replacement or the deny did not happen as designed (output above)" >&2
+  fi
   exit 1
 fi
 # The CLI names the AWS failure by its class (AccessDenied); AWS's own
@@ -463,23 +508,17 @@ if ! grep -qF "Failed to create IAM managed policy Breaker: AccessDenied" <<<"${
   echo "[verify] FAIL: precondition -- the deploy did not fail on the role's explicit deny of Breaker's create (output above)" >&2
   exit 1
 fi
-# The premise first, so a fixture problem (the deny role's Allow not yet bound,
-# say) never reads as a #4946 regression: the old policy survived its refused
-# delete, and that delete had already detached it from Holder.
-if ! present_eventually aws iam get-policy --policy-arn "${TARGET_A}"; then
-  echo "[verify] FAIL: ${TARGET_A} is gone after step 2 (its delete was refused)" >&2
-  exit 1
-fi
-if ! roles_eventually "${TARGET_A}" ""; then
-  echo "[verify] FAIL: precondition -- ${TARGET_A} is still attached to '${ROLES_SEEN}' after step 2: its delete did not strip it before the refusal, so the step proves nothing" >&2
-  exit 1
-fi
 # go-to-k/cdkd#4946: the old policy's delete detached it from Holder before
 # AWS refused DeletePolicy, so the survivor is a stripped policy and must not be
 # re-adopted. Before the fix the refusal by name read as `kept`: the rollback
 # re-adopted the detached policy and deleted the working new one.
 if grep -qF "the old resource of Target (${TARGET_A}) still exists" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: the rollback re-adopted the old Target (${TARGET_A}) although its delete had already detached it from ${HOLDER} -- go-to-k/cdkd#4946: a refused delete that stripped the resource is read as a whole survivor (output above)" >&2
+  exit 1
+fi
+# Nor as one whose delete was never sent (the #6374 deferral's re-adopt arm).
+if grep -qF "the old resource of Target (${TARGET_A}) was not deleted yet" <<<"${DEPLOY_FLAT}"; then
+  echo "[verify] FAIL: the rollback re-adopted the old Target (${TARGET_A}) as a deferred delete (go-to-k/cdkd#6374) although its inline delete ran and stripped it (output above)" >&2
   exit 1
 fi
 # Both phrases on ONE refusal line of the log, not anywhere in the output.
@@ -519,8 +558,8 @@ delete_policy_by_arn "${TARGET_A}"
 assert_gone_eventually "${TARGET_A} still exists after its delete by hand" \
   aws iam get-policy --policy-arn "${TARGET_A}"
 # IAM is eventually consistent: the rollback's own read may still see the
-# deleted policy and refuse again, so a refusal on Target is retried.
-RB_RC=1
+# deleted policy and refuse again as in the deploy, so that refusal is retried.
+RB_RC=0
 for attempt in 1 2 3; do
   set +e
   env -u TARGET_SUFFIX -u BREAK -u CERT_MODE ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force \
@@ -533,26 +572,49 @@ for attempt in 1 2 3; do
   echo "[verify] rollback attempt ${attempt} still saw ${TARGET_A}; retrying in 15s"
   sleep 15
 done
-if [ "${RB_RC}" -ne 0 ]; then
-  echo "[verify] FAIL: cdkd rollback exited ${RB_RC} after the old policy was deleted by hand (output above)" >&2
+if [ "${RB_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: cdkd rollback SUCCEEDED, but Target's baseline holds its NoEcho Description only as the mask, so re-creating the old policy must be refused (output above)" >&2
   exit 1
 fi
-if ! present_eventually aws iam get-policy --policy-arn "${TARGET_A}"; then
-  echo "[verify] FAIL: cdkd rollback did not re-create ${TARGET_A}" >&2
+# AWS and state first: the refusal sent nothing. A re-create would have put a
+# policy back under the old name.
+assert_gone "cdkd rollback re-created ${TARGET_A} although its baseline holds the NoEcho Description only as the mask" \
+  aws iam get-policy --policy-arn "${TARGET_A}"
+if ! present_eventually aws iam get-policy --policy-arn "${TARGET_B}"; then
+  echo "[verify] FAIL: the replacement's new policy ${TARGET_B} is gone after the refused cdkd rollback (the refusal must send nothing)" >&2
   exit 1
 fi
-if ! roles_eventually "${TARGET_A}" "${HOLDER}"; then
-  echo "[verify] FAIL: the re-created ${TARGET_A} is attached to '${ROLES_SEEN}' (expected ${HOLDER})" >&2
+if ! roles_eventually "${TARGET_B}" "${HOLDER}"; then
+  echo "[verify] FAIL: ${TARGET_B} is attached to '${ROLES_SEEN}' after the refused cdkd rollback (expected ${HOLDER})" >&2
   exit 1
 fi
-assert_gone_eventually "the replacement's new policy ${TARGET_B} survived cdkd rollback (its reversal must delete it)" \
-  aws iam get-policy --policy-arn "${TARGET_B}"
 STATE_2B_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Target.physicalId // "<absent>"')"
-if [ "${STATE_2B_ID}" != "${TARGET_A}" ]; then
-  echo "[verify] FAIL: state's Target is '${STATE_2B_ID}' after cdkd rollback (expected ${TARGET_A})" >&2
+if [ "${STATE_2B_ID}" != "${TARGET_B}" ]; then
+  echo "[verify] FAIL: state's Target is '${STATE_2B_ID}' after the refused cdkd rollback (expected ${TARGET_B})" >&2
   exit 1
 fi
-echo "[verify] step 2 ok: the rollback refused to re-adopt the stripped ${TARGET_A}; after its delete by hand, cdkd rollback re-created it on ${HOLDER} and deleted ${TARGET_B} (deploy rc=${DEPLOY_RC})"
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "[verify] FAIL: the refused cdkd rollback dropped the journal ${JOURNAL_KEY}" >&2
+  exit 1
+fi
+RB_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/rollback.log")"
+# go-to-k/cdkd#2631: the rollback read AWS for the old policy before acting.
+if ! grep -qF "Rollback: the old resource of Target (${TARGET_A}) is gone — re-creating it" <<<"${RB_PLAIN}"; then
+  echo "[verify] FAIL: cdkd rollback did not report reading the old Target (${TARGET_A}) as gone before the re-create (output above)" >&2
+  exit 1
+fi
+# Both phrases on ONE line; the second alone is the sentinel for a reworded
+# subject. Captured first: a `grep | grep -q` pipe can SIGPIPE under pipefail.
+RB_REFUSAL="$(grep -F "Cannot re-create Target while reversing its replacement" <<<"${RB_PLAIN}" || true)"
+if ! grep -qF "holds a NoEcho value only as the redaction mask" <<<"${RB_REFUSAL}"; then
+  if grep -qF "holds a NoEcho value only as the redaction mask" <<<"${RB_PLAIN}"; then
+    echo "[verify] FAIL: cdkd rollback refused on the NoEcho mask, but not in the 'Cannot re-create Target while reversing its replacement' words -- the refusal's wording drifted (output above)" >&2
+  else
+    echo "[verify] FAIL: cdkd rollback did not refuse to re-create Target from a baseline holding its NoEcho value only as the mask (output above)" >&2
+  fi
+  exit 1
+fi
+echo "[verify] step 2 ok: the rollback refused to re-adopt the stripped ${TARGET_A}; after its delete by hand, cdkd rollback found it gone and refused to re-create it from a masked NoEcho baseline, sending nothing (deploy rc=${DEPLOY_RC}, rollback rc=${RB_RC})"
 
 echo "[verify] step 3: destroy"
 env -u TARGET_SUFFIX -u BREAK -u CERT_MODE ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
@@ -719,4 +781,4 @@ rm -rf "${LOG_DIR}"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "replaced-delete-failed-rollback state teardown"
 
-echo "[verify] PASS -- the rollback refused to re-adopt a replaced policy its refused delete had already stripped (go-to-k/cdkd#4946) and re-created it once it was gone (go-to-k/cdkd#2631), and re-adopted a provider-replaced certificate whose refused delete changed nothing (go-to-k/cdkd#4911)"
+echo "[verify] PASS -- the rollback refused to re-adopt a replaced policy its refused inline delete had already stripped (go-to-k/cdkd#4946), read it as gone once deleted by hand (go-to-k/cdkd#2631) and refused to re-create it from a masked NoEcho baseline, and re-adopted a provider-replaced certificate whose refused delete changed nothing (go-to-k/cdkd#4911)"

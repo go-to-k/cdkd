@@ -22,9 +22,11 @@ Run it with `/run-integ rollback-command` (never invoke `cdkd deploy` /
   [#1199](https://github.com/go-to-k/cdkd/issues/1199))**: deploy with
   `REPLACE_SUFFIX=b` (+ injected create failure) under `--no-rollback
   --force-stateful-recreation` — the create-only SSM parameter Name change
-  REPLACES `ReplaceParam` (old `-replace-a` deleted, new `-replace-b`
-  created) before the deploy fails → `cdkd rollback --force` REVERSES the
-  replacement: `-replace-a` re-created, `-replace-b` deleted, journal gone,
+  REPLACES `ReplaceParam` (new `-replace-b` created) before the deploy
+  fails; the old `-replace-a` waits for the cleanup phase the failed deploy
+  never reaches, so it survives untouched and state keeps it as superseded
+  (go-to-k/cdkd#6374) → `cdkd rollback --force` REVERSES the replacement:
+  `-replace-a` re-adopted untouched, `-replace-b` deleted, journal gone,
   exit 0.
 - **Phase F (`--revert-failed`, issue
   [#1198](https://github.com/go-to-k/cdkd/issues/1198))**: deploy with

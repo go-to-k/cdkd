@@ -328,6 +328,8 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
     expect([...live]).toEqual(['rev-old']);
     expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    // Re-adopted, so no longer awaiting a delete: its superseded entry goes.
+    expect(saved.at(-1)!.supersededResources).toBeUndefined();
     expect(
       printed.info.some(
         (l) =>

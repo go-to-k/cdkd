@@ -318,7 +318,11 @@ export async function rollbackFailedDeploy(
       ...orphansAfterRollback(currentState, rollbackOrphans),
       ...stackInstanceIdCarriedFrom(currentState),
       // go-to-k/cdkd#5064: a renamed reversal's new copy left to delete.
-      ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
+      ...supersededAfterRollback(
+        currentState,
+        { supersededResources: rollbackSuperseded },
+        newResources
+      ),
       // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back,
       // and a CREATE it took back is named anew by the next create.
       ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
@@ -382,7 +386,11 @@ export async function rollbackFailedDeploy(
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
         ...stackInstanceIdCarriedFrom(currentState),
-        ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
+        ...supersededAfterRollback(
+          currentState,
+          { supersededResources: rollbackSuperseded },
+          newResources
+        ),
         ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the

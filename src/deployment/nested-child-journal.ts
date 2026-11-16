@@ -53,7 +53,7 @@ import type {
   StackState,
   SupersededResourceRecord,
 } from '../types/state.js';
-import { supersededAfterRollback } from './superseded-resources.js';
+import { supersededAfterRollback, withoutSuperseded } from './superseded-resources.js';
 import { segmentCleanupOptions } from './rollback-executor/replay-moved-id-cleanup.js';
 import {
   isMarkFor,
@@ -744,11 +744,11 @@ export async function revertNestedChildFromJournal(args: {
     let restoring = false;
     // `skippedOutputs` is dropped for the reason `cdkd rollback`'s own save
     // drops it: the replay can change what an output reads.
-    const { skippedOutputs: _dropped, ...carried } = base;
+    const { skippedOutputs: _dropped, ...carried } = withoutSuperseded(base);
     const next = (): StackState => ({
       ...carried,
       ...stackInstanceIdCarriedFrom(base),
-      ...supersededAfterRollback(base, supersededHost),
+      ...supersededAfterRollback(base, supersededHost, stateResources),
       version: STATE_SCHEMA_VERSION_CURRENT,
       region,
       resources: { ...stateResources },

@@ -169,16 +169,27 @@ export function removeSuperseded(
 /**
  * go-to-k/cdkd#5064: a rollback save's `supersededResources`: the state's own
  * entries, plus the new resources a renamed reversal's deferred delete has yet
- * to remove (`pending`). Nothing when there are none of the latter, so the
- * carried field stays as it was.
+ * to remove (`pending`).
+ *
+ * go-to-k/cdkd#6374: minus every own entry a record of the same type names
+ * after the rollback (`resources`): a replacement's old resource, deferred to
+ * the cleanup phase, that the rollback re-adopted. It is the stack's own
+ * resource again, and an entry left beside its record would tell a later
+ * reader it awaits a delete. It is the whole field: a save spreading the old
+ * state must leave the old field out (`withoutSuperseded`), or an empty
+ * answer keeps what the rollback took back.
  */
 export function supersededAfterRollback(
   base: Pick<StackState, 'supersededResources'>,
-  pending: Pick<StackState, 'supersededResources'>
+  pending: Pick<StackState, 'supersededResources'>,
+  resources: Record<string, ResourceState>
 ): Pick<StackState, 'supersededResources'> {
   const added = Array.isArray(pending.supersededResources) ? pending.supersededResources : [];
-  if (added.length === 0) return {};
-  return { supersededResources: [...ownNotPending(base, added), ...added] };
+  const own = ownNotPending(base, added).filter(
+    (entry) => !isSupersededResourceRecord(entry) || !isSupersededHeldBySameType(entry, resources)
+  );
+  const all = [...own, ...added];
+  return all.length > 0 ? { supersededResources: all } : {};
 }
 
 /**

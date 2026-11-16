@@ -17,12 +17,16 @@
 #        (1 resource: Marker). `cdkd events` shows a rollback run = SUCCEEDED.
 #   PHASE R (reverse-replacement, issue #1199):
 #     R1. Deploy with REPLACE_SUFFIX=b + INJECT_FAIL under --no-rollback:
-#         ReplaceParam is REPLACED (old `-replace-a` deleted, new `-replace-b`
-#         created — Name is create-only), then FailingQueue fails. Journal
-#         records the replacement op.
+#         ReplaceParam is REPLACED (new `-replace-b` created — Name is
+#         create-only), then FailingQueue fails. The old `-replace-a` is
+#         deleted only in the cleanup phase after every other change succeeded
+#         (go-to-k/cdkd#6374), which the failed deploy never reaches: it still
+#         exists, untouched (same LastModifiedDate), state keeps it as
+#         superseded, and the deploy says so. Journal records the replacement op.
 #     R2. `cdkd rollback --force`: exit 0. The replacement is REVERSED —
-#         `-replace-a` re-created, `-replace-b` deleted, journal gone, and
-#         the rollback output mentions the reverse-replacement.
+#         the untouched `-replace-a` re-adopted (same LastModifiedDate, no
+#         longer superseded in state), `-replace-b` deleted, journal gone, and
+#         the rollback output says it re-adopted the old parameter.
 #   PHASE F (--revert-failed, issue #1198):
 #     F1. Deploy with MARKER_VALUE=vF + INJECT_UPDATE_FAIL under
 #         --no-rollback: Marker updates to vF (completes first), then
@@ -241,6 +245,21 @@ ssm_value() { # usage: ssm_value <name>
 
 # --- Count resources recorded in a stack's cdkd state.json (echoes a number,
 # or 'gone' when the state object is absent). ---
+# ReplaceParam's old parameter's LastModifiedDate: unchanged across a deploy
+# and rollback that never wrote it, new on a re-create. Fails when it is gone.
+replace_a_modified() {
+  aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}" \
+    --query 'Parameter.LastModifiedDate' --output text
+}
+
+# How many superseded resources the stack's state records under physical id
+# "$1" (go-to-k/cdkd#6374: an old resource whose delete waits for the cleanup
+# phase).
+state_superseded_count() { # usage: state_superseded_count <physical-id>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg id "$1" '[.supersededResources // [] | .[] | select(.state.physicalId == $id)] | length'
+}
+
 state_resource_count() { # usage: state_resource_count <state-key>
   local body
   if ! body="$(aws s3 cp "s3://${STATE_BUCKET}/$1" - 2>/dev/null)"; then
@@ -636,6 +655,7 @@ echo "[verify] step 4c ok: newest run = rollback / SUCCEEDED"
 # PHASE R: reverse-replacement rollback (issue #1199)
 # ---------------------------------------------------------------------------
 echo "[verify] step R1: deploy ${STACK} with REPLACE_SUFFIX=b + INJECT_FAIL --no-rollback (expect FAILURE after the replacement)"
+R0_A_MODIFIED="$(replace_a_modified)"
 # --force-stateful-recreation: AWS::SSM::Parameter is a stateful type, so the
 # property-driven replacement (create-only Name change) requires the explicit
 # data-loss confirmation flag.
@@ -653,14 +673,31 @@ if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" >/d
   echo "[verify] FAIL: no rollback journal after the replacement deploy"
   exit 1
 fi
-# The replacement landed: new-named param exists, old-named param deleted.
+# The replacement landed: new-named param exists. go-to-k/cdkd#6374: the
+# failed deploy never sent the old one's delete, so it exists, untouched, and
+# state keeps it as superseded. AWS and state before the wording.
 if ! aws ssm get-parameter --name "${REPLACE_B_NAME}" --region "${REGION}" >/dev/null 2>&1; then
   echo "[verify] FAIL: ${REPLACE_B_NAME} missing — the replacement did not land"
   exit 1
 fi
-assert_gone "old ${REPLACE_A_NAME} still exists — the replacement did not delete it" \
-  aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}"
-echo "[verify] step R1 ok: replacement landed (b created, a deleted), journal present"
+if ! R1_A_MODIFIED="$(replace_a_modified)"; then
+  echo "[verify] FAIL: old ${REPLACE_A_NAME} is gone after the failed deploy — a failed deploy must never send the replaced resource's delete (go-to-k/cdkd#6374)"
+  exit 1
+fi
+if [ "${R1_A_MODIFIED}" != "${R0_A_MODIFIED}" ]; then
+  echo "[verify] FAIL: old ${REPLACE_A_NAME} was modified by the failed deploy (LastModifiedDate ${R0_A_MODIFIED} -> ${R1_A_MODIFIED}): it was deleted and re-created, or written"
+  exit 1
+fi
+R1_SUPERSEDED="$(state_superseded_count "${REPLACE_A_NAME}")"
+if [ "${R1_SUPERSEDED}" != "1" ]; then
+  echo "[verify] FAIL: state records ${R1_SUPERSEDED} superseded resource(s) named ${REPLACE_A_NAME} after the failed deploy (expected 1: kept for a later run)"
+  exit 1
+fi
+if ! grep -qF "(${REPLACE_A_NAME}) was not deleted: the deploy failed first" "${LOG_DIR}/rollback-cmd-replace.log"; then
+  echo "[verify] FAIL: the failed deploy did not say old ${REPLACE_A_NAME} was not deleted (output above)"
+  exit 1
+fi
+echo "[verify] step R1 ok: replacement landed (b created, a kept for the cleanup phase), journal present"
 
 echo "[verify] step R2: cdkd rollback ${STACK} --force (expect reverse-replacement, exit 0)"
 # Success-expected, but echo the captured output BEFORE asserting the exit
@@ -679,12 +716,32 @@ if ! grep -qi 'reverse-replace\|Reversing replacement' "${LOG_DIR}/rollback-cmd-
   echo "[verify] FAIL: rollback output does not mention the reverse-replacement"
   exit 1
 fi
-if ! aws ssm get-parameter --name "${REPLACE_A_NAME}" --region "${REGION}" >/dev/null 2>&1; then
-  echo "[verify] FAIL: ${REPLACE_A_NAME} was not re-created by the reverse-replacement"
+# AWS and state first: the SAME old parameter is back in the stack, and no
+# superseded entry is left for the next deploy to delete it by.
+if ! R2_A_MODIFIED="$(replace_a_modified)"; then
+  echo "[verify] FAIL: ${REPLACE_A_NAME} is gone after the reverse-replacement"
+  exit 1
+fi
+if [ "${R2_A_MODIFIED}" != "${R0_A_MODIFIED}" ]; then
+  echo "[verify] FAIL: ${REPLACE_A_NAME} was re-created or written by the rollback (LastModifiedDate ${R0_A_MODIFIED} -> ${R2_A_MODIFIED}); it must be re-adopted untouched (go-to-k/cdkd#6374)"
+  exit 1
+fi
+R2_SUPERSEDED="$(state_superseded_count "${REPLACE_A_NAME}")"
+if [ "${R2_SUPERSEDED}" != "0" ]; then
+  echo "[verify] FAIL: state still records ${REPLACE_A_NAME} as superseded after the rollback re-adopted it — the next deploy would delete the stack's live parameter"
+  exit 1
+fi
+R2_A_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "${REPLACE_A_NAME}" '[.resources[] | select(.physicalId == $id)] | length')"
+if [ "${R2_A_ID}" != "1" ]; then
+  echo "[verify] FAIL: state records ${R2_A_ID} resource(s) named ${REPLACE_A_NAME} after the rollback (expected 1: ReplaceParam re-pointed at it)"
   exit 1
 fi
 assert_gone "new ${REPLACE_B_NAME} still exists — the reverse-replacement did not delete it" \
   aws ssm get-parameter --name "${REPLACE_B_NAME}" --region "${REGION}"
+if ! grep -qF "(${REPLACE_A_NAME}) was not deleted yet — re-adopting it" "${LOG_DIR}/rollback-cmd-replace-rb.log"; then
+  echo "[verify] FAIL: the rollback did not say it re-adopted the untouched old ${REPLACE_A_NAME} (output above)"
+  exit 1
+fi
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
   echo "[verify] FAIL: rollback journal still present after the reverse-replacement rollback"
   exit 1
@@ -694,7 +751,7 @@ if [ "${R2_COUNT}" != "3" ]; then
   echo "[verify] FAIL: post-reverse-replacement state records ${R2_COUNT} resource(s) (expected 3)"
   exit 1
 fi
-echo "[verify] step R2 ok: replacement reversed (a re-created, b deleted), journal gone"
+echo "[verify] step R2 ok: replacement reversed (a re-adopted untouched, b deleted), journal gone"
 
 # ---------------------------------------------------------------------------
 # PHASE F: --revert-failed (issue #1198)

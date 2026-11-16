@@ -26,7 +26,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     `REPLACE_SUFFIX` (default `a`). Changing the suffix changes the
  *     create-only `Name` property, driving a REPLACEMENT — the
  *     reverse-replacement rollback target (issue #1199): `cdkd rollback`
- *     must re-create the old-named parameter and delete the new-named one.
+ *     must take back the old-named parameter, which a failed deploy never
+ *     deletes (go-to-k/cdkd#6374), and delete the new-named one.
  *   - `RevertQueue` — an SQS queue whose `messageRetentionPeriod` is valid
  *     (3600) by default and out-of-range (9999999) when
  *     `INJECT_UPDATE_FAIL=true`. AWS rejects the `SetQueueAttributes`
