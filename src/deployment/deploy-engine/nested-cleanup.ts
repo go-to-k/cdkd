@@ -1,3 +1,4 @@
+import { stackInstanceIdCarriedFrom } from '../../types/state/helpers.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { CompletedOperation } from '../rollback-executor.js';
 import type { ResourceState, StackState, SupersededResourceRecord } from '../../types/state.js';
@@ -255,6 +256,7 @@ async function persistDropped(
     const { supersededResources: _rows, ...rest } = current.state;
     const next: StackState = {
       ...rest,
+      ...stackInstanceIdCarriedFrom(rest),
       ...(kept.length > 0 && { supersededResources: kept }),
       lastModified: Date.now(),
     };
