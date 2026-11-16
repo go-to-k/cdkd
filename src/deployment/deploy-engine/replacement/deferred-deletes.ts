@@ -142,6 +142,9 @@ export async function retryDeferredReplacedDeletes(
   // cycle runs whatever is left at once, as before.
   const pending = new Map(deferred);
   while (pending.size > 0) {
+    // A Ctrl-C between waves sends nothing more: what is left stays recorded
+    // as superseded, for the next deploy or `cdkd destroy`.
+    if (deps.interrupted()) break;
     const dependedOn = new Set<string>();
     for (const [logicalId, entry] of pending) {
       for (const dep of entry.dependencies ?? []) {

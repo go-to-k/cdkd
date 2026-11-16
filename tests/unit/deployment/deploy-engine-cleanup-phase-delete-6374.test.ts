@@ -620,6 +620,47 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     expect(deleted).toEqual(['route-old', 'subnet-old', 'vpc-old']);
   });
 
+  it('a Ctrl-C during one wave sends nothing from the next', async () => {
+    const engine = makeEngine({ concurrency: 4 });
+    const run = engine.replacementRun;
+    const deleted: string[] = [];
+    run.deferredReplacedDeletes = new Map([
+      [
+        'Vpc',
+        {
+          physicalId: 'vpc-old',
+          resourceType: REVISION,
+          provisionedBy: 'sdk' as const,
+          failureMessage: undefined,
+          cleanupPhase: true as const,
+          retry: async () => {
+            deleted.push('vpc-old');
+          },
+        },
+      ],
+      [
+        'Subnet',
+        {
+          physicalId: 'subnet-old',
+          resourceType: REVISION,
+          provisionedBy: 'sdk' as const,
+          failureMessage: undefined,
+          cleanupPhase: true as const,
+          dependencies: ['Vpc'],
+          retry: async () => {
+            deleted.push('subnet-old');
+            (engine as unknown as { interrupted: boolean }).interrupted = true;
+          },
+        },
+      ],
+    ]);
+    await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', {
+      updated: 0,
+      updatePartial: 0,
+    });
+    expect(deleted).toEqual(['subnet-old']);
+  });
+
   it('the cleanup pass still deletes every entry of a dependency cycle', async () => {
     const engine = makeEngine({ concurrency: 4 });
     const run = engine.replacementRun;

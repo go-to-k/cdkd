@@ -153,6 +153,8 @@ export async function deleteOldIdAfterDeploy(
     resourceType: oldResource.resourceType,
     provisionedBy: input.deleteProvisionedBy,
     failureMessage: undefined,
+    // go-to-k/cdkd#6374: ordered against the other cleanup deletes too.
+    ...(oldResource.dependencies !== undefined && { dependencies: oldResource.dependencies }),
     retry: () => send(true),
   });
   deps.logger.info(
