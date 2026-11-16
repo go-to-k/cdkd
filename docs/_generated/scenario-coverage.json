@@ -2014,6 +2014,11 @@
       "scenarios": []
     },
     {
+      "name": "local-start-alb-cognito-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-alb-from-state",
       "annotated": false,
       "scenarios": []
@@ -4054,6 +4059,7 @@
     "local-engine-role-identity",
     "local-start-agentcore",
     "local-start-alb",
+    "local-start-alb-cognito-from-state",
     "local-start-alb-from-state",
     "local-start-api-user-pool-authorizer",
     "local-start-cloudfront",

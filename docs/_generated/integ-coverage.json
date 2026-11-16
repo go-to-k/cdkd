@@ -1224,6 +1224,7 @@
         "cognito-schema-rollback",
         "cognito-userpool-user-ref",
         "import-attribute-readback-final",
+        "local-start-alb-cognito-from-state",
         "local-start-api-user-pool-authorizer",
         "propagation-races-2",
         "remove-protection",
@@ -1271,6 +1272,10 @@
         ],
         "import-attribute-readback-final": [
           "l1"
+        ],
+        "local-start-alb-cognito-from-state": [
+          "l2",
+          "literal"
         ],
         "local-start-api-user-pool-authorizer": [
           "l2",
@@ -5332,6 +5337,7 @@
         "generated-name-lifecycle",
         "local-engine-role-identity",
         "local-start-alb",
+        "local-start-alb-cognito-from-state",
         "local-start-alb-from-state",
         "nlb-quic-server-id"
       ],
@@ -5351,6 +5357,9 @@
         "local-start-alb": [
           "l1",
           "literal"
+        ],
+        "local-start-alb-cognito-from-state": [
+          "l1"
         ],
         "local-start-alb-from-state": [
           "literal"
@@ -5374,6 +5383,7 @@
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
+        "local-start-alb-cognito-from-state",
         "local-start-alb-from-state",
         "nlb-quic-server-id",
         "nlb-source-nat",
@@ -5419,6 +5429,9 @@
         "local-start-alb": [
           "l1",
           "literal"
+        ],
+        "local-start-alb-cognito-from-state": [
+          "l1"
         ],
         "local-start-alb-from-state": [
           "l2",
