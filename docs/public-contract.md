@@ -24,7 +24,7 @@ cdkd deploy MyStack; echo "exit $?"      # a covered exit code
 | Release | May contain |
 | --- | --- |
 | Patch | Bug fixes that keep every covered item as documented. |
-| Minor | New commands, flags, JSON fields, configuration keys and environment variables; a state schema bump, migrated automatically; a feature that needs a newer bootstrap, or a security fix that needs a re-run of `cdkd bootstrap`; dropping an end-of-life Node.js major; deprecations. |
+| Minor | New commands, flags, JSON fields, configuration keys and environment variables; a state schema bump, migrated automatically; a feature that needs a newer bootstrap (`cdkd bootstrap`), or a security fix that needs a bootstrap re-run (`cdkd bootstrap --force` when it changes existing resources); dropping an end-of-life Node.js major; deprecations. |
 | Major | Anything that removes or changes a covered item, including a changed default. |
 
 A bug fix can still change behaviour that contradicts these docs. The docs
@@ -120,7 +120,7 @@ These environment variables are covered:
 | `CDKD_PHASE_TIMINGS` | [Slow deploys, throttling and retries](troubleshooting-slow-deploys.md) |
 | `CDKD_CR_AUTHZ_MAX_RETRIES` | [Slow deploys, throttling and retries](troubleshooting-slow-deploys.md) |
 | `CDKD_ACM_POLL_ATTEMPTS`, `CDKD_ACM_POLL_INTERVAL_MS` | [Failures during a deploy](troubleshooting-deploy.md) |
-| `CDKD_CR_S3_ENDPOINT_URL` | [cdkd deploy: custom resources](cli-deploy-custom-resources.md) |
+| `CDKD_CR_S3_ENDPOINT_URL` | [The custom-resource response endpoint](troubleshooting-internals.md#the-custom-resource-response-endpoint) |
 | `CDKD_ALLOW_SECRETS_ON_ARGV` | [Local Execution](local-emulation.md) |
 | `CDKD_SHADOW_READY_TIMEOUT_MS` | [`cdkd local start-service`](local-start-service.md) |
 
@@ -147,10 +147,12 @@ rules:
   than your bootstrap. Using that feature without it fails with an error
   telling you to re-run `cdkd bootstrap`. Deploys that do not use the feature
   keep working.
-- A minor release may require re-running `cdkd bootstrap` to apply a security
-  fix. Its release notes say so, and cdkd warns you. When the fix cannot
-  wait, cdkd may stop before a deploy changes anything, with an error telling
-  you to re-run `cdkd bootstrap`.
+- A minor release may require re-running bootstrap to apply a security fix.
+  Its release notes say so and name the command, and cdkd warns you. A fix
+  that changes resources bootstrap already created needs
+  `cdkd bootstrap --force`, because a plain re-run leaves them untouched.
+  When the fix cannot wait, cdkd may stop before a deploy changes anything,
+  with an error that names the command to run.
 
 ### The CLI is the interface
 
