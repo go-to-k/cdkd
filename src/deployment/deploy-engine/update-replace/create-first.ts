@@ -440,9 +440,6 @@ export async function replaceCreateFirst(
       safeMsg`  Retaining old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) - UpdateReplacePolicy: Retain`
     );
   } else {
-    engine.logger.info(
-      safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
-    );
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
     // old resource before the post-replacement cleanup delete.
     // Two failure classes, deliberately handled differently:
@@ -498,7 +495,9 @@ export async function replaceCreateFirst(
         updateReplacePolicy,
         updateSecrets,
         oldDeleteRoute.provisionedBy,
-        noEchoDeleteValues
+        noEchoDeleteValues,
+        false,
+        createResult.physicalId === currentResource.physicalId && resourceType === oldResourceType
       );
     }
   }

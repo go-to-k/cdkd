@@ -33,8 +33,9 @@ Give the resource a new logical id. In CDK that means a new construct id:
 new CustomResource(this, 'SeedV2', { serviceToken: newProvider.serviceToken });
 ```
 
-The deploy then creates the new resource through the new handler and deletes
-the old resource through its old handler. Calling `overrideLogicalId` on the
+The deploy then creates the new resource through the new handler and, after
+the rest of the deploy succeeds, deletes the old resource through its old
+handler. Calling `overrideLogicalId` on the
 resource's `CfnResource` has the same effect.
 
 No flag overrides the refusal. A resource named by `--recreate-via-cc-api` is

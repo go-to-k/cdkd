@@ -478,9 +478,13 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   // read of the old resource instead of the re-create.
   if (
     o['oldResourceMaySurvive'] !== undefined &&
-    !(['kept', 'unconfirmed'] as unknown[]).includes(o['oldResourceMaySurvive'])
+    !(['kept', 'unconfirmed', 'deferred'] as unknown[]).includes(o['oldResourceMaySurvive'])
   ) {
-    fail('oldResourceMaySurvive', o['oldResourceMaySurvive'], 'kept or unconfirmed when present');
+    fail(
+      'oldResourceMaySurvive',
+      o['oldResourceMaySurvive'],
+      'kept, unconfirmed or deferred when present'
+    );
   }
   // go-to-k/cdkd#1710: both COMPUTED by the deploy engine and both select a
   // `--revert-failed` delete arm for a resource no state record holds, so a

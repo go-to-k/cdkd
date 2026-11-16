@@ -280,7 +280,12 @@ describe('DeployEngine - NoEcho round 8', () => {
   } as CloudFormationTemplate;
 
   it('reports a create-first replacement whose old-resource delete was skipped as a PARTIAL update, line and summary alike (CODE m1)', async () => {
-    stateBackend.getState!.mockResolvedValue({ state: replacementState(), etag: 'etag-old' });
+    // A record holding a NoEcho mask: `canRecordSuperseded` refuses it, so the
+    // old delete stays INLINE, inside the row whose line this case reads,
+    // rather than waiting for the cleanup phase (go-to-k/cdkd#6374).
+    const state = replacementState();
+    state.resources['Topic']!.noEchoLeaves = [['DisplayName']];
+    stateBackend.getState!.mockResolvedValue({ state, etag: 'etag-old' });
     provider.create!.mockResolvedValue({
       physicalId: 'arn:aws:sns:us-east-1:123456789012:new-name',
       attributes: {},

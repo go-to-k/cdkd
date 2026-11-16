@@ -9045,6 +9045,7 @@
         "s3-analytics-inventory",
         "s3-event-notification",
         "s3-lifecycle",
+        "schedule-group-rename-rollback",
         "scheduler-custom-group",
         "schema-v11-to-v12-migration",
         "secret-derived-immutable-names",
@@ -9294,6 +9295,9 @@
         ],
         "s3-lifecycle": [
           "l1"
+        ],
+        "schedule-group-rename-rollback": [
+          "l2"
         ],
         "scheduler-custom-group": [
           "l2"

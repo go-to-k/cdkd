@@ -6,9 +6,22 @@
  * `cdkd rollback`, so it reverted both policies back to the OLD role name
  * before re-creating that role. It must re-create the old role first and
  * delete the new one only after both policies moved back.
+ *
+ * go-to-k/cdkd#6374: the deploy no longer deletes the old role inline (its
+ * delete waits for the cleanup phase, which a failed deploy never reaches), so
+ * the rollback reads AWS, finds the old role whole and RE-ADOPTS it: the
+ * policies still revert onto it before the new role is deleted. The hoisted
+ * re-create itself is covered through `cdkd rollback` in
+ * `rollback-renamed-reversal-order-5064.test.ts`, and through the automatic
+ * rollback by the second describe below: a renamed DB instance under
+ * `UpdateReplacePolicy: Snapshot`, whose delete stays INLINE (the snapshot is
+ * taken before the delete), so the rollback re-creates it ahead of its
+ * dependent. A role has no natural non-deferrable shape: a NoEcho-masked
+ * record keeps the delete inline but cannot be re-created by the replay.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
@@ -113,6 +126,9 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
         roles.delete(physicalId);
       }),
       getAttribute: vi.fn(),
+      readCurrentState: vi.fn(async (physicalId: string) =>
+        roles.has(physicalId) ? { RoleName: physicalId } : RESOURCE_NOT_FOUND
+      ),
     };
     const state: StackState = {
       version: STATE_SCHEMA_VERSION_CURRENT,
@@ -239,35 +255,40 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     return Object.assign(engine, { template, saveState });
   }
 
-  it('E2: re-creates the old role, reverts both policies onto it, then deletes the new role', async () => {
+  it('E2: re-adopts the old role the failed deploy never deleted, reverts both policies onto it, then deletes the new role', async () => {
     const engine = buildEngine();
-    const template = (engine as unknown as { template: CloudFormationTemplate }).template;
+    const { template, saveState } = engine as unknown as {
+      template: CloudFormationTemplate;
+      saveState: ReturnType<typeof vi.fn>;
+    };
     await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
 
-    // The forward deploy, as E1/E2 ran it.
+    // The forward deploy, as E1/E2 ran it, minus the old role's delete: it
+    // waits for the cleanup phase (go-to-k/cdkd#6374).
     const forward = calls.slice(0, calls.indexOf('create Fail') + 1);
     expect(forward).toEqual([
       'create Role',
-      `delete Role ${OLD_ROLE}`,
       `update RoleDefaultPolicy -> ${NEW_ROLE}`,
       `update Managed -> ${NEW_ROLE}`,
       'create Fail',
     ]);
-    // The rollback.
+    // The rollback: no re-create, the old role is taken back as it is.
     expect(calls.slice(forward.length)).toEqual([
-      'create Role',
       `update Managed -> ${OLD_ROLE}`,
       `update RoleDefaultPolicy -> ${OLD_ROLE}`,
       `delete Role ${NEW_ROLE}`,
     ]);
     expect(warned.filter((w) => w.includes('cannot be found'))).toEqual([]);
     expect([...roles]).toEqual([OLD_ROLE]);
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Role']!.physicalId).toBe(OLD_ROLE);
   });
 
-  // Review N4: the automatic rollback's one save records a new copy its
-  // deferred delete could not remove, as `cdkd rollback` does, so the next
-  // deploy deletes it instead of leaving it untracked.
-  it('a new role the rollback could not delete stays recorded as superseded', async () => {
+  // Review N4: a new copy the rollback could not delete is never left
+  // untracked. go-to-k/cdkd#6374: a re-adopt deletes the new role before it
+  // re-points state, so a refused delete leaves the Role record on the new
+  // role, and the old one stays recorded as superseded for the next deploy.
+  it('a new role the rollback could not delete stays tracked', async () => {
     const engine = buildEngine({ newRoleDeleteFails: true });
     const { template, saveState } = engine as unknown as {
       template: CloudFormationTemplate;
@@ -277,11 +298,11 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
 
     expect(calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
     const saved = saveState.mock.calls.at(-1)![2] as StackState;
-    expect(saved.resources['Role']!.physicalId).toBe(OLD_ROLE);
+    expect(saved.resources['Role']!.physicalId).toBe(NEW_ROLE);
     expect(saved.supersededResources?.map((e) => [e.logicalId, e.state.physicalId])).toEqual([
-      ['Role', NEW_ROLE],
+      ['Role', OLD_ROLE],
     ]);
-    expect(warned.some((w) => w.includes('next `cdkd deploy`'))).toBe(true);
+    expect(warned.some((w) => w.includes('Rollback failed for Role') && w.includes('DeleteConflict'))).toBe(true);
   });
 
   it('a new role the rollback deleted is not recorded', async () => {
@@ -295,7 +316,10 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     expect(saved.supersededResources).toBeUndefined();
   });
 
-  it('names a new role it could not delete when the post-rollback save fails too', async () => {
+  // go-to-k/cdkd#6374: the re-adopt keeps no pending new copy (the new role
+  // is still the Role record), so the failure the user is told about is the
+  // rollback's own save.
+  it('reports the refused new-role delete and the failed post-rollback save', async () => {
     const engine = buildEngine({ newRoleDeleteFails: true });
     const { template, saveState } = engine as unknown as {
       template: CloudFormationTemplate;
@@ -307,9 +331,11 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
       return 'etag-1';
     });
     await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
-    expect(
-      warned.some((w) => w.includes(NEW_ROLE) && w.includes('is NOT recorded'))
-    ).toBe(true);
+    expect(calls.at(-1)).toBe(`delete Role ${NEW_ROLE}`);
+    expect(warned.some((w) => w.includes('Rollback failed for Role'))).toBe(true);
+    expect(warned.some((w) => w.includes('Failed to save state after rollback: save refused'))).toBe(
+      true
+    );
   });
 
   // Review N-a: the user's Ctrl-C reaches the automatic rollback's replay (a
@@ -317,6 +343,8 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
   // the SIGINT listener `deploy()` itself registers; the sibling failure that
   // started the rollback does not stop it (the tests above run to the end).
   it("a Ctrl-C during the rollback stops its replay, and keeps the new role recorded", async () => {
+    // go-to-k/cdkd#6374: pressed during the rollback's first revert (the
+    // re-adopt re-creates nothing).
     const engine = buildEngine();
     const { template, saveState } = engine as unknown as {
       template: CloudFormationTemplate;
@@ -324,13 +352,13 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     };
     const before = new Set(process.listeners('SIGINT'));
     const provider = (
-      engine as unknown as { providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } } }
+      engine as unknown as { providerRegistry: { getProviderFor: () => { provider: { update: ReturnType<typeof vi.fn> } } } }
     ).providerRegistry.getProviderFor().provider;
-    const create = provider.create.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
-    provider.create.mockImplementation(async (...args: unknown[]) => {
-      const out = await create(...args);
-      // The rollback's re-create of the old role: the user presses Ctrl-C.
-      if (args[0] === 'Role' && calls.filter((c) => c === 'create Role').length === 2) {
+    const update = provider.update.getMockImplementation() as (...a: unknown[]) => Promise<unknown>;
+    provider.update.mockImplementation(async (...args: unknown[]) => {
+      const out = await update(...args);
+      // The rollback's first revert onto the old role: the user presses Ctrl-C.
+      if (calls.at(-1) === `update Managed -> ${OLD_ROLE}`) {
         const registered = process.listeners('SIGINT').filter((l) => !before.has(l));
         expect(registered).toHaveLength(1);
         (registered[0] as () => void)();
@@ -340,9 +368,11 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
     await expect(engine.deploy(STACK, template)).rejects.toThrow();
 
     const rollback = calls.slice(calls.indexOf('create Fail') + 1);
-    expect(rollback).toEqual(['create Role']);
+    expect(rollback).toEqual([`update Managed -> ${OLD_ROLE}`]);
+    // The new role is still the Role record, and the old one stays recorded.
     const saved = saveState.mock.calls.at(-1)![2] as StackState;
-    expect(saved.supersededResources?.map((e) => e.state.physicalId)).toEqual([NEW_ROLE]);
+    expect(saved.resources['Role']!.physicalId).toBe(NEW_ROLE);
+    expect(saved.supersededResources?.map((e) => e.state.physicalId)).toEqual([OLD_ROLE]);
     // Ops were left unreverted: the journal stays for `cdkd rollback`.
     const backend = (engine as unknown as { stateBackend: Record<string, ReturnType<typeof vi.fn>> })
       .stateBackend;
@@ -369,3 +399,212 @@ describe('the automatic rollback re-creates a renamed replacement before its dep
   });
 });
 
+
+// A replacement whose old-resource delete stays INLINE (go-to-k/cdkd#6374):
+// `UpdateReplacePolicy: Snapshot` takes its snapshot before the delete, so the
+// delete is not deferred, the op journals no survivor verdict, and the
+// automatic rollback re-creates the renamed old resource ahead of the
+// dependent that reverts onto it.
+describe('the automatic rollback re-creates an inline-deleted renamed replacement first (go-to-k/cdkd#5064)', () => {
+  const DB = 'AWS::RDS::DBInstance';
+  const TARGETS = 'AWS::RDS::DBProxyTargetGroup';
+  const OLD_DB = 'app-db-1';
+  const NEW_DB = 'app-db-2';
+  const TG_ID = 'prx-tg-1';
+  let calls: string[];
+  let dbs: Set<string>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    warned.length = 0;
+    calls = [];
+    dbs = new Set([OLD_DB]);
+  });
+
+  const dbProps = (id: string) => ({ DBInstanceIdentifier: id, DBInstanceClass: 'db.t4g.micro' });
+  const tgProps = (id: string) => ({ DBProxyName: 'prx', DBInstanceIdentifiers: [id] });
+
+  function buildEngine(options: { newDbDeleteFails?: boolean } = {}) {
+    const provider = {
+      create: vi.fn(async (logicalId: string, _type: string, props: Record<string, unknown>) => {
+        calls.push(`create ${logicalId}`);
+        if (logicalId === 'Fail') throw new Error('create failed: Fail');
+        const id = props['DBInstanceIdentifier'] as string;
+        dbs.add(id);
+        return { physicalId: id, attributes: {} };
+      }),
+      update: vi.fn(
+        async (logicalId: string, physicalId: string, _t: string, props: Record<string, unknown>) => {
+          const db = (props['DBInstanceIdentifiers'] as string[])[0]!;
+          calls.push(`update ${logicalId} -> ${db}`);
+          if (!dbs.has(db)) throw new Error(`DBInstanceNotFound: ${db} not found.`);
+          return { physicalId, wasReplaced: false };
+        }
+      ),
+      delete: vi.fn(async (logicalId: string, physicalId: string) => {
+        calls.push(`delete ${logicalId} ${physicalId}`);
+        if (options.newDbDeleteFails === true && physicalId === NEW_DB) {
+          throw new Error('InvalidDBInstanceState: the instance is being modified.');
+        }
+        dbs.delete(physicalId);
+      }),
+      getAttribute: vi.fn(),
+      readCurrentState: vi.fn(async (physicalId: string) =>
+        dbs.has(physicalId) ? { DBInstanceIdentifier: physicalId } : RESOURCE_NOT_FOUND
+      ),
+    };
+    const state: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: 'us-east-1',
+      stackName: STACK,
+      resources: {
+        Db: rec(OLD_DB, DB, dbProps(OLD_DB), []),
+        Targets: rec(TG_ID, TARGETS, tgProps(OLD_DB), ['Db']),
+      },
+      outputs: {},
+      lastModified: 0,
+    };
+    const changes = new Map<string, ResourceChange>([
+      [
+        'Db',
+        {
+          logicalId: 'Db',
+          changeType: 'UPDATE',
+          resourceType: DB,
+          currentProperties: dbProps(OLD_DB),
+          desiredProperties: dbProps(NEW_DB),
+          propertyChanges: [
+            { path: 'DBInstanceIdentifier', oldValue: OLD_DB, newValue: NEW_DB, requiresReplacement: true },
+          ],
+        },
+      ],
+      [
+        'Targets',
+        {
+          logicalId: 'Targets',
+          changeType: 'UPDATE',
+          resourceType: TARGETS,
+          currentProperties: tgProps(OLD_DB),
+          desiredProperties: tgProps(NEW_DB),
+          propertyChanges: [
+            {
+              path: 'DBInstanceIdentifiers',
+              oldValue: [OLD_DB],
+              newValue: [NEW_DB],
+              requiresReplacement: false,
+            },
+          ],
+        },
+      ],
+      [
+        'Fail',
+        {
+          logicalId: 'Fail',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: {},
+          propertyChanges: [],
+        },
+      ],
+    ]);
+    const deps: Record<string, string[]> = { Db: [], Targets: ['Db'], Fail: ['Targets'] };
+    const template = {
+      Resources: {
+        Db: { Type: DB, Properties: dbProps(NEW_DB), UpdateReplacePolicy: 'Snapshot' },
+        Targets: { Type: TARGETS, Properties: tgProps(NEW_DB) },
+        Fail: { Type: 'AWS::SQS::Queue', Properties: {} },
+      },
+    } as unknown as CloudFormationTemplate;
+    const saveState = vi.fn().mockResolvedValue('etag-1');
+    const engine = new DeployEngine(
+      {
+        getState: vi.fn().mockResolvedValue({ state, etag: 'etag-0' }),
+        saveState,
+        appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
+        deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),
+        popRollbackJournalSegment: vi.fn().mockResolvedValue(0),
+      } as never,
+      {
+        acquireLockWithRetry: vi.fn().mockResolvedValue(true),
+        releaseLock: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {
+        buildGraph: vi.fn().mockReturnValue({}),
+        getExecutionLevels: vi.fn().mockReturnValue([['Db'], ['Targets'], ['Fail']]),
+        getDirectDependencies: vi.fn((_dag: unknown, id: string) => deps[id] ?? []),
+      } as never,
+      {
+        calculateDiff: vi.fn().mockResolvedValue(changes),
+        hasChanges: vi.fn().mockReturnValue(true),
+        filterByType: vi.fn((c: Map<string, ResourceChange>, type: string) =>
+          [...c.values()].filter((x) => x.changeType === type)
+        ),
+      } as never,
+      {
+        getProvider: vi.fn().mockReturnValue(provider),
+        getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' }),
+        getRegisteredTypes: vi.fn().mockReturnValue([]),
+        validateResourceTypes: vi.fn(),
+        validateResourceProperties: vi.fn(),
+        ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
+      } as never,
+      { dryRun: false, concurrency: 1, forceStatefulRecreation: true } as never,
+      'us-east-1',
+      {
+        updateForStack: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
+        lookup: vi.fn().mockResolvedValue(null),
+        patchEntry: vi.fn().mockResolvedValue(undefined),
+      } as never
+    );
+    return { engine, template, saveState, provider };
+  }
+
+  it('E2: deletes the old instance inline, then the rollback re-creates it before the target group reverts onto it', async () => {
+    const { engine, template, provider } = buildEngine();
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+
+    const forward = calls.slice(0, calls.indexOf('create Fail') + 1);
+    expect(forward).toEqual([
+      'create Db',
+      `delete Db ${OLD_DB}`,
+      `update Targets -> ${NEW_DB}`,
+      'create Fail',
+    ]);
+    // The inline delete took its final snapshot first.
+    expect((provider.delete.mock.calls[0] as unknown[])[4]).toHaveProperty('finalSnapshotIdentifier');
+    expect(calls.slice(forward.length)).toEqual([
+      'create Db',
+      `update Targets -> ${OLD_DB}`,
+      `delete Db ${NEW_DB}`,
+    ]);
+    expect(warned.filter((w) => w.includes('not found'))).toEqual([]);
+    expect([...dbs]).toEqual([OLD_DB]);
+  });
+
+  // Review N4, through the automatic rollback.
+  it('a new instance the rollback could not delete stays recorded as superseded', async () => {
+    const { engine, template, saveState } = buildEngine({ newDbDeleteFails: true });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+
+    expect(calls.at(-1)).toBe(`delete Db ${NEW_DB}`);
+    const saved = saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.resources['Db']!.physicalId).toBe(OLD_DB);
+    expect(saved.supersededResources?.map((e) => [e.logicalId, e.state.physicalId])).toEqual([
+      ['Db', NEW_DB],
+    ]);
+    expect(warned.some((w) => w.includes('next `cdkd deploy`'))).toBe(true);
+  });
+
+  it('names a new instance it could not delete when the post-rollback save fails too', async () => {
+    const { engine, template, saveState } = buildEngine({ newDbDeleteFails: true });
+    // Every save after the rollback's delete attempt fails.
+    saveState.mockImplementation(async () => {
+      if (calls.includes(`delete Db ${NEW_DB}`)) throw new Error('save refused');
+      return 'etag-1';
+    });
+    await expect(engine.deploy(STACK, template)).rejects.toThrow(/Fail/);
+    expect(warned.some((w) => w.includes(NEW_DB) && w.includes('is NOT recorded'))).toBe(true);
+  });
+});

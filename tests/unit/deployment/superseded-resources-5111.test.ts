@@ -259,8 +259,9 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     expect(supersededResourcesOf(afterTgRow).map((e) => [e.logicalId, e.state.physicalId])).toEqual(
       [['Tg', OLD_TG]]
     );
-    // The deploy's own cleanup then deleted it, and the final save drops it.
-    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual([OLD_TG, OLD_TG]);
+    // go-to-k/cdkd#6374: no delete inside the DAG; the deploy's cleanup phase
+    // sends the only one, and the final save drops the entry.
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual([OLD_TG]);
     expect(final.supersededResources).toBeUndefined();
   });
 
@@ -301,9 +302,9 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
 
     const final = await run(state, changes);
 
-    // One in-DAG attempt, then the cleanup's three.
+    // go-to-k/cdkd#6374: no in-DAG attempt (the delete waits for the cleanup
+    // phase), then the cleanup's three.
     expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual([
-      OLD_TG,
       OLD_TG,
       OLD_TG,
       OLD_TG,

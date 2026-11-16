@@ -12,24 +12,34 @@ plan that `cdkd rollback` prints shows which ones apply before you confirm.
 
 ## Reversing a replacement
 
-When the failed deploy replaced a resource, the rollback re-creates the old
-resource from the properties the journal saved and deletes the new one. The
-plan labels such an operation `reverse-replace`.
+When the failed deploy replaced a resource, the rollback takes the old
+resource back and deletes the new one. A create-first replacement deletes the
+old resource only after the rest of the deploy succeeds, so after a failed
+deploy it is still in AWS: the rollback adopts it again, and its data is kept.
+The plan labels such an operation `reverse-replace`.
+
+Four cases delete the old resource right after the new one is created: a
+record holding a NoEcho value, an IAM inline policy,
+`UpdateReplacePolicy: Snapshot` without `--skip-final-snapshot`, and an old
+physical id another resource of the stack now records. The rollback
+re-creates the old resource of these, and of a delete-first replacement, from
+the properties the journal saved.
 
 > [!WARNING]
-> For a type that holds data (DynamoDB, RDS, S3 and so on), the replacement
-> destroyed the old resource's data. The rollback does not recover it: the
-> re-created resource starts empty. This does not apply under
+> For a type that holds data (DynamoDB, RDS, S3 and so on), an old resource
+> that was deleted right away, or first, lost its data. The rollback does not
+> recover it: the re-created resource starts empty. This does not apply under
 > `UpdateReplacePolicy: Retain`, where the old resource was kept.
 
 The rollback works in the same order the deploy did:
 
 | The deploy | The rollback |
 | --- | --- |
-| Created the new resource, then deleted the old one | Re-creates the old one, then deletes the new one |
+| Created the new resource first, with the old one's delete still waiting | Adopts the old one again, then deletes the new one |
+| Created the new resource, then deleted the old one right away | Re-creates the old one, then deletes the new one |
 | Deleted the old one first | Deletes the new one, then re-creates the old one |
 | Kept the old one (`UpdateReplacePolicy: Retain`) | Adopts the old one again; re-creates nothing |
-| Created the new resource first, then could not delete the old one | Checks AWS for the old one first: re-creates it if gone, adopts it again if AWS had refused its delete or it was never sent, and otherwise changes nothing and keeps the journal ([details](cli-rollback-internals.md#reversing-a-replacement)) |
+| Created the new resource first, then could not delete the old one right away | Checks AWS for the old one first: re-creates it if gone, adopts it again if AWS had refused its delete or it was never sent, and otherwise changes nothing and keeps the journal ([details](cli-rollback-internals.md#reversing-a-replacement)) |
 
 A deploy deletes the old resource first under `--recreate-via-*`, on the
 delete-first path of `--replace`, and when it falls back to a replacement
@@ -39,9 +49,9 @@ because the new resource gets the next generated name.
 
 ### When the old name is still taken
 
-If the deploy created the new resource first, the old resource's name may
-still be held by the new one when the rollback tries to re-create the old
-one.
+If the deploy created the new resource first and deleted the old one right
+away, the old resource's name may still be held by the new one when the
+rollback tries to re-create the old one.
 
 cdkd deletes the new resource first in that case, but only when it can show
 that the new resource is what holds the name. If something else holds the

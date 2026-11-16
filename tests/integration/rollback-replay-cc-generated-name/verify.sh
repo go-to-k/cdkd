@@ -101,8 +101,14 @@
 #                                      name so nothing collides; the invalid
 #                                      queue — which DEPENDS on the role, so the
 #                                      replacement has already completed — is
-#                                      then rejected by AWS and cdkd rolls back
-#                                      in-process.
+#                                      then rejected by AWS. Run with
+#                                      --no-rollback.
+#   3b. delete the old role out of band, then `cdkd rollback`
+#                                   -> the old role's delete waits for a deploy
+#                                      that succeeds (#6374), so only a role
+#                                      gone by the rollback takes the re-create
+#                                      arm: the replay reads AWS, finds it
+#                                      gone, and re-creates it.
 #   4. THE ARM                      -> exactly ONE role under the fixture path,
 #                                      named CC_NAME, with a CHANGED CreateDate;
 #                                      the explicitly-named one gone; state
@@ -263,6 +269,15 @@ record() { # usage: record <jq-expression-over-the-resource-object>
     '.resources | keys[] | select(startswith($p))' | head -1)
   [ -n "${key}" ] || { echo "FAIL: no state resource whose logical id starts with ${LOGICAL_ID}" >&2; exit 1; }
   printf '%s' "${json}" | jq -r --arg k "${key}" ".resources[\$k] | $1"
+}
+
+# How many superseded entries the state records under physical id $1.
+superseded_count() { # usage: superseded_count <physical-id>
+  local json
+  json=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null) || return 1
+  [ -n "${json}" ] || { echo "FAIL: state.json unreadable at ${STATE_KEY}" >&2; exit 1; }
+  printf '%s' "${json}" | jq -r --arg id "$1" \
+    '[.supersededResources // [] | .[] | select(.state.physicalId == $id)] | length'
 }
 
 state_output() { # usage: state_output <OutputKey>
@@ -585,13 +600,39 @@ echo "[verify] phase 3: ROLE_EXPLICIT_NAME=${EXPLICIT_NAME} REPLAY_CC_NAME_FAIL=
 DEPLOY_LOG="$(mktemp)"
 set +e
 ROLE_EXPLICIT_NAME="${EXPLICIT_NAME}" ROLE_DESCRIPTION="${MIGRATED_DESCRIPTION}" REPLAY_CC_NAME_FAIL=true \
-  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
     > "${DEPLOY_LOG}" 2>&1
 DEPLOY_RC=$?
 set -e
 sed 's/^/  /' "${DEPLOY_LOG}" || true
 [ "${DEPLOY_RC}" -ne 0 ] || { echo "FAIL: the deploy with REPLAY_CC_NAME_FAIL=true unexpectedly SUCCEEDED (rc=0). The injected queue must be rejected by AWS, otherwise no rollback runs." >&2; exit 1; }
 echo "[verify] phase 3 ok: deploy failed as designed (rc=${DEPLOY_RC})"
+
+# Issue #6374: a create-first replacement deletes the old role only after the
+# deploy succeeds, so a failed deploy leaves it in place and the rollback
+# RE-ADOPTS it -- the re-create arm under test never runs. The arm is still
+# reached when the old resource is gone by the time of the rollback (deleted
+# out of band). So the deploy runs with --no-rollback, the old role is deleted
+# here, and `cdkd rollback` replays the journal: it reads AWS, finds the old
+# role gone, and re-creates it through Cloud Control.
+echo "[verify] phase 3b: delete the old role ${CC_NAME} out of band, then cdkd rollback"
+# The failed deploy kept the old role (its delete waits for a deploy that
+# succeeds) and recorded it as superseded. Data first.
+KEPT_AT=$(capture aws iam get-role --role-name "${CC_NAME}" --region "${REGION}" \
+  --query 'Role.CreateDate' --output text)
+[ "${KEPT_AT}" = "${CREATED_AT_1}" ] || { echo "FAIL: after the failed deploy the old role ${CC_NAME} is not the phase-2 role (CreateDate '${KEPT_AT}', expected ${CREATED_AT_1}) -- the deploy deleted it instead of keeping it for the cleanup phase (#6374)" >&2; exit 1; }
+[ "$(superseded_count "${CC_NAME}")" = "1" ] || { echo "FAIL: state does not record the kept old role ${CC_NAME} as superseded after the failed deploy" >&2; exit 1; }
+aws iam delete-role --role-name "${CC_NAME}" --region "${REGION}"
+assert_gone "old role ${CC_NAME} still exists after its out-of-band delete" \
+  aws iam get-role --role-name "${CC_NAME}" --region "${REGION}"
+ROLLBACK_LOG="$(mktemp)"
+set +e
+${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${ROLLBACK_LOG}" 2>&1
+ROLLBACK_RC=$?
+set -e
+sed 's/^/  /' "${ROLLBACK_LOG}" || true
+[ "${ROLLBACK_RC}" -eq 0 ] || { echo "FAIL: cdkd rollback exited ${ROLLBACK_RC}" >&2; exit 1; }
+echo "[verify] phase 3b ok: cdkd rollback exited 0 (its re-create is asserted after phase 4's data checks)"
 
 # ---------------------------------------------------------------------------
 # PHASE 4: THE ARM — what the rollback restored
@@ -601,8 +642,8 @@ echo "[verify] phase 4: assert the reverse-replacement replay restored the GENER
 # 4a. SENTINEL FIRST, and POSITIVE. Every other assertion in this phase is also
 #     satisfied by "the deploy refused before replacing anything and nothing
 #     changed" — a VACUOUS pass. A CHANGED CreateDate on the role named CC_NAME
-#     is the only signal that the old role was actually destroyed by the forward
-#     replacement and RE-CREATED by the rollback replay.
+#     is the only signal that the old role was actually destroyed (out of band,
+#     phase 3b) and RE-CREATED by the rollback replay.
 #
 #     If that role is ABSENT this capture emits nothing, which trivially differs
 #     from CREATED_AT_1 and falls through to 4b — the assertion that names #3199
@@ -672,6 +713,15 @@ if ! gone_probe aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --reg
   echo "FAIL: the failing queue ${FAILING_QUEUE_NAME} exists — the invalid CreateQueue should have been rejected outright" >&2
   exit 1
 fi
+# 4g. The re-created role is a record again, so no superseded entry names it.
+[ "$(superseded_count "${CC_NAME}")" = "0" ] || { echo "FAIL: state still records ${CC_NAME} as superseded after the rollback re-created it -- the next deploy would delete the stack's live role" >&2; exit 1; }
+
+# 4h. Then the wording: the replay read the old role as gone and re-created it.
+if ! grep -qF "is gone — re-creating it" "${ROLLBACK_LOG}"; then
+  echo "FAIL: cdkd rollback never took the re-create arm for the gone old role" >&2
+  exit 1
+fi
+rm -f "${ROLLBACK_LOG}"
 echo "[verify] phase 4 ok: replay restored the generated name on a NEW role, new one deleted, state live, no orphan queue"
 
 # ---------------------------------------------------------------------------

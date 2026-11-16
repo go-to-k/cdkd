@@ -344,7 +344,9 @@ export function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean):
           `gone, ` +
           (op.oldResourceMaySurvive === 'kept'
             ? `re-adopt it if AWS still has it (its delete was refused or never sent), `
-            : `REFUSED if AWS still has it (its delete may still be running, or only partly ran), `) +
+            : op.oldResourceMaySurvive === 'deferred'
+              ? `re-adopt it if AWS still has it (its delete waits for the deploy to succeed), `
+              : `REFUSED if AWS still has it (its delete may still be running, or only partly ran), `) +
           `REFUSED if cdkd cannot tell; ` +
           (item.retainsNewResource
             ? `new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]`

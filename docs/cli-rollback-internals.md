@@ -129,7 +129,8 @@ journal (reduced to that entry where it can), warns, and exits `2`
 ## Reversing a replacement
 
 A replacement is undone by reversing it: the old resource is re-CREATEd from its
-journaled pre-deploy state, and the new resource is deleted unless its own
+journaled pre-deploy state (a create-first old resource whose delete was still
+deferred is still in AWS, so it is re-adopted instead), and the new resource is deleted unless its own
 `UpdateReplacePolicy: Retain` says otherwise (see below). A custom resource whose
 `Update` handler answered a new physical id is the exception: its old id was
 never deleted, so the rollback sends the new id an `Update` with the old

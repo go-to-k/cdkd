@@ -628,16 +628,39 @@ describe('a rollback save carries each superseded id once (#6120)', () => {
   it("drops the state's entry for an id the rollback's pending entries name", () => {
     const out = supersededAfterRollback(
       { supersededResources: [entry('name-1'), entry('name-4')] },
-      { supersededResources: [entry('name-4')] }
+      { supersededResources: [entry('name-4')] },
+      {}
     );
     expect(out.supersededResources?.map((e) => e.state.physicalId)).toEqual(['name-1', 'name-4']);
+  });
+
+  // go-to-k/cdkd#6374: a replacement's old resource the rollback re-adopted is
+  // a record again, so its entry goes; one of another type under that id stays.
+  it('drops an entry a same-type record names after the rollback, and only that one', () => {
+    const otherType = {
+      ...entry('name-2'),
+      state: { ...entry('name-2').state, resourceType: 'Custom::Other' },
+    };
+    const out = supersededAfterRollback(
+      { supersededResources: [entry('name-1'), entry('name-2'), otherType] },
+      {},
+      { Res: record('name-1', OLD_PROPS) }
+    );
+    expect(out.supersededResources?.map((e) => `${e.state.physicalId} ${e.state.resourceType}`)).toEqual([
+      `name-2 ${CR}`,
+      'name-2 Custom::Other',
+    ]);
+    expect(
+      supersededAfterRollback({ supersededResources: [entry('name-1')] }, {}, { Res: record('name-1', OLD_PROPS) })
+    ).toEqual({});
   });
 
   it('keeps an entry of another type under the same id', () => {
     const other = { ...entry('name-4'), state: { ...entry('name-4').state, resourceType: 'Custom::Other' } };
     const out = supersededAfterRollback(
       { supersededResources: [other] },
-      { supersededResources: [entry('name-4')] }
+      { supersededResources: [entry('name-4')] },
+      {}
     );
     expect(out.supersededResources?.map((e) => e.state.resourceType)).toEqual([
       'Custom::Other',

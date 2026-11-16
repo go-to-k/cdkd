@@ -137,8 +137,8 @@ export async function deleteOldIdAfterDeploy(
   const deferred = run.deferredReplacedDeletes;
   if (deferred === undefined) {
     // Not reached by a deploy (`executeDeployment` sets the map for its whole
-    // DAG); a caller outside one has no cleanup phase to wait for.
-    deps.logger.info(safeMsg`  Deleting old ${logicalId} (${shownOldId})...`);
+    // DAG); a caller outside one has no cleanup phase to wait for. The
+    // delete prints its own "Deleting old" line.
     await send(false);
     return;
   }
@@ -153,6 +153,8 @@ export async function deleteOldIdAfterDeploy(
     resourceType: oldResource.resourceType,
     provisionedBy: input.deleteProvisionedBy,
     failureMessage: undefined,
+    // go-to-k/cdkd#6374: ordered against the other cleanup deletes too.
+    ...(oldResource.dependencies !== undefined && { dependencies: oldResource.dependencies }),
     retry: () => send(true),
   });
   deps.logger.info(

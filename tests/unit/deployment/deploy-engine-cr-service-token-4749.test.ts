@@ -286,15 +286,25 @@ describe('DeployEngine - a ServiceToken that reads the backing Lambda (go-to-k/c
 
   it('rolls the Lambda replacement back after the refusal', async () => {
     const p = provider();
+    // The old function is alive: its delete waited for the cleanup phase.
+    p.readCurrentState.mockImplementation(async (physicalId: string) =>
+      physicalId === 'old-handler' ? { FunctionName: physicalId } : undefined
+    );
     const stateBackend = backend({ Fn: lambda('old-handler'), Cr: cr(OLD_TOKEN) });
     await deployError(makeEngine(p, stateBackend), template('new-handler'));
-    // The replacement created the new function and deleted the old; the
-    // rollback re-creates the old one and deletes the new.
+    // go-to-k/cdkd#6374: the replacement created the new function and left
+    // the old one for the cleanup phase, which the failed deploy never
+    // reached; the rollback re-adopts the old one and deletes the new.
     expect(callsFor(p.create, 'Fn').map((c) => (c[2] as Record<string, unknown>)['FunctionName'])).toEqual([
       'new-handler',
-      'old-handler',
     ]);
-    expect(callsFor(p.delete, 'Fn').map((c) => c[1])).toEqual(['old-handler', 'new-handler']);
+    expect(callsFor(p.delete, 'Fn').map((c) => c[1])).toEqual(['new-handler']);
+    expect(p.readCurrentState).toHaveBeenCalledWith(
+      'old-handler',
+      'Fn',
+      'AWS::Lambda::Function',
+      expect.anything()
+    );
     const saved = stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.resources['Fn']?.physicalId).toBe('old-handler');
     expect(saved.resources['Cr']?.properties['ServiceToken']).toBe(OLD_TOKEN);

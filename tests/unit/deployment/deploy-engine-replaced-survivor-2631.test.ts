@@ -101,7 +101,11 @@ vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOrigin
   };
 });
 
-const REVISION = 'AWS::Lambda::WebFunctionRevision';
+// An IAM inline policy type: `canRecordSuperseded` refuses it, so its delete
+// stays INLINE rather than waiting for the cleanup phase (go-to-k/cdkd#6374),
+// the path whose failure verdicts this file covers. It is not a standalone
+// inline policy (`RolePolicy` ...), so no name-claim predicate joins the delete.
+const REVISION = 'AWS::IAM::Policy';
 
 /** An AWS SDK-shaped error: its `name` is the service's error code. */
 function awsError(name: string, message: string): Error {

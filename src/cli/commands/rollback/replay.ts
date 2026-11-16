@@ -1,6 +1,7 @@
 import {
   holdsSupersededResources,
   supersededAfterRollback,
+  withoutSuperseded,
 } from '../../../deployment/superseded-resources.js';
 import { releaseRegistryMarkerQuietly } from '../registry-release.js';
 import { recordRetainedForReadoption } from '../../../deployment/retained-readoption.js';
@@ -558,11 +559,12 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
       // template, so the diff's change map cannot un-bind and the digest is
       // unmoved; carried, the record would preview a key as absent while the
       // next deploy publishes it.
-      const { skippedOutputs: _droppedByRollback, ...carriedState } = baseState;
+      const { skippedOutputs: _droppedByRollback, ...carriedState } = withoutSuperseded(baseState);
       const next = (): StackState => ({
         ...carriedState,
-        ...stackInstanceIdCarriedFrom(baseState),
-        ...supersededAfterRollback(baseState, supersededHost),
+        // The superseded entries are `supersededAfterRollback`'s to write.
+        ...stackInstanceIdCarriedFrom(withoutSuperseded(baseState)),
+        ...supersededAfterRollback(baseState, supersededHost, stateResources),
         version: STATE_SCHEMA_VERSION_CURRENT,
         region,
         resources: { ...stateResources },

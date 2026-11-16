@@ -53,7 +53,7 @@ import type {
   StackState,
   SupersededResourceRecord,
 } from '../types/state.js';
-import { supersededAfterRollback } from './superseded-resources.js';
+import { supersededAfterRollback, withoutSuperseded } from './superseded-resources.js';
 import { segmentCleanupOptions } from './rollback-executor/replay-moved-id-cleanup.js';
 import {
   isMarkFor,
@@ -227,9 +227,11 @@ export function displacedOpClause(
     const kept =
       op.oldResourceRetained === true
         ? 'but kept it (UpdateReplacePolicy: Retain)'
-        : op.oldResourceMaySurvive !== undefined
-          ? 'and may have kept it (its delete was not confirmed)'
-          : 'and may have kept it (the journal records no verdict)';
+        : op.oldResourceMaySurvive === 'deferred'
+          ? 'and may have kept it (its delete waits for the deploy to succeed)'
+          : op.oldResourceMaySurvive !== undefined
+            ? 'and may have kept it (its delete was not confirmed)'
+            : 'and may have kept it (the journal records no verdict)';
     return (
       `replaced ${shownOld} ${kept}; cdkd import adopted the replacement, so ${shownOld} ` +
       `is left untracked`
@@ -742,11 +744,12 @@ export async function revertNestedChildFromJournal(args: {
     let restoring = false;
     // `skippedOutputs` is dropped for the reason `cdkd rollback`'s own save
     // drops it: the replay can change what an output reads.
-    const { skippedOutputs: _dropped, ...carried } = base;
+    const { skippedOutputs: _dropped, ...carried } = withoutSuperseded(base);
     const next = (): StackState => ({
       ...carried,
-      ...stackInstanceIdCarriedFrom(base),
-      ...supersededAfterRollback(base, supersededHost),
+      // The superseded entries are `supersededAfterRollback`'s to write.
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(base)),
+      ...supersededAfterRollback(base, supersededHost, stateResources),
       version: STATE_SCHEMA_VERSION_CURRENT,
       region,
       resources: { ...stateResources },

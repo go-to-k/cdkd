@@ -82,8 +82,18 @@ Examples are an `AWS::EFS::FileSystem` `PerformanceMode` change, an
 `AWS::EC2::Volume` `AvailabilityZone` move, an S3 `BucketName` rename, and
 new `AWS::Lambda::LayerVersion` content.
 
-cdkd creates the new resource first and then deletes the old one, which is
-CloudFormation's order.
+cdkd creates the new resource first and deletes the old one after the rest of
+the deploy succeeds, which is CloudFormation's order. Four cases delete it
+right after the new one is created: a record holding a NoEcho value, an IAM
+inline policy, `UpdateReplacePolicy: Snapshot` without
+`--skip-final-snapshot`, and an old physical id another resource of the stack
+now records.
+
+Until that delete, the old resource still holds its name. A deploy that gives
+the same name to another resource, such as two resources swapping names, is
+refused because the name is taken, as CloudFormation refuses it. Split
+it into two deploys: rename one resource away, then give its old name to the
+other.
 
 A type that is not stateful is replaced with no further flag. A stateful
 type is refused with `STATEFUL_REPLACE_BLOCKED`. See

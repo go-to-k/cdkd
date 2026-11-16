@@ -78,7 +78,7 @@ cdkd rollback replays it, newest first
 | Created a resource | Deletes it |
 | Updated a resource | Restores its previous properties, `DeletionPolicy` and `UpdateReplacePolicy` |
 | Changed only a resource's `DeletionPolicy` / `UpdateReplacePolicy` | Restores the previous policies in state, with no AWS call |
-| Replaced a resource | Re-creates the old one and deletes the new one |
+| Replaced a resource | Adopts the old one again, or re-creates it if it was deleted, then deletes the new one |
 | Deleted a resource | Does nothing |
 | Failed on a resource | Leaves that resource as it is |
 
@@ -87,8 +87,10 @@ Four of these rows have more to them:
 - **Created.** The delete follows the resource's `DeletionPolicy`, so a
   `Retain` resource stays in AWS. See
   [DeletionPolicy on a rolled-back CREATE](#deletionpolicy-on-a-rolled-back-create).
-- **Replaced.** The old resource comes back empty. Its data is not recovered.
-  See [Reversing a replacement](cli-rollback-limitations.md#reversing-a-replacement).
+- **Replaced.** The old resource is usually still in AWS, because its delete
+  waits for the deploy to succeed, so it comes back with its data. One deleted
+  right away, or deleted first, comes back empty. See
+  [Reversing a replacement](cli-rollback-limitations.md#reversing-a-replacement).
 - **Deleted.** A deleted resource cannot be restored, as under CloudFormation.
   A deploy runs its deletes after its creates and updates, so a typical
   mid-deploy failure has not deleted anything yet.
@@ -256,7 +258,9 @@ confirm.
 - **The resource whose operation failed** is left as it is unless you pass
   `--revert-failed`. See
   [failed operations](cli-rollback-failed-operations.md).
-- **A replaced resource** is re-created, and its data does not come back. See
+- **A replaced resource** is adopted again when its delete had not been sent;
+  one that was already deleted is re-created, and its data does not come back.
+  See
   [Reversing a replacement](cli-rollback-limitations.md#reversing-a-replacement).
 - **Old asset objects** must still exist. A revert that points at an old asset
   (a Lambda function's `Code.S3Key`) needs that object to still exist. The

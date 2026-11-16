@@ -265,7 +265,7 @@ resource, keyed by its logical ID from the template.
 | `outputReads` | The outputs of other stacks that this stack read with `Fn::GetStackOutput` |
 | `skippedOutputs` | Outputs the last deploy [could not resolve](state-management-schema-versions.md#an-output-the-deploy-could-not-resolve) |
 | `orphans` | Resources a rollback left in AWS and stopped listing under `resources` |
-| `supersededResources` | The old copy of a replaced resource whose delete has not succeeded yet |
+| `supersededResources` | The old copy of a replaced resource whose delete has not succeeded yet, or has not been sent |
 | `parentStack`, `parentLogicalId`, `parentRegion` | Present only on a nested stack's record |
 | `stackInstanceId` | The id of the stack's [current lifetime](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack); absent on a stack created before the field existed |
 | `retiredNameGenerations` | For each logical ID whose resource left the stack, the [name generation](state-management-schema-versions.md#name-generations-a-new-name-for-each-replacement) it left at; only on a stack with a `stackInstanceId` |
@@ -283,8 +283,11 @@ Four of these fields change what a command does:
   it to. On a stack without a `stackInstanceId`, a later deploy adopts them
   again; on a stack with one, a later deploy only warns about them and creates
   new resources under new names, and `cdkd import` adopts one.
-- `supersededResources` lists the old copy of a replaced resource that was
-  still in use when the deploy tried to delete it, such as a target group a
+- `supersededResources` lists the old copy of every create-first replacement
+  from its replacement until the deploy's cleanup pass deletes it. A deploy
+  that fails first never sends that delete, and its rollback adopts the old
+  resource again from this list. It also keeps the old copy of a replaced
+  resource that was still in use when the deploy tried to delete it, such as a target group a
   listener still pointed at, and the old physical id of a custom resource whose
   update answered a new one, from the update until the deploy's `Delete` of it. Every later `cdkd deploy` retries the delete once
   its own changes are done and drops the entry when it succeeds, and

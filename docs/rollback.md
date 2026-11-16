@@ -88,9 +88,11 @@ things are outside its reach:
 
 - **A deleted resource.** Once the deploy has deleted a resource, the
   rollback cannot restore it. It prints a warning and continues.
-- **Data in a replaced resource.** The rollback re-creates the old resource,
-  but a re-created bucket, table or other data-holding resource starts empty.
-  cdkd warns when this happens.
+- **Data in a replaced resource.** The rollback adopts the old resource again
+  when its delete had not been sent, and its data is kept. When the deploy had
+  already deleted it, the rollback re-creates it, and a re-created bucket,
+  table or other data-holding resource starts empty. cdkd warns when this
+  happens.
 - **A change made outside cdkd.** An updated resource is set back to the
   properties cdkd recorded at the last deploy. cdkd does not read the live
   resource first. If someone edited the resource in the console before the

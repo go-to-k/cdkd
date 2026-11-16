@@ -9,7 +9,7 @@ import { secretNameBagFor } from '../masking.js';
 import { withPrintingSecrets } from '../../resource-secrets-scope.js';
 import { unionOfSecretBags } from '../../secret-redaction.js';
 import { orphanRecordsPrintingBag } from '../../secret-name-needles.js';
-import { supersededAfterRollback } from '../../superseded-resources.js';
+import { supersededAfterRollback, withoutSuperseded } from '../../superseded-resources.js';
 import { InterruptedError, crossStackReadsForPartialSave } from '../../deploy-engine.js';
 import { isInterruptedWaitError } from '../../../provisioning/interrupt-watch.js';
 import {
@@ -316,9 +316,13 @@ export async function rollbackFailedDeploy(
       ...exportNamesCarriedFrom(currentState),
       ...skippedOutputsCarriedFrom(currentState),
       ...orphansAfterRollback(currentState, rollbackOrphans),
-      ...stackInstanceIdCarriedFrom(currentState),
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(currentState)),
       // go-to-k/cdkd#5064: a renamed reversal's new copy left to delete.
-      ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
+      ...supersededAfterRollback(
+        currentState,
+        { supersededResources: rollbackSuperseded },
+        newResources
+      ),
       // go-to-k/cdkd#5064: what the rollback left in AWS is not taken back,
       // and a CREATE it took back is named anew by the next create.
       ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
@@ -381,8 +385,12 @@ export async function rollbackFailedDeploy(
         ...exportNamesCarriedFrom(currentState),
         ...skippedOutputsCarriedFrom(currentState),
         ...orphansAfterRollback(currentState, rollbackOrphans),
-        ...stackInstanceIdCarriedFrom(currentState),
-        ...supersededAfterRollback(currentState, { supersededResources: rollbackSuperseded }),
+        ...stackInstanceIdCarriedFrom(withoutSuperseded(currentState)),
+        ...supersededAfterRollback(
+          currentState,
+          { supersededResources: rollbackSuperseded },
+          newResources
+        ),
         ...retiredAfterRollback(currentState, rollbackOrphans, rollbackCreates),
         // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
         // session resolved. See `crossStackReadsForPartialSave` — writing the

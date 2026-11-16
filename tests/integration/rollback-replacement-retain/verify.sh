@@ -50,7 +50,7 @@
 #
 # `Name` is create-only, so flipping it forces a property-driven replacement;
 # the type has an SDK provider; a parameter name is released the instant it is
-# deleted, so the control arms' re-create of the OLD name is deterministic
+# deleted, so a re-create of the OLD name would be deterministic
 # (unlike an SQS queue name, which rides a ~60s cooldown, or a globally unique
 # bucket name); and parameters are free, so the deliberate `Retain` survivor
 # costs nothing while it is alive.
@@ -391,14 +391,18 @@ if ! grep -qF "(${RETAIN_V2}) is RETAINED by this rollback" "${WORK_DIR}/deploy-
 fi
 
 # The controls must have taken the DELETE polarity of the same branch.
-if ! grep -qF "Rollback: ControlParam replacement reversed (old resource re-created as ${CONTROL_V1})" \
+# Issue #6374: the old copy's delete waits for the deploy to succeed, so
+# the rollback re-adopts it instead of re-creating it.
+if ! grep -qF "Rollback: Reversing replacement of ControlParam (AWS::SSM::Parameter) — deleting the new resource and re-adopting the surviving old one (${CONTROL_V1})" \
   "${WORK_DIR}/deploy-v2.log"; then
   echo "FAIL: phase 3: ControlParam did not take the reverse-replacement arm" >&2
-  echo "      (re-create the old copy, delete the new one)." >&2
+  echo "      (re-adopt the old copy, delete the new one)." >&2
   tail -40 "${WORK_DIR}/deploy-v2.log" >&2
   exit 1
 fi
-if ! grep -qF "Rollback: DeletionPolicyParam replacement reversed (old resource re-created as ${DP_V1})" \
+# Issue #6374: the old copy's delete waits for the deploy to succeed, so
+# the rollback re-adopts it instead of re-creating it.
+if ! grep -qF "Rollback: Reversing replacement of DeletionPolicyParam (AWS::SSM::Parameter) — deleting the new resource and re-adopting the surviving old one (${DP_V1})" \
   "${WORK_DIR}/deploy-v2.log"; then
   echo "FAIL: phase 3: DeletionPolicyParam did not take the reverse-replacement arm." >&2
   tail -40 "${WORK_DIR}/deploy-v2.log" >&2
@@ -467,8 +471,9 @@ assert_gone "phase 4: ${CONTROL_V2} survived the rollback -- a resource with NO 
 assert_gone "phase 4: ${DP_V2} survived the rollback -- DeletionPolicy: Retain does NOT govern the replacement's new copy (see the A/B table in this file's header)" \
   aws ssm get-parameter --name "${DP_V2}"
 
-# ...and every OLD copy is back: re-adopted for RetainParam (it was never
-# deleted), re-created for the two controls.
+# ...and every OLD copy is back, re-adopted: RetainParam's was kept by its
+# policy, the two controls' because their delete waits for the deploy to
+# succeed (issue #6374).
 for p in "${RETAIN_V1}" "${CONTROL_V1}" "${DP_V1}"; do
   GOT="$(aws ssm get-parameter --name "${p}" --query 'Parameter.Name' --output text)"
   if [ "${GOT}" != "${p}" ]; then

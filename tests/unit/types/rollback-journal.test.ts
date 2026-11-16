@@ -686,13 +686,14 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
   });
 
   // go-to-k/cdkd#2631: it sends the replay to an AWS read of the old resource.
-  it('refuses an oldResourceMaySurvive outside its two verdicts', () => {
-    for (const planted of ['yes', true]) {
+  // go-to-k/cdkd#6374 adds `'deferred'`: a delete left for the cleanup phase.
+  it('refuses an oldResourceMaySurvive outside its three verdicts', () => {
+    for (const planted of ['yes', true, 'Deferred']) {
       expect(
         messageOf(journalWith([{ ...op, changeType: 'UPDATE', oldResourceMaySurvive: planted }]))
-      ).toContain('oldResourceMaySurvive must be kept or unconfirmed when present');
+      ).toContain('oldResourceMaySurvive must be kept, unconfirmed or deferred when present');
     }
-    for (const verdict of ['kept', 'unconfirmed']) {
+    for (const verdict of ['kept', 'unconfirmed', 'deferred']) {
       expect(
         parseRollbackJournal(
           journalWith([{ ...op, changeType: 'UPDATE', oldResourceMaySurvive: verdict }]),

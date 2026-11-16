@@ -7,8 +7,9 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * Fixture for `cdkd rollback` re-creating an EXPLICITLY named IAM Role under
  * the name its deploy sent (issue #4018) — or, when the prefix flag flipped
  * between the deploy that created it and the one that failed, under the name
- * it had (issue #4024) — and for the rewritten-name holder refusal (issue
- * #4010) on that re-create.
+ * it had (issue #4024). A failed deploy never deletes the replaced role
+ * (go-to-k/cdkd#6374: that delete waits for the cleanup phase), so verify.sh
+ * deletes it by hand before each `cdkd rollback` that must re-create it.
  *
  * covers: AWS::IAM::Role
  * covers: AWS::SQS::Queue
@@ -23,7 +24,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *
  *   - `NamedRole` — `roleName: cdkd-integ-rbrw-<ROLE_SUFFIX>` (default `a`).
  *     Changing the suffix changes the create-only `RoleName`, driving a
- *     REPLACEMENT (new role created, old one deleted).
+ *     REPLACEMENT (new role created, old one deleted once the deploy succeeds).
  *     `ROLE_DESCRIPTION_V2=true` changes only the mutable `Description`, an
  *     in-place UPDATE whose revert must stay in place.
  *   - `FailingQueue` — an SQS queue with an out-of-range

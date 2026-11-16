@@ -18,16 +18,22 @@
 #      guard used to key on the template's type, AWS::SNS::Topic, and never
 #      fired.) Nothing in AWS or state changed.
 #   3. Deploy v2 + INJECT_FAIL with the consent flag: all three replacements
-#      complete, then FailingQueue is rejected and the AUTOMATIC rollback
-#      reverses them. v1 is restored in AWS and in state — each OLD type
-#      re-created through its own provider, each new resource deleted.
-#   4. The same failing deploy under --no-rollback: v2 has landed, and the
-#      journal records BOTH types per op (previousResourceType). Then
-#      `cdkd rollback --force` restores v1 and clears the journal.
-#   5. Deploy v2 for real. Old resources GONE, new ones exist, state records the
-#      v2 types. For Overlap that means the parameter is gone AND the log group
-#      of the same name survives. For EqualBags (#3036) the deploy must not have
-#      been a no-op.
+#      create their new resource, then FailingQueue is rejected before the
+#      cleanup phase that deletes the old ones (go-to-k/cdkd#6374), and the
+#      AUTOMATIC rollback reverses them: each new resource deleted through its
+#      NEW type, each untouched old one re-adopted under its OLD type. v1 is
+#      restored in AWS and in state, with nothing left superseded.
+#   4. The same failing deploy under --no-rollback: every new resource exists,
+#      every OLD one still exists too (a failed deploy never sends their
+#      delete), state keeps each old one as superseded under its OLD type, the
+#      deploy says so, and the journal records BOTH types per op
+#      (previousResourceType). Then `cdkd rollback --force` re-adopts the old
+#      resources, deletes the new ones, restores v1 and clears the journal.
+#   5. Deploy v2 for real. Its cleanup phase deletes each old resource through
+#      its OLD type: old resources GONE, new ones exist, state records the v2
+#      types and nothing superseded. For Overlap that means the parameter is
+#      gone AND the log group of the same name survives. For EqualBags (#3036)
+#      the deploy must not have been a no-op.
 #   6. Re-deploy v2: "No changes detected" — state really holds the new types.
 #   7. Destroy: 0 errors, state gone, every physical name from both variants
 #      confirmed gone.
@@ -154,6 +160,15 @@ equalbags_log_group_at() { # usage: equalbags_log_group_at <generation>
   printf '%s' "/cdkd/${EQUALBAGS_PREFIX}${suffix}"
 }
 
+# "<logicalId> <type> <physicalId>" per superseded resource state records
+# (go-to-k/cdkd#6374: an old resource whose delete waits for the cleanup
+# phase), sorted; nothing when there is none.
+state_superseded() {
+  local body
+  body="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)" || return 1
+  jq -r '(.supersededResources // [])[] | "\(.logicalId) \(.state.resourceType) \(.state.physicalId)"' <<<"${body}" | LC_ALL=C sort
+}
+
 # Echo the number of resources state records.
 state_resource_count() {
   local body
@@ -242,31 +257,40 @@ assert_v1_world() { # usage: assert_v1_world <step>
     echo "[verify] FAIL (${step}): state records ${count} resource(s) (expected 3)"
     exit 1
   fi
+  # A superseded entry left naming a v1 resource would have the next deploy
+  # delete it (go-to-k/cdkd#6374).
+  local sup
+  sup="$(state_superseded)" || exit 1
+  if [ -n "${sup}" ]; then
+    echo "[verify] FAIL (${step}): state still records superseded resources in the v1 world (the next deploy would delete them):"
+    printf '%s\n' "${sup}" | sed 's/^/    /'
+    exit 1
+  fi
 }
 
-# The whole v2 world.
-assert_v2_world() { # usage: assert_v2_world <step>
-  local step="$1" lg
-  assert_gone "(${step}) Subject's OLD SSM parameter ${SUBJECT_PARAM} still exists" \
-    aws ssm get-parameter --name "${SUBJECT_PARAM}" --region "${REGION}"
+# The whole v2 world. "kept" (after a failed --no-rollback deploy, #6374): the
+# OLD resources must still EXIST, kept in state as superseded under their OLD
+# types, rather than be gone.
+assert_v2_world() { # usage: assert_v2_world <step> [kept]
+  local step="$1" old="${2:-gone}" lg
+  if [ "${old}" = "kept" ]; then
+    assert_v2_old_kept "${step}"
+  else
+    assert_v2_old_gone "${step}"
+  fi
   if ! aws sns get-topic-attributes --topic-arn "${SUBJECT_TOPIC_ARN}" --region "${REGION}" >/dev/null; then
     echo "[verify] FAIL (${step}): Subject's new topic ${SUBJECT_TOPIC_ARN} does not exist"
     exit 1
   fi
-  # Overlap: the two ids are EQUAL. The parameter must be gone AND the log
-  # group must have survived the old resource's delete.
-  assert_gone "(${step}) Overlap's OLD SSM parameter ${OVERLAP_NAME} still exists" \
-    aws ssm get-parameter --name "${OVERLAP_NAME}" --region "${REGION}"
+  # Overlap: the two ids are EQUAL. The log group must have survived the old
+  # resource's delete (or, kept, coexist with the parameter).
   lg="$(log_group_state "${OVERLAP_NAME}")"
   if [ "${lg}" != "present" ]; then
     echo "[verify] FAIL (${step}): Overlap's new log group ${OVERLAP_NAME} does not exist — the old resource's delete may have been aimed at it"
     exit 1
   fi
   # EqualBags (#3036): identical property bags, so a properties-only no-op
-  # check reports nothing to do. The old topic must be GONE and the new log
-  # group must EXIST, read from AWS.
-  assert_gone "(${step}) EqualBags' OLD topic ${EQUALBAGS_TOPIC_ARN} still exists — the Type change was swallowed" \
-    aws sns get-topic-attributes --topic-arn "${EQUALBAGS_TOPIC_ARN}" --region "${REGION}"
+  # check reports nothing to do. The new log group must EXIST, read from AWS.
   # The replacement's generation, from the record; its name is derived, never read.
   local gen
   gen="$(state_field EqualBags nameGeneration)" || exit 1
@@ -290,6 +314,54 @@ assert_v2_world() { # usage: assert_v2_world <step>
   require_state_field "${step}" Overlap physicalId "${OVERLAP_NAME}"
   require_state_field "${step}" EqualBags resourceType AWS::Logs::LogGroup
   require_state_field "${step}" EqualBags physicalId "${EQUALBAGS_LOG_GROUP}"
+}
+
+# The OLD half of a finished v2 world: every v1 resource deleted through its
+# OLD type, and nothing left superseded.
+assert_v2_old_gone() { # usage: assert_v2_old_gone <step>
+  local step="$1" sup
+  assert_gone "(${step}) Subject's OLD SSM parameter ${SUBJECT_PARAM} still exists" \
+    aws ssm get-parameter --name "${SUBJECT_PARAM}" --region "${REGION}"
+  assert_gone "(${step}) Overlap's OLD SSM parameter ${OVERLAP_NAME} still exists" \
+    aws ssm get-parameter --name "${OVERLAP_NAME}" --region "${REGION}"
+  assert_gone "(${step}) EqualBags' OLD topic ${EQUALBAGS_TOPIC_ARN} still exists — the Type change was swallowed" \
+    aws sns get-topic-attributes --topic-arn "${EQUALBAGS_TOPIC_ARN}" --region "${REGION}"
+  sup="$(state_superseded)" || exit 1
+  if [ -n "${sup}" ]; then
+    echo "[verify] FAIL (${step}): state still records superseded resources after a successful deploy:"
+    printf '%s\n' "${sup}" | sed 's/^/    /'
+    exit 1
+  fi
+}
+
+# The OLD half after a failed --no-rollback v2 deploy (go-to-k/cdkd#6374):
+# every v1 resource still exists, and state keeps each as superseded under
+# its OLD type and id, for a rollback to re-adopt or the next deploy to delete.
+assert_v2_old_kept() { # usage: assert_v2_old_kept <step>
+  local step="$1" sup want
+  if ! aws ssm get-parameter --name "${SUBJECT_PARAM}" --region "${REGION}" >/dev/null; then
+    echo "[verify] FAIL (${step}): Subject's OLD SSM parameter ${SUBJECT_PARAM} is gone after a failed deploy (its delete must wait for the cleanup phase)"
+    exit 1
+  fi
+  if ! aws ssm get-parameter --name "${OVERLAP_NAME}" --region "${REGION}" >/dev/null; then
+    echo "[verify] FAIL (${step}): Overlap's OLD SSM parameter ${OVERLAP_NAME} is gone after a failed deploy (its delete must wait for the cleanup phase)"
+    exit 1
+  fi
+  if ! aws sns get-topic-attributes --topic-arn "${EQUALBAGS_TOPIC_ARN}" --region "${REGION}" >/dev/null; then
+    echo "[verify] FAIL (${step}): EqualBags' OLD topic ${EQUALBAGS_TOPIC_ARN} is gone after a failed deploy (its delete must wait for the cleanup phase)"
+    exit 1
+  fi
+  sup="$(state_superseded)" || exit 1
+  want="$(printf '%s\n' \
+    "EqualBags AWS::SNS::Topic ${EQUALBAGS_TOPIC_ARN}" \
+    "Overlap AWS::SSM::Parameter ${OVERLAP_NAME}" \
+    "Subject AWS::SSM::Parameter ${SUBJECT_PARAM}" | LC_ALL=C sort)"
+  if [ "${sup}" != "${want}" ]; then
+    echo "[verify] FAIL (${step}): state's superseded resources after the failed deploy are not the three old ones under their OLD types:"
+    printf '%s\n' "${sup}" | sed 's/^/    got:      /'
+    printf '%s\n' "${want}" | sed 's/^/    expected: /'
+    exit 1
+  fi
 }
 
 # Fill EqualBags' two generated names from the topic state records after a v1
@@ -390,6 +462,18 @@ run_logged() { # usage: run_logged <log-file> <command...>
   sed 's/^/  /' "${log}" || true
 }
 
+# go-to-k/cdkd#6374: the rollback re-adopted each untouched old resource
+# (called after assert_v1_world, which reads AWS and state first).
+assert_readopted() { # usage: assert_readopted <step> <log>
+  local row
+  for row in "Subject ${SUBJECT_PARAM}" "Overlap ${OVERLAP_NAME}" "EqualBags ${EQUALBAGS_TOPIC_ARN}"; do
+    if ! grep -qF "Rollback: the old resource of ${row% *} (${row#* }) was not deleted yet — re-adopting it" "$2"; then
+      echo "[verify] FAIL ($1): the rollback did not say it re-adopted old ${row% *} (${row#* }) (output above)"
+      exit 1
+    fi
+  done
+}
+
 echo "[verify] step 0: install + build cdkd (root) + fixture deps, then a pre-run sweep"
 (cd "${REPO_ROOT}" && CI=true pnpm install)
 (cd "${REPO_ROOT}" && vp run build)
@@ -472,6 +556,7 @@ fi
 assert_gone "(step 3) FailingQueue ${FAILING_QUEUE_NAME} exists — the injected CreateQueue should have been rejected" \
   aws sqs get-queue-url --queue-name "${FAILING_QUEUE_NAME}" --region "${REGION}"
 assert_v1_world "step 3"
+assert_readopted "step 3" "${LOG_DIR}/3-autorollback.log"
 # The rolled-back replacement reached generation 1, and the restored record
 # remembers it (go-to-k/cdkd#5064), so the v1-world probe above covered it.
 STEP3_HIGH="$(state_field EqualBags nameGenerationHigh)"
@@ -479,7 +564,7 @@ if [ "${STEP3_HIGH}" != "1" ]; then
   echo "[verify] FAIL (step 3): EqualBags records nameGenerationHigh '${STEP3_HIGH}' after the rollback, expected 1"
   exit 1
 fi
-echo "[verify] step 3 ok: automatic rollback re-created each OLD type and deleted each new resource"
+echo "[verify] step 3 ok: automatic rollback re-adopted each OLD resource under its old type and deleted each new resource"
 
 # ---------------------------------------------------------------------------
 echo "[verify] step 4: the same failing deploy under --no-rollback (expect v2 to have landed and the journal to record BOTH types)"
@@ -489,7 +574,13 @@ if [ "${RUN_RC}" -eq 0 ]; then
   echo "[verify] FAIL (step 4): the INJECT_FAIL --no-rollback deploy unexpectedly SUCCEEDED"
   exit 1
 fi
-assert_v2_world "step 4"
+assert_v2_world "step 4" kept
+for row in "Subject ${SUBJECT_PARAM}" "Overlap ${OVERLAP_NAME}" "EqualBags ${EQUALBAGS_TOPIC_ARN}"; do
+  if ! grep -qF "Old ${row% *} (${row#* }) was not deleted: the deploy failed first" "${LOG_DIR}/4-norollback.log"; then
+    echo "[verify] FAIL (step 4): the failed deploy did not say old ${row% *} (${row#* }) was not deleted (output above)"
+    exit 1
+  fi
+done
 JOURNAL_BODY="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" -)"
 # "<logicalId> <new type> <old type>" per completed op of the newest segment.
 JOURNAL_TYPES="$(jq -r '.segments[-1].operations[] | "\(.logicalId) \(.resourceType) \(.previousResourceType // "MISSING")"' <<<"${JOURNAL_BODY}" | sort)"
@@ -503,7 +594,7 @@ if [ "${JOURNAL_TYPES}" != "${EXPECTED_JOURNAL_TYPES}" ]; then
   printf '%s\n' "${EXPECTED_JOURNAL_TYPES}" | sed 's/^/    expected: /'
   exit 1
 fi
-echo "[verify] step 4 ok: v2 landed under --no-rollback; the journal names the old AND the new type of all three ops"
+echo "[verify] step 4 ok: v2 landed under --no-rollback with every old resource kept; the journal names the old AND the new type of all three ops"
 
 echo "[verify] step 4a: cdkd rollback ${STACK} --force (expect v1 restored, journal cleared, exit 0)"
 run_logged "${LOG_DIR}/4a-rollback.log" ${CLI} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force
@@ -512,9 +603,10 @@ if [ "${RUN_RC}" -ne 0 ]; then
   exit 1
 fi
 assert_v1_world "step 4a"
+assert_readopted "step 4a" "${LOG_DIR}/4a-rollback.log"
 assert_gone "(step 4a) rollback journal still present after a clean rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
-echo "[verify] step 4a ok: cdkd rollback reversed all three Type changes"
+echo "[verify] step 4a ok: cdkd rollback reversed all three Type changes, re-adopting each old resource"
 
 # ---------------------------------------------------------------------------
 echo "[verify] step 5: deploy v2 for real"
@@ -530,7 +622,7 @@ if [ "${V2_COUNT}" != "3" ]; then
   echo "[verify] FAIL (step 5): state records ${V2_COUNT} resource(s) (expected 3)"
   exit 1
 fi
-echo "[verify] step 5 ok: each old resource deleted through its own type, each new one created, state records the v2 types"
+echo "[verify] step 5 ok: the cleanup phase deleted each old resource through its own type, each new one created, state records the v2 types"
 
 # ---------------------------------------------------------------------------
 echo "[verify] step 6: re-deploy v2 (expect 'No changes detected')"

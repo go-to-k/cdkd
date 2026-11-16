@@ -310,8 +310,21 @@ if ! aws s3api head-bucket --bucket "${REPLACE_BUCKET_AFTER}" --region "${REGION
   echo "FAIL: new ReplaceBucket '${REPLACE_BUCKET_AFTER}' does not exist on AWS after replacement" >&2
   exit 1
 fi
-# ...and the old bucket must be GONE (replacement deletes the original).
-assert_gone "old ReplaceBucket '${REPLACE_BUCKET_BEFORE}' still exists after replacement — old physical resource was not cleaned up" aws s3api head-bucket --bucket "${REPLACE_BUCKET_BEFORE}" --region "${REGION}"
+# ...and the old bucket must be GONE (replacement deletes the original). The
+# delete is the deploy's last step (the cleanup phase, issue #6374), and S3's
+# HeadBucket can still answer for a bucket deleted a moment ago, so poll.
+OLD_GONE=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws s3api head-bucket --bucket "${REPLACE_BUCKET_BEFORE}" --region "${REGION}"; then
+    OLD_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${OLD_GONE}" -ne 1 ]; then
+  echo "FAIL: old ReplaceBucket '${REPLACE_BUCKET_BEFORE}' still exists 60s after replacement — old physical resource was not cleaned up" >&2
+  exit 1
+fi
 echo "    OK (replacement): ReplaceBucket id CHANGED ${REPLACE_BUCKET_BEFORE} -> ${REPLACE_BUCKET_AFTER}, old gone, new present"
 
 # --- Phase 2: destroy -------------------------------------------------

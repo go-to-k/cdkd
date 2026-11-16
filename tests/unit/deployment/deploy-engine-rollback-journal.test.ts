@@ -3198,12 +3198,16 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     // is not.
     describe('a replacement whose old-resource delete outlives the deadline (go-to-k/cdkd#5511)', () => {
       const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      // An IAM inline policy type: `canRecordSuperseded` refuses it, so the old
+      // delete stays INLINE, under the row's deadline, rather than waiting for
+      // the cleanup phase (go-to-k/cdkd#6374).
+      const TYPE = 'AWS::IAM::Policy';
 
       function replacementPastDeadline(oldDelete: () => Promise<void>) {
         const change = {
           logicalId: 'B',
           changeType: 'UPDATE',
-          resourceType: 'AWS::SQS::Queue',
+          resourceType: TYPE,
           desiredProperties: { p: 'new' },
           propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: true }],
         } as unknown as ResourceChange;
@@ -3217,10 +3221,10 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
           deps: { B: [], C: [] },
           noRollback: true,
           currentEtag: 'e0',
-          currentResources: { B: prevB() },
+          currentResources: { B: prevB(TYPE) },
           engineOptions: {
             resourceWarnAfterMs: 10,
-            resourceTimeoutByType: { 'AWS::SQS::Queue': 60 },
+            resourceTimeoutByType: { [TYPE]: 60 },
           },
         });
         const provider = (
@@ -3237,13 +3241,13 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
             await sleep(400);
             return { physicalId: 'phys-C', attributes: {} };
           }
-          reportCreatedResource('B', 'AWS::SQS::Queue', 'b-new');
+          reportCreatedResource('B', TYPE, 'b-new');
           return { physicalId: 'b-new', attributes: {} };
         });
         provider.delete.mockImplementation(oldDelete);
         const tmpl: CloudFormationTemplate = {
           Resources: {
-            B: { Type: 'AWS::SQS::Queue', Properties: { p: 'new' } },
+            B: { Type: TYPE, Properties: { p: 'new' } },
             C: { Type: 'AWS::S3::Bucket', Properties: {} },
           },
         };

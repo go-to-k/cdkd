@@ -80,9 +80,10 @@ export class ReplacementRunState {
    * blocked by a failed final snapshot), with the verdict stamped as
    * `CompletedOperation.oldResourceMaySurvive`, which makes the rollback
    * read AWS for the old resource before re-creating it. Cleared per
-   * `deploy()`.
+   * `deploy()`. `'deferred'` (go-to-k/cdkd#6374): the delete waits for the
+   * deploy's cleanup phase, so until then the old resource is whole.
    */
-  replacedOldMaySurvive = new Map<string, 'kept' | 'unconfirmed'>();
+  replacedOldMaySurvive = new Map<string, 'kept' | 'unconfirmed' | 'deferred'>();
 
   /**
    * go-to-k/cdkd#4411: logical ids this deploy destroyed and re-created under
