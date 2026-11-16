@@ -327,6 +327,7 @@ const DESTROY_RUNNER_ORDER = [
   'types.ts',
   'helpers.ts',
   'preflight.ts',
+  'child-records.ts',
   'emulator-custom-resources.ts',
   'run.ts',
   'under-lock.ts',
@@ -8282,6 +8283,13 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
       'src/cli/upload-cfn-template.ts',
       1,
       'an S3 OBJECT key being written, not a key anything is looked up by',
+    ],
+    [
+      'src/cli/commands/destroy-runner/child-records.ts',
+      1,
+      '`${parentStackName}~${logicalId}`: the nested child state-key NAME the provider ' +
+        'derives the same way (`deriveChildStackName`); a logical id is alphanumeric, so ' +
+        'it cannot hold `~` and the split is unambiguous (go-to-k/cdkd#6396)',
     ],
     [
       'src/deployment/intrinsic-resolver/getatt-construct-compute.ts',
