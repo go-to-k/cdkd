@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { DagBuilder } from '../../../src/analyzer/dag-builder.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import {
@@ -152,6 +153,11 @@ describe('DeployEngine and per-resource name generations (go-to-k/cdkd#5064 phas
       }),
       getAttribute: vi.fn(),
       import: vi.fn(async () => null),
+      // go-to-k/cdkd#6374: a rollback reads AWS for a replaced resource whose
+      // delete waited for the cleanup phase.
+      readCurrentState: vi.fn(async (physicalId: string) =>
+        held.has(physicalId) ? { Name: physicalId } : RESOURCE_NOT_FOUND
+      ),
     };
     stateBackend = {
       getState: vi.fn(),

@@ -94,7 +94,12 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
   }),
 }));
 
-const REVISION = 'AWS::Lambda::WebFunctionRevision';
+// An IAM inline policy type: `canRecordSuperseded` refuses it, so its first
+// delete stays INLINE rather than waiting for the cleanup phase
+// (go-to-k/cdkd#6374), and this file's failure-then-retry flow still runs.
+// It is not a standalone inline policy (`RolePolicy` ...), so no name-claim
+// predicate joins the delete.
+const REVISION = 'AWS::IAM::Policy';
 const ENDPOINT = 'AWS::Lambda::WebFunctionEndpoint';
 const lines = (level: 'info' | 'warn'): string[] => printed[level];
 

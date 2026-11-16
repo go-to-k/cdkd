@@ -1,0 +1,471 @@
+/**
+ * go-to-k/cdkd#6374: a create-first replacement's delete of the OLD resource
+ * waits for the deploy's cleanup phase, as CloudFormation deletes replaced
+ * resources only after every other change succeeded. A failed deploy never
+ * sends it, journals `oldResourceMaySurvive: 'deferred'`, and the automatic
+ * rollback re-adopts the old resource it finds whole. Where the old record
+ * cannot be kept in state until then (`canRecordSuperseded`), or a Snapshot
+ * policy takes its snapshot first, the delete stays inline.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
+import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
+import { supersededResourcesOf } from '../../../src/deployment/superseded-resources.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
+import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
+import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+
+const printed = vi.hoisted(() => ({ info: [] as string[], warn: [] as string[] }));
+vi.mock('../../../src/utils/logger.js', async () => {
+  const sink = (level: 'info' | 'warn') =>
+    vi.fn((message: unknown) => {
+      printed[level].push(String(message));
+    });
+  const fns = {
+    setLevel: vi.fn(),
+    debug: vi.fn(),
+    info: sink('info'),
+    warn: sink('warn'),
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
+  IntrinsicFunctionResolver: vi.fn().mockImplementation(() => ({
+    getPhysicalIdFallbackCount: vi.fn().mockReturnValue(0),
+    resetPhysicalIdFallbackCount: vi.fn(),
+    resolve: vi.fn().mockImplementation((value: unknown) => Promise.resolve(value)),
+    resolveParameters: vi.fn().mockReturnValue({}),
+    evaluateConditions: vi.fn().mockResolvedValue({}),
+  })),
+}));
+
+vi.mock('../../../src/deployment/resource-deadline.js', () => ({
+  withResourceDeadline: vi.fn(async (operation: () => Promise<unknown>) => operation()),
+}));
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({}),
+  setAwsClients: vi.fn(),
+  AwsClients: vi.fn(),
+}));
+
+vi.mock('../../../src/utils/live-renderer.js', () => ({
+  getLiveRenderer: () => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+    addTask: vi.fn(),
+    removeTask: vi.fn(),
+    updateTaskLabel: vi.fn(),
+    printAbove: (write: () => void) => write(),
+  }),
+}));
+
+// Each journal segment the engine writes, as a clone taken before the write.
+const journalTap = vi.hoisted(() => ({ push: (_ops: unknown): void => {} }));
+vi.mock('../../../src/deployment/deploy-engine/rollback.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/deployment/deploy-engine/rollback.js')>();
+  return {
+    ...actual,
+    writeRollbackJournalSegment: vi.fn(
+      async (...args: Parameters<typeof actual.writeRollbackJournalSegment>) => {
+        journalTap.push(structuredClone(args[2]));
+        return actual.writeRollbackJournalSegment(...args);
+      }
+    ),
+  };
+});
+
+/** A type `canRecordSuperseded` accepts: its delete is deferred. */
+const REVISION = 'AWS::Lambda::WebFunctionRevision';
+const ENDPOINT = 'AWS::Lambda::WebFunctionEndpoint';
+
+function awsError(name: string, message: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
+
+describe('a create-first replacement deletes the old resource in the cleanup phase (go-to-k/cdkd#6374)', () => {
+  let provider: ResourceProvider;
+  let endpointFails: boolean;
+  /** Ids whose delete AWS refuses, with the error it throws. */
+  let refuse: Map<string, () => Error>;
+  let live: Set<string>;
+  let order: string[];
+  let journaled: CompletedOperation[][];
+  let saved: StackState[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    printed.info.length = 0;
+    printed.warn.length = 0;
+    endpointFails = false;
+    refuse = new Map();
+    live = new Set(['rev-old']);
+    order = [];
+    journaled = [];
+    saved = [];
+    provider = {
+      create: vi.fn(async () => {
+        live.add('rev-new');
+        order.push('create rev-new');
+        return { physicalId: 'rev-new', attributes: {} };
+      }),
+      update: vi.fn(async (_logicalId: string, physicalId: string) => {
+        order.push(`update ${physicalId}`);
+        if (endpointFails) throw new Error('ValidationException: endpoint update rejected');
+        return { physicalId, wasReplaced: false, attributes: {} };
+      }),
+      delete: vi.fn(async (_logicalId: string, physicalId: string) => {
+        order.push(`delete ${physicalId}`);
+        const refusal = refuse.get(physicalId);
+        if (refusal !== undefined) throw refusal();
+        live.delete(physicalId);
+        return undefined;
+      }),
+      readCurrentState: vi.fn(async (physicalId: string) =>
+        live.has(physicalId) ? { FunctionName: 'todo-api' } : RESOURCE_NOT_FOUND
+      ),
+      getAttribute: vi.fn(),
+      disableOuterRetry: true,
+    } as unknown as ResourceProvider;
+  });
+
+  function makeEngine(options: Record<string, unknown> = {}): InstanceType<typeof DeployEngine> {
+    const registry = {
+      getProvider: vi.fn().mockReturnValue(provider),
+      getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'sdk' as const }),
+      getRegisteredTypes: vi.fn().mockReturnValue([]),
+      validateResourceTypes: vi.fn(),
+      validateResourceProperties: vi.fn(),
+      ccRouteUnavailableReason: vi.fn().mockReturnValue(undefined),
+    };
+    const engine = new DeployEngine(
+      {
+        getState: vi.fn(),
+        saveState: vi.fn(async (_stack: string, _region: string, state: StackState) => {
+          saved.push(structuredClone(state));
+          order.push('save');
+          return 'etag';
+        }),
+        loadRollbackJournal: vi.fn().mockResolvedValue(null),
+        saveRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
+        purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
+        rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
+        warmConnections: vi.fn().mockResolvedValue(undefined),
+      } as unknown as never,
+      {} as unknown as never,
+      {
+        getDirectDependencies: (_d: unknown, id: string) => (id === 'Endpoint' ? ['Revision'] : []),
+      } as unknown as never,
+      {} as unknown as never,
+      registry as unknown as never,
+      { concurrency: 4, noRollback: true, ...options } as never,
+      'us-east-1'
+    );
+    journalTap.push = (ops) => journaled.push(ops as CompletedOperation[]);
+    return engine;
+  }
+
+  async function deploy(
+    opts: {
+      engine?: DeployEngine;
+      revisionType?: string;
+      oldRecord?: Partial<ResourceState>;
+      updateReplacePolicy?: string;
+    } = {}
+  ): Promise<{ completedOperations: CompletedOperation[]; state: StackState }> {
+    const engine = opts.engine ?? makeEngine();
+    const type = opts.revisionType ?? REVISION;
+    const template = {
+      Resources: {
+        Revision: {
+          Type: type,
+          Properties: { FunctionName: 'todo-api', Code: 'v2' },
+          ...(opts.updateReplacePolicy !== undefined && {
+            UpdateReplacePolicy: opts.updateReplacePolicy,
+          }),
+        },
+        Endpoint: { Type: ENDPOINT, Properties: { FunctionName: 'todo-api', RevisionId: 'rev-new' } },
+      },
+    } as unknown as CloudFormationTemplate;
+    const record = (physicalId: string, resourceType: string, properties: Record<string, unknown>) =>
+      ({
+        physicalId,
+        resourceType,
+        properties,
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      }) as ResourceState;
+    const currentState = {
+      version: 12,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      resources: {
+        Revision: {
+          ...record('rev-old', type, { FunctionName: 'todo-api', Code: 'v1' }),
+          ...opts.oldRecord,
+        },
+        Endpoint: record('prod', ENDPOINT, { FunctionName: 'todo-api', RevisionId: 'rev-old' }),
+      },
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+    const changes = new Map<string, ResourceChange>([
+      [
+        'Revision',
+        {
+          logicalId: 'Revision',
+          changeType: 'UPDATE',
+          resourceType: type,
+          currentProperties: { FunctionName: 'todo-api', Code: 'v1' },
+          desiredProperties: { FunctionName: 'todo-api', Code: 'v2' },
+          propertyChanges: [{ path: 'Code', oldValue: 'v1', newValue: 'v2', requiresReplacement: true }],
+        } as unknown as ResourceChange,
+      ],
+      [
+        'Endpoint',
+        {
+          logicalId: 'Endpoint',
+          changeType: 'UPDATE',
+          resourceType: ENDPOINT,
+          currentProperties: { FunctionName: 'todo-api', RevisionId: 'rev-old' },
+          desiredProperties: { FunctionName: 'todo-api', RevisionId: 'rev-new' },
+          propertyChanges: [
+            { path: 'RevisionId', oldValue: 'rev-old', newValue: 'rev-new', requiresReplacement: false },
+          ],
+        } as unknown as ResourceChange,
+      ],
+    ]);
+    return (await executeDeployment(
+      engine,
+      template,
+      currentState,
+      changes,
+      {} as never,
+      [['Revision'], ['Endpoint']],
+      'MyStack',
+      template,
+      undefined,
+      undefined,
+      'etag-0'
+    )) as unknown as { completedOperations: CompletedOperation[]; state: StackState };
+  }
+
+  const revisionOp = (ops: CompletedOperation[]): CompletedOperation =>
+    ops.find((o) => o.logicalId === 'Revision')!;
+  const oldDeletes = (): number =>
+    vi.mocked(provider.delete).mock.calls.filter((c) => c[1] === 'rev-old').length;
+
+  it('a successful deploy sends the old delete only after every DAG node, then drops the mark and the record', async () => {
+    const engine = makeEngine();
+    let markDuringDag: unknown;
+    const update = provider.update;
+    provider.update = vi.fn(async (...args: Parameters<ResourceProvider['update']>) => {
+      markDuringDag = engine.replacementRun.replacedOldMaySurvive.get('Revision');
+      return update(...args);
+    }) as unknown as ResourceProvider['update'];
+
+    const result = await deploy({ engine });
+
+    // The dependent's update ran first; the old revision's delete after it.
+    expect(order.filter((o) => o !== 'save')).toEqual([
+      'create rev-new',
+      'update prod',
+      'delete rev-old',
+    ]);
+    expect(oldDeletes()).toBe(1);
+    expect(live.has('rev-old')).toBe(false);
+    // `'deferred'` while the DAG ran; gone from the op once the delete landed.
+    expect(markDuringDag).toBe('deferred');
+    expect('oldResourceMaySurvive' in revisionOp(result.completedOperations)).toBe(false);
+    // The superseded record kept until then is dropped.
+    expect(supersededResourcesOf(result.state)).toEqual([]);
+    expect(
+      printed.info.some((l) =>
+        l.includes('Old Revision (rev-old) is deleted after the rest of the deploy succeeds')
+      )
+    ).toBe(true);
+    expect(printed.info.some((l) => l.includes('Deleting the old resource of 1 replaced resource(s)'))).toBe(
+      true
+    );
+    expect(printed.warn).toEqual([]);
+  });
+
+  it('records the old revision on the live state at the replaced row save, before any delete (crash safety)', async () => {
+    await deploy();
+
+    const rowSave = saved.findIndex((s) => s.resources['Revision']?.physicalId === 'rev-new');
+    expect(rowSave).toBeGreaterThanOrEqual(0);
+    expect(
+      supersededResourcesOf(saved[rowSave]).map((e) => [e.logicalId, e.state.physicalId])
+    ).toEqual([['Revision', 'rev-old']]);
+    // That save came before the delete was sent.
+    const saves = order.map((o, i) => (o === 'save' ? i : -1)).filter((i) => i >= 0);
+    expect(saves[rowSave]!).toBeLessThan(order.indexOf('delete rev-old'));
+  });
+
+  it('a deploy failing after the replacement sends no old delete, journals deferred, and the rollback re-adopts it', async () => {
+    endpointFails = true;
+    const engine = makeEngine({ noRollback: false });
+
+    await expect(deploy({ engine })).rejects.toThrow();
+
+    expect(oldDeletes()).toBe(0);
+    expect(journaled.length).toBeGreaterThanOrEqual(1);
+    expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('deferred');
+    // Re-adopted: the new revision is deleted, the old one is alive, and the
+    // last save points state back at it.
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+    expect([...live]).toEqual(['rev-old']);
+    expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    expect(
+      printed.info.some(
+        (l) =>
+          l.includes('the old resource of Revision (rev-old) was not deleted yet') &&
+          l.includes('re-adopting it')
+      )
+    ).toBe(true);
+    // Nothing went wrong with the old revision: no warning names it.
+    expect(printed.warn.some((l) => l.includes('rev-old'))).toBe(false);
+  });
+
+  // The delete was never sent, so a read that cannot answer still re-adopts.
+  it.each([
+    [
+      'unreadable (the type has no readCurrentState)',
+      (): void => {
+        delete (provider as { readCurrentState?: unknown }).readCurrentState;
+      },
+    ],
+    [
+      'unknown (the read throws)',
+      (): void => {
+        provider.readCurrentState = vi.fn(async () => {
+          throw new Error('ThrottlingException: Rate exceeded');
+        }) as unknown as ResourceProvider['readCurrentState'];
+      },
+    ],
+  ] as const)('a failed deploy re-adopts the deferred old resource when the read is %s', async (_l, arrange) => {
+    endpointFails = true;
+    arrange();
+
+    await expect(deploy({ engine: makeEngine({ noRollback: false }) })).rejects.toThrow();
+
+    expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('deferred');
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+    expect([...live]).toEqual(['rev-old']);
+    expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    expect(printed.info.some((l) => l.includes('was not deleted yet') && l.includes('re-adopting it'))).toBe(
+      true
+    );
+    expect(printed.warn.some((l) => l.includes('rev-old') || l.includes('Cannot reverse'))).toBe(false);
+  });
+
+  it('a rollback interrupted during the read still refuses the deferred op (journal kept)', async () => {
+    endpointFails = true;
+    const engine = makeEngine({ noRollback: false });
+    // The user presses Ctrl-C while the rollback's read of the old revision
+    // is running; it answers too late. (The forward deploy reads only the new one.)
+    let probes = 0;
+    provider.readCurrentState = vi.fn(async (physicalId: string) => {
+      if (physicalId === 'rev-old') {
+        probes++;
+        engine.userInterrupted = true;
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
+      return live.has(physicalId) ? { FunctionName: 'todo-api' } : RESOURCE_NOT_FOUND;
+    }) as unknown as ResourceProvider['readCurrentState'];
+
+    await expect(deploy({ engine })).rejects.toThrow();
+
+    // The rollback's survivor read ran, and was interrupted.
+    expect(probes).toBe(1);
+    // Neither copy is deleted, and state is not re-pointed at the old one.
+    expect(oldDeletes()).toBe(0);
+    expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).not.toContain('rev-new');
+    expect([...live].sort()).toEqual(['rev-new', 'rev-old']);
+    expect(printed.info.some((l) => l.includes('re-adopting it'))).toBe(false);
+    // The existing refusal, unchanged by the deferral.
+    expect(
+      printed.warn.some(
+        (l) =>
+          l.includes('Cannot reverse the replacement of Revision') &&
+          l.includes('the rollback was interrupted before cdkd could read whether it does')
+      )
+    ).toBe(true);
+  });
+
+  it.each([
+    ['kept', () => awsError('AccessDenied', 'not authorized to perform: DeleteRevision')],
+    ['unconfirmed', () => new Error('Timed out waiting for the revision to be deleted')],
+  ] as const)(
+    're-stamps the journaled verdict (%s) when the cleanup-phase delete fails',
+    async (verdict, error) => {
+      refuse.set('rev-old', error);
+
+      const result = await deploy();
+
+      expect(oldDeletes()).toBe(1);
+      expect(order.indexOf('delete rev-old')).toBeGreaterThan(order.indexOf('update prod'));
+      expect(revisionOp(result.completedOperations).oldResourceMaySurvive).toBe(verdict);
+      expect(
+        printed.warn.some((l) => l.includes('Failed to delete old resource Revision (rev-old)'))
+      ).toBe(true);
+    }
+  );
+
+  it('deletes inline when the old record cannot be kept in state (a NoEcho mask)', async () => {
+    const result = await deploy({ oldRecord: { noEchoLeaves: [['Code']] } });
+
+    // Inside the DAG, before the dependent moved.
+    expect(order.filter((o) => o !== 'save')).toEqual([
+      'create rev-new',
+      'delete rev-old',
+      'update prod',
+    ]);
+    expect(printed.info.some((l) => l.includes('Deleting old Revision (rev-old)...'))).toBe(true);
+    expect(printed.info.some((l) => l.includes('is deleted after the rest of the deploy'))).toBe(false);
+    expect(supersededResourcesOf(result.state)).toEqual([]);
+  });
+
+  it('deletes inline under UpdateReplacePolicy: Snapshot, and defers under --skip-final-snapshot', async () => {
+    const DB = 'AWS::RDS::DBInstance';
+    await deploy({
+      engine: makeEngine({ forceStatefulRecreation: true }),
+      revisionType: DB,
+      updateReplacePolicy: 'Snapshot',
+    });
+    expect(order.filter((o) => o !== 'save')).toEqual([
+      'create rev-new',
+      'delete rev-old',
+      'update prod',
+    ]);
+    // The snapshot identifier reached the inline delete.
+    expect(vi.mocked(provider.delete).mock.calls[0]![4]).toHaveProperty('finalSnapshotIdentifier');
+
+    // Control: the same replacement with no snapshot to take waits for the cleanup phase.
+    order = [];
+    live = new Set(['rev-old']);
+    vi.mocked(provider.delete).mockClear();
+    await deploy({
+      engine: makeEngine({ forceStatefulRecreation: true, skipFinalSnapshot: true }),
+      revisionType: DB,
+      updateReplacePolicy: 'Snapshot',
+    });
+    expect(order.filter((o) => o !== 'save')).toEqual([
+      'create rev-new',
+      'update prod',
+      'delete rev-old',
+    ]);
+  });
+});

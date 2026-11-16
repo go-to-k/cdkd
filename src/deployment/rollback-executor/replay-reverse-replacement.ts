@@ -177,10 +177,17 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     if (survivor === 'exists' && op.oldResourceMaySurvive === 'unconfirmed') {
       throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
     }
-    if (survivor === 'exists' && op.oldResourceMaySurvive === 'deferred') {
+    if (
+      op.oldResourceMaySurvive === 'deferred' &&
+      survivor !== 'gone' &&
+      survivor !== 'interrupted'
+    ) {
       // go-to-k/cdkd#6374: its delete waited for the deploy's cleanup phase,
       // which a failed deploy never reaches, so it was never sent: the old
       // resource is whole, and taking it back is the CloudFormation rollback.
+      // So a read that cannot answer (a type with no `readCurrentState`, a
+      // failed read) still re-adopts; only AWS reporting it gone (deleted out
+      // of band) re-creates it.
       logger.info(
         safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) was not deleted yet — re-adopting it`
       );

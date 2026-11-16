@@ -1002,7 +1002,7 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       /** A failed in-flight op recorded beside the completed one. */
       failedOperations?: unknown[];
       /** go-to-k/cdkd#2631: the deploy did not confirm the old delete. */
-      oldResourceMaySurvive?: 'kept' | 'unconfirmed';
+      oldResourceMaySurvive?: 'kept' | 'unconfirmed' | 'deferred';
     }): void {
       const op = {
         logicalId: 'R',
@@ -1122,6 +1122,9 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
       ['kept' as const, 'Retain' as const, 'new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]'],
       ['unconfirmed' as const, undefined, 'delete new]'],
       ['unconfirmed' as const, 'Retain' as const, 'new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]'],
+      // go-to-k/cdkd#6374: a delete left for the deploy's cleanup phase.
+      ['deferred' as const, undefined, 'delete new]'],
+      ['deferred' as const, 'Retain' as const, 'new one RETAINED (UpdateReplacePolicy: Retain) and left untracked]'],
     ])('an old delete the deploy did not confirm (%s, new copy policy %s) names its outcomes', async (verdict, policy, tail) => {
       installReplacementStack({
         oldResourceRetained: false,
@@ -1134,7 +1137,9 @@ describe('rollbackCommand — DeletionPolicy: Snapshot wiring (#1358)', () => {
         '[the deploy did not confirm deleting the old resource: re-create it if AWS reports it gone, ' +
           (verdict === 'kept'
             ? 're-adopt it if AWS still has it (its delete was refused or never sent), '
-            : 'REFUSED if AWS still has it (its delete may still be running, or only partly ran), ') +
+            : verdict === 'deferred'
+              ? 're-adopt it if AWS still has it (its delete waits for the deploy to succeed), '
+              : 'REFUSED if AWS still has it (its delete may still be running, or only partly ran), ') +
           'REFUSED if cdkd cannot tell; ' +
           tail
       );

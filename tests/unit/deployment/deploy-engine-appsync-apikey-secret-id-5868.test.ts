@@ -45,6 +45,7 @@ vi.mock('p-limit', () => ({ default: vi.fn(() => <T>(fn: () => T) => fn()) }));
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
 
@@ -150,8 +151,11 @@ describe('an AppSync ApiKey replacement never logs the key (go-to-k/cdkd#5868)',
     // The new id prints on no line of this path; never as the key either.
     expect(all).not.toContain(NEW_KEY);
     if (!shown) {
-      // The display helper's rendering, not a bag's `***`.
-      expect(all).toContain(`Deleting old Key (${OLD_API}|${last4(OLD_KEY)})...`);
+      // The display helper's rendering, not a bag's `***`: go-to-k/cdkd#6374
+      // moved it onto the line deferring the delete to the cleanup phase.
+      expect(all).toContain(
+        `Old Key (${OLD_API}|${last4(OLD_KEY)}) is deleted after the rest of the deploy succeeds`
+      );
     }
     // The persisted record keeps the full id.
     const saved = JSON.stringify(h.saveState.mock.calls.map((c) => c[2] ?? c));
@@ -251,6 +255,10 @@ describe('the in-process rollback of an ApiKey replacement never logs a key (go-
         ? { physicalId: `${NEW_API}|${NEW_KEY}`, attributes: { ApiKey: NEW_KEY } }
         : { physicalId: `${OLD_API}|${RECREATED_KEY}`, attributes: { ApiKey: RECREATED_KEY } };
     });
+    // go-to-k/cdkd#6374: the deploy never sent the old key's delete (it
+    // waits for the cleanup phase), and AWS reports it gone here (deleted out
+    // of band), so the rollback re-creates it: the lines this case covers.
+    h.provider.readCurrentState.mockResolvedValue(RESOURCE_NOT_FOUND);
     // The rollback's delete of the NEW key fails, so its survivor warning
     // names the new id.
     h.provider.delete.mockImplementation((_logicalId: unknown, physicalId: unknown) => {
@@ -264,7 +272,13 @@ describe('the in-process rollback of an ApiKey replacement never logs a key (go-
     // Premise: the rollback reversed the replacement, failed to delete the new
     // key, and named both sides.
     expect(all).toContain('Rollback: Key replacement reversed (old resource re-created as');
-    expect(all).toContain(`Deleting old Key (${OLD_API}|`);
+    expect(h.provider.readCurrentState).toHaveBeenCalledWith(
+      `${OLD_API}|${OLD_KEY}`,
+      'Key',
+      type,
+      expect.anything()
+    );
+    expect(all).toContain(`Old Key (${OLD_API}|`);
     expect(all).toContain(NEW_API);
     expect(all.includes(OLD_KEY)).toBe(shown);
     expect(all.includes(RECREATED_KEY)).toBe(shown);
@@ -272,6 +286,32 @@ describe('the in-process rollback of an ApiKey replacement never logs a key (go-
     if (!shown) {
       expect(all).toContain(`re-created as ${OLD_API}|${last4(RECREATED_KEY)})`);
     }
+  });
+
+  it.each([
+    ['an AppSync ApiKey', 'AWS::AppSync::ApiKey', false],
+    ['negative control, an AppSync DataSource', 'AWS::AppSync::DataSource', true],
+  ])('re-adopting the old key the failed deploy never deleted (go-to-k/cdkd#6374): %s', async (_l, type, shown) => {
+    const h = harness(state(type, { ApiId: OLD_API, Name: 'n' }), {
+      levels: [['Key'], ['Boom']],
+    });
+    h.provider.create.mockImplementation(async (logicalId: string) => {
+      if (logicalId === 'Boom') throw new Error('Boom create failed');
+      return { physicalId: `${NEW_API}|${NEW_KEY}`, attributes: { ApiKey: NEW_KEY } };
+    });
+    // The old key is alive: its delete waited for the cleanup phase.
+    h.provider.readCurrentState.mockResolvedValue({ ApiId: OLD_API });
+    const tpl = template(type, { ApiId: NEW_API, Name: 'n' });
+    tpl.Resources['Boom'] = { Type: 'AWS::SNS::Topic', Properties: {} };
+    await h.engine.deploy('s', tpl).catch(() => undefined);
+    const all = logLines.join('\n');
+    // Premise: no delete of the old key was sent, the rollback re-adopted it
+    // and deleted the new one.
+    const deleted = h.provider.delete.mock.calls.map((c) => c[1]);
+    expect(deleted).toEqual([`${NEW_API}|${NEW_KEY}`]);
+    expect(all).toContain('was not deleted yet — re-adopting it');
+    expect(all).toContain(`the old resource of Key (${OLD_API}|`);
+    expect(all.includes(OLD_KEY)).toBe(shown);
   });
 });
 
@@ -301,7 +341,11 @@ describe('a Type change away from an ApiKey never logs its key (go-to-k/cdkd#586
       expect(all).toContain(OLD_API);
       expect(all.includes(OLD_KEY)).toBe(shown);
       if (!shown) {
-        expect(all).toContain(`Deleting old Key (${OLD_API}|${last4(OLD_KEY)})...`);
+        // go-to-k/cdkd#6374: the display helper's rendering is on the line
+        // deferring the delete to the cleanup phase.
+        expect(all).toContain(
+          `Old Key (${OLD_API}|${last4(OLD_KEY)}) is deleted after the rest of the deploy succeeds`
+        );
       }
     }
   );
@@ -327,6 +371,9 @@ describe('a Type change away from an ApiKey never logs its key (go-to-k/cdkd#586
         ? { physicalId: 'q-new-5868', attributes: {} }
         : { physicalId: `${OLD_API}|${RECREATED_KEY}`, attributes: { ApiKey: RECREATED_KEY } };
     });
+    // go-to-k/cdkd#6374: AWS reports the old key gone (its delete waited for
+    // the cleanup phase and was deleted out of band), so the rollback re-creates it.
+    h.provider.readCurrentState.mockResolvedValue(RESOURCE_NOT_FOUND);
     const tpl = template('AWS::SQS::Queue', { QueueName: 'q-new-5868' });
     tpl.Resources['Boom'] = { Type: 'AWS::SNS::Topic', Properties: {} };
     await h.engine.deploy('s', tpl).catch(() => undefined);
