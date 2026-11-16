@@ -273,6 +273,26 @@ describe('autoDeleteObjects fixtures sweep their Lambda log groups', () => {
     'local-start-cloudfront': 'serves the synthesized assembly locally; no AWS call',
   };
 
+  /**
+   * Fixtures that deploy ONLY into a local AWS Emulator container: no Lambda
+   * runs in a real account, and removing the container discards the
+   * emulator's log groups with everything else.
+   */
+  const EMULATOR_ONLY: Readonly<Record<string, string>> = {
+    'local-aws-emulator': 'every deploy / destroy passes --aws-emulator; the container is removed on exit',
+  };
+
+  it('every emulator-only exemption is still in the population and passes --aws-emulator on every deploy', () => {
+    for (const name of Object.keys(EMULATOR_ONLY)) {
+      expect(population).toContain(name);
+      const deployLines = readFileSync(runnerOf(name)!, 'utf8')
+        .split('\n')
+        .filter((line) => /\b(deploy|destroy) "\$\{STACK\}"/.test(line));
+      expect(deployLines.length).toBeGreaterThanOrEqual(3);
+      for (const line of deployLines) expect(line).toMatch(/--aws-emulator/);
+    }
+  });
+
   it('finds the population (floor), and every exemption is still in it and still never deploys', () => {
     // A drop below the population measured when this landed means the scan
     // stopped seeing fixtures, not that they stopped needing the sweep.
@@ -285,7 +305,7 @@ describe('autoDeleteObjects fixtures sweep their Lambda log groups', () => {
 
   it('each sources the shared helper and calls it with its stack, or keeps its own /aws/lambda/ sweep', () => {
     const missing = population.filter((name) => {
-      if (name in NEVER_DEPLOYS) return false;
+      if (name in NEVER_DEPLOYS || name in EMULATOR_ONLY) return false;
       const body = readFileSync(runnerOf(name)!, 'utf8');
       const helper =
         HELPER_SOURCE.test(body) && body.split('\n').some((line) => HELPER_CALL.test(line));
