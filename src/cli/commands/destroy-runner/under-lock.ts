@@ -54,7 +54,7 @@ import type {
   DestroyLogger,
   StackLockBase,
 } from './types.js';
-import { nestedRowChildNames, retireUnaddressedChildRecords } from './child-records.js';
+import { retainedNestedRowChildNames, retireUnaddressedChildRecords } from './child-records.js';
 import {
   NESTED_STACK_TYPE,
   purgeStateHistoryIfOptedIn,
@@ -774,7 +774,7 @@ export async function destroyStackUnderLock({
         ctx,
         logger,
         refusalRecovery,
-        nestedRowChildNames(stackName, state.resources)
+        retainedNestedRowChildNames(stackName, state.resources)
       );
     } else {
       // Final authoritative write of the remaining state (not-yet-deleted +

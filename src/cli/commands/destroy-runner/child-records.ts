@@ -3,7 +3,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { holdsSupersededResources } from '../../../deployment/superseded-resources.js';
 import { loadJournaledOrphans } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
-import type { StackState } from '../../../types/state.js';
+import { shouldRetainResource, type ResourceState, type StackState } from '../../../types/state.js';
 import { destroyEmptyStack } from './preflight.js';
 import type { DestroyLogger, DestroyRunnerContext, DestroyRunnerResult } from './types.js';
 
@@ -19,11 +19,11 @@ import type { DestroyLogger, DestroyRunnerContext, DestroyRunnerResult } from '.
  * reaches `NestedStackProvider.delete` for that child, and the record outlived
  * the destroy: `cdkd state list` kept listing the child as a stack.
  *
- * Called once the parent's own record is deleted (under the parent's lock on
- * the main path, just after its release on the empty-record path). What makes
- * it safe is the CHILD's lock: a child deploy writes its record only under
- * that lock, and the delete re-checks emptiness under it. A record is retired
- * only when it names this parent (`parentStack` /
+ * Called once the parent's own record is deleted, still under the parent's
+ * lock on both destroy paths, so no deploy of the parent can add a row
+ * meanwhile. Each delete also takes the CHILD's lock, which a child deploy
+ * holds whenever it writes its record, and re-checks emptiness under it. A
+ * record is retired only when it names this parent (`parentStack` /
  * `parentRegion`, matching its own key) and holds nothing: no resource, no
  * rollback orphan, no superseded resource, no journaled orphan. The delete
  * itself is `destroyEmptyStack`, which takes the CHILD's lock and re-checks
@@ -77,15 +77,25 @@ export async function retireUnaddressedChildRecords(
   }
 }
 
-/** The child record names the parent's nested-stack rows address. */
-export function nestedRowChildNames(
+/**
+ * The child records the parent's KEPT nested-stack rows (`DeletionPolicy:
+ * Retain`) address: such a row leaves its child on purpose. A deleted row's
+ * child is gone with it, so anything still under it is swept.
+ */
+export function retainedNestedRowChildNames(
   parentStackName: string,
-  resources: Readonly<Record<string, { resourceType?: unknown } | null | undefined>>
+  resources: Readonly<
+    Record<string, { resourceType?: unknown; deletionPolicy?: unknown } | null | undefined>
+  >
 ): ReadonlySet<string> {
   const names = new Set<string>();
   for (const [logicalId, row] of Object.entries(resources)) {
-    if (row?.resourceType === 'AWS::CloudFormation::Stack')
+    if (
+      row?.resourceType === 'AWS::CloudFormation::Stack' &&
+      shouldRetainResource(row.deletionPolicy as ResourceState['deletionPolicy'])
+    ) {
       names.add(`${parentStackName}~${logicalId}`);
+    }
   }
   return names;
 }

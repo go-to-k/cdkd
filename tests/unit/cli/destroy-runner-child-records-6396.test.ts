@@ -201,6 +201,23 @@ describe('destroy retires the nested-child records no parent row addresses (go-t
     );
   });
 
+  it("still sweeps what is left under a nested row the destroy DELETED (not retained)", async () => {
+    const grand = `${CHILD}~Grand`;
+    const parent = record(PARENT, {
+      resources: {
+        ChildNestedStackResource: {
+          physicalId: 'arn:aws:cloudformation:us-east-1:111122223333:stack/x/y',
+          resourceType: 'AWS::CloudFormation::Stack',
+          properties: {},
+        },
+      },
+    });
+    // The row's own delete found no child record (already gone), leaving the grandchild.
+    const h = makeCtx({ [PARENT]: parent, [grand]: childRecord(grand, CHILD) });
+    await runDestroyForStack(PARENT, parent, h.ctx);
+    expect(h.deleted).toEqual([PARENT, grand]);
+  });
+
   it('retires a grandchild before its child', async () => {
     const grand = `${CHILD}~Grand`;
     const h = makeCtx({

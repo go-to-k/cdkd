@@ -14,7 +14,8 @@ export interface FailingChildParentStackProps extends cdk.StackProps {
  * parent's destroy used to leave the child's state.json and rollback journal
  * behind. The child creates an SSM parameter, then fails on an SQS queue whose
  * `MessageRetentionPeriod` is out of range (SQS refuses 59 seconds), which
- * fails the same way on every run.
+ * fails the same way on every run. The resource-holding parent adds the child
+ * only under `CDKD_TEST_CHILD=true`, so its first deploy succeeds first.
  */
 export class FailingChildParentStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: FailingChildParentStackProps) {
@@ -25,6 +26,10 @@ export class FailingChildParentStack extends cdk.Stack {
         stringValue: 'parent',
       });
     }
+    // The resource-holding parent deploys once without the child, so its
+    // parameter survives the failed child deploy and the destroy takes the
+    // main path (a first deploy that fails rolls the parent back to empty).
+    if (props.parentResource && process.env.CDKD_TEST_CHILD !== 'true') return;
     const child = new cdk.NestedStack(this, 'Child');
     const param = new ssm.StringParameter(child, 'ChildParam', {
       parameterName: `/cdkd-integ/${id}/child`,

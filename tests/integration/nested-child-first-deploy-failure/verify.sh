@@ -13,7 +13,9 @@
 #   CdkdIntegNestedChildFailEmpty  holds only the nested row (the empty-record
 #                                  path)
 # Phases, per parent:
-#   1. `cdkd deploy` fails: the child's SQS queue is refused
+#   0. (CdkdIntegNestedChildFail only) deploy the parent with its parameter and
+#      no child, so the parameter survives the failed child deploy below.
+#   1. `cdkd deploy` (CDKD_TEST_CHILD=true) fails: the child's SQS queue is refused
 #      (MessageRetentionPeriod 59), after its SSM parameter was created.
 #   2. Precondition (the leak's shape): the child's state.json exists.
 #   3. `cdkd destroy` succeeds; the child's state.json and rollback journal
@@ -123,10 +125,16 @@ for STACK in "${STACKS[@]}"; do
   CHILD_STATE="cdkd/${CHILD}/${REGION}/state.json"
   CHILD_JOURNAL="cdkd/${CHILD}/${REGION}/rollback-journal.json"
 
+  # --- Phase 0: the resource-holding parent deploys without the child --------
+  if [ "${STACK}" = "CdkdIntegNestedChildFail" ]; then
+    echo "==> [${STACK}] Phase 0: deploy the parent with its own parameter, no child yet"
+    env -u CDKD_TEST_CHILD node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  fi
+
   # --- Phase 1: the child's first deploy fails -------------------------------
   echo "==> [${STACK}] Phase 1: deploy fails inside the nested child"
   DEPLOY_RC=0
-  DEPLOY_OUT="$(node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || DEPLOY_RC=$?
+  DEPLOY_OUT="$(CDKD_TEST_CHILD=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || DEPLOY_RC=$?
   DEPLOY_OUT="$(printf '%s\n' "${DEPLOY_OUT}" | strip_ansi)"
   if [ "${DEPLOY_RC}" -eq 0 ]; then
     printf '%s\n' "${DEPLOY_OUT}" >&2
@@ -158,7 +166,7 @@ for STACK in "${STACKS[@]}"; do
     exit 1
   fi
   DESTROY_RC=0
-  DESTROY_OUT="$(node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)" || DESTROY_RC=$?
+  DESTROY_OUT="$(CDKD_TEST_CHILD=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)" || DESTROY_RC=$?
   DESTROY_OUT="$(printf '%s\n' "${DESTROY_OUT}" | strip_ansi)"
   printf '%s\n' "${DESTROY_OUT}"
   if [ "${DESTROY_RC}" -ne 0 ]; then
