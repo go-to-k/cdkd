@@ -16,7 +16,8 @@
 #   1. Deploy (v1). The Lambda's recorded Code names the EXPECTED bucket --
 #      the cdkd asset bucket from the region's bootstrap marker (key
 #      `<hash>.zip` at its root), else the CDKToolkit stack's BucketName
-#      (`assets/<hash>.zip`, CDK CLI layout) -- and that object exists; the
+#      (`assets/<hash>.zip`, CDK CLI layout; reachable because the deploys pass
+#      --no-auto-asset-storage) -- and that object exists; the
 #      `||`-split key parameter resolved. Invoking the Lambda returns the v1
 #      code marker and the v1 file asset's content, read through the DATA_URL
 #      the file asset's parameters built, in the SAME bucket.
