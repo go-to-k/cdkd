@@ -215,7 +215,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   ): Promise<string | undefined> {
     if (process.env['CDKD_NO_WAIT'] === 'true') {
       this.logger.debug(
-        `Skipping the READY wait for BedrockAgentCore Runtime ${logicalId} after ${operation} (CDKD_NO_WAIT=true)`
+        safeMsg`Skipping the READY wait for BedrockAgentCore Runtime ${logicalId} after ${operation} (CDKD_NO_WAIT=true)`
       );
       return responseStatus;
     }

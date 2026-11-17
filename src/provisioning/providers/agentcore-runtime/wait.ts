@@ -56,14 +56,12 @@ export async function waitForRuntimeReady(
   deps.debug(
     `Waiting for BedrockAgentCore Runtime ${agentRuntimeId} to be READY after ${operation}`
   );
-  const fail = (text: string): ProvisioningError =>
-    markNonRetryable(
-      new ProvisioningError(
-        `BedrockAgentCore Runtime ${logicalId} (${agentRuntimeId}) ${text}`,
-        resourceType,
-        logicalId,
-        agentRuntimeId
-      )
+  const failure = (text: string): ProvisioningError =>
+    new ProvisioningError(
+      `BedrockAgentCore Runtime ${logicalId} (${agentRuntimeId}) ${text}`,
+      resourceType,
+      logicalId,
+      agentRuntimeId
     );
   const watch = startInterruptWatch(`BedrockAgentCore Runtime ${logicalId} ${operation} wait`);
   try {
@@ -79,21 +77,27 @@ export async function waitForRuntimeReady(
         deps.debug(
           mask(`Runtime ${agentRuntimeId} failureReason: ${runtime.failureReason ?? '(none)'}`)
         );
-        throw fail(
-          `entered ${status} during ${operation}; its failureReason (GetAgentRuntime) says why`
+        throw markNonRetryable(
+          failure(
+            `entered ${status} during ${operation}; its failureReason (GetAgentRuntime) says why`
+          )
         );
       }
       if (status === undefined || !IN_FLIGHT.has(status)) {
-        throw fail(
-          `reported status ${status ?? '(none)'} while cdkd waited for READY after ${operation}`
+        throw markNonRetryable(
+          failure(
+            `reported status ${status ?? '(none)'} while cdkd waited for READY after ${operation}`
+          )
         );
       }
       deps.debug(`Runtime ${agentRuntimeId} is ${status} (poll ${poll}/${RUNTIME_WAIT_MAX_POLLS})`);
       await deps.sleep(RUNTIME_WAIT_POLL_MS);
     }
-    throw fail(
-      `was still ${status} ${(RUNTIME_WAIT_MAX_POLLS * RUNTIME_WAIT_POLL_MS) / 1000}s after the ${operation}; ` +
-        `re-run once it is READY, or pass --no-wait to return without waiting`
+    throw markNonRetryable(
+      failure(
+        `was still ${status} ${(RUNTIME_WAIT_MAX_POLLS * RUNTIME_WAIT_POLL_MS) / 1000}s after the ${operation}; ` +
+          `re-run once it is READY, or pass --no-wait to return without waiting`
+      )
     );
   } finally {
     watch.dispose();

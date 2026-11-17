@@ -326,9 +326,13 @@ A wait that runs out fails the update.
 | VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation (about 18 minutes) |
 | Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes for an IPv4 block, about 25 for an IPv6 one) |
 | IPAM pool CIDR refused while deleted resources' allocations remain | Until the pool releases them, then delete again |
+| Bedrock AgentCore runtime still `CREATING` or `UPDATING` | Until it leaves that status, then delete (up to 10 minutes) |
 
 Each wait is there for a reason:
 
+- A Bedrock AgentCore runtime that a `--no-wait` or interrupted deploy left
+  `CREATING` or `UPDATING` is waited out before the delete. If the wait runs
+  out, or the runtime cannot be read, cdkd sends the delete anyway.
 - A NAT gateway that is still `deleting` blocks the deletes of its subnet,
   internet gateway and VPC with `DependencyViolation`.
 - The CloudFront API requires a distribution to be disabled before it can be
