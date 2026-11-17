@@ -113,8 +113,9 @@ function fillOriginSslProtocols(
     (previousItems as Record<string, unknown>[]).some(
       (o) =>
         o?.['Id'] === id &&
-        (o['CustomOriginConfig'] as Record<string, unknown> | undefined)?.['OriginSslProtocols'] !==
-          undefined
+        (o?.['CustomOriginConfig'] as Record<string, unknown> | undefined)?.[
+          'OriginSslProtocols'
+        ] !== undefined
     );
   origins['Items'] = (origins['Items'] as Record<string, unknown>[]).map((origin) => {
     const custom = origin?.['CustomOriginConfig'];
