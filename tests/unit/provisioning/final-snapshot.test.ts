@@ -498,19 +498,16 @@ describe('createEbsFinalSnapshot', () => {
       .mockResolvedValueOnce({ SnapshotId: 'snap-t' })
       .mockResolvedValue({ Snapshots: [{ SnapshotId: 'snap-t', State: 'pending' }] });
 
-    const realNow = Date.now.bind(Date);
-    const start = realNow();
-    let calls = 0;
-    // First Date.now() seeds the deadline; later reads jump past it.
+    const start = Date.now();
+    // The clock stands still until the first wait poll is sent, then jumps
+    // past the deadline: keyed on the calls sent, not on how often the
+    // helper reads the clock (the reuse probe reads it too).
     vi.spyOn(Date, 'now').mockImplementation(() =>
-      calls++ === 0 ? start : start + 61 * 60 * 1_000
+      send.mock.calls.length >= 3 ? start + 61 * 60 * 1_000 : start
     );
     try {
-      // An explicit attempt start: without one the reuse probe reads the clock first.
       await expect(
-        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
-          attemptStartedAt: start,
-        })
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger)
       ).rejects.toMatchObject({
         code: 'FINAL_SNAPSHOT_TIMEOUT',
         message: expect.stringContaining(
