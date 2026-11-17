@@ -418,8 +418,8 @@ plan names every one before you confirm. The lists are in
 With no stack named and `--all` unset, the single stack in state is selected,
 with its nested stacks.
 
-`--region` is deprecated. Prefer `AWS_REGION` or your AWS profile. It is still
-honored if passed.
+`--region <region>` picks the region, ahead of `AWS_REGION` and your AWS
+profile. See [Region resolution](cli-reference-region.md).
 
 ## Resource type coverage
 

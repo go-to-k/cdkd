@@ -9,7 +9,7 @@ import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import { Command, Option } from 'commander';
 import {
   commonOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   resourceTimeoutOptions,
   allowUnsupportedTypesOption,
@@ -200,7 +200,7 @@ async function stateDestroyCommand(
   // is constructed, and the runner keeps this registry for a stack recorded in
   // `setup.region`, so under `--region X` from a shell in another region it
   // would delete by name in the shell's region. `--region` overrides
-  // `AWS_REGION` (`deprecatedRegionOption`), so the SDK is told so too.
+  // `AWS_REGION` (`regionOption`), so the SDK is told so too.
   if (options.region) {
     process.env['AWS_REGION'] = setup.region;
     process.env['AWS_DEFAULT_REGION'] = setup.region;
@@ -686,9 +686,7 @@ export function createStateDestroyCommand(): Command {
     noLocalCustomResourcesOption,
   ].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated on every state subcommand (PR 5). Accepted for
-  // backward compatibility; warning emitted at runtime.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

@@ -10,11 +10,7 @@ import {
   withheldTargetClause,
   proseQuoted,
 } from '../../../utils/pasteable-command.js';
-import {
-  warnIfDeprecatedRegion,
-  validateResourceTimeouts,
-  type ResourceTimeoutOption,
-} from '../../options.js';
+import { validateResourceTimeouts, type ResourceTimeoutOption } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { asIsMessage, displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -99,10 +95,6 @@ export async function destroyCommand(
     // interleave too aggressively with the live area's in-flight task lines.
     process.env['CDKD_NO_LIVE'] = '1';
   }
-
-  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
-  // the rest of the pipeline working as before.
-  warnIfDeprecatedRegion(options);
 
   // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
   // up front so the user sees the error before synth runs. Mutates

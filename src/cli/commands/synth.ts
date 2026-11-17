@@ -5,9 +5,8 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeStack, matchStacks, renderNoStackMatch } from '../stack-matcher.js';
@@ -149,10 +148,6 @@ export async function synthCommand(
   // Lines are MOVED, not suppressed — a terminal shows exactly what it did
   // before, and `2>&1` restores the old single-stream view.
   reserveStdoutForPayload();
-
-  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
-  // the rest of the pipeline working as before.
-  warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
@@ -304,9 +299,7 @@ export function createSynthCommand(): Command {
     cmd.addOption(opt)
   );
 
-  // --region is deprecated for synth (PR 5). Accepted for backward
-  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

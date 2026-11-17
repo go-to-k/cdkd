@@ -1,7 +1,8 @@
 import { Command, Option } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { createLocalCommand } from '../../../src/cli/commands/local-invoke.js';
-import { adoptDeprecatedRegionFlag } from '../../../src/cli/region-options.js';
+import { regionOption } from '../../../src/cli/options.js';
+import { adoptRegionFlag } from '../../../src/cli/region-options.js';
 
 /**
  * Issue [#2522](https://github.com/go-to-k/cdkd/issues/2522) — the four
@@ -20,7 +21,7 @@ import { adoptDeprecatedRegionFlag } from '../../../src/cli/region-options.js';
  *
  * This is the BEHAVIOURAL half of the fence, deliberately live rather than a
  * source scan: it drives commander's real parser through
- * `adoptDeprecatedRegionFlag`'s `preAction` hook and reads the option bag the
+ * `adoptRegionFlag`'s `preAction` hook and reads the option bag the
  * action would have received. Removing the fold from any ONE of the six turns
  * its rows red. The STRUCTURAL half — "a seventh shim cannot be added unfolded" —
  * lives in `cli-region-fold.test.ts`, which is where the rest of this class is
@@ -110,39 +111,33 @@ describe('cdkd local start-*: --region is folded before cdk-local sees it (#2522
     expect(process.env['AWS_DEFAULT_REGION']).toBe('cn-north-1');
   });
 
-  it.each(SHIMS)('%s hides --region from --help, like every other cdkd command', (name) => {
+  it.each(SHIMS)('%s shows cdkd\'s --region in --help, like every other cdkd command', (name) => {
     const sub = localTree().commands.find((c) => c.name() === name);
     const region = sub?.options.find((option) => option.long === '--region');
     expect(region, `${name} lost its --region option entirely`).toBeDefined();
-    // The user-visible delta of this change: cdk-local declared it VISIBLY and
-    // undeprecated; cdkd's shared `deprecatedRegionOption` is hidden and says so.
-    expect(region?.hidden).toBe(true);
-    expect(region?.description).toContain('[deprecated]');
+    // cdk-local's own declaration is replaced by cdkd's shared one, so the flag
+    // reads the same here as on every other cdkd command (issue #6504).
+    expect(region?.description).toBe(regionOption.description);
+    expect(region?.hidden).toBeFalsy();
+    expect(sub?.helpInformation()).toMatch(/--region <region>/);
     // Exactly one — a failed splice of cdk-local's declaration would leave two
     // `--region` entries, and commander answers `opts().region` from whichever
     // parsed last.
     expect(sub?.options.filter((option) => option.long === '--region')).toHaveLength(1);
   });
 
-  it.each(SHIMS)('%s warns that --region is deprecated when it is passed', (name) => {
+  it.each(SHIMS)('%s prints no deprecation warning when --region is passed (#6504)', (name) => {
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-    parseOpts(name, ['--region', 'cn-north-1']);
+    const opts = parseOpts(name, ['--region', 'cn-north-1']);
+    // The flag reached the bag, so the silence is not a parse that dropped it.
+    expect(opts['region']).toBe('cn-north-1');
     const written = stderr.mock.calls.map((call) => String(call[0])).join('');
-    expect(written).toContain('--region is deprecated');
-  });
-
-  it.each(SHIMS)('%s does NOT warn when --region was not passed', (name) => {
-    // The other direction: a warning that fires unconditionally would satisfy
-    // the case above while nagging every user of these four commands.
-    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-    parseOpts(name, []);
-    const written = stderr.mock.calls.map((call) => String(call[0])).join('');
-    expect(written).not.toContain('--region is deprecated');
+    expect(written).not.toMatch(/deprecat/i);
   });
 });
 
 /**
- * {@link adoptDeprecatedRegionFlag} in isolation — the arms the four live
+ * {@link adoptRegionFlag} in isolation — the arms the four live
  * commands cannot exercise.
  *
  * Every case above runs it against a command that ALREADY carries cdk-local's
@@ -152,7 +147,7 @@ describe('cdkd local start-*: --region is folded before cdk-local sees it (#2522
  * Deleting the splice makes commander throw at CONSTRUCTION, which is a fine
  * safety net but not an assertion, so the discriminating cases live here.
  */
-describe('adoptDeprecatedRegionFlag in isolation', () => {
+describe('adoptRegionFlag in isolation', () => {
   const savedEnv = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
   beforeEach(() => {
     delete process.env['AWS_REGION'];
@@ -170,7 +165,7 @@ describe('adoptDeprecatedRegionFlag in isolation', () => {
    * A stand-in for a shim, with or without an inherited `--region`.
    *
    * `--stack-region` is declared unconditionally because cdk-local declares it
-   * on all four real commands and `adoptDeprecatedRegionFlag` folds it; without
+   * on all four real commands and `adoptRegionFlag` folds it; without
    * the declaration commander would drop the value and the fold case below
    * would pass on an option that was never parsed.
    */
@@ -179,7 +174,7 @@ describe('adoptDeprecatedRegionFlag in isolation', () => {
       .argument('[target]')
       .addOption(new Option('--stack-region <region>', 'upstream stack region'));
     if (inherited) cmd.addOption(inherited);
-    adoptDeprecatedRegionFlag(cmd);
+    adoptRegionFlag(cmd);
     cmd.action(() => {});
     return cmd;
   }
@@ -188,7 +183,7 @@ describe('adoptDeprecatedRegionFlag in isolation', () => {
     const cmd = shim();
     const region = cmd.options.filter((option) => option.long === '--region');
     expect(region).toHaveLength(1);
-    expect(region[0]?.hidden).toBe(true);
+    expect(region[0]?.description).toBe(regionOption.description);
     cmd.parse(['--region', 'CN-NORTH-1'], { from: 'user' });
     expect(cmd.opts()['region']).toBe('cn-north-1');
   });
@@ -197,9 +192,7 @@ describe('adoptDeprecatedRegionFlag in isolation', () => {
     // The residue the array splice alone leaves behind. cdk-local's `--region`
     // is bare today, so this asserts against the shape that would break it: an
     // upstream default would sit in `_optionValues` with source `default`,
-    // making the deprecation warning fire on EVERY invocation and the fold
-    // honour a region nobody named.
-    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    // making the fold honour a region nobody named.
     const cmd = shim(new Option('--region <region>', 'upstream').default('US-WEST-2'));
     cmd.parse([], { from: 'user' });
     expect(cmd.opts()['region']).toBeUndefined();
@@ -209,8 +202,6 @@ describe('adoptDeprecatedRegionFlag in isolation', () => {
     // and to `Object.keys`. An earlier cut assigned rather than deleted and
     // this assertion is the only one that told the two apart.
     expect(Object.hasOwn(cmd.opts(), 'region')).toBe(false);
-    const written = stderr.mock.calls.map((call) => String(call[0])).join('');
-    expect(written).not.toContain('--region is deprecated');
   });
 
   it('removes the inherited listener, so one --region does not fire two handlers', () => {

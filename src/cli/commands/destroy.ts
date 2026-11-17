@@ -3,7 +3,7 @@ import { commandHole } from '../../utils/pasteable-command.js';
 import {
   appOptions,
   commonOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   stackOptions,
   destroyOptions,
@@ -97,9 +97,7 @@ export function createDestroyCommand(): Command {
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for destroy (PR 5). Accepted for backward
-  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

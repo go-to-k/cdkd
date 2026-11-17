@@ -3,6 +3,7 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
+  regionOption,
   stateOptions,
   useCdkBootstrapAssetsOption,
 } from '../options.js';
@@ -151,6 +152,10 @@ export function createImportCommand(): Command {
   [...commonOptions, ...appOptions, ...stateOptions, ...contextOptions].forEach((o) =>
     cmd.addOption(o)
   );
+  // `importCommand` has always read `options.region`; the declaration was the
+  // missing half, so `cdkd import --region <r>` was refused where
+  // `cdk import --region <r>` works (issue #6504).
+  cmd.addOption(regionOption);
 
   return cmd;
 }

@@ -3,9 +3,8 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -179,10 +178,6 @@ async function listCommand(
   // three modes corruptible by exactly the chatter the comment above
   // describes.
   reserveStdoutForPayload();
-
-  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
-  // the rest of the pipeline working as before.
-  warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
@@ -371,9 +366,7 @@ export function createListCommand(): Command {
   // / deploy options — it's a pure local synth + render command.
   [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for list (PR 5). Accepted for backward
-  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

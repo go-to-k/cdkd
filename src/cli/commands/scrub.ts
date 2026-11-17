@@ -5,7 +5,7 @@ import {
   stateOptions,
   stackOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { scrubCommand } from './scrub/command.js';
@@ -79,7 +79,7 @@ export function createScrubCommand(): Command {
   [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...contextOptions].forEach(
     (opt) => cmd.addOption(opt)
   );
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   cmd.action(withErrorHandling(scrubCommand));
   return cmd;

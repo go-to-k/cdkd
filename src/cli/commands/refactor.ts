@@ -3,7 +3,7 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   stackOptions,
   useCdkBootstrapAssetsOption,
@@ -54,6 +54,6 @@ export function createRefactorCommand(): Command {
   [...commonOptions, ...appOptions, ...stateOptions, ...stackOptions, ...contextOptions].forEach(
     (opt) => cmd.addOption(opt)
   );
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }

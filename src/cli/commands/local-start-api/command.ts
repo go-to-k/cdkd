@@ -1,11 +1,7 @@
 import { rmSync } from 'node:fs';
 import { pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { createWatchPredicates, resolveWatchConfig, UNNAMED_WORKLOAD } from 'cdk-local/internal';
-import {
-  parseContextOptions,
-  normalizeStartApiAssumeRole,
-  warnIfDeprecatedRegion,
-} from '../../options.js';
+import { parseContextOptions, normalizeStartApiAssumeRole } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import {
@@ -180,7 +176,6 @@ export async function localStartApiCommand(
     apiFilter = options.api;
   }
 
-  warnIfDeprecatedRegion(options);
   // Refuse a malformed or empty `--layer-role-arn` at boot, like
   // `--assume-role`'s parse-time refusal, rather than at the first request
   // that materializes an ARN layer (issue #2348).

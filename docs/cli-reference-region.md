@@ -1,33 +1,37 @@
 ---
 title: Region resolution
-description: "Which AWS region a cdkd command works in, where --region is still a supported flag, and how cdkd treats an upper-cased region."
+description: "Which AWS region a cdkd command works in, how --region ranks against AWS_REGION and your profile, and how cdkd treats an upper-cased region."
 ---
 
 # Region resolution
 
-Choose the region with `AWS_REGION` or your AWS profile. This page gives the
-order cdkd reads those sources in, how a region cdkd inferred keeps working
+Choose the region with `--region`, `AWS_REGION` or your AWS profile. This page
+gives the order cdkd reads those sources in, how a region cdkd inferred keeps working
 with stacks and storage that an older cdkd created in `us-east-1`, and how
 cdkd treats a region typed in upper case.
 
 ```bash
+cdkd deploy MyStack --region us-west-2
 AWS_REGION=us-west-2 cdkd deploy MyStack
 cdkd deploy MyStack --profile staging     # the profile's region
 ```
 
-## `--region` is deprecated on most commands
+## The `--region` flag
 
-`--region` is a supported flag on two commands only, where it names the region
-to act on:
+Every command except `cdkd state info` takes `--region`, as the AWS CDK CLI
+does. It outranks `AWS_REGION` and the profile, and a stack with `env.region`
+set in your CDK app still uses that region.
+
+On three commands the flag names the region to act on rather than a default:
 
 ```bash
-cdkd bootstrap --region us-west-2
-cdkd gc --region us-west-2
+cdkd bootstrap --region us-west-2       # where to create the bucket and asset storage
+cdkd gc --region us-west-2              # whose asset storage to collect
+cdkd state migrate --region us-west-2   # which legacy state bucket to copy
 ```
 
-On every other command the flag is deprecated. It is hidden from `--help`, it
-prints a deprecation warning, and a future release will remove it. Until then
-it still works, and it outranks the environment variable and the profile.
+Earlier releases hid `--region` from `--help` on every other command and
+printed a warning that it would be removed. It is no longer deprecated.
 
 ## Resolution order
 

@@ -6,7 +6,7 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseAssumeRoleToken,
   stateOptions,
   type AssumeRoleOption,
@@ -235,7 +235,7 @@ export function createLocalStartApiCommand(): Command {
   [...commonOptions, ...appOptions, ...contextOptions, ...stateOptions].forEach((opt) =>
     startApi.addOption(opt)
   );
-  startApi.addOption(deprecatedRegionOption);
+  startApi.addOption(regionOption);
   // `--aws-emulator [url]` / `--ca-bundle <file>` (go-to-k/cdkd#6131, #6132),
   // the same spelling the cdk-local engine commands register.
   addAwsEndpointOptions(startApi);

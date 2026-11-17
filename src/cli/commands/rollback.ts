@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import {
   commonOptions,
   stateOptions,
-  deprecatedRegionOption,
+  regionOption,
   skipFinalSnapshotOption,
   noLocalCustomResourcesOption,
 } from '../options.js';
@@ -80,6 +80,6 @@ export function createRollbackCommand(): Command {
     .action(withErrorHandling(rollbackCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }

@@ -1,5 +1,5 @@
 import { Command, Option } from 'commander';
-import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
+import { commonOptions, regionOption, stateOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import { withErrorHandling } from '../../../utils/error-handler.js';
 import { S3StateBackend, type StackStateRef } from '../../../state/s3-state-backend.js';
@@ -376,10 +376,7 @@ export function createStateListCommand(): Command {
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for state subcommands (PR 5). Accepted for
-  // backward compatibility; warning emitted at runtime via
-  // warnIfDeprecatedRegion (called from setupStateBackend).
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

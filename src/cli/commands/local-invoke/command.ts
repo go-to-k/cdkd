@@ -1,6 +1,6 @@
 import { logMixedModeForWorkload } from 'cdk-local/internal';
 import { rmSync } from 'node:fs';
-import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
+import { parseContextOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import { onShutdownSignals, shutdownSignalExitCode } from '../../../utils/shutdown-signals.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -132,7 +132,6 @@ export async function localInvokeCommand(
   // either.
   reserveStdoutForPayload();
 
-  warnIfDeprecatedRegion(options);
   // Issue #1795: fold `--region` ONCE, at the boundary, so every downstream
   // SDK client sees the canonical spelling (AWS SDK endpoint resolution is
   // case-sensitive, so a raw `--region CN-NORTH-1` reached the COMMERCIAL

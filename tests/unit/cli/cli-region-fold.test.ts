@@ -85,7 +85,7 @@ describe('a split command is read with its directory', () => {
   const FOLDS_PER_READ: Record<string, string> = { 'gc.ts': 'namedCliRegion(options.region)' };
 
   // `cdkd rollback` neither folds nor assumes a role in its own family: it
-  // takes `--region` only through `deprecatedRegionOption` and hands the
+  // takes `--region` only through `regionOption` and hands the
   // options bag to `setupStateBackend`, which makes its first AWS call
   // (`applyRoleArnIfSet`). Its family read holds that hand-off instead, and no
   // role assumption of its own (go-to-k/cdkd#5835).
@@ -431,7 +431,7 @@ describe('no CLI command resolves a region without folding it', () => {
  *    modules that merely RECEIVE an already-folded region from their caller
  *    (`deployment-events-run.ts` takes `args.region` from `deploy.ts`), while
  *    missing files using other bag names. The population is now derived from
- *    what actually ACCEPTS the flag — `deprecatedRegionOption` (18 commands)
+ *    what actually ACCEPTS the flag — `regionOption`
  *    plus the four that declare `'--region'` themselves.
  * 2. **Wrong PREDICATE.** The second cut OR'd three whole-file substrings, and
  *    16 of these files contain more than one of them. A review probe deleted
@@ -456,7 +456,7 @@ describe('every handler that accepts --region folds it', () => {
   /** Files that actually take a `--region` flag from the user. */
   const regionTaking = files.filter((f) => {
     const code = stripComments(sources.get(f)!);
-    return code.includes('deprecatedRegionOption') || code.includes("'--region");
+    return code.includes('regionOption') || code.includes("'--region");
   });
 
   it('finds the handlers — floor, so an empty list cannot pass as full coverage', () => {
@@ -571,7 +571,7 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
  * [#2522](https://github.com/go-to-k/cdkd/issues/2522).
  *
  * The fence above derives its population from files that NAME a `--region`
- * declaration or `deprecatedRegionOption`, and checks that every read of
+ * declaration or `regionOption`, and checks that every read of
  * `<bag>.region` is wrapped. Four commands were invisible to BOTH halves at
  * once: `local start-{service,alb,cloudfront,agentcore}` inherit `--region`
  * from cdk-local (no declaration here to find) and forward the whole options
@@ -583,7 +583,7 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
  * of the two supported ways — in its own handler (`foldRegionOption(options)`
  * or the `options.region = canonicalizeRegion(...)` spelling the four
  * handler-owning commands use) or, when cdk-local owns the handler, by adopting
- * the shared `adoptDeprecatedRegionFlag` wrapper, which installs the
+ * the shared `adoptRegionFlag` wrapper, which installs the
  * `preAction` fold. The BEHAVIOUR of that wrapper is fenced live in
  * `local-shim-region-fold.test.ts`; what this pins is that a NEW shim cannot be
  * added without either.
@@ -612,12 +612,12 @@ describe('every `cdkd local *` command folds the region it forwards (#2522)', ()
     const foldsInHandler =
       /\bfoldRegionOption\(options\)/.test(code) ||
       /\b(?:options|opts|args)\.region\s*=\s*canonicalizeRegion\(/.test(code);
-    const foldsViaShimWrapper = /\badoptDeprecatedRegionFlag\(/.test(code);
+    const foldsViaShimWrapper = /\badoptRegionFlag\(/.test(code);
     expect(
       foldsInHandler || foldsViaShimWrapper,
       `${file} builds a \`cdkd local\` command but folds --region neither in its own handler ` +
         '(foldRegionOption(options) / options.region = canonicalizeRegion(...)) nor by wrapping ' +
-        'its command in adoptDeprecatedRegionFlag(...). An unfolded region reaches cdk-local\'s ' +
+        'its command in adoptRegionFlag(...). An unfolded region reaches cdk-local\'s ' +
         'SDK clients, the ECR host it synthesizes and the containers it starts (issue #2522).'
     ).toBe(true);
   });
@@ -636,7 +636,7 @@ describe('every `cdkd local *` command folds the region it forwards (#2522)', ()
       ) {
         handlerFolders.push(file);
       }
-      if (/\badoptDeprecatedRegionFlag\(/.test(code)) wrapperFolders.push(file);
+      if (/\badoptRegionFlag\(/.test(code)) wrapperFolders.push(file);
     }
     expect(handlerFolders.length).toBeGreaterThanOrEqual(4);
     expect(wrapperFolders.sort()).toEqual([

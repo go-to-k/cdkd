@@ -60,7 +60,7 @@ These pages cover behaviour that is the same for every command:
   an assumed role needs, what changes when the role is in another account, and
   how the role interacts with `cdkd local`.
 - [Region resolution](cli-reference-region.md): which region a command works
-  in, and where `--region` is still a supported flag.
+  in, and how `--region` ranks against `AWS_REGION` and your profile.
 - [Output streams](cli-reference-output.md): which commands write only a
   machine-readable document to stdout, so that you can pipe it.
 - [Exit codes](cli-reference-exit-codes.md): what `0`, `1`, `2`, `3`, `70` and
@@ -72,6 +72,7 @@ These pages cover behaviour that is the same for every command:
 | --- | --- | --- |
 | `--profile <profile>` | default credential chain | AWS profile for your credentials and config settings. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's AWS calls. See [`--role-arn`](#role-arn). |
+| `--region <region>` | `AWS_REGION`, `AWS_DEFAULT_REGION`, the profile's region, `us-east-1` | The AWS region for a stack without `env.region` and for cdkd's own calls. Not on `cdkd state info`. See [Region resolution](cli-reference-region.md). |
 | `--aws-emulator [url]` | `CDKD_AWS_EMULATOR` | Experimental. Send every AWS call to a local AWS Emulator, with its keys only. See [Deploying into AWS Emulator](local-emulation.md#deploying-into-aws-emulator); on `cdkd local`, `"real-aws"` in `--env-vars` keeps chosen services on real AWS ([mixed mode](local-emulation.md#aws-emulator-mixed-mode)). |
 | `-y`, `--yes` | `false` | Answer confirmation prompts with the recommended response. |
 | `--verbose` | `false` | Debug-level logging. |

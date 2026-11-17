@@ -542,7 +542,7 @@ describe('cdkd publish-assets', () => {
       expect(new PartialFailureError('x').exitCode).toBe(2);
     });
 
-    it('emits the --region deprecation warning to stderr (PR 5)', async () => {
+    it('accepts --region without a deprecation warning (issue #6504)', async () => {
       mockSynthesize.mockResolvedValue({
         stacks: [makeStack({ stackName: 'StackA' })],
         manifest: {},
@@ -552,7 +552,7 @@ describe('cdkd publish-assets', () => {
 
       const { stderr, error } = await runCmd(['--region', 'us-east-1']);
       expect(error).toBeUndefined();
-      expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
+      expect(stderr).not.toMatch(/deprecat/i);
     });
   });
 

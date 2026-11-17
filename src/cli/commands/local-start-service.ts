@@ -11,7 +11,7 @@ import {
   type ServiceBoot,
 } from './ecs-service-emulator.js';
 import { cdkdExtraStateProviders } from './local-state-source.js';
-import { adoptDeprecatedRegionFlag } from '../region-options.js';
+import { adoptRegionFlag } from '../region-options.js';
 
 /**
  * Cdkd-specific extension of cdk-local's `EcsServiceEmulatorOptions` carrying
@@ -142,5 +142,5 @@ export function createLocalStartServiceCommand(): Command {
   addStartServiceSpecificOptions(cmd);
   // Last, so cdk-local's own `--region` has already been added and can be
   // replaced by cdkd's deprecated twin + the entry fold (issue #2522).
-  return adoptDeprecatedRegionFlag(addCommonEcsServiceOptions(cmd));
+  return adoptRegionFlag(addCommonEcsServiceOptions(cmd));
 }

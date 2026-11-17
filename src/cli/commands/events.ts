@@ -7,10 +7,9 @@ import {
 } from '../../utils/pasteable-command.js';
 import {
   commonOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseDuration,
   stateOptions,
-  warnIfDeprecatedRegion,
   parseStackRegion,
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
@@ -167,7 +166,7 @@ function residueSweepNote(
 /**
  * Options accepted by `cdkd events`. `stateBucket` / `statePrefix` /
  * `region` / `profile` / `verbose` come from the shared option blocks
- * (`commonOptions` + `stateOptions` + the deprecated region option).
+ * (`commonOptions` + `stateOptions` + `regionOption`).
  */
 interface EventsCommandOptions {
   /** `--role-arn`: declared by `commonOptions`, applied before any AWS call. */
@@ -218,7 +217,6 @@ export async function eventsCommand(
     reserveStdoutForPayload();
   }
 
-  warnIfDeprecatedRegion(options);
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
   // reaches an SDK client, an ARN segment or a state key. Rationale (and why
   // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
@@ -434,7 +432,6 @@ export async function eventsPruneCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
-  warnIfDeprecatedRegion(options);
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
   // reaches an SDK client, an ARN segment or a state key. Rationale (and why
   // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.
@@ -874,7 +871,7 @@ export function createEventsCommand(): Command {
     );
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   cmd.addCommand(createEventsPruneCommand());
 
@@ -886,7 +883,7 @@ export function createEventsCommand(): Command {
  *
  * Only the prune-SPECIFIC options (`--keep` / `--older-than` / `--all`) are
  * declared here. The shared option blocks (`commonOptions` + `stateOptions`
- * + the deprecated region option) and `--stack-region` are inherited from
+ * + `regionOption`) and `--stack-region` are inherited from
  * the parent `events` command — declaring the same flag on BOTH parent and
  * child makes Commander route a post-subcommand flag (`events prune X --yes`)
  * to the PARENT's storage, leaving the child's value at its default. The

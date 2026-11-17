@@ -100,7 +100,7 @@ export interface LocalStateSourceOptions {
    *
    * Since issue [#2522](https://github.com/go-to-k/cdkd/issues/2522) the four
    * ECS / CloudFront / AgentCore ENGINE commands capture it too, from the
-   * `preAction` hook `adoptDeprecatedRegionFlag` installs — cdk-local owns
+   * `preAction` hook `adoptRegionFlag` installs — cdk-local owns
    * their handler, so the hook is their only cdkd-owned point BEFORE the fold.
    * The factory's fallback to the raw `stackRegion` below therefore no longer
    * has a caller in this repo, and is kept as the correct answer for a bag that
@@ -161,7 +161,7 @@ function s3ProviderOptions(
   // The RAW `--stack-region` spelling for the state-record match (issue #1836
   // round 3). Every cdkd `local *` command now captures it before its own fold —
   // the four that own their handler do it there, the four ENGINE commands from
-  // the `preAction` hook `adoptDeprecatedRegionFlag` installs (issue #2522). The
+  // the `preAction` hook `adoptRegionFlag` installs (issue #2522). The
   // fallback to the still-raw `stackRegion` remains for a bag that reached this
   // factory without passing either capture point. Blank counts as absent,
   // matching the `stackRegion` gate above.

@@ -6,7 +6,7 @@ import {
   proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { Command, InvalidArgumentError } from 'commander';
-import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
+import { commonOptions, regionOption, stateOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from '../confirm-prompt.js';
@@ -719,10 +719,7 @@ export function createStateOrphanCommand(): Command {
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for state subcommands (PR 5). Accepted for
-  // backward compatibility; warning emitted at runtime via
-  // warnIfDeprecatedRegion (called from setupStateBackend).
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

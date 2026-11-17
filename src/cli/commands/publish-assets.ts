@@ -4,11 +4,10 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
   stateOptions,
   useCdkBootstrapAssetsOption,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { bold, green } from '../../utils/colors.js';
@@ -102,10 +101,6 @@ async function publishAssetsCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
-
-  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
-  // the rest of the pipeline working as before.
-  warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary; same class and same
@@ -519,9 +514,7 @@ export function createPublishAssetsCommand(): Command {
   // recommended form is positional.
   cmd.addOption(new Option('--stack <name>', 'Stack name to publish (alternative to positional)'));
 
-  // --region is deprecated for publish-assets (PR 5). Accepted for backward
-  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

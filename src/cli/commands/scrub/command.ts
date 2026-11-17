@@ -1,4 +1,4 @@
-import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
+import { parseContextOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import {
   Synthesizer,
@@ -140,7 +140,6 @@ export interface ScrubOptions {
 export async function scrubCommand(stacks: string[], options: ScrubOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
-  warnIfDeprecatedRegion(options);
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
   // reaches an SDK client, an ARN segment or a state key. Rationale (and why
   // this is per-command rather than per-consumer) in `src/cli/region-options.ts`.

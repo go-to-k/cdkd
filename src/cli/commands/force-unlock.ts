@@ -1,10 +1,9 @@
 import { Command, Option } from 'commander';
 import {
   commonOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   stackOptions,
-  warnIfDeprecatedRegion,
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -55,10 +54,6 @@ async function forceUnlockCommand(
   if (options.verbose) {
     logger.setLevel('debug');
   }
-
-  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
-  // the rest of the pipeline working as before.
-  warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
@@ -223,9 +218,7 @@ export function createForceUnlockCommand(): Command {
 
   [...commonOptions, ...stateOptions, ...stackOptions].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for force-unlock (PR 5). Accepted for backward
-  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

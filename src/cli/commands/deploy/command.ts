@@ -1,9 +1,4 @@
-import {
-  parseContextOptions,
-  warnIfDeprecatedRegion,
-  validateResourceTimeouts,
-  applyWaitFlagEnv,
-} from '../../options.js';
+import { parseContextOptions, validateResourceTimeouts, applyWaitFlagEnv } from '../../options.js';
 import { inRunStackKey } from '../../../deployment/export-change-guard.js';
 import { getLogger } from '../../../utils/logger.js';
 import { PhaseClock, renderPhaseTimings, timePhase } from '../../../utils/phase-timings.js';
@@ -108,10 +103,6 @@ export async function deployCommand(
     // interleave too aggressively with the live area's in-flight task lines.
     process.env['CDKD_NO_LIVE'] = '1';
   }
-
-  // PR 5: --region is deprecated on non-bootstrap commands. Warn but keep
-  // the rest of the pipeline working as before.
-  warnIfDeprecatedRegion(options);
 
   // Reject mis-ordered --resource-warn-after / --resource-timeout pairs
   // up front so the user sees the error before synth / docker builds run.

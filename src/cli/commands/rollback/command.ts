@@ -5,7 +5,6 @@ import {
   plainOrDescribed,
   proseQuoted,
 } from '../../../utils/pasteable-command.js';
-import { warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { AwsClients, runWithStackAwsClients, setAwsClients } from '../../../utils/aws-clients.js';
 import { loadProviderClasses } from '../../../provisioning/register-providers.js';
@@ -28,7 +27,6 @@ export async function rollbackCommand(
     logger.setLevel('debug');
     process.env['CDKD_NO_LIVE'] = '1';
   }
-  warnIfDeprecatedRegion(options);
   // go-to-k/cdkd#4633: before any AWS call, so a bad combination costs nothing.
   if (options.dropFailed !== undefined) refuseDropFailedConflicts(options);
 

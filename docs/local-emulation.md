@@ -375,8 +375,7 @@ The region for AWS calls comes from `AWS_REGION`, then `AWS_DEFAULT_REGION`,
 then the synthesized stack's own `env.region`. An upper-cased region such as
 `US-EAST-1` is changed to lower case before any AWS call.
 
-A deprecated `--region` flag still overrides all three and prints a removal
-warning. `--help` does not list it.
+`--region <region>` overrides all three.
 
 A Lambda container gets that region as `AWS_REGION`, and `AWS_DEFAULT_REGION`
 beside it. On `local invoke`, `local start-api` and `local invoke-agentcore`,

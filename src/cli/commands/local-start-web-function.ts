@@ -5,7 +5,7 @@ import {
   getEmbedConfig,
 } from 'cdk-local';
 import { cdkdExtraStateProviders } from './local-state-source.js';
-import { adoptDeprecatedRegionFlag } from '../region-options.js';
+import { adoptRegionFlag } from '../region-options.js';
 
 /**
  * `cdkd local start-web-function <target>` — serve an AWS Lambda Web Function
@@ -84,5 +84,5 @@ export function createLocalStartWebFunctionCommand(): Command {
 
   // cdk-local declares a visible `--region`; cdkd replaces it with its hidden
   // deprecated twin and folds it in a `preAction` hook (issue #2522).
-  return adoptDeprecatedRegionFlag(cmd);
+  return adoptRegionFlag(cmd);
 }

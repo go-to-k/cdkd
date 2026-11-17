@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
+import { commonOptions, regionOption, stateOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { formatError, withErrorHandling } from '../../../utils/error-handler.js';
 import { isInteractiveTerminal, type SelectStreams } from '../../interactive-select.js';
@@ -81,6 +81,6 @@ export function createStateBrowseCommand(): Command {
     .action(withErrorHandling(stateBrowseCommand));
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }

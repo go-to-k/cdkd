@@ -407,7 +407,7 @@ describe('stackRegionResolver', () => {
     });
     await regionFor('Old');
     const said = String(logger.info.mock.calls[0]![0]);
-    // `--region` is deprecated on every command that reaches this hold.
+    // Names `AWS_REGION`, which settles every later command in the shell.
     expect(said).toContain('AWS_REGION=ap-northeast-1');
     expect(said).toContain('AWS_REGION=us-east-1');
     expect(said).not.toContain('--region');

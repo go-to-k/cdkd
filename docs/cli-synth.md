@@ -46,7 +46,7 @@ which template reaches stdout and which stack cdkd checks for annotations.
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
 | `--verbose` | `false` | Debug-level logging. Also writes `<stackName>.template.json` into `--output` for each selected stack (`<stackName>.<region>.template.json` when two selected stacks share a physical name). |
 | `-y`, `--yes` | `false` | Accepted, but `cdkd synth` asks no confirmation. |
-| `--region <region>` | | Deprecated and hidden. See [Region resolution](cli-reference-region.md). |
+| `--region <region>` | `AWS_REGION`, then your AWS profile | The region for a stack without `env.region`. See [Region resolution](cli-reference-region.md). |
 
 cdkd refuses a name that matches no stack, and the message names the stacks
 the app does hold. When you pass both `--strict` and `--ignore-errors`,

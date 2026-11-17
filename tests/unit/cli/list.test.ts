@@ -396,7 +396,7 @@ describe('cdkd list', () => {
     expect(error?.message).toBe('__process.exit__');
   });
 
-  it('emits a deprecation warning to stderr when --region is passed (PR 5)', async () => {
+  it('accepts --region without a deprecation warning (issue #6504)', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [makeStack({ stackName: 'StackA', displayName: 'StackA' })],
       manifest: {},
@@ -406,22 +406,8 @@ describe('cdkd list', () => {
     const { stdout, stderr, error } = await runList(['--region', 'us-east-1']);
 
     expect(error).toBeUndefined();
-    // Command still runs to completion.
     expect(stdout).toBe('StackA\n');
-    // Warning is on stderr, mentions --region and points users at AWS_REGION.
-    expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
-    expect(stderr).toMatch(/AWS_REGION/);
-  });
-
-  it('does not emit the deprecation warning when --region is omitted', async () => {
-    mockSynthesize.mockResolvedValue({
-      stacks: [makeStack({ stackName: 'StackA', displayName: 'StackA' })],
-      manifest: {},
-      assemblyDir: '/tmp/cdk.out',
-    });
-
-    const { stderr } = await runList([]);
-    expect(stderr).not.toMatch(/--region is deprecated/);
+    expect(stderr).not.toMatch(/deprecat/i);
   });
 
   // go-to-k/cdkd#5807: a failed context lookup does not change which stacks exist.

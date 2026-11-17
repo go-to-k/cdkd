@@ -46,7 +46,7 @@ the account through STS and runs the context lookups the app asks for, so
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
 | `--verbose` | `false` | Debug-level logging. |
 | `-y`, `--yes` | `false` | Accepted, but `cdkd list` asks no confirmation. |
-| `--region <region>` | | Deprecated and hidden. See [Region resolution](cli-reference-region.md). |
+| `--region <region>` | `AWS_REGION`, then your AWS profile | The region for a stack without `env.region`. See [Region resolution](cli-reference-region.md). |
 
 ## Selecting stacks
 

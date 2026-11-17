@@ -4,7 +4,7 @@ import {
   refuseMalformedResourcePropertiesForExport,
   refuseMalformedResourcesForExport,
 } from '../../../state/malformed-resources-bag.js';
-import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
+import { parseContextOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { applyRoleArnIfSet } from '../../../utils/role-arn.js';
@@ -95,8 +95,6 @@ export async function exportCommand(
     logger.setLevel('debug');
     process.env['CDKD_NO_LIVE'] = '1';
   }
-
-  warnIfDeprecatedRegion(options);
 
   // Gate transient context overrides. CLI `-c key=value` flags are
   // visible to cdkd's synth but NOT persisted to cdk.json /

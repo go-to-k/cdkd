@@ -7,7 +7,7 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   parseStackRegion,
 } from '../options.js';
@@ -295,7 +295,7 @@ export function createLocalCommand(): Command {
   [...commonOptions, ...appOptions, ...contextOptions, ...stateOptions].forEach((opt) =>
     invoke.addOption(opt)
   );
-  invoke.addOption(deprecatedRegionOption);
+  invoke.addOption(regionOption);
   // `--aws-emulator [url]` / `--ca-bundle <file>` (go-to-k/cdkd#6131, #6132),
   // the same spelling the cdk-local engine commands register.
   addAwsEndpointOptions(invoke);

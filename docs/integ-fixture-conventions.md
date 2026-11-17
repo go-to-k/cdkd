@@ -215,7 +215,7 @@ Two traps when auditing this by hand:
   decisive — the option set has to come from the command tree itself.
 - **`--region` is not a no-op** on the commands that accept it. It is the
   highest-precedence region source (see [CLI Reference](cli-reference.md)),
-  so "cleaning up" deprecated `--region` flags would silently change region
+  so "cleaning up" a fixture's `--region` flags would silently change region
   resolution.
 
 `tests/unit/scripts/integ-cli-flags.test.ts` enforces this across the fixture
@@ -1390,8 +1390,7 @@ replays them, headed by the test name, only if that test FAILS.
 
 It exists because vitest attributes and suppresses `console.*` but a raw
 `stream.write()` bypasses that entirely. Product code writes that way on purpose
-where the logger is the wrong channel — the deprecated-`--region` notice in
-`src/cli/options.ts`, the SIGINT notices in `src/provisioning/interrupt-watch.ts`
+where the logger is the wrong channel — the SIGINT notices in `src/provisioning/interrupt-watch.ts`
 and `src/cli/commands/destroy-runner.ts`, the critic summaries under `scripts/` —
 so any suite exercising those paths legitimately printed them. Measured on the
 full suite before the fence: 108 such lines, ~20 KB of `vp test run`'s ~22 KB of

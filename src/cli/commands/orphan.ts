@@ -3,11 +3,10 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   destroyOptions,
   parseContextOptions,
   stateOptions,
-  warnIfDeprecatedRegion,
   parseStackRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -244,8 +243,6 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
   const providerClasses = await loadProviderClasses();
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
-
-  warnIfDeprecatedRegion(options);
 
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
@@ -894,8 +891,7 @@ export function createOrphanCommand(): Command {
     ...contextOptions,
   ].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated outside of bootstrap (PR 5).
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }
