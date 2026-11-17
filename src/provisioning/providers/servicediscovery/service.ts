@@ -365,17 +365,34 @@ export async function updateService(
   // The service's ARN when a GetService already ran in this update, so the
   // Tags arm below does not read it a second time.
   let knownArn: string | undefined;
+  // go-to-k/cdkd#6484: set when AWS refused the ServiceChange because the
+  // service is in an HTTP (API-only) namespace.
+  let serviceChangeRefused = false;
   try {
     if (hasServiceChange) {
       if (servicePlan.keepRemovedFromLive) {
         knownArn = await this.keepUndeclaredServiceFields(physicalId, serviceChange);
       }
-      const response = await client.send(
-        new UpdateServiceCommand({
-          Id: physicalId,
-          Service: serviceChange,
-        })
-      );
+      let response: { OperationId?: string | undefined } = {};
+      try {
+        response = await client.send(
+          new UpdateServiceCommand({
+            Id: physicalId,
+            Service: serviceChange,
+          })
+        );
+      } catch (error) {
+        if (!isApiOnlyNamespaceRefusal(error)) throw error;
+        // AWS never updates such a service, and CloudFormation reports the
+        // update as applied while changing nothing. cdkd matches the outcome
+        // (the deploy goes on), says so, and records what AWS still holds.
+        serviceChangeRefused = true;
+        this.logger.warn(
+          `Cloud Map cannot update service ${logicalId}: it is in an HTTP (API-only) namespace, ` +
+            'where AWS refuses UpdateService. Its Description, DnsConfig and HealthCheckConfig ' +
+            'changes were not applied, as in CloudFormation; replace the service to change them.'
+        );
+      }
 
       const operationId = response.OperationId;
       if (operationId) {
@@ -476,6 +493,13 @@ export async function updateService(
     this.logger.debug(`Successfully updated service discovery service ${logicalId}`);
     await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
 
+    if (serviceChangeRefused) {
+      return {
+        physicalId,
+        wasReplaced: false,
+        effectiveProperties: withServiceChangeKeysKept(properties, previousProperties),
+      };
+    }
     return { physicalId, wasReplaced: false };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
@@ -673,4 +697,39 @@ export async function deleteService(
     );
     throw refused;
   }
+}
+
+/**
+ * AWS's refusal of `UpdateService` for a service in an HTTP (API-only)
+ * namespace (measured us-east-1: `InvalidInput: Service in API-only namespace
+ * cannot be updated.`). Keyed on the wording, so a reworded refusal falls
+ * through to the plain failure (go-to-k/cdkd#6484).
+ */
+function isApiOnlyNamespaceRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'InvalidInput' &&
+    /API-only namespace/i.test(error.message)
+  );
+}
+
+/** The keys a `ServiceChange` carries; the rest of an update applies either way. */
+const SERVICE_CHANGE_KEYS = ['Description', 'DnsConfig', 'HealthCheckConfig'] as const;
+
+/**
+ * The desired bag with every `ServiceChange` key put back to the RECORDED
+ * value, for an update AWS refused: the call never ran, so state must keep
+ * saying what AWS holds. A key the record lacks is dropped.
+ */
+function withServiceChangeKeysKept(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): Record<string, unknown> {
+  const kept: Record<string, unknown> = { ...properties };
+  for (const key of SERVICE_CHANGE_KEYS) {
+    if (Object.hasOwn(previousProperties, key))
+      kept[key] = structuredClone(previousProperties[key]);
+    else delete kept[key];
+  }
+  return kept;
 }
