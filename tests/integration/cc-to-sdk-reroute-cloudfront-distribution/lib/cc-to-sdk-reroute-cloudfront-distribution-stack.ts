@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 /**
  * The value each routing phase declares on the resource under test.
@@ -13,6 +14,7 @@ const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
   seed: 'b',
   pinned: 'a',
   flip: 'b',
+  replay: 'b',
 };
 
 /** The origin domain; nothing is ever requested through the distribution. */
@@ -35,6 +37,11 @@ export const ORIGIN_DOMAIN = 'example.com';
  * propagation. It is the only resource, with a fixed logical id, so this
  * fixture shares nothing with the RDS batch-11 fixture and the two slow cycles
  * run apart.
+ *
+ * go-to-k/cdkd#6519: the `replay` phase narrows the origin's
+ * OriginSSLProtocols to `[TLSv1]` and adds a queue CreateQueue refuses, created
+ * only after the distribution's update, so the deploy fails and its rollback
+ * replays that update with the pre-deploy template, which omits the member.
  */
 export class CcToSdkRerouteCloudFrontDistributionStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -51,7 +58,10 @@ export class CcToSdkRerouteCloudFrontDistributionStack extends cdk.Stack {
           {
             id: 'origin',
             domainName: ORIGIN_DOMAIN,
-            customOriginConfig: { originProtocolPolicy: 'https-only' },
+            customOriginConfig: {
+              originProtocolPolicy: 'https-only',
+              ...(phase === 'replay' && { originSslProtocols: ['TLSv1'] }),
+            },
           },
         ],
         defaultCacheBehavior: {
@@ -63,6 +73,14 @@ export class CcToSdkRerouteCloudFrontDistributionStack extends cdk.Stack {
       },
     });
     distribution.overrideLogicalId('RerouteDistribution');
+
+    if (phase === 'replay') {
+      // MessageRetentionPeriod's ceiling is 1209600 (14 days); this is well
+      // past it, so CreateQueue fails and the deploy rolls back. It waits for
+      // the distribution, or there is no completed update to revert.
+      const failing = new sqs.CfnQueue(this, 'FailQueue', { messageRetentionPeriod: 999999999 });
+      failing.addDependency(distribution);
+    }
 
     // Ref of a distribution is its Id on both layers; GetAtt Id and
     // DomainName are read beside it.
