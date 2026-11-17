@@ -70,6 +70,7 @@ import type {
 import { CFN_MAP_KEYS, SDK_MAP_KEYS, isUserTagKey } from './agentcore-runtime/shared.js';
 import { readCurrentState, importImpl } from './agentcore-runtime/read-state.js';
 import {
+  keptIdempotentRuntimeNote,
   retireFailedRuntimeCreate,
   waitForRuntimeReady,
   waitForRuntimeSettledBeforeDelete,
@@ -445,16 +446,17 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       // CloudFormation's CREATE_FAILED rollback does, so the next deploy's
       // create does not meet it under the same name. Not on Ctrl-C: the
       // interrupt stops cdkd starting new calls, and the journal mark below
-      // leaves the runtime to `cdkd rollback`.
-      const survivor =
-        createdRuntimeId !== undefined && !isInterruptedWaitError(error)
-          ? await retireFailedRuntimeCreate(
-              this.waitDeps(),
-              createdRuntimeId,
-              await this.client.config.region().catch(() => undefined),
-              mask
-            )
-          : undefined;
+      // leaves the runtime to `cdkd rollback`. Not under a declared
+      // ClientToken: AWS's idempotency may have answered with an existing
+      // runtime another deploy's state holds, so it is reported, not deleted.
+      let survivor: string | undefined;
+      if (createdRuntimeId !== undefined && !isInterruptedWaitError(error)) {
+        const region = await this.client.config.region().catch(() => undefined);
+        survivor =
+          properties['ClientToken'] !== undefined
+            ? keptIdempotentRuntimeNote(createdRuntimeId, region, mask)
+            : await retireFailedRuntimeCreate(this.waitDeps(), createdRuntimeId, region, mask);
+      }
       const cause = error instanceof Error ? error : undefined;
       // A cdkd-authored failure (the READY wait's, go-to-k/cdkd#6490) already
       // names the runtime: it is kept as it is, as update() does, rather than
@@ -493,8 +495,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
           retractCreatedResource(logicalId, resourceType, createdRuntimeId);
           markNonRetryable(thrown);
         } else {
-          // The runtime survives (the delete failed, or an interrupt skipped
-          // it) with no state record: name it for the failed-CREATE journal
+          // The runtime survives (the delete failed or was not attempted: a
+          // declared ClientToken, an interrupt) with no state record: name it for the failed-CREATE journal
           // (`cdkd rollback --revert-failed`). A replayed create could only
           // meet it, so a survivor the delete could not remove is terminal.
           if (survivor !== undefined) markNonRetryable(thrown);

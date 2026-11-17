@@ -268,6 +268,22 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
     });
 
+    it('deletes nothing under a declared ClientToken, which may have returned an existing runtime, and journals it', async () => {
+      answer(['CREATE_FAILED']);
+      const error = await provider
+        .create('Rt', TYPE, { ...PROPS, ClientToken: 'token-1234567890-abcdefghijklmnop' })
+        .catch((e: unknown) => e);
+      expect(sent()).not.toContain('DeleteAgentRuntimeCommand');
+      const message = (error as Error).message;
+      expect(message).toMatch(/^BedrockAgentCore Runtime Rt \(.*\) entered CREATE_FAILED during create/);
+      expect(message).toContain('AWS may have returned an existing runtime');
+      expect(message).toContain(
+        `aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id ${ID} --region us-east-1`
+      );
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+    });
+
     it('deletes nothing on an interrupt, leaving the journaled runtime to cdkd rollback', async () => {
       answer(['CREATING']);
       const interrupted = new InterruptedWaitError('BedrockAgentCore Runtime Rt create wait');

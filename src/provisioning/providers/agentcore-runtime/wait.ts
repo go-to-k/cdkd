@@ -192,11 +192,13 @@ export async function waitForRuntimeSettledBeforeDelete(
  * would collide with it. CloudFormation's CREATE_FAILED rollback deletes it
  * too.
  *
- * Safe: `agentRuntimeId` is the id THIS call's `CreateAgentRuntime`
- * response named, and nothing references an id no state records. That is the
- * runtime this call created, or, under a template-declared `ClientToken`, the
- * same runtime an earlier idempotent call with that token created: never
- * another one.
+ * Safe only WITHOUT a template-declared `ClientToken`: the SDK then fills a
+ * fresh token per call, so the id `CreateAgentRuntime` answered is a runtime
+ * THIS call created, and nothing references an id no state records. With a
+ * declared token AWS's idempotency can answer with an EXISTING runtime, such
+ * as one another deploy of the same stack, name and token (another
+ * `--state-bucket` or prefix) holds in its state, so the caller never calls
+ * this then and reports {@link keptIdempotentRuntimeNote} instead.
  *
  * Returns `''` when the runtime is gone (a not-found counts), or a sentence
  * naming the survivor and the command that retires it, for the caller to
@@ -218,12 +220,38 @@ export async function retireFailedRuntimeCreate(
     deps.debug(
       mask(`Delete of runtime ${agentRuntimeId} after the failed create failed: ${failed.detail}`)
     );
-    const aws = pasteableAwsCommand(mask);
-    const regionArg = region ? aws` --region ${region}` : aws``;
     return (
       ` The runtime ${agentRuntimeId} it created could not be deleted (${failed.summary}); ` +
-      `delete it with: ` +
-      aws`aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id ${agentRuntimeId}${regionArg}`.render()
+      `delete it with: ${deleteRuntimeCommand(agentRuntimeId, region, mask)}`
     );
   }
+}
+
+/**
+ * The survivor sentence for a failed create that declared a `ClientToken`,
+ * which cdkd does not delete (see {@link retireFailedRuntimeCreate}): AWS may
+ * have answered with an existing runtime for that token, one this deploy
+ * does not own.
+ */
+export function keptIdempotentRuntimeNote(
+  agentRuntimeId: string,
+  region: string | undefined,
+  mask: MaskerFn
+): string {
+  return (
+    ` The template declares a ClientToken, so AWS may have returned an existing runtime ` +
+    `for it: cdkd left runtime ${agentRuntimeId} in place. If this deploy created it, ` +
+    `delete it with: ${deleteRuntimeCommand(agentRuntimeId, region, mask)}`
+  );
+}
+
+/** The pasteable command that deletes one runtime. */
+function deleteRuntimeCommand(
+  agentRuntimeId: string,
+  region: string | undefined,
+  mask: MaskerFn
+): string {
+  const aws = pasteableAwsCommand(mask);
+  const regionArg = region ? aws` --region ${region}` : aws``;
+  return aws`aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id ${agentRuntimeId}${regionArg}`.render();
 }
