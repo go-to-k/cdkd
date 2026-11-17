@@ -205,6 +205,12 @@ describe('sticky-CC exemption table', () => {
     ['AWS::Glue::Database', { CatalogId: '123456789012', DatabaseInput: { Name: 'd', Description: 'd' } }],
     ['AWS::Glue::Job', { Role: 'arn', Description: 'd', Command: { Name: 'pythonshell' } }],
     ['AWS::ECR::Repository', { ImageTagMutability: 'MUTABLE' }],
+    // Batch 4 of go-to-k/cdkd#6454.
+    ['AWS::Events::EventBus', { Name: 'b', Description: 'd' }],
+    ['AWS::ServiceDiscovery::PrivateDnsNamespace', { Name: 'n.internal', Vpc: 'vpc-1', Description: 'd' }],
+    ['AWS::Glue::Workflow', { Name: 'w', Description: 'd' }],
+    ['AWS::Glue::Crawler', { Role: 'arn', DatabaseName: 'd', Description: 'd', Targets: {} }],
+    ['AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal', Subnets: ['subnet-1'] }],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {
