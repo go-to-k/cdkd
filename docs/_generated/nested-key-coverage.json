@@ -2,7 +2,7 @@
   "summary": {
     "targetCount": 28,
     "nestedKeyCount": 1529,
-    "wholeDeliveredPathCount": 621,
+    "wholeDeliveredPathCount": 623,
     "shapeClean": 182,
     "shapeHandled": 50,
     "shapeAllowListed": 8,
@@ -598,6 +598,8 @@
         "DeploymentConfiguration.MinimumHealthyPercent",
         "DeploymentConfiguration.Strategy",
         "DeploymentController.Type",
+        "GatewayConnectors.DeregistrationDelay",
+        "GatewayConnectors.DeregistrationDelay.TimeoutSeconds",
         "GatewayConnectors.Filters",
         "GatewayConnectors.Filters.AccessTypes",
         "GatewayConnectors.HealthCheck",
@@ -698,7 +700,6 @@
       "shapeCleanCount": 21,
       "unmatchedDefinitions": [
         "ForceNewDeployment",
-        "GatewayConnectorDeregistrationDelay",
         "HookTimeoutConfig",
         "ServiceConnectContainerConfiguration",
         "ServiceConnectTestTrafficRulesHeader",
