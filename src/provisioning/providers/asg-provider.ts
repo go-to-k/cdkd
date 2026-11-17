@@ -91,6 +91,11 @@ export class ASGProvider implements ResourceProvider {
   /** `--remove-protection` flips per group, kept across `delete()` re-entry (#2204). */
   readonly protectionFlips = new ProtectionFlipRegistry();
   /**
+   * go-to-k/cdkd#6437: the instance refresh this process last started per
+   * group, so a rollback revert cancels only a refresh cdkd itself started.
+   */
+  readonly startedRefreshes = new Map<string, string>();
+  /**
    * The `DeletionProtection` level each flip record's flip removed. Keyed by
    * the RECORD, not the group, so it lives and dies with it: the registry
    * hands a re-entered `delete()` the same record (and so this level), and a
@@ -249,9 +254,17 @@ export class ASGProvider implements ResourceProvider {
     groupName: string,
     logicalId: string,
     properties: Record<string, unknown>,
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    waitForGone = true
   ): Promise<string | undefined> {
-    return retireFailedCreate.call(this, groupName, logicalId, properties, maskSecrets);
+    return retireFailedCreate.call(
+      this,
+      groupName,
+      logicalId,
+      properties,
+      maskSecrets,
+      waitForGone
+    );
   }
 
   update(

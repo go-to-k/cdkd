@@ -690,6 +690,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
@@ -1201,6 +1202,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
@@ -1795,6 +1797,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
@@ -2234,6 +2237,7 @@
     {
       "flag": "--update-policy",
       "integs": [
+        "asg-update-policy",
         "launchtemplate-asg-inplace"
       ]
     },
@@ -2355,6 +2359,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",

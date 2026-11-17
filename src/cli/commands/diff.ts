@@ -12,6 +12,7 @@ import {
   parseContextOptions,
   useCdkBootstrapAssetsOption,
   noCfnFallbackOption,
+  diffUpdatePolicyOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
@@ -45,6 +46,7 @@ import {
 import {
   resolveApp,
   resolveStateBucketWithDefault,
+  resolveUpdatePolicy,
   resolveUseCdkBootstrapAssets,
 } from '../config-loader.js';
 import {
@@ -227,6 +229,7 @@ async function diffCommand(
     context?: string[];
     useCdkBootstrapAssets?: boolean;
     cfnFallback?: boolean;
+    updatePolicy?: boolean;
   }
 ): Promise<void> {
   // Awaited first, so provider construction below stays synchronous once the
@@ -600,11 +603,16 @@ async function diffCommand(
           // Issue #5600: the predicate the deploy's pre-flight refusal reads.
           ccRouteUnavailableReason: (resourceType) =>
             diffProviderRegistry.ccRouteUnavailableReason(resourceType),
+          // go-to-k/cdkd#6437: a replacement's create route, as the deploy decides it.
+          createRouteOf: (input) => diffProviderRegistry.getProviderFor(input),
           ...(assetRedirect && { assetRedirect }),
           // Issue #1697: the diff's best-effort resolvers honor the same
           // CloudFormation fallback opt-out as deploy, so preview and apply
           // resolve cross-stack references identically.
           ...(options.cfnFallback === false && { cfnFallback: false }),
+          // go-to-k/cdkd#6437: preview the replacement `cdkd deploy --update-policy`
+          // makes, with the deploy's precedence (CLI > cdk.json).
+          ...(resolveUpdatePolicy(options.updatePolicy) === true && { updatePolicy: true }),
           // Consulted lazily, by a `Fn::GetStackOutput` carrying a `RoleArn` only.
           producerLookup,
           ...(stackInfo.account && { consumerAccount: stackInfo.account }),
@@ -803,6 +811,8 @@ export function createDiffCommand(): Command {
     )
     .addOption(useCdkBootstrapAssetsOption)
     .addOption(noCfnFallbackOption)
+    .addOption(diffUpdatePolicyOptions[0]!)
+    .addOption(diffUpdatePolicyOptions[1]!)
     .action(withErrorHandling(diffCommand));
 
   // Add options

@@ -1,4 +1,5 @@
 import type { CloudFormationTemplate } from '../../types/resource.js';
+import { markUpdatePolicyReplacements } from './update-policy-replacement.js';
 import type { StackState, ResourceChange, PropertyChange } from '../../types/state.js';
 import { acceptedCreateOnlyDropsOf } from '../../types/state.js';
 import {
@@ -133,7 +134,15 @@ export async function calculateDiff(
    * passes, so a reader of its `Outputs.<Key>` is promoted as for any
    * updated nested stack.
    */
-  forcedNestedChildRuns?: ReadonlySet<string>
+  forcedNestedChildRuns?: ReadonlySet<string>,
+  /**
+   * go-to-k/cdkd#6437: `--update-policy` (or `cdk.json`
+   * `context.cdkd.updatePolicy`) is on, so an Auto Scaling group's
+   * `AutoScalingReplacingUpdate` turns a trigger property change into a
+   * replacement (`markUpdatePolicyReplacements`). Absent / `false`: no
+   * policy replaces anything, as before.
+   */
+  updatePolicy?: boolean
 ): Promise<Map<string, ResourceChange>> {
   const changes = new Map<string, ResourceChange>();
 
@@ -646,6 +655,9 @@ export async function calculateDiff(
     );
   }
   do {
+    if (updatePolicy === true) {
+      markUpdatePolicyReplacements(changes, desiredTemplate);
+    }
     this.promoteReplacementDependents(
       changes,
       desiredTemplate,

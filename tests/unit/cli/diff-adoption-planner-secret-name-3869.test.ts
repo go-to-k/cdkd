@@ -33,6 +33,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveApp: vi.fn(() => 'node app.ts'),
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
+  resolveUpdatePolicy: vi.fn(() => undefined),
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
 }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({

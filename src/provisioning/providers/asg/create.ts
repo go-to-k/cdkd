@@ -1,4 +1,5 @@
 import type { ASGProvider } from '../asg-provider.js';
+import { waitForInService } from './instance-refresh.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
   CreateAutoScalingGroupCommand,
@@ -29,8 +30,10 @@ import {
 // ─── Dispatch ─────────────────────────────────────────────────────
 
 /**
- * The `context` parameter is read for ONE thing: `maskSecrets` (issue #1932
- * item 3, adopted here by issue #1997).
+ * The `context` parameter is read for `maskSecrets` (issue #1932 item 3,
+ * adopted here by issue #1997), `replayingState`, and `awaitInService`
+ * (go-to-k/cdkd#6437: a replacing update's new group waits for its
+ * instances before returning).
  *
  * An earlier revision of this comment claimed the create path had no site to
  * mask, on the grounds that it names "only the logical id and the generated
@@ -48,6 +51,7 @@ export async function create(
   properties: Record<string, unknown>,
   context?: CreateContext
 ): Promise<ResourceCreateResult> {
+  const startedAt = Date.now();
   if (resourceType !== 'AWS::AutoScaling::AutoScalingGroup') {
     throw new ProvisioningError(
       `Unsupported resource type: ${resourceType}`,
@@ -200,6 +204,7 @@ export async function create(
         ...(tags.length > 0 && { Tags: tags }),
       })
     );
+    let waitingInService = false;
     // go-to-k/cdkd#5511: report before the wiring calls.
     reportCreatedResource(logicalId, resourceType, groupName);
 
@@ -239,8 +244,20 @@ export async function create(
           })
         );
       }
+      // go-to-k/cdkd#6437: a replacing update's new group serves before the
+      // old one goes; a timeout retires this group below.
+      if (context?.awaitInService === true) {
+        waitingInService = true;
+        await waitForInService(this, groupName, logicalId, resourceType, maskSecrets, startedAt);
+      }
     } catch (wiringError) {
-      survivorNote = await this.retireFailedCreate(groupName, logicalId, properties, maskSecrets);
+      survivorNote = await this.retireFailedCreate(
+        groupName,
+        logicalId,
+        properties,
+        maskSecrets,
+        !waitingInService
+      );
       if (survivorNote === undefined) retractCreatedResource(logicalId, resourceType, groupName);
       // The group itself was created: an error from its wiring is an
       // auxiliary object's, never this group's name collision (#3826).
@@ -317,7 +334,16 @@ export async function retireFailedCreate(
   groupName: string,
   logicalId: string,
   properties: Record<string, unknown>,
-  maskSecrets: SecretMasker
+  maskSecrets: SecretMasker,
+  /**
+   * `false` after an `awaitInService` wait ran out (go-to-k/cdkd#6437): that
+   * wait already took the operation's time up to its margin, and waiting up
+   * to 15 more minutes for the group to go would outlive the resource
+   * timeout, letting the rollback start a second delete of the same group.
+   * The accepted force delete finishes on its own, and the group is then
+   * reported gone.
+   */
+  waitForGone = true
 ): Promise<string | undefined> {
   const debug = (message: string): void => this.logger.debug(maskSecrets(message));
   let deleteAccepted = false;
@@ -366,7 +392,7 @@ export async function retireFailedCreate(
       new DeleteAutoScalingGroupCommand({ AutoScalingGroupName: groupName, ForceDelete: true })
     );
     deleteAccepted = true;
-    await this.waitForGroupDeleted(groupName);
+    if (waitForGone) await this.waitForGroupDeleted(groupName);
     debug(`Retired AutoScalingGroup ${logicalId} after its create-time wiring failed`);
     return undefined;
   } catch (cleanupError) {

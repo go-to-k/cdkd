@@ -308,7 +308,16 @@ cdkd deploy MyStack --update-policy
 | Policy | With `--update-policy` |
 | --- | --- |
 | `AutoScalingScheduledAction` (`IgnoreUnmodifiedGroupSizeProperties: true`) | An Auto Scaling group update sends only the size properties the template changed. |
+| `AutoScalingRollingUpdate` | A launch template, launch configuration, subnet or placement group change replaces the instances with an instance refresh, and the deploy waits for it. |
+| `AutoScalingInstanceRefresh` | The same changes, plus `MixedInstancesPolicy` and the Availability Zones, start the instance refresh the policy declares, and the deploy waits for it. |
+| `AutoScalingReplacingUpdate` (`WillReplace: true`) | The rolling update's changes create a new group, wait for its instances to be in service, then delete the old one. |
 | Any other `UpdatePolicy` | Still skipped. |
+
+A refresh needs the `autoscaling:StartInstanceRefresh`,
+`autoscaling:DescribeInstanceRefreshes` and `autoscaling:CancelInstanceRefresh`
+permissions. `--no-wait` starts it without waiting. How a rolling update maps
+onto a refresh, and how a rollback reverts one, is in
+[`UpdatePolicy` is opt-in](supported-features.md#updatepolicy-is-opt-in).
 
 To turn it on for a whole project, set it in `cdk.json`:
 
@@ -321,8 +330,8 @@ To turn it on for a whole project, set it in `cdk.json`:
 ```
 
 The command-line flag wins over `cdk.json`. With neither set, cdkd skips
-the policy and prints a one-line hint on each SDK-provider update of a
-resource whose policy `--update-policy` would honor. See
+the policy and prints a one-line hint on each update that a policy
+`--update-policy` would honor applies to. See
 [`UpdatePolicy` is opt-in](supported-features.md#updatepolicy-is-opt-in).
 
 ## `--no-aggressive-vpc-parallel`

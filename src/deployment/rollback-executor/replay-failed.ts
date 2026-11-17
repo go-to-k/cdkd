@@ -1,5 +1,6 @@
 /** The failed-op replay, split out of `rollback-executor.ts` (go-to-k/cdkd#5835). */
 
+import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   journaledOrphanKeepReason,
@@ -789,25 +790,23 @@ export async function replayFailedOperationsUnbound(
                 op.logicalId,
                 current.physicalId,
                 op.resourceType,
-                // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard
-                // above (same reason as the other two sites). The previous-side
-                // one below is LIVE, but not for the reason an earlier spelling
-                // of this comment gave: `op.attemptedProperties` being optional
-                // does NOT reach it, because `?? current.properties` already
-                // covers that and `ResourceState.properties` is required. It is
-                // live because a malformed STATE record can lack `properties`
-                // altogether -- the same premise this whole guard rests on.
+                // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard above (same reason
+                // as the other two sites). The previous-side one below is LIVE, but not for the
+                // reason an earlier spelling of this comment gave: `op.attemptedProperties` being
+                // optional does NOT reach it, because `?? current.properties` already covers that
+                // and `ResourceState.properties` is required. It is live because a malformed STATE
+                // record can lack `properties` altogether -- the same premise this whole guard
+                // rests on.
                 desiredProps ?? {},
                 attemptedProps ?? {},
-                // Same as the `revert` arm: masker, no readback flag,
-                // `ctx.region` as `expectedRegion` (issue #2301 item 1), and
-                // `replayingState` (issue #3141). The DESIRED bag here is
-                // `prev.properties` — a cdkd state record, exactly as on the
-                // `revert` arm — so the replay licence is the same one. (The
-                // PREVIOUS side is `op.attemptedProperties`, the failed attempt's
-                // desired bag; `replayingState` describes the desired side, which
-                // is the side a provider's refusals read.) `recordedAttributes` (issue
-                // #4051) and `recordedCreateOnlyDrops` (#6104), as on the `revert` arm.
+                // Same as the `revert` arm: masker, no readback flag, `ctx.region` as
+                // `expectedRegion` (issue #2301 item 1), and `replayingState` (issue #3141). The
+                // DESIRED bag here is `prev.properties` — a cdkd state record, exactly as on the
+                // `revert` arm — so the replay licence is the same one. (The PREVIOUS side is
+                // `op.attemptedProperties`, the failed attempt's desired bag; `replayingState`
+                // describes the desired side, which is the side a provider's refusals read.)
+                // `recordedAttributes` (issue #4051) and `recordedCreateOnlyDrops` (#6104), as on
+                // the `revert` arm. The forward's honored `updatePolicy` too (go-to-k/cdkd#6457).
                 {
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: ctx.region,
@@ -821,6 +820,7 @@ export async function replayFailedOperationsUnbound(
                   // AWS; the record built below clears them only on success.
                   ...revertUnsettled,
                   typedPayloadLeaves: prev.typedPayloadLeaves, // go-to-k/cdkd#6309
+                  ...revertUpdatePolicyContext(op.updatePolicy),
                 },
               ],
               op.logicalId,

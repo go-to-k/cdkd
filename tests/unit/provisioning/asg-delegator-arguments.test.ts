@@ -86,7 +86,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['getCreateClient', 'core', 'getCreateClient', 0],
   ['getEc2Client', 'core', 'getEc2Client', 0],
   ['create', 'create', 'create', 4],
-  ['retireFailedCreate', 'create', 'retireFailedCreate', 4],
+  ['retireFailedCreate', 'create', 'retireFailedCreate', 5],
   ['update', 'update', 'update', 6],
   ['wrapCaughtError', 'core', 'wrapCaughtError', 3],
   ['wrapUpdateError', 'core', 'wrapUpdateError', 5],

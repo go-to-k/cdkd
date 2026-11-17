@@ -103,6 +103,23 @@ the failure still validate the next attempt. Use `--no-wait` to keep a
 cdkd returns while the image is `CREATING`. The image's ARN is available
 first, so stack outputs that use it still work.
 
+### Auto Scaling group instance refresh
+
+With `--update-policy`, an Auto Scaling group whose `AutoScalingRollingUpdate`
+or `AutoScalingInstanceRefresh` policy applies to the update starts an
+instance refresh. Under `--no-wait`, cdkd returns once AWS accepts
+`StartInstanceRefresh`. The refresh keeps replacing instances in the
+background, and a refresh that fails does not fail the deploy. To wait
+manually:
+
+```bash
+aws autoscaling describe-instance-refreshes --auto-scaling-group-name <group>
+```
+
+An `AutoScalingReplacingUpdate` still waits under `--no-wait`: cdkd deletes
+the old group only once the new group's instances are in service, since
+deleting it earlier would leave the group's capacity at zero.
+
 ### ECS service
 
 cdkd returns once `CreateService` or `UpdateService` is accepted, and prints

@@ -247,12 +247,14 @@ export interface UpdateContext extends SecretMaskingContext {
 
   /**
    * go-to-k/cdkd#6437: the resource's template `UpdatePolicy` attribute, as
-   * written (intrinsics unresolved). Set ONLY by `cdkd deploy`'s in-place
-   * update when `--update-policy` (or `cdk.json context.cdkd.updatePolicy:
-   * true`) is on and the template declares one. Absent on every other caller —
-   * the rollback reverts, `cdkd drift --revert` — and absent means "do what
-   * cdkd did before UpdatePolicy support": a provider reading it must treat
-   * absence as that, never as a policy of its own.
+   * written (intrinsics unresolved). Set by `cdkd deploy`'s in-place update
+   * when `--update-policy` (or `cdk.json context.cdkd.updatePolicy: true`) is
+   * on and the template declares one, and by a rollback revert of such an
+   * update (go-to-k/cdkd#6457), from the policy that update journaled, minus
+   * `AutoScalingScheduledAction` (CloudFormation ignores it on a rollback).
+   * Absent on every other caller (`cdkd drift --revert` included), and absent
+   * means "do what cdkd did before UpdatePolicy support": a provider reading it
+   * must treat absence as that, never as a policy of its own.
    */
   updatePolicy?: Readonly<Record<string, unknown>> | undefined;
 
@@ -511,6 +513,17 @@ export type InlinePolicyClaimed = (
  * historical cdkd STATE record?
  */
 export interface CreateContext extends SecretMaskingContext {
+  /**
+   * go-to-k/cdkd#6437: set ONLY by the deploy's create-first replacement of
+   * an Auto Scaling group under `UpdatePolicy.AutoScalingReplacingUpdate`.
+   * The create waits for the new group's instances to be `InService` and
+   * healthy up to its desired capacity before it returns, so the old group
+   * is deleted only once the new one serves (CloudFormation: "deletes the old
+   * Auto Scaling group ... once the new one is healthy"). A provider without
+   * such a wait ignores it.
+   */
+  awaitInService?: boolean;
+
   /**
    * `true` when the properties handed to `create()` come from a cdkd STATE
    * record rather than from the synthesized template — today that is the

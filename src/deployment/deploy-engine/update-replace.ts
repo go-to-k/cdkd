@@ -58,6 +58,7 @@ export async function updateByReplacement(
     updateSecrets,
     lostWithParent,
     nameGenerationFields,
+    policyReplacement,
   }: {
     change: ResourceChange;
     counts: ProvisionCounts | undefined;
@@ -92,6 +93,8 @@ export async function updateByReplacement(
      * where the generation does not move.
      */
     nameGenerationFields: Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'>;
+    /** go-to-k/cdkd#6437: an `AutoScalingReplacingUpdate` drives the replacement. */
+    policyReplacement?: boolean;
   }
 ): Promise<ResourceOutcomeSignal | void> {
   // go-to-k/cdkd#4682: the resource is still in the template, so a custom
@@ -136,6 +139,10 @@ export async function updateByReplacement(
   } else if (recreateViaSdkProvider) {
     // #651 reverse direction.
     replacementReason = '--recreate-via-sdk-provider flag (mid-life CC→SDK migration)';
+  } else if (policyReplacement === true) {
+    // go-to-k/cdkd#6437: no immutable property changed; the template's
+    // `UpdatePolicy` asked for the replacement.
+    replacementReason = 'UpdatePolicy AutoScalingReplacingUpdate (WillReplace: true)';
   } else {
     replacementReason = `immutable properties changed: ${change.propertyChanges
       ?.filter((pc) => pc.requiresReplacement)
@@ -348,6 +355,8 @@ export async function updateByReplacement(
       lostWithParent,
       typedPayloadLeaves,
       nameChange,
+      // go-to-k/cdkd#6437: the old group goes only once the new one serves.
+      awaitInService: policyReplacement === true,
     });
   }
 

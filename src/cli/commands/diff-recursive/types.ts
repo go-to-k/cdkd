@@ -1,4 +1,5 @@
 import type { MovedTo, RefactorSides } from '../../../analyzer/refactor-hints.js';
+import type { CreateRouteOf } from '../../../deployment/deploy-engine/update-policy.js';
 import type { NoEchoMacCache } from './noecho-macs.js';
 import type { MacWriteOnlyLookups } from '../../../deployment/deploy-engine/update/noecho-macs.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
@@ -321,6 +322,19 @@ export interface ComputeStackDiffOptions {
    * deploy engine's option so preview and apply resolve identically.
    */
   cfnFallback?: boolean;
+  /**
+   * go-to-k/cdkd#6437: `--update-policy` (or `cdk.json`
+   * `context.cdkd.updatePolicy: true`), so the preview replaces an Auto
+   * Scaling group whose `AutoScalingReplacingUpdate` the deploy would honor.
+   */
+  updatePolicy?: boolean;
+  /**
+   * go-to-k/cdkd#6437: the provider registry's `getProviderFor`, so the
+   * preview decides a replacement's create route as the deploy does
+   * (`replacementCreateRoutesToCloudControl`). Absent: the route is not
+   * checked.
+   */
+  createRouteOf?: CreateRouteOf;
   /**
    * The cloud assembly's producer artifacts, consulted lazily by an
    * `Fn::GetStackOutput` carrying a `RoleArn` only, as the deploy engine's

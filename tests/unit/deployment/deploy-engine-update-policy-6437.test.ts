@@ -178,7 +178,7 @@ describe('DeployEngine UpdatePolicy / CreationPolicy (go-to-k/cdkd#6437)', () =>
     expect(hintLines()[0]).toContain('AutoScalingScheduledAction');
   });
 
-  it('the default prints no hint for a policy cdkd does not honor yet', async () => {
+  it('the default prints no hint for a rolling update whose trigger properties did not change', async () => {
     await makeEngine().deploy(
       STACK,
       primeUpdate({ AutoScalingRollingUpdate: { MaxBatchSize: 1 } })

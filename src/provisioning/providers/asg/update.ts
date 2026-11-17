@@ -13,6 +13,8 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../../update-removal.js';
 import { protectedReplacementAdvice } from '../../replacement-protection-advice.js';
@@ -20,6 +22,8 @@ import { unchangedBehindSecretReference } from '../../secret-reference-immutable
 import { createMaskedLogSinks, withDerivedNameMasks } from '../../masked-retry-logger.js';
 import { zoneMembers } from './shared.js';
 import { ignoresUnmodifiedGroupSize } from './update-policy.js';
+import { runInstanceRefresh, runningRefreshOf, selectInstanceRefresh } from './instance-refresh.js';
+import { markRefusedBeforeApplying } from '../../../deployment/prior-attempt-scope.js';
 
 /**
  * The `context` parameter is read for ONE thing today: `maskSecrets` (issue
@@ -41,6 +45,7 @@ export async function update(
   previousProperties: Record<string, unknown>,
   context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
+  const startedAt = Date.now();
   properties = withRemovalDefaults(
     this.removalDefaults,
     resourceType,
@@ -138,6 +143,51 @@ export async function update(
         remedy
     );
   }
+  // go-to-k/cdkd#6437: the instance refresh `AutoScalingRollingUpdate` /
+  // `AutoScalingInstanceRefresh` asks for (only under `--update-policy`, or a
+  // rollback revert of a deploy that ran under it), chosen before any call so
+  // the two declared together -- which CloudFormation fails the update on --
+  // are refused before the group changes. A revert's policy came from the
+  // forward deploy, which refused that pair already, so it only warns.
+  const refresh = selectInstanceRefresh(
+    context?.updatePolicy,
+    properties,
+    previousProperties,
+    context?.unsettledProperties
+  );
+  if (refresh.kind === 'conflict') {
+    const text = safeMsg`UpdatePolicy declares both AutoScalingInstanceRefresh and AutoScalingRollingUpdate on AutoScalingGroup ${logicalId}; CloudFormation fails such an update. Keep one of the two.`;
+    if (context?.replayingState !== true) {
+      // Nothing was sent: the journal keeps no attempted bag.
+      throw markRefusedBeforeApplying(
+        markNonRetryable(new ProvisioningError(text, resourceType, logicalId, physicalId))
+      );
+    }
+    this.logger.warn(safeMsg`${text} No instance refresh is started.`);
+  }
+  // A refresh already running (an earlier --no-wait deploy's, an operator's)
+  // would refuse ours only after the group changed, so it is refused here,
+  // before any write. A rollback revert handles it at the start instead.
+  if (
+    (refresh.kind === 'rolling' || refresh.kind === 'instance-refresh') &&
+    context?.replayingState !== true
+  ) {
+    const running = await runningRefreshOf(this, physicalId);
+    if (running !== undefined) {
+      throw markRefusedBeforeApplying(
+        markNonRetryable(
+          new ProvisioningError(
+            mask(
+              `Failed to update AutoScalingGroup ${logicalId}: instance refresh ${running} is already running on the group, and AWS runs one at a time. Wait for it to finish or cancel it, then deploy again. Nothing was changed.`
+            ),
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        )
+      );
+    }
+  }
   // BOTH sides before any call (go-to-k/cdkd#3948): a rollback replays this
   // method with a recorded bag as the DESIRED side, and the previous side is
   // always the state record.
@@ -164,6 +214,7 @@ export async function update(
       NotificationConfigurations: previousProperties['NotificationConfigurations'],
     }
   );
+  let result: ResourceUpdateResult;
   try {
     // Sub-shape diffs are applied via separate per-shape SDK calls
     // BEFORE the main UpdateAutoScalingGroup. AWS does not expose these
@@ -435,11 +486,27 @@ export async function update(
     if (launchTemplate?.LaunchTemplateId) {
       attributes['LaunchTemplateID'] = launchTemplate.LaunchTemplateId;
     }
-    return { physicalId, wasReplaced: false, attributes };
+    result = { physicalId, wasReplaced: false, attributes };
   } catch (error) {
     if (error instanceof ResourceUpdateNotSupportedError) throw error;
     throw this.wrapUpdateError(error, resourceType, logicalId, physicalId, mask);
   }
+  // Outside the wrap above: its failures are already worded, marked
+  // non-retryable, and an interrupt must stay one.
+  if (refresh.kind === 'rolling' || refresh.kind === 'instance-refresh') {
+    await runInstanceRefresh(this, {
+      logicalId,
+      physicalId,
+      resourceType,
+      selection: refresh,
+      properties,
+      replayingState: context?.replayingState === true,
+      markUnsettled: context?.markUnsettled,
+      startedAt,
+      mask,
+    });
+  }
+  return result;
 }
 
 /**
