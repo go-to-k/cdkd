@@ -211,6 +211,8 @@ describe('sticky-CC exemption table', () => {
     ['AWS::Glue::Workflow', { Name: 'w', Description: 'd' }],
     ['AWS::Glue::Crawler', { Role: 'arn', DatabaseName: 'd', Description: 'd', Targets: {} }],
     ['AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal', Subnets: ['subnet-1'] }],
+    // Batch 5 of go-to-k/cdkd#6454.
+    ['AWS::ServiceDiscovery::Service', { Name: 's', NamespaceId: 'ns-1', Description: 'd' }],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {
