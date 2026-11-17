@@ -256,4 +256,16 @@ describe('pauseBeforeNextPoll (#6517)', () => {
       watch.dispose();
     }
   });
+
+  it('answers a Ctrl-C seen before the pause with the interrupt, not a timeout', async () => {
+    const baseline = process.listeners('SIGINT') as NodeJS.SignalsListener[];
+    const watch = startInterruptWatch('test wait');
+    try {
+      pressCtrlC(baseline);
+      const outcome = await pauseBeforeNextPoll(Date.now() - 1, watch).catch((e: unknown) => e);
+      expect(isInterruptedWaitError(outcome)).toBe(true);
+    } finally {
+      watch.dispose();
+    }
+  });
 });
