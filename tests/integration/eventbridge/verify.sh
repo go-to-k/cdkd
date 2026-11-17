@@ -4,7 +4,8 @@
 #
 # Deploys the eventbridge fixture and asserts that LogConfig reaches AWS
 # via the CreateEventBus wire path (no separate control-plane API). Then
-# destroys clean.
+# destroys clean. A destroy with a rule from outside the stack on the bus
+# refuses first and leaves the bus, the rule and its record (issue #6479).
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -52,6 +53,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 BUS_NAME="cdkd-test-bus-${ACCOUNT_ID}"
 SOURCE_KEY_FN="cdkd-test-source-key-fn-${ACCOUNT_ID}"
+# Phase 1.9 puts this rule on the bus from outside the stack (issue #6479).
+FOREIGN_RULE="cdkd-foreign-rule-6479"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -62,6 +65,8 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   destroy_rc=0
+  # A leftover Phase 1.9 rule would keep the bus, so it goes first.
+  aws events delete-rule --name "${FOREIGN_RULE}" --event-bus-name "${BUS_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -x "${LOCAL_DIST}" ]; then
     env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
       --region "${REGION}" --yes >/dev/null 2>&1
@@ -269,6 +274,47 @@ if [ "${RM_SOURCE_KEY}" != "${BUS_KEY_ARN}" ]; then
   exit 1
 fi
 echo "    OK: removal: ${SOURCE_KEY_FN} keeps the fixture key after UpdateFunctionCode without SourceKMSKeyArn, as CloudFormation does (issue #5300)"
+
+# --- Phase 1.9: a rule from outside the stack keeps the bus (#6479) ----
+# AWS refuses DeleteEventBus while a rule remains, and so does
+# CloudFormation; cdkd must refuse too rather than delete a rule it does not
+# own. The rest of the stack is destroyed; the bus, the rule and the bus's
+# state record stay.
+echo "==> Phase 1.9: destroy refuses while a rule from outside the stack is on the bus (#6479)"
+aws events put-rule --name "${FOREIGN_RULE}" --event-bus-name "${BUS_NAME}" \
+  --event-pattern '{"source":["cdkd.foreign"]}' --region "${REGION}" >/dev/null
+set +e
+REFUSED_OUT=$(env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+REFUSED_RC=$?
+set -e
+if [ "${REFUSED_RC}" -eq 0 ]; then
+  echo "FAIL: destroy exited 0 with a rule from outside the stack on ${BUS_NAME}" >&2
+  printf '%s\n' "${REFUSED_OUT}" >&2
+  exit 1
+fi
+# The refusal names the rule on the same line as cdkd's own wording; the
+# sentinel catches a reworded refusal that still names the rule.
+REFUSAL_LINE=$(grep -F "${FOREIGN_RULE}" <<<"${REFUSED_OUT}" | grep -F 'EventBus' || true)
+if ! grep -qF 'AWS refuses to delete an event bus that has rules' <<<"${REFUSAL_LINE}"; then
+  echo "FAIL: destroy did not refuse with the has-rules wording naming ${FOREIGN_RULE} (rc=${REFUSED_RC}):" >&2
+  printf '%s\n' "${REFUSED_OUT}" >&2
+  exit 1
+fi
+aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" >/dev/null || {
+  echo "FAIL: ${BUS_NAME} is gone although destroy refused" >&2
+  exit 1
+}
+aws events describe-rule --name "${FOREIGN_RULE}" --event-bus-name "${BUS_NAME}" --region "${REGION}" >/dev/null || {
+  echo "FAIL: the rule from outside the stack (${FOREIGN_RULE}) was deleted" >&2
+  exit 1
+}
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -e '[.resources[] | select(.resourceType == "AWS::Events::EventBus")] | length == 1' >/dev/null || {
+  echo "FAIL: the bus's state record was dropped although its delete refused" >&2
+  exit 1
+}
+aws events delete-rule --name "${FOREIGN_RULE}" --event-bus-name "${BUS_NAME}" --region "${REGION}"
+echo "    OK: destroy refused (rc=${REFUSED_RC}), bus, rule and record intact; rule removed by hand"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

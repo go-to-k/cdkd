@@ -6,9 +6,6 @@ import {
   DescribeEventBusCommand,
   ListRulesCommand,
   ListTagsForResourceCommand,
-  RemoveTargetsCommand,
-  DeleteRuleCommand,
-  ListTargetsByRuleCommand,
   PutPermissionCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -29,12 +26,13 @@ import {
 } from '../auxiliary-failure.js';
 import { reportCreatedResource } from '../created-resource-sink.js';
 import {
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import { markDeleteStarted } from '../delete-started.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
@@ -527,18 +525,15 @@ export class EventBridgeBusProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting EventBus ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#4946: set once the cleanup has sent a rule or target
-    // removal, so a refused `DeleteEventBus` is never read as a whole survivor.
-    let stripped = false;
+    const mask = maskerOrIdentity(context?.maskSecrets);
 
     try {
-      // First, clean up all rules on this bus (they block deletion)
-      stripped = await this.cleanupRulesOnBus(physicalId);
-
-      // Then delete the bus
-      await this.eventBridgeClient.send(new DeleteEventBusCommand({ Name: physicalId }));
+      await this.deleteBusOnceManagedRulesClear(logicalId, physicalId, resourceType, mask);
       this.logger.debug(`Successfully deleted EventBus ${logicalId}`);
     } catch (error) {
+      // The rule refusal and an interrupted wait are already in their final
+      // shape: wrapping either would hide what it says (go-to-k/cdkd#6479).
+      if (error instanceof ProvisioningError || isInterruptedWaitError(error)) throw error;
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.eventBridgeClient.config.region();
         assertRegionMatch(
@@ -570,7 +565,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = this.wrapMaskedError(
-        maskerOrIdentity(context?.maskSecrets),
+        mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -584,10 +579,125 @@ export class EventBridgeBusProvider implements ResourceProvider {
       // The wrap names an AWS failure by its CLASS, which the delete classifiers
       // read as "already deleted" on a `NotFound` needle: only the typed
       // not-found above means this bus is gone (go-to-k/cdkd#2319).
-      const marked =
-        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
-      throw stripped ? markDeleteStarted(marked) : marked;
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(failure)
+        : failure;
     }
+  }
+
+  /**
+   * How long {@link deleteBusOnceManagedRulesClear} waits out rules an AWS
+   * service manages. A field rather than constants so a suite can shorten it.
+   */
+  managedRuleWait = {
+    pollIntervalMs: 5_000,
+    timeoutMs: 120_000,
+    sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
+
+  /**
+   * `DeleteEventBus`, leaving every rule on the bus alone (go-to-k/cdkd#6479).
+   *
+   * AWS refuses to delete a bus that still has rules, and so does
+   * CloudFormation, so a rule this stack does not own keeps the bus: cdkd
+   * refuses, naming the rules, rather than deleting another owner's rules. The
+   * stack's own rules reference the bus and are deleted before it.
+   *
+   * The one wait is for rules an AWS service MANAGES (`ManagedBy`), such as an
+   * archive's or a schema discoverer's: their owner is deleted first and AWS
+   * removes the rule after it, so the bus is retried until they are gone, up
+   * to {@link managedRuleWait}.
+   */
+  private async deleteBusOnceManagedRulesClear(
+    logicalId: string,
+    busName: string,
+    resourceType: string,
+    mask: MaskerFn
+  ): Promise<void> {
+    const { pollIntervalMs, timeoutMs, sleep } = this.managedRuleWait;
+    const deadline = Date.now() + timeoutMs;
+    const watch = startInterruptWatch(`EventBus ${logicalId} managed-rule wait`);
+    try {
+      for (;;) {
+        try {
+          await this.eventBridgeClient.send(new DeleteEventBusCommand({ Name: busName }));
+          return;
+        } catch (error) {
+          if (!isBusHasRulesRefusal(error)) throw error;
+        }
+        const rules = await this.listRulesOnBus(busName);
+        const unmanaged = rules.filter((rule) => !rule.managedBy);
+        if (unmanaged.length > 0) {
+          throw this.busHasRulesError(
+            logicalId,
+            busName,
+            resourceType,
+            mask,
+            `${unmanaged.length} rule(s) this stack does not delete: ` +
+              `${unmanaged.map((rule) => rule.name).join(', ')}. Delete or move them, then re-run`
+          );
+        }
+        if (Date.now() >= deadline) {
+          throw this.busHasRulesError(
+            logicalId,
+            busName,
+            resourceType,
+            mask,
+            `rule(s) an AWS service manages, still there ${Math.round(timeoutMs / 1000)}s ` +
+              `later: ${rules.map((rule) => `${rule.name} (${rule.managedBy})`).join(', ')}. ` +
+              'Their owner removes them; re-run once they are gone'
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // No rule listed means the last one went between the two calls: retry now.
+        if (rules.length > 0) await sleep(pollIntervalMs);
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /** Every rule on the bus, with the service that manages it, if any. */
+  private async listRulesOnBus(busName: string): Promise<{ name: string; managedBy?: string }[]> {
+    const rules: { name: string; managedBy?: string }[] = [];
+    let nextToken: string | undefined;
+    do {
+      const page = await this.eventBridgeClient.send(
+        new ListRulesCommand({ EventBusName: busName, NextToken: nextToken })
+      );
+      for (const rule of page.Rules ?? []) {
+        if (rule.Name)
+          rules.push({ name: rule.Name, ...(rule.ManagedBy && { managedBy: rule.ManagedBy }) });
+      }
+      nextToken = page.NextToken;
+    } while (nextToken);
+    return rules;
+  }
+
+  /**
+   * The refusal for a bus that still has rules. Rule names are the user's, so
+   * the already-deleted classifiers must not read one as a not-found
+   * (`markNotGone`), and nothing a retry does removes them (`markNonRetryable`).
+   */
+  private busHasRulesError(
+    logicalId: string,
+    busName: string,
+    resourceType: string,
+    mask: MaskerFn,
+    remaining: string
+  ): ProvisioningError {
+    return markNonRetryable(
+      markNotGone(
+        new ProvisioningError(
+          mask(
+            safeMsg`Failed to delete EventBus ${logicalId}: AWS refuses to delete an event bus that has rules, and ${busName} still has ${remaining}.`
+          ),
+          resourceType,
+          logicalId,
+          busName
+        )
+      )
+    );
   }
 
   getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
@@ -599,73 +709,6 @@ export class EventBridgeBusProvider implements ResourceProvider {
       return Promise.resolve(physicalId);
     }
     return Promise.resolve(undefined);
-  }
-
-  /**
-   * Remove all rules and their targets from an event bus before deletion.
-   * Returns whether it found any rule to remove (and so may have removed one).
-   */
-  private async cleanupRulesOnBus(busName: string): Promise<boolean> {
-    let found = false;
-    try {
-      const rulesResponse = await this.eventBridgeClient.send(
-        new ListRulesCommand({ EventBusName: busName })
-      );
-
-      const rules = rulesResponse.Rules ?? [];
-      if (rules.length === 0) return false;
-      found = true;
-
-      this.logger.debug(`Cleaning up ${rules.length} rule(s) on bus ${busName}`);
-
-      for (const rule of rules) {
-        if (!rule.Name) continue;
-
-        // Remove targets first
-        try {
-          const targetsResponse = await this.eventBridgeClient.send(
-            new ListTargetsByRuleCommand({
-              Rule: rule.Name,
-              EventBusName: busName,
-            })
-          );
-
-          const targetIds = (targetsResponse.Targets ?? [])
-            .map((t) => t.Id)
-            .filter((id): id is string => !!id);
-
-          if (targetIds.length > 0) {
-            await this.eventBridgeClient.send(
-              new RemoveTargetsCommand({
-                Rule: rule.Name,
-                EventBusName: busName,
-                Ids: targetIds,
-              })
-            );
-          }
-        } catch {
-          // Best-effort target removal
-        }
-
-        // Delete the rule
-        try {
-          await this.eventBridgeClient.send(
-            new DeleteRuleCommand({
-              Name: rule.Name,
-              EventBusName: busName,
-            })
-          );
-        } catch {
-          // Best-effort rule removal
-        }
-      }
-    } catch (error) {
-      if (error instanceof ResourceNotFoundException) return found;
-      this.logger.debug(
-        `Failed to list rules on bus ${busName}: ${describeAwsFailure(error).detail}`
-      );
-    }
-    return found;
   }
 
   /**
@@ -765,4 +808,18 @@ export class EventBridgeBusProvider implements ResourceProvider {
     // bus reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * AWS's refusal of a `DeleteEventBus` while rules remain (measured us-east-1:
+ * `ValidationException: EventBus can't be deleted since it has rules.`). Keyed
+ * on the wording, so a reworded refusal falls through to the plain failure,
+ * which still refuses the delete.
+ */
+function isBusHasRulesRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'ValidationException' &&
+    /has rules/i.test(error.message)
+  );
 }
