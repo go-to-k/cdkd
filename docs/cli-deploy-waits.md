@@ -179,6 +179,13 @@ settles. A Lambda function in a VPC that
 nothing invokes therefore does not hold the deploy for the 5 to 10 minutes its
 network interface takes to attach.
 
+An `AWS::RDS::DBProxy` and an `AWS::RDS::DBProxyEndpoint` wait in every mode
+too. A create returns only once the proxy or endpoint is `available`, and so
+does an update that calls `ModifyDBProxy` or `ModifyDBProxyEndpoint`; a
+tag-only change returns at once. RDS refuses the next modify or delete
+of a proxy or endpoint that is still `modifying`. That includes the call a
+rollback replays, so returning early would only move the failure later.
+
 ### `AWS::Lambda::NetworkConnector`
 
 A Lambda network connector also waits in every mode. Its create returns only

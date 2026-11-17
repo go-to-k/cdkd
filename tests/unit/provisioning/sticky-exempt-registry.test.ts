@@ -267,6 +267,26 @@ describe('sticky-CC exemption table', () => {
     ],
     ['AWS::AppSync::GraphQLApi', { Name: 'n', AuthenticationType: 'API_KEY', XrayEnabled: true }],
     ['AWS::S3Vectors::VectorBucket', { VectorBucketName: 'n', Tags: [{ Key: 'k', Value: 'v' }] }],
+    // Batch 11 (go-to-k/cdkd#6490).
+    [
+      'AWS::CloudFront::Distribution',
+      { DistributionConfig: { Enabled: false, Comment: 'c', Origins: [], DefaultCacheBehavior: {} } },
+    ],
+    [
+      'AWS::RDS::DBProxy',
+      {
+        DBProxyName: 'p',
+        EngineFamily: 'MYSQL',
+        Auth: [{ AuthScheme: 'SECRETS', SecretArn: 'arn' }],
+        RoleArn: 'arn',
+        VpcSubnetIds: ['subnet-1'],
+        IdleClientTimeout: 1800,
+      },
+    ],
+    [
+      'AWS::RDS::DBProxyEndpoint',
+      { DBProxyEndpointName: 'e', DBProxyName: 'p', VpcSubnetIds: ['subnet-1'], VpcSecurityGroupIds: ['sg-1'] },
+    ],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {

@@ -815,8 +815,10 @@ conditional the escape is:
   `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Stage`,
   `AWS::ApiGateway::Method`, `AWS::ApiGatewayV2::Stage`,
   `AWS::ApiGatewayV2::Integration`, `AWS::ApiGatewayV2::Route`,
-  `AWS::ApiGatewayV2::Authorizer`, `AWS::AppSync::GraphQLApi` and
-  `AWS::S3Vectors::VectorBucket` are the members today.
+  `AWS::ApiGatewayV2::Authorizer`, `AWS::AppSync::GraphQLApi`,
+  `AWS::S3Vectors::VectorBucket`, `AWS::WAFv2::WebACL`,
+  `AWS::CodeCommit::Repository`, `AWS::CloudFront::Distribution`,
+  `AWS::RDS::DBProxy` and `AWS::RDS::DBProxyEndpoint` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

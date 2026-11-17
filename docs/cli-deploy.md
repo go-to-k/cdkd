@@ -151,7 +151,7 @@ cdkd deploy MyStack --full-wait   # wait as long as CloudFormation would
 
 | Mode | What cdkd waits for |
 | --- | --- |
-| `--no-wait` | Nothing beyond the AWS API call returning. |
+| `--no-wait` | Nothing beyond the AWS API call returning, except the [waits every mode keeps](cli-deploy-waits.md#the-waits-no-wait-never-skips). |
 | default | Whatever is still undecided when the API call returns: a result a later step of the same deploy needs, or an outcome that can still fail, such as an ECS service's rollout. |
 | `--full-wait` | Everything CloudFormation waits for. |
 
@@ -210,6 +210,12 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   association in every mode, before DNS64 wiring and observed-state capture. In-place CIDR changes also
   wait for disassociation and association. See
   [wait mode details](cli-deploy-waits.md).
+
+- An RDS proxy and a proxy endpoint wait for `available` in every mode after a
+  create, and after an update that calls `ModifyDBProxy` or
+  `ModifyDBProxyEndpoint` (a tag-only change does not wait), because RDS
+  refuses the next modify or delete while one is `modifying`. See
+  [wait mode details](cli-deploy-waits.md#the-waits-no-wait-never-skips).
 
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness

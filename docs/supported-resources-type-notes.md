@@ -1,6 +1,6 @@
 ---
 title: Per-Type Behaviour Notes
-description: "Resource types whose behaviour under cdkd differs from CloudFormation or leaves something behind on destroy: EFS, FSx, EMR, Bedrock AgentCore, nested stacks, wait condition handles and Glue."
+description: "Resource types whose behaviour under cdkd differs from CloudFormation or leaves something behind on destroy: EFS, FSx, EMR, Bedrock AgentCore, nested stacks, wait condition handles, Glue and CloudFront."
 ---
 
 # Per-Type Behaviour Notes
@@ -302,6 +302,19 @@ entries added in the console.
 
 More detail is in
 [Supported Resources internals](supported-resources-internals.md#glue-parameter-preservation).
+
+## CloudFront origin TLS protocols survive a removal
+
+When an update leaves a custom origin's `OriginSSLProtocols` out of an
+`AWS::CloudFront::Distribution` template, cdkd keeps the protocols the origin
+already has. This includes removing it from a template that declared it.
+CloudFormation instead resets it to its default, `SSLv3` and `TLSv1`, which
+would turn SSLv3 back on. cdkd warns when it keeps a value the previous
+template declared. A rollback that restores a template without
+`OriginSSLProtocols` also leaves the value the failed deploy applied, and says
+so. To change the protocols, declare `OriginSSLProtocols`. A
+custom origin that is new in the update gets what CloudFront records at
+create: `TLSv1`, `TLSv1.1` and `TLSv1.2`.
 
 ## Related
 

@@ -607,7 +607,8 @@ export async function constructAttributeForComputeTypes(
       case 'Id':
         return physicalId;
       case 'DomainName': {
-        // A distribution id is `E` + 13 upper-case alphanumerics. Refused
+        // A distribution id is `E` + upper-case alphanumerics, of no fixed
+        // length (`E` + 12 and `E` + 13 both measured, 2026-11-18). Refused
         // before the cache read (keyed by this id) and the `GetDistribution`
         // it would parameterise; marked, since the record decides it.
         if (!/^[A-Z0-9]+$/.test(physicalId)) {

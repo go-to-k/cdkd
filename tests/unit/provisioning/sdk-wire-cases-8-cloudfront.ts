@@ -258,9 +258,18 @@ const DISTRIBUTION_FULL: Bag = {
 const MEMBER_WHOLE_FROM_NEXT =
   'a carried DistributionConfig member is sent whole from next over the live config, so a nested removal is delivered by next alone (`mergeUpdateConfig`, cloudfront-distribution/update-config.ts)';
 
+// A custom origin's OriginSSLProtocols removed from the template is the one
+// nested removal that is NOT silent: the update keeps the LIVE value of the
+// origin with the same Id (the arm's live config is built from the previous
+// bag), so whether prev held it changes what is sent (go-to-k/cdkd#6490).
+const LIVE_KEPT_ON_REMOVAL = new Set([
+  'DistributionConfig.Origins.0.CustomOriginConfig.OriginSSLProtocols',
+]);
+
 const nestedUpdateRemoves = Object.fromEntries(
   paths(DISTRIBUTION_FULL)
     .filter((p) => p[0] === 'DistributionConfig' && p.length > 2)
+    .filter((p) => !LIVE_KEPT_ON_REMOVAL.has(p.join('.')))
     .map((p) => [`update-remove:${p.join('.')}`, MEMBER_WHOLE_FROM_NEXT])
 );
 
