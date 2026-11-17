@@ -1091,7 +1091,8 @@ describe('EC2Provider SecurityGroupIngress duplicate ownership (#4355)', () => {
         'Rule',
         `${GROUP_ID}|tcp|5432|5432`,
         TYPE,
-        { ...PROPS, Description: 'new text' },
+        // An identity change: a description-only one is in place (#6514).
+        { ...PROPS, CidrIp: '10.1.0.0/16', Description: 'new text' },
         adoptedRecord,
         { recordedAttributes: { Id: RULE_ID } }
       );

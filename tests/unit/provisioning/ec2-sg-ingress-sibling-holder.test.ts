@@ -629,7 +629,7 @@ describe('EC2Provider SecurityGroupIngress rule shared by two records of one sta
     expect(mockSend.mock.calls.some((c) => c[0] instanceof AuthorizeSecurityGroupIngressCommand)).toBe(true);
   });
 
-  it('update: a holder recording ANOTHER rule id is no holder, so the update revokes and re-authorizes', async () => {
+  it('update: a holder recording ANOTHER rule id is no holder, so an identity change revokes and re-authorizes', async () => {
     mockSend.mockImplementation((command: unknown) =>
       command instanceof AuthorizeSecurityGroupIngressCommand
         ? Promise.resolve({ SecurityGroupRules: [{ SecurityGroupRuleId: 'sgr-0ddddddddddddddd0' }] })
@@ -639,7 +639,9 @@ describe('EC2Provider SecurityGroupIngress rule shared by two records of one sta
     const result = await withStackRecords(
       view({ ExplicitRule: ingressRecord(EXPLICIT_RULE, { Id: 'sgr-0fffffffffffffff0' }) }),
       () =>
-        provider.update('ProxyRule', PHYSICAL_ID, TYPE, { ...PROXY_RULE, Description: 'renamed' }, PROXY_RULE, {
+        // A state-borne caller (`drift --revert`) can change the identity; a
+        // description-only change is in place (go-to-k/cdkd#6514).
+        provider.update('ProxyRule', PHYSICAL_ID, TYPE, { ...PROXY_RULE, FromPort: 3307, ToPort: 3307 }, PROXY_RULE, {
           recordedAttributes: { Id: RULE_ID },
         })
     );

@@ -331,6 +331,16 @@ const ec2Cases: Case[] = [
     ),
   },
   {
+    // go-to-k/cdkd#6514: a description-only change is updated in place.
+    wrap: 'Failed to update the description of SecurityGroupIngress Res',
+    run: ec2Update(
+      'AWS::EC2::SecurityGroupIngress',
+      'sg-1|tcp|443|443',
+      { ...EC2_INGRESS, Description: 'new' },
+      EC2_INGRESS
+    ),
+  },
+  {
     wrap: 'Failed to create EC2 Instance Res',
     run: ec2Create('AWS::EC2::Instance', { ImageId: 'ami-1', InstanceType: 't3.micro' }),
   },
@@ -484,9 +494,9 @@ describe('tail-c provider wraps withhold AWS text (#2319)', () => {
       .join('\n');
     // Minus one: `wrapDeleteError`'s own call into `wrapCaughtError`.
     const ec2Wraps = (ec2Source.match(/this\.wrap(Caught|Delete)Error\(/g) ?? []).length - 1;
-    expect(ec2Wraps).toBe(40);
+    expect(ec2Wraps).toBe(41);
     expect(new Set(ec2Cases.map((c) => c.wrap)).size).toBe(ec2Wraps - 3);
-    expect(ec2Cases).toHaveLength(39);
+    expect(ec2Cases).toHaveLength(40);
     expect(otherCases).toHaveLength(9);
   });
 

@@ -36,9 +36,10 @@ import {
   sgProtocolKey,
   stackIngressRuleHolder,
 } from './sg-support.js';
+import { updateSgRuleDescription } from './sg-rule-description.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
-// ─── AWS::EC2::SecurityGroup ──────────────────────────────────────
+// ─── AWS::EC2::SecurityGroup──────────────────────────────────────
 
 export async function createSecurityGroup(
   this: EC2Provider,
@@ -735,9 +736,11 @@ export function buildIpPermission(
  * Compute the diff between two sets of SecurityGroup rule definitions
  * (ingress or egress) and apply the resulting authorize/revoke calls.
  *
- * Rules are identified by a deterministic key derived from their full
- * shape — protocol, ports, CIDR, peer group, prefix list, description —
- * so updating any of those fields counts as a replacement (revoke + authorize).
+ * Rules are identified by a deterministic key derived from what AWS treats as
+ * the rule — protocol, ports, CIDR, peer group, prefix list — so changing any
+ * of those is a replacement (revoke + authorize). The description is NOT part
+ * of the key (go-to-k/cdkd#6514): a rule on both sides whose description
+ * differs is updated in place, keeping its `sgr-` id, as CloudFormation does.
  */
 export async function applySecurityGroupRuleDiff(
   this: EC2Provider,
@@ -773,7 +776,9 @@ export async function applySecurityGroupRuleDiff(
       direction === 'ingress' ? (rule['SourceSecurityGroupName'] as string | undefined) : undefined;
     return JSON.stringify({
       // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
-      // MUST agree, which is what this function's sibling JSDoc promises.
+      // MUST agree on identity, which is what this function's sibling JSDoc
+      // promises. `sgRuleKey` also keys `Description`, which only pairs drift
+      // read-back rules; here the description is compared per pair below.
       // Without it a `--revert` of a drifted inline rule set keys the
       // previous side (AWS's `tcp`) differently from the desired side
       // (state's `'6'`), so EVERY rule is revoked and re-authorized instead
@@ -787,7 +792,6 @@ export async function applySecurityGroupRuleDiff(
       peerName: peerKey ? null : (peerName ?? null),
       peerOwner: peerOwner ?? null,
       pl: prefixKey ?? null,
-      d: rule['Description'] ?? null,
     });
   };
 
@@ -801,8 +805,41 @@ export async function applySecurityGroupRuleDiff(
     if (!nextByKey.has(key)) toRevoke.push(rule);
   }
   const toAuthorize: Array<Record<string, unknown>> = [];
+  const toDescribe: Array<Record<string, unknown>> = [];
   for (const [key, rule] of nextByKey) {
-    if (!prevByKey.has(key)) toAuthorize.push(rule);
+    const previous = prevByKey.get(key);
+    if (previous === undefined) toAuthorize.push(rule);
+    else if ((previous['Description'] ?? null) !== (rule['Description'] ?? null)) {
+      toDescribe.push(rule);
+    }
+  }
+
+  // go-to-k/cdkd#6514: a description-only change, in place.
+  for (const rule of toDescribe) {
+    // go-to-k/cdkd#4492: a standalone record of this stack holding the same
+    // rule shares its one description, so it is left as that record has it.
+    if (direction === 'ingress' && logicalId !== undefined) {
+      const holder = stackIngressRuleHolder(
+        getStackRecords()?.survivors(),
+        logicalId,
+        groupId,
+        rule
+      );
+      if (holder !== undefined) {
+        this.logger.info(
+          safeMsg`SecurityGroup ${logicalId}: an ingress rule whose description changed is also held by ${holder} of this stack, so its description was left as it is`
+        );
+        continue;
+      }
+    }
+    const outcome = await updateSgRuleDescription(
+      this.ec2Client,
+      groupId,
+      direction,
+      this.buildIpPermission(rule, direction, direction === 'ingress')
+    );
+    // Revoked out of band: authorized below, as the revoke + authorize did.
+    if (outcome === 'not-found') toAuthorize.push(rule);
   }
 
   for (const rule of toRevoke) {

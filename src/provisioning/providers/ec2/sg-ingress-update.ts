@@ -33,6 +33,7 @@ import {
   stackIngressRuleHolder,
   survivingRecordOfRuleId,
 } from './sg-support.js';
+import { updateSgRuleDescription } from './sg-rule-description.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 /**
@@ -333,7 +334,55 @@ export async function updateSecurityGroupIngress(
     };
   }
 
-  // SecurityGroupIngress updates require replacement: revoke old, authorize new
+  // go-to-k/cdkd#6514: the same rule with another description (every identity
+  // key is create-only, so a template edit only reaches here as one) is
+  // updated in place, as CloudFormation does: the rule keeps its `sgr-` id
+  // and is never absent. A redacted recorded description is never sent.
+  const identity = comparableIngressIdentity(properties['GroupId'], properties);
+  if (
+    identity !== undefined &&
+    identity === comparableIngressIdentity(previousProperties['GroupId'], previousProperties) &&
+    !isRedactedRecordedValue(properties['Description'])
+  ) {
+    const { ipProtocol, narrowed } = narrowIngressIpProtocol(properties, (message) =>
+      this.logger.warn(message)
+    );
+    let outcome: 'updated' | 'not-found';
+    try {
+      outcome = await updateSgRuleDescription(
+        this.ec2Client,
+        properties['GroupId'] as string,
+        'ingress',
+        { ...this.buildIpPermission(properties), IpProtocol: ipProtocol }
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update the description of SecurityGroupIngress ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+    // Revoked out of band: the revoke + authorize below re-creates it.
+    if (outcome === 'updated') {
+      return {
+        physicalId,
+        wasReplaced: false,
+        ...(recordedAttributes && { attributes: { ...recordedAttributes } }),
+        ...(narrowed !== properties && { effectiveProperties: narrowed }),
+      };
+    }
+  }
+
+  // An identity change (a state-borne caller: `drift --revert`, a rollback):
+  // revoke old, authorize new.
   try {
     // go-to-k/cdkd#4492: an old rule a surviving record still holds is not
     // revoked (the delete would skip it for the same holder), and nothing
