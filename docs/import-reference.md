@@ -160,8 +160,8 @@ has to supply that resource.
 cdkd takes the account from `sts:GetCallerIdentity`. It takes the region from
 the stack's `env.region`. A stack with no fixed region uses the
 [region resolution order](cli-reference-region.md#resolution-order):
-`AWS_REGION`, `AWS_DEFAULT_REGION`, your profile's region, then `us-east-1`; the
-deprecated `--region` flag, when passed, takes precedence over all of them. A
+`--region`, `AWS_REGION`, `AWS_DEFAULT_REGION`, your profile's region, then
+`us-east-1`. A
 stack that already has state only in `us-east-1` keeps using it unless you name
 a region.
 

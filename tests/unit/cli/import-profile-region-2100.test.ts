@@ -346,4 +346,19 @@ describe('cdkd import runs its providers in the target region (review B2)', () =
     expect(stateRegions('S')).toEqual({ read: ['ap-northeast-1'], written: ['ap-northeast-1'] });
     expect(clientRegions()).toEqual(['ap-northeast-1']);
   });
+
+  it('--region is accepted, folded and obeyed like AWS_REGION (go-to-k/cdkd#6504)', async () => {
+    // `import` declared no `--region` until #6504, so commander refused the
+    // flag before the handler's fold ever ran. Upper-cased to prove the fold:
+    // the state key, the clients and the env all see the canonical spelling.
+    held.value.set('S', new Set(['us-east-1']));
+    synthesize.mockResolvedValue({ stacks: [envAgnostic('S')] });
+
+    await runImport(['S', '--app', 'x', '--yes', '--region', 'EU-WEST-1']);
+
+    expect(backend.stateExistsOwnedBy).not.toHaveBeenCalled();
+    expect(stateRegions('S')).toEqual({ read: ['eu-west-1'], written: ['eu-west-1'] });
+    expect(clientRegions()).toEqual(['eu-west-1']);
+    expect(process.env['AWS_REGION']).toBe('eu-west-1');
+  });
 });

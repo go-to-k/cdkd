@@ -64,13 +64,10 @@ export function parseContextOptions(contextArgs?: string[]): Record<string, stri
 /**
  * Common CLI options.
  *
- * Note: `--region` is intentionally NOT in `commonOptions`. Since PR 3
- * (dynamic region resolution) and PR 4 (region-free default state bucket
- * name), `--region` no longer has a useful role on most commands. It is
- * still required by `cdkd bootstrap` (which needs to know where to create
- * a new bucket) and is added directly there. Other commands accept it for
- * backward compatibility via `deprecatedRegionOption` and emit a
- * deprecation warning when it is passed; the value is otherwise ignored.
+ * Note: `--region` is intentionally NOT in `commonOptions`: it is declared per
+ * command. The commands that act on one named region (`cdkd bootstrap`,
+ * `cdkd gc`, `cdkd state migrate`) declare their own with their own
+ * description; the rest add `regionOption`.
  */
 export const commonOptions = [
   new Option('--verbose', 'Enable verbose logging').default(false),
@@ -86,46 +83,24 @@ export const commonOptions = [
 ];
 
 /**
- * Deprecated `--region` option attached to non-bootstrap commands.
+ * The shared `--region` option (see `commonOptions` for the commands that
+ * declare their own instead).
  *
- * Kept (rather than fully removed) so that scripts or muscle memory passing
- * `--region` do not break. The value IS still honored — every non-bootstrap
- * command consumes `options.region` as the highest-precedence region source
- * (`--region` -> `AWS_REGION` -> `AWS_DEFAULT_REGION` -> the profile's region
- * -> `us-east-1`, `resolveEffectiveRegion`, issues #2029 / #2100; the value is
- * folded to its canonical spelling at each handler's entry, issue #2065): it
- * sets the region of the
- * provisioning / state-bucket SDK clients, the `applyRoleArnIfSet` STS hop,
- * and (for `deploy` / `destroy` / `import` / `export` / `orphan`) the
- * `AWS_REGION` env var inherited by the CDK synth subprocess. The flag is
- * *deprecated* — the recommended way to choose the region is `AWS_REGION` or
- * your AWS profile — but passing it is NOT a no-op. See
- * `warnIfDeprecatedRegion` for the runtime warning. Final removal is
- * tracked in PR 99 (see `docs/plans/05-region-flag-cleanup.md`).
+ * It is the highest-precedence region source: `--region` -> `AWS_REGION` ->
+ * `AWS_DEFAULT_REGION` -> the profile's region -> `us-east-1`
+ * (`resolveEffectiveRegion`, issues #2029 / #2100; the value is folded to its
+ * canonical spelling at each handler's entry, issue #2065). It sets the region
+ * of the provisioning / state-bucket SDK clients, the `applyRoleArnIfSet` STS
+ * hop, and (for `deploy` / `destroy` / `import` / `export` / `orphan`) the
+ * `AWS_REGION` env var inherited by the CDK synth subprocess. A stack whose
+ * `env.region` is set keeps that region, as with the AWS CDK CLI's global
+ * `--region` ("Use the indicated AWS region as the default region"), which
+ * this follows (issue #6504).
  */
-export const deprecatedRegionOption = new Option(
+export const regionOption = new Option(
   '--region <region>',
-  '[deprecated] Prefer AWS_REGION or your AWS profile; --region is still honored but will be removed in a future release'
-).hideHelp();
-
-/**
- * Emit a one-shot stderr warning when a non-bootstrap command receives
- * `--region`. The flag is deprecated in favor of `AWS_REGION` / profile, but
- * — contrary to an earlier message that claimed "no effect" — it is NOT a
- * no-op: every non-bootstrap command consumes `options.region` as the
- * highest-precedence region source (see `deprecatedRegionOption`). So the
- * warning steers users toward the recommended mechanism WITHOUT falsely
- * telling them their flag had no effect (issue #818).
- */
-export function warnIfDeprecatedRegion(options: { region?: string }): void {
-  if (options.region !== undefined) {
-    process.stderr.write(
-      'Warning: --region is deprecated and will be removed in a future release. ' +
-        'It is still honored for now (it overrides AWS_REGION / your AWS profile), ' +
-        'but prefer the AWS_REGION environment variable or your AWS profile to choose the region.\n'
-    );
-  }
-}
+  'Use the indicated AWS region as the default region (overrides AWS_REGION, AWS_DEFAULT_REGION and your AWS profile)'
+);
 
 /**
  * App options

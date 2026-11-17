@@ -1,6 +1,6 @@
 import { plainOrDescribed } from '../../../utils/pasteable-command.js';
 import { Option } from 'commander';
-import { warnIfDeprecatedRegion, parseStackRegion } from '../../options.js';
+import { parseStackRegion } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { S3StateBackend, type StackStateRef } from '../../../state/s3-state-backend.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -58,10 +58,6 @@ export async function setupStateBackend(options: {
   exportIndexStore: ExportIndexStore;
   dispose: () => void;
 }> {
-  // PR 5: --region is deprecated on every state subcommand. Warn here so
-  // the four subcommands inherit the warning via this shared bootstrap.
-  warnIfDeprecatedRegion(options);
-
   // Resolve --role-arn / CDKD_ROLE_ARN before any AWS call.
   // Issue #2065 - fold `--region` ONCE, at the boundary, so no raw spelling
   // reaches an SDK client, an ARN segment or a state key. Rationale (and why

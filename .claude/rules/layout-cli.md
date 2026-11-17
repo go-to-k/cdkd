@@ -77,10 +77,10 @@ Index of every area: [code-layout.md](code-layout.md).
   user NAME" (`undefined` when none); `rawCliRegion` preserves the spelling for
   the bootstrap marker's second probe alone. A region VALUE comes from
   `resolveEffectiveRegion`, held per stack by `stackRegionResolver` (#2100).
-  `adoptDeprecatedRegionFlag(cmd)`
+  `adoptRegionFlag(cmd)`
   serves the six `cdkd local start-*` ENGINE shims whose handler belongs to
-  cdk-local: it splices cdk-local's `--region` out, adds cdkd's hidden
-  deprecated option, and folds in a `preAction` hook, which runs BEFORE
+  cdk-local: it splices cdk-local's `--region` out, adds cdkd's
+  `regionOption`, and folds in a `preAction` hook, which runs BEFORE
   cdk-local builds an SDK client. `cli-region-fold.test.ts` fences it.
 - **src/cli/program.ts** - `buildProgram()`, the whole Commander tree (apart
   from `index.ts`, whose import runs `main()`).

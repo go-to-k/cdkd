@@ -840,16 +840,15 @@ echo "    sibling witness: ${VPC_LID} -> ${VPC_PHYS_PRE}"
 # rather than silently hollowing out the phase.
 #
 # FLAG NOTE: `orphan` accepts TWO different region flags. `--stack-region`
-# selects the STATE RECORD to operate on; `--region` is the deprecated
-# general AWS-region flag (hidden from --help, but still honored — it is the
-# highest-precedence region source, NOT a no-op). We pass `--stack-region`
+# selects the STATE RECORD to operate on; `--region` is the general
+# AWS-region flag (the highest-precedence region source, NOT a no-op). We pass `--stack-region`
 # because it names precisely what this call needs and matches the
 # `state show` / `state destroy` invocations above that read the same record.
 # The AWS region itself arrives via AWS_REGION, pinned explicitly here so the
 # synth / AWS region cannot fall back to the ambient profile when the caller
 # left AWS_REGION unset (REGION defaults to us-east-1 in that case, and the
 # two must not diverge). Verified against `cdkd orphan --help` and
-# src/cli/options.ts (deprecatedRegionOption, lines 71-73).
+# src/cli/options.ts (`regionOption`).
 AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" orphan "${STACK}/Cluster" \
   --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes
 
@@ -880,18 +879,10 @@ fi
 echo "    cluster still ${STATE_ORPHANED} in AWS (orphan left it alone)"
 
 echo "    re-adopting via cdkd import --resource ${CLUSTER_LID}=${CID_P2}"
-# FLAG NOTE: `cdkd import` has NO region flag at all — not `--region` (unlike
-# deploy / destroy / orphan, which accept it as a hidden deprecated-but-still-
-# honored option) and not `--stack-region` (unlike the `state` subcommands).
-# import.ts is the one command that never calls `addOption(
-# deprecatedRegionOption)`, which is exactly why this is easy to get wrong.
-# Passing `--region` makes
-# commander hard-fail the whole command with "unknown option '--region'", so
-# the import never runs. Region reaches import via the environment:
-# src/cli/commands/import.ts resolves `options.region || AWS_REGION ||
-# 'us-east-1'`, and since the option is never declared the env var is the
-# only live source. Set it explicitly here so the binding does not depend on
-# how verify.sh itself was invoked. Verified against `cdkd import --help`.
+# FLAG NOTE: `cdkd import` takes no `--stack-region` (unlike the `state`
+# subcommands), so the region reaches import via AWS_REGION. Set it
+# explicitly here so the binding does not depend on how verify.sh itself was
+# invoked.
 AWS_REGION="${REGION}" env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" import "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --resource "${CLUSTER_LID}=${CID_P2}" --yes

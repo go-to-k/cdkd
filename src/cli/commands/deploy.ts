@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import {
   appOptions,
   commonOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   stackOptions,
   annotationMessageOptions,
@@ -46,9 +46,7 @@ export function createDeployCommand(): Command {
     ...annotationMessageOptions,
   ].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for deploy (PR 5). Accepted for backward
-  // compatibility; warning emitted at runtime via warnIfDeprecatedRegion.
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

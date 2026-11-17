@@ -9,8 +9,7 @@ import { beforeEach, onTestFailed, onTestFinished } from 'vite-plus/test';
  * Vitest attributes and (under this repo's reporter) suppresses `console.*`,
  * but a raw `stream.write()` bypasses that entirely and lands in the run's
  * output unattributed. Product code writes that way on purpose in the few
- * places where the logger is the wrong channel — the deprecated-`--region`
- * notice (`src/cli/options.ts`), the SIGINT notices in
+ * places where the logger is the wrong channel — the SIGINT notices in
  * `src/provisioning/interrupt-watch.ts` and `src/cli/commands/destroy-runner.ts`,
  * the critic summaries under `scripts/` — so the suites exercising those paths
  * legitimately trigger them. Measured 2026-08-30 on the full suite: 108 such

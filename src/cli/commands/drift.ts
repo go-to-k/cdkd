@@ -5,7 +5,7 @@
  */
 import { Command } from 'commander';
 import { parsePositiveIntegerOption } from '../arg-parser.js';
-import { commonOptions, stateOptions, deprecatedRegionOption } from '../options.js';
+import { commonOptions, stateOptions, regionOption } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { UNREADABLE_RESOURCES_MAP_ROW } from '../../state/malformed-resources-bag.js';
 import { driftCommand } from './drift/command.js';
@@ -103,7 +103,7 @@ export function createDriftCommand(): Command {
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

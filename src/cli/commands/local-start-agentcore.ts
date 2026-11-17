@@ -5,7 +5,7 @@ import {
   getEmbedConfig,
 } from 'cdk-local';
 import { cdkdExtraStateProviders } from './local-state-source.js';
-import { adoptDeprecatedRegionFlag } from '../region-options.js';
+import { adoptRegionFlag } from '../region-options.js';
 
 /**
  * `cdkd local start-agentcore <target>` — long-running serve for a Bedrock
@@ -111,5 +111,5 @@ export function createLocalStartAgentCoreCommand(): Command {
   // cdk-local declares a visible `--region <region>` and owns this command's
   // handler, so cdkd replaces the declaration with its deprecated twin and
   // folds the parsed value in a `preAction` hook (issue #2522).
-  return adoptDeprecatedRegionFlag(cmd);
+  return adoptRegionFlag(cmd);
 }

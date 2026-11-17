@@ -85,8 +85,8 @@ describe('createLocalStartMicrovmCommand', () => {
     expect(cmd.options.find((o) => o.long === '--host')?.defaultValue).toBe('127.0.0.1');
   });
 
-  it('hides --region (replaced by the deprecated twin)', () => {
-    expect(cmd.options.find((o) => o.long === '--region')?.hidden).toBe(true);
+  it('shows --region (cdkd\'s shared option replaces cdk-local\'s)', () => {
+    expect(cmd.options.find((o) => o.long === '--region')?.hidden).toBeFalsy();
   });
 
   it('parses --count, --auto-resume and a repeatable --proxy-port', () => {

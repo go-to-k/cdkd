@@ -1,7 +1,7 @@
 import type { Command, Option } from 'commander';
 import { canonicalizeRegion } from '../utils/aws-partition.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
-import { deprecatedRegionOption, warnIfDeprecatedRegion } from './options.js';
+import { regionOption } from './options.js';
 import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { injectAwsRegion, injectedAwsRegionValue } from '../utils/injected-aws-region.js';
 import { plainOrDescribed } from '../utils/pasteable-command.js';
@@ -331,9 +331,9 @@ function inferredFrom(effective: EffectiveRegion): string {
   return effective.source === 'default-env' ? 'AWS_DEFAULT_REGION' : 'your AWS profile';
 }
 
-// Names `AWS_REGION`, not `--region`: on every command that reaches a hold,
-// `--region` is deprecated, and `AWS_REGION` is the documented way to name a
-// region there. Either spelling is a NAMED region, which skips the hold.
+// Names `AWS_REGION`, not `--region`: one export settles every later command
+// in the shell, where a flag must be repeated on each. Either spelling is a
+// NAMED region, which skips the hold.
 function holdMessage(effective: EffectiveRegion, stackName: string): string {
   return (
     `Stack ${quoteStackName(stackName)} has existing state in ${LEGACY_DEFAULT_REGION}, but ` +
@@ -699,7 +699,7 @@ export function regionNeedsReconciliation(effective: EffectiveRegion): boolean {
  * cdkd command has, and fold it before cdk-local's handler runs.
  *
  * The four `start-*` shims (`service` / `alb` / `cloudfront` / `agentcore`)
- * arrive with cdk-local's own visible, undeprecated `--region <region>`, and
+ * arrive with cdk-local's own `--region <region>`, and
  * three of the four hand their whole options bag straight to cdk-local — so
  * there is no cdkd-owned line inside the handler to fold at, and issue
  * [#2522](https://github.com/go-to-k/cdkd/issues/2522) measured what that
@@ -712,9 +712,8 @@ export function regionNeedsReconciliation(effective: EffectiveRegion): boolean {
  * Two halves, and BOTH are needed:
  *
  * 1. cdk-local's `--region` declaration is spliced out and cdkd's shared
- *    {@link deprecatedRegionOption} takes its place — hidden from `--help` and
- *    warned about at runtime, exactly as on every other cdkd command that
- *    accepts the flag. The flag keeps WORKING; only its advertisement changes.
+ *    {@link regionOption} takes its place, so the flag reads the same in
+ *    `--help` as on every other cdkd command that accepts it.
  * 2. A `preAction` hook folds the parsed bag. commander runs the hook after
  *    parsing and before the action, and `opts()` returns the LIVE option
  *    object, so the fold is visible to cdk-local and to everything downstream
@@ -731,7 +730,7 @@ export function regionNeedsReconciliation(effective: EffectiveRegion): boolean {
  *
  * Returns the same command so it can tail a factory's option-adding chain.
  */
-export function adoptDeprecatedRegionFlag(cmd: Command): Command {
+export function adoptRegionFlag(cmd: Command): Command {
   // commander refuses a second option with the same flag and exposes no
   // `removeOption`, so the inherited declaration is spliced out of the
   // (TS-readonly, runtime-mutable) array before cdkd's twin is added. A shim
@@ -743,9 +742,9 @@ export function adoptDeprecatedRegionFlag(cmd: Command): Command {
   // and, for an option carrying `.default()`, seeds `_optionValues` with source
   // `'default'`. cdk-local's `--region` is bare today, so neither residue
   // matters — but if it ever gains a default, the seeded value would survive
-  // this splice and make `warnIfDeprecatedRegion` fire on EVERY invocation
-  // while the fold honoured a region the user never named. Clearing both here
-  // costs nothing and removes the dependency on that staying true.
+  // this splice and make the fold honour a region the user never named.
+  // Clearing both here costs nothing and removes the dependency on that
+  // staying true.
   const registered = cmd.options as Option[];
   const inherited = registered.findIndex((option) => option.long === '--region');
   if (inherited !== -1) {
@@ -784,7 +783,7 @@ export function adoptDeprecatedRegionFlag(cmd: Command): Command {
       delete internals._optionValueSources['region'];
     }
   }
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   cmd.hook('preAction', (_thisCommand, actionCommand) => {
     const options = actionCommand.opts<{
@@ -792,7 +791,6 @@ export function adoptDeprecatedRegionFlag(cmd: Command): Command {
       stackRegion?: string;
       rawStackRegion?: string;
     }>();
-    warnIfDeprecatedRegion(options);
     if (options.stackRegion !== undefined) {
       options.rawStackRegion = options.stackRegion;
       options.stackRegion = canonicalizeRegion(options.stackRegion);

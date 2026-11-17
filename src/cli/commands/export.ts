@@ -3,7 +3,7 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   stateOptions,
   parseStackRegion,
 } from '../options.js';
@@ -195,7 +195,7 @@ export function createExportCommand(): Command {
   [...commonOptions, ...appOptions, ...stateOptions, ...contextOptions].forEach((opt) =>
     cmd.addOption(opt)
   );
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

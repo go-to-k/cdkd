@@ -20,8 +20,9 @@ import { join } from 'node:path';
  * The originating case: `cdkd import --region` died with
  * `error: unknown option '--region'`, which meant the import round-trip that
  * fixture exists to exercise had never executed once. `--region` IS declared in
- * `src/cli/options.ts` and IS accepted by ~10 sibling commands; `import` is the
- * single one that never attaches it. Only a per-subcommand check catches that.
+ * `src/cli/options.ts` and was accepted by its sibling commands; `import` was
+ * the one that never attached it (since fixed, #6504). Only a per-subcommand
+ * check catches that.
  */
 
 const INTEG_ROOT = join(import.meta.dirname, '../../../tests/integration');
@@ -43,17 +44,17 @@ describe('collectCommandSpecs', () => {
   });
 
   it('captures hidden options, which `--help` omits', () => {
-    // `--region` is registered as a hidden deprecated option on deploy.
-    expect(specs.get('deploy')!.longFlags.has('--region')).toBe(true);
+    // `state destroy` registers `--all` with `.hideHelp()`.
+    expect(specs.get('state destroy')!.longFlags.has('--all')).toBe(true);
   });
 
   it('models the exact gap that motivated this lint', () => {
-    // The invariant under test: --region is widely declared but NOT on import.
-    // If a future PR attaches it to `import`, this expectation flips and the
-    // test must be updated deliberately rather than silently.
-    expect(specs.get('import')!.longFlags.has('--region')).toBe(false);
-    expect(specs.get('deploy')!.longFlags.has('--region')).toBe(true);
-    expect(specs.get('destroy')!.longFlags.has('--region')).toBe(true);
+    // The originating gap (import lacking --region) was closed by #6504, so
+    // the model is now the same shape on another flag: --stack-region is
+    // declared on the state subcommands but NOT on import.
+    expect(specs.get('import')!.longFlags.has('--region')).toBe(true);
+    expect(specs.get('import')!.longFlags.has('--stack-region')).toBe(false);
+    expect(specs.get('state show')!.longFlags.has('--stack-region')).toBe(true);
   });
 });
 
@@ -222,12 +223,12 @@ describe('extractInvocations', () => {
 
 describe('lintScript', () => {
   it('flags a flag the subcommand does not declare, naming where it IS declared', () => {
-    const script = 'CLI="node ../../../dist/cli.js"\n${CLI} import MyStack --region us-east-1\n';
+    const script = 'CLI="node ../../../dist/cli.js"\n${CLI} import MyStack --stack-region us-east-1\n';
     const violations = lintScript('sample', script, specs);
     expect(violations).toHaveLength(1);
-    expect(violations[0]!.flag).toBe('--region');
+    expect(violations[0]!.flag).toBe('--stack-region');
     expect(violations[0]!.commandPath).toBe('import');
-    expect(violations[0]!.declaredOn).toContain('deploy');
+    expect(violations[0]!.declaredOn).toContain('state show');
     expect(formatViolation(violations[0]!)).toContain('but NOT on `import`');
   });
 

@@ -303,14 +303,16 @@ describe('list keeps stdout to the payload in every mode (issues #2280, #2410)',
    * Two writers are exercised because they reach the streams by different
    * mechanisms and only one of them goes through the code under test: the
    * warn runs `ConsoleLogger.emit`'s `level === 'warn'` arm while the
-   * reservation is active, and `warnIfDeprecatedRegion` (`src/cli/options.ts`)
-   * is a DIRECT `process.stderr.write` that the reservation must leave
-   * untouched.
+   * reservation is active, and the second is a DIRECT `process.stderr.write`
+   * (the shape of any stderr notice that bypasses the logger) that the
+   * reservation must leave untouched.
    */
   it('warnings land on stderr exactly once and never on stdout, payload untouched', async () => {
     const WARN_LINE = 'lane2410-list-warn-control';
+    const DIRECT_LINE = 'lane2410-list-direct-stderr-control';
     mockSynthesize.mockImplementation(async () => {
       getLogger().child('AppExecutor').warn(WARN_LINE);
+      process.stderr.write(`${DIRECT_LINE}\n`);
       return { stacks: [makeStack({ stackName: 'MyStack' })] };
     });
 
@@ -325,8 +327,8 @@ describe('list keeps stdout to the payload in every mode (issues #2280, #2410)',
     expect(stderr.split(WARN_LINE).length - 1).toBe(1);
     expect(stdout).not.toContain(WARN_LINE);
 
-    const deprecationNeedle = '--region is deprecated';
-    expect(stderr.split(deprecationNeedle).length - 1).toBe(1);
-    expect(stdout).not.toContain(deprecationNeedle);
+    expect(stderr.split(DIRECT_LINE).length - 1).toBe(1);
+    expect(stdout).not.toContain(DIRECT_LINE);
+
   });
 });

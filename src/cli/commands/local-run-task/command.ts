@@ -1,5 +1,5 @@
 import { createCallerDynamicReferenceResolver } from '../../../local/dynamic-reference.js';
-import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
+import { parseContextOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { groupWorkloadsRoutedApart, UNNAMED_WORKLOAD } from 'cdk-local/internal';
@@ -82,7 +82,6 @@ export async function localRunTaskCommand(
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  warnIfDeprecatedRegion(options);
   // Issue #1795: fold `--region` ONCE, at the boundary, so every downstream
   // consumer sees the canonical spelling — the SDK clients this file builds
   // (`applyRoleArnIfSet` / `assumeTaskRole` / `resolvePlaceholderAccount` /

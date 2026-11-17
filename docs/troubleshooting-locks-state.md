@@ -331,9 +331,8 @@ a bug in cdkd. Please
 [open an issue](https://github.com/go-to-k/cdkd/issues) with the output of the
 command re-run under `--verbose`.
 
-`AWS_REGION` or your AWS profile sets the region resources are provisioned in.
-`--region` is an option of `cdkd bootstrap`, where it picks the new bucket's
-region; on other commands it is deprecated but still honored.
+`--region`, `AWS_REGION` or your AWS profile sets the region resources are
+provisioned in. On `cdkd bootstrap`, `--region` picks the new bucket's region.
 
 ## "Refusing to deploy stack X: it is already recorded under another state prefix"
 

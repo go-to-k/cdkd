@@ -5,7 +5,7 @@ import {
   getEmbedConfig,
 } from 'cdk-local';
 import { cdkdExtraStateProviders } from './local-state-source.js';
-import { adoptDeprecatedRegionFlag } from '../region-options.js';
+import { adoptRegionFlag } from '../region-options.js';
 
 /**
  * `cdkd local start-cloudfront <distribution>` — serve a CloudFront distribution
@@ -29,10 +29,9 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * live in cdk-local and are auto-inherited.
  *
  * `--region` is the ONE inherited option cdkd replaces rather than accepts as
- * given: cdk-local declares it visibly and undeprecated, while every other cdkd
- * command carries the hidden, warned, folded `deprecatedRegionOption`. See
- * {@link adoptDeprecatedRegionFlag} — the flag keeps working, disappears from
- * `--help`, prints the removal warning, and (the reason it exists) is folded to
+ * given: every other cdkd command carries the shared, folded `regionOption`.
+ * See {@link adoptRegionFlag} — the flag keeps working, reads the same in
+ * `--help` as elsewhere, and (the reason it exists) is folded to
  * its canonical spelling before cdk-local's handler builds an SDK client from it
  * ([#2522](https://github.com/go-to-k/cdkd/issues/2522)).
  *
@@ -107,5 +106,5 @@ export function createLocalStartCloudFrontCommand(): Command {
     )
   );
 
-  return adoptDeprecatedRegionFlag(cmd);
+  return adoptRegionFlag(cmd);
 }

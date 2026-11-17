@@ -3,7 +3,6 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { GetRoleCommand, GetUserCommand } from '@aws-sdk/client-iam';
-import { warnIfDeprecatedRegion } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import type { Logger } from '../../../types/config.js';
 import { PartialFailureError } from '../../../utils/error-handler.js';
@@ -129,8 +128,6 @@ export async function driftCommand(
   if (options.json) {
     reserveStdoutForPayload();
   }
-
-  warnIfDeprecatedRegion(options);
 
   if (options.accept && options.revert) {
     throw new Error(

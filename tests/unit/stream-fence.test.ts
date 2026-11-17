@@ -68,12 +68,12 @@ describe('createStreamFence', () => {
     fence.attach(err, 'stderr');
 
     fence.begin();
-    err.write('Warning: --region is deprecated\n');
+    err.write('Warning: a stderr notice\n');
 
     expect(err.printed).toEqual([]);
     expect(fence.capturing()).toBe(true);
     expect(fence.buffered()?.map((w) => w.text)).toEqual([
-      'Warning: --region is deprecated\n',
+      'Warning: a stderr notice\n',
     ]);
   });
 

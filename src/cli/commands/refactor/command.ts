@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { NoEchoMacCache } from '../diff-recursive/noecho-macs.js';
 import type { MacWriteOnlyLookups } from '../../../deployment/deploy-engine/update/noecho-macs.js';
-import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
+import { parseContextOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
@@ -115,7 +115,6 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
     throw new CdkdError('--revert requires --override-file', 'INCOMPATIBLE_OPTIONS');
   }
 
-  warnIfDeprecatedRegion(options);
   foldRegionOption(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 

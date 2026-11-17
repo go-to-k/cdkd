@@ -40,8 +40,8 @@
 #   `node "${LOCAL_DIST}"`) — so a fixture that already defines any ONE of
 #   these needs no new variable, and this file does not invent a fourth
 #   convention. Resolves the stack's region from ${REGION} or ${AWS_REGION}
-#   when either is set, passed as the non-deprecated `--stack-region` (never
-#   `--region`, which state subcommands warn on stderr for).
+#   when either is set, passed as `--stack-region`, which selects the state
+#   record (never `--region`, which picks the AWS-call region instead).
 state_physical_id() {
   local stack="$1" bucket="$2" resource_type="$3" logical_prefix="${4:-}"
   local region="${REGION:-${AWS_REGION:-}}"
@@ -67,8 +67,8 @@ state_physical_id() {
   [ -n "${region}" ] && cmd+=(--stack-region "${region}")
   cmd+=(--json)
 
-  # Captured to a file, not `2>&1`, so a benign stderr line (the deprecated
-  # `--region` warning, a retry notice) never lands IN the JSON this function
+  # Captured to a file, not `2>&1`, so a benign stderr line (a retry
+  # notice) never lands IN the JSON this function
   # parses as stdout -- the lesson `s3-versions.sh`'s `_s3v_rows` already
   # carries. Still surfaced on failure (below) so a caller sees WHY, instead
   # of only "failed or returned nothing".

@@ -108,8 +108,7 @@ describe('assertRegionMatch', () => {
         expect(message).not.toContain('NotFound');
         expect(message).toContain(`Refusing to delete ${logicalId}`);
         // The remediation names the region to point the CLIENT at, and does
-        // NOT recommend `--region`: that flag is deprecated on non-bootstrap
-        // commands, and on the one path where this refusal actually bites --
+        // NOT recommend `--region`: on the one path where this refusal bites --
         // `drift --all --revert`, which spans several regions in a single run
         // -- setting it correctly for one stack sets it wrongly for the rest.
         expect(message).toContain('Point the AWS client at us-west-2');

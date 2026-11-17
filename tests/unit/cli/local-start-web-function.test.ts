@@ -75,9 +75,9 @@ describe('createLocalStartWebFunctionCommand', () => {
     expect(cmd.options.find((o) => o.long === '--host')?.defaultValue).toBe('127.0.0.1');
   });
 
-  it('hides --region (replaced by the deprecated twin)', () => {
+  it('shows --region (cdkd\'s shared option replaces cdk-local\'s)', () => {
     const region = cmd.options.find((o) => o.long === '--region');
-    expect(region?.hidden).toBe(true);
+    expect(region?.hidden).toBeFalsy();
   });
 
   it('parses --revision and a bare --assume-role', () => {

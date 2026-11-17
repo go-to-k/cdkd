@@ -1034,23 +1034,15 @@ describe('cdkd state list', () => {
     });
   });
 
-  it('emits a deprecation warning to stderr when --region is passed (PR 5)', async () => {
+  it('accepts --region without a deprecation warning (issue #6504)', async () => {
     mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
     const { stdout, stderr } = await runStateListWithStderr([
       'list',
       '--region',
       'us-west-2',
     ]);
-    // Command still completes successfully (PR 1 added region suffix to default output).
     expect(stdout).toBe('StackA (us-east-1)\n');
-    expect(stderr).toMatch(/--region is deprecated and will be removed in a future release/);
-    expect(stderr).toMatch(/AWS_REGION/);
-  });
-
-  it('does not emit the deprecation warning when --region is omitted', async () => {
-    mockListStacks.mockResolvedValue([{ stackName: 'StackA', region: 'us-east-1' }]);
-    const { stderr } = await runStateListWithStderr(['list']);
-    expect(stderr).not.toMatch(/--region is deprecated/);
+    expect(stderr).not.toMatch(/deprecat/i);
   });
 
   // #555 A3: parent → child tree rendering.

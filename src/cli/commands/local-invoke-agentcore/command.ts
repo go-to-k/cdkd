@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { parseContextOptions, warnIfDeprecatedRegion } from '../../options.js';
+import { parseContextOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -117,8 +117,6 @@ export async function localInvokeAgentCoreCommand(
   // ([#2419](https://github.com/go-to-k/cdkd/issues/2419)). Do not re-file
   // either.
   reserveStdoutForPayload();
-
-  warnIfDeprecatedRegion(options);
 
   // Fold `--region` to its canonical lower-case spelling once, at the handler
   // entry, exactly as `local-start-api.ts` / `local-invoke.ts` / `local-run-task.ts`

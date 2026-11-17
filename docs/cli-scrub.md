@@ -191,8 +191,8 @@ earlier S3 versions of that file; see
 | `-y`, `--yes` | off | Accepted so scripts can pass it to every command. Scrub never prompts, so it changes nothing. |
 | `--verbose` | off | Verbose logging, including why a stack was reported clean. |
 
-`--region` is deprecated in favour of `AWS_REGION` or your AWS profile. Scrub
-still honours it when you pass it.
+`--region <region>` picks the region, ahead of `AWS_REGION` and your AWS
+profile. See [Region resolution](cli-reference-region.md).
 
 Scrub needs the CDK app, which the `cdkd state ...` commands do not. A state
 file stores a value with no marker of whether it is a secret, so the template

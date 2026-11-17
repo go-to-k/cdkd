@@ -6,14 +6,13 @@ import { dirname, join } from 'node:path';
 
 import {
   commonOptions,
-  deprecatedRegionOption,
+  regionOption,
   effectiveResourceTimeoutMs,
   parseContextOptions,
   parseDuration,
   parseStackRegion,
   resourceTimeoutOptions,
   validateResourceTimeouts,
-  warnIfDeprecatedRegion,
   type ResourceTimeoutOption,
 } from '../../../src/cli/options.js';
 import { createBootstrapCommand } from '../../../src/cli/commands/bootstrap.js';
@@ -24,6 +23,7 @@ import { createSynthCommand } from '../../../src/cli/commands/synth.js';
 import { createListCommand } from '../../../src/cli/commands/list.js';
 import { createForceUnlockCommand } from '../../../src/cli/commands/force-unlock.js';
 import { createPublishAssetsCommand } from '../../../src/cli/commands/publish-assets.js';
+import { createImportCommand } from '../../../src/cli/commands/import.js';
 import { createStateCommand } from '../../../src/cli/commands/state.js';
 import { buildProgram } from '../../../src/cli/program.js';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -39,7 +39,7 @@ function optionFlags(cmd: Command): string[] {
 
 /**
  * True when the command exposes `--region <region>` regardless of where it
- * came from (commonOptions, bootstrap-direct, or deprecated wrapper).
+ * came from (bootstrap-direct or the shared `regionOption`).
  */
 function hasRegionOption(cmd: Command): boolean {
   return optionFlags(cmd).some((f) => /^--region\b/.test(f));
@@ -47,7 +47,7 @@ function hasRegionOption(cmd: Command): boolean {
 
 describe('cli/options.ts', () => {
   describe('commonOptions', () => {
-    it('does not include --region (PR 5: consolidated to bootstrap-only)', () => {
+    it('does not include --region (each command declares its own)', () => {
       const flags = commonOptions.map((o) => o.flags);
       expect(flags.some((f) => /^--region\b/.test(f))).toBe(false);
     });
@@ -60,80 +60,25 @@ describe('cli/options.ts', () => {
     });
   });
 
-  describe('deprecatedRegionOption', () => {
-    it('exposes the --region <region> flag and is hidden from --help', () => {
-      expect(deprecatedRegionOption.flags).toBe('--region <region>');
+  describe('regionOption', () => {
+    it('exposes the --region <region> flag and is shown in --help (issue #6504)', () => {
+      expect(regionOption.flags).toBe('--region <region>');
       // Commander records hideHelp() by setting `hidden = true` on the option.
-      // The exact field is internal but observable.
-      expect((deprecatedRegionOption as unknown as { hidden?: boolean }).hidden).toBe(true);
+      expect((regionOption as unknown as { hidden?: boolean }).hidden).toBeFalsy();
     });
 
-    it('help text does NOT claim the flag has no effect (issue #818)', () => {
-      // The flag IS still honored on every non-bootstrap command (it feeds the
-      // SDK client region / AWS_REGION injection); the description must not
-      // falsely advertise it as a no-op.
-      expect(deprecatedRegionOption.description).not.toMatch(/no effect/i);
-      expect(deprecatedRegionOption.description).toMatch(/still honored/i);
-      expect(deprecatedRegionOption.description).toMatch(/AWS_REGION/);
-    });
-  });
-
-  describe('warnIfDeprecatedRegion', () => {
-    // Direct replacement of process.stderr.write — under vitest's output
-    // capture, vi.spyOn does not always intercept the stream cleanly.
-    let stderrChunks: string[];
-    let originalStderrWrite: typeof process.stderr.write;
-
-    beforeEach(() => {
-      stderrChunks = [];
-      originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-        stderrChunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8'));
-        return true;
-      }) as typeof process.stderr.write;
-    });
-
-    afterEach(() => {
-      process.stderr.write = originalStderrWrite;
-    });
-
-    it('writes a deprecation warning to stderr when region is set', () => {
-      warnIfDeprecatedRegion({ region: 'us-east-1' });
-      const all = stderrChunks.join('');
-      expect(all).toMatch(/--region is deprecated and will be removed in a future release/);
-      expect(all).toMatch(/AWS_REGION/);
-    });
-
-    it('does NOT claim the flag has no effect (issue #818)', () => {
-      // The warning must steer users toward AWS_REGION / profile WITHOUT
-      // falsely telling them the flag they just passed did nothing: deploy /
-      // destroy / diff / list / etc. all consume options.region as the
-      // highest-precedence region source, so "has no effect" was a lie.
-      warnIfDeprecatedRegion({ region: 'eu-west-1' });
-      const all = stderrChunks.join('');
-      expect(all).not.toMatch(/no effect/i);
-      expect(all).toMatch(/still honored/i);
-    });
-
-    it('is silent when region is undefined', () => {
-      warnIfDeprecatedRegion({});
-      expect(stderrChunks).toEqual([]);
-    });
-
-    it('treats empty-string region as set (commander only assigns when the flag is passed)', () => {
-      warnIfDeprecatedRegion({ region: '' });
-      const all = stderrChunks.join('');
-      // Empty string is still a user-supplied value; warn (do not silently ignore).
-      expect(all).toMatch(/--region is deprecated/);
+    it('describes a supported flag, not a deprecated one (issue #6504)', () => {
+      expect(regionOption.description).not.toMatch(/deprecat|removed|no effect/i);
+      // Names what it outranks, so a reader of --help knows the precedence.
+      expect(regionOption.description).toMatch(/AWS_REGION/);
+      expect(regionOption.description).toMatch(/profile/);
     });
   });
 
   describe('command --region wiring', () => {
-    it('bootstrap exposes a non-deprecated --region (bucket creation needs it)', () => {
+    it('bootstrap exposes a visible --region (bucket creation needs it)', () => {
       const cmd = createBootstrapCommand();
       expect(hasRegionOption(cmd)).toBe(true);
-      // bootstrap's --region is NOT the deprecated wrapper — it must be visible
-      // in --help.
       const regionOpt = cmd.options.find((o) => /^--region\b/.test(o.flags));
       expect((regionOpt as unknown as { hidden?: boolean }).hidden).toBeFalsy();
     });
@@ -146,26 +91,45 @@ describe('cli/options.ts', () => {
       ['list', () => createListCommand()],
       ['force-unlock', () => createForceUnlockCommand()],
       ['publish-assets', () => createPublishAssetsCommand()],
-    ])('%s accepts --region but hides it from --help', (_name, build) => {
+      // Refused `--region` with "unknown option" until #6504.
+      ['import', () => createImportCommand()],
+    ])('%s accepts --region and lists it in --help', (_name, build) => {
       const cmd = build();
       expect(hasRegionOption(cmd)).toBe(true);
-      const regionOpt = cmd.options.find((o) => /^--region\b/.test(o.flags));
-      // Deprecated wrapper is hidden from generated --help text.
-      expect((regionOpt as unknown as { hidden?: boolean }).hidden).toBe(true);
+      expect(cmd.helpInformation()).toMatch(/--region <region>/);
     });
 
     it.each(['list', 'resources', 'show', 'orphan'])(
-      'state %s accepts --region but hides it from --help',
+      'state %s accepts --region and lists it in --help',
       (subcommandName) => {
         const stateCmd = createStateCommand();
         const sub = stateCmd.commands.find((c) => c.name() === subcommandName);
         expect(sub).toBeDefined();
         if (!sub) return;
         expect(hasRegionOption(sub)).toBe(true);
-        const regionOpt = sub.options.find((o) => /^--region\b/.test(o.flags));
-        expect((regionOpt as unknown as { hidden?: boolean }).hidden).toBe(true);
+        expect(sub.helpInformation()).toMatch(/--region <region>/);
       }
     );
+
+    it('no command in the built program hides --region or calls it deprecated (issue #6504)', () => {
+      // Walks the whole tree, so a command added later with a hidden or
+      // "[deprecated]" --region reds here rather than shipping unseen.
+      const seen: string[] = [];
+      const walk = (cmd: Command, path: string): void => {
+        const region = cmd.options.find((o) => o.long === '--region');
+        if (region !== undefined) {
+          seen.push(path);
+          expect((region as unknown as { hidden?: boolean }).hidden, path).toBeFalsy();
+          expect(region.description, path).not.toMatch(/deprecat/i);
+        }
+        for (const sub of cmd.commands) walk(sub, `${path} ${sub.name()}`);
+      };
+      walk(buildProgram(), 'cdkd');
+      // Floor: the walk must actually reach the commands that carry the flag
+      // (deploy, the state subcommands, the local shims, ...), or it proves nothing.
+      expect(seen.length).toBeGreaterThan(30);
+      expect(seen).toEqual(expect.arrayContaining(['cdkd deploy', 'cdkd state list', 'cdkd bootstrap']));
+    });
   });
 
   describe('annotation-message flag wiring (issue #1230)', () => {

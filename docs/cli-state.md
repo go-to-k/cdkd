@@ -104,9 +104,9 @@ which takes neither `--state-bucket` nor `--state-prefix`.
 | `-y`, `--yes` | off | Skip the confirmation prompt. No effect on the read-only subcommands. |
 | `--verbose` | off | Verbose logging. |
 
-`--region` is deprecated: set `AWS_REGION` or use your AWS profile instead.
-cdkd still honors the flag, with two differences. `state info` rejects it, and
-on `state migrate` it is a regular option that names the older bucket.
+`--region <region>` picks the region for cdkd's AWS calls, ahead of
+`AWS_REGION` and your AWS profile, with two differences. `state info` does not
+take it, and on `state migrate` it names the older bucket's region.
 
 ### `--stack-region`: which of a name's records
 

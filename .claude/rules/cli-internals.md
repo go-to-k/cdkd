@@ -25,9 +25,9 @@ Implemented in `src/cli/config-loader.ts`; option parsing in
   boolean, default `false`; there is no `--no-` negation form.
 - **`--region`** — on `cdkd bootstrap` it picks the region of the new state
   bucket AND of the cdkd-owned asset storage, and under `bootstrap --destroy`
-  which region's asset storage to tear down. On every other command it is
-  DEPRECATED but still honored: a hidden `deprecatedRegionOption` that warns
-  once and IS the highest-precedence region source
+  which region's asset storage to tear down. Every other command but
+  `state info` takes the shared `regionOption` (CDK CLI parity, #6504),
+  the highest-precedence region source
   (`resolveEffectiveRegion`; #2100), copied into `process.env.AWS_REGION`
   for the synth subprocess. **It is NOT a no-op** — do not "clean up" a
   fixture's `--region`. The state-bucket S3 client still auto-detects the

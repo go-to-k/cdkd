@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
+import { commonOptions, regionOption, stateOptions } from '../../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../../utils/logger.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { withErrorHandling } from '../../../utils/error-handler.js';
@@ -429,10 +429,7 @@ export function createStateResourcesCommand(): Command {
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
-  // --region is deprecated for state subcommands (PR 5). Accepted for
-  // backward compatibility; warning emitted at runtime via
-  // warnIfDeprecatedRegion (called from setupStateBackend).
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }

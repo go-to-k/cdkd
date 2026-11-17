@@ -170,10 +170,9 @@ describe('cdkd state resources', () => {
     await expect(runStateResources(['resources', 'MyStack'])).rejects.toThrow();
     const message = String(errorSpy.mock.calls[0]?.[0] ?? '');
     expect(message).toMatch(/multiple regions: us-west-2, us-east-1/);
-    // The error must direct users to --stack-region, NOT the deprecated
-    // top-level --region (which is ignored on this command and would emit
-    // its own deprecation warning, causing the very confusion this regex
-    // guards against).
+    // The error must direct users to --stack-region, NOT the top-level
+    // --region: that one picks the region of AWS calls, not which state
+    // record to read, so naming it here would send the user the wrong way.
     expect(message).toMatch(/--stack-region/);
     expect(message).not.toMatch(/--region\b(?!-)/);
   });

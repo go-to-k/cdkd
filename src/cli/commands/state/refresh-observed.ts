@@ -6,7 +6,7 @@ import {
   proseQuoted,
 } from '../../../utils/pasteable-command.js';
 import { Command } from 'commander';
-import { commonOptions, deprecatedRegionOption, stateOptions } from '../../options.js';
+import { commonOptions, regionOption, stateOptions } from '../../options.js';
 import { getLogger } from '../../../utils/logger.js';
 import { confirmOrRefuse } from '../confirm-prompt.js';
 import { PartialFailureError, withErrorHandling } from '../../../utils/error-handler.js';
@@ -471,7 +471,7 @@ export function createStateRefreshObservedCommand(): Command {
 
   [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
 
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
 
   return cmd;
 }
