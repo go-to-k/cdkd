@@ -6,7 +6,7 @@
  * a CI gate observes. Harness: `diff-deploy-refusal-exit.test.ts`.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,6 +46,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveApp: vi.fn(() => 'node app.ts'),
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
+  resolveUpdatePolicy: vi.fn(() => undefined),
   resolveUseCdkBootstrapAssets: vi.fn(() => false),
 }));
 
@@ -77,9 +78,11 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
   registerAllProviders: vi.fn(),
 }));
 
+const mockGetProviderFor = vi.hoisted(() => vi.fn((): { provisionedBy: string } => ({ provisionedBy: 'sdk' })));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     getProvider: vi.fn(),
+    getProviderFor: mockGetProviderFor,
     ccRouteUnavailableReason: mockCcRouteUnavailableReason,
   })),
 }));
@@ -89,6 +92,7 @@ import {
   parseFailOn,
   resolveFailOn,
 } from '../../../src/cli/commands/diff.js';
+import { resolveUpdatePolicy } from '../../../src/cli/config-loader.js';
 
 async function runDiff(argv: string[]): Promise<{ code: number | undefined; said: string }> {
   let code: number | undefined;
@@ -440,6 +444,77 @@ describe('cdkd diff --fail-on', () => {
       mockCcRouteUnavailableReason.mockReset();
     }
   }, 30_000);
+
+  describe('an AutoScalingReplacingUpdate (go-to-k/cdkd#6437, #6472)', () => {
+    // A stack with replacement names: a legacy one blocks instead (exit 3).
+    const withInstanceId = (state: StackState): StackState => ({
+      ...state,
+      stackInstanceId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    });
+    beforeEach(() => {
+      vi.mocked(resolveUpdatePolicy).mockImplementation((value) => value);
+      stateForDiff.value = withInstanceId(stateWith({
+        Group: {
+          physicalId: 'S-Group-abc',
+          resourceType: 'AWS::AutoScaling::AutoScalingGroup',
+          properties: {
+            MinSize: '1',
+            MaxSize: '2',
+            LaunchTemplate: { LaunchTemplateId: 'lt-0abc', Version: '1' },
+          },
+        },
+      }));
+      synthTemplate({
+        Group: {
+          Type: 'AWS::AutoScaling::AutoScalingGroup',
+          Metadata: { 'aws:cdk:path': 'S/Group/ASG' },
+          Properties: {
+            MinSize: '1',
+            MaxSize: '2',
+            LaunchTemplate: { LaunchTemplateId: 'lt-0abc', Version: '2' },
+          },
+          UpdatePolicy: { AutoScalingReplacingUpdate: { WillReplace: true } },
+        },
+      });
+    });
+    afterEach(() => {
+      vi.mocked(resolveUpdatePolicy).mockImplementation(() => undefined);
+    });
+
+    it('--update-policy previews the replacement, which --fail-on=destructive fails', async () => {
+      const { code, said } = await runDiff(['S', '--update-policy', '--fail-on=destructive']);
+      expect(code).toBe(1);
+      expect(said).toContain('AWS::AutoScaling::AutoScalingGroup Group/ASG Group will be replaced');
+    }, 30_000);
+
+    it('exits 3 when the deploy would create the new group through Cloud Control', async () => {
+      mockGetProviderFor.mockReturnValueOnce({ provisionedBy: 'cc-api' });
+      const { code } = await runDiff(['S', '--update-policy']);
+      expect(code).toBe(3);
+      expect(mockGetProviderFor).toHaveBeenCalledWith(
+        expect.objectContaining({ resourceType: 'AWS::AutoScaling::AutoScalingGroup' })
+      );
+    }, 30_000);
+
+    it('exits 3 when the deploy would refuse the replacement (a legacy stack)', async () => {
+      const { ['stackInstanceId']: _id, ...legacy } = stateForDiff.value as StackState & {
+        stackInstanceId?: string;
+      };
+      stateForDiff.value = legacy as StackState;
+      const { code } = await runDiff(['S', '--update-policy']);
+      expect(code).toBe(3);
+    }, 30_000);
+
+    it.each([[[]], [['--no-update-policy']]])(
+      '%j previews an in-place update, which --fail-on=destructive passes',
+      async (flags) => {
+        const { code, said } = await runDiff(['S', ...flags, '--fail-on=destructive']);
+        expect(code).toBeUndefined();
+        expect(said).not.toContain('will be replaced');
+      },
+      30_000
+    );
+  });
 
   describe('refusals', () => {
     beforeEach(() => {

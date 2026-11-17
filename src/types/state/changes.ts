@@ -76,6 +76,16 @@ export interface PropertyChange {
   requiresReplacement: boolean;
 
   /**
+   * go-to-k/cdkd#6437: the replacement comes from the template's
+   * `UpdatePolicy.AutoScalingReplacingUpdate` (`WillReplace: true`) under
+   * `--update-policy`, not from the property's type: set with
+   * `requiresReplacement` by the diff, on an Auto Scaling group's trigger
+   * property. The engine refuses such a replacement it cannot make (a named
+   * group) instead of reporting an immutable property.
+   */
+  updatePolicyReplacement?: true;
+
+  /**
    * Set on synthetic changes created by replacement propagation (issue
    * #807): the property's template value did not change, but a resource it
    * references via Ref / Fn::GetAtt will be REPLACED, so the resolved

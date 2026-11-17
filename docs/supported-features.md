@@ -19,7 +19,7 @@ locally.
 
 | Feature | Status | What cdkd does |
 | --- | --- | --- |
-| `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (`AutoScalingScheduledAction`) |
+| `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (the Auto Scaling group policies) |
 | `CreationPolicy` | ⚠️ Not waited on | Creates or replaces the resource and logs a warning |
 | A resource type with no SDK provider and no Cloud Control support | Not supported | Fails the deploy with an error naming the type |
 
@@ -39,12 +39,124 @@ With `--update-policy`, cdkd honors:
   `DesiredCapacity` values the template changed, so a size a scheduled action
   set is kept. A size given as a dynamic reference (`{{resolve:...}}`) is
   always sent. The CDK `AutoScalingGroup` construct declares this policy
-  unless `ignoreUnmodifiedSizeProperties` is `false`. This applies when the
-  group is updated through cdkd's SDK provider; an update routed through
-  Cloud Control logs a warning that cdkd does not apply the policy there.
+  unless `ignoreUnmodifiedSizeProperties` is `false`.
+- `AutoScalingRollingUpdate`: when the update changes the group's
+  `LaunchTemplate`, `LaunchConfigurationName`, `VPCZoneIdentifier` or
+  `PlacementGroup`, cdkd updates the group and then replaces its instances
+  with an instance refresh, waiting for it to succeed. See
+  [Rolling updates as an instance refresh](#rolling-updates-as-an-instance-refresh).
+- `AutoScalingInstanceRefresh`: when the update changes the group's
+  `LaunchTemplate`, `MixedInstancesPolicy`, `VPCZoneIdentifier`,
+  `AvailabilityZones`, `AvailabilityZoneIds` or `PlacementGroup`, cdkd starts
+  the instance refresh the policy declares (its `Strategy` and `Preferences`)
+  and waits for it to succeed. Missing percentages default as in
+  CloudFormation: the group's `InstanceMaintenancePolicy`, else `100` / `110`
+  (`Rolling`) or `90` / `100` (`ReplaceRootVolume`); `SkipMatching` defaults
+  to `true`. A group that declares both this policy and
+  `AutoScalingRollingUpdate` fails the update before anything changes, as in
+  CloudFormation, with or without `AutoScalingReplacingUpdate`.
+- `AutoScalingReplacingUpdate` with `WillReplace: true`: when the update
+  changes one of the rolling update's four properties above, cdkd creates a
+  new group, waits until the new group's desired capacity of instances is
+  `InService` and healthy, then deletes the old group, the same create-first
+  replacement it uses when an immutable property changes. The replacement is
+  planned with the rest of the deploy, so `cdkd diff --update-policy` and
+  `--require-approval` show it, and resources that refer to the group, such
+  as a scaling policy or a lifecycle hook, move to the new group.
+  `WillReplace: true` takes precedence over an `AutoScalingRollingUpdate` on
+  the same group, as CloudFormation documents, and cdkd applies the same
+  precedence over `AutoScalingInstanceRefresh`. A group the template names
+  with `AutoScalingGroupName` cannot be created beside the old one, so the
+  update fails before anything changes, as CloudFormation refuses to replace
+  a custom-named resource. So does a group on a stack whose state was first
+  written by a cdkd release without replacement names, since its new group
+  would get the old one's name.
+
+  The wait reads only the group's instance states: cdkd receives no
+  `cfn-signal` and does not read target-group health. It runs under
+  `--no-wait` too, because deleting the old group before the new one has
+  instances drops the capacity. It is bounded like a refresh (below); when
+  the new instances are not in service in time, cdkd deletes the new group,
+  keeps the old one, and fails the update. A new group that would be created
+  through Cloud Control, which cannot wait, is refused before anything
+  changes, at the plan. An instance held in `Pending:Wait` by a lifecycle hook declared as
+  its own resource never counts as in service, because the hook moves to the
+  new group only after the group's create returns; such a replacement fails
+  at the wait.
+
+  A replacement cdkd cannot make (a named group, a stack without
+  replacement names, the policy pair above, or a new group Cloud Control
+  would create) stops `cdkd deploy` before
+  any resource changes, and `cdkd diff --update-policy` reports it as a
+  reason the deploy would refuse. A replacement that depends on a value
+  read through `Fn::GetAtt`, such as a launch template's latest version, is
+  shown as "may be replaced" and is refused, when it stands, at the group
+  itself.
+
+The Auto Scaling policies apply when the group is updated through cdkd's SDK
+provider; on a group updated through Cloud Control the refresh policies log
+a warning that cdkd does not apply them. `AutoScalingReplacingUpdate` also
+applies to a group recorded on Cloud Control, when its new group can be
+created through the SDK provider; one whose new group would be created
+through Cloud Control is refused at the plan, and `cdkd diff
+--update-policy` reports it. cdkd decides from
+the template and its own record: a refresh or a replacement starts only when
+one of the properties listed for the policy changes, whatever launch
+configuration the running instances have.
 
 Every other `UpdatePolicy` is skipped, with or without the flag: cdkd applies
 the update in one step.
+
+#### Rolling updates as an instance refresh
+
+CloudFormation replaces `MaxBatchSize` instances at a time (default 1) while
+keeping `MinInstancesInService` (default 0) in service, and pauses
+`PauseTime` after each batch. An instance refresh is shaped by percentages of
+the desired capacity instead, so cdkd translates:
+
+| Rolling update | Instance refresh |
+| --- | --- |
+| `MinInstancesInService` below the desired capacity | Terminate, then launch, at most `MaxBatchSize` instances at a time (`MinHealthyPercentage` rounded down, `MaxHealthyPercentage` 100) |
+| `MinInstancesInService` at or above the desired capacity | Launch up to `MaxBatchSize` extra instances before terminating (`MinHealthyPercentage` 100, `MaxHealthyPercentage` above 100, at most 200) |
+| `PauseTime` | `InstanceWarmup`: AWS waits that long after a new instance is in service; no `PauseTime` is 0 |
+| Every instance replaced | `SkipMatching: false` |
+
+Where the percentages round, a batch can be smaller than `MaxBatchSize`, never
+larger. `WaitOnResourceSignals` cannot be honored, because `cfn-signal`
+signals a CloudFormation stack: cdkd logs a warning and waits `PauseTime`
+(`PT5M` when unset) after each new instance instead. A refresh has no setting
+for `MinActiveInstancesPercent`, `MinSuccessfulInstancesPercent` or
+`SuspendProcesses`; when the template sets one, cdkd logs one line naming it.
+
+A refresh that fails or is cancelled fails the update, and so does one still
+running two minutes before the resource timeout (`--resource-timeout`, 30
+minutes by default; a tenth of a timeout shorter than 20 minutes), which cdkd
+cancels. The group already holds the new
+launch template, so the deploy's rollback puts the previous one back and
+starts a refresh. When only the launch template (or `MixedInstancesPolicy`)
+moved, that refresh replaces only the instances on the new one; a subnet or
+placement group change, or a group restored to a launch configuration,
+replaces every instance. The rollback's refresh does not use the
+`AlarmSpecification`, `CheckpointPercentages` or `CheckpointDelay` of an
+`AutoScalingInstanceRefresh`, since the alarm may be what failed the forward
+refresh. A deploy that would start a refresh on a group already running one
+(an earlier `--no-wait` deploy's, or one started by hand) fails before
+anything changes.
+`--no-wait` starts the refresh and returns without checking its outcome. The
+refresh needs the `autoscaling:StartInstanceRefresh`,
+`autoscaling:DescribeInstanceRefreshes` and `autoscaling:CancelInstanceRefresh`
+permissions.
+
+#### Rollback
+
+A rollback reverts an Auto Scaling group with the same rollout: a
+rolling-update or instance-refresh group gets a refresh back to its previous
+launch template, and a replaced group returns to the old group. Every recorded
+size is sent again, because CloudFormation ignores
+`IgnoreUnmodifiedGroupSizeProperties` during a rollback. CloudFormation rolls
+back under the policy of the template before the update; cdkd keeps no
+earlier template, so it uses the policy of the deploy it reverts. The two
+differ only when that deploy also changed the group's `UpdatePolicy`.
 
 `EnableVersionUpgrade` (OpenSearch domain) and `UseOnlineResharding`
 (ElastiCache replication group) need no flag: cdkd changes an OpenSearch
@@ -52,7 +164,8 @@ domain's engine version and a replication group's shard count in place.
 
 When a template declares a policy that `--update-policy` would honor and
 neither flag nor the `cdk.json` key is set, cdkd prints a one-line hint on
-each update of that resource through its SDK provider.
+each update the policy would apply to: for a rolling, instance-refresh or
+replacing update, one that changes a property listed above.
 
 ### `CreationPolicy` is not waited on
 

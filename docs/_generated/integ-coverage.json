@@ -790,6 +790,7 @@
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "drift-revert-vpc",
         "getatt-asg-arn-rule-name",
         "launchtemplate-asg-inplace",
@@ -798,6 +799,10 @@
       ],
       "signals": {
         "asg-destroy-running-instances": [
+          "l2",
+          "literal"
+        ],
+        "asg-update-policy": [
           "l2",
           "literal"
         ],
@@ -1707,6 +1712,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -1801,6 +1807,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -2060,6 +2069,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -2148,6 +2158,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -2429,6 +2442,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -2520,6 +2534,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -2771,6 +2788,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -2864,6 +2882,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -3403,6 +3424,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -3506,6 +3528,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -3811,6 +3836,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -3899,6 +3925,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -4139,6 +4168,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -4249,6 +4279,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -4577,6 +4610,7 @@
         "alb-advanced",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-update-policy",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -4669,6 +4703,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-update-policy": [
           "l2"
         ],
         "batch": [
@@ -9276,6 +9313,7 @@
       "resourceType": "AWS::SQS::Queue",
       "integs": [
         "appsync",
+        "asg-update-policy",
         "basic",
         "bench-cdk-sample",
         "bench-sdk",
@@ -9368,6 +9406,9 @@
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "asg-update-policy": [
           "l1"
         ],
         "basic": [
@@ -10605,6 +10646,7 @@
     "AWS::ApplicationAutoScaling::ScalingPolicy",
     "AWS::Athena::NamedQuery",
     "AWS::Athena::WorkGroup",
+    "AWS::AutoScaling::ScalingPolicy",
     "AWS::Backup::BackupPlan",
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",

@@ -42,6 +42,8 @@ import { finishUpdate } from './finish.js';
 import { unwrittenCreateOnlyRefusal } from './refusal-text.js';
 import { macWriteOnlyKeys, noEchoMacVerdicts } from './noecho-macs.js';
 import { keptNoEchoMacSink } from '../noecho-macs.js';
+import { updatePolicyReplacementRefusal } from '../update-policy.js';
+import { getCurrentStackInstanceId } from '../../../provisioning/resource-name.js';
 
 /** The `UPDATE` arm of `provisionResourceBody` (`deployment/deploy-engine/provision.ts`, #4200 phase 3a). */
 export async function provisionUpdate(
@@ -766,6 +768,34 @@ export async function provisionUpdate(
   // lists, so at most one of these two booleans is true at a time.
   const recreateViaSdkProvider = recreateTargets?.viaSdkProvider.has(logicalId) ?? false;
   const recreateFlagged = recreateViaCcApi || recreateViaSdkProvider;
+  // go-to-k/cdkd#6437: the diff marked this group's trigger changes
+  // `updatePolicyReplacement` (an `AutoScalingReplacingUpdate` under
+  // `--update-policy`), so its readers were promoted and the plan-time
+  // prompt saw a replacement. When only those changes drive it, the policy
+  // asked for the replacement: refused before anything is sent where cdkd
+  // cannot make it (a named group, a legacy stack, a policy pair
+  // CloudFormation fails on).
+  const replacementChanges = (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement);
+  const policyReplacement =
+    !typeChanged &&
+    !recreateFlagged &&
+    lostWithParent === undefined &&
+    replacementChanges.length > 0 &&
+    replacementChanges.every((pc) => pc.updatePolicyReplacement === true);
+  if (policyReplacement) {
+    const refusal = updatePolicyReplacementRefusal(
+      logicalId,
+      template?.Resources?.[logicalId],
+      resolvedProps,
+      replacementChanges.map((pc) => pc.path),
+      getCurrentStackInstanceId() !== undefined
+    );
+    if (refusal !== undefined) {
+      throw markRefusedBeforeApplying(
+        markNonRetryable(new CdkdError(refusal, 'UPDATE_POLICY_REPLACEMENT_REFUSED'))
+      );
+    }
+  }
   const needsReplacement =
     propertyDrivenReplacement || recreateFlagged || lostWithParent !== undefined;
 
@@ -794,7 +824,9 @@ export async function provisionUpdate(
       desiredForSkipCheck,
       allowedForRecord,
       createOnlyEvidence,
-      (change.propertyChanges ?? []).filter((pc) => pc.requiresReplacement).map((pc) => pc.path)
+      (change.propertyChanges ?? [])
+        .filter((pc) => pc.requiresReplacement && pc.updatePolicyReplacement !== true)
+        .map((pc) => pc.path)
     );
     if (unwritten.length > 0) {
       // Marked refused-before-applying: nothing was sent, so the journal
@@ -872,5 +904,6 @@ export async function provisionUpdate(
     recreateViaSdkProvider,
     recreateFlagged,
     needsReplacement,
+    policyReplacement,
   });
 }

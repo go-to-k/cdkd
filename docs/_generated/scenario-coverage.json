@@ -491,6 +491,11 @@
       "scenarios": []
     },
     {
+      "name": "asg-update-policy",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "asset-auto-create",
       "annotated": true,
       "scenarios": [
@@ -3958,6 +3963,7 @@
     "appconfig",
     "appconfig-environment-delete-protection",
     "asg-destroy-running-instances",
+    "asg-update-policy",
     "aws-custom-resource",
     "backup",
     "bootstrap-free-region",

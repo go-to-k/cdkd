@@ -1,4 +1,8 @@
 import { diffLogMasker } from '../masking.js';
+import {
+  findUpdatePolicyReplacementRefusals,
+  replacementCreateRoutesToCloudControl,
+} from '../update-policy.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { promoteRecreateTargets, recreateTargetIdsFor } from '../../recreate-target-promotion.js';
@@ -95,6 +99,27 @@ export async function refuseUnsafePlan(
         renderNestedStackTypeChangeRefusal(nestedStackTypeChanges, stackName),
         'TYPE_CHANGE_NESTED_STACK'
       )
+    );
+  }
+
+  // go-to-k/cdkd#6437: an `AutoScalingReplacingUpdate` replacement the diff
+  // planned but cdkd cannot make (a named group, a legacy stack, a policy
+  // pair CloudFormation fails on, a new group Cloud Control would create),
+  // before anything is provisioned.
+  const policyReplacementRefusals = findUpdatePolicyReplacementRefusals(
+    changes,
+    effectiveTemplate,
+    currentState.stackInstanceId !== undefined,
+    (logicalId, change) =>
+      replacementCreateRoutesToCloudControl(
+        (input) => engine.providerRegistry.getProviderFor(input),
+        change,
+        currentState.resources[logicalId]?.properties
+      )
+  );
+  if (policyReplacementRefusals.length > 0) {
+    throw markNonRetryable(
+      new CdkdError(policyReplacementRefusals.join('\n'), 'UPDATE_POLICY_REPLACEMENT_REFUSED')
     );
   }
 

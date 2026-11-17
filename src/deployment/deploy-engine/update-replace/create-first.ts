@@ -1,4 +1,6 @@
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
+import { cloudControlReplacementRefusal } from '../update-policy.js';
+import { markRefusedBeforeApplying } from '../../prior-attempt-scope.js';
 import { deployReplaceCommand } from '../../../utils/pasteable-command.js';
 import { guardedReplacementCreate } from '../create.js';
 import { type DeployEngine } from '../../deploy-engine.js';
@@ -63,9 +65,19 @@ export async function replaceCreateFirst(
     typedPayloadLeaves,
     lostWithParent,
     nameChange,
+    awaitInService,
   }: ReplacementArmInput & {
     lostWithParent: string | undefined;
     nameChange: ReplacementNameChange | undefined;
+    /**
+     * go-to-k/cdkd#6437, an `AutoScalingReplacingUpdate`: the new group's
+     * create waits for its instances to be in service (`CreateContext
+     * .awaitInService`), so the old group is deleted only once the new one
+     * serves. A new group routed to Cloud Control, whose create cannot
+     * wait, is refused before anything is created (the plan refuses it
+     * first: `findUpdatePolicyReplacementRefusals`).
+     */
+    awaitInService?: boolean;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
 ): Promise<any> {
@@ -74,6 +86,19 @@ export async function replaceCreateFirst(
   // Property-driven replacement: create-then-destroy (CFn
   // safe-replacement order — keeps the old alive if CREATE
   // fails so the deploy can roll back to it cleanly).
+  // The old group goes only once the new one serves, and only the SDK
+  // provider's create can wait for that: a Cloud Control-routed new group is
+  // refused before anything is created, rather than replaced without capacity.
+  if (awaitInService === true && replaceDecision.provisionedBy !== 'sdk') {
+    throw markRefusedBeforeApplying(
+      markNonRetryable(
+        new CdkdError(
+          cloudControlReplacementRefusal(logicalId),
+          'UPDATE_POLICY_REPLACEMENT_REFUSED'
+        )
+      )
+    );
+  }
   engine.logger.info(safeMsg`  Creating new ${logicalId}...`);
   // go-to-k/cdkd#4411: a resource stored inside a parent that was just
   // destroyed and re-created is already gone, exactly as after the
@@ -106,6 +131,7 @@ export async function replaceCreateFirst(
               replaceProvider.create(logicalId, resourceType, replaceProps, {
                 maskSecrets: createSecretMasker(updateSecrets),
                 ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
+                ...(awaitInService === true && { awaitInService: true }),
               })
             ),
           logicalId,

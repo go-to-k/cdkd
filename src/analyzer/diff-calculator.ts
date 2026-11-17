@@ -93,7 +93,8 @@ export class DiffCalculator {
     refusalRecovery?: LockRecoveryContext,
     noEchoCompare?: NoEchoCompareFn,
     readProvenance?: ReadProvenanceSources,
-    forcedNestedChildRuns?: ReadonlySet<string>
+    forcedNestedChildRuns?: ReadonlySet<string>,
+    updatePolicy?: boolean
   ): Promise<Map<string, ResourceChange>> {
     return calculateDiff.call(
       this,
@@ -109,7 +110,8 @@ export class DiffCalculator {
       refusalRecovery,
       noEchoCompare,
       readProvenance,
-      forcedNestedChildRuns
+      forcedNestedChildRuns,
+      updatePolicy
     );
   }
 

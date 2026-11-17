@@ -1,4 +1,5 @@
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
+import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
 import { withReplayDeletePrinting } from './replay-scope.js';
 import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
@@ -651,6 +652,9 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
           // go-to-k/cdkd#6309: each side typed by the record that wrote it.
           typedPayloadLeaves: previousState.typedPayloadLeaves,
           previousTypedPayloadLeaves: current.typedPayloadLeaves,
+          // go-to-k/cdkd#6457: the rollout the forward update honored under
+          // `--update-policy`, minus what CloudFormation ignores on a rollback.
+          ...revertUpdatePolicyContext(op.updatePolicy),
         },
       ],
       op.logicalId,

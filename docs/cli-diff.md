@@ -296,6 +296,7 @@ The full rules are in
 | `--json` | off | Emit the diff as JSON. See [cdkd diff: JSON output](cli-diff-json.md). |
 | `--use-cdk-bootstrap-assets` | off | Compare against the CDK bootstrap asset destinations verbatim, skipping cdkd's asset-storage redirection. |
 | `--no-cfn-fallback` | fallback on | Do not fall back to CloudFormation when a cross-stack reference is missing from cdkd state. See [`--no-cfn-fallback` (deploy / diff)](cli-deploy-safety-ci-flags.md#no-cfn-fallback-deploy-diff). |
+| `--update-policy`, `--no-update-policy` | skipped | Preview the `UpdatePolicy` attributes `cdkd deploy --update-policy` honors: an Auto Scaling group's `AutoScalingReplacingUpdate` shows as a replacement. Per-app: `cdk.json` `context.cdkd.updatePolicy`. See [`UpdatePolicy` is opt-in](supported-features.md#updatepolicy-is-opt-in). |
 | `--region <region>` | AWS profile / `AWS_REGION` | Deprecated, still honored. Prefer `AWS_REGION` or your AWS profile. |
 
 `cdkd diff` also accepts the flags every command shares: `--app`,

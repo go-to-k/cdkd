@@ -1,4 +1,5 @@
 import { hintSidesOf, rollbackOrphanIds } from '../../../analyzer/refactor-hints.js';
+import type { CreateRouteOf } from '../../../deployment/deploy-engine/update-policy.js';
 import { displayIdent, displayStackName } from '../../../utils/display-safe.js';
 import { displayAssemblyPath } from '../../../utils/assembly-path.js';
 import {
@@ -141,6 +142,10 @@ export async function buildDiffTree(args: {
    * the deploy engine's option. Default (undefined) = fallback enabled.
    */
   cfnFallback?: boolean;
+  /** As `computeStackDiff`'s `updatePolicy`; handed to every node of the tree. */
+  updatePolicy?: boolean;
+  /** As `computeStackDiff`'s `createRouteOf`; handed to every node of the tree. */
+  createRouteOf?: CreateRouteOf;
   /** As `computeStackDiff`'s `producerLookup`; handed to every node of the tree. */
   producerLookup?: ProducerLookup;
   /** As `computeStackDiff`'s `consumerAccount`; handed to every node of the tree. */
@@ -247,6 +252,8 @@ export async function buildDiffTree(args: {
     ccRouteUnavailableReason,
     assetRedirect,
     cfnFallback,
+    updatePolicy,
+    createRouteOf,
     producerLookup,
     consumerAccount,
     previewOrphanAdoption,
@@ -336,6 +343,8 @@ export async function buildDiffTree(args: {
         ...(canonicalizeProperties && { canonicalizeProperties }),
         ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        ...(updatePolicy === true && { updatePolicy }),
+        ...(createRouteOf && { createRouteOf }),
         ...(producerLookup && { producerLookup }),
         ...(consumerAccount && { consumerAccount }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
@@ -618,6 +627,8 @@ export async function buildDiffTree(args: {
         ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
+        ...(updatePolicy === true && { updatePolicy }),
+        ...(createRouteOf && { createRouteOf }),
         ...(producerLookup && { producerLookup }),
         ...(consumerAccount && { consumerAccount }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),

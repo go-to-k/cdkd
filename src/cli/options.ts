@@ -243,7 +243,11 @@ export function guardStackRegionOptions(cmd: Command): void {
 /**
  * Skip waiting for async-stabilization resources (RDS, ElastiCache,
  * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
- * ECS Service steady state) on deploy. Setting the flag mutates
+ * ECS Service steady state, the Auto Scaling instance refresh an
+ * `--update-policy` rolling update starts, go-to-k/cdkd#6437) on deploy.
+ * NOT the wait of an `AutoScalingReplacingUpdate` for its new group's
+ * instances, which runs whatever the flag says: deleting the old group
+ * before the new one serves would drop the group's capacity. Setting the flag mutates
  * `process.env.CDKD_NO_WAIT='true'`; provider code checks that env
  * var, not the parsed CLI option (this lets nested call paths — e.g.
  * asset publish, lifecycle hooks — see the same setting without
@@ -264,7 +268,7 @@ export function guardStackRegionOptions(cmd: Command): void {
  */
 export const noWaitOption = new Option(
   '--no-wait',
-  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, ECS Service steady state)'
+  'Skip waiting for async resources to stabilize (RDS, ElastiCache, NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image, ECS Service steady state, Auto Scaling instance refresh under --update-policy; an AutoScalingReplacingUpdate still waits for its new instances)'
 );
 
 /**
@@ -627,7 +631,8 @@ export const deployOptions = [
   new Option(
     '--update-policy',
     "Honor the template's UpdatePolicy attributes cdkd supports " +
-      '(today: AutoScalingScheduledAction.IgnoreUnmodifiedGroupSizeProperties). ' +
+      '(the Auto Scaling group policies: AutoScalingScheduledAction, AutoScalingRollingUpdate, ' +
+      'AutoScalingInstanceRefresh, AutoScalingReplacingUpdate). ' +
       'Skipped by default. Per-app: cdk.json context.cdkd.updatePolicy: true.'
   ),
   new Option(
@@ -759,3 +764,24 @@ export const noLocalCustomResourcesOption = new Option(
     'instead of running them locally in the official Lambda runtime image (Docker). A no-op ' +
     'without --aws-emulator.'
 );
+
+/**
+ * go-to-k/cdkd#6437: `cdkd diff`'s twin of deploy's pair, so the preview
+ * shows the replacement an `AutoScalingReplacingUpdate` makes under
+ * `cdkd deploy --update-policy`. No default, as on deploy, so passing
+ * neither leaves `updatePolicy` undefined and `resolveUpdatePolicy` falls
+ * through to `cdk.json context.cdkd.updatePolicy`.
+ */
+export const diffUpdatePolicyOptions: readonly Option[] = [
+  new Option(
+    '--update-policy',
+    "Preview the template's UpdatePolicy attributes as deploy --update-policy honors them " +
+      '(an AutoScalingReplacingUpdate shows as a replacement). ' +
+      'Per-app: cdk.json context.cdkd.updatePolicy: true.'
+  ),
+  new Option(
+    '--no-update-policy',
+    'Preview without UpdatePolicy attributes (the default). Overrules ' +
+      'cdk.json context.cdkd.updatePolicy: true.'
+  ),
+];

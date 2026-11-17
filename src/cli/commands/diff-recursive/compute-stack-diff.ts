@@ -1,4 +1,8 @@
 import { stripControlChars, stripForDisplay } from '../../../utils/regexp.js';
+import {
+  findUpdatePolicyReplacementRefusals,
+  replacementCreateRoutesToCloudControl,
+} from '../../../deployment/deploy-engine/update-policy.js';
 import { displayStackName, safeMsg } from '../../../utils/display-safe.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResourceState, StackState } from '../../../types/state.js';
@@ -536,7 +540,9 @@ export async function computeStackDiff(
         stateBackend
       ),
     },
-    options.forcedNestedChildRuns
+    options.forcedNestedChildRuns,
+    // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
+    options.updatePolicy === true
   );
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
@@ -637,6 +643,26 @@ export async function computeStackDiff(
   // otherwise exit 3 on every `cdkd diff`. A key the SDK provider now writes
   // (#5572) is refused under any flag, but still only at the resource, after
   // other rows may have changed, so it is a warning too.
+  // go-to-k/cdkd#6437: `cdkd deploy --update-policy` refuses, at its plan,
+  // an `AutoScalingReplacingUpdate` replacement it cannot make, so it blocks.
+  // Only a diff run with the flag marks such a replacement.
+  blocking = [
+    ...blocking,
+    ...findUpdatePolicyReplacementRefusals(
+      changes,
+      effectiveTemplate,
+      stateForDiff.stackInstanceId !== undefined,
+      // The deploy's own route decision, through the same registry call.
+      options.createRouteOf === undefined
+        ? undefined
+        : (logicalId, change) =>
+            replacementCreateRoutesToCloudControl(
+              options.createRouteOf!,
+              change,
+              stateForDiff.resources[logicalId]?.properties
+            )
+    ),
+  ];
   for (const reason of findUnwrittenCreateOnlyRefusals(
     changes,
     stateForDiff.resources,

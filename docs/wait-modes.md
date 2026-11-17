@@ -126,6 +126,10 @@ the background. Until then, you may see these:
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 - An ECS service's rollout is unchecked: a service whose tasks never start
   still deploys with exit `0`.
+- With `--update-policy`, an Auto Scaling group's instance refresh is still
+  replacing instances, and a refresh that fails does not fail the deploy.
+  An `AutoScalingReplacingUpdate` is the exception: it still waits for the
+  new group's instances to be in service before it deletes the old group.
 
 [cdkd deploy](cli-deploy.md) lists what each mode does for
 every affected resource type, next to what CloudFormation and Terraform do.

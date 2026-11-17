@@ -192,7 +192,9 @@ export async function calculateDeployDiff(
         engine.stateBackend
       ),
     },
-    forcedNestedChildRuns
+    forcedNestedChildRuns,
+    // go-to-k/cdkd#6437: an `AutoScalingReplacingUpdate` replaces at plan time.
+    engine.options.updatePolicy === true
   );
   return { diffResolverContext, maskedInputs, changes };
 }

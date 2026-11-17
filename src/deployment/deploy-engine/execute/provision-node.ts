@@ -28,6 +28,8 @@ import {
   replacementOrphanOpFor,
 } from './helpers.js';
 import type { DeployRun } from './run.js';
+import type { CloudFormationTemplate } from '../../../types/resource.js';
+import { journaledUpdatePolicy } from '../update-policy.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -273,6 +275,12 @@ export async function provisionCreateUpdateNode(
       ...(!refused && {
         attemptedProperties: engine.attemptedResolvedProps.get(logicalId),
       }),
+      ...journaledUpdatePolicyField(
+        change.changeType,
+        engine.options.updatePolicy,
+        template,
+        logicalId
+      ),
     };
     failedOperations.push(failedOp);
     // go-to-k/cdkd#5064 phase 2: the failed replacement's create may have
@@ -378,6 +386,14 @@ export async function provisionCreateUpdateNode(
       engine.replacementRun.oldIdLeftForCleanup.has(logicalId) && {
         oldPhysicalIdLeftForCleanup: true as const,
       }),
+    // go-to-k/cdkd#6457: the UpdatePolicy `--update-policy` handed the update,
+    // which the rollback's revert of it honors too.
+    ...journaledUpdatePolicyField(
+      change.changeType,
+      engine.options.updatePolicy,
+      template,
+      logicalId
+    ),
     // Issue #2668: `resourceType` above is the TEMPLATE's type, so
     // on a Type change the journal would otherwise name only the
     // NEW one and the rollback would re-create the OLD resource
@@ -401,4 +417,20 @@ export async function provisionCreateUpdateNode(
   saveStateAfterResource(logicalId);
   if (engine.replacementRun.recreatedUnderSameId.has(logicalId))
     enqueueLostChildren(createUpdateExecutor);
+}
+
+/**
+ * go-to-k/cdkd#6457: `{ updatePolicy }` on an UPDATE operation the deploy ran
+ * under `--update-policy` with a template `UpdatePolicy`, else nothing (a
+ * journal byte-identical to one written without the flag).
+ */
+function journaledUpdatePolicyField(
+  changeType: string,
+  updatePolicyOption: boolean | undefined,
+  template: CloudFormationTemplate | undefined,
+  logicalId: string
+): { updatePolicy?: Record<string, unknown> } {
+  if (changeType !== 'UPDATE') return {};
+  const updatePolicy = journaledUpdatePolicy(updatePolicyOption, template?.Resources?.[logicalId]);
+  return updatePolicy !== undefined ? { updatePolicy } : {};
 }

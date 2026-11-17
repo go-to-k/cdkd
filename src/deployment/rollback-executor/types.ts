@@ -145,6 +145,15 @@ export interface CompletedOperation {
    */
   oldPhysicalIdLeftForCleanup?: true | undefined;
   /**
+   * go-to-k/cdkd#6457, on an UPDATE the deploy ran under `--update-policy`:
+   * the template's `UpdatePolicy` handed to that update, so the revert of it
+   * honors the same rollout (`revertUpdatePolicy` drops
+   * `AutoScalingScheduledAction`, which CloudFormation ignores on a
+   * rollback). Template values, never resolved. ADDITIVE, no
+   * `journalVersion` bump: an older binary ignores it and reverts as before.
+   */
+  updatePolicy?: Record<string, unknown> | undefined;
+  /**
    * go-to-k/cdkd#4690: the deploy deleted the OLD resource BEFORE it created
    * the new one (`--recreate-via-cc-api` / `--recreate-via-sdk-provider`, the
    * UPDATE-unsupported fallback, `--replace`'s delete-first fallback, or a
@@ -296,6 +305,15 @@ export interface FailedOperation {
    * this the patch would be empty and the revert a no-op.
    */
   attemptedProperties?: Record<string, unknown> | undefined;
+  /**
+   * go-to-k/cdkd#6457, on an UPDATE the deploy ran under `--update-policy`:
+   * the template's `UpdatePolicy` handed to that update, so the revert of it
+   * honors the same rollout (`revertUpdatePolicy` drops
+   * `AutoScalingScheduledAction`, which CloudFormation ignores on a
+   * rollback). Template values, never resolved. ADDITIVE, no
+   * `journalVersion` bump: an older binary ignores it and reverts as before.
+   */
+  updatePolicy?: Record<string, unknown> | undefined;
 }
 
 /** Collaborators the executor needs (no synth-side dependencies). */

@@ -74,6 +74,8 @@ export interface FinishUpdateInput
   recreateViaSdkProvider: boolean;
   recreateFlagged: boolean;
   needsReplacement: boolean | undefined;
+  /** go-to-k/cdkd#6437: an `AutoScalingReplacingUpdate` drives the replacement. */
+  policyReplacement?: boolean | undefined;
 }
 
 /**
@@ -119,6 +121,7 @@ export async function finishUpdate(
     recreateViaSdkProvider,
     recreateFlagged,
     needsReplacement,
+    policyReplacement,
   } = input;
   // The label `provisionResource` chose left ceilings out; one that
   // stood (the value moved, or it is a fresh `NoEcho` value AWS could
@@ -245,6 +248,7 @@ export async function finishUpdate(
         updateSecrets,
         lostWithParent,
         nameGenerationFields,
+        policyReplacement: policyReplacement === true,
       });
     const replaced = await (nextGeneration === undefined
       ? replace()
