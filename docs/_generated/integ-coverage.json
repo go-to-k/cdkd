@@ -9515,6 +9515,7 @@
         "bench-sdk",
         "budgets",
         "cc-getatt-readback",
+        "cc-to-sdk-reroute-cloudfront-distribution",
         "cc-to-sdk-reroute-common-types",
         "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
@@ -9622,6 +9623,9 @@
         ],
         "cc-getatt-readback": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-cloudfront-distribution": [
+          "l1"
         ],
         "cc-to-sdk-reroute-common-types": [
           "l1",
