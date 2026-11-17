@@ -117,6 +117,22 @@ fi
 [ "$(service_id)" = "${SERVICE_ID}" ] || { echo "FAIL: phase 2 replaced the service" >&2; exit 1; }
 echo "    OK: deploy went on with the warning; AWS and the record both keep description-a"
 
+echo "==> Phase 2b: the same template again -- the next deploy also goes on (it failed every time before)"
+set +e
+AGAIN_OUT=$(env CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
+AGAIN_RC=$?
+set -e
+[ "${AGAIN_RC}" -eq 0 ] || { printf '%s\n' "${AGAIN_OUT}" >&2; echo "FAIL: the second Description-only deploy exited ${AGAIN_RC}" >&2; exit 1; }
+grep -F 'Cloud Map cannot update service HttpService' <<<"${AGAIN_OUT}" | grep -qF 'HTTP (API-only) namespace' || {
+  printf '%s\n' "${AGAIN_OUT}" >&2
+  echo "FAIL: the second deploy did not warn again" >&2
+  exit 1
+}
+[ "$(service_id)" = "${SERVICE_ID}" ] || { echo "FAIL: the second deploy replaced the service" >&2; exit 1; }
+[ "$(state_description)" = "description-a" ] || { echo "FAIL: the second deploy recorded '$(state_description)'" >&2; exit 1; }
+echo "    OK: the next deploy goes on too, warning again, same service, record unchanged"
+
 echo "==> Phase 3: no drift"
 DRIFT_JSON=$(mktemp)
 set +e

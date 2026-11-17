@@ -313,7 +313,8 @@ export async function updateService(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
   maskSecrets?: SecretMasker,
-  changedProperties?: ReadonlySet<string>
+  changedProperties?: ReadonlySet<string>,
+  unsettledProperties?: ReadonlySet<string>
 ): Promise<ResourceUpdateResult> {
   this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
   // go-to-k/cdkd#3994: `Tags` used to be ignored on update; a malformed
@@ -390,7 +391,8 @@ export async function updateService(
         this.logger.warn(
           `Cloud Map cannot update service ${logicalId}: it is in an HTTP (API-only) namespace, ` +
             'where AWS refuses UpdateService. Its Description, DnsConfig and HealthCheckConfig ' +
-            'changes were not applied, as in CloudFormation; replace the service to change them.'
+            'changes were not applied, as in CloudFormation, and the state record keeps the ' +
+            'values AWS holds; replace the service to change them.'
         );
       }
 
@@ -497,7 +499,11 @@ export async function updateService(
       return {
         physicalId,
         wasReplaced: false,
-        effectiveProperties: withServiceChangeKeysKept(properties, previousProperties),
+        effectiveProperties: withServiceChangeKeysKept(
+          properties,
+          previousProperties,
+          unsettledProperties
+        ),
       };
     }
     return { physicalId, wasReplaced: false };
@@ -719,17 +725,23 @@ const SERVICE_CHANGE_KEYS = ['Description', 'DnsConfig', 'HealthCheckConfig'] as
 /**
  * The desired bag with every `ServiceChange` key put back to the RECORDED
  * value, for an update AWS refused: the call never ran, so state must keep
- * saying what AWS holds. A key the record lacks is dropped.
+ * saying what AWS holds. A key the record lacks is dropped, and so is an
+ * UNSETTLED one: its previous value was read back from AWS, so it can be a
+ * resolved secret this deploy no longer references and the record's
+ * redaction could not match (go-to-k/cdkd#6484 review).
  */
 function withServiceChangeKeysKept(
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  unsettledProperties: ReadonlySet<string> | undefined
 ): Record<string, unknown> {
   const kept: Record<string, unknown> = { ...properties };
   for (const key of SERVICE_CHANGE_KEYS) {
-    if (Object.hasOwn(previousProperties, key))
+    if (Object.hasOwn(previousProperties, key) && !unsettledProperties?.has(key)) {
       kept[key] = structuredClone(previousProperties[key]);
-    else delete kept[key];
+    } else {
+      delete kept[key];
+    }
   }
   return kept;
 }

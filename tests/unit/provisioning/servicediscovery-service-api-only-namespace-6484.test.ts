@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  GetServiceCommand,
+  TagResourceCommand,
   UpdateServiceCommand,
   UpdateServiceAttributesCommand,
 } from '@aws-sdk/client-servicediscovery';
@@ -95,6 +97,51 @@ describe('ServiceDiscovery Service update in an HTTP namespace (#6484)', () => {
       { Name: 'svc', NamespaceId: 'ns-1' }
     );
     expect(result.effectiveProperties).toEqual({ Name: 'svc', NamespaceId: 'ns-1' });
+  });
+
+  it('puts HealthCheckConfig back too, and drops an UNSETTLED key instead of copying its readback', async () => {
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      return {};
+    });
+    const previous = {
+      Name: 'svc',
+      NamespaceId: 'ns-1',
+      // An unsettled key's previous value is AWS's readback, which can be a
+      // resolved secret the record's redaction no longer matches.
+      Description: 'plaintext-read-back-from-aws',
+      HealthCheckConfig: { Type: 'HTTP', FailureThreshold: 2 },
+    };
+    const result = await new ServiceDiscoveryProvider().update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      { ...previous, Description: 'new', HealthCheckConfig: { Type: 'HTTP', FailureThreshold: 3 } },
+      previous,
+      { unsettledProperties: new Set(['Description']) }
+    );
+    expect(result.effectiveProperties).toEqual({
+      Name: 'svc',
+      NamespaceId: 'ns-1',
+      HealthCheckConfig: { Type: 'HTTP', FailureThreshold: 2 },
+    });
+    expect(JSON.stringify(result.effectiveProperties)).not.toContain('plaintext-read-back-from-aws');
+  });
+
+  it('still applies a Tags change the same deploy carries', async () => {
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) return { Service: { Arn: 'arn:aws:servicediscovery:us-east-1:123456789012:service/srv-1' } };
+      return {};
+    });
+    await new ServiceDiscoveryProvider().update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      { Name: 'svc', NamespaceId: 'ns-1', Description: 'new', Tags: [{ Key: 'k', Value: 'v' }] },
+      { Name: 'svc', NamespaceId: 'ns-1', Description: 'old' }
+    );
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof TagResourceCommand)).toBe(true);
   });
 
   it('still applies the ServiceAttributes change the same deploy carries', async () => {

@@ -109,7 +109,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['createPublicDnsNamespace', 'namespace', 'createPublicDnsNamespace', 4],
   ['updatePublicDnsNamespace', 'namespace', 'updatePublicDnsNamespace', 6],
   ['createService', 'service', 'createService', 4],
-  ['updateService', 'service', 'updateService', 7],
+  ['updateService', 'service', 'updateService', 8],
   ['planServiceChange', 'service', 'planServiceChange', 3],
   ['warnUnappliedDnsConfigMembers', 'service', 'warnUnappliedDnsConfigMembers', 4],
   ['keepUndeclaredServiceFields', 'service', 'keepUndeclaredServiceFields', 2],
