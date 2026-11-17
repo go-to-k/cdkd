@@ -536,6 +536,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-required-name-generation",
+        "cc-to-sdk-reroute-cloudfront-distribution",
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-10",
         "cc-to-sdk-reroute-common-types-2",
