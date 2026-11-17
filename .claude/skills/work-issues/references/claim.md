@@ -73,7 +73,8 @@ path changes the type's `getDriftUnknownPaths` pin, `grep -rl
 getDriftUnknownPaths tests/unit | grep '<provider basename>'`), the fixture §8-c
 will extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW
 one, or a `--<flag>` token no `verify.sh` used before, adds `gen:all-matrices`'
-outputs in `docs/`) and, when a
+outputs in `docs/`; a NEW one seeding a secret, e.g. `unsafePlainText`, adds its
+name to `integ-secret-fixture-sweep.test.ts`'s audited set, #6505) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every file the fix makes FALSE — a comment, doc or rule stating the old invariant
 or calling the issue open, or a `verify.sh` / workflow reading a renamed key
