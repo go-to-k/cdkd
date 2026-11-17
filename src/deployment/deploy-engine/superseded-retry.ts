@@ -1,6 +1,7 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ResourceState, StackState, SupersededResourceRecord } from '../../types/state.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
 import { green } from '../../utils/colors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { deleteSkippedMessage } from '../delete-outcome.js';
@@ -10,6 +11,7 @@ import { orphanRecordsPrintingBag } from '../secret-name-needles.js';
 import { withStackRecords } from '../stack-records-scope.js';
 import {
   SUPERSEDED_KEPT_REMEDY,
+  addSuperseded,
   deleteSupersededEntry,
   removeSuperseded,
   supersededHeldByOtherTypeWarning,
@@ -92,11 +94,24 @@ export async function retryCarriedSupersededResources(
             // One attempt unless this deploy released a possible user: an
             // entry still in use must not slow every deploy.
             once: options.waitInUse !== true,
+            // go-to-k/cdkd#6463: an entry owing its pre-delete snapshot.
+            preDeleteSnapshot: {
+              clients: engine.options.finalSnapshotClients ?? getAwsClients(),
+              logger: {
+                info: (message) => engine.logger.info(maskSecretsInText(message, bag)),
+                debug: (message) => engine.logger.debug(maskSecretsInText(message, bag)),
+              },
+            },
           });
         } catch (error) {
           outcome = { kind: 'failed' as const, error };
         }
         if (outcome.kind === 'failed') {
+          // go-to-k/cdkd#6463: its snapshot was taken, so it is not owed again.
+          if (outcome.replacement !== undefined) {
+            addSuperseded(host, outcome.replacement);
+            changed = true;
+          }
           const detail = maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
           engine.logger.warn(
             safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${physicalId}): ${detail}. ${SUPERSEDED_KEPT_REMEDY}.`

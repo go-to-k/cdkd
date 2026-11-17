@@ -57,6 +57,7 @@ import type {
 import { retainedNestedRowChildNames, retireUnaddressedChildRecords } from './child-records.js';
 import {
   NESTED_STACK_TYPE,
+  maskedSnapshotLogger,
   purgeStateHistoryIfOptedIn,
   releaseRegistryMarkerAfterDestroy,
 } from './helpers.js';
@@ -515,6 +516,9 @@ export async function destroyStackUnderLock({
     ): Promise<boolean> => {
       const { logicalId } = entry;
       const { physicalId, resourceType } = entry.state;
+      // By identity: a row swapped below for one owing no snapshot
+      // (go-to-k/cdkd#6463) is a pre-delete-snapshot type, which never takes
+      // the `early` pass, so no second call for it can come here.
       const drop = (): void => {
         remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
       };
@@ -562,6 +566,11 @@ export async function destroyStackUnderLock({
                 ...(ctx.stackDestroy === true && { stackDestroy: true }),
                 maskSecrets: createUnionSecretMasker([bag]),
                 stop: () => lock.interrupted,
+                // go-to-k/cdkd#6463: an entry owing its pre-delete snapshot.
+                preDeleteSnapshot: {
+                  clients: destroyAwsClients ?? ctx.baseAwsClients,
+                  logger: maskedSnapshotLogger(logger, createUnionSecretMasker([bag])),
+                },
               })
           );
         } catch (error) {
@@ -572,6 +581,13 @@ export async function destroyStackUnderLock({
           drop();
           logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
           return false;
+        }
+        // go-to-k/cdkd#6463: its snapshot was taken, so a re-run owes none.
+        const replacement = outcome.kind === 'failed' ? outcome.replacement : undefined;
+        if (replacement !== undefined) {
+          remainingSuperseded = (remainingSuperseded ?? []).map((row) =>
+            row === entry ? replacement : row
+          );
         }
         if (early) {
           // A not-yet-updated resource of a failed deploy may still use the

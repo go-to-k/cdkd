@@ -10,6 +10,7 @@ export type { ReplacementDeps } from './replacement/run-state.js';
 export {
   replacementDeleteContext,
   prepareFinalSnapshotForDelete,
+  prepareCreateFirstFinalSnapshot,
 } from './replacement/delete-context.js';
 export { replaceDeleteFirstAndRecreate } from './replacement/delete-first.js';
 export { typeChangeNameQuestion, checkedReplacementNameChange } from './replacement/name-change.js';

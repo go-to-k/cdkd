@@ -10,7 +10,13 @@
  * in `deploy-engine/superseded-retry.ts`, the destroy's in
  * `cli/commands/destroy-runner.ts`.
  */
-import { replacementDeletePolicy } from '../provisioning/final-snapshot.js';
+import {
+  type PreDeleteSnapshotClients,
+  PRE_DELETE_SNAPSHOT_TYPES,
+  createPreDeleteFinalSnapshot,
+  replacementDeletePolicy,
+} from '../provisioning/final-snapshot.js';
+import { CdkdError } from '../utils/error-handler.js';
 import type { ResourceDeleteResult, ResourceProvider } from '../types/resource.js';
 import type { ResourceState, StackState, SupersededResourceRecord } from '../types/state.js';
 import { reportDeleteGuards } from './delete-guard-scope.js';
@@ -284,7 +290,16 @@ export function withoutSuperseded<T extends Pick<StackState, 'supersededResource
 export type SupersededDeleteOutcome =
   | { kind: 'deleted' }
   | { kind: 'notDeleted'; reason: string }
-  | { kind: 'failed'; error: unknown };
+  | {
+      kind: 'failed';
+      error: unknown;
+      /**
+       * go-to-k/cdkd#6463: the entry to keep in place of the one sent, set
+       * when the owed pre-delete snapshot was taken before the delete
+       * failed: it no longer owes one, so a later attempt takes no second.
+       */
+      replacement?: SupersededResourceRecord;
+    };
 
 /**
  * Send the delete of one superseded resource, as the replacement that
@@ -306,9 +321,77 @@ export async function deleteSupersededEntry(
     stop: () => boolean;
     /** Send once, without waiting out an "in use" refusal (a deploy's carried retry). */
     once?: boolean;
+    /**
+     * go-to-k/cdkd#6463: the stack's region-pinned clients and a masked
+     * logger, for an entry that still owes its pre-delete snapshot. Without
+     * them such an entry fails, unsent.
+     */
+    preDeleteSnapshot?: {
+      clients: PreDeleteSnapshotClients;
+      logger: { info(message: string): void; debug(message: string): void };
+    };
   }
 ): Promise<SupersededDeleteOutcome> {
   const record = entry.state;
+  // go-to-k/cdkd#6463: a create-first replacement of a pre-delete-snapshot
+  // type (an EBS volume, a Redshift cluster, an ElastiCache replication
+  // group) records its owed snapshot as `finalSnapshotIdentifier`; no other
+  // writer puts one on these types. The snapshot is taken here, as the
+  // deferred delete would have, and the delete then carries no identifier.
+  // The entry's own `skipFinalSnapshot` consent is the only one that counts.
+  const owesSnapshot =
+    entry.skipFinalSnapshot !== true &&
+    entry.finalSnapshotIdentifier !== undefined &&
+    PRE_DELETE_SNAPSHOT_TYPES.has(record.resourceType);
+  if (owesSnapshot) {
+    if (input.preDeleteSnapshot === undefined) {
+      return {
+        kind: 'failed',
+        error: new CdkdError(
+          `The final snapshot of ${entry.logicalId}'s superseded ${record.resourceType} ` +
+            `could not be taken here. The resource was NOT deleted.`,
+          'FINAL_SNAPSHOT_FAILED'
+        ),
+      };
+    }
+    // A Redshift snapshot can wait for an hour: none starts once stopped.
+    if (input.stop()) {
+      return {
+        kind: 'failed',
+        error: new CdkdError(
+          `The run was interrupted before the final snapshot of ${entry.logicalId}'s ` +
+            `superseded ${record.resourceType}. The resource was NOT deleted.`,
+          'FINAL_SNAPSHOT_FAILED'
+        ),
+      };
+    }
+    try {
+      // The copy is live: one AWS calls unsnapshottable (paused, modifying)
+      // refuses, never deletes unsnapshotted.
+      await createPreDeleteFinalSnapshot(
+        record.resourceType,
+        record.physicalId,
+        entry.logicalId,
+        input.preDeleteSnapshot.clients,
+        input.preDeleteSnapshot.logger,
+        {
+          refuseUnsnapshottableState: true,
+          // A snapshot started since the deferral: this delete's, resumed.
+          reuseStartedAtOrAfter: Number.isFinite(entry.supersededAt)
+            ? entry.supersededAt
+            : Date.now(),
+          stop: input.stop,
+        }
+      );
+    } catch (error) {
+      return { kind: 'failed', error };
+    }
+  }
+  const { finalSnapshotIdentifier: _taken, ...snapshotTaken } = entry;
+  const failed = (error: unknown): SupersededDeleteOutcome =>
+    owesSnapshot
+      ? { kind: 'failed', error, replacement: snapshotTaken }
+      : { kind: 'failed', error };
   let result: void | ResourceDeleteResult;
   try {
     const send = (): Promise<void | ResourceDeleteResult> =>
@@ -320,9 +403,13 @@ export async function deleteSupersededEntry(
         {
           expectedRegion: input.region,
           ...(entry.forceDataDelete === true && { forceDataDelete: true }),
-          ...(entry.finalSnapshotIdentifier !== undefined && {
-            finalSnapshotIdentifier: entry.finalSnapshotIdentifier,
-          }),
+          // A pre-delete-snapshot type's identifier is only the owed mark,
+          // never the delete's (its Cloud Control delete refuses one), also
+          // under the entry's own `skipFinalSnapshot` consent.
+          ...(entry.finalSnapshotIdentifier !== undefined &&
+            !PRE_DELETE_SNAPSHOT_TYPES.has(record.resourceType) && {
+              finalSnapshotIdentifier: entry.finalSnapshotIdentifier,
+            }),
           deletionPolicy: replacementDeletePolicy(entry.updateReplacePolicy),
           ...(entry.skipFinalSnapshot === true && { skipFinalSnapshot: true }),
           ...(input.removeProtection === true && { removeProtection: true }),
@@ -337,7 +424,7 @@ export async function deleteSupersededEntry(
       );
     result = input.once === true ? await send() : await retryWhileInUse(send, input.stop);
   } catch (error) {
-    return { kind: 'failed', error };
+    return failed(error);
   }
   // Issue #2422: into the caller's guard sink, when it binds one.
   reportDeleteGuards(result, {

@@ -75,6 +75,13 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   AwsClients: vi.fn(),
 }));
 
+// go-to-k/cdkd#6463: a carried entry's owed pre-delete snapshot.
+const preDeleteSnapshot = vi.hoisted(() => vi.fn(async () => 'snap-1'));
+vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  createPreDeleteFinalSnapshot: preDeleteSnapshot,
+}));
+
 vi.mock('../../../src/utils/live-renderer.js', () => ({
   getLiveRenderer: () => ({
     start: vi.fn(),
@@ -559,6 +566,41 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     ]);
     expect(written[0]!.state.outputs).toEqual({ Marker: 'written-after-the-child' });
     expect(written[0]!.state.resources['CRev']!.physicalId).toBe('CRev-new');
+  });
+
+  // go-to-k/cdkd#6463: a carried entry owing a pre-delete snapshot, whose
+  // delete fails after the snapshot, stays listed and owes none.
+  it("keeps a child's entry whose snapshot was taken before its delete failed, owing none", async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+    live.add('vol-old');
+    refuse.add('vol-old');
+
+    await withNestedCleanupQueue(queue, () =>
+      deployStack(child, CHILD, 'C', {
+        superseded: [
+          {
+            logicalId: 'Vol',
+            supersededAt: 1,
+            state: record('vol-old', 'AWS::EC2::Volume', {}),
+            updateReplacePolicy: 'Snapshot',
+            finalSnapshotIdentifier: 'vol-old-final-20261117-000000',
+          },
+        ],
+      })
+    );
+    const savesBefore = saves.length;
+
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(preDeleteSnapshot).toHaveBeenCalledTimes(1);
+    expect(deletesOf('vol-old')).toBeGreaterThanOrEqual(1);
+    const written = saves.slice(savesBefore);
+    expect(written).toHaveLength(1);
+    const [kept] = supersededResourcesOf(written[0]!.state);
+    expect(kept!.state.physicalId).toBe('vol-old');
+    expect(kept).not.toHaveProperty('finalSnapshotIdentifier');
+    expect(kept!.updateReplacePolicy).toBe('Snapshot');
   });
 
   it('an entry no longer listed in the persisted child state is not deleted', async () => {

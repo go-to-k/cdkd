@@ -140,7 +140,10 @@ older cdkd lacks the mark that says so and keeps the re-create. The default orde
 create-first; when a user-supplied physical name is still held by the new
 resource, cdkd falls back to delete-new-first with a bounded name-release retry.
 
-A deferred old resource is re-adopted after the rollback reads AWS for it.
+A deferred old resource is re-adopted after the rollback reads AWS for it,
+and no snapshot of it is taken: under `UpdateReplacePolicy: Snapshot` its
+snapshot belongs to the deferred delete, pre-delete snapshot types (an EBS
+volume, a Redshift cluster, an ElastiCache replication group) included.
 When that read cannot answer (the type has no read, or the read fails), the
 automatic rollback still re-adopts it, since that deploy sent no delete. A
 later `cdkd rollback` re-adopts it only while state still lists it as

@@ -31,7 +31,7 @@ import {
   maskSecretsInText,
   unionOfSecretBags,
 } from '../../secret-redaction.js';
-import { prepareFinalSnapshotForDelete } from './delete-context.js';
+import { prepareCreateFirstFinalSnapshot } from './delete-context.js';
 import { deleteReplacedAfterCreate } from './delete-replaced.js';
 import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
 
@@ -86,20 +86,20 @@ export async function createFirstThenDeleteOld(
   const { logicalId, resourceType, currentResource, secrets } = input;
   const retainOld = input.retainOld === true;
   // Before the create, so a refusal changes nothing. A PRE_DELETE_SNAPSHOT
-  // type would take its snapshot here, before the create window; none of
-  // them has a name `replacementRequestsDifferentName` reads, so none
-  // reaches this method.
+  // type takes no snapshot here: its delete takes it, right before it is
+  // sent (go-to-k/cdkd#6463). None of them has a name
+  // `replacementRequestsDifferentName` reads, so none reaches this method
+  // today.
   const finalSnapshotIdentifier = retainOld
     ? undefined
-    : await prepareFinalSnapshotForDelete(
+    : await prepareCreateFirstFinalSnapshot(
         deps,
         logicalId,
         input.oldResourceType,
         currentResource,
         input.snapshotPolicy,
         // A superset of the delete's masker below (`createSecretMasker(secrets)`):
-        // the resolved bag plus the #2007 name bag. No PRE_DELETE_SNAPSHOT type
-        // reaches this method today, so no snapshot line is logged here yet.
+        // the resolved bag plus the #2007 name bag.
         createUnionSecretMasker([secrets, secretNameBagFor(deps.secretsRun(), logicalId)])
       );
   deps.logger.info(

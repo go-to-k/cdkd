@@ -5,7 +5,7 @@ import { type DeployEngine } from '../../deploy-engine.js';
 import { printingSecretsFor, secretNameBagFor } from '../masking.js';
 import {
   deleteReplacedAfterCreate,
-  prepareFinalSnapshotForDelete,
+  prepareCreateFirstFinalSnapshot,
   replaceDeleteFirstAndRecreate,
 } from '../replacement.js';
 import { applyDefaultNameForFallback } from '../../../provisioning/resource-name.js';
@@ -441,7 +441,10 @@ export async function replaceCreateFirst(
     );
   } else {
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
-    // old resource before the post-replacement cleanup delete.
+    // old resource before the post-replacement cleanup delete. A
+    // `PRE_DELETE_SNAPSHOT_TYPES` member's snapshot is taken by that
+    // delete itself, right before it is sent (go-to-k/cdkd#6463), so a
+    // delete deferred to the cleanup phase takes it there.
     // Two failure classes, deliberately handled differently:
     //   - a REFUSAL (`FINAL_SNAPSHOT_UNSUPPORTED` — cc-api routing
     //     or a type cdkd cannot snapshot) is a CONFIGURATION error
@@ -454,7 +457,7 @@ export async function replaceCreateFirst(
     let cleanupFinalSnapshotId: string | undefined;
     let snapshotBlockedDelete = false;
     try {
-      cleanupFinalSnapshotId = await prepareFinalSnapshotForDelete(
+      cleanupFinalSnapshotId = await prepareCreateFirstFinalSnapshot(
         engine.replacementDeps(),
         logicalId,
         oldResourceType,

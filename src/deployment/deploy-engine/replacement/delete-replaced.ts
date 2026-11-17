@@ -20,7 +20,7 @@ import {
 import { ATOMIC_FINAL_SNAPSHOT_TYPES } from '../../../provisioning/final-snapshot.js';
 import { green } from '../../../utils/colors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { safeMsg } from '../../../utils/display-safe.js';
+import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../../delete-outcome.js';
 import { replacedDeleteFailureVerdict } from '../../rollback-executor/replaced-survivor.js';
 import { reportDeleteGuards } from '../../delete-guard-scope.js';
@@ -32,7 +32,11 @@ import {
   createUnionSecretMasker,
   maskSecretsInText,
 } from '../../secret-redaction.js';
-import { replacementDeleteContext } from './delete-context.js';
+import {
+  owesPreDeleteSnapshot,
+  replacementDeleteContext,
+  takePreDeleteSnapshot,
+} from './delete-context.js';
 import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
 
 /**
@@ -49,9 +53,9 @@ import type { ReplacementRunState, ReplacementDeps } from './run-state.js';
  * or `cdkd destroy`; a custom resource whose delete needs this run's NoEcho
  * values waits in memory only (go-to-k/cdkd#6445). Under
  * `UpdateReplacePolicy: Snapshot` the deferred delete takes the final
- * snapshot, for a type whose delete call takes it (RDS and the like; a type
- * snapshotted before its delete is go-to-k/cdkd#6463). Where the delete
- * still runs inline, and why, is `deferToCleanupPhase`'s.
+ * snapshot: through the delete call for RDS and the like, or right before it
+ * for a type snapshotted before its delete (go-to-k/cdkd#6463). Where the
+ * delete still runs inline, and why, is `deferToCleanupPhase`'s.
  *
  * A failure
  * or a skip warns rather than fails the resource (issue #1762): the new
@@ -135,6 +139,17 @@ export async function deleteReplacedAfterCreate(
       safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
     );
   }
+  // go-to-k/cdkd#6463: a pre-delete-snapshot type's snapshot is taken here,
+  // right before the delete is sent, inline or in the cleanup phase; the
+  // identifier only marks it as owed, so the delete itself carries none (a
+  // Cloud Control delete refuses one).
+  let sentSnapshotIdentifier = finalSnapshotIdentifier;
+  if (owesPreDeleteSnapshot(oldResourceType, finalSnapshotIdentifier)) {
+    if (!(await takeOwedSnapshot(run, deps, logicalId, currentResource, secrets, isRetry))) {
+      return;
+    }
+    sentSnapshotIdentifier = undefined;
+  }
   // Initialized because the catch below can leave it unassigned.
   let deleteResult: void | ResourceDeleteResult = undefined;
   let deleteFailed = false;
@@ -156,7 +171,9 @@ export async function deleteReplacedAfterCreate(
         {
           expectedRegion: deps.stackRegion,
           forceDataDelete: deps.options.forceStatefulRecreation === true,
-          ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
+          ...(sentSnapshotIdentifier !== undefined && {
+            finalSnapshotIdentifier: sentSnapshotIdentifier,
+          }),
           ...replacementDeleteContext(deps, updateReplacePolicy),
           // Issue #4157: the identity evidence of the record deleted.
           recordedAttributes: currentResource.attributes,
@@ -210,9 +227,10 @@ export async function deleteReplacedAfterCreate(
       // go-to-k/cdkd#5111: recorded BEFORE the row's save, which persists it:
       // a deploy killed before the retry below left the old resource in AWS
       // with no record at all.
+      // A pre-delete snapshot already taken above is not owed again.
       recordSupersededForDeferral(run, deps, logicalId, currentResource, {
         updateReplacePolicy,
-        finalSnapshotIdentifier,
+        finalSnapshotIdentifier: sentSnapshotIdentifier,
         noEchoDeleteValues,
         inlinePolicyClaimed,
       });
@@ -233,7 +251,7 @@ export async function deleteReplacedAfterCreate(
             currentResource,
             deleteProvider,
             deleteProperties,
-            finalSnapshotIdentifier,
+            sentSnapshotIdentifier,
             updateReplacePolicy,
             secrets,
             deleteProvisionedBy,
@@ -307,6 +325,106 @@ export async function deleteReplacedAfterCreate(
 }
 
 /**
+ * go-to-k/cdkd#6463: take the pre-delete snapshot a replaced resource's old
+ * copy is owed, right before its delete, and answer whether the delete may
+ * be sent. Never on an interrupted cleanup pass (a Redshift snapshot can wait
+ * for an hour). AWS calling the copy unsnapshottable refuses rather than
+ * skips: the copy is live, and may be paused or modifying. Once taken, the
+ * kept entry no longer owes it, so a delete that then fails is retried by
+ * the next deploy or `cdkd destroy` without another snapshot, as an inline
+ * delete's retry is (go-to-k/cdkd#4900); a name-keyed snapshot is not reused
+ * once complete, so each attempt would otherwise take one more.
+ */
+async function takeOwedSnapshot(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  logicalId: string,
+  oldResource: ResourceState,
+  secrets: RecordedSecretValues,
+  isRetry: boolean
+): Promise<boolean> {
+  const recorded = isRetry ? run.supersededEntries.get(logicalId) : undefined;
+  // Who still tracks the old copy, for the remedy a refusal names.
+  const tracking = (): 'kept' | 'held' | 'untracked' =>
+    recorded !== undefined
+      ? 'kept'
+      : oldIdHeldByAnotherRecord(deps, logicalId, oldResource)
+        ? 'held'
+        : 'untracked';
+  if (isRetry && deps.interrupted()) {
+    deps.logger.warn(
+      safeMsg`  ⚠ Old ${logicalId} (${oldResource.physicalId}) was not deleted: the deploy was interrupted before its final snapshot (UpdateReplacePolicy: Snapshot). ` +
+        (tracking() === 'kept'
+          ? safeMsg`${SUPERSEDED_KEPT_REMEDY}.`
+          : tracking() === 'held'
+            ? 'Another resource of this stack records the same physical id.'
+            : 'Delete it manually once you have a snapshot; it is no longer tracked in state.')
+    );
+    return false;
+  }
+  const snapshotMask = createUnionSecretMasker([
+    secrets,
+    secretNameBagFor(deps.secretsRun(), logicalId),
+  ]);
+  try {
+    await takePreDeleteSnapshot(
+      deps,
+      logicalId,
+      oldResource.resourceType,
+      oldResource.physicalId,
+      snapshotMask,
+      {
+        refuseUnsnapshottableState: true,
+        // Only a snapshot taken for this delete stands in for one: an EBS
+        // volume's from an older attempt predates writes since.
+        reuseStartedAtOrAfter: reuseBound(recorded),
+        // The cleanup pass's wait stops on Ctrl-C, its entry kept owing. An
+        // inline delete's runs on: stopped, it would leave the old copy
+        // untracked.
+        ...(isRetry && { stop: () => deps.interrupted() }),
+      }
+    );
+  } catch (snapshotError) {
+    // The delete was never sent, so the old resource is whole: a rollback
+    // may re-adopt it (go-to-k/cdkd#2631), and a recorded entry stays for a
+    // later run to snapshot and delete.
+    if (!isRetry) run.replacedOldMaySurvive.set(logicalId, 'kept');
+    deps.logger.warn(
+      safeMsg`  ⚠ Final snapshot for old ${logicalId} (${oldResource.physicalId}) ` +
+        safeMsg`failed: ${asIsMessage(snapshotMask(describeAwsFailure(snapshotError).detail))}. ` +
+        `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot). ` +
+        (tracking() === 'kept'
+          ? safeMsg`${SUPERSEDED_KEPT_REMEDY}.`
+          : tracking() === 'held'
+            ? 'Another resource of this stack records the same physical id.'
+            : 'Delete it manually once you have a snapshot; it is no longer tracked in state.')
+    );
+    return false;
+  }
+  if (recorded?.finalSnapshotIdentifier !== undefined && run.supersededHost !== undefined) {
+    const { finalSnapshotIdentifier: _taken, ...taken } = recorded;
+    addSuperseded(run.supersededHost, taken);
+    run.supersededEntries.set(logicalId, taken);
+  }
+  return true;
+}
+
+/**
+ * go-to-k/cdkd#6463: the earliest start a reused snapshot may have: when the
+ * deferral was recorded, so an interrupted attempt of the same delete is
+ * resumed; else this attempt's own start. A run killed after the snapshot
+ * completed and before its cleared mark was saved leaves that snapshot inside
+ * the bound, so the next attempt reuses it (an EBS volume's): writes between
+ * the two are in no snapshot, as after a delete that fails once its snapshot
+ * is taken (one snapshot per old copy, at its first delete attempt).
+ */
+function reuseBound(recorded: SupersededResourceRecord | undefined): number {
+  return recorded !== undefined && Number.isFinite(recorded.supersededAt)
+    ? recorded.supersededAt
+    : Date.now();
+}
+
+/**
  * go-to-k/cdkd#6374: whether this delete waits for the cleanup phase. Only
  * inside a deploy (the deferred map is set), and only once the deploy can
  * still send it after a kill: its old record is on the live state, so the
@@ -319,10 +437,14 @@ export async function deleteReplacedAfterCreate(
  * `UpdateReplacePolicy: Snapshot` defers for an atomic type
  * (`ATOMIC_FINAL_SNAPSHOT_TYPES`: RDS and the like), whose delete call takes
  * the snapshot from the identifier the deferral carries (go-to-k/cdkd#6445).
- * A type snapshotted BEFORE its delete (`PRE_DELETE_SNAPSHOT_TYPES`) still
- * deletes right away: the caller has already taken the snapshot, and a later
- * delete would let the data move past it. Moving that snapshot into the
- * deferred delete is go-to-k/cdkd#6463.
+ * A type snapshotted BEFORE its delete (`PRE_DELETE_SNAPSHOT_TYPES`) defers
+ * too, with its snapshot moved into the deferred delete (go-to-k/cdkd#6463):
+ * the create-first gate takes none and hands over the owed mark
+ * (`prepareCreateFirstFinalSnapshot`), and the delete takes it right before
+ * it is sent. Without the mark (a caller that took the snapshot already) it
+ * still deletes right away, since a later delete would let the data move
+ * past that snapshot. Both copies stay live, and billed, until the deploy
+ * ends; writes that reach the old copy meanwhile are in its snapshot.
  *
  * Two cases delete right away by the maintainer's decision
  * (go-to-k/cdkd#6445):
@@ -349,7 +471,10 @@ function deferToCleanupPhase(
   if (
     updateReplacePolicy === 'Snapshot' &&
     deps.options.skipFinalSnapshot !== true &&
-    !ATOMIC_FINAL_SNAPSHOT_TYPES.has(oldResource.resourceType)
+    !ATOMIC_FINAL_SNAPSHOT_TYPES.has(oldResource.resourceType) &&
+    // go-to-k/cdkd#6463: a pre-delete-snapshot type defers only while its
+    // snapshot is still owed, so the deferred delete takes it.
+    !owesPreDeleteSnapshot(oldResource.resourceType, context.finalSnapshotIdentifier)
   ) {
     return false;
   }

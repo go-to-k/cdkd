@@ -184,6 +184,79 @@ describe('createEbsFinalSnapshot', () => {
     expect(send.mock.calls.map((c) => c[0].constructor.name)).not.toContain('CreateSnapshotCommand');
   });
 
+  describe('go-to-k/cdkd#6463: the reuse bound and the stop', () => {
+    const BOUND = Date.parse('2026-11-17T10:00:00Z');
+
+    it('does not reuse a completed snapshot started before the bound, and takes a fresh one', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [
+            { SnapshotId: 'snap-stale', State: 'completed', StartTime: new Date('2026-08-01T00:00:00Z') },
+          ],
+        })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      const result = await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        reuseStartedAtOrAfter: BOUND,
+      });
+
+      expect(result).toBe('snap-fresh');
+      expect(send.mock.calls[1][0].constructor.name).toBe('CreateSnapshotCommand');
+    });
+
+    it('resumes a snapshot started at or after the bound (an interrupted attempt of this delete)', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [
+            { SnapshotId: 'snap-stale', State: 'completed', StartTime: new Date('2026-08-01T00:00:00Z') },
+            { SnapshotId: 'snap-mine', State: 'pending', StartTime: new Date(BOUND) },
+          ],
+        })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed' }] });
+
+      const result = await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        reuseStartedAtOrAfter: BOUND,
+      });
+
+      expect(result).toBe('snap-mine');
+      expect(send.mock.calls.map((c) => c[0].constructor.name)).not.toContain('CreateSnapshotCommand');
+    });
+
+    it('does not reuse a snapshot AWS reports no start time for', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-unknown', State: 'completed' }] })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+          reuseStartedAtOrAfter: BOUND,
+        })
+      ).resolves.toBe('snap-fresh');
+    });
+
+    it('a stopped run stops the wait before the delete, and polls no more', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({ Snapshots: [] })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-123' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-123', State: 'pending' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, { stop: () => true })
+      ).rejects.toMatchObject({
+        code: 'FINAL_SNAPSHOT_FAILED',
+        message: expect.stringContaining('the run was interrupted. The volume was NOT deleted'),
+      });
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(finalSnapshotDelays.sleep).not.toHaveBeenCalled();
+    });
+  });
+
   it('returns null when the volume no longer exists', async () => {
     const gone = Object.assign(new Error('The volume does not exist'), {
       name: 'InvalidVolume.NotFound',
@@ -397,6 +470,68 @@ describe('createRedshiftFinalSnapshot', () => {
     expect(createCall.input.SnapshotIdentifier).toBe(id);
   });
 
+  it.each([
+    ['started before the bound', new Date('2026-11-17T09:00:00Z'), false],
+    ['with no start time', undefined, false],
+    ['started at the bound', new Date('2026-11-17T10:00:00Z'), true],
+  ])(
+    'go-to-k/cdkd#6463: under a reuse bound, an in-flight snapshot %s is resumed: %s',
+    async (_label, created, resumed) => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [
+            {
+              SnapshotIdentifier: 'my-cluster-final-20261117-090000',
+              Status: 'creating',
+              ...(created !== undefined && { SnapshotCreateTime: created }),
+            },
+          ],
+        })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Snapshots: [{ Status: 'available' }] });
+
+      await createRedshiftFinalSnapshot(mockRedshift(send), 'my-cluster', 'Db', logger, {
+        reuseStartedAtOrAfter: Date.parse('2026-11-17T10:00:00Z'),
+      });
+
+      const names = send.mock.calls.map((c) => c[0].constructor.name);
+      expect(names.includes('CreateClusterSnapshotCommand')).toBe(!resumed);
+    }
+  );
+
+  it('go-to-k/cdkd#6463: a stopped run stops the snapshot wait, and the cluster settle wait', async () => {
+    const waiting = vi
+      .fn()
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Snapshots: [{ Status: 'creating' }] });
+    await expect(
+      createRedshiftFinalSnapshot(mockRedshift(waiting), 'my-cluster', 'Db', logger, {
+        stop: () => true,
+      })
+    ).rejects.toThrow(/interrupted. The cluster was NOT deleted/);
+    expect(waiting).toHaveBeenCalledTimes(3);
+
+    // Ready, but the cluster is still busy: the settle wait stops too.
+    let stopped = false;
+    const settling = vi
+      .fn()
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Snapshots: [{ Status: 'available' }] })
+      .mockImplementationOnce(async () => {
+        stopped = true;
+        return { Clusters: [{ ClusterStatus: 'modifying' }] };
+      });
+    await expect(
+      createRedshiftFinalSnapshot(mockRedshift(settling), 'my-cluster', 'Db', logger, {
+        stop: () => stopped,
+      })
+    ).rejects.toThrow(/Stopped waiting for Redshift cluster my-cluster \(Db\) to settle/);
+    expect(settling).toHaveBeenCalledTimes(4);
+  });
+
   it('resumes an IN-FLIGHT (creating) generated snapshot', async () => {
     const send = vi
       .fn()
@@ -476,6 +611,19 @@ describe('createRedshiftFinalSnapshot', () => {
     await expect(
       createRedshiftFinalSnapshot(mockRedshift(send), 'my-cluster', 'Db', logger)
     ).resolves.toBeNull();
+  });
+
+  it('go-to-k/cdkd#6463: refuses an unsnapshottable cluster when asked to, rather than skip its snapshot', async () => {
+    const paused = Object.assign(new Error('Cluster is not in a valid state'), {
+      name: 'InvalidClusterStateFault',
+    });
+    const send = vi.fn().mockResolvedValueOnce({ Snapshots: [] }).mockRejectedValueOnce(paused);
+
+    await expect(
+      createRedshiftFinalSnapshot(mockRedshift(send), 'my-cluster', 'Db', logger, {
+        refuseUnsnapshottableState: true,
+      })
+    ).rejects.toThrow(/The cluster was NOT deleted/);
   });
 
   it('waits for the CLUSTER to settle after the snapshot, before the caller deletes', async () => {
@@ -716,6 +864,69 @@ describe('createReplicationGroupFinalSnapshot', () => {
     ).resolves.toBeNull();
   });
 
+  it.each([
+    ['started before the bound', '2026-11-17T09:00:00Z', false],
+    ['started after the bound', '2026-11-17T10:05:00Z', true],
+  ])(
+    'go-to-k/cdkd#6463: under a reuse bound, an in-flight snapshot %s is resumed: %s',
+    async (_label, created, resumed) => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce(modeDisabled)
+        .mockResolvedValueOnce({
+          Snapshots: [
+            {
+              SnapshotName: 'my-group-final-20261117-090000',
+              SnapshotStatus: 'creating',
+              NodeSnapshots: [{ SnapshotCreateTime: new Date(created) }],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotStatus: 'available' }] });
+
+      await createReplicationGroupFinalSnapshot(mockElastiCache(send), 'my-group', 'Cache', logger, {
+        reuseStartedAtOrAfter: Date.parse('2026-11-17T10:00:00Z'),
+      });
+
+      const names = send.mock.calls.map((c) => c[0].constructor.name);
+      expect(names.includes('CreateSnapshotCommand')).toBe(!resumed);
+    }
+  );
+
+  it('go-to-k/cdkd#6463: a stopped run stops the snapshot wait', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(modeDisabled)
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ Snapshots: [{ SnapshotStatus: 'creating' }] });
+
+    await expect(
+      createReplicationGroupFinalSnapshot(mockElastiCache(send), 'my-group', 'Cache', logger, {
+        stop: () => true,
+      })
+    ).rejects.toThrow(/interrupted. The replication group was NOT deleted/);
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+
+  it('go-to-k/cdkd#6463: refuses an unsnapshottable replication group when asked to', async () => {
+    const modifying = Object.assign(new Error('not in a valid state'), {
+      name: 'InvalidReplicationGroupStateFault',
+    });
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(modeDisabled)
+      .mockResolvedValueOnce({ Snapshots: [] })
+      .mockRejectedValueOnce(modifying);
+
+    await expect(
+      createReplicationGroupFinalSnapshot(mockElastiCache(send), 'my-group', 'Cache', logger, {
+        refuseUnsnapshottableState: true,
+      })
+    ).rejects.toThrow(/The replication group was NOT deleted/);
+  });
+
   it('returns null when the replication group no longer exists', async () => {
     const gone = Object.assign(new Error('Replication group not found.'), {
       name: 'ReplicationGroupNotFoundFault',
@@ -788,6 +999,60 @@ describe('createPreDeleteFinalSnapshot dispatcher', () => {
     ).resolves.toBe('snap-d');
     expect(clients.redshift.send).not.toHaveBeenCalled();
     expect(clients.elastiCache.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['AWS::Redshift::Cluster', 'InvalidClusterStateFault'],
+    ['AWS::ElastiCache::ReplicationGroup', 'InvalidReplicationGroupStateFault'],
+  ])('go-to-k/cdkd#6463: threads the unsnapshottable-state refusal to %s', async (type, fault) => {
+    const refusal = () => Object.assign(new Error('not in a valid state'), { name: fault });
+    const make = () =>
+      ({
+        ec2: { send: vi.fn() },
+        redshift: {
+          send: vi.fn().mockResolvedValueOnce({ Snapshots: [] }).mockRejectedValueOnce(refusal()),
+        },
+        elastiCache: {
+          send: vi
+            .fn()
+            .mockResolvedValueOnce({
+              ReplicationGroups: [{ ClusterEnabled: true, ReplicationGroupId: 'src' }],
+            })
+            .mockResolvedValueOnce({ Snapshots: [] })
+            .mockRejectedValueOnce(refusal()),
+        },
+      }) as unknown as PreDeleteSnapshotClients;
+
+    await expect(
+      createPreDeleteFinalSnapshot(type, 'src', 'Src', make(), logger, {
+        refuseUnsnapshottableState: true,
+      })
+    ).rejects.toThrow(/NOT deleted/);
+    // Without the option, the existing "likely already deleting" skip.
+    await expect(createPreDeleteFinalSnapshot(type, 'src', 'Src', make(), logger)).resolves.toBeNull();
+  });
+
+  it('go-to-k/cdkd#6463: threads the reuse bound to the EBS implementation', async () => {
+    const ec2Send = vi
+      .fn()
+      .mockResolvedValueOnce({
+        Snapshots: [
+          { SnapshotId: 'snap-stale', State: 'completed', StartTime: new Date('2026-08-01T00:00:00Z') },
+        ],
+      })
+      .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+      .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+    const clients = {
+      ec2: { send: ec2Send },
+      redshift: { send: vi.fn() },
+      elastiCache: { send: vi.fn() },
+    } as unknown as PreDeleteSnapshotClients;
+
+    await expect(
+      createPreDeleteFinalSnapshot('AWS::EC2::Volume', 'vol-1', 'Vol', clients, logger, {
+        reuseStartedAtOrAfter: Date.parse('2026-11-17T10:00:00Z'),
+      })
+    ).resolves.toBe('snap-fresh');
   });
 
   it('fails closed on a PRE_DELETE type with no implementation (set/dispatcher drift guard)', async () => {

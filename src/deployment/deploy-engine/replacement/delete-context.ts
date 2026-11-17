@@ -7,6 +7,7 @@
 import {
   ATOMIC_FINAL_SNAPSHOT_TYPES,
   PRE_DELETE_SNAPSHOT_TYPES,
+  type PreDeleteSnapshotOptions,
   buildFinalSnapshotIdentifier,
   ccRoutedInstanceTakesNoSnapshot,
   ccRoutedFinalSnapshotError,
@@ -53,7 +54,9 @@ export function replacementDeleteContext(
  *     (go-to-k/cdkd#6047).
  *   - `PRE_DELETE_SNAPSHOT_TYPES` (EC2 Volume / Redshift Cluster /
  *     ElastiCache ReplicationGroup) → creates the snapshot and waits for
- *     it here, then returns undefined (the subsequent delete is plain).
+ *     it here, then returns undefined (the subsequent delete is plain). A
+ *     create-first replacement takes it at its delete instead
+ *     ({@link prepareCreateFirstFinalSnapshot}).
  *   - anything else Snapshot-tagged → refuses.
  *
  * `mask` is the caller's secret masker, when it holds one: the snapshot
@@ -87,25 +90,88 @@ export async function prepareFinalSnapshotForDelete(
     throw ccRoutedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
   }
   if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
-    // Region-pinned clients: `getAwsClients()` is a process-global that a
-    // concurrent stack's deploy can repoint at ANOTHER region
-    // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
-    // snapshot call 404s as a NotFound, which would be read as "source
-    // gone" and skip the snapshot. Prefer the engine-scoped clients
-    // threaded via options.
-    await createPreDeleteFinalSnapshot(
-      resourceType,
-      currentResource.physicalId,
-      logicalId,
-      deps.options.finalSnapshotClients ?? getAwsClients(),
-      mask === undefined
-        ? deps.logger
-        : {
-            info: (message) => deps.logger.info(mask(message)),
-            debug: (message) => deps.logger.debug(mask(message)),
-          }
-    );
+    await takePreDeleteSnapshot(deps, logicalId, resourceType, currentResource.physicalId, mask);
     return undefined;
   }
   throw unsupportedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
+}
+
+/**
+ * The CREATE-FIRST replacement's snapshot gate (go-to-k/cdkd#6463). As
+ * {@link prepareFinalSnapshotForDelete}, except that a
+ * `PRE_DELETE_SNAPSHOT_TYPES` member takes NO snapshot here: the snapshot
+ * moves into the delete (`deleteReplacedAfterCreate`), which takes it right
+ * before it sends the delete, inline or in the cleanup phase, so a deferred
+ * delete's snapshot holds what the old copy held when it was deleted. The
+ * returned identifier is then only the mark that the snapshot is still owed,
+ * never the snapshot's name (the snapshot helper names it). A recorded
+ * superseded entry carries it too, so a later run takes the snapshot before
+ * its delete (`deleteSupersededEntry`), and an older cdkd's delete of that
+ * entry fails closed instead of deleting it unsnapshotted: these three types
+ * are Cloud Control routed, and that delete refuses a final-snapshot
+ * identifier.
+ */
+export async function prepareCreateFirstFinalSnapshot(
+  deps: ReplacementDeps,
+  logicalId: string,
+  resourceType: string,
+  currentResource: { physicalId: string; provisionedBy?: 'sdk' | 'cc-api' | undefined },
+  policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
+  mask?: (text: string) => string
+): Promise<string | undefined> {
+  if (
+    policy === 'Snapshot' &&
+    deps.options.skipFinalSnapshot !== true &&
+    PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)
+  ) {
+    return buildFinalSnapshotIdentifier(currentResource.physicalId, resourceType);
+  }
+  return prepareFinalSnapshotForDelete(
+    deps,
+    logicalId,
+    resourceType,
+    currentResource,
+    policy,
+    mask
+  );
+}
+
+/** Whether a create-first delete still owes its pre-delete snapshot (go-to-k/cdkd#6463). */
+export function owesPreDeleteSnapshot(
+  resourceType: string,
+  finalSnapshotIdentifier: string | undefined
+): boolean {
+  return finalSnapshotIdentifier !== undefined && PRE_DELETE_SNAPSHOT_TYPES.has(resourceType);
+}
+
+/**
+ * Take a `PRE_DELETE_SNAPSHOT_TYPES` member's final snapshot and wait for it.
+ * A snapshot an earlier attempt took is reused, not duplicated.
+ */
+export async function takePreDeleteSnapshot(
+  deps: ReplacementDeps,
+  logicalId: string,
+  resourceType: string,
+  physicalId: string,
+  mask?: (text: string) => string,
+  options?: PreDeleteSnapshotOptions
+): Promise<void> {
+  // Region-pinned clients: `getAwsClients()` is a process-global that a
+  // concurrent stack's deploy can repoint at ANOTHER region
+  // (`--stack-concurrency > 1` + multi-region apps); a wrong-region
+  // snapshot call 404s as a NotFound, which would be read as "source
+  // gone" and skip the snapshot. Prefer the engine-scoped clients
+  // threaded via options.
+  const logger =
+    mask === undefined
+      ? deps.logger
+      : {
+          info: (message: string) => deps.logger.info(mask(message)),
+          debug: (message: string) => deps.logger.debug(mask(message)),
+        };
+  const clients = deps.options.finalSnapshotClients ?? getAwsClients();
+  // Without options the call is the one `prepareFinalSnapshotForDelete` always made.
+  await (options === undefined
+    ? createPreDeleteFinalSnapshot(resourceType, physicalId, logicalId, clients, logger)
+    : createPreDeleteFinalSnapshot(resourceType, physicalId, logicalId, clients, logger, options));
 }

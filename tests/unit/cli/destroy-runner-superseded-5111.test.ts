@@ -50,6 +50,12 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: vi.fn(),
 }));
 
+const snapshotSpy = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  createPreDeleteFinalSnapshot: snapshotSpy,
+}));
+
 // Live renderer is TTY plumbing — replace with inert stubs.
 vi.mock('../../../src/utils/live-renderer.js', () => ({
   getLiveRenderer: () => ({
@@ -141,6 +147,7 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     mockSaveState.mockReset().mockResolvedValue('"etag"');
     mockDeleteState.mockReset().mockResolvedValue(undefined);
     mockProviderDelete.mockReset();
+    snapshotSpy.mockReset();
     warnSpy.mockReset();
     debugSpy.mockReset();
     supersededInUseRetry.delayMs = 0;
@@ -307,5 +314,107 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     expect(
       warnSpy.mock.calls.some((c) => String(c[0]).includes('record of this stack has the same physical id'))
     ).toBe(true);
+  });
+
+  // go-to-k/cdkd#6463: a deferred create-first replacement of a
+  // pre-delete-snapshot type records its owed snapshot; the destroy takes it
+  // with the stack's clients before the delete.
+  it('takes an owed pre-delete snapshot before the delete, with the stack clients', async () => {
+    const order: string[] = [];
+    snapshotSpy.mockImplementation(async (_t: string, physicalId: string) => {
+      order.push(`snapshot ${physicalId}`);
+      return 'snap-1';
+    });
+    mockProviderDelete.mockImplementation(async (_l: string, physicalId: string) => {
+      order.push(`delete ${physicalId}`);
+    });
+    const volume: SupersededResourceRecord = {
+      logicalId: 'Vol',
+      supersededAt: 1,
+      state: { physicalId: 'vol-old', resourceType: 'AWS::EC2::Volume', properties: {}, attributes: {} },
+      updateReplacePolicy: 'Snapshot',
+      finalSnapshotIdentifier: 'vol-old-final-20261117-000000',
+    };
+    const state = makeState({}, { supersededResources: [volume] });
+    const ctx = makeCtx(state);
+
+    const result = await runDestroyForStack('TestStack', state, ctx);
+
+    expect(order).toEqual(['snapshot vol-old', 'delete vol-old']);
+    expect(snapshotSpy.mock.calls[0]![3]).toBe(ctx.baseAwsClients);
+    expect(mockProviderDelete.mock.calls[0]![4]).not.toHaveProperty('finalSnapshotIdentifier');
+    expect(result.errorCount).toBe(0);
+  });
+
+  it("takes a cross-region stack's owed snapshot with the stack region's clients, not the base ones", async () => {
+    const { ProviderRegistry } = await import('../../../src/provisioning/provider-registry.js');
+    const { AwsClients } = await import('../../../src/utils/aws-clients.js');
+    vi.mocked(ProviderRegistry).mockImplementationOnce(
+      () =>
+        ({
+          getProviderFor: () => ({ provider: { delete: mockProviderDelete } }),
+          setCustomResourceResponseBucket: vi.fn(),
+          allowUnsupportedTypes: vi.fn(),
+        }) as never
+    );
+    snapshotSpy.mockResolvedValue('snap-1');
+    mockProviderDelete.mockResolvedValue(undefined);
+    const volume: SupersededResourceRecord = {
+      logicalId: 'Vol',
+      supersededAt: 1,
+      state: { physicalId: 'vol-old', resourceType: 'AWS::EC2::Volume', properties: {}, attributes: {} },
+      updateReplacePolicy: 'Snapshot',
+      finalSnapshotIdentifier: 'vol-old-final-20261117-000000',
+    };
+    const state = makeState({}, { region: 'us-west-2', supersededResources: [volume] });
+    const ctx = makeCtx(state);
+
+    await runDestroyForStack('TestStack', state, ctx);
+
+    expect(snapshotSpy).toHaveBeenCalledTimes(1);
+    const clients = snapshotSpy.mock.calls[0]![3];
+    expect(clients).not.toBe(ctx.baseAwsClients);
+    expect(clients).toBe(vi.mocked(AwsClients).mock.instances.at(-1));
+    expect(vi.mocked(AwsClients).mock.calls.at(-1)![0]).toMatchObject({ region: 'us-west-2' });
+  });
+
+  it('keeps the entry owing no snapshot when its delete fails after the snapshot', async () => {
+    snapshotSpy.mockResolvedValue('snap-1');
+    mockProviderDelete.mockRejectedValue(new Error('IncorrectState: busy'));
+    supersededInUseRetry.attempts = 1;
+    const volume: SupersededResourceRecord = {
+      logicalId: 'Vol',
+      supersededAt: 1,
+      state: { physicalId: 'vol-old', resourceType: 'AWS::EC2::Volume', properties: {}, attributes: {} },
+      updateReplacePolicy: 'Snapshot',
+      finalSnapshotIdentifier: 'vol-old-final-20261117-000000',
+    };
+    const state = makeState({}, { supersededResources: [volume] });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
+
+    expect(result.errorCount).toBe(1);
+    const last = mockSaveState.mock.calls.at(-1)![2] as StackState;
+    expect(last.supersededResources).toHaveLength(1);
+    expect(last.supersededResources![0]!.state.physicalId).toBe('vol-old');
+    expect(last.supersededResources![0]).not.toHaveProperty('finalSnapshotIdentifier');
+  });
+
+  it('keeps the entry, unsent, when the owed snapshot fails', async () => {
+    snapshotSpy.mockRejectedValue(new Error('SnapshotQuotaExceeded'));
+    const volume: SupersededResourceRecord = {
+      logicalId: 'Vol',
+      supersededAt: 1,
+      state: { physicalId: 'vol-old', resourceType: 'AWS::EC2::Volume', properties: {}, attributes: {} },
+      updateReplacePolicy: 'Snapshot',
+      finalSnapshotIdentifier: 'vol-old-final-20261117-000000',
+    };
+    const state = makeState({}, { supersededResources: [volume] });
+
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
+
+    expect(mockProviderDelete).not.toHaveBeenCalled();
+    expect(result.errorCount).toBe(1);
+    expect(mockDeleteState).not.toHaveBeenCalled();
   });
 });
