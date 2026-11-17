@@ -3,18 +3,19 @@
  * against the option set of the subcommand that actually declares the flag.
  *
  * Why this exists (issue #1097): a fixture passed `--region` to `cdkd import`.
- * `import` is the ONE command that never calls `addOption(deprecatedRegionOption)`
- * — `deploy`, `destroy`, `orphan`, `diff`, `drift`, `export`, `events`, `list`,
- * `synth` and every `state` subcommand all do — so the flag looked correct by
- * analogy with its neighbours and was wrong only there. The run died with
+ * At the time `import` was the one command that did not declare `--region`
+ * (it has since #6504) while `deploy`, `destroy`, `orphan`, `diff`, `drift`,
+ * `export`, `events`, `list`, `synth` and every `state` subcommand did, so the
+ * flag looked correct by analogy with its neighbours and was wrong only there. The run died with
  * `error: unknown option '--region'`, which meant the import round-trip the
  * fixture exists to exercise had never executed once. A green typecheck says
  * nothing about whether a shell script's CLI invocations are real.
  *
  * Two existing things do NOT catch it:
- *   - `--help` output omits hidden options, so auditing by hand is unreliable.
+ *   - `--help` output omits hidden options (`state destroy --all`), so
+ *     auditing by hand is unreliable.
  *   - `scripts/build-cli-flag-coverage-matrix.ts` parses `src/cli/options.ts`
- *     (and its `src/cli/options/` sibling modules) as a FLAT GLOBAL set. `--region` IS declared there; it is just never
+ *     (and its `src/cli/options/` sibling modules) as a FLAT GLOBAL set. `--region` WAS declared there; it was just never
  *     attached to `import`. Command attachment is exactly the dimension that
  *     matters, and that matrix does not model it.
  *
@@ -149,7 +150,7 @@ export function findCliVariables(content: string): Set<string> {
  *
  * Without this, `${CLI} deploy S && ${CLI} import S --region us-east-1` parsed
  * as a single `deploy` invocation owning `--region` -- and since `deploy` DOES
- * accept `--region`, the `import --region` bug this lint exists to catch would
+ * accept `--region`, the `import --region` bug this lint was written for would
  * have passed clean. The inverse (a valid `destroy --force` reported against a
  * preceding `deploy`) is the false-positive twin.
  *

@@ -82,7 +82,7 @@ export function createLocalStartWebFunctionCommand(): Command {
     )
   );
 
-  // cdk-local declares a visible `--region`; cdkd replaces it with its hidden
-  // deprecated twin and folds it in a `preAction` hook (issue #2522).
+  // cdk-local declares its own `--region`; cdkd replaces it with the shared
+  // `regionOption` and folds it in a `preAction` hook (issue #2522).
   return adoptRegionFlag(cmd);
 }
