@@ -12,7 +12,9 @@ import {
   failureSentence,
   finalSnapshotDelays,
   finalSnapshotFailure,
+  finalSnapshotWaitStopped,
   type InfoLogger,
+  type PreDeleteSnapshotOptions,
 } from './shared.js';
 
 function isVolumeNotFound(error: unknown): boolean {
@@ -32,7 +34,9 @@ function isVolumeNotFound(error: unknown): boolean {
  * the tag can only ever point at THIS volume's data — unlike the name-keyed
  * Redshift / ElastiCache APIs, whose user-chosen ids repeat across
  * generations and therefore only resume an in-flight snapshot (see
- * `RESUMABLE_SNAPSHOT_STATUS`).
+ * `RESUMABLE_SNAPSHOT_STATUS`). A caller deleting a replaced resource's old
+ * copy bounds the reuse to a snapshot started for that delete
+ * (`reuseStartedAtOrAfter`, go-to-k/cdkd#6463).
  *
  * @returns the snapshot id, or `null` when the volume no longer exists
  *   (nothing to snapshot; the subsequent delete is idempotent too).
@@ -41,7 +45,8 @@ export async function createEbsFinalSnapshot(
   client: EC2Client,
   volumeId: string,
   logicalId: string,
-  logger: InfoLogger
+  logger: InfoLogger,
+  options: PreDeleteSnapshotOptions = {}
 ): Promise<string | null> {
   let snapshotId: string | undefined;
   try {
@@ -54,7 +59,16 @@ export async function createEbsFinalSnapshot(
         ],
       })
     );
-    snapshotId = existing.Snapshots?.[0]?.SnapshotId;
+    // go-to-k/cdkd#6463: under a bound, only a snapshot AWS started for this
+    // delete stands in; an older one predates writes the volume took since.
+    const bound = options.reuseStartedAtOrAfter;
+    snapshotId = (
+      bound === undefined
+        ? existing.Snapshots?.[0]
+        : existing.Snapshots?.find(
+            (s) => s.StartTime !== undefined && new Date(s.StartTime).getTime() >= bound
+          )
+    )?.SnapshotId;
     if (snapshotId) {
       logger.debug(
         `Reusing existing final snapshot ${snapshotId} for ${logicalId} (${volumeId}) from a previous destroy attempt`
@@ -158,6 +172,9 @@ export async function createEbsFinalSnapshot(
           `destroy once it completes (the existing snapshot is reused, not duplicated).`,
         'FINAL_SNAPSHOT_TIMEOUT'
       );
+    }
+    if (options.stop?.() === true) {
+      throw finalSnapshotWaitStopped(snapshotId, logicalId, volumeId, 'volume');
     }
     await finalSnapshotDelays.sleep(PRE_DELETE_SNAPSHOT_POLL_INTERVAL_MS);
   }

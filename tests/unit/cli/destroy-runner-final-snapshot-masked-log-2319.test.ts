@@ -157,3 +157,60 @@ describe("cdkd destroy masks the final snapshot's debug line (go-to-k/cdkd#2319)
     ]);
   });
 });
+
+// go-to-k/cdkd#6463: a superseded entry's owed pre-delete snapshot, taken by
+// `cdkd destroy` before the entry's delete, logs through the same masker.
+describe("cdkd destroy masks a superseded entry's owed snapshot lines (go-to-k/cdkd#6463)", () => {
+  async function supersededSnapshotLines(userName: string): Promise<string[]> {
+    // The replaced Vol's new copy is in the stack (no snapshot: Delete); its
+    // old copy waits in `supersededResources`, owing its snapshot.
+    const state = makeState(userName);
+    const vol = state.resources['Vol']!;
+    state.resources['Vol'] = { ...vol, physicalId: 'vol-2', deletionPolicy: 'Delete' };
+    state.supersededResources = [
+      {
+        logicalId: 'Vol',
+        supersededAt: 1,
+        state: { ...vol, deletionPolicy: 'Delete' },
+        updateReplacePolicy: 'Snapshot',
+        finalSnapshotIdentifier: 'vol-1-final-20261117-000000',
+      },
+    ];
+    runnerDebug.mockReset();
+    runnerInfo.mockReset();
+    snapshot.mockReset();
+    snapshot.mockImplementation(
+      async (
+        _t: string,
+        _p: string,
+        _l: string,
+        _c: unknown,
+        log: { debug(m: string): void; info(m: string): void }
+      ) => {
+        log.debug(`Failed to create the final snapshot for Vol (vol-1): AccessDenied on ${USER_ID}`);
+        log.info(`Final snapshot snap-1 completed for Vol (vol-1) of ${USER_ID}`);
+        return 'snap-1';
+      }
+    );
+    const result = await runDestroyForStack('TestStack', state, makeCtx(vi.fn().mockResolvedValue(undefined)));
+    expect(result.errorCount).toBe(0);
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    return [...runnerDebug.mock.calls, ...runnerInfo.mock.calls]
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('final snapshot') || l.includes('Final snapshot'));
+  }
+
+  it('masks a name derived from a secret', async () => {
+    expect(await supersededSnapshotLines(REF)).toEqual([
+      'Failed to create the final snapshot for Vol (vol-1): AccessDenied on ***',
+      'Final snapshot snap-1 completed for Vol (vol-1) of ***',
+    ]);
+  });
+
+  it('negative control: an ordinary name prints as it is', async () => {
+    expect(await supersededSnapshotLines('plain-user')).toEqual([
+      `Failed to create the final snapshot for Vol (vol-1): AccessDenied on ${USER_ID}`,
+      `Final snapshot snap-1 completed for Vol (vol-1) of ${USER_ID}`,
+    ]);
+  });
+});

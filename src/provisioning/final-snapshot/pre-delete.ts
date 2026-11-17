@@ -23,7 +23,9 @@ import {
   finalSnapshotDelays,
   finalSnapshotFailure,
   finalSnapshotNamePrefix,
+  finalSnapshotWaitStopped,
   type InfoLogger,
+  type PreDeleteSnapshotOptions,
 } from './shared.js';
 
 // ─── Pre-delete final snapshots for name-keyed snapshot APIs (#1353) ───────
@@ -40,6 +42,8 @@ export interface PreDeleteSnapshotClients {
   elastiCache: ElastiCacheClient;
 }
 
+export type { PreDeleteSnapshotOptions } from './shared.js';
+
 /**
  * Dispatch the pre-delete final snapshot for a `PRE_DELETE_SNAPSHOT_TYPES`
  * member: create (or resume) the snapshot and wait until it is ready, so the
@@ -53,19 +57,21 @@ export async function createPreDeleteFinalSnapshot(
   physicalId: string,
   logicalId: string,
   clients: PreDeleteSnapshotClients,
-  logger: InfoLogger
+  logger: InfoLogger,
+  options: PreDeleteSnapshotOptions = {}
 ): Promise<string | null> {
   switch (resourceType) {
     case 'AWS::EC2::Volume':
-      return createEbsFinalSnapshot(clients.ec2, physicalId, logicalId, logger);
+      return createEbsFinalSnapshot(clients.ec2, physicalId, logicalId, logger, options);
     case 'AWS::Redshift::Cluster':
-      return createRedshiftFinalSnapshot(clients.redshift, physicalId, logicalId, logger);
+      return createRedshiftFinalSnapshot(clients.redshift, physicalId, logicalId, logger, options);
     case 'AWS::ElastiCache::ReplicationGroup':
       return createReplicationGroupFinalSnapshot(
         clients.elastiCache,
         physicalId,
         logicalId,
-        logger
+        logger,
+        options
       );
     default:
       // Guard against a set/dispatcher drift — a PRE_DELETE type without an
@@ -103,6 +109,8 @@ async function waitForNamedSnapshot(opts: {
   pollStatus: () => Promise<string | undefined>;
   isTransientNotFound: (error: unknown) => boolean;
   logger: InfoLogger;
+  /** go-to-k/cdkd#6463: stop the wait (the delete is not sent). */
+  stop?: (() => boolean) | undefined;
 }): Promise<string> {
   const { snapshotId, logicalId, sourceId, noun, logger } = opts;
   logger.info(
@@ -147,6 +155,8 @@ async function waitForNamedSnapshot(opts: {
         'FINAL_SNAPSHOT_TIMEOUT'
       );
     }
+    if (opts.stop?.() === true)
+      throw finalSnapshotWaitStopped(snapshotId, logicalId, sourceId, noun);
     await finalSnapshotDelays.sleep(PRE_DELETE_SNAPSHOT_POLL_INTERVAL_MS);
   }
 }
@@ -154,6 +164,17 @@ async function waitForNamedSnapshot(opts: {
 function errorNameOrMessageIncludes(error: unknown, token: string): boolean {
   const name = error instanceof Error ? error.name : '';
   return name === token || errMsg(error).includes(token);
+}
+
+/**
+ * go-to-k/cdkd#6463: whether an in-flight snapshot may be resumed under the
+ * caller's reuse bound. With a bound, one whose start time AWS does not
+ * report is not resumed: the create that follows takes a fresh one, or is
+ * refused while the other runs, and the delete waits for a later attempt.
+ */
+function startedAtOrAfter(started: Date | string | undefined, bound: number | undefined): boolean {
+  if (bound === undefined) return true;
+  return started !== undefined && new Date(started).getTime() >= bound;
 }
 
 /** Max reuse-probe pages to walk (bounded so a huge snapshot history cannot
@@ -201,7 +222,8 @@ export async function createRedshiftFinalSnapshot(
   client: RedshiftClient,
   clusterId: string,
   logicalId: string,
-  logger: InfoLogger
+  logger: InfoLogger,
+  options: PreDeleteSnapshotOptions = {}
 ): Promise<string | null> {
   const matches = generatedSnapshotNameMatcher(clusterId, 'AWS::Redshift::Cluster');
   let snapshotId: string | undefined;
@@ -219,7 +241,8 @@ export async function createRedshiftFinalSnapshot(
         (s) =>
           s.SnapshotIdentifier !== undefined &&
           matches.test(s.SnapshotIdentifier) &&
-          s.Status === RESUMABLE_SNAPSHOT_STATUS
+          s.Status === RESUMABLE_SNAPSHOT_STATUS &&
+          startedAtOrAfter(s.SnapshotCreateTime, options.reuseStartedAtOrAfter)
       )?.SnapshotIdentifier;
       marker = existing.Marker;
       if (marker === undefined) break;
@@ -256,7 +279,12 @@ export async function createRedshiftFinalSnapshot(
       // cannot be snapshotted and is on its way out anyway — treat it as
       // gone rather than stranding the resource behind a permanent failure
       // (memory rule: FAILED_STATES must tolerate a stale read on recovery).
-      if (errorNameOrMessageIncludes(createError, 'InvalidClusterStateFault')) {
+      // A caller deleting a live old copy later (go-to-k/cdkd#6463) refuses
+      // instead: a paused or resizing cluster would be deleted unsnapshotted.
+      if (
+        options.refuseUnsnapshottableState !== true &&
+        errorNameOrMessageIncludes(createError, 'InvalidClusterStateFault')
+      ) {
         logger.info(
           `Redshift cluster ${clusterId} is not in a snapshottable state (likely already ` +
             `deleting) — skipping the final snapshot for ${logicalId}: ${errMsg(createError)}`
@@ -287,6 +315,7 @@ export async function createRedshiftFinalSnapshot(
     },
     isTransientNotFound: (e) => errorNameOrMessageIncludes(e, 'ClusterSnapshotNotFoundFault'),
     logger,
+    stop: options.stop,
   });
 
   // The SNAPSHOT reaching `available` does not mean the CLUSTER has: Redshift
@@ -295,7 +324,7 @@ export async function createRedshiftFinalSnapshot(
   // to delete it at a later time." (seen live 2026-08-03 — the snapshot we
   // just took is what put the cluster in that state, so settling it is this
   // function's job, not the caller's).
-  await waitForRedshiftClusterSettled(client, clusterId, logicalId, logger);
+  await waitForRedshiftClusterSettled(client, clusterId, logicalId, logger, options.stop);
   return readySnapshotId;
 }
 
@@ -309,7 +338,8 @@ async function waitForRedshiftClusterSettled(
   client: RedshiftClient,
   clusterId: string,
   logicalId: string,
-  logger: InfoLogger
+  logger: InfoLogger,
+  stop?: () => boolean
 ): Promise<void> {
   const deadline = Date.now() + REDSHIFT_CLUSTER_SETTLE_TIMEOUT_MS;
   for (;;) {
@@ -345,6 +375,14 @@ async function waitForRedshiftClusterSettled(
       return;
     }
     logger.debug(`Waiting for Redshift cluster ${clusterId} to settle (status: ${status})`);
+    // go-to-k/cdkd#6463: the snapshot is ready, but a stopped run sends no delete.
+    if (stop?.() === true) {
+      throw new CdkdError(
+        `Stopped waiting for Redshift cluster ${clusterId} (${logicalId}) to settle after its ` +
+          `final snapshot: the run was interrupted. The cluster was NOT deleted.`,
+        'FINAL_SNAPSHOT_FAILED'
+      );
+    }
     await finalSnapshotDelays.sleep(PRE_DELETE_SNAPSHOT_POLL_INTERVAL_MS);
   }
 }
@@ -373,7 +411,8 @@ export async function createReplicationGroupFinalSnapshot(
   client: ElastiCacheClient,
   replicationGroupId: string,
   logicalId: string,
-  logger: InfoLogger
+  logger: InfoLogger,
+  options: PreDeleteSnapshotOptions = {}
 ): Promise<string | null> {
   // Resolve the snapshot SOURCE first: the reuse probe has to look where the
   // snapshot would actually be created.
@@ -438,7 +477,8 @@ export async function createReplicationGroupFinalSnapshot(
         (s) =>
           s.SnapshotName !== undefined &&
           matches.test(s.SnapshotName) &&
-          s.SnapshotStatus === RESUMABLE_SNAPSHOT_STATUS
+          s.SnapshotStatus === RESUMABLE_SNAPSHOT_STATUS &&
+          startedAtOrAfter(s.NodeSnapshots?.[0]?.SnapshotCreateTime, options.reuseStartedAtOrAfter)
       )?.SnapshotName;
       marker = existing.Marker;
       if (marker === undefined) break;
@@ -475,8 +515,13 @@ export async function createReplicationGroupFinalSnapshot(
       }
       // Already `deleting` (an interrupted destroy being re-run): the group
       // cannot be snapshotted and is on its way out — treat it as gone
-      // instead of stranding the resource behind a permanent failure.
-      if (errorNameOrMessageIncludes(createError, 'InvalidReplicationGroupStateFault')) {
+      // instead of stranding the resource behind a permanent failure. A
+      // caller deleting a live old copy later (go-to-k/cdkd#6463) refuses
+      // instead: a group that is only modifying would be deleted unsnapshotted.
+      if (
+        options.refuseUnsnapshottableState !== true &&
+        errorNameOrMessageIncludes(createError, 'InvalidReplicationGroupStateFault')
+      ) {
         logger.info(
           `Replication group ${replicationGroupId} is not in a snapshottable state (likely ` +
             `already deleting) — skipping the final snapshot for ${logicalId}: ${errMsg(createError)}`
@@ -507,5 +552,6 @@ export async function createReplicationGroupFinalSnapshot(
     },
     isTransientNotFound: (e) => errorNameOrMessageIncludes(e, 'SnapshotNotFoundFault'),
     logger,
+    stop: options.stop,
   });
 }

@@ -8,7 +8,9 @@
  *      go to state.
  *   2. An IAM inline policy is deleted right away.
  *   3. `UpdateReplacePolicy: Snapshot` defers where the delete call takes the
- *      snapshot (RDS); a type snapshotted before its delete stays inline.
+ *      snapshot (RDS); a type snapshotted before its delete defers with its
+ *      snapshot moved into the deferred delete (go-to-k/cdkd#6463), and stays
+ *      inline only when its snapshot was already taken.
  *   4. An old physical id another record holds is deleted right away.
  *
  * The engine-level runs (dependent ordering, rollback re-adopt) are in
@@ -329,7 +331,10 @@ describe('which replaced deletes wait for the cleanup phase (go-to-k/cdkd#6445)'
     ['AWS::EC2::Volume'],
     ['AWS::Redshift::Cluster'],
     ['AWS::ElastiCache::ReplicationGroup'],
-  ])('case 3: %s, snapshotted before its delete, is still deleted right away', async (type) => {
+  ])('case 3: %s, its snapshot already taken (no owed mark), is still deleted right away', async (type) => {
+    // go-to-k/cdkd#6463: a create-first replacement now hands over an owed
+    // mark and defers (`deploy-engine-predelete-snapshot-defer-6463.test.ts`);
+    // a caller that took the snapshot itself passes none and stays inline.
     const { engine, run, host } = inDeploy();
     const old = { physicalId: 'vol-old', resourceType: type, properties: {} } as unknown as ResourceState;
 

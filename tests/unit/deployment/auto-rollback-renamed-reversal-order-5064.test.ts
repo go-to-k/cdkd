@@ -15,8 +15,9 @@
  * `rollback-renamed-reversal-order-5064.test.ts`, and through the automatic
  * rollback by the second describe below: a renamed DB instance under
  * `UpdateReplacePolicy: Snapshot`, classed here as a type snapshotted BEFORE
- * its delete, whose delete stays INLINE (go-to-k/cdkd#6445), so the rollback
- * re-creates it ahead of its dependent. The real pre-delete-snapshot types
+ * its delete and given the pre-#6463 snapshot gate, so its delete stays
+ * INLINE (go-to-k/cdkd#6445) and the rollback re-creates it ahead of its
+ * dependent. The real pre-delete-snapshot types
  * (EBS volume, Redshift cluster, ElastiCache replication group) have no name
  * key a renamed reversal reads, and an RDS instance's own atomic snapshot now
  * defers its delete. A role has no natural non-deferrable shape.
@@ -72,6 +73,21 @@ vi.mock('../../../src/provisioning/final-snapshot.js', async (importOriginal) =>
     }),
   };
 });
+
+// go-to-k/cdkd#6463: a pre-delete-snapshot type's create-first replacement now
+// defers too, its snapshot moved into the deferred delete. This file keeps the
+// pre-#6463 gate, which takes the snapshot before the delete and hands over no
+// owed mark, so `deferToCleanupPhase` keeps that delete inline.
+vi.mock(
+  '../../../src/deployment/deploy-engine/replacement/delete-context.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../src/deployment/deploy-engine/replacement/delete-context.js')
+      >();
+    return { ...actual, prepareCreateFirstFinalSnapshot: actual.prepareFinalSnapshotForDelete };
+  }
+);
 
 vi.mock('p-limit', () => ({
   default: vi.fn(() => <T>(fn: () => T) => fn()),

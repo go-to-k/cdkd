@@ -573,7 +573,13 @@ export interface SupersededResourceRecord {
   /** The `UpdateReplacePolicy` the replacement's delete ran under. */
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
 
-  /** The final snapshot the replacement's delete was to take (`Snapshot`). */
+  /**
+   * The final snapshot the replacement's delete was to take (`Snapshot`). On a
+   * pre-delete-snapshot type (an EBS volume, a Redshift cluster, an
+   * ElastiCache replication group) it only marks the snapshot as still owed:
+   * the later run's delete takes one under its helper's own name first, and
+   * drops the mark once taken (go-to-k/cdkd#6463).
+   */
   finalSnapshotIdentifier?: string;
 
   /** The replacement ran under `--force-stateful-recreation`. */

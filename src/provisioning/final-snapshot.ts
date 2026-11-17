@@ -17,7 +17,10 @@ export {
   createRedshiftFinalSnapshot,
   createReplicationGroupFinalSnapshot,
 } from './final-snapshot/pre-delete.js';
-export type { PreDeleteSnapshotClients } from './final-snapshot/pre-delete.js';
+export type {
+  PreDeleteSnapshotClients,
+  PreDeleteSnapshotOptions,
+} from './final-snapshot/pre-delete.js';
 
 /**
  * `DeletionPolicy: Snapshot` support (issues #1352 / #1353).

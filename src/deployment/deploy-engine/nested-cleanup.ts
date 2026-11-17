@@ -214,12 +214,18 @@ async function runQueuedNestedCleanup(
       const before = supersededResourcesOf(host);
       const counts = { updated: 0, updatePartial: 0 };
       await pass(stillOwed, counts);
-      const remaining = new Set<unknown>(
-        Array.isArray(host.supersededResources) ? host.supersededResources : []
+      // By key, not identity: a delete whose owed snapshot was taken before it
+      // failed swaps its row for one owing none (go-to-k/cdkd#6463), which is
+      // kept, and written back so the child's next deploy takes no second.
+      const after = supersededResourcesOf(host);
+      const dropped = before.filter((entry) => !after.some((row) => sameSuperseded(row, entry)));
+      const replaced = after.filter(
+        (row) => !before.includes(row) && before.some((entry) => sameSuperseded(row, entry))
       );
-      const dropped = before.filter((entry) => !remaining.has(entry));
       const unrecorded =
-        dropped.length > 0 ? await persistDropped(engine, stackName, read, dropped) : 0;
+        dropped.length > 0 || replaced.length > 0
+          ? await persistDropped(engine, stackName, read, dropped, replaced)
+          : 0;
       return { updatePartial: counts.updatePartial + unrecorded };
     } finally {
       try {
@@ -258,18 +264,37 @@ async function persistDropped(
   engine: DeployEngine,
   stackName: string,
   fresh: { state: StackState; etag: string },
-  dropped: readonly SupersededResourceRecord[]
+  dropped: readonly SupersededResourceRecord[],
+  /** go-to-k/cdkd#6463: rows whose owed snapshot was taken; the persisted row of the same key drops its mark. */
+  replaced: readonly SupersededResourceRecord[] = []
 ): Promise<number> {
   const region = engine.stackRegion;
   let current = fresh;
   for (let attempt = 1; ; attempt++) {
     const rows = current.state.supersededResources;
     if (!Array.isArray(rows)) return 0;
-    const kept = rows.filter(
-      (row) =>
-        !isSupersededResourceRecord(row) || !dropped.some((entry) => sameSuperseded(row, entry))
-    );
-    if (kept.length === rows.length) return 0;
+    let changed = false;
+    const kept = rows
+      .filter(
+        (row) =>
+          !isSupersededResourceRecord(row) || !dropped.some((entry) => sameSuperseded(row, entry))
+      )
+      .map((row) => {
+        if (!isSupersededResourceRecord(row)) return row;
+        // Only the owed-snapshot mark goes: the persisted row stays as read.
+        const replacement = replaced.find((entry) => sameSuperseded(row, entry));
+        if (
+          replacement === undefined ||
+          replacement.finalSnapshotIdentifier !== undefined ||
+          row.finalSnapshotIdentifier === undefined
+        ) {
+          return row;
+        }
+        changed = true;
+        const { finalSnapshotIdentifier: _taken, ...rest } = row;
+        return rest;
+      });
+    if (kept.length === rows.length && !changed) return 0;
     const { supersededResources: _rows, ...rest } = current.state;
     const next: StackState = {
       ...rest,

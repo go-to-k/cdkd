@@ -21,21 +21,24 @@ top-level deploy that fails after a child finished still finds the child's old
 resource, and its revert of the child adopts it again.
 The plan labels such an operation `reverse-replace`.
 
-The same wait applies to a record holding a NoEcho value, and to
-`UpdateReplacePolicy: Snapshot` on a type whose delete call takes the final
-snapshot (RDS, Neptune and DocumentDB clusters, an ElastiCache cache cluster):
-the final snapshot is taken when the old resource is deleted, after the rest
-of the deploy succeeds. When a failed deploy's rollback adopts the old
-resource again, it deletes the new copy under the same `UpdateReplacePolicy`,
-so under `Snapshot` it takes a final snapshot of the new copy first: the new
-copy may already hold writes.
+The same wait applies to a record holding a NoEcho value and to a resource
+under `UpdateReplacePolicy: Snapshot`, whose final snapshot is taken when the
+old resource is deleted, after the rest of the deploy succeeds:
 
-Three cases delete the old resource right after the new one is created:
+| Type | Old copy's snapshot | New copy's delete by a rollback |
+| --- | --- | --- |
+| RDS instance or cluster, Neptune or DocumentDB cluster, ElastiCache cache cluster | Taken by the delete call | Takes a final snapshot first: the new copy may already hold writes |
+| EBS volume, Redshift cluster, ElastiCache replication group | Taken and waited for right before the delete, never before the create | Takes none |
+
+A failed deploy takes no snapshot of the old resource. Both copies stay in
+AWS, and are billed, until the deploy ends, and writes that reach the old copy
+meanwhile are in its snapshot.
+
+Two cases delete the old resource right after the new one is created:
 
 | Case | Why |
 | --- | --- |
 | An IAM inline policy | Both policies attached until the deploy ends would grant the union of their permissions. Nothing is lost: the rollback re-creates the policy document exactly. |
-| `UpdateReplacePolicy: Snapshot` on an EBS volume, a Redshift cluster or an ElastiCache replication group, without `--skip-final-snapshot` | Its snapshot is taken before the delete, so a later delete would let data written meanwhile miss the snapshot. |
 | An old physical id another resource of the stack now records | The other resource must be able to move off the id, and cdkd never leaves a delete pending for an id a record names. |
 
 The rollback re-creates the old resource of these, and of a delete-first
@@ -55,6 +58,24 @@ in memory only. A deploy killed before its end (SIGKILL, a power loss) leaves
 that old custom resource's physical id, or that old nested stack, in AWS,
 untracked; a deploy that fails or is stopped with Ctrl-C says so in its
 output.
+
+Under `UpdateReplacePolicy: Snapshot`, that later delete takes the promised
+snapshot first:
+
+- `--skip-final-snapshot` on the later run does not skip it: only the deploy
+  that replaced the resource could.
+- A copy AWS cannot snapshot yet (a paused Redshift cluster, a modifying
+  replication group) is not deleted, and the next run tries again.
+- Once the snapshot is taken, a delete that then fails is retried without
+  another one.
+- A Ctrl-C while the snapshot is being taken stops before the delete. The next
+  run reuses that snapshot for an EBS volume, or while a Redshift or
+  replication group snapshot is still being taken, and takes a new one
+  otherwise. Only a snapshot started since the replacement is reused.
+- A deploy killed outright during the delete still lists the copy as owing
+  its snapshot. The next run reuses an EBS volume's snapshot, takes one more
+  of a Redshift cluster or replication group, or, for one already being
+  deleted, warns that it cannot until the copy is gone.
 
 The rollback works in the same order the deploy did:
 

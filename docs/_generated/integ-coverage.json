@@ -9306,6 +9306,7 @@
         "refactor-command",
         "refactor-move",
         "rename-refactor",
+        "replace-predelete-snapshot-failed-rollback",
         "replace-snapshot-failed-rollback",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -9525,6 +9526,10 @@
         ],
         "rename-refactor": [
           "l2",
+          "literal"
+        ],
+        "replace-predelete-snapshot-failed-rollback": [
+          "l1",
           "literal"
         ],
         "replace-snapshot-failed-rollback": [

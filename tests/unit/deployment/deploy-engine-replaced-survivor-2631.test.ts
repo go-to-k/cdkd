@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { executeDeployment } from '../../../src/deployment/deploy-engine/execute.js';
 import {
-  prepareFinalSnapshotForDelete,
+  prepareCreateFirstFinalSnapshot,
   retryDeferredReplacedDeletes,
 } from '../../../src/deployment/deploy-engine/replacement.js';
 import { markDeleteStarted } from '../../../src/provisioning/delete-started.js';
@@ -76,7 +76,7 @@ vi.mock('../../../src/deployment/deploy-engine/replacement.js', async (importOri
   return {
     ...actual,
     retryDeferredReplacedDeletes: vi.fn(actual.retryDeferredReplacedDeletes),
-    prepareFinalSnapshotForDelete: vi.fn(actual.prepareFinalSnapshotForDelete),
+    prepareCreateFirstFinalSnapshot: vi.fn(actual.prepareCreateFirstFinalSnapshot),
   };
 });
 
@@ -130,7 +130,7 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(retryDeferredReplacedDeletes).mockReset();
-    vi.mocked(prepareFinalSnapshotForDelete).mockReset();
+    vi.mocked(prepareCreateFirstFinalSnapshot).mockReset();
     printed.info.length = 0;
     printed.warn.length = 0;
     endpointRevision = 'rev-old';
@@ -458,12 +458,12 @@ describe('a replacement whose old-resource delete is unconfirmed (#2631)', () =>
   it('marks the op kept when a failed final snapshot blocks the delete', async () => {
     endpointRevision = 'none';
     const engine = makeEngine(true);
-    vi.mocked(prepareFinalSnapshotForDelete).mockImplementation(async () => {
+    vi.mocked(prepareCreateFirstFinalSnapshot).mockImplementation(async () => {
       throw new Error('SnapshotQuotaExceeded');
     });
     const result = await deploy({ engine, updateReplacePolicy: 'Snapshot' });
     // The stub ran: the gate refused, so the delete was never sent.
-    expect(prepareFinalSnapshotForDelete).toHaveBeenCalled();
+    expect(prepareCreateFirstFinalSnapshot).toHaveBeenCalled();
     expect(provider.delete).not.toHaveBeenCalled();
     expect(revisionOp(result.completedOperations).oldResourceMaySurvive).toBe('kept');
   });

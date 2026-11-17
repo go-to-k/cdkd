@@ -84,12 +84,12 @@ new `AWS::Lambda::LayerVersion` content.
 
 cdkd creates the new resource first and deletes the old one after the rest of
 the deploy succeeds, which is CloudFormation's order. Under
-`UpdateReplacePolicy: Snapshot`, that later delete takes the final snapshot.
-Three cases delete it right after the new one is created: an IAM inline
-policy, `UpdateReplacePolicy: Snapshot` on a type snapshotted before its
-delete (an EBS volume, a Redshift cluster, an ElastiCache replication group)
-without `--skip-final-snapshot`, and an old physical id another resource of
-the stack now records. Why each case does, and what a rollback then does, is
+`UpdateReplacePolicy: Snapshot`, that later delete takes the final snapshot,
+for an EBS volume, a Redshift cluster or an ElastiCache replication group
+too: cdkd snapshots the old copy right before it deletes it, never before the
+create. Two cases delete it right after the new one is created: an IAM inline
+policy, and an old physical id another resource of the stack now records.
+Why each case does, and what a rollback then does, is
 on [cdkd rollback: limitations](cli-rollback-limitations.md#reversing-a-replacement).
 
 Until that delete, the old resource still holds its name. A deploy that gives

@@ -137,3 +137,44 @@ export function finalSnapshotFailure(message: string, error: unknown): CdkdError
     ? markRedactedCause(thrown)
     : thrown;
 }
+
+/** How a caller narrows a pre-delete final snapshot (go-to-k/cdkd#6463). */
+export interface PreDeleteSnapshotOptions {
+  /**
+   * Refuse, rather than skip the snapshot, when AWS says the source is not in
+   * a snapshottable state. Set by the deletes of a replaced resource's old
+   * copy, which may run long after the replacement against a live copy (a
+   * paused Redshift cluster, a modifying replication group), where "likely
+   * already deleting" would delete it unsnapshotted.
+   */
+  refuseUnsnapshottableState?: boolean;
+  /**
+   * Reuse an existing EBS snapshot of the volume only when AWS started it at
+   * or after this time (Unix milliseconds): one taken for THIS delete, by an
+   * interrupted earlier attempt. Unset reuses any, as before. A completed
+   * snapshot from an older attempt whose delete failed (the volume stayed in
+   * use) would otherwise stand in for one, and the writes since be lost.
+   */
+  reuseStartedAtOrAfter?: number;
+  /**
+   * Checked before each wait poll: once it answers `true` the wait stops
+   * with a `FINAL_SNAPSHOT_FAILED` refusal, so the delete is not sent. The
+   * snapshot itself continues in AWS, and the next attempt resumes it.
+   */
+  stop?: () => boolean;
+}
+
+/** The refusal a stopped pre-delete snapshot wait throws. */
+export function finalSnapshotWaitStopped(
+  snapshotId: string,
+  logicalId: string,
+  sourceId: string,
+  noun: string
+): CdkdError {
+  return new CdkdError(
+    safeMsg`Stopped waiting for final snapshot ${snapshotId} of ${logicalId} (${sourceId}): ` +
+      `the run was interrupted. The ${noun} was NOT deleted; the snapshot continues in AWS ` +
+      `and the next attempt resumes it.`,
+    'FINAL_SNAPSHOT_FAILED'
+  );
+}
