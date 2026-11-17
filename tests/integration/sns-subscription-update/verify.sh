@@ -14,8 +14,9 @@
 #     subscribed again).
 #   Phase 2a (+body-scope): FilterPolicyScope MessageBody alone, in place.
 #   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
-#     template: the policy is cleared on the live subscription (the scope of a
-#     subscription with no policy filters nothing and is left), same ARN.
+#     template: the policy is cleared on the live subscription (cdkd sends no
+#     scope reset for a subscription left with no policy; SNS drops the scope
+#     with the policy on its own), same ARN.
 #   Phase 2c (filter-c, drop-filter gone): a FilterPolicy on the message
 #     body added to the subscription 2b left with no policy and no scope (SNS
 #     drops the scope with the policy). `cdkd diff` must report the
