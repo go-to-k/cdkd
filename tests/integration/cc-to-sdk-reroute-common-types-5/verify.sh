@@ -97,9 +97,10 @@ live_value() { # usage: live_value <logicalId> <physicalId>
   esac
 }
 
-# IDENTITY WITNESS: Cloud Map re-mints the same id for a re-created name
-# (measured on batch 3's namespace), so a service is witnessed by its
-# CreateDate, which a recreate changes and an in-place update keeps.
+# IDENTITY WITNESS: Cloud Map handed a namespace re-created under the same
+# name its old `ns-...` id (measured in batch 3; not measured for services),
+# so a service is witnessed by its CreateDate, which a recreate changes and an
+# in-place update keeps.
 witness() { # usage: witness <logicalId> <physicalId>
   aws servicediscovery get-service --id "$2" --region "${REGION}" --query 'Service.CreateDate' --output text
 }
