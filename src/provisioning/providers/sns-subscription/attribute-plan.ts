@@ -34,11 +34,21 @@ export const MUTABLE_ATTRIBUTES = [
  * `ReplayPolicy`, `SubscriptionRoleArn`) is removed by re-creating the
  * subscription without it, as before go-to-k/cdkd#4853.
  */
-const RESET_VALUES: Readonly<Record<string, string>> = {
+const RESET_VALUES = {
   RawMessageDelivery: 'false',
   FilterPolicy: '',
   FilterPolicyScope: 'MessageAttributes',
   RedrivePolicy: '',
+} as const satisfies Partial<Record<MutableAttribute, string>>;
+
+type MutableAttribute = (typeof MUTABLE_ATTRIBUTES)[number];
+/** The attributes with no reset: removing one re-creates the subscription. */
+type UnresettableAttribute = Exclude<MutableAttribute, keyof typeof RESET_VALUES>;
+
+const UNRESETTABLE_REASONS: Readonly<Record<UnresettableAttribute, SubscriptionReplaceReason>> = {
+  DeliveryPolicy: 'DeliveryPolicy removed, which SNS cannot reset',
+  ReplayPolicy: 'ReplayPolicy removed, which SNS cannot reset',
+  SubscriptionRoleArn: 'SubscriptionRoleArn removed, which SNS cannot reset',
 };
 
 /**
@@ -64,8 +74,14 @@ export function toAttributeValue(key: string, value: unknown): string | undefine
  * parsed, and an absent value equals the attribute's default (AWS omits
  * `RawMessageDelivery` on an email subscription, where setting it is refused).
  */
+function resetValueOf(name: string): string | undefined {
+  return Object.hasOwn(RESET_VALUES, name)
+    ? RESET_VALUES[name as keyof typeof RESET_VALUES]
+    : undefined;
+}
+
 function sameAttributeValue(name: string, desired: string, current: string | undefined): boolean {
-  if (current === undefined) return desired === RESET_VALUES[name];
+  if (current === undefined) return desired === resetValueOf(name);
   if (desired === current) return true;
   try {
     return JSON.stringify(JSON.parse(desired)) === JSON.stringify(JSON.parse(current));
@@ -133,12 +149,9 @@ export function planSubscriptionAttributes(
     // A scope without a policy filters nothing, and SNS may refuse to set
     // one on a subscription with no policy: leave it for the next policy.
     if (name === 'FilterPolicyScope' && filterPolicyCleared(calls, current)) continue;
-    const reset = RESET_VALUES[name];
+    const reset = resetValueOf(name);
     if (reset === undefined) {
-      return {
-        kind: 'replace',
-        reason: `${name} removed, which SNS cannot reset` as SubscriptionReplaceReason,
-      };
+      return { kind: 'replace', reason: UNRESETTABLE_REASONS[name as UnresettableAttribute] };
     }
     if (now !== reset) calls.push([name, reset]);
   }

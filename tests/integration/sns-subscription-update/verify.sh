@@ -13,13 +13,15 @@
 #     without #4853 is RED here (the ARN changes: it unsubscribed and
 #     subscribed again).
 #   Phase 2a (+body-scope): FilterPolicyScope MessageBody alone, in place.
-#   Phase 2c (+filter-c): FilterPolicy b -> c with the scope dropped in one
-#     deploy. `cdkd diff` must report the replacement the provider makes
-#     (#6509), `--fail-on=destructive` must fail, and the deploy then
-#     re-creates the subscription (new ARN) with the new policy and scope.
 #   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
 #     template: the policy is cleared on the live subscription (the scope of a
 #     subscription with no policy filters nothing and is left), same ARN.
+#   Phase 2c (filter-c, drop-filter gone): a new FilterPolicy while the live
+#     scope 2b left is MessageBody and the record names none. `cdkd diff`
+#     must report the replacement the provider makes (#6509), reading the
+#     live scope from observedProperties; `--fail-on=destructive` must fail;
+#     the deploy re-creates the subscription (new ARN) with kind=c and the
+#     MessageAttributes scope.
 #   Phase 3 (unreadable record): the state physicalId is rewritten to a
 #     malformed subscription ARN; the in-place path's readback is refused, so
 #     cdkd fails the deploy WITHOUT unsubscribing or subscribing anything.
@@ -409,10 +411,44 @@ if [ "${SCOPE_2A}" != "MessageBody" ] || [ "$(filter_policy_of "${SUB_ARN_1}")" 
 fi
 echo "    OK: FilterPolicyScope MessageBody on ${SUB_ARN_1}, policy kept"
 
+# --- Phase 2b: attributes dropped from the template --------------------------
+echo "==> Phase 2b: remove FilterPolicy and its scope from the template (reset in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_exactly_one_subscription "phase 2b"
+if [ "$(sub_arn)" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2b: SubscriptionArn changed, expected ${SUB_ARN_1} kept" >&2
+  exit 1
+fi
+FILTER_2B=$(filter_policy_of "${SUB_ARN_1}")
+if [ "${FILTER_2B}" != "None" ] && [ -n "${FILTER_2B}" ]; then
+  echo "FAIL: phase 2b: FilterPolicy is still '${FILTER_2B}' after it left the template" >&2
+  exit 1
+fi
+if [ "$(raw_delivery_of "${SUB_ARN_1}")" != "true" ]; then
+  echo "FAIL: phase 2b: RawMessageDelivery changed, expected the untouched 'true'" >&2
+  exit 1
+fi
+echo "    OK: FilterPolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still true"
+SUB_ARN_2="${SUB_ARN_1}"
+
 # --- Phase 2c: a policy and scope change in one deploy (#6509) ---------------
-# The provider re-creates the subscription for this change (Subscribe sets the
-# pair together), so the diff must say "replacement", not "update".
-echo "==> Phase 2c: FilterPolicy b -> c and FilterPolicyScope dropped (diff reports the replacement)"
+# After 2b the record names no policy and no scope, while the live scope is
+# still MessageBody (2b leaves a scope with no policy in place). A new policy
+# with no scope then makes the provider reset the scope AND set the policy,
+# which it does by re-creating the subscription (Subscribe sets the pair
+# together). The diff must say "replacement", reading the live scope from the
+# record's observedProperties.
+echo "==> Phase 2c: FilterPolicy c added with the live MessageBody scope left by 2b (diff reports the replacement)"
+SCOPE_PRE_2C=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "${SUB_ARN_1}" \
+  --query 'Attributes.FilterPolicyScope' --output text)
+if [ "${SCOPE_PRE_2C}" != "MessageBody" ]; then
+  echo "FAIL: phase 2c premise: live FilterPolicyScope after 2b is '${SCOPE_PRE_2C}', expected the MessageBody 2b leaves" >&2
+  exit 1
+fi
 DIFF_LOG_2C="$(mktemp)"
 DIFF_RC_2C=0
 CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,filter-c node "${LOCAL_DIST}" diff "${STACK}" \
@@ -464,30 +500,7 @@ fi
 echo "    OK: re-created as ${SUB_ARN_2C} with FilterPolicy kind=c, scope MessageAttributes; state in sync"
 # Later phases follow the subscription the replacement created.
 SUB_ARN_1="${SUB_ARN_2C}"
-
-# --- Phase 2b: attributes dropped from the template --------------------------
-echo "==> Phase 2b: remove FilterPolicy and its scope from the template (reset in place)"
-CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,filter-c,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" \
-  --yes
-
-assert_exactly_one_subscription "phase 2b"
-if [ "$(sub_arn)" != "${SUB_ARN_1}" ]; then
-  echo "FAIL: phase 2b: SubscriptionArn changed, expected ${SUB_ARN_1} kept" >&2
-  exit 1
-fi
-FILTER_2B=$(filter_policy_of "${SUB_ARN_1}")
-if [ "${FILTER_2B}" != "None" ] && [ -n "${FILTER_2B}" ]; then
-  echo "FAIL: phase 2b: FilterPolicy is still '${FILTER_2B}' after it left the template" >&2
-  exit 1
-fi
-if [ "$(raw_delivery_of "${SUB_ARN_1}")" != "true" ]; then
-  echo "FAIL: phase 2b: RawMessageDelivery changed, expected the untouched 'true'" >&2
-  exit 1
-fi
-echo "    OK: FilterPolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still true"
-SUB_ARN_2="${SUB_ARN_1}"
+SUB_ARN_2="${SUB_ARN_2C}"
 
 # --- Phase 3: an unreadable record ---------------------------------------
 # A malformed subscription ARN makes SNS answer `InvalidParameter` (measured

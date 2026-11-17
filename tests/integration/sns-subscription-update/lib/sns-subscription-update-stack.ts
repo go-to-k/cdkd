@@ -66,11 +66,11 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
     const modes = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',');
     const rawDelivery = modes.includes('raw-delivery');
     // `filter-b` edits the policy in place; `body-scope` then moves it to the
-    // message body (a scope-only edit, also in place); `filter-c` changes the
-    // policy AND drops the scope in one deploy, which the provider carries out
-    // by re-creating the subscription and `cdkd diff` must say so (#6509);
-    // `drop-filter` removes both, which must leave the live subscription with
-    // no filter (#4853).
+    // message body (a scope-only edit, also in place); `drop-filter` removes
+    // both, which must leave the live subscription with no filter (#4853);
+    // `filter-c` (with `drop-filter` gone) adds a policy and no scope while
+    // the live scope is still the message body, which the provider carries out
+    // by re-creating the subscription and `cdkd diff` must say so (#6509).
     const dropFilter = modes.includes('drop-filter');
     const filterC = modes.includes('filter-c');
     const filterPolicy = dropFilter

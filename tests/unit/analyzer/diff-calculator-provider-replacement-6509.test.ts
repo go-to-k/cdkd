@@ -24,7 +24,10 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { findDestructiveChanges } from '../../../src/analyzer/destructive-changes.js';
-import { markProviderReplacements } from '../../../src/analyzer/diff-calculator/provider-replacement.js';
+import {
+  dropSupersededProviderReplacements,
+  providerReplacementReason,
+} from '../../../src/analyzer/diff-calculator/provider-replacement.js';
 import { planSubscriptionAttributes } from '../../../src/provisioning/providers/sns-subscription/attribute-plan.js';
 import { renderDiffTree } from '../../../src/cli/commands/diff-recursive/render.js';
 import { diffTreeToJson } from '../../../src/cli/commands/diff-recursive/json.js';
@@ -61,6 +64,24 @@ function stateOf(
 const templateOf = (properties: Record<string, unknown>): CloudFormationTemplate =>
   ({ Resources: { Sub: { Type: SUB, Properties: { ...BASE, ...properties } } } }) as CloudFormationTemplate;
 
+// Resolves `{ Ref: 'PolicyParam' }` to the `kind: a` policy and an `Fn::If` to
+// its false branch, as the deploy's resolver hands `update()` resolved values.
+const resolveTemplate = async (value: unknown): Promise<unknown> => {
+  const resolve = (v: unknown): unknown => {
+    if (v === null || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map(resolve);
+    const obj = v as Record<string, unknown>;
+    if (obj['Ref'] === 'PolicyParam') return { kind: ['a'] };
+    if ('Fn::If' in obj) return undefined;
+    return Object.fromEntries(
+      Object.entries(obj)
+        .map(([k, x]) => [k, resolve(x)] as const)
+        .filter(([, x]) => x !== undefined)
+    );
+  };
+  return resolve(value);
+};
+
 async function diff(
   recorded: Record<string, unknown>,
   desired: Record<string, unknown>,
@@ -69,7 +90,7 @@ async function diff(
   const changes = await new DiffCalculator().calculateDiff(
     stateOf(recorded, provisionedBy),
     templateOf(desired),
-    async (v: unknown) => v
+    resolveTemplate
   );
   return changes.get('Sub')!;
 }
@@ -118,6 +139,23 @@ describe('markProviderReplacements through DiffCalculator (#6509)', () => {
     expect(change.providerReplacement).toBeUndefined();
   });
 
+  it('plans on resolved values: a DeliveryPolicy an Fn::If resolves away is a removal', async () => {
+    const change = await diff(
+      { DeliveryPolicy: { x: 1 } },
+      { DeliveryPolicy: { 'Fn::If': ['C', { x: 1 }, { Ref: 'AWS::NoValue' }] } }
+    );
+    expect(change.providerReplacement).toBe('DeliveryPolicy removed, which SNS cannot reset');
+  });
+
+  it('plans on resolved values: a policy behind a Ref that resolves unchanged is a scope-only edit', async () => {
+    const change = await diff(
+      { FilterPolicy: { kind: ['a'] } },
+      { FilterPolicy: { Ref: 'PolicyParam' }, FilterPolicyScope: 'MessageBody' }
+    );
+    expect(change.changeType).toBe('UPDATE');
+    expect(change.providerReplacement).toBeUndefined();
+  });
+
   it('leaves a change the engine replaces anyway (a create-only Endpoint) unmarked', async () => {
     const change = await diff(BODY_A, {
       FilterPolicy: { kind: ['b'] },
@@ -128,28 +166,9 @@ describe('markProviderReplacements through DiffCalculator (#6509)', () => {
   });
 });
 
-describe('markProviderReplacements (#6509)', () => {
-  const record = (properties: Record<string, unknown>): ResourceState =>
-    ({ physicalId: 'p', resourceType: SUB, properties }) as ResourceState;
-  const update = (current: Record<string, unknown>, desired: Record<string, unknown>): ResourceChange => ({
-    logicalId: 'Sub',
-    changeType: 'UPDATE',
-    resourceType: SUB,
-    currentProperties: current,
-    desiredProperties: desired,
-    propertyChanges: [{ path: 'FilterPolicy', oldValue: 1, newValue: 2, requiresReplacement: false }],
-  });
-
-  it('is idempotent and clears a stale mark', () => {
-    const change = update(BODY_A, { FilterPolicy: { kind: ['b'] } });
-    const changes = new Map([['Sub', change]]);
-    markProviderReplacements(changes, { Sub: record(BODY_A) });
-    markProviderReplacements(changes, { Sub: record(BODY_A) });
-    expect(change.providerReplacement).toBe('FilterPolicy and FilterPolicyScope change together');
-    change.desiredProperties = { FilterPolicy: { kind: ['b'] }, FilterPolicyScope: 'MessageBody' };
-    markProviderReplacements(changes, { Sub: record(BODY_A) });
-    expect(change.providerReplacement).toBeUndefined();
-  });
+describe('providerReplacementReason (#6509)', () => {
+  const record = (properties: Record<string, unknown>, extra: Partial<ResourceState> = {}): ResourceState =>
+    ({ physicalId: 'p', resourceType: SUB, properties, ...extra }) as ResourceState;
 
   it.each([
     ['MessageBody', 'FilterPolicy and FilterPolicyScope change together'],
@@ -157,34 +176,44 @@ describe('markProviderReplacements (#6509)', () => {
   ])(
     'reads a live scope of %s the record no longer names (a dropped policy left it) from observedProperties',
     (scope, expected) => {
-      const change = update({}, { FilterPolicy: { kind: ['c'] } });
-      markProviderReplacements(new Map([['Sub', change]]), {
-        Sub: { ...record({}), observedProperties: { FilterPolicyScope: scope } },
-      });
-      expect(change.providerReplacement).toBe(expected);
+      expect(
+        providerReplacementReason(SUB, record({}, { observedProperties: { FilterPolicyScope: scope } }), {
+          FilterPolicy: { kind: ['c'] },
+        })
+      ).toBe(expected);
     }
   );
 
   it('prefers the recorded scope over the snapshot', () => {
-    const change = update(BODY_A, { FilterPolicy: { kind: ['b'] }, FilterPolicyScope: 'MessageBody' });
-    markProviderReplacements(new Map([['Sub', change]]), {
-      Sub: { ...record(BODY_A), observedProperties: { FilterPolicyScope: 'MessageAttributes' } },
-    });
-    expect(change.providerReplacement).toBeUndefined();
+    expect(
+      providerReplacementReason(
+        SUB,
+        record(BODY_A, { observedProperties: { FilterPolicyScope: 'MessageAttributes' } }),
+        { FilterPolicy: { kind: ['b'] }, FilterPolicyScope: 'MessageBody' }
+      )
+    ).toBeUndefined();
   });
 
-  it('skips another type and a record of another type', () => {
-    const other: ResourceChange = { ...update(BODY_A, {}), resourceType: 'AWS::SNS::Topic' };
-    const retyped = update({ DeliveryPolicy: { x: 1 } }, {});
-    markProviderReplacements(
-      new Map([
-        ['Sub', retyped],
-        ['T', { ...other, logicalId: 'T' }],
-      ]),
-      { Sub: { ...record({}), resourceType: 'AWS::SNS::Topic' }, T: record({ DeliveryPolicy: { x: 1 } }) }
-    );
-    expect(retyped.providerReplacement).toBeUndefined();
-    expect(other.providerReplacement).toBeUndefined();
+  it('answers undefined for another type and a record of another type', () => {
+    expect(providerReplacementReason('AWS::SNS::Topic', record({ DeliveryPolicy: { x: 1 } }), {})).toBeUndefined();
+    expect(
+      providerReplacementReason(SUB, { ...record({ DeliveryPolicy: { x: 1 } }), resourceType: 'AWS::SNS::Topic' }, {})
+    ).toBeUndefined();
+  });
+
+  it('dropSupersededProviderReplacements clears only a change the engine replaces', () => {
+    const marked = (requiresReplacement: boolean): ResourceChange => ({
+      logicalId: 'Sub',
+      changeType: 'UPDATE',
+      resourceType: SUB,
+      propertyChanges: [{ path: 'FilterPolicy', oldValue: 1, newValue: 2, requiresReplacement }],
+      providerReplacement: 'FilterPolicy and FilterPolicyScope change together',
+    });
+    const kept = marked(false);
+    const dropped = marked(true);
+    dropSupersededProviderReplacements(new Map([['A', kept], ['B', dropped]]));
+    expect(kept.providerReplacement).toBe('FilterPolicy and FilterPolicyScope change together');
+    expect(dropped.providerReplacement).toBeUndefined();
   });
 });
 
