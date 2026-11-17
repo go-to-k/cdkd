@@ -38,6 +38,7 @@ import {
   getTopLevelAttributeNames,
   getTopLevelDeployAttributeNames,
   getTopLevelReadOnlyProperties,
+  getReadOnlyPropertyPaths,
   clearReadOnlyPropertiesCache,
 } from '../../../src/provisioning/read-only-properties.js';
 import { WRITABLE_GETATT_ATTRIBUTES } from '../../../src/provisioning/getatt-attributes.generated.js';
@@ -354,5 +355,67 @@ describe('getTopLevelDeployAttributeNames (issue #2925)', () => {
     mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
 
     expect(await getTopLevelDeployAttributeNames('AWS::DocDB::DBCluster')).toBeUndefined();
+  });
+});
+
+describe('getReadOnlyPropertyPaths (go-to-k/cdkd#6485)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearReadOnlyPropertiesCache();
+    describeTypeRetryDelays.sleep = async () => {};
+  });
+
+  afterEach(() => {
+    delete describeTypeRetryDelays.sleep;
+  });
+
+  it('answers the EXACT positions, a nested pointer as a dotted path, never its container', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: RDS_CLUSTER_SCHEMA });
+
+    expect(await getReadOnlyPropertyPaths('AWS::RDS::DBCluster')).toEqual([
+      'DBClusterArn',
+      'Endpoint.Address',
+      'Endpoint.Port',
+    ]);
+  });
+
+  it('leaves out a pointer a dotted path cannot spell (an array wildcard, a key holding a dot)', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({
+      Schema: JSON.stringify({
+        readOnlyProperties: [
+          '/properties/UpdateTime',
+          '/properties/Rules/*/Id',
+          '/properties/a.b',
+          '/properties/x~1y',
+          '/properties/',
+        ],
+      }),
+    });
+
+    expect(await getReadOnlyPropertyPaths('AWS::Location::Tracker')).toEqual([
+      'UpdateTime',
+      'x/y',
+    ]);
+  });
+
+  it('shares ONE DescribeType call with getTopLevelReadOnlyProperties', async () => {
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: RDS_CLUSTER_SCHEMA });
+
+    const [paths, topLevel] = await Promise.all([
+      getReadOnlyPropertyPaths('AWS::RDS::DBCluster'),
+      getTopLevelReadOnlyProperties('AWS::RDS::DBCluster'),
+    ]);
+
+    expect(paths).toEqual(['DBClusterArn', 'Endpoint.Address', 'Endpoint.Port']);
+    expect([...topLevel!].sort()).toEqual(['DBClusterArn', 'Endpoint']);
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers undefined when the schema cannot be read, and for a schema-less type without a call', async () => {
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+    expect(await getReadOnlyPropertyPaths('AWS::Location::Tracker')).toBeUndefined();
+    mockCloudFormationSend.mockReset();
+    expect(await getReadOnlyPropertyPaths('Custom::Thing')).toBeUndefined();
+    expect(mockCloudFormationSend).not.toHaveBeenCalled();
   });
 });

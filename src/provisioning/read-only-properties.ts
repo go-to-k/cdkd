@@ -1,6 +1,7 @@
 /**
  * Read-only property resolution for `CloudControlProvider.import()` (issue
- * [#2847](https://github.com/go-to-k/cdkd/issues/2847)) — the read-side sibling
+ * [#2847](https://github.com/go-to-k/cdkd/issues/2847)), and the exact
+ * read-only paths `cdkd drift` skips ({@link getReadOnlyPropertyPaths}) — the read-side sibling
  * of {@link file://./write-only-properties.ts}, sharing its `DescribeType` +
  * per-type cache + top-level reduction, and differing from it in exactly one
  * way that is the point of the module: it distinguishes "this type declares no
@@ -108,7 +109,17 @@ function isDefinitiveRefusal(error: unknown): boolean {
  * 4xx) stays cached as `undefined` for the run; any other failure removes its
  * own entry so a later call retries.
  */
-const readOnlyPropertiesCache = new Map<string, Promise<ReadonlySet<string> | undefined>>();
+const readOnlyPropertiesCache = new Map<string, Promise<ReadOnlySchemaPaths | undefined>>();
+
+/**
+ * One parse of a type's `readOnlyProperties`, read two ways:
+ * `topLevel` is the containing-property reduction the attribute callers use,
+ * `paths` the exact positions `cdkd drift` skips (go-to-k/cdkd#6485).
+ */
+interface ReadOnlySchemaPaths {
+  readonly topLevel: ReadonlySet<string>;
+  readonly paths: readonly string[];
+}
 
 /**
  * Per-type union built by {@link getTopLevelAttributeNames}. Only built from a
@@ -229,6 +240,34 @@ export function getTopLevelReadOnlyProperties(
   if (hasNoRegistrySchema(resourceType)) {
     return Promise.resolve(undefined);
   }
+  return readOnlySchemaPaths(resourceType).then((schema) => schema?.topLevel);
+}
+
+/**
+ * The EXACT read-only positions of a resource type, as dotted drift paths
+ * (`UpdateTime`, `Endpoint.Address`), for `cdkd drift` (go-to-k/cdkd#6485).
+ * A Cloud Control model carries them, so a deploy's observed baseline records
+ * them, and a timestamp among them changes on every update: comparing it read
+ * the change as drift, and `--revert` sent it back in a patch Cloud Control
+ * refuses (`readOnlyProperties ... cannot be updated`). CloudFormation drift
+ * compares only what a template can declare, which a read-only position is not.
+ *
+ * Unlike {@link getTopLevelReadOnlyProperties} there is no reduction: skipping
+ * `Endpoint` for a read-only `Endpoint/Address` would hide a writable sibling.
+ * A pointer through an array (`*`) or naming a key that holds a `.` is left
+ * out, since a dotted path cannot spell it; it stays compared. Same
+ * `undefined` contract and cache; never throws.
+ */
+export function getReadOnlyPropertyPaths(
+  resourceType: string
+): Promise<readonly string[] | undefined> {
+  if (hasNoRegistrySchema(resourceType)) {
+    return Promise.resolve(undefined);
+  }
+  return readOnlySchemaPaths(resourceType).then((schema) => schema?.paths);
+}
+
+function readOnlySchemaPaths(resourceType: string): Promise<ReadOnlySchemaPaths | undefined> {
   const cached = readOnlyPropertiesCache.get(resourceType);
   if (cached) {
     return cached;
@@ -264,11 +303,12 @@ export function getTopLevelReadOnlyProperties(
  * Fetch + parse the type's read-only properties. THROWS on a DescribeType
  * failure — the caller catches, reports `undefined`, and declines to cache.
  */
-async function fetchTopLevelReadOnlyProperties(resourceType: string): Promise<ReadonlySet<string>> {
+async function fetchTopLevelReadOnlyProperties(resourceType: string): Promise<ReadOnlySchemaPaths> {
   const logger = getLogger().child('ReadOnlyProperties');
   const response = await describeTypeWithThrottleRetry(resourceType);
 
   const result = new Set<string>();
+  const paths: string[] = [];
   // A response carrying no Schema is a SUCCESSFUL lookup of "no attributes" —
   // the same reading the write-only sibling applies to the same shape.
   if (response.Schema) {
@@ -282,6 +322,15 @@ async function fetchTopLevelReadOnlyProperties(resourceType: string): Promise<Re
         const match = /^\/properties\/([^/]+)/.exec(path);
         if (match?.[1]) {
           result.add(unescapeJsonPointerSegment(match[1]));
+          const segments = path
+            .slice('/properties/'.length)
+            .split('/')
+            .map(unescapeJsonPointerSegment);
+          if (
+            segments.every((segment) => segment !== '' && segment !== '*' && !segment.includes('.'))
+          ) {
+            paths.push(segments.join('.'));
+          }
         }
       }
     }
@@ -291,7 +340,7 @@ async function fetchTopLevelReadOnlyProperties(resourceType: string): Promise<Re
     `Resolved ${result.size} top-level read-only properties for ${displaySafe(resourceType, { asciiOnly: true })}` +
       (result.size > 0 ? `: ${[...result].join(', ')}` : '')
   );
-  return result;
+  return { topLevel: result, paths };
 }
 
 /** Unescape an RFC 6901 JSON Pointer segment (`~1` -> `/`, `~0` -> `~`). */

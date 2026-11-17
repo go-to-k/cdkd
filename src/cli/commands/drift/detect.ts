@@ -41,6 +41,7 @@ import {
   secretNamedRecordNeedles,
 } from '../../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
+import { getReadOnlyPropertyPaths } from '../../../provisioning/read-only-properties.js';
 import type { StackDriftReport, DriftOutcome } from './outcome.js';
 import { type NestedChildRecord, nestedChildStackName } from './command.js';
 import { DriftSecretResolvers, driftProducerRegionEvidence } from './secret-resolution.js';
@@ -508,6 +509,10 @@ export async function runDriftForStack(
       // access key's `UserName`) no recorded plaintext spells. Log-only needles,
       // so nothing compared, redacted or persisted reads them.
       const printing = printingBagOf(logicalId);
+      // go-to-k/cdkd#6485: started BESIDE the read, so the schema lookup (one
+      // per type, cached) overlaps it. Never rejects.
+      const readOnlyPathsLookup =
+        readPath === 'ccApi' ? getReadOnlyPropertyPaths(resource.resourceType) : undefined;
       await withPrintingSecrets(printing, async () => {
         try {
           let aws: Record<string, unknown> | ResourceNotFound | undefined;
@@ -590,6 +595,7 @@ export async function runDriftForStack(
             printing,
             aws,
             readContext,
+            ...(readOnlyPathsLookup && { readOnlyPathsLookup }),
           });
         } catch (err) {
           // A type with NO read path is not a failure. When the Cloud Control

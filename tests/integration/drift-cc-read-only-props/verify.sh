@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# verify.sh — cdkd integ for go-to-k/cdkd#6485.
+#
+# A Cloud Control routed resource's drift baseline is its whole Cloud Control
+# model, read-only properties included. Before the fix, an out-of-band
+# `Description` edit on an AWS::Location::Tracker also reported its read-only
+# `UpdateTime` as drift, and `cdkd drift --revert -y` failed:
+#   UPDATE failed for Tracker: Invalid patch update: readOnlyProperties
+#   [/properties/UpdateTime] cannot be updated
+# leaving the real drift in place.
+#
+# Phases:
+#   1. Deploy a GeofenceCollection + Tracker (+ TrackerConsumer). Premise: the
+#      Tracker's recorded baseline holds UpdateTime, so the run discriminates.
+#   2. `cdkd drift` exits 0.
+#   3. Change both descriptions OUT OF BAND.
+#   4. `cdkd drift` exits 1, names Description on both, never UpdateTime.
+#   5. `cdkd drift --revert -y` exits 0; both live descriptions are back.
+#   6. `cdkd drift` exits 0 again.
+#   7. Destroy + gone-probes.
+#
+# Required env vars:
+#   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
+#   AWS_REGION   — defaults to us-east-1
+
+set -euo pipefail
+
+# --- issue #1097 pattern 2: strict gone-probe helpers -----------------------
+# A destroy/leak assertion must distinguish "not found" from any other probe
+# failure (throttle, auth, network); a blind `if aws ...; then` reads ANY
+# failure as "gone" and silently passes the leak check.
+# gone_probe returns 0 when the probe fails with a not-found error (resource
+# confirmed gone), 1 when the probe succeeds (resource still exists), and
+# hard-FAILs the run on any other probe failure (undetermined result).
+# The first-arg guard catches a forgotten assert_gone description: without it,
+# `assert_gone aws ...` would exec `lambda get-function ...` and the shell's
+# "command not found" error would match the signature -- a silent pass.
+gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
+  [ "${1:-}" = "aws" ] || { echo "FAIL: gone_probe: probe must start with aws (got: ${1:-<empty>})" >&2; exit 1; }
+  local out
+  if out="$("$@" 2>&1)"; then
+    return 1
+  fi
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
+    echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
+    exit 1
+  fi
+  return 0
+}
+assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-verb> [args...]
+  local desc="$1"
+  shift
+  if ! gone_probe "$@"; then
+    echo "FAIL: ${desc}" >&2
+    exit 1
+  fi
+}
+# ---------------------------------------------------------------------------
+
+cd "$(dirname "$0")"
+
+STACK="CdkdDriftCcReadOnlyPropsExample"
+REGION="${AWS_REGION:-us-east-1}"
+STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
+TRACKER="CdkdIntegDriftRoTracker"
+COLLECTION="CdkdIntegDriftRoGeo"
+DRIFT_LOG=""
+
+# We are in the fixture dir, three levels below repo root.
+LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+cleanup() {
+  echo "==> Cleanup: destroying any leftover stack + state"
+  set +eu
+  rm -f "${DRIFT_LOG:-}"
+  if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" --force >/dev/null 2>&1
+  fi
+  if [ -x "${LOCAL_DIST}" ]; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+  fi
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
+    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1
+  fi
+  set -eu
+}
+
+trap cleanup EXIT
+trap '(exit 130); cleanup; exit 130' INT
+trap '(exit 143); cleanup; exit 143' TERM
+
+if [ -z "${STATE_BUCKET:-}" ]; then
+  echo "FAIL: STATE_BUCKET env var is required" >&2
+  exit 1
+fi
+
+if [ ! -f "${LOCAL_DIST}" ]; then
+  echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
+  exit 1
+fi
+
+echo "==> Installing fixture deps"
+if [ ! -d node_modules ]; then
+  npm install
+fi
+
+echo "==> Pre-run cleanup"
+cleanup
+
+run_drift() { # usage: run_drift [extra drift flags...] -> sets DRIFT_RC; output in DRIFT_LOG
+  rm -f "${DRIFT_LOG:-}"
+  DRIFT_LOG="$(mktemp)"
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" "$@" \
+    >"${DRIFT_LOG}" 2>&1
+  DRIFT_RC=$?
+  set -e
+  sed 's/^/    | /' "${DRIFT_LOG}"
+}
+expect_drift_rc() { # usage: expect_drift_rc <want> <phase label>
+  if [ "${DRIFT_RC}" != "$1" ]; then
+    echo "FAIL: $2: cdkd drift exited ${DRIFT_RC}, want $1" >&2
+    exit 1
+  fi
+}
+expect_descriptions() { # usage: expect_descriptions <want> <phase label>
+  local t g
+  t="$(aws location describe-tracker --tracker-name "${TRACKER}" --query Description --output text)" || return 1
+  g="$(aws location describe-geofence-collection --collection-name "${COLLECTION}" \
+    --query Description --output text)" || return 1
+  if [ "${t}" != "$1" ] || [ "${g}" != "$1" ]; then
+    echo "FAIL: $2: want both descriptions '$1', got tracker '${t}', collection '${g}'" >&2
+    exit 1
+  fi
+  echo "    ok: $2: both descriptions '$1'"
+}
+
+echo "==> Phase 1: deploy"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+expect_descriptions integ "Phase 1"
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+# Premise: the Tracker is Cloud Control routed and its recorded baseline holds
+# the read-only UpdateTime. Without it this run proves nothing.
+if [ "$(jq -r '.resources.Tracker.provisionedBy // empty' <<<"${STATE_JSON}")" != "cc-api" ]; then
+  echo "FAIL: premise: the Tracker record is not Cloud Control provisioned" >&2
+  exit 1
+fi
+if [ -z "$(jq -r '.resources.Tracker.observedProperties.UpdateTime // empty' <<<"${STATE_JSON}")" ]; then
+  echo "FAIL: premise: the Tracker baseline records no UpdateTime" >&2
+  exit 1
+fi
+
+echo "==> Phase 2: cdkd drift on the fresh stack reports no drift"
+run_drift
+expect_drift_rc 0 "Phase 2"
+
+echo "==> Phase 3: change both descriptions out of band"
+aws location update-tracker --tracker-name "${TRACKER}" --description oob >/dev/null
+aws location update-geofence-collection --collection-name "${COLLECTION}" --description oob >/dev/null
+expect_descriptions oob "Phase 3"
+
+echo "==> Phase 4: cdkd drift reports Description, never UpdateTime"
+run_drift
+expect_drift_rc 1 "Phase 4"
+# Sentinel: the drift blocks must be there, so a reworded report cannot pass
+# the UpdateTime grep below vacuously.
+for type in AWS::Location::Tracker AWS::Location::GeofenceCollection; do
+  if ! grep -qF "(${type})" "${DRIFT_LOG}"; then
+    echo "FAIL: Phase 4: no ${type} drift block — the report wording drifted" >&2
+    exit 1
+  fi
+done
+if [ "$(grep -c 'Description: oob' "${DRIFT_LOG}")" != "2" ]; then
+  echo "FAIL: Phase 4: the report does not name both out-of-band descriptions" >&2
+  exit 1
+fi
+if grep -q 'UpdateTime' "${DRIFT_LOG}"; then
+  echo "FAIL: Phase 4: the report names the read-only UpdateTime" >&2
+  exit 1
+fi
+
+echo "==> Phase 5: cdkd drift --revert -y reverts both descriptions"
+run_drift --revert -y
+expect_drift_rc 0 "Phase 5"
+expect_descriptions integ "Phase 5"
+
+echo "==> Phase 6: cdkd drift is clean again"
+run_drift
+expect_drift_rc 0 "Phase 6"
+
+echo "==> Phase 7: destroy"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+assert_gone "tracker ${TRACKER} leaked" aws location describe-tracker --tracker-name "${TRACKER}"
+assert_gone "geofence collection ${COLLECTION} leaked" \
+  aws location describe-geofence-collection --collection-name "${COLLECTION}"
+assert_gone "state ${STATE_KEY} leaked" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+
+trap - EXIT INT TERM
+rm -f "${DRIFT_LOG:-}"
+echo "PASS: drift-cc-read-only-props"

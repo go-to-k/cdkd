@@ -144,6 +144,41 @@ export function preFixBaselineUncomparedDriftKeys(
 }
 
 /**
+ * The schema read-only paths drift must NOT compare on one Cloud Control
+ * readback (go-to-k/cdkd#6485): every path of `readOnlyPaths`
+ * (`getReadOnlyPropertyPaths`) that `properties` (the template) does not
+ * declare.
+ *
+ * WHY: the observed baseline is the whole Cloud Control model, so it records
+ * read-only values such as `UpdateTime`, which AWS changes on every update.
+ * Comparing them reported an out-of-band edit's timestamp as drift, and
+ * `--revert` sent the old timestamp in its patch, which Cloud Control refuses
+ * whole, so the real drift was not reverted either. CloudFormation drift
+ * compares only what a template declares. A declared path is still compared:
+ * a schema that marks a settable property read-only stays visible.
+ *
+ * Read-only and per resource, like the rules above: a baseline written before
+ * this rule is compared around, not rewritten. `undefined` (the schema could
+ * not be read) skips nothing, the comparison before the rule.
+ */
+export function readOnlyUncomparedDriftPaths(
+  readOnlyPaths: readonly string[] | undefined,
+  properties: unknown
+): string[] {
+  if (!readOnlyPaths || readOnlyPaths.length === 0) return [];
+  const declared = (path: string): boolean => {
+    let node: unknown = properties;
+    for (const segment of path.split('.')) {
+      if (typeof node !== 'object' || node === null || Array.isArray(node)) return false;
+      if (!hasOwnKey(node as Record<string, unknown>, segment)) return false;
+      node = (node as Record<string, unknown>)[segment];
+    }
+    return true;
+  };
+  return readOnlyPaths.filter((path) => !declared(path));
+}
+
+/**
  * The physical ids of every record of `resources` OTHER than `logicalId`'s
  * (go-to-k/cdkd#4810). Drift resolves state with no resource records, so no
  * `Ref` / `Fn::GetAtt` read records a copy; each of these ids is stored in

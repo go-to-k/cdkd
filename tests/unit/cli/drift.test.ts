@@ -192,6 +192,16 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   }),
 }));
 
+// go-to-k/cdkd#6485: the schema read-only lookup beside a Cloud Control read.
+// `undefined` (schema unreadable) is the default, the comparison before it.
+const mockReadOnlyPropertyPaths = vi
+  .fn<(resourceType: string) => Promise<readonly string[] | undefined>>()
+  .mockResolvedValue(undefined);
+vi.mock('../../../src/provisioning/read-only-properties.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/read-only-properties.js')>()),
+  getReadOnlyPropertyPaths: (resourceType: string) => mockReadOnlyPropertyPaths(resourceType),
+}));
+
 import {
   buildReadCurrentStateContext,
   createDriftCommand,
@@ -311,6 +321,7 @@ describe('cdkd drift', () => {
     mockRegistryGetProvider.mockReset();
     mockRegistryShouldSkip.mockReset().mockReturnValue(false);
     mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockReadOnlyPropertyPaths.mockReset().mockResolvedValue(undefined);
     mockIamSend.mockReset();
     errorSpy.mockReset();
     warnSpy.mockReset();
@@ -727,6 +738,112 @@ describe('cdkd drift', () => {
       expect(logicalId).toBe('Bus');
       expect(newProps['Description']).toBe('v1');
       expect(newProps['Policy']).toEqual(policy(true));
+    });
+  });
+
+  // go-to-k/cdkd#6485: a Cloud Control model's read-only `UpdateTime` is in the
+  // observed baseline and changes on every update.
+  describe('schema read-only paths of a Cloud Control readback', () => {
+    const tracker = (properties: Record<string, unknown> = { TrackerName: 't', Description: 'v2' }) =>
+      makeResource({
+        physicalId: 't',
+        resourceType: 'AWS::Location::Tracker',
+        properties,
+        observedProperties: {
+          TrackerName: 't',
+          Description: 'v2',
+          UpdateTime: '2026-11-17T05:03:33.485Z',
+          Arn: 'arn:aws:geo:us-east-1:123456789012:tracker/t',
+        },
+      });
+    const live = {
+      TrackerName: 't',
+      Description: 'oob',
+      UpdateTime: '2026-11-17T05:08:47.591Z',
+      Arn: 'arn:aws:geo:us-east-1:123456789012:tracker/t',
+    };
+
+    it('reports the real drift and not the read-only timestamp', async () => {
+      mockReadOnlyPropertyPaths.mockResolvedValue(['UpdateTime', 'Arn', 'CreateTime']);
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Tracker: tracker() }));
+      mockRegistryGetProvider.mockReturnValue({});
+      mockCcReadCurrentState.mockResolvedValue({ ...live });
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      const [report] = JSON.parse(output) as Array<{
+        drifted: Array<{ changes: Array<{ path: string }> }>;
+      }>;
+      expect(report!.drifted.flatMap((d) => d.changes.map((c) => c.path))).toEqual([
+        'Description',
+      ]);
+      expect(mockReadOnlyPropertyPaths).toHaveBeenCalledWith('AWS::Location::Tracker');
+    });
+
+    it('--revert sends the live timestamp, so the patch carries only the drifted key', async () => {
+      mockReadOnlyPropertyPaths.mockResolvedValue(['UpdateTime', 'Arn']);
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Tracker: tracker() }));
+      const updateMock = vi.fn<
+        (
+          logicalId: string,
+          physicalId: string,
+          resourceType: string,
+          newProperties: Record<string, unknown>,
+          previousProperties: Record<string, unknown>
+        ) => Promise<{ physicalId: string; wasReplaced: boolean }>
+      >(async () => ({ physicalId: 't', wasReplaced: false }));
+      mockRegistryGetProvider.mockReturnValue({ update: updateMock });
+      mockCcReadCurrentState.mockResolvedValue({ ...live });
+
+      const { error } = await runDrift(['TestStack', '--revert', '--yes']);
+
+      expect(error).toBeUndefined();
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      const [, , , newProps, previousProps] = updateMock.mock.calls[0]!;
+      expect(newProps['Description']).toBe('v2');
+      expect(newProps['UpdateTime']).toBe(previousProps['UpdateTime']);
+    });
+
+    it('still compares a read-only path the template declares', async () => {
+      mockReadOnlyPropertyPaths.mockResolvedValue(['UpdateTime']);
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Tracker: tracker({ TrackerName: 't', Description: 'v2', UpdateTime: 'declared' }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({});
+      mockCcReadCurrentState.mockResolvedValue({ ...live });
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      expect(output).toContain('"UpdateTime"');
+    });
+
+    it('compares every key when the schema cannot be read', async () => {
+      mockReadOnlyPropertyPaths.mockResolvedValue(undefined);
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Tracker: tracker() }));
+      mockRegistryGetProvider.mockReturnValue({});
+      mockCcReadCurrentState.mockResolvedValue({ ...live });
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      expect(output).toContain('"UpdateTime"');
+    });
+
+    it('does not look the schema up for a provider-owned read', async () => {
+      mockReadOnlyPropertyPaths.mockResolvedValue(['UpdateTime']);
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(makeState({ Tracker: tracker() }));
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({ ...live }) });
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      expect(mockReadOnlyPropertyPaths).not.toHaveBeenCalled();
+      expect(output).toContain('"UpdateTime"');
     });
   });
 
@@ -6700,6 +6817,7 @@ describe('cdkd drift --revert untemplated-value contract (issue #1626)', () => {
     mockRegistryGetProvider.mockReset();
     mockRegistryShouldSkip.mockReset().mockReturnValue(false);
     mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockReadOnlyPropertyPaths.mockReset().mockResolvedValue(undefined);
     mockIamSend.mockReset();
     errorSpy.mockReset();
     warnSpy.mockReset();

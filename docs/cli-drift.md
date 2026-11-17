@@ -80,6 +80,12 @@ cdkd state refresh-observed MyStack
 
 Drift compares only the properties that state records. Fields AWS manages and
 cdkd never stored, such as timestamps and generated identifiers, are ignored.
+For a resource read through Cloud Control, the snapshot does record the
+resource type's read-only fields (an `AWS::Location::Tracker`'s `UpdateTime`,
+for example). Drift ignores every field the type's registry schema marks
+read-only unless your template sets it, so `--revert` never tries to write one
+back. Reading the schema needs `cloudformation:DescribeType`; without it, those
+fields are compared too.
 
 Drift never compares a bucket's `NotificationConfiguration` unless your
 template sets it on the bucket itself. CDK's `bucket.addEventNotification(...)`
