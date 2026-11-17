@@ -114,9 +114,9 @@ cleanup() {
     fi
   fi
   # Both hand-retirements above are best-effort (`|| true`), which is right --
-  # a cleanup failure must not mask the assertion result -- but silent. With
-  # two deliberately-stranded certificates now, sweep for survivors so a failed
-  # retirement is VISIBLE rather than discovered later on the bill. Reported,
+  # a cleanup failure must not mask the assertion result -- but silent. Sweep
+  # for survivors so a failed retirement is VISIBLE rather than discovered
+  # later on the bill. Reported,
   # not fatal: the run's own verdict is already decided by `rc`.
   #
   # TRI-STATE, not two: `|| true` here would let a throttle / AccessDenied
@@ -128,7 +128,7 @@ cleanup() {
   # POLLED, not a single probe. `DeleteCertificate` returns before
   # `ListCertificates` stops listing the certificate, so a one-shot check
   # immediately after the retirements above reports a survivor that is already
-  # being deleted -- measured on this fixture: the arn phase 3 stranded was
+  # being deleted -- measured on this fixture: a retired certificate was
   # still listed at cleanup time and gone moments later. A warning that fires
   # on every clean run is worse than no warning, because the next reader learns
   # to ignore it.
@@ -350,7 +350,8 @@ if [[ "${arn}" != arn:aws:acm:* ]]; then
   exit 1
 fi
 echo "PASS: state records ACM cert ARN ${arn}"
-# Hand the cleanup trap the ARN phase 2 is about to strand.
+# Hand the cleanup trap the ARN phase 2's replacement deletes, in case the run
+# stops before that delete.
 ORIGINAL_ARN="${arn}"
 
 # Verify the cert exists in ACM. The synthetic `example.test` domain cannot
@@ -405,9 +406,16 @@ if [[ "${diff_rc}" -ne 1 ]] || ! grep -q "TestCertificate6B4956B6 will be replac
 fi
 echo "PASS: cdkd diff reports the replacement and --fail-on=destructive fails"
 
+set +e
 deploy_out=$(CDKD_NO_WAIT=true CDKD_TEST_UPDATE=validation $CDKD deploy \
   --region "${REGION}" --state-bucket "${BUCKET}" 2>&1)
+deploy_rc=$?
+set -e
 echo "${deploy_out}"
+if [[ "${deploy_rc}" -ne 0 ]]; then
+  echo "FAIL: the ValidationMethod replacement deploy exited ${deploy_rc}"
+  exit 1
+fi
 deploy_txt=$(printf '%s' "${deploy_out}" | sed $'s/\033\[[0-9;]*m//g')
 if ! grep -q "immutable properties changed: ValidationMethod" <<<"${deploy_txt}"; then
   echo "FAIL: the deploy did not take the engine's replacement for ValidationMethod"
@@ -431,12 +439,19 @@ old_out=$(aws acm describe-certificate --certificate-arn "${ORIGINAL_ARN}" --reg
   echo "FAIL: the replaced certificate ${ORIGINAL_ARN} still exists (status ${old_out})"
   exit 1
 }
-if ! grep -qiE 'not ?found|no ?such|does ?not ?exist' <<<"${old_out}"; then
+if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${old_out}"; then
   echo "FAIL: could not confirm the old certificate is gone: ${old_out}"
   exit 1
 fi
 ORIGINAL_ARN=""
-echo "PASS: replaced by ${new_arn}; the old certificate is deleted"
+# The stack's one reader of the certificate ARN must follow the replacement.
+out_arn=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin).get("outputs", {}).get("CertificateArn", ""))')
+if [[ "${out_arn}" != "${new_arn}" ]]; then
+  echo "FAIL: Output CertificateArn is '${out_arn}', expected the replacement ${new_arn}"
+  exit 1
+fi
+echo "PASS: replaced by ${new_arn}; the old certificate is deleted and the output follows it"
 
 # --- Phase 4: a secret-derived DomainName is updated in place (#4275) ---------
 #
@@ -477,6 +492,8 @@ print(r.get("physicalId", "") if f == "physicalId" else r.get("properties", {}).
 ' "$1"
 }
 
+# No CDKD_TEST_UPDATE here, so TestCertificate also goes back from EMAIL to
+# DNS: a second engine replacement, beside the secret certificate's create.
 CDKD_NO_WAIT=true CDKD_TEST_SECRET_NAME="${SECRET_NAME}" \
   $CDKD deploy --region "${REGION}" --state-bucket "${BUCKET}"
 
@@ -538,8 +555,8 @@ echo "PASS: the Tags-only update was applied in place (phase=v2)"
 
 # Destroy on the success path (unpiped, so `set -e` stops the run if it
 # fails), then sweep every object version under the stack's prefix and assert
-# none survives. The trap still retires the stranded certificates, deletes the
-# secret and runs the ACM leak sweep.
+# none survives. The trap still retires a certificate phase 2 left, deletes
+# the secret and runs the ACM leak sweep.
 echo "=== Destroying stack ${STACK} ==="
 $CDKD destroy --region "${REGION}" --state-bucket "${BUCKET}" --force
 DESTROYED=1

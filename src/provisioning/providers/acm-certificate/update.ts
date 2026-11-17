@@ -52,9 +52,12 @@ export async function update(
   // and handed here resolved, which is no change, so it must not REPLACE the
   // certificate (go-to-k/cdkd#4275). The physical id is the certificate ARN,
   // which carries none of these values, so the masker arm decides, and only
-  // on a key the engine itself replaces on any change; ValidationMethod is
-  // not one, so a secret-derived one still replaces. The writes below
-  // address the certificate by its ARN and never send these keys.
+  // on a key the engine itself replaces on any change, which since
+  // go-to-k/cdkd#6513 is every one of them (ValidationMethod through
+  // `ReplacementRulesRegistry`). A template edit to any of these keys is
+  // therefore an engine replacement and never reaches this arm; only a
+  // state-borne caller (a rollback revert) does. The writes below address
+  // the certificate by its ARN and never send these keys.
   let changedImmutable: (typeof immutableFields)[number] | undefined;
   for (const k of immutableFields) {
     if (JSON.stringify(properties[k]) === JSON.stringify(previousProperties[k])) continue;

@@ -187,9 +187,11 @@ describe('ACM Certificate: a secret-derived immutable value no longer REPLACES t
     expect(replaced).toBe(true);
   });
 
-  it('ValidationMethod is not a key the engine replaces on, so a secret-derived one still replaces', async () => {
+  // go-to-k/cdkd#6513: ValidationMethod is now a key the engine replaces on,
+  // so an unchanged secret-derived one is no change here either.
+  it('ValidationMethod UNCHANGED behind a secret reference: updated in place', async () => {
     const { replaced } = await run('ValidationMethod', NAME, REF);
-    expect(replaced).toBe(true);
+    expect(replaced).toBe(false);
   });
 
   it('an unchanged secret-derived DomainName does not hide a real change of a later key', async () => {

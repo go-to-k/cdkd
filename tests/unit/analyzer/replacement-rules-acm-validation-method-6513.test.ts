@@ -43,6 +43,43 @@ describe('ACM Certificate ValidationMethod (#6513)', () => {
     }
   });
 
+  const stateWith = (properties: Record<string, unknown>) =>
+    ({
+      version: 16,
+      stackName: 'S',
+      region: 'us-east-1',
+      resources: {
+        Cert: {
+          physicalId: 'arn:aws:acm:us-east-1:111111111111:certificate/a',
+          resourceType: CERT,
+          properties,
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    }) as StackState;
+  const diffOf = async (recorded: Record<string, unknown>, desired: Record<string, unknown>) =>
+    (
+      await new DiffCalculator().calculateDiff(
+        stateWith(recorded),
+        { Resources: { Cert: { Type: CERT, Properties: desired } } } as CloudFormationTemplate,
+        async (v: unknown) => v
+      )
+    ).get('Cert')!;
+
+  it('keeps the schema fallback: a DomainName change still replaces, a Tags change stays in place', async () => {
+    const renamed = await diffOf({ DomainName: 'a.example.test' }, { DomainName: 'b.example.test' });
+    expect(renamed.propertyChanges?.find((pc) => pc.path === 'DomainName')?.requiresReplacement).toBe(true);
+    const tagged = await diffOf(
+      { DomainName: 'a.example.test' },
+      { DomainName: 'a.example.test', Tags: [{ Key: 'k', Value: 'v' }] }
+    );
+    expect(tagged.changeType).toBe('UPDATE');
+    expect(tagged.propertyChanges?.some((pc) => pc.requiresReplacement)).toBe(false);
+  });
+
   it('is reported by the diff and counted as destructive', async () => {
     const state = {
       version: 16,
