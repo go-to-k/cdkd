@@ -365,14 +365,18 @@ env CDKD_TEST_PHASE=flip \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${FLIP_OUT}"
 # The two normalized types announce the id moving to the SDK form; the Method
 # keeps its id. Each line names its logical id.
+# Each id's lines captured first, then matched with a here-string: under
+# pipefail a `grep -q` closing the pipe early can SIGPIPE the grep feeding it.
 for id in RerouteAuthorizer RerouteStage; do
-  grep -F "${id} (AWS::" "${FLIP_OUT}" | grep -qF "takes the SDK provider's form" || {
+  lines=$(grep -F "${id} (AWS::" "${FLIP_OUT}" || true)
+  grep -qF "takes the SDK provider's form" <<<"${lines}" || {
     echo "FAIL: the flip did not announce ${id}'s id moving to the SDK form" >&2
     rm -f "${FLIP_OUT}"
     exit 1
   }
 done
-grep -F "RerouteMethod (AWS::" "${FLIP_OUT}" | grep -qF 'The physical id is preserved' || {
+lines=$(grep -F "RerouteMethod (AWS::" "${FLIP_OUT}" || true)
+grep -qF 'The physical id is preserved' <<<"${lines}" || {
   echo "FAIL: the flip did not announce RerouteMethod returning with its id preserved" >&2
   rm -f "${FLIP_OUT}"
   exit 1
