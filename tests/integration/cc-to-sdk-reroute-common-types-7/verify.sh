@@ -361,28 +361,24 @@ method_witness_present || { echo "FAIL: the out-of-band method response was not 
 echo "    OK: all ${#SUBJECTS[@]} still on Cloud Control, updates applied via CC"
 
 echo "==> Phase 5: THE ARM -- redeploy unpinned; each flip must be churn-free"
-FLIP_OUT=$(mktemp)
-env CDKD_TEST_PHASE=flip \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${FLIP_OUT}"
+FLIP_OUT=$(env CDKD_TEST_PHASE=flip \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee /dev/stderr)
 # The two normalized types announce the id moving to the SDK form; the Method
 # keeps its id. Each line names its logical id.
 # Each id's lines captured first, then matched with a here-string: under
 # pipefail a `grep -q` closing the pipe early can SIGPIPE the grep feeding it.
 for id in RerouteAuthorizer RerouteStage; do
-  lines=$(grep -F "${id} (AWS::" "${FLIP_OUT}" || true)
+  lines=$(grep -F "${id} (AWS::" <<<"${FLIP_OUT}" || true)
   grep -qF "takes the SDK provider's form" <<<"${lines}" || {
     echo "FAIL: the flip did not announce ${id}'s id moving to the SDK form" >&2
-    rm -f "${FLIP_OUT}"
     exit 1
   }
 done
-lines=$(grep -F "RerouteMethod (AWS::" "${FLIP_OUT}" || true)
+lines=$(grep -F "RerouteMethod (AWS::" <<<"${FLIP_OUT}" || true)
 grep -qF 'The physical id is preserved' <<<"${lines}" || {
   echo "FAIL: the flip did not announce RerouteMethod returning with its id preserved" >&2
-  rm -f "${FLIP_OUT}"
   exit 1
 }
-rm -f "${FLIP_OUT}"
 load_state
 assert_layers "phase 5 (flip)" sdk
 assert_forms "phase 5 (flip)" sdk
@@ -441,11 +437,11 @@ echo "==> Phase 7: remove the three from the template; each SDK delete must addr
 # and readable here. After a destroy the API's own delete would take every
 # child with it and pass the gone-probes for any id.
 AUTHORIZER_ID=$(record RerouteAuthorizer '.physicalId')
-REMOVE_LOG=$(mktemp)
-env CDKD_TEST_PHASE=removed \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${REMOVE_LOG}"
-REMOVE_PLAIN=$(sed $'s/\033\\[[0-9;]*m//g' "${REMOVE_LOG}")
-rm -f "${REMOVE_LOG}"
+# Captured in a variable, not a temp file a failed deploy would leave behind;
+# `tee /dev/stderr` still shows the run.
+REMOVE_OUT=$(env CDKD_TEST_PHASE=removed \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee /dev/stderr)
+REMOVE_PLAIN=$(sed $'s/\033\\[[0-9;]*m//g' <<<"${REMOVE_OUT}")
 load_state
 for id in "${SUBJECTS[@]}"; do
   # Spelled out: cdk.out now holds the removed phase's template, which no

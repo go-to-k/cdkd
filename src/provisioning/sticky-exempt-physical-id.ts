@@ -76,7 +76,9 @@ const REST_API_ID = '[a-z0-9]{10}';
  * schema's primaryIdentifier is `[RestApiId, AuthorizerId]`, the reverse of
  * the order the committed schema fixture lists). The authorizer id is a
  * lowercase alphanumeric; every one measured had 6 characters, but AWS
- * documents no length, so it is not pinned.
+ * documents no length, so it is not pinned. A reversed
+ * `<authorizerId>|<restApiId>` is therefore refused only while the authorizer
+ * id is not itself 10 characters long, as no measured one was.
  */
 const APIGW_AUTHORIZER_CC_ID = new RegExp(`^${REST_API_ID}\\|([a-z0-9]+)$`);
 
