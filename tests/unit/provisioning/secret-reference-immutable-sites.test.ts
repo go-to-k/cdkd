@@ -21,7 +21,7 @@
  *  - MASK (`***`) where the physical id does not carry the name, and NO
  *    MASKER: both still refused.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const { mockSend, mockRegion, debugSpy, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
@@ -1018,6 +1018,55 @@ describe('the log lines a secret-derived name newly reaches are masked (go-to-k/
     expect(result).toBe('resolved');
     expect(transcript()).toContain(`(group: ${SECRET_MASK})`);
     expect(transcript()).not.toContain(NAME);
+  });
+});
+
+describe('DBProxyEndpoint: the post-modify wait masks the name in every message it throws (go-to-k/cdkd#6490)', () => {
+  // The physical id IS the endpoint name. Each case asserts the masked message
+  // was thrown (its fixed text plus `***`), so "no plaintext" is not vacuous.
+  const site = (): Site => SITES.find((s) => s.label === 'RDS DBProxyEndpoint DBProxyEndpointName')!;
+  const modifyThen = (describeAnswer: () => unknown) =>
+    fakeAws({ ModifyDBProxyEndpointCommand: () => ({}), DescribeDBProxyEndpointsCommand: describeAnswer });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('the not-found message', async () => {
+    modifyThen(() => ({ DBProxyEndpoints: [] }));
+    const message = await run(site(), NAME, REF);
+    expect(message).toContain(`DBProxyEndpoint ${SECRET_MASK} was not found while waiting for it after modify`);
+    expect(message).not.toContain(NAME);
+  });
+
+  it('the terminal-state message', async () => {
+    modifyThen(() => ({ DBProxyEndpoints: [{ Status: 'incompatible-network' }] }));
+    const message = await run(site(), NAME, REF);
+    expect(message).toContain(
+      `DBProxyEndpoint ${SECRET_MASK} entered terminal failure state after modify: incompatible-network`
+    );
+    expect(message).not.toContain(NAME);
+  });
+
+  it('the timeout message', async () => {
+    vi.useFakeTimers();
+    modifyThen(() => ({ DBProxyEndpoints: [{ Status: 'modifying' }] }));
+    const pending = run(site(), NAME, REF);
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 5000);
+    const message = await pending;
+    expect(message).toContain(
+      `Timed out waiting for DBProxyEndpoint ${SECRET_MASK} to become available after modify`
+    );
+    expect(message).not.toContain(NAME);
+  });
+
+  it('a failed poll call that quotes the name', async () => {
+    modifyThen(() => {
+      throw new Error(`endpoint ${NAME} is unavailable`);
+    });
+    const message = await run(site(), NAME, REF);
+    expect(message).toContain('UPDATE (poll) failed');
+    expect(message).not.toContain(NAME);
   });
 });
 

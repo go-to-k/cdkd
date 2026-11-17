@@ -148,7 +148,7 @@ declared_value() { # usage: declared_value <logicalId> <a|b>
 # IDENTITY WITNESS, AWS-minted: the resource id inside the ARN RDS reports for
 # the name (`prx-...` for a proxy, `prx-endpoint-...` for an endpoint; a
 # re-created proxy or endpoint gets a new one). Read by NAME, so it does not
-# echo the record; the record's own ARN attribute must name the same id.
+# echo the record.
 witness() { # usage: witness <logicalId> <physicalId>
   local arn want
   case "$1" in
@@ -244,14 +244,21 @@ assert_refs() { # usage: assert_refs <phase-label>
 
 # Waits for a resource an out-of-band modify left `modifying` to be
 # `available` again: the next modify, and the destroy, are refused until then.
+# Prints how long it stayed unavailable: for the endpoint, that is the window
+# phase 5's status read has to land in.
 wait_available() { # usage: wait_available <logicalId> <physicalId>
-  local deadline=$(( $(date +%s) + SETTLE_SECONDS )) st
+  local start deadline st
+  start=$(date +%s)
+  deadline=$(( start + SETTLE_SECONDS ))
   while :; do
     case "$1" in
       RerouteDBProxy) st=$(describe_proxy "$2" Status) ;;
       RerouteDBProxyEndpoint) st=$(describe_endpoint "$2" Status) ;;
     esac || { echo "FAIL: cannot read $1's status through $2" >&2; return 1; }
-    [ "${st}" = "available" ] && return 0
+    if [ "${st}" = "available" ]; then
+      echo "    NOTE: $1 ($2) was available again $(( $(date +%s) - start ))s after its out-of-band modify returned"
+      return 0
+    fi
     [ "$(date +%s)" -lt "${deadline}" ] || { echo "FAIL: $1 ($2) is still '${st}' ${SETTLE_SECONDS}s after its out-of-band change" >&2; return 1; }
     sleep 10
   done
@@ -272,6 +279,20 @@ W1=()
 P1=()
 # The proxy secret, read from the stack's outputs once it is deployed.
 SECRET_ARN=""
+
+# Deletes the log group RDS Proxy may create for each generation's proxy name;
+# a missing one is the normal answer.
+delete_proxy_log_groups() { (
+  set +eu
+  for gen in 1 2; do
+    group="/aws/rds/proxy/$(name_of RerouteDBProxy "${gen}")"
+    if out=$(aws logs delete-log-group --log-group-name "${group}" --region "${REGION}" 2>&1); then
+      echo "    deleted log group ${group}"
+    elif ! grep -q 'ResourceNotFoundException' <<<"${out}"; then
+      echo "WARN: could not delete log group ${group}; delete it by hand: ${out}" >&2
+    fi
+  done
+) }
 
 cleanup() {
   echo "==> Cleanup"
@@ -296,6 +317,7 @@ cleanup() {
     aws secretsmanager delete-secret --secret-id "${SECRET_ARN}" --force-delete-without-recovery \
       --region "${REGION}" >/dev/null 2>&1
   fi
+  delete_proxy_log_groups
   set -eu
 }
 trap cleanup EXIT
@@ -416,6 +438,15 @@ echo "    OK: both still on Cloud Control, updates applied via CC"
 echo "==> Phase 5: THE ARM -- redeploy unpinned; each flip must be churn-free"
 env CDKD_TEST_PHASE=flip \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Wait parity, read FIRST and by name: a ModifyDBProxyEndpoint leaves the
+# endpoint `modifying` for only seconds, so the read must not wait behind the
+# state download. The unit suite pins the wait itself; this is the live check.
+EP_STATUS=$(describe_endpoint "$(name_of RerouteDBProxyEndpoint 2)" Status) ||
+  { echo "FAIL: phase 5: cannot read RerouteDBProxyEndpoint's status right after the deploy" >&2; exit 1; }
+[ "${EP_STATUS}" = "available" ] || {
+  echo "FAIL: phase 5: RerouteDBProxyEndpoint is '${EP_STATUS}' as the SDK update returned, not available: the update did not wait" >&2
+  exit 1
+}
 load_state
 assert_layers "phase 5 (flip)" sdk
 # Wait parity: the SDK update returned only once each resource was available.
@@ -537,9 +568,21 @@ assert_gone_as "endpoint ${FLIPPED[1]} survived its delete under the flipped id"
 assert_gone_as "proxy ${FLIPPED[0]} survived its delete under the flipped id" DBProxyNotFoundFault \
   aws rds describe-db-proxies --db-proxy-name "${FLIPPED[0]}" --region "${REGION}"
 # The secret goes without a recovery window: one left in recovery would be
-# a leak, and would refuse the next run's create of the same name.
+# a leak, and would refuse the next run's create of the same name. A forced
+# delete completes asynchronously, so the probe allows it a minute.
+for _ in $(seq 1 12); do
+  gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}" && break
+  sleep 5
+done
 assert_gone_as "proxy secret ${SECRET_ARN} survived the destroy (or is in recovery)" ResourceNotFoundException \
   aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}"
+# RDS Proxy may create a log group per proxy name that outlives the proxy;
+# neither generation's may survive the run.
+delete_proxy_log_groups
+for gen in 1 2; do
+  assert_gone_as "log group /aws/rds/proxy/$(name_of RerouteDBProxy "${gen}") survived the run" ResourceNotFoundException \
+    aws logs list-tags-log-group --log-group-name "/aws/rds/proxy/$(name_of RerouteDBProxy "${gen}")" --region "${REGION}"
+done
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: destroyed clean"
