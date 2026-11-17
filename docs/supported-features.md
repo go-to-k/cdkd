@@ -19,7 +19,7 @@ locally.
 
 | Feature | Status | What cdkd does |
 | --- | --- | --- |
-| `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (the Auto Scaling group policies) |
+| `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (the Auto Scaling group policies and `CodeDeployLambdaAliasUpdate`) |
 | `CreationPolicy` | ⚠️ Not waited on | Creates or replaces the resource and logs a warning |
 | A resource type with no SDK provider and no Cloud Control support | Not supported | Fails the deploy with an error naming the type |
 
@@ -92,6 +92,12 @@ With `--update-policy`, cdkd honors:
   read through `Fn::GetAtt`, such as a launch template's latest version, is
   shown as "may be replaced" and is refused, when it stands, at the group
   itself.
+- `CodeDeployLambdaAliasUpdate` on a Lambda alias: when the update changes
+  the alias's `FunctionVersion`, cdkd shifts the alias's traffic to the new
+  version through a CodeDeploy deployment on the policy's deployment group,
+  with its `BeforeAllowTrafficHook` and `AfterAllowTrafficHook`, and waits for
+  it to succeed. See
+  [Lambda alias traffic shifting](#lambda-alias-traffic-shifting).
 
 The Auto Scaling policies apply when the group is updated through cdkd's SDK
 provider; on a group updated through Cloud Control the refresh policies log
@@ -106,6 +112,62 @@ configuration the running instances have.
 
 Every other `UpdatePolicy` is skipped, with or without the flag: cdkd applies
 the update in one step.
+
+#### Lambda alias traffic shifting
+
+With `--update-policy`, an alias update that changes `FunctionVersion` runs in
+this order:
+
+1. cdkd reads the version the alias serves now, and fails the update before
+   anything changes when the deployment group already runs a deployment
+   (one started by hand, or one an interrupted deploy left): CodeDeploy runs
+   one at a time. It also fails the update before anything changes when the
+   alias cannot be read, or when the deployment group's configuration's
+   traffic time, plus 5 minutes for the deployment's start-up and hooks, does
+   not fit what the resource timeout leaves (a linear configuration such as
+   10% every 10 minutes takes 90 minutes, 10% every 3 minutes 27); the error
+   names the `--resource-timeout AWS::Lambda::Alias=<duration>` that fits.
+2. It creates a CodeDeploy deployment whose AppSpec shifts the alias from that
+   version to the new one, with the policy's hooks, and waits until it
+   `Succeeded`. The deployment group's configuration (canary, linear or all at
+   once) sets the pace.
+3. It applies the alias's other changed properties, such as `Description` or
+   `ProvisionedConcurrencyConfig`. CodeDeploy has already moved
+   `FunctionVersion`, so it is not written again.
+
+When the deployment does not succeed:
+
+- A deployment that ends `Failed` or `Stopped` fails the update before step
+  3, so the alias's other properties are unchanged. cdkd first waits for the
+  deployment group's rollback deployment, if it has one, to finish; the error
+  names the version the alias then serves and whether its traffic is still
+  split.
+- A deployment still running two minutes before the resource timeout
+  (`--resource-timeout`, 30 minutes by default; a tenth of a timeout shorter
+  than 20 minutes) is stopped with CodeDeploy's rollback and fails the
+  update.
+- Ctrl-C stops the deployment too, and waits up to a minute for CodeDeploy's
+  rollback of it.
+
+The policy's names and the other cases:
+
+- `ApplicationName`, `DeploymentGroupName` and the hook names are resolved
+  like properties, so `Ref`s to resources in the same stack work, and the
+  alias waits for those resources to be created first.
+- A secret there (a dynamic reference such as `{{resolve:...}}`, or a `NoEcho`
+  parameter) fails the update before anything changes.
+- An alias created or replaced is created at its version directly, as in
+  CloudFormation.
+- The deployment is waited for under `--no-wait` too; see
+  [cdkd deploy: wait mode details](cli-deploy-waits.md#lambda-alias-codedeploy-deployment).
+- `cdkd diff` shows the version change as an ordinary update.
+
+The deployment needs `codedeploy:CreateDeployment` (with its dependent
+actions `codedeploy:GetDeploymentConfig`, `codedeploy:GetApplicationRevision`
+and `codedeploy:RegisterApplicationRevision`), `codedeploy:GetDeployment`,
+`codedeploy:GetDeploymentGroup`, `codedeploy:GetDeploymentConfig`,
+`codedeploy:ListDeployments`, `codedeploy:StopDeployment`,
+`lambda:GetAlias` and `lambda:UpdateAlias`.
 
 #### Rolling updates as an instance refresh
 
@@ -158,6 +220,24 @@ back under the policy of the template before the update; cdkd keeps no
 earlier template, so it uses the policy of the deploy it reverts. The two
 differ only when that deploy also changed the group's `UpdatePolicy`.
 
+A rollback reverts a Lambda alias the same way: an alias whose version moved
+through CodeDeploy is shifted back to its previous version by a second
+deployment on the same deployment group, which takes as long as the first.
+An alias CodeDeploy's own rollback already returned to the previous version
+is not shifted again. When a deployment ended mid-shift without CodeDeploy's
+rollback, the alias still splits traffic; the rollback clears that split
+before it reverts, unless the restored alias declares its own
+`RoutingConfig`. Two cases switch the alias directly, without the gradual
+shift and without running the hooks, where CloudFormation's rollback would
+run the deployment: a rollback that cannot read the alias, and one whose
+deployment configuration does not fit the resource timeout (the same check
+as a deploy's). `cdkd rollback` takes no `--resource-timeout`, so it always
+uses the 30-minute default, and a configuration that does not fit it is
+switched directly there.
+A rollback that meets a deployment the failed deploy started and left running
+(its wait was cut short) stops it first; any other running deployment fails
+the rollback, which can be run again once it ends.
+
 `EnableVersionUpgrade` (OpenSearch domain) and `UseOnlineResharding`
 (ElastiCache replication group) need no flag: cdkd changes an OpenSearch
 domain's engine version and a replication group's shard count in place.
@@ -165,7 +245,9 @@ domain's engine version and a replication group's shard count in place.
 When a template declares a policy that `--update-policy` would honor and
 neither flag nor the `cdk.json` key is set, cdkd prints a one-line hint on
 each update the policy would apply to: for a rolling, instance-refresh or
-replacing update, one that changes a property listed above.
+replacing update, one that changes a property listed above, and for
+`CodeDeployLambdaAliasUpdate`, one that changes the alias's
+`FunctionVersion`.
 
 ### `CreationPolicy` is not waited on
 

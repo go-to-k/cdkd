@@ -60,6 +60,7 @@ import {
   resolveApp,
   resolveAutoAssetStorage,
   resolveSkipPrefix,
+  resolveUpdatePolicy,
   resolveUseCdkBootstrapAssets,
   warnDeprecatedNoPrefixCliFlag,
 } from '../../config-loader.js';
@@ -653,6 +654,8 @@ export async function deployCommand(
     };
     const dagBuilder = new DagBuilder({
       relaxCdkVpcDefensiveDeps: !!options.aggressiveVpcParallel,
+      // go-to-k/cdkd#6437: the alias waits for its CodeDeploy policy's targets.
+      ...(resolveUpdatePolicy(options.updatePolicy) === true && { updatePolicyReferences: true }),
     });
     const diffCalculator = new DiffCalculator();
 

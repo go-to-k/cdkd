@@ -132,6 +132,8 @@ the background. Until then, you may see these:
   replacing instances, and a refresh that fails does not fail the deploy.
   An `AutoScalingReplacingUpdate` is the exception: it still waits for the
   new group's instances to be in service before it deletes the old group.
+  A Lambda alias's CodeDeploy deployment is waited for too, since the
+  deploy can delete the version the alias serves until the shift ends.
 
 [cdkd deploy](cli-deploy.md) lists what each mode does for
 every affected resource type, next to what CloudFormation and Terraform do.

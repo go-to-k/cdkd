@@ -49,6 +49,7 @@ export function deploy(
   // otherwise journal the PREVIOUS run's bag against today's template and
   // pairs — and now mark it as today's.
   this.attemptedResolvedProps = new Map();
+  this.resolvedUpdatePolicies = new Map();
   this.unsettledMarks = new Map();
   this.unsettledItemMarks = new Map();
   this.resumedCreates = new Map();

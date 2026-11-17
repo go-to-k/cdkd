@@ -279,7 +279,8 @@ export async function provisionCreateUpdateNode(
         change.changeType,
         engine.options.updatePolicy,
         template,
-        logicalId
+        logicalId,
+        engine.resolvedUpdatePolicies.get(logicalId)
       ),
     };
     failedOperations.push(failedOp);
@@ -392,7 +393,8 @@ export async function provisionCreateUpdateNode(
       change.changeType,
       engine.options.updatePolicy,
       template,
-      logicalId
+      logicalId,
+      engine.resolvedUpdatePolicies.get(logicalId)
     ),
     // Issue #2668: `resourceType` above is the TEMPLATE's type, so
     // on a Type change the journal would otherwise name only the
@@ -428,9 +430,15 @@ function journaledUpdatePolicyField(
   changeType: string,
   updatePolicyOption: boolean | undefined,
   template: CloudFormationTemplate | undefined,
-  logicalId: string
+  logicalId: string,
+  /** go-to-k/cdkd#6437: the alias policy this update resolved, journaled in its place. */
+  resolved: Record<string, unknown> | undefined
 ): { updatePolicy?: Record<string, unknown> } {
   if (changeType !== 'UPDATE') return {};
-  const updatePolicy = journaledUpdatePolicy(updatePolicyOption, template?.Resources?.[logicalId]);
+  const updatePolicy = journaledUpdatePolicy(
+    updatePolicyOption,
+    template?.Resources?.[logicalId],
+    resolved
+  );
   return updatePolicy !== undefined ? { updatePolicy } : {};
 }

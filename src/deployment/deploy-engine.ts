@@ -354,6 +354,15 @@ export class DeployEngine {
   attemptedResolvedProps = new Map<string, Record<string, unknown>>();
 
   /**
+   * go-to-k/cdkd#6437: per logical id, an `AWS::Lambda::Alias` update's
+   * `UpdatePolicy` with its `CodeDeployLambdaAliasUpdate` names resolved
+   * (`resolveAliasUpdatePolicy`), written only under `--update-policy`. Handed
+   * to the update and journaled for its rollback revert.
+   */
+  /** @internal */
+  resolvedUpdatePolicies = new Map<string, Record<string, unknown>>();
+
+  /**
    * go-to-k/cdkd#5380: per logical id, the top-level property names this
    * deploy's `update()` declared (`UpdateContext.markUnsettled`) it was about
    * to change with an irreversible call. Held HERE, outside the provider's

@@ -36,6 +36,7 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 import { stringifyJsonProperties, stripNullValues, s3RedirectRegion } from './shared.js';
 import { IdScrubLog, inIdLogScope, holdsSecretDerivedLeaf } from './id-log.js';
+import { shiftAliasThroughCodeDeploy } from './codedeploy-alias-update.js';
 
 /**
  * Update a resource using Cloud Control API
@@ -141,6 +142,23 @@ export async function updateInIdLogScope(
       }
     }
 
+    // go-to-k/cdkd#6437: under `--update-policy`, an alias's `FunctionVersion`
+    // change goes through CodeDeploy first; the patch then leaves it alone
+    // (CodeDeploy owns the shift) and carries the alias's other changes. Nothing runs without `context.updatePolicy`.
+    const shifted =
+      (await shiftAliasThroughCodeDeploy(this, {
+        logicalId,
+        physicalId,
+        resourceType,
+        properties: cleanProperties,
+        previousProperties: cleanPreviousProperties,
+        context,
+        mask: maskerOrIdentity(context?.maskSecrets),
+      })) === 'shifted';
+    if (shifted) cleanPreviousProperties['FunctionVersion'] = cleanProperties['FunctionVersion'];
+    // CodeDeploy wrote the alias, so an empty patch did send something.
+    const sentNothing = shifted ? {} : { sentNothing: true as const };
+
     // Generate JSON Patch document
     let patch = this.patchGenerator.generatePatch(cleanPreviousProperties, cleanProperties);
 
@@ -150,7 +168,7 @@ export async function updateInIdLogScope(
       return {
         physicalId,
         wasReplaced: false,
-        sentNothing: true,
+        ...sentNothing,
       };
     }
 
@@ -205,7 +223,7 @@ export async function updateInIdLogScope(
         return {
           physicalId,
           wasReplaced: false,
-          sentNothing: true,
+          ...sentNothing,
         };
       }
     }

@@ -32,6 +32,7 @@ import {
 import { noEchoAttributeOverridesFor, noEchoPositionSources } from '../noecho.js';
 import { noEchoMacCover, noEchoMacInputBindingsFor } from '../noecho-macs.js';
 import { isWhollyMask } from './helpers.js';
+import { aliasPolicySecretGuard, resolveAliasUpdatePolicy } from '../update-policy.js';
 
 /**
  * The first phase of `provisionUpdate`: the record, the resolved bag and
@@ -135,6 +136,19 @@ export async function resolveUpdateInputs(
     string,
     unknown
   >;
+  // go-to-k/cdkd#6437: the alias's CodeDeploy names, resolved in the same
+  // context; only under `--update-policy`.
+  const aliasUpdatePolicy = await resolveAliasUpdatePolicy(
+    engine.options.updatePolicy,
+    logicalId,
+    resourceType,
+    template?.Resources?.[logicalId],
+    String(resolvedProps['FunctionVersion']) !== String(currentProps['FunctionVersion']),
+    (value) => engine.resolver.resolve(value, context),
+    () => aliasPolicySecretGuard(updateSecrets)
+  );
+  if (aliasUpdatePolicy !== undefined)
+    engine.resolvedUpdatePolicies.set(logicalId, aliasUpdatePolicy);
   // go-to-k/cdkd#3869: the name this deploy resolved, before the provider
   // prints it (a rename, or a replacement's new resource).
   noteSecretNamedRecord(engine.secretsRun, logicalId, {

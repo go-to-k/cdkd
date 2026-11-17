@@ -9387,6 +9387,7 @@
         "cc-to-sdk-reroute-common-types",
         "cc-write-only-create-only",
         "cloudwatch-anomaly-detector",
+        "codedeploy-lambda-deployment-group",
         "cognito-schema-rollback",
         "composite-stack",
         "conditions-update-2",
@@ -9501,6 +9502,9 @@
         ],
         "cloudwatch-anomaly-detector": [
           "l2"
+        ],
+        "codedeploy-lambda-deployment-group": [
+          "l1"
         ],
         "cognito-schema-rollback": [
           "l1"

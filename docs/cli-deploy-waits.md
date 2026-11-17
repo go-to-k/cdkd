@@ -128,6 +128,16 @@ An `AutoScalingReplacingUpdate` still waits under `--no-wait`: cdkd deletes
 the old group only once the new group's instances are in service, since
 deleting it earlier would leave the group's capacity at zero.
 
+### Lambda alias CodeDeploy deployment
+
+With `--update-policy`, a Lambda alias whose `CodeDeployLambdaAliasUpdate`
+policy applies to the update shifts its traffic to the new version through a
+CodeDeploy deployment. cdkd waits for that deployment under `--no-wait` too:
+the alias serves the previous version until the shift ends, and the same
+deploy can delete that version (a CDK `currentVersion` without a `RETAIN`
+removal policy is a new resource on every code change), which would cut off
+the traffic still routed to it.
+
 ### ECS service
 
 cdkd returns once `CreateService` or `UpdateService` is accepted, and prints

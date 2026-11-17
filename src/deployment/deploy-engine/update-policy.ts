@@ -1,4 +1,13 @@
 import { safeMsg } from '../../utils/display-safe.js';
+import { CdkdError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../retryable-errors.js';
+import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
+import {
+  createSecretMasker,
+  logOnlyValueCount,
+  printingCorpusOf,
+  type RecordedSecretValues,
+} from '../secret-redaction.js';
 import type {
   CloudFormationTemplate,
   TemplateResource,
@@ -36,7 +45,8 @@ import {
  * value (`IgnoreUnmodifiedGroupSizeProperties: false`), or one whose trigger
  * properties the update leaves alone, gets no hint and no warning.
  * `route: 'sdk'` keys are applied by the type's SDK provider (Cloud Control
- * reads no `UpdatePolicy`); `'any'` keys by the engine, on either route.
+ * reads no `UpdatePolicy`); `'any'` keys on either route (by the engine, or,
+ * for a type with no SDK provider, by the Cloud Control provider).
  * Extend it in the same change as the code that reads the key.
  */
 const HONORED_UPDATE_POLICIES: Readonly<
@@ -77,7 +87,71 @@ const HONORED_UPDATE_POLICIES: Readonly<
         INSTANCE_REFRESH_TRIGGER_PROPERTIES.some((k) => changed.has(k)),
     },
   ],
+  // `AWS::Lambda::Alias` has no SDK provider: the CodeDeploy deployment runs
+  // in `CloudControlProvider.update`, its only route, so the key is `'any'`.
+  'AWS::Lambda::Alias': [
+    {
+      key: 'CodeDeployLambdaAliasUpdate',
+      route: 'any',
+      asksForIt: (policy, changed) =>
+        isObject(policy['CodeDeployLambdaAliasUpdate']) && changed.has('FunctionVersion'),
+    },
+  ],
 };
+
+/**
+ * go-to-k/cdkd#6437: the `UpdatePolicy` an `AWS::Lambda::Alias` update hands
+ * its provider under `--update-policy`, with `CodeDeployLambdaAliasUpdate`'s
+ * values RESOLVED (`resolve`: the update's own resolver context). CDK writes
+ * them as `Ref`s to the application, the deployment group and the hook
+ * functions, which CodeDeploy needs as names. `undefined` when nothing applies
+ * (flag off, another type, no such policy): the template's policy as written.
+ *
+ * Only when the update changes `FunctionVersion` (`versionChanges`), the one
+ * change the policy applies to: any other alias update resolves nothing.
+ *
+ * The resolved values are journaled for the rollback revert, so a secret is
+ * refused here, before anything is sent: a `{{resolve:...}}` in the policy as
+ * written (CloudFormation resolves dynamic references in resource properties
+ * only), and any resolved value that is one by another route (an `Fn::Join`
+ * spelling a reference, a `Ref` to a `NoEcho` parameter or to a recorded
+ * secret): `secretBearing` answers from the update's own secrets bag, which
+ * the resolution adds to.
+ */
+export async function resolveAliasUpdatePolicy(
+  updatePolicyOption: boolean | undefined,
+  logicalId: string,
+  resourceType: string,
+  resource: TemplateResource | undefined,
+  versionChanges: boolean,
+  resolve: (value: unknown) => Promise<unknown>,
+  /**
+   * Taken right before the resolution (a snapshot of the update's secrets
+   * bag); its answer says whether the resolved value is, or added, a secret.
+   */
+  secretGuard: () => (resolved: unknown) => boolean
+): Promise<Record<string, unknown> | undefined> {
+  if (updatePolicyOption !== true || resourceType !== 'AWS::Lambda::Alias') return undefined;
+  if (!versionChanges) return undefined;
+  const updatePolicy = resource?.UpdatePolicy;
+  if (!isObject(updatePolicy)) return undefined;
+  const aliasPolicy = updatePolicy['CodeDeployLambdaAliasUpdate'];
+  if (!isObject(aliasPolicy)) return undefined;
+  const refusal = (): Error =>
+    markRefusedBeforeApplying(
+      markNonRetryable(
+        new CdkdError(
+          safeMsg`${logicalId}: UpdatePolicy CodeDeployLambdaAliasUpdate names a secret (a dynamic reference or a NoEcho value), which cdkd does not resolve there. Name the application, deployment group and hook functions directly or with Ref.`,
+          'UPDATE_POLICY_SECRET_REFUSED'
+        )
+      )
+    );
+  if (JSON.stringify(aliasPolicy).includes('{{resolve:')) throw refusal();
+  const isSecretBearing = secretGuard();
+  const resolved = await resolve(aliasPolicy);
+  if (isSecretBearing(resolved)) throw refusal();
+  return { ...updatePolicy, CodeDeployLambdaAliasUpdate: resolved };
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -123,9 +197,11 @@ export function updatePolicyContext(
   resourceType: string,
   resource: TemplateResource | undefined,
   provisionedBy: 'sdk' | 'cc-api',
-  changed: ReadonlySet<string>
+  changed: ReadonlySet<string>,
+  /** {@link resolveAliasUpdatePolicy}'s answer for this update, handed over in place of the template's. */
+  resolved?: Record<string, unknown>
 ): Pick<UpdateContext, 'updatePolicy'> {
-  const updatePolicy = resource?.UpdatePolicy;
+  const updatePolicy = resolved ?? resource?.UpdatePolicy;
   if (typeof updatePolicy !== 'object' || updatePolicy === null) return {};
   if (updatePolicyOption === false) return {};
   if (updatePolicyOption === true) {
@@ -148,6 +224,36 @@ export function updatePolicyContext(
     );
   }
   return {};
+}
+
+/**
+ * {@link resolveAliasUpdatePolicy}'s `secretGuard` over the update's secrets
+ * bag: a snapshot taken before the policy is resolved, whose answer is `true`
+ * when the resolution recorded a secret or a `NoEcho` value (either count
+ * grew), when a string of the result IS one already recorded (any length: an
+ * alias property can hold the same value, so no count grows, and the masker
+ * below skips a value shorter than its floor), or when the printing masker
+ * changes the result's text.
+ */
+export function aliasPolicySecretGuard(
+  secrets: RecordedSecretValues
+): (resolved: unknown) => boolean {
+  const pairs = secrets.size;
+  const logOnly = logOnlyValueCount(secrets);
+  return (resolved) => {
+    if (secrets.size !== pairs || logOnlyValueCount(secrets) !== logOnly) return true;
+    const corpus = printingCorpusOf(secrets);
+    if (stringLeaves(resolved).some((leaf) => corpus.has(leaf))) return true;
+    const text = JSON.stringify(resolved) ?? '';
+    return createSecretMasker(secrets)(text) !== text;
+  };
+}
+
+function stringLeaves(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(stringLeaves);
+  if (isObject(value)) return Object.values(value).flatMap(stringLeaves);
+  return [];
 }
 
 /**
@@ -221,16 +327,19 @@ export function updatePolicyReplacementRefusal(
 
 /**
  * The `UpdatePolicy` a deploy journals on an UPDATE operation (go-to-k/cdkd#6457):
- * the template's, when `--update-policy` handed it to the update. Absent
+ * the template's, when `--update-policy` handed it to the update (an alias's
+ * with its `CodeDeployLambdaAliasUpdate` names resolved). Absent
  * otherwise, so a journal written without the flag is byte-identical to one
  * an older cdkd writes, and an older cdkd reading a journal that carries it
  * ignores the field.
  */
 export function journaledUpdatePolicy(
   updatePolicyOption: boolean | undefined,
-  resource: TemplateResource | undefined
+  resource: TemplateResource | undefined,
+  /** {@link resolveAliasUpdatePolicy}'s answer for this update, journaled in its place. */
+  resolved?: Record<string, unknown>
 ): Record<string, unknown> | undefined {
-  const updatePolicy = resource?.UpdatePolicy;
+  const updatePolicy = resolved ?? resource?.UpdatePolicy;
   return updatePolicyOption === true && isObject(updatePolicy) ? updatePolicy : undefined;
 }
 
