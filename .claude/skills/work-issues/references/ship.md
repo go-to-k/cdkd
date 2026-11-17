@@ -21,8 +21,8 @@ even commit-without-push (the marker hashes that tree's delta, not the sha its
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards the integ's tree
 before the marker, re-running an integ the fix touches. Never two
 merges at once, nor two integs on the SAME fixture (one stack name, one state
-prefix; another REGION is no isolation: cdkd then refuses
-"state in multiple regions" at drift and cleanup, voiding both, #6048): queue
+prefix; another REGION is no isolation: cdkd refuses
+"state in multiple regions", #6048): queue
 the later lane behind the earlier one's merge and rebase it. A
 merge during another lane's integ is allowed, but it moves `main` under that
 lane (#4864): before ITS merge, re-read its marker per `verify.md` §8-b and
@@ -37,9 +37,11 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
 - a rollback-journal reader or `cdkd rollback` caller gets its own state
   bucket (#5104);
 - cap fixtures in flight per region at what the account's VPC / EIP / NAT
-  quotas carry, else spread across regions.
+  quotas carry, else spread across regions;
+- a building fixture runs alone in its tree (`/run-integ` step 1's grep,
+  re-run on each fixture ADDED, #6438).
 
-The PARENT checks all five before granting each further lane's integ. ANY
+The PARENT checks all six before granting each further lane's integ. ANY
 turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
@@ -47,8 +49,8 @@ it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 exits — a no-edit brief still names the ledger row it owes (#6332) —
 names only fixtures `ls tests/integration/` lists in the PR's OWN repo, has it run `/run-integ` step 5's block AS
 WRITTEN and UNWRAPPED in ONE launch call per fixture (its `wait` works only in the
-shell that ran the `&`: a wrapper's own `wait` printed `rc=127` for a PASS), never step 5's SET loop (a zsh loop's
-unsplit `set -- $p` killed two in 5 s) under the budget the PARENT computed with that block, named per
+shell that ran the `&`), never step 5's SET loop (zsh leaves `set -- $p` unsplit;
+the brief QUOTES this ban, #6438) under the budget the PARENT computed with that block, named per
 fixture in the brief (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line
 (#5519), wait on ONE command exiting with that PID and stop every
@@ -69,8 +71,7 @@ dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
 open PRs touching each fixture: a held one gets a lock watcher, not a runner
 (#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
 re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
-read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`: a bare-digit
-grep matches a `mktemp` path's zeroes),
+read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`),
 `SendMessage`s the runner as each exits, and alarms when no PID has run for 15
 min unreported.
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
