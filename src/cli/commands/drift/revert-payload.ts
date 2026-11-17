@@ -8,10 +8,7 @@ import { hasOwnKey, ownValue, defineOwnKey, hasPlainPrototype } from '../../../u
 import { safeMsg } from '../../../utils/display-safe.js';
 import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import { carriesDynamicReference } from '../../../deployment/intrinsic-resolver/context/log-twins.js';
-import {
-  tryGetTopLevelWriteOnlyProperties,
-  getTopLevelKeysHoldingUnreadableCreateOnly,
-} from '../../../provisioning/write-only-properties.js';
+import { getTopLevelKeysHoldingUnreadableCreateOnly } from '../../../provisioning/write-only-properties.js';
 import type { ResourceProvider } from '../../../types/resource.js';
 import {
   mergeUntemplatedValue,
@@ -357,25 +354,29 @@ export function sameRecordedJson(candidate: unknown, recorded: unknown): boolean
  *   and a deploy's update skips it only because its previous side is the
  *   template, where a revert's is the readback.
  *
- * A failed schema lookup sends none, as before this rule. The plan prints the
- * same names (`printRevertPlan`), so the user confirms what is written.
+ * Pure: `runRevert` looks the type's write-only names up ONCE, on a Cloud
+ * Control route only, and the plan and the update both read the result, so
+ * the user confirms exactly what is written. A failed lookup (`undefined`)
+ * sends none, as before this rule.
  *
  * Coupling: nothing writes these values into state. That holds while the Cloud
  * Control `update()` returns no `effectiveProperties`; one that did would read
  * each as narrowed to absent in `collectNarrowedTopLevelKeys`.
  */
-export async function revertWriteOnlyResendNames(
-  provisionedBy: string | undefined,
+export function revertWriteOnlyResendNames(
   resourceType: string,
-  properties: Record<string, unknown> | undefined
-): Promise<string[]> {
-  if (provisionedBy !== 'cc-api' || !isPlainRecord(properties)) return [];
-  const writeOnlyNames = await tryGetTopLevelWriteOnlyProperties(resourceType);
-  if (!writeOnlyNames || writeOnlyNames.size === 0) return [];
+  properties: Record<string, unknown> | undefined,
+  awsProperties: Record<string, unknown>,
+  writeOnlyNames: ReadonlySet<string> | undefined
+): string[] {
+  if (!writeOnlyNames || writeOnlyNames.size === 0 || !isPlainRecord(properties)) return [];
   const unreadableCreateOnly = getTopLevelKeysHoldingUnreadableCreateOnly(resourceType, properties);
   const names: string[] = [];
   for (const name of writeOnlyNames) {
     if (!hasOwnKey(properties, name) || unreadableCreateOnly.has(name)) continue;
+    // A key the read returns is a container holding a nested write-only
+    // member; the send bag already carries it, readback-shaped.
+    if (hasOwnKey(awsProperties, name)) continue;
     const value = properties[name];
     if (value === undefined || value === null) continue;
     if (carriesDynamicReference(value) || carriesSecretMask(value)) continue;

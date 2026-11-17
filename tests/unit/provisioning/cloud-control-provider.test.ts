@@ -134,7 +134,10 @@ import {
   handlerAuthFailureHint,
   s3RedirectRegion,
 } from '../../../src/provisioning/cloud-control-provider.js';
-import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import {
+  clearWriteOnlyPropertiesCache,
+  tryGetTopLevelWriteOnlyProperties,
+} from '../../../src/provisioning/write-only-properties.js';
 import {
   revertWriteOnlyResendNames,
   withDeclaredWriteOnlyProperties,
@@ -804,7 +807,12 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     };
     const readback = { UserPoolId: 'us-east-1_abc', Settings: '{"a":2}' };
 
-    const names = await revertWriteOnlyResendNames('cc-api', type, declared);
+    const names = revertWriteOnlyResendNames(
+      type,
+      declared,
+      readback,
+      await tryGetTopLevelWriteOnlyProperties(type)
+    );
     expect(names).toEqual(['ReturnMergedResources']);
     await provider.update(
       'WebClientBranding',

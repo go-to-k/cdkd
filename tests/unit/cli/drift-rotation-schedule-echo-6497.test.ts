@@ -284,11 +284,20 @@ describe('cdkd drift --revert carries a Cloud Control record\'s declared write-o
     expect(mockWriteOnly).not.toHaveBeenCalled();
   });
 
-  it('adds nothing when the write-only lookup failed', async () => {
+  it('neither names nor sends anything when the write-only lookup failed', async () => {
     routedBy = 'cc-api';
     mockWriteOnly.mockResolvedValue(undefined);
     expect(await runDrift(['--revert', '--yes'])).toBe(0);
     expect(sentBags[0]).not.toHaveProperty('RotateImmediatelyOnUpdate');
+    expect(stdout).not.toContain('also sends');
+  });
+
+  it('looks the type up once, before the plan, for the plan and the update alike', async () => {
+    routedBy = 'cc-api';
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(mockWriteOnly).toHaveBeenCalledTimes(1);
+    expect(stdout).toContain('also sends');
+    expect(sentBags[0]!['RotateImmediatelyOnUpdate']).toBe(false);
   });
 
   it('names the re-sent write-only property in the plan, under --dry-run too', async () => {
@@ -310,15 +319,14 @@ describe('cdkd drift --revert carries a Cloud Control record\'s declared write-o
 });
 
 describe('revertWriteOnlyResendNames', () => {
+  const names = new Set(['W', 'X']);
   beforeEach(() => {
-    mockWriteOnly.mockReset();
-    mockWriteOnly.mockResolvedValue(new Set(['W', 'X']));
     mockUnreadableCreateOnly.mockReset();
     mockUnreadableCreateOnly.mockReturnValue(new Set());
   });
 
-  it('names a declared plain write-only value', async () => {
-    expect(await revertWriteOnlyResendNames('cc-api', TYPE, { A: 1, W: false })).toEqual(['W']);
+  it('names a declared plain write-only value', () => {
+    expect(revertWriteOnlyResendNames(TYPE, { A: 1, W: false }, {}, names)).toEqual(['W']);
   });
 
   it.each([
@@ -329,24 +337,22 @@ describe('revertWriteOnlyResendNames', () => {
     ['an intrinsic object', { W: { Inner: { 'Fn::GetAtt': ['R', 'Arn'] } } }],
     ['a null value', { W: null }],
     ['an undeclared name', { Y: 1 }],
-  ])('names nothing for %s', async (_l, properties) => {
-    expect(await revertWriteOnlyResendNames('cc-api', TYPE, properties)).toEqual([]);
+  ])('names nothing for %s', (_l, properties) => {
+    expect(revertWriteOnlyResendNames(TYPE, properties, {}, names)).toEqual([]);
   });
 
-  it('names nothing off the Cloud Control route, without a lookup', async () => {
-    expect(await revertWriteOnlyResendNames('sdk', TYPE, { W: 1 })).toEqual([]);
-    expect(await revertWriteOnlyResendNames(undefined, TYPE, { W: 1 })).toEqual([]);
-    expect(mockWriteOnly).not.toHaveBeenCalled();
+  it('names nothing for a key the readback holds (a container of a nested write-only member)', () => {
+    expect(revertWriteOnlyResendNames(TYPE, { W: { A: 1, S: 'x' } }, { W: { A: 1 } }, names)).toEqual([]);
   });
 
-  it('names nothing when the lookup failed', async () => {
-    mockWriteOnly.mockResolvedValue(undefined);
-    expect(await revertWriteOnlyResendNames('cc-api', TYPE, { W: 1 })).toEqual([]);
+  it('names nothing when the lookup failed or found none', () => {
+    expect(revertWriteOnlyResendNames(TYPE, { W: 1 }, {}, undefined)).toEqual([]);
+    expect(revertWriteOnlyResendNames(TYPE, { W: 1 }, {}, new Set())).toEqual([]);
   });
 
-  it('leaves out a key holding an unreadable create-only path', async () => {
+  it('leaves out a key holding an unreadable create-only path', () => {
     mockUnreadableCreateOnly.mockReturnValue(new Set(['W']));
-    expect(await revertWriteOnlyResendNames('cc-api', TYPE, { W: 1, X: 2 })).toEqual(['X']);
+    expect(revertWriteOnlyResendNames(TYPE, { W: 1, X: 2 }, {}, names)).toEqual(['X']);
     expect(mockUnreadableCreateOnly).toHaveBeenCalledWith(TYPE, { W: 1, X: 2 });
   });
 });

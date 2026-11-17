@@ -203,7 +203,20 @@ expect_drift_rc 0 "Phase 6"
 
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
-assert_gone "secret ${SECRET_ARN} leaked" aws secretsmanager describe-secret --secret-id "${SECRET_ARN}"
+# ForceDeleteWithoutRecovery is asynchronous: describe-secret still answers
+# for a few seconds after the call returns, so poll the strict gone-probe.
+SECRET_GONE=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_ARN}"; then
+    SECRET_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ "${SECRET_GONE}" != "1" ]; then
+  echo "FAIL: secret ${SECRET_ARN} leaked" >&2
+  exit 1
+fi
 assert_gone "function ${FUNCTION_NAME} leaked" aws lambda get-function --function-name "${FUNCTION_NAME}"
 assert_gone "log group ${LOG_GROUP} leaked" aws logs describe-log-streams --log-group-name "${LOG_GROUP}"
 assert_gone "state ${STATE_KEY} leaked" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

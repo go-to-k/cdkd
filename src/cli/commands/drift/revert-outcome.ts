@@ -34,7 +34,6 @@ import {
   buildRevertNewProperties,
   driftAbsentMeansDefaultKeys,
   withDeclaredWriteOnlyProperties,
-  revertWriteOnlyResendNames,
 } from './revert-payload.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
@@ -154,18 +153,10 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
   // worse than none. The payload build below IS guarded, because that one
   // is reachable: `readCurrentState` is provider-authored and its output
   // is not vetted.
-  const routing = scope.registry.getProviderFor({
+  const provider: ResourceProvider = scope.registry.getProviderFor({
     resourceType: outcome.resourceType,
     provisionedBy: stateResource.provisionedBy,
-  });
-  const provider: ResourceProvider = routing.provider;
-  // go-to-k/cdkd#6498: started here so the schema lookup (cached per type,
-  // already settled by the plan) overlaps the payload build. Never rejects.
-  const writeOnlyResend = revertWriteOnlyResendNames(
-    routing.provisionedBy,
-    outcome.resourceType,
-    stateResource.properties
-  );
+  }).provider;
   // The baseline drift was computed against — `observedProperties`
   // when present, else `properties` — is the right "desired" value
   // to push back to AWS. Using `properties` alone would push the
@@ -592,7 +583,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     newProperties = withDeclaredWriteOnlyProperties(
       maskPreserved.properties,
       stateResource.properties,
-      await writeOnlyResend
+      args.writeOnlyResend
     );
   } catch (err) {
     // Reachability note (issue #1914 review): this arm is narrower than
