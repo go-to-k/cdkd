@@ -10523,6 +10523,7 @@
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
         "cc-to-sdk-reroute-common-types-3",
+        "servicediscovery-http-namespace-update",
         "servicediscovery-namespaces"
       ],
       "signals": {
@@ -10530,6 +10531,10 @@
           "l1"
         ],
         "cc-to-sdk-reroute-common-types-3": [
+          "l1",
+          "literal"
+        ],
+        "servicediscovery-http-namespace-update": [
           "l1",
           "literal"
         ],
@@ -10585,7 +10590,8 @@
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
         "local-ecs-service-connect",
-        "servicediscovery"
+        "servicediscovery",
+        "servicediscovery-http-namespace-update"
       ],
       "signals": {
         "access-key-cloudmap-fix-forward-orphan": [
@@ -10595,6 +10601,10 @@
           "literal"
         ],
         "servicediscovery": [
+          "l1",
+          "literal"
+        ],
+        "servicediscovery-http-namespace-update": [
           "l1",
           "literal"
         ]
