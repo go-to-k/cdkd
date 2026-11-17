@@ -108,10 +108,10 @@ took with `--accept`. The plan lists those properties on a line starting
 `+ also sends the template's write-only fields of`.
 
 A value that holds a dynamic reference (`{{resolve:...}}`) is sent resolved and
-stays masked in the output. cdkd warns and sends nothing for a field when:
-
-- the dynamic reference cannot be resolved;
-- the field sits in a list whose items cannot be matched to the template's.
+stays masked in the output. When cdkd cannot resolve it, it warns and sends
+nothing for that property. When the field sits in a list whose items cannot be
+matched to the template's one by one, cdkd warns and sends the template's whole
+list, as a deploy does.
 
 A field that Cloud Control refuses to receive again after creation is not sent.
 

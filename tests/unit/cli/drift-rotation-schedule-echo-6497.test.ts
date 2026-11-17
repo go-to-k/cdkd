@@ -367,6 +367,7 @@ describe('withDeclaredWriteOnlyValues', () => {
     expect(withDeclaredWriteOnlyValues(send, { A: 1, W: false }, ['W'], whole)).toEqual({
       properties: { A: 1, W: false },
       skipped: [],
+      wholesale: [],
     });
     expect(send).toEqual({ A: 1 });
   });
@@ -380,7 +381,11 @@ describe('withDeclaredWriteOnlyValues', () => {
       ['W'],
       [['W', 'S']]
     );
-    expect(r).toEqual({ properties: { W: { N: 'accepted', S: 'key' } }, skipped: [] });
+    expect(r).toEqual({
+      properties: { W: { N: 'accepted', S: 'key' } },
+      skipped: [],
+      wholesale: [],
+    });
   });
 
   it('grafts into list elements paired by identity, not by index', () => {
@@ -399,10 +404,45 @@ describe('withDeclaredWriteOnlyValues', () => {
     expect(r.skipped).toEqual([]);
   });
 
-  it('skips a list key whose elements cannot be paired', () => {
-    const send = { L: [{ V: 1 }, { V: 2 }] };
-    const r = withDeclaredWriteOnlyValues(send, { L: [{ V: 9, S: 'x' }] }, ['L'], [['L', '*', 'S']]);
-    expect(r).toEqual({ properties: send, skipped: ['L'] });
+  it('matches list items without an identity field, ignoring keys only the bag holds', () => {
+    // An ELBv2 ListenerRule's `Actions/*/AuthenticateOidcConfig/ClientSecret`:
+    // AWS adds `Order`, the template carries the secret.
+    const action = (issuer: string, extra: Record<string, unknown>) => ({
+      Type: 'authenticate-oidc',
+      AuthenticateOidcConfig: { Issuer: issuer, ClientId: 'c', ...extra },
+    });
+    const r = withDeclaredWriteOnlyValues(
+      { Actions: [{ ...action('i2', {}), Order: 2 }, { ...action('i1', {}), Order: 1 }] },
+      { Actions: [action('i1', { ClientSecret: 's1' }), action('i2', { ClientSecret: 's2' })] },
+      ['Actions'],
+      [['Actions', '*', 'AuthenticateOidcConfig', 'ClientSecret']]
+    );
+    expect(r.properties).toEqual({
+      Actions: [
+        { ...action('i2', { ClientSecret: 's2' }), Order: 2 },
+        { ...action('i1', { ClientSecret: 's1' }), Order: 1 },
+      ],
+    });
+    expect(r.wholesale).toEqual([]);
+  });
+
+  it.each([
+    ['different lengths', [{ V: 1 }, { V: 2 }], [{ V: 1, S: 'x' }]],
+    ['an ambiguous match', [{ V: 1 }, { V: 1 }], [{ V: 1, S: 'x' }, { V: 1, S: 'y' }]],
+    ['no match', [{ V: 1 }], [{ V: 9, S: 'x' }]],
+  ])('sends the template list whole and reports it for %s', (_l, live, template) => {
+    const r = withDeclaredWriteOnlyValues({ L: live }, { L: template }, ['L'], [['L', '*', 'S']]);
+    expect(r).toEqual({ properties: { L: template }, skipped: [], wholesale: ['L'] });
+  });
+
+  it('takes the template value whole where the bag lacks a container on the way', () => {
+    const r = withDeclaredWriteOnlyValues(
+      { W: { Other: 1 } },
+      { W: { Inner: { Name: 'n', S: 'key' } } },
+      ['W'],
+      [['W', 'Inner', 'S']]
+    );
+    expect(r.properties).toEqual({ W: { Other: 1, Inner: { Name: 'n', S: 'key' } } });
   });
 
   it.each([
@@ -413,6 +453,7 @@ describe('withDeclaredWriteOnlyValues', () => {
     expect(withDeclaredWriteOnlyValues(send, resolved, ['W'], [['W', 'S']])).toEqual({
       properties: send,
       skipped: ['W'],
+      wholesale: [],
     });
   });
 

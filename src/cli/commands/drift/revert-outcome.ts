@@ -591,6 +591,14 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       getSettledWriteOnlyPropertyPaths(outcome.resourceType)
     );
     newProperties = writeOnly.properties;
+    if (writeOnly.wholesale.length > 0) {
+      logger.warn(
+        `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): sent the ` +
+          `template's whole value of ${maskSecretsInText(writeOnly.wholesale.join(', '), secrets)} — ` +
+          `its list items could not be matched to the template's one by one, so items an ` +
+          `'--accept' changed there go back to the template, as a deploy would send them.`
+      );
+    }
     if (writeOnly.skipped.length > 0) {
       logger.warn(
         `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not ` +

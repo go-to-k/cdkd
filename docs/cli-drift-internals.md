@@ -607,9 +607,11 @@ without its nested member (`ApiKeyValue`), and Cloud Control refused the model.
 - **Graft, not replace.** A key the bag lacks takes the template value whole.
   In a key the bag holds, only the schema's write-only paths take the
   template's value, so an `--accept`ed readable member survives. A `*` path
-  pairs list elements with `pairedLiveItems` (identity field or corroborating
-  literals, never the index alone). An unpaired list skips the key with a
-  warning.
+  matches list items one to one: a template item partners a bag item when its
+  leaves outside the write-only paths equal the bag's (keys only the bag holds,
+  such as an AWS-added `Order`, are ignored), and an ambiguous or missing match
+  is no match. Lists that do not match send the template's whole value, as a
+  deploy does, with a warning.
 - **Values.** The template side is the record's `properties` as the revert
   resolved them into its `secrets` map. A dynamic reference is therefore sent
   resolved, and masked on everything the update prints. A grafted value still

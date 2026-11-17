@@ -269,7 +269,9 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
  * Every write-only path of `resourceType` as segments under `properties` (`*`
  * for an array element), from the schema {@link getTopLevelWriteOnlyProperties}
  * or {@link tryGetTopLevelWriteOnlyProperties} fetched: call it after that
- * lookup resolved. `[]` when none settled.
+ * lookup resolved. `[]` when none settled. Keyed by type only, like every
+ * cache here: a type's registry schema is taken to be the same in every
+ * region, so the paths are whichever region's lookup settled first.
  */
 export function getSettledWriteOnlyPropertyPaths(
   resourceType: string
