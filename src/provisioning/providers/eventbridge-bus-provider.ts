@@ -606,7 +606,8 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * The one wait is for rules an AWS service MANAGES (`ManagedBy`), such as an
    * archive's or a schema discoverer's: their owner is deleted first and AWS
    * removes the rule after it, so the bus is retried until they are gone, up
-   * to {@link managedRuleWait}.
+   * to {@link managedRuleWait}. A refusal that ListRules cannot explain (an
+   * empty listing, more than once) waits the same way, then refuses.
    */
   private async deleteBusOnceManagedRulesClear(
     logicalId: string,
@@ -617,6 +618,10 @@ export class EventBridgeBusProvider implements ResourceProvider {
     const { pollIntervalMs, timeoutMs, sleep } = this.managedRuleWait;
     const deadline = Date.now() + timeoutMs;
     const watch = startInterruptWatch(`EventBus ${logicalId} managed-rule wait`);
+    // An empty listing right after a has-rules refusal is retried at once ONCE
+    // (the last rule went between the two calls); a listing that keeps coming
+    // back empty while AWS keeps refusing waits like a managed rule does.
+    let retriedEmptyListing = false;
     try {
       for (;;) {
         try {
@@ -638,19 +643,28 @@ export class EventBridgeBusProvider implements ResourceProvider {
           );
         }
         if (Date.now() >= deadline) {
+          const seconds = Math.round(timeoutMs / 1000);
           throw this.busHasRulesError(
             logicalId,
             busName,
             resourceType,
             mask,
-            `rule(s) an AWS service manages, still there ${Math.round(timeoutMs / 1000)}s ` +
-              `later: ${rules.map((rule) => `${rule.name} (${rule.managedBy})`).join(', ')}. ` +
-              'Their owner removes them; re-run once they are gone'
+            rules.length === 0
+              ? `rules ListRules does not report, ${seconds}s after the first refusal. ` +
+                  'Check the bus for rules, then re-run'
+              : `rule(s) an AWS service manages, still there ${seconds}s later: ` +
+                  `${rules.map((rule) => `${rule.name} (${rule.managedBy})`).join(', ')}. ` +
+                  'AWS removes each when the resource that owns it (an archive, a schema ' +
+                  'discoverer) is deleted; delete that resource if this stack does not own it, ' +
+                  'then re-run'
           );
         }
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        // No rule listed means the last one went between the two calls: retry now.
-        if (rules.length > 0) await sleep(pollIntervalMs);
+        if (rules.length === 0 && !retriedEmptyListing) {
+          retriedEmptyListing = true;
+          continue;
+        }
+        await sleep(pollIntervalMs);
       }
     } finally {
       watch.dispose();

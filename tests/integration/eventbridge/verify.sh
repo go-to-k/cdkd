@@ -278,8 +278,8 @@ echo "    OK: removal: ${SOURCE_KEY_FN} keeps the fixture key after UpdateFuncti
 # --- Phase 1.9: a rule from outside the stack keeps the bus (#6479) ----
 # AWS refuses DeleteEventBus while a rule remains, and so does
 # CloudFormation; cdkd must refuse too rather than delete a rule it does not
-# own. The rest of the stack is destroyed; the bus, the rule and the bus's
-# state record stay.
+# own. The bus, the rule and the bus's state record stay; what the bus
+# depends on (its key and dead-letter queue) stays with it, for Phase 2.
 echo "==> Phase 1.9: destroy refuses while a rule from outside the stack is on the bus (#6479)"
 aws events put-rule --name "${FOREIGN_RULE}" --event-bus-name "${BUS_NAME}" \
   --event-pattern '{"source":["cdkd.foreign"]}' --region "${REGION}" >/dev/null

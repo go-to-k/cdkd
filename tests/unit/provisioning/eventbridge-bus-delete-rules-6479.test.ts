@@ -145,6 +145,7 @@ describe('EventBridgeBusProvider.delete leaves rules on the bus alone (#6479)', 
     const err = await caught(bus.delete('Bus', 'my-bus', 'AWS::Events::EventBus'));
     expect(err).toBeInstanceOf(ProvisioningError);
     expect(err.message).toContain('Schemas-x (schemas.amazonaws.com)');
+    expect(err.message).toContain('delete that resource if this stack does not own it');
     expect(isMarkedNonRetryable(err)).toBe(true);
   });
 
@@ -163,6 +164,42 @@ describe('EventBridgeBusProvider.delete leaves rules on the bus alone (#6479)', 
     await bus.delete('Bus', 'my-bus', 'AWS::Events::EventBus');
     expect(deletes).toBe(2);
     expect(sleeps).toEqual([]);
+  });
+
+  it('waits, then refuses, when AWS keeps refusing while ListRules keeps answering empty', async () => {
+    let deletes = 0;
+    mockEventBridgeSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof DeleteEventBusCommand) {
+        deletes++;
+        throw hasRules();
+      }
+      if (cmd instanceof ListRulesCommand) return { Rules: [] };
+      return {};
+    });
+    const { bus, sleeps } = provider();
+    bus.managedRuleWait.timeoutMs = 1_000;
+    let calls = 0;
+    // The clock does not move in a unit test, so it jumps past the deadline
+    // once the third sleep has been taken.
+    bus.managedRuleWait.sleep = (ms) => {
+      sleeps.push(ms);
+      calls++;
+      return Promise.resolve();
+    };
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => (calls >= 3 ? (now += 10_000) : now);
+    let err: Error;
+    try {
+      err = await caught(bus.delete('Bus', 'my-bus', 'AWS::Events::EventBus'));
+    } finally {
+      Date.now = realNow;
+    }
+    expect(err).toBeInstanceOf(ProvisioningError);
+    expect(err.message).toContain('rules ListRules does not report');
+    // One immediate retry, then every further retry waits a poll interval.
+    expect(deletes).toBe(5);
+    expect(sleeps).toEqual([5, 5, 5]);
   });
 
   it('reads every page of rules before deciding', async () => {
