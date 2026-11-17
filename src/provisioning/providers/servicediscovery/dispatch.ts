@@ -115,7 +115,8 @@ export function update(
         properties,
         previousProperties,
         context?.maskSecrets,
-        context?.changedProperties
+        context?.changedProperties,
+        context?.unsettledProperties
       );
     default:
       throw new ProvisioningError(

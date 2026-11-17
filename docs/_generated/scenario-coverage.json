@@ -2934,6 +2934,11 @@
       "scenarios": []
     },
     {
+      "name": "servicediscovery-http-namespace-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "servicediscovery-namespaces",
       "annotated": true,
       "scenarios": []
@@ -4205,6 +4210,7 @@
     "secretsmanager-update-value-source",
     "select-out-of-bounds",
     "servicediscovery",
+    "servicediscovery-http-namespace-update",
     "shared-stackname-multi-region",
     "sns-event-source",
     "sns-inline-subscription",

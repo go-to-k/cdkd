@@ -331,7 +331,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     maskSecrets?: SecretMasker,
-    changedProperties?: ReadonlySet<string>
+    changedProperties?: ReadonlySet<string>,
+    unsettledProperties?: ReadonlySet<string>
   ): Promise<ResourceUpdateResult> {
     return updateService.call(
       this,
@@ -341,7 +342,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       properties,
       previousProperties,
       maskSecrets,
-      changedProperties
+      changedProperties,
+      unsettledProperties
     );
   }
 
