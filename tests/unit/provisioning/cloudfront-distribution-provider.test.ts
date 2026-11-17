@@ -1424,6 +1424,36 @@ describe('CloudFrontDistributionProvider', () => {
         expect(
           warned.filter((w) => w.includes("OriginSSLProtocols was removed from origin 'web'"))
         ).toHaveLength(1);
+        expect(warned.filter((w) => w.includes('the rollback restores'))).toHaveLength(0);
+      });
+
+      it('on a rollback replay, keeps the live value and says the failed deploy applied it', async () => {
+        // The replay restores the pre-deploy template (no OriginSSLProtocols)
+        // over the failed deploy's record, which declared it (go-to-k/cdkd#6519
+        // restores the pre-deploy value instead).
+        mockUpdateChain(liveWith('web', ['TLSv1']));
+        await provider.update(
+          'Dist',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          template(customOrigin()),
+          template(customOrigin({ OriginSSLProtocols: ['TLSv1'] })),
+          { replayingState: true }
+        );
+        const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 1,
+          Items: ['TLSv1'],
+        });
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
+        expect(
+          warned.filter((w) =>
+            w.includes(
+              "the rollback restores a template without OriginSSLProtocols on origin 'web', so the value the failed deploy applied stays; revert it by declaring OriginSSLProtocols."
+            )
+          )
+        ).toHaveLength(1);
+        expect(warned.filter((w) => w.includes('was removed from origin'))).toHaveLength(0);
       });
 
       it('does not warn when the previous template never declared OriginSSLProtocols', async () => {

@@ -374,7 +374,8 @@ export async function update(
       currentConfig as unknown as Record<string, unknown>,
       newDistributionConfig,
       previousDistributionConfig,
-      logicalId
+      logicalId,
+      context?.replayingState === true
     );
 
     await this.cloudFrontClient.send(

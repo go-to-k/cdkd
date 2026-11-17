@@ -29,7 +29,8 @@ export function mergeUpdateConfig(
   currentConfig: Record<string, unknown>,
   newDistributionConfig: Record<string, unknown>,
   previousDistributionConfig: Record<string, unknown>,
-  logicalId: string
+  logicalId: string,
+  replayingState?: boolean
 ): Record<string, unknown> {
   const templateSdk = this.convertToSdkFormat(newDistributionConfig);
   const previousSdk = this.convertToSdkFormat(previousDistributionConfig);
@@ -60,9 +61,17 @@ export function mergeUpdateConfig(
 
   Object.assign(merged, templateSdk);
   merged['CallerReference'] = currentConfig['CallerReference'];
+  // A rollback replay restores a template that omits OriginSSLProtocols over
+  // a failed deploy that declared it. The live value, which that deploy
+  // applied, stays: restoring the pre-deploy value needs the restored
+  // record's observed snapshot, which `update()` does not receive
+  // (go-to-k/cdkd#6519). CloudFormation's own rollback would send its SSLv3,
+  // TLSv1 default here, so this is no weaker.
   fillOriginSslProtocols(merged, currentConfig, previousSdk, (originId) =>
     this.logger.warn(
-      safeMsg`CloudFront Distribution ${logicalId}: OriginSSLProtocols was removed from origin '${String(originId)}' in the template; keeping the live value rather than CloudFormation's SSLv3, TLSv1 default. Set it explicitly in the template to change it.`
+      replayingState
+        ? safeMsg`CloudFront Distribution ${logicalId}: the rollback restores a template without OriginSSLProtocols on origin '${String(originId)}', so the value the failed deploy applied stays; revert it by declaring OriginSSLProtocols.`
+        : safeMsg`CloudFront Distribution ${logicalId}: OriginSSLProtocols was removed from origin '${String(originId)}' in the template; keeping the live value rather than CloudFormation's SSLv3, TLSv1 default. Set it explicitly in the template to change it.`
     )
   );
   this.completeRequiredUpdateFields(merged);

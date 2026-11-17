@@ -100,7 +100,7 @@ const CASES: ReadonlyArray<readonly [string, string, string, number]> = [
   ['tags', 'computeTagDiff', 'computeTagDiff', 4],
   ['tags', 'toSdkTags', 'toSdkTags', 1],
   ['update-config', 'completeRequiredUpdateFields', 'completeRequiredUpdateFields', 1],
-  ['update-config', 'mergeUpdateConfig', 'mergeUpdateConfig', 4],
+  ['update-config', 'mergeUpdateConfig', 'mergeUpdateConfig', 5],
 ];
 
 describe('CloudFrontDistributionProvider delegators hand each argument to the moved body', () => {

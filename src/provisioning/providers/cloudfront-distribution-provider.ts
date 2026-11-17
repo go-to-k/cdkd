@@ -154,14 +154,16 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     currentConfig: Record<string, unknown>,
     newDistributionConfig: Record<string, unknown>,
     previousDistributionConfig: Record<string, unknown>,
-    logicalId: string
+    logicalId: string,
+    replayingState?: boolean
   ): Record<string, unknown> {
     return mergeUpdateConfig.call(
       this,
       currentConfig,
       newDistributionConfig,
       previousDistributionConfig,
-      logicalId
+      logicalId,
+      replayingState
     );
   }
 
