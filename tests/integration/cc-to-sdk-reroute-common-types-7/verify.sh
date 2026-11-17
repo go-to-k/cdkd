@@ -11,7 +11,8 @@
 # Control (--recreate-via-cc-api) and see Cloud Control's form -> the plan
 # announces each return -> --pin-cc-api declines them -> redeploy with a real
 # change: each id in the SDK form, each record flipped to 'sdk', each update
-# reached AWS on the same resource -> no drift -> the three leave the template
+# reached AWS on the same resource -> drift clean, then exactly the witness's
+# removal -> the three leave the template
 # and are deleted on the SDK route while their REST API stays -> destroy.
 
 set -euo pipefail
@@ -405,32 +406,62 @@ assert_live_values "phase 5 (SDK update)" b
 assert_refs "phase 5"
 echo "    OK: SDK-form ids, same witnesses, all ${#SUBJECTS[@]} records flipped to sdk, updates applied in place"
 
-echo "==> Phase 6: no drift on the flipped records"
-# The witness response is undeclared, so drift would rightly report it.
-aws apigateway delete-method-response --rest-api-id "${API_ID}" --resource-id "${ROOT_ID}" \
-  --http-method GET --status-code "${WITNESS_STATUS}" --region "${REGION}"
-# Both: rc 0 alone would also pass a read that missed a resource, so the
-# report must place each one in the clean bucket.
-DRIFT_JSON=$(mktemp)
-set +e
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --stack-region "${REGION}" --json >"${DRIFT_JSON}" 2>/dev/null
-DRIFT_RC=$?
-set -e
-for id in "${SUBJECTS[@]}"; do
-  bucket=$(jq -r --arg id "${id}" '[.. | objects | to_entries[]
+echo "==> Phase 6: drift on the flipped records"
+# cdkd drift compares AWS with the snapshot each deploy reads back
+# (observedProperties), which holds every property AWS reported, undeclared
+# ones included. The phase-5 flip read the Method back while the out-of-band
+# 418 response was live, so the snapshot carries it.
+#
+# 6a: with the witness still live, all must be clean: each flipped record's
+# snapshot matches what AWS holds. 6b: with the witness removed, the Method must
+# drift by exactly that response and nothing else, which proves drift reads
+# the live Method through the flipped record rather than skipping it.
+DRIFT_OUT=""
+DRIFT_RC=0
+run_drift() {
+  set +e
+  DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --stack-region "${REGION}" --json 2>/dev/null)
+  DRIFT_RC=$?
+  set -e
+}
+# The report bucket(s) a logical id lands in, comma-joined.
+drift_bucket() { # usage: drift_bucket <logicalId>
+  jq -r --arg id "$1" '[.. | objects | to_entries[]
     | select((.value | type) == "array") | .key as $bucket
     | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' \
-    "${DRIFT_JSON}" 2>/dev/null || true)
-  if [ "${DRIFT_RC}" -ne 0 ] || [ "${bucket}" != "clean" ]; then
-    echo "FAIL: cdkd drift did not report ${id} clean after the flip (bucket '${bucket}', rc=${DRIFT_RC}):" >&2
-    cat "${DRIFT_JSON}" >&2
-    rm -f "${DRIFT_JSON}"
-    exit 1
-  fi
+    <<<"${DRIFT_OUT}" 2>/dev/null || true
+}
+drift_fail() { # usage: drift_fail <message>
+  echo "FAIL: $1" >&2
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  exit 1
+}
+
+run_drift
+for id in "${SUBJECTS[@]}"; do
+  bucket=$(drift_bucket "${id}")
+  [ "${bucket}" = "clean" ] || drift_fail "6a: cdkd drift put ${id} in bucket '${bucket}', expected clean"
 done
-rm -f "${DRIFT_JSON}"
-echo "    OK: cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0)"
+# rc after the per-subject buckets, so a non-zero rc names its own cause.
+[ "${DRIFT_RC}" -eq 0 ] || drift_fail "6a: cdkd drift exited ${DRIFT_RC} although every subject is clean"
+echo "    OK (6a): cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0) with the witness live"
+
+aws apigateway delete-method-response --rest-api-id "${API_ID}" --resource-id "${ROOT_ID}" \
+  --http-method GET --status-code "${WITNESS_STATUS}" --region "${REGION}"
+run_drift
+for id in RerouteAuthorizer RerouteStage; do
+  bucket=$(drift_bucket "${id}")
+  [ "${bucket}" = "clean" ] || drift_fail "6b: cdkd drift put ${id} in bucket '${bucket}', expected clean"
+done
+bucket=$(drift_bucket RerouteMethod)
+[ "${bucket}" = "drifted" ] || drift_fail "6b: cdkd drift put RerouteMethod in bucket '${bucket}', expected drifted by the removed ${WITNESS_STATUS} response"
+CHANGES=$(jq -c '[.[].drifted[] | select(.logicalId == "RerouteMethod") | .changes[]]' <<<"${DRIFT_OUT}")
+WANT='[{"path":"MethodResponses.'"${WITNESS_STATUS}"'","stateValue":{"statusCode":"'"${WITNESS_STATUS}"'"}}]'
+[ "$(jq -cS '[.[] | del(.awsValue | nulls)]' <<<"${CHANGES}")" = "$(jq -cS . <<<"${WANT}")" ] ||
+  drift_fail "6b: RerouteMethod drifted by ${CHANGES}, expected exactly ${WANT}"
+[ "${DRIFT_RC}" -ne 0 ] || drift_fail "6b: cdkd drift exited 0 although it reports RerouteMethod drifted"
+echo "    OK (6b): with the witness removed, only RerouteMethod drifted, by MethodResponses.${WITNESS_STATUS} alone (rc=${DRIFT_RC})"
 
 echo "==> Phase 7: remove the three from the template; each SDK delete must address the flipped id"
 # The REST API stays, so a delete sent to a wrong id leaves its target alive
