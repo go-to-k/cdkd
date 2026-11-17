@@ -326,7 +326,7 @@ A wait that runs out fails the update.
 | VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation (about 18 minutes) |
 | Subnet whose CIDR came from an IPAM pool | Until the pool releases the subnet's allocation (about 19 minutes for an IPv4 block, about 25 for an IPv6 one) |
 | IPAM pool CIDR refused while deleted resources' allocations remain | Until the pool releases them, then delete again |
-| Bedrock AgentCore runtime still `CREATING` or `UPDATING` | Until it leaves that status, then delete (up to 10 minutes) |
+| Bedrock AgentCore runtime still `CREATING` or `UPDATING` | Until it leaves that status, then delete (up to 30 minutes) |
 
 Each wait is there for a reason:
 

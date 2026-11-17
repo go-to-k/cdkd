@@ -149,9 +149,8 @@ form_ok() { # usage: form_ok <logicalId> <physicalId>
   esac
 }
 
-# The runtime can still be CREATING / UPDATING when a deploy returns (a
-# provider that does not wait for READY, or a Cloud Control read racing the
-# handler), so every phase waits for READY before it reads the runtime. A
+# After a Cloud Control deploy (phases 2 and 4) the runtime is waited for
+# READY before it is read, as a defence against a read racing the handler. A
 # `*FAILED` runtime fails the run with AWS's failureReason.
 wait_ready() { # usage: wait_ready <runtime-id>
   local status=""
@@ -169,6 +168,20 @@ wait_ready() { # usage: wait_ready <runtime-id>
   done
   echo "FAIL: runtime $1 did not reach READY within 600s (last status '${status}')" >&2
   exit 1
+}
+
+# After an SDK deploy (phases 1 and 5) the runtime must ALREADY be READY: the
+# SDK provider waits for it (go-to-k/cdkd#6490), so a status still CREATING /
+# UPDATING here is that wait missing. No polling, or the check would pass
+# without the provider's wait.
+assert_ready_now() { # usage: assert_ready_now <phase-label> <runtime-id>
+  local status
+  status=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$2" \
+    --region "${REGION}" --query status --output text) || return 1
+  [ "${status}" = "READY" ] || {
+    echo "FAIL: $1: runtime $2 is ${status} right after the deploy; the SDK provider returned before READY" >&2
+    exit 1
+  }
 }
 
 # Every resource's live value must be the phase's.
@@ -254,7 +267,7 @@ env CDKD_TEST_PHASE=base \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 load_state
 assert_layers "phase 1 (fresh deploy)" sdk
-wait_ready "$(record RerouteRuntime '.physicalId')"
+assert_ready_now "phase 1" "$(record RerouteRuntime '.physicalId')"
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   P0[$i]=$(record "${id}" '.physicalId')
@@ -337,7 +350,7 @@ env CDKD_TEST_PHASE=flip \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 load_state
 assert_layers "phase 5 (flip)" sdk
-wait_ready "$(record RerouteRuntime '.physicalId')"
+assert_ready_now "phase 5" "$(record RerouteRuntime '.physicalId')"
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   p2=$(record "${id}" '.physicalId')

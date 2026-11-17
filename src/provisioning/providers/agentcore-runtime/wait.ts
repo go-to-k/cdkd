@@ -16,14 +16,21 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { startInterruptWatch } from '../../interrupt-watch.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
-import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import {
+  isRetryableTransientError,
+  markNonRetryable,
+} from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { MaskerFn } from '../../masked-retry-logger.js';
 
 /** The time between two status reads. */
 export const RUNTIME_WAIT_POLL_MS = 5_000;
-/** The reads a wait makes before it gives up: 10 minutes at {@link RUNTIME_WAIT_POLL_MS}. */
-export const RUNTIME_WAIT_MAX_POLLS = 120;
+/**
+ * The reads a wait makes before it gives up: 30 minutes at
+ * {@link RUNTIME_WAIT_POLL_MS}, the default per-resource deadline, which
+ * stops the wait first unless `--resource-timeout` allows more.
+ */
+export const RUNTIME_WAIT_MAX_POLLS = 360;
 
 /** Statuses AWS reports while a create or update is still in flight. */
 const IN_FLIGHT: ReadonlySet<string> = new Set(['CREATING', 'UPDATING']);
@@ -39,10 +46,13 @@ export interface RuntimeWaitDeps {
  * Poll `GetAgentRuntime` until the runtime is `READY`, and return that read.
  *
  * `CREATE_FAILED` / `UPDATE_FAILED`, any status other than `READY` or the
- * in-flight one, and a runtime still in flight after
- * {@link RUNTIME_WAIT_MAX_POLLS} reads each throw a NON-retryable
- * `ProvisioningError`: re-sending the create or update cannot settle any of
- * them. AWS's `failureReason` goes to `debug` through `mask` only, because a
+ * in-flight one, a read that fails for a reason other than a transient one,
+ * and a runtime still in flight after {@link RUNTIME_WAIT_MAX_POLLS} reads
+ * each throw a NON-retryable `ProvisioningError`: the deploy engine's retry
+ * would re-send the whole create, and a second `CreateAgentRuntime` under the
+ * same name collides with the runtime that is settling. A transient read
+ * failure (throttle, 5xx, a dropped connection) counts as a poll and the wait
+ * goes on. AWS's `failureReason` goes to `debug` through `mask` only, because a
  * thrown message is persisted to the deployment events.
  */
 export async function waitForRuntimeReady(
@@ -68,9 +78,32 @@ export async function waitForRuntimeReady(
     let status: string | undefined;
     for (let poll = 1; poll <= RUNTIME_WAIT_MAX_POLLS; poll++) {
       if (watch.isInterrupted()) throw watch.onInterrupted();
-      const runtime = (await deps.client.send(
-        new GetAgentRuntimeCommand({ agentRuntimeId })
-      )) as GetAgentRuntimeCommandOutput;
+      let runtime: GetAgentRuntimeCommandOutput;
+      try {
+        runtime = (await deps.client.send(
+          new GetAgentRuntimeCommand({ agentRuntimeId })
+        )) as GetAgentRuntimeCommandOutput;
+      } catch (error) {
+        const failed = describeAwsFailure(error);
+        if (isRetryableTransientError(error, error instanceof Error ? error.message : '')) {
+          deps.debug(
+            mask(
+              `Status read of runtime ${agentRuntimeId} failed transiently (${failed.detail}); polling on`
+            )
+          );
+          await deps.sleep(RUNTIME_WAIT_POLL_MS);
+          continue;
+        }
+        throw markNonRetryable(
+          new ProvisioningError(
+            `BedrockAgentCore Runtime ${logicalId} (${agentRuntimeId}) could not be read while cdkd waited for READY after ${operation}: ${failed.summary}`,
+            resourceType,
+            logicalId,
+            agentRuntimeId,
+            error instanceof Error ? error : undefined
+          )
+        );
+      }
       status = runtime.status;
       if (status === 'READY') return runtime;
       if (status === 'CREATE_FAILED' || status === 'UPDATE_FAILED') {

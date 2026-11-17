@@ -243,7 +243,7 @@ export function guardStackRegionOptions(cmd: Command): void {
 /**
  * Skip waiting for async-stabilization resources (RDS, ElastiCache,
  * NAT Gateway, EC2 Instance, ELBv2 LoadBalancer, Lambda MicroVM Image,
- * Bedrock AgentCore Runtime `READY`, go-to-k/cdkd#6490, ECS Service steady state, the Auto Scaling instance refresh an
+ * Bedrock AgentCore Runtime `READY` (go-to-k/cdkd#6490), ECS Service steady state, the Auto Scaling instance refresh an
  * `--update-policy` rolling update starts, go-to-k/cdkd#6437) on deploy.
  * NOT the wait of an `AutoScalingReplacingUpdate` for its new group's
  * instances, which runs whatever the flag says: deleting the old group

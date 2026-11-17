@@ -141,6 +141,32 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       expect(lines).not.toContain('hunter2');
     });
 
+    it('polls on through a transient status-read failure', async () => {
+      const throttle = Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+      answer(['CREATING', throttle, 'READY']);
+      const result = await provider.create('Rt', TYPE, PROPS);
+      expect(result.attributes?.['Status']).toBe('READY');
+      expect(sent().filter((c) => c === 'GetAgentRuntimeCommand')).toHaveLength(3);
+      expect(sent().filter((c) => c === 'CreateAgentRuntimeCommand')).toHaveLength(1);
+    });
+
+    it('fails non-retryably, keeping the AWS error as the cause, on a non-transient status-read failure', async () => {
+      const denied = Object.assign(new Error('not allowed'), { name: 'AccessDeniedException' });
+      answer([denied]);
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      expect((error as Error).message).toMatch(/could not be read while cdkd waited for READY/);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect((error as Error).cause).toBe(denied);
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+    });
+
+    it('throws the wait failure as it is, not wrapped into a doubled message', async () => {
+      answer(['CREATE_FAILED']);
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      expect((error as Error).message).toMatch(/^BedrockAgentCore Runtime Rt \(/);
+      expect((error as Error).message).not.toContain('Failed to create');
+    });
+
     it('fails on a status other than READY or in flight', async () => {
       answer(['DELETING']);
       await expect(provider.create('Rt', TYPE, PROPS)).rejects.toThrow(/reported status DELETING/);

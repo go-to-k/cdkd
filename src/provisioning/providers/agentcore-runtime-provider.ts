@@ -437,18 +437,24 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     } catch (error) {
       if (createdRuntimeId !== undefined) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
+      // A cdkd-authored failure (the READY wait's, go-to-k/cdkd#6490) already
+      // names the runtime: pass it through, as update() does, rather than
+      // wrapping it into a doubled message.
+      const thrown =
+        error instanceof CdkdError
+          ? error
+          : this.wrapCaughtError(
+              maskerOrIdentity(context?.maskSecrets),
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  cause
+                )
+            );
       // The runtime exists with no state record: name it for the failed-CREATE
       // journal (`cdkd rollback --revert-failed`).
       if (createdRuntimeId !== undefined) {
