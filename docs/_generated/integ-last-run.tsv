@@ -54,7 +54,7 @@ cc-to-sdk-reroute	2026-11-03T04:12:32Z	PASS	210	verify.sh	rc ok, orph clean, 475
 cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
-cc-to-sdk-reroute-common-types-4	2026-11-17T04:51:52Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at c605a8821
+cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
 cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-hosted-zone	2026-11-02T17:29:26Z	PASS	177	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 cc-to-sdk-reroute-mount-target	2026-11-03T04:12:32Z	PASS	296	verify.sh	rc ok, orph clean, 4750ae2de
