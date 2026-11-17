@@ -114,7 +114,8 @@ instead of the RANGE, a global needle where each subject spells its own, and
   always empty (#6505); `perl -0pi` without `/g` hits only the first match); a
   case REACHES the line by EVERY arm, degenerate ones too (empty map, shape
   divergence; #5049), licensing a case per arm, never a fence change nor
-  DELETING a guard as "implied"; and the command ran where you think (gotchas.md). Read the TALLY.
+  DELETING a guard as "implied"; and the command ran where you think
+  (gotchas.md). Read the TALLY.
 
 ### 5-f'. Scanner/fence calibration (when the fix ships a repo-wide check)
 
