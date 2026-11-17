@@ -2888,6 +2888,7 @@
     "--evaluator-id",
     "--event",
     "--event-bus-name",
+    "--event-pattern",
     "--event-selectors",
     "--event-source-arn",
     "--exclude",

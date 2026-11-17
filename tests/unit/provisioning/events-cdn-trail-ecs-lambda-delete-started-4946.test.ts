@@ -196,45 +196,18 @@ describe('EventBridgeRuleProvider.delete stripped mark (#4946)', () => {
 });
 
 describe('EventBridgeBusProvider.delete stripped mark (#4946)', () => {
-  it('marks a refused DeleteEventBus after the rules on the bus were removed', async () => {
+  // The delete strips nothing since go-to-k/cdkd#6479 (rules on the bus are
+  // left alone), so a refused DeleteEventBus is never marked.
+  it('leaves a refused DeleteEventBus unmarked and sends no rule or target call', async () => {
     mockEventBridgeSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof ListRulesCommand) return { Rules: [{ Name: 'r1' }] };
-      if (cmd instanceof ListTargetsByRuleCommand) return { Targets: [{ Id: 't1' }] };
       if (cmd instanceof DeleteEventBusCommand) throw awsError('AccessDeniedException');
       return {};
     });
     const err = await caught(
       new EventBridgeBusProvider().delete('Bus', 'my-bus', 'AWS::Events::EventBus')
     );
-    expect(sentTypes(mockEventBridgeSend)).toContain(RemoveTargetsCommand);
-    expect(sentTypes(mockEventBridgeSend)).toContain(DeleteRuleCommand);
-    expectMarked(err);
-  });
-
-  it('leaves a refused DeleteEventBus unmarked when the bus had no rules', async () => {
-    mockEventBridgeSend.mockImplementation(async (cmd: unknown) => {
-      if (cmd instanceof ListRulesCommand) return { Rules: [] };
-      if (cmd instanceof DeleteEventBusCommand) throw awsError('AccessDeniedException');
-      return {};
-    });
-    const err = await caught(
-      new EventBridgeBusProvider().delete('Bus', 'my-bus', 'AWS::Events::EventBus')
-    );
-    expect(sentTypes(mockEventBridgeSend)).not.toContain(DeleteRuleCommand);
-    expect(sentTypes(mockEventBridgeSend)).toContain(DeleteEventBusCommand);
-    expectUnmarked(err);
-  });
-
-  it('leaves a refused DeleteEventBus unmarked when ListRules itself was refused', async () => {
-    mockEventBridgeSend.mockImplementation(async (cmd: unknown) => {
-      if (cmd instanceof ListRulesCommand) throw awsError('AccessDeniedException');
-      if (cmd instanceof DeleteEventBusCommand) throw awsError('AccessDeniedException');
-      return {};
-    });
-    const err = await caught(
-      new EventBridgeBusProvider().delete('Bus', 'my-bus', 'AWS::Events::EventBus')
-    );
-    expect(sentTypes(mockEventBridgeSend)).toContain(DeleteEventBusCommand);
+    expect(sentTypes(mockEventBridgeSend)).toEqual([DeleteEventBusCommand]);
     expectUnmarked(err);
   });
 });

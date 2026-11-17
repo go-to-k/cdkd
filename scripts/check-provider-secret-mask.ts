@@ -680,6 +680,8 @@ const MESSAGE_SINK_RECEIVERS: ReadonlySet<string> = new Set([
  * throws none today, so adding one lands inside the fence.
  */
 const MESSAGE_SINK_FACTORIES: ReadonlySet<string> = new Set([
+  // EventBridgeBusProvider's has-rules refusal (go-to-k/cdkd#6479).
+  'busHasRulesError',
   'handleError',
   'wrapError',
   'wrapUpdateError',
