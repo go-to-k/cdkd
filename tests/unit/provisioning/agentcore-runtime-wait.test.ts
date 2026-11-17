@@ -246,6 +246,8 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       expect(message).toMatch(/^Failed to create BedrockAgentCore Runtime Rt: /);
       expect(message).toContain(`The runtime ${ID} it created could not be deleted`);
       expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+      // A replayed create could only meet the survivor under its name.
+      expect(isMarkedNonRetryable(error)).toBe(true);
     });
 
     it('counts a not-found answer to the retire as gone', async () => {
