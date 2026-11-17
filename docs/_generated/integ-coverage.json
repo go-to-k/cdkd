@@ -853,11 +853,15 @@
       "resourceType": "AWS::BedrockAgentCore::Evaluator",
       "integs": [
         "agentcore-tools",
+        "cc-to-sdk-reroute-common-types-6",
         "getatt-iam-waf-s3vectors-evaluator",
         "import-attribute-readback-misc"
       ],
       "signals": {
         "agentcore-tools": [
+          "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-6": [
           "literal"
         ],
         "getatt-iam-waf-s3vectors-evaluator": [
@@ -872,10 +876,14 @@
       "resourceType": "AWS::BedrockAgentCore::Runtime",
       "integs": [
         "bedrock-agentcore",
+        "cc-to-sdk-reroute-common-types-6",
         "local-engine-role-identity"
       ],
       "signals": {
         "bedrock-agentcore": [
+          "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-6": [
           "literal"
         ],
         "local-engine-role-identity": [
@@ -6265,6 +6273,7 @@
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-common-types-3",
         "cc-to-sdk-reroute-common-types-4",
+        "cc-to-sdk-reroute-common-types-6",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -6426,6 +6435,9 @@
         ],
         "cc-to-sdk-reroute-common-types-4": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-6": [
+          "l2"
         ],
         "cc-write-only-create-only": [
           "l2"
@@ -7218,6 +7230,7 @@
         "cache-streaming",
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-2",
+        "cc-to-sdk-reroute-common-types-6",
         "cloudfront-function-url",
         "codedeploy-lambda-deployment-group",
         "cognito-lambda-triggers",
@@ -7388,6 +7401,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-common-types-2": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-6": [
           "l2"
         ],
         "cloudfront-function-url": [
@@ -8953,11 +8969,16 @@
     {
       "resourceType": "AWS::S3Tables::TableBucket",
       "integs": [
+        "cc-to-sdk-reroute-common-types-6",
         "getatt-appsync-s3express-s3tables",
         "ref-shape-vector-namespace-attachment",
         "s3-tables"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-6": [
+          "l1",
+          "literal"
+        ],
         "getatt-appsync-s3express-s3tables": [
           "l1",
           "literal"
