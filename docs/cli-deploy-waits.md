@@ -103,6 +103,14 @@ the failure still validate the next attempt. Use `--no-wait` to keep a
 cdkd returns while the image is `CREATING`. The image's ARN is available
 first, so stack outputs that use it still work.
 
+### `AWS::BedrockAgentCore::Runtime`
+
+cdkd returns while the runtime is `CREATING` or `UPDATING`, so a runtime that
+ends in `CREATE_FAILED` or `UPDATE_FAILED` does not fail the deploy. Its id
+and ARN are available first. A later delete of the runtime, by `cdkd destroy`
+or a replacement, waits for it to leave `CREATING` / `UPDATING` first, in
+every mode.
+
 ### Auto Scaling group instance refresh
 
 With `--update-policy`, an Auto Scaling group whose `AutoScalingRollingUpdate`

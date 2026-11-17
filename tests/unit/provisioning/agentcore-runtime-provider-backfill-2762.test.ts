@@ -4,7 +4,7 @@
  * CapacityProviderConfiguration / PlatformVersion / Tags reach AWS through the
  * SDK provider instead of routing the resource to Cloud Control.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateAgentRuntimeCommand,
   GetAgentRuntimeCommand,
@@ -95,6 +95,17 @@ const sleeps: number[] = [];
 function countOf<T>(ctor: new (...args: never[]) => T): number {
   return commandsSent().filter((c) => c instanceof ctor).length;
 }
+
+
+// These cases pin what the create / update SEND; the READY wait after each
+// (go-to-k/cdkd#6490) is covered by agentcore-runtime-wait.test.ts, so it is
+// skipped here as `--no-wait` skips it.
+beforeEach(() => {
+  vi.stubEnv('CDKD_NO_WAIT', 'true');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('AgentCoreRuntimeProvider go-to-k/cdkd#2762 backfill', () => {
   let provider: AgentCoreRuntimeProvider;

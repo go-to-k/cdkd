@@ -68,6 +68,11 @@ import type {
 } from '../../types/resource.js';
 import { CFN_MAP_KEYS, SDK_MAP_KEYS, isUserTagKey } from './agentcore-runtime/shared.js';
 import { readCurrentState, importImpl } from './agentcore-runtime/read-state.js';
+import {
+  waitForRuntimeReady,
+  waitForRuntimeSettledBeforeDelete,
+  type RuntimeWaitDeps,
+} from './agentcore-runtime/wait.js';
 
 /** The accepted shape of the Runtime's top-level `Tags`, named by a refusal. */
 const RUNTIME_TAGS_WHAT =
@@ -184,6 +189,46 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   /** The wait between post-create tag attempts; replaced in unit tests. */
   protected sleep = (ms: number): Promise<void> =>
     new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** What the status waits read through (go-to-k/cdkd#6490). */
+  private waitDeps(): RuntimeWaitDeps {
+    return {
+      client: this.client,
+      sleep: (ms) => this.sleep(ms),
+      debug: (message) => this.logger.debug(message),
+    };
+  }
+
+  /**
+   * The status a create or update records: READY once the wait saw it, or
+   * the call's own answer under `--no-wait` (`CDKD_NO_WAIT=true`), which
+   * returns while the runtime is still CREATING / UPDATING
+   * (go-to-k/cdkd#6490). Cloud Control's handler waits for READY too.
+   */
+  private async settledStatus(
+    agentRuntimeId: string,
+    logicalId: string,
+    resourceType: string,
+    operation: 'create' | 'update',
+    responseStatus: string | undefined,
+    mask: MaskerFn
+  ): Promise<string | undefined> {
+    if (process.env['CDKD_NO_WAIT'] === 'true') {
+      this.logger.debug(
+        `Skipping the READY wait for BedrockAgentCore Runtime ${logicalId} after ${operation} (CDKD_NO_WAIT=true)`
+      );
+      return responseStatus;
+    }
+    const ready = await waitForRuntimeReady(
+      this.waitDeps(),
+      agentRuntimeId,
+      logicalId,
+      resourceType,
+      operation,
+      mask
+    );
+    return ready.status;
+  }
 
   /**
    * Send a post-create tag call, retrying only {@link isTransientTagFailure}
@@ -376,9 +421,18 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         await this.ensureCreateTags(agentRuntimeId, agentRuntimeArn, desiredTags);
       }
 
+      const status = await this.settledStatus(
+        agentRuntimeId,
+        logicalId,
+        resourceType,
+        'create',
+        response.status,
+        maskerOrIdentity(context?.maskSecrets)
+      );
+
       return {
         physicalId: agentRuntimeId,
-        attributes: this.buildAttributes(response, agentRuntimeName),
+        attributes: this.buildAttributes({ ...response, status }, agentRuntimeName),
       };
     } catch (error) {
       if (createdRuntimeId !== undefined) markAuxiliaryFailure(error, logicalId);
@@ -526,12 +580,24 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         mask
       );
 
+      const status = await this.settledStatus(
+        agentRuntimeId,
+        logicalId,
+        resourceType,
+        'update',
+        response.status,
+        mask
+      );
+
       this.logger.debug(`Successfully updated BedrockAgentCore Runtime ${logicalId}`);
 
       return {
         physicalId: agentRuntimeId,
         wasReplaced: false,
-        attributes: this.buildAttributes(response, properties['AgentRuntimeName'] as string),
+        attributes: this.buildAttributes(
+          { ...response, status },
+          properties['AgentRuntimeName'] as string
+        ),
       };
     } catch (error) {
       // syncTags' own refusal (no runtime ARN) is cdkd's: pass it through.
@@ -653,6 +719,10 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting BedrockAgentCore Runtime ${logicalId}: ${physicalId}`);
+
+    // go-to-k/cdkd#6490: a runtime still CREATING / UPDATING (a `--no-wait`
+    // or interrupted deploy) settles first. Best effort, in every mode.
+    await waitForRuntimeSettledBeforeDelete(this.waitDeps(), physicalId, logicalId);
 
     try {
       await this.client.send(

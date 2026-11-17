@@ -149,6 +149,28 @@ form_ok() { # usage: form_ok <logicalId> <physicalId>
   esac
 }
 
+# The runtime can still be CREATING / UPDATING when a deploy returns (a
+# provider that does not wait for READY, or a Cloud Control read racing the
+# handler), so every phase waits for READY before it reads the runtime. A
+# `*FAILED` runtime fails the run with AWS's failureReason.
+wait_ready() { # usage: wait_ready <runtime-id>
+  local status=""
+  for _ in $(seq 1 120); do
+    status=$(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" \
+      --region "${REGION}" --query status --output text) || return 1
+    case "${status}" in
+      READY) return 0 ;;
+      *FAILED)
+        echo "FAIL: runtime $1 is ${status}: $(aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$1" --region "${REGION}" --query failureReason --output text 2>&1)" >&2
+        exit 1
+        ;;
+    esac
+    sleep 5
+  done
+  echo "FAIL: runtime $1 did not reach READY within 600s (last status '${status}')" >&2
+  exit 1
+}
+
 # Every resource's live value must be the phase's.
 assert_live_values() { # usage: assert_live_values <phase-label> <a|b>
   local id pid got want
@@ -232,6 +254,7 @@ env CDKD_TEST_PHASE=base \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 load_state
 assert_layers "phase 1 (fresh deploy)" sdk
+wait_ready "$(record RerouteRuntime '.physicalId')"
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   P0[$i]=$(record "${id}" '.physicalId')
@@ -250,6 +273,7 @@ env CDKD_TEST_PHASE=seed \
 load_state
 # Without this every assertion below would be vacuous.
 assert_layers "phase 2 (after --recreate-via-cc-api)" cc-api
+wait_ready "$(record RerouteRuntime '.physicalId')"
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   P1[$i]=$(record "${id}" '.physicalId')
@@ -295,6 +319,7 @@ env CDKD_TEST_PHASE=pinned \
     "${PIN_FLAGS[@]}" --yes
 load_state
 assert_layers "phase 4 (--pin-cc-api)" cc-api
+wait_ready "$(record RerouteRuntime '.physicalId')"
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   [ "$(record "${id}" '.physicalId')" = "${P1[$i]}" ] || { echo "FAIL: the pinned deploy changed ${id}'s id" >&2; exit 1; }
@@ -312,6 +337,7 @@ env CDKD_TEST_PHASE=flip \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 load_state
 assert_layers "phase 5 (flip)" sdk
+wait_ready "$(record RerouteRuntime '.physicalId')"
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   p2=$(record "${id}" '.physicalId')

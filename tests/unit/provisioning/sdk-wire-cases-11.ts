@@ -2,6 +2,7 @@ import {
   ACCOUNT,
   TAG_THROWS,
   createOnlyOf,
+  setOutputOverrides,
   type BagCase,
   type Throw,
   type TypeCase,
@@ -311,6 +312,9 @@ const RUNTIME_CASE: TypeCase = {
   provider: () => new AgentCoreRuntimeProvider(),
   physicalId: RUNTIME_ID,
   createOnly: createOnlyOf('AWS::BedrockAgentCore::Runtime'),
+  // The create and update wait for READY (go-to-k/cdkd#6490): the fake read
+  // answers it, so each probe's write sequence is the same as before the wait.
+  arm: () => setOutputOverrides({ GetAgentRuntimeCommand: () => ({ status: 'READY' }) }),
   wholeFromNext: RUNTIME_FROM_NEXT,
   exempt: {},
   targets: [

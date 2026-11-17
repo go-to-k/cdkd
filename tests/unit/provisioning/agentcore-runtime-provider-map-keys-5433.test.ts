@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 // go-to-k/cdkd#5433: the PascalCase -> camelCase flip must stop at a
 // user-keyed map. A `ManagedVpcResource.Tags` key `Env` went out as `env`, so
@@ -116,6 +116,17 @@ const PROPERTIES = {
   AuthorizerConfiguration: CFN_AUTHORIZER,
   EnvironmentVariables: ENV,
 };
+
+
+// These cases pin what the create / update SEND; the READY wait after each
+// (go-to-k/cdkd#6490) is covered by agentcore-runtime-wait.test.ts, so it is
+// skipped here as `--no-wait` skips it.
+beforeEach(() => {
+  vi.stubEnv('CDKD_NO_WAIT', 'true');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('AgentCoreRuntimeProvider user-keyed map keys (issue #5433)', () => {
   let provider: AgentCoreRuntimeProvider;
