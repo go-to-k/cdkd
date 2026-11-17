@@ -123,6 +123,8 @@ the background. Until then, you may see these:
   instance that declares `Volumes` or `SsmAssociations` waits for `running`
   to attach the volumes or associate the document, and gets that check.
 - An ACM certificate is still in `PENDING_VALIDATION`.
+- A Bedrock AgentCore runtime can still be `CREATING` or `UPDATING`, and a
+  runtime that fails to reach `READY` does not fail the deploy.
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 - An ECS service's rollout is unchecked: a service whose tasks never start
   still deploys with exit `0`.

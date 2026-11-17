@@ -210,6 +210,8 @@ const CASES: Case[] = [
       },
       // The new runtime holds none of the tags it was sent.
       ListTagsForResourceCommand: { tags: {} },
+      // The READY wait before the tag check (go-to-k/cdkd#6490).
+      GetAgentRuntimeCommand: { status: 'READY' },
     },
   },
   {

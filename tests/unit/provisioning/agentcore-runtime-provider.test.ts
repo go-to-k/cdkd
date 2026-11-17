@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { ResourceNotFoundException } from '@aws-sdk/client-bedrock-agentcore-control';
 
 // Mock AWS clients before importing the provider
@@ -32,6 +32,17 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
+
+
+// These cases pin what the create / update SEND; the READY wait after each
+// (go-to-k/cdkd#6490) is covered by agentcore-runtime-wait.test.ts, so it is
+// skipped here as `--no-wait` skips it.
+beforeEach(() => {
+  vi.stubEnv('CDKD_NO_WAIT', 'true');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('AgentCoreRuntimeProvider', () => {
   let provider: AgentCoreRuntimeProvider;
@@ -305,6 +316,8 @@ describe('AgentCoreRuntimeProvider', () => {
 
   describe('delete', () => {
     it('should delete a runtime', async () => {
+      // The pre-delete status read (go-to-k/cdkd#6490), then the delete.
+      mockSend.mockResolvedValueOnce({ agentRuntimeId: 'runtime-12345', status: 'READY' });
       mockSend.mockResolvedValueOnce({
         agentRuntimeId: 'runtime-12345',
         status: 'DELETING',
@@ -316,14 +329,19 @@ describe('AgentCoreRuntimeProvider', () => {
         'AWS::BedrockAgentCore::Runtime'
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(mockSend.mock.calls[0][0].constructor.name).toBe('GetAgentRuntimeCommand');
 
-      const deleteCall = mockSend.mock.calls[0][0];
+      const deleteCall = mockSend.mock.calls[1][0];
       expect(deleteCall.constructor.name).toBe('DeleteAgentRuntimeCommand');
       expect(deleteCall.input.agentRuntimeId).toBe('runtime-12345');
     });
 
     it('should skip deletion when runtime does not exist (ResourceNotFoundException)', async () => {
+      // The pre-delete read and the delete both answer not-found.
+      mockSend.mockRejectedValueOnce(
+        new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
+      );
       mockSend.mockRejectedValueOnce(
         new ResourceNotFoundException({ $metadata: {}, message: 'not found' })
       );
@@ -334,10 +352,11 @@ describe('AgentCoreRuntimeProvider', () => {
         'AWS::BedrockAgentCore::Runtime'
       );
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
     it('should throw ProvisioningError on unexpected failure', async () => {
+      mockSend.mockResolvedValueOnce({ agentRuntimeId: 'runtime-12345', status: 'READY' });
       mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
       await expect(

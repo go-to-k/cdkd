@@ -48,7 +48,8 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
-import { reportCreatedResource } from '../created-resource-sink.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { isInterruptedWaitError } from '../interrupt-watch.js';
 import {
   planTagDiff,
   refuseMalformedDesiredTags,
@@ -68,6 +69,13 @@ import type {
 } from '../../types/resource.js';
 import { CFN_MAP_KEYS, SDK_MAP_KEYS, isUserTagKey } from './agentcore-runtime/shared.js';
 import { readCurrentState, importImpl } from './agentcore-runtime/read-state.js';
+import {
+  keptIdempotentRuntimeNote,
+  retireFailedRuntimeCreate,
+  waitForRuntimeReady,
+  waitForRuntimeSettledBeforeDelete,
+  type RuntimeWaitDeps,
+} from './agentcore-runtime/wait.js';
 
 /** The accepted shape of the Runtime's top-level `Tags`, named by a refusal. */
 const RUNTIME_TAGS_WHAT =
@@ -184,6 +192,46 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
   /** The wait between post-create tag attempts; replaced in unit tests. */
   protected sleep = (ms: number): Promise<void> =>
     new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** What the status waits read through (go-to-k/cdkd#6490). */
+  private waitDeps(): RuntimeWaitDeps {
+    return {
+      client: this.client,
+      sleep: (ms) => this.sleep(ms),
+      debug: (message) => this.logger.debug(message),
+    };
+  }
+
+  /**
+   * The status a create or update records: READY once the wait saw it, or
+   * the call's own answer under `--no-wait` (`CDKD_NO_WAIT=true`), which
+   * returns while the runtime is still CREATING / UPDATING
+   * (go-to-k/cdkd#6490). Cloud Control's handler waits for READY too.
+   */
+  private async settledStatus(
+    agentRuntimeId: string,
+    logicalId: string,
+    resourceType: string,
+    operation: 'create' | 'update',
+    responseStatus: string | undefined,
+    mask: MaskerFn
+  ): Promise<string | undefined> {
+    if (process.env['CDKD_NO_WAIT'] === 'true') {
+      this.logger.debug(
+        safeMsg`Skipping the READY wait for BedrockAgentCore Runtime ${logicalId} after ${operation} (CDKD_NO_WAIT=true)`
+      );
+      return responseStatus;
+    }
+    const ready = await waitForRuntimeReady(
+      this.waitDeps(),
+      agentRuntimeId,
+      logicalId,
+      resourceType,
+      operation,
+      mask
+    );
+    return ready.status;
+  }
 
   /**
    * Send a post-create tag call, retrying only {@link isTransientTagFailure}
@@ -372,33 +420,88 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
 
       this.logger.debug(`Created BedrockAgentCore Runtime: ${agentRuntimeId} (${agentRuntimeArn})`);
 
+      // READY first (go-to-k/cdkd#6490): a tag check that fails then leaves a
+      // settled runtime, which the catch's retire can delete.
+      const status = await this.settledStatus(
+        agentRuntimeId,
+        logicalId,
+        resourceType,
+        'create',
+        response.status,
+        maskerOrIdentity(context?.maskSecrets)
+      );
+
       if (desiredTags.length > 0) {
         await this.ensureCreateTags(agentRuntimeId, agentRuntimeArn, desiredTags);
       }
 
       return {
         physicalId: agentRuntimeId,
-        attributes: this.buildAttributes(response, agentRuntimeName),
+        attributes: this.buildAttributes({ ...response, status }, agentRuntimeName),
       };
     } catch (error) {
       if (createdRuntimeId !== undefined) markAuxiliaryFailure(error, logicalId);
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      // go-to-k/cdkd#2169: a runtime this call created is deleted again, as
+      // CloudFormation's CREATE_FAILED rollback does, so the next deploy's
+      // create does not meet it under the same name. Not on Ctrl-C: the
+      // interrupt stops cdkd starting new calls, and the journal mark below
+      // leaves the runtime to `cdkd rollback`. Not under a declared
+      // ClientToken: AWS's idempotency may have answered with an existing
+      // runtime another deploy's state holds, so it is reported, not deleted.
+      let survivor: string | undefined;
+      if (createdRuntimeId !== undefined && !isInterruptedWaitError(error)) {
+        const region = await this.client.config.region().catch(() => undefined);
+        survivor =
+          properties['ClientToken'] !== undefined
+            ? keptIdempotentRuntimeNote(createdRuntimeId, region, mask)
+            : await retireFailedRuntimeCreate(this.waitDeps(), createdRuntimeId, region, mask);
+      }
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-      // The runtime exists with no state record: name it for the failed-CREATE
-      // journal (`cdkd rollback --revert-failed`).
+      // A cdkd-authored failure (the READY wait's, go-to-k/cdkd#6490) already
+      // names the runtime: it is kept as it is, as update() does, rather than
+      // wrapped into a doubled message. A survivor note is APPENDED to the
+      // original failure, never swapped in.
+      let thrown: Error;
+      if (error instanceof CdkdError) {
+        thrown = survivor
+          ? new ProvisioningError(
+              `${error.message}${survivor}`,
+              resourceType,
+              logicalId,
+              undefined,
+              error
+            )
+          : error;
+      } else {
+        thrown = this.wrapCaughtError(
+          mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}${survivor ?? ''}`,
+              resourceType,
+              logicalId,
+              undefined,
+              cause
+            )
+        );
+      }
       if (createdRuntimeId !== undefined) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdRuntimeId);
+        if (survivor === '') {
+          // Retired: nothing is left for the failed-CREATE journal to name.
+          // Still terminal: the delete returned while the runtime may be
+          // DELETING, and a replayed create under the same name would meet it.
+          retractCreatedResource(logicalId, resourceType, createdRuntimeId);
+          markNonRetryable(thrown);
+        } else {
+          // The runtime survives (the delete failed or was not attempted: a
+          // declared ClientToken, an interrupt) with no state record: name it for the failed-CREATE journal
+          // (`cdkd rollback --revert-failed`). A replayed create could only
+          // meet it, so a survivor the delete could not remove is terminal.
+          if (survivor !== undefined) markNonRetryable(thrown);
+          markCreatedBeforeFailure(thrown, logicalId, resourceType, createdRuntimeId);
+        }
       }
       throw thrown;
     }
@@ -526,12 +629,24 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         mask
       );
 
+      const status = await this.settledStatus(
+        agentRuntimeId,
+        logicalId,
+        resourceType,
+        'update',
+        response.status,
+        mask
+      );
+
       this.logger.debug(`Successfully updated BedrockAgentCore Runtime ${logicalId}`);
 
       return {
         physicalId: agentRuntimeId,
         wasReplaced: false,
-        attributes: this.buildAttributes(response, properties['AgentRuntimeName'] as string),
+        attributes: this.buildAttributes(
+          { ...response, status },
+          properties['AgentRuntimeName'] as string
+        ),
       };
     } catch (error) {
       // syncTags' own refusal (no runtime ARN) is cdkd's: pass it through.
@@ -653,6 +768,10 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting BedrockAgentCore Runtime ${logicalId}: ${physicalId}`);
+
+    // go-to-k/cdkd#6490: a runtime still CREATING / UPDATING (a `--no-wait`
+    // or interrupted deploy) settles first. Best effort, in every mode.
+    await waitForRuntimeSettledBeforeDelete(this.waitDeps(), physicalId, logicalId);
 
     try {
       await this.client.send(

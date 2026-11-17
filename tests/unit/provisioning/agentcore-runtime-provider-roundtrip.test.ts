@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { UpdateAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore-control';
 
 const mockSend = vi.fn();
@@ -35,6 +35,17 @@ import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/ag
 
 const RUNTIME_ID = 'runtime-12345';
 const RESOURCE_TYPE = 'AWS::BedrockAgentCore::Runtime';
+
+
+// These cases pin what the create / update SEND; the READY wait after each
+// (go-to-k/cdkd#6490) is covered by agentcore-runtime-wait.test.ts, so it is
+// skipped here as `--no-wait` skips it.
+beforeEach(() => {
+  vi.stubEnv('CDKD_NO_WAIT', 'true');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('AgentCoreRuntimeProvider read-update round-trip', () => {
   let provider: AgentCoreRuntimeProvider;

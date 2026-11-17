@@ -792,8 +792,10 @@ conditional the escape is:
   `AWS::Glue::Job`, `AWS::ECR::Repository`, `AWS::Events::EventBus`,
   `AWS::ServiceDiscovery::PrivateDnsNamespace`,
   `AWS::Glue::Workflow`, `AWS::Glue::Crawler`,
-  `AWS::ElasticLoadBalancingV2::LoadBalancer` and
-  `AWS::ServiceDiscovery::Service` are the members today.
+  `AWS::ElasticLoadBalancingV2::LoadBalancer`,
+  `AWS::ServiceDiscovery::Service`, `AWS::S3Tables::TableBucket`,
+  `AWS::BedrockAgentCore::Runtime` and `AWS::BedrockAgentCore::Evaluator` are
+  the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

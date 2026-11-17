@@ -721,4 +721,49 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'cc-to-sdk-reroute-common-types-5',
     },
   ],
+  [
+    'AWS::S3Tables::TableBucket',
+    {
+      // Batch 6 of go-to-k/cdkd#6454 (the follow-up go-to-k/cdkd#6490),
+      // admitted with the two AgentCore types below for the SDK path's speed.
+      // The bucket ARN is built from its name, so a re-created bucket keeps
+      // it: the fixture witnesses the bucket by its tableBucketId and
+      // createdAt instead.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the table bucket ARN: the schema primaryIdentifier is ' +
+        'TableBucketARN and the S3 Tables provider records the CreateTableBucket arn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-6',
+    },
+  ],
+  [
+    'AWS::BedrockAgentCore::Runtime',
+    {
+      // Admitted with AWS::S3Tables::TableBucket (go-to-k/cdkd#6490, batch 6).
+      // AgentCore mints the id (the name plus a random suffix), and the
+      // fixture also witnesses the runtime by its createdAt.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare agentRuntimeId, not the ARN: the schema ' +
+        'primaryIdentifier is AgentRuntimeId and the AgentCore Runtime provider records ' +
+        'the CreateAgentRuntime agentRuntimeId',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-6',
+    },
+  ],
+  [
+    'AWS::BedrockAgentCore::Evaluator',
+    {
+      // Admitted with AWS::S3Tables::TableBucket (go-to-k/cdkd#6490, batch 6).
+      // The ARN carries the AgentCore-minted evaluatorId, and the fixture also
+      // witnesses the evaluator by its createdAt.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the evaluator ARN, not the bare id: the schema primaryIdentifier ' +
+        'is EvaluatorArn and the AgentCore Evaluator provider records the CreateEvaluator evaluatorArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-6',
+    },
+  ],
 ]);

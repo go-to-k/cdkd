@@ -213,6 +213,25 @@ describe('sticky-CC exemption table', () => {
     ['AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal', Subnets: ['subnet-1'] }],
     // Batch 5 of go-to-k/cdkd#6454.
     ['AWS::ServiceDiscovery::Service', { Name: 's', NamespaceId: 'ns-1', Description: 'd' }],
+    // Batch 6 (go-to-k/cdkd#6490).
+    [
+      'AWS::S3Tables::TableBucket',
+      { TableBucketName: 'b', UnreferencedFileRemoval: { Status: 'Enabled', UnreferencedDays: 5 } },
+    ],
+    [
+      'AWS::BedrockAgentCore::Runtime',
+      {
+        AgentRuntimeName: 'r',
+        Description: 'd',
+        RoleArn: 'arn',
+        AgentRuntimeArtifact: {},
+        NetworkConfiguration: { NetworkMode: 'PUBLIC' },
+      },
+    ],
+    [
+      'AWS::BedrockAgentCore::Evaluator',
+      { EvaluatorName: 'e', Description: 'd', Level: 'TRACE', EvaluatorConfig: {} },
+    ],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {

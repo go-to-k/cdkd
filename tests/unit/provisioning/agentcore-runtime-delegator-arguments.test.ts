@@ -68,9 +68,10 @@ describe('AgentCoreRuntimeProvider delegators hand every argument to the moved b
     );
     // The class's own non-delegator methods stay in the class.
     expect(Object.getOwnPropertyNames(AgentCoreRuntimeProvider.prototype).length).toBe(
-      // constructor, sendCreateTagCall, wrapCaughtError, create, update,
-      // ensureCreateTags, syncTags, delete, buildAttributes, getAttribute
-      own.length + 10
+      // constructor, waitDeps, settledStatus, sendCreateTagCall,
+      // wrapCaughtError, create, update, ensureCreateTags, syncTags, delete,
+      // buildAttributes, getAttribute
+      own.length + 12
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });

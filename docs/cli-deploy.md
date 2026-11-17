@@ -197,6 +197,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::EC2::Instance` | Return while `pending`; a create declaring `Volumes` or `SsmAssociations` still waits for `running`, which attaching a volume or associating a document needs; an update that stops the instance (an `InstanceType`, `UserData`, `PrivateDnsNameOptions.HostnameType`, `Affinity`, `HostId`, `KernelId` or `RamdiskId` change) still waits for `stopped`, then returns after the start; each `Volumes` attach or detach still waits for the attachment to read `attached` or to go | Wait for `running` (30-60 s), on create and after an update's stop and start, and for each `Volumes` attachment to read `attached` (or, on a detach, to go) | same as default | Waits | Waits |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
+| `AWS::BedrockAgentCore::Runtime` | Return while `CREATING` / `UPDATING` | Wait for `READY`; a `CREATE_FAILED` or `UPDATE_FAILED` runtime fails the deploy | same as default | Waits | Waits |
 | `AWS::AutoScaling::AutoScalingGroup` with `--update-policy` | Start the instance refresh an `AutoScalingRollingUpdate` or `AutoScalingInstanceRefresh` asks for, then return; an `AutoScalingReplacingUpdate` still waits for the new group's instances before deleting the old group | Wait for the refresh to succeed; a failed or cancelled refresh fails the deploy | same as default | Waits | Starts a refresh (`instance_refresh`) and does not wait |
 
 [cdkd deploy: wait mode details](cli-deploy-waits.md) explains what each early
@@ -248,11 +249,12 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
     right after the deploy that added it, waits for the association;
   - releasing the gateway's last associated address waits until another
     address the template keeps has associated.
-- **CloudFront and `AWS::Lambda::MicrovmImage` through Cloud Control.** cdkd
-  provisions common resource types by calling the service's own API, and the
-  rest through the AWS Cloud Control API. The early return in the table
-  applies only to the first route. A resource of either type that is routed
-  through Cloud Control waits for its final state whatever the flag.
+- **CloudFront, `AWS::Lambda::MicrovmImage` and `AWS::BedrockAgentCore::Runtime`
+  through Cloud Control.** cdkd provisions common resource types by calling
+  the service's own API, and the rest through the AWS Cloud Control API. The
+  early return in the table applies only to the first route. A resource of
+  these types that is routed through Cloud Control waits for its final state
+  whatever the flag.
 
 ## The same stack name under another state prefix
 
