@@ -42,7 +42,7 @@ bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 
 budgets	2026-11-06T21:48:30Z	PASS	94	verify.sh	#5919 budgets-budget split head; rc ok, orph clean
 cache-streaming	2026-10-30T13:07:14Z	PASS	3339	verify.sh	rc ok, #5558 AZ-removal replacement verified (probe red at the zone-list removal assertion), orph clean
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
-cc-api-fallback	2026-11-17T09:08:06Z	PASS	210	verify.sh	rc ok, orph clean (#6437 PR #6483)
+cc-api-fallback	2026-11-17T11:07:54Z	PASS	212	verify.sh	rc ok, orph clean (#6494 PR #6495)
 cc-api-fallback-transitions	2026-11-17T09:08:06Z	PASS	110	verify.sh	rc ok, orph clean (#6437 PR #6483)
 cc-final-snapshot-handlers	2026-11-06T12:35:19Z	PASS	867	verify.sh	rc ok, destroy 0 errors, orph clean (#5846 a87a46584)
 cc-getatt-readback	2026-11-04T21:32:32Z	PASS	90	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean

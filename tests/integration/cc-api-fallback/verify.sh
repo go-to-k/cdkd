@@ -421,12 +421,16 @@ done
 # Emptied and deleted here, confirmed gone; `cleanup` retries on any failure.
 aws s3 rm "s3://${DEFS_BUCKET}" --recursive --region "${REGION}" >/dev/null
 aws s3api delete-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}"
-for _ in $(seq 1 12); do
+# HeadBucket can flip back to 200 right after a 404, so the loop's own 404 is
+# the verdict: a second probe after it reads the stale answer (go-to-k/cdkd#6494).
+for attempt in $(seq 1 12); do
   if gone_probe aws s3api head-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}"; then break; fi
+  if [ "${attempt}" = 12 ]; then
+    echo "FAIL: definition bucket ${DEFS_BUCKET} still exists after its delete" >&2
+    exit 1
+  fi
   sleep 5
 done
-assert_gone "definition bucket ${DEFS_BUCKET} still exists after its delete" \
-  aws s3api head-bucket --bucket "${DEFS_BUCKET}" --region "${REGION}"
 DEFS_BUCKET_CREATED=""
 
 # --- Phase 1b: a denied Cloud Control DELETE (go-to-k/cdkd#2319) ------------
