@@ -162,7 +162,7 @@ export interface PreDeleteSnapshotOptions {
    * {@link reuseStartedAtOrAfter}, an EBS volume's in-flight snapshot is
    * resumed whatever its age (at most one snapshot's duration old, so a
    * re-run destroy resumes its own), while a completed one is reused only
-   * when it started at or after this time: a completed snapshot from an older
+   * when it started at or after this time plus the EBS probe's skew margin: a completed snapshot from an older
    * attempt whose delete failed (the volume stayed in use) predates the writes
    * since. The EBS probe adds a clock-skew margin to it
    * (`ATTEMPT_START_SKEW_MARGIN_MS`), and each caller takes it right before

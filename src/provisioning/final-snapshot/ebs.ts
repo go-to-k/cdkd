@@ -27,7 +27,8 @@ import {
  * its attempt start right before its single reuse probe, and none probes again
  * after its own `CreateSnapshot`, so a completed snapshot of THIS attempt
  * cannot exist at probe time. Only the attempt-start bound takes it; a
- * recorded `reuseStartedAtOrAfter` (`supersededAt`) is compared as is.
+ * recorded `reuseStartedAtOrAfter` (`supersededAt`) is compared as is. It
+ * holds for a skew under 5 minutes; a local clock further behind reopens it.
  */
 export const ATTEMPT_START_SKEW_MARGIN_MS = 5 * 60 * 1_000;
 
@@ -84,7 +85,8 @@ export async function createEbsFinalSnapshot(
     // go-to-k/cdkd#6463: under a bound, only a snapshot AWS started for this
     // delete stands in; an older one predates writes the volume took since.
     // go-to-k/cdkd#6473: without one, an in-flight snapshot is resumed
-    // whatever its age, and a completed one only from this attempt.
+    // whatever its age, and a completed one only when AWS dates it past the
+    // attempt start plus the skew margin.
     const bound = options.reuseStartedAtOrAfter;
     const completedBound =
       bound ?? (options.attemptStartedAt ?? Date.now()) + ATTEMPT_START_SKEW_MARGIN_MS;
