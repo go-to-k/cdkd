@@ -350,7 +350,8 @@ describe('createEbsFinalSnapshot', () => {
     });
 
     describe('the clock-skew margin (AWS clock ahead of the local one)', () => {
-      const AHEAD = new Date(ATTEMPT + SKEW_MARGIN - 30_000);
+      // One millisecond short of the margin: the bound is exact.
+      const AHEAD = new Date(ATTEMPT + SKEW_MARGIN - 1);
 
       it('does not reuse a completed snapshot AWS dates inside the margin after the attempt start', async () => {
         const send = vi
