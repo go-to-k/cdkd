@@ -5,6 +5,7 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
 
 /**
@@ -92,7 +93,10 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
       'RerouteGlueWorkflow'
     );
 
-    // NOT under test: the crawler's role and database.
+    // NOT under test: the crawler's role, database and target bucket. AWS
+    // validates that a crawler's S3 target exists, so the bucket is real.
+    const crawlerBucket = new s3.CfnBucket(this, 'CrawlerBucket');
+    crawlerBucket.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
     const crawlerRole = new iam.CfnRole(this, 'CrawlerRole', {
       assumeRolePolicyDocument: {
         Version: '2012-10-17',
@@ -108,7 +112,7 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
         role: crawlerRole.attrArn,
         databaseName: crawlerDatabase.ref,
         description: phase,
-        targets: { s3Targets: [{ path: 's3://cdkd-reroute-unused/prefix/' }] },
+        targets: { s3Targets: [{ path: `s3://${crawlerBucket.ref}/prefix/` }] },
       }),
       'RerouteGlueCrawler'
     );
@@ -127,5 +131,6 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'HostNamespaceId', { value: hostNamespace.attrId });
     new cdk.CfnOutput(this, 'CrawlerRoleName', { value: crawlerRole.ref });
     new cdk.CfnOutput(this, 'CrawlerDatabaseName', { value: crawlerDatabase.ref });
+    new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucket.ref });
   }
 }

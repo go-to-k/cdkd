@@ -354,6 +354,7 @@ HOST_VPC_ID=$(output HostVpcId)
 HOST_NS_ID=$(output HostNamespaceId)
 CRAWLER_ROLE=$(output CrawlerRoleName)
 CRAWLER_DB=$(output CrawlerDatabaseName)
+CRAWLER_BUCKET=$(output CrawlerBucketName)
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # Cloud Map deletes a namespace asynchronously, so it stays readable for a
 # while after the delete is accepted. Each poll still goes through gone_probe,
@@ -382,6 +383,8 @@ assert_gone "glue crawler ${CRAWLER_NAME} survived destroy" \
   aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}"
 assert_gone "glue database ${CRAWLER_DB} survived destroy" \
   aws glue get-database --name "${CRAWLER_DB}" --region "${REGION}"
+assert_gone "crawler bucket ${CRAWLER_BUCKET} survived destroy" \
+  aws s3api head-bucket --bucket "${CRAWLER_BUCKET}"
 assert_gone "role ${CRAWLER_ROLE} survived destroy" aws iam get-role --role-name "${CRAWLER_ROLE}"
 assert_gone "load balancer ${LB_ARN} survived destroy" \
   aws elbv2 describe-load-balancers --load-balancer-arns "${LB_ARN}" --region "${REGION}"
