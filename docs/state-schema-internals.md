@@ -790,7 +790,7 @@ conditional the escape is:
   `AWS::KMS::Alias`, `AWS::CloudFront::CloudFrontOriginAccessIdentity`,
   `AWS::ServiceDiscovery::HttpNamespace`, `AWS::Glue::Database`,
   `AWS::Glue::Job`, `AWS::ECR::Repository`, `AWS::Events::EventBus`,
-  `AWS::ServiceDiscovery::PrivateDnsNamespace`, `AWS::ServiceDiscovery::Service`,
+  `AWS::ServiceDiscovery::PrivateDnsNamespace`,
   `AWS::Glue::Workflow`, `AWS::Glue::Crawler` and
   `AWS::ElasticLoadBalancingV2::LoadBalancer` are the members today.
 

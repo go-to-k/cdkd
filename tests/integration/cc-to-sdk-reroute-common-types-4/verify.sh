@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh -- cdkd sticky-CC -> SDK re-route parity integ for six more types (issue 6454, batch 4).
+# verify.sh -- cdkd sticky-CC -> SDK re-route parity integ for five more types (issue 6454, batch 4).
 #
 # Admission evidence for each type's `'sdk-coverage'` sticky exemption. Every
-# phase acts on all six resources at once. Phases: deploy on the SDK route ->
+# phase acts on all five resources at once. Phases: deploy on the SDK route ->
 # force each resource onto Cloud Control (--recreate-via-cc-api) -> the plan
 # announces each return -> --pin-cc-api declines them -> redeploy with a real
 # change: each id unchanged, each record flipped to 'sdk', each update reached
@@ -53,7 +53,6 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 SUBJECTS=(
   RerouteEventBus
   ReroutePrivateNamespace
-  RerouteDiscoveryService
   RerouteGlueWorkflow
   RerouteGlueCrawler
   RerouteLoadBalancer
@@ -95,8 +94,6 @@ live_value() { # usage: live_value <logicalId> <physicalId>
       aws events describe-event-bus --name "$2" --region "${REGION}" --query 'Description' --output text ;;
     ReroutePrivateNamespace)
       aws servicediscovery get-namespace --id "$2" --region "${REGION}" --query 'Namespace.Description' --output text ;;
-    RerouteDiscoveryService)
-      aws servicediscovery get-service --id "$2" --region "${REGION}" --query 'Service.Description' --output text ;;
     RerouteGlueWorkflow)
       aws glue get-workflow --name "$2" --region "${REGION}" --query 'Workflow.Description' --output text ;;
     RerouteGlueCrawler)
@@ -116,12 +113,10 @@ witness() { # usage: witness <logicalId> <physicalId>
   case "$1" in
     RerouteEventBus)
       aws events describe-event-bus --name "$2" --region "${REGION}" --query 'CreationTime' --output text ;;
-    # Cloud Map re-mints the same `ns-...` / `srv-...` id for a re-created name
+    # Cloud Map re-mints the same `ns-...` id for a re-created name
     # (measured on batch 3's namespace), so its ids cannot witness a recreate.
     ReroutePrivateNamespace)
       aws servicediscovery get-namespace --id "$2" --region "${REGION}" --query 'Namespace.CreateDate' --output text ;;
-    RerouteDiscoveryService)
-      aws servicediscovery get-service --id "$2" --region "${REGION}" --query 'Service.CreateDate' --output text ;;
     RerouteGlueWorkflow)
       aws glue get-workflow --name "$2" --region "${REGION}" --query 'Workflow.CreatedOn' --output text ;;
     RerouteGlueCrawler)
@@ -137,7 +132,6 @@ form_ok() { # usage: form_ok <logicalId> <physicalId>
   case "$1" in
     RerouteEventBus) grep -qE '^CdkdCcToSdkRerouteCommonTypes4Example-bus$' <<<"$2" ;;
     ReroutePrivateNamespace) grep -qE '^ns-[a-z0-9]+$' <<<"$2" ;;
-    RerouteDiscoveryService) grep -qE '^srv-[a-z0-9]+$' <<<"$2" ;;
     RerouteGlueWorkflow) grep -qE '^CdkdCcToSdkRerouteCommonTypes4Example-workflow$' <<<"$2" ;;
     RerouteGlueCrawler) grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]*$' <<<"$2" ;;
     RerouteLoadBalancer)
@@ -346,12 +340,10 @@ echo "    OK: cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0)"
 echo "==> Phase 7: Destroy + gone-probes"
 BUS_NAME=$(record RerouteEventBus '.physicalId')
 PRIVATE_NS_ID=$(record ReroutePrivateNamespace '.physicalId')
-SERVICE_ID=$(record RerouteDiscoveryService '.physicalId')
 WORKFLOW_NAME=$(record RerouteGlueWorkflow '.physicalId')
 CRAWLER_NAME=$(record RerouteGlueCrawler '.physicalId')
 LB_ARN=$(record RerouteLoadBalancer '.physicalId')
 HOST_VPC_ID=$(output HostVpcId)
-HOST_NS_ID=$(output HostNamespaceId)
 CRAWLER_ROLE=$(output CrawlerRoleName)
 CRAWLER_DB=$(output CrawlerDatabaseName)
 CRAWLER_BUCKET=$(output CrawlerBucketName)
@@ -373,10 +365,6 @@ assert_gone "event bus ${BUS_NAME} survived destroy" \
   aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"
 assert_gone_within "private namespace ${PRIVATE_NS_ID} survived destroy" \
   aws servicediscovery get-namespace --id "${PRIVATE_NS_ID}" --region "${REGION}"
-assert_gone "service ${SERVICE_ID} survived destroy" \
-  aws servicediscovery get-service --id "${SERVICE_ID}" --region "${REGION}"
-assert_gone_within "host namespace ${HOST_NS_ID} survived destroy" \
-  aws servicediscovery get-namespace --id "${HOST_NS_ID}" --region "${REGION}"
 assert_gone "glue workflow ${WORKFLOW_NAME} survived destroy" \
   aws glue get-workflow --name "${WORKFLOW_NAME}" --region "${REGION}"
 assert_gone "glue crawler ${CRAWLER_NAME} survived destroy" \

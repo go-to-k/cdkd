@@ -643,9 +643,9 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   [
     'AWS::Events::EventBus',
     {
-      // Batch 4 of go-to-k/cdkd#6454, admitted with five other types for the
+      // Batch 4 of go-to-k/cdkd#6454, admitted with four other types for the
       // SDK path's speed once its delete stopped deleting rules from outside
-      // the stack (go-to-k/cdkd#6479). Its fixture observed all six flips on
+      // the stack (go-to-k/cdkd#6479). Its fixture observed all five flips on
       // live resources, each with an identity witness: the AWS-minted ARN,
       // or the resource's creation time (Cloud Map re-mints its ids).
       mode: 'sdk-coverage' as const,
@@ -664,18 +664,6 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       physicalIdForm:
         'both layers store the bare `ns-...` namespace id: the schema primaryIdentifier ' +
         'is Id and the Service Discovery provider records the Id of the namespace it created',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
-      integFixture: 'cc-to-sdk-reroute-common-types-4',
-    },
-  ],
-  [
-    'AWS::ServiceDiscovery::Service',
-    {
-      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        'both layers store the bare `srv-...` service id: the schema primaryIdentifier ' +
-        'is Id and the Service Discovery provider records the CreateService Id',
       issue: 'https://github.com/go-to-k/cdkd/issues/6454',
       integFixture: 'cc-to-sdk-reroute-common-types-4',
     },

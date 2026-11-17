@@ -208,7 +208,6 @@ describe('sticky-CC exemption table', () => {
     // Batch 4 of go-to-k/cdkd#6454.
     ['AWS::Events::EventBus', { Name: 'b', Description: 'd' }],
     ['AWS::ServiceDiscovery::PrivateDnsNamespace', { Name: 'n.internal', Vpc: 'vpc-1', Description: 'd' }],
-    ['AWS::ServiceDiscovery::Service', { Name: 's', NamespaceId: 'ns-1', Description: 'd' }],
     ['AWS::Glue::Workflow', { Name: 'w', Description: 'd' }],
     ['AWS::Glue::Crawler', { Role: 'arn', DatabaseName: 'd', Description: 'd', Targets: {} }],
     ['AWS::ElasticLoadBalancingV2::LoadBalancer', { Scheme: 'internal', Subnets: ['subnet-1'] }],

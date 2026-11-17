@@ -22,12 +22,12 @@ const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
 };
 
 /**
- * physicalId-parity arm for issue 6454, batch 4: a resource of each of six
+ * physicalId-parity arm for issue 6454, batch 4: a resource of each of five
  * types, recorded `provisionedBy: 'cc-api'`, returns to its SDK provider
  * without churn.
  *
  * covers: AWS::Events::EventBus, AWS::ServiceDiscovery::PrivateDnsNamespace,
- * AWS::ServiceDiscovery::Service, AWS::Glue::Workflow, AWS::Glue::Crawler,
+ * AWS::Glue::Workflow, AWS::Glue::Crawler,
  * AWS::ElasticLoadBalancingV2::LoadBalancer
  *
  * Every resource under test is a LEAF: nothing in the stack references it, so
@@ -52,7 +52,7 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
     );
 
     // NOT under test: the VPC the private namespace and the load balancer sit
-    // in, its two subnets, and the DNS namespace the service registers in.
+    // in, and its two subnets.
     const hostVpc = new ec2.CfnVPC(this, 'HostVpc', {
       cidrBlock: '10.45.0.0/24',
       enableDnsHostnames: true,
@@ -66,10 +66,6 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
           availabilityZone: cdk.Fn.select(i, cdk.Fn.getAzs()),
         })
     );
-    const hostDnsNamespace = new servicediscovery.CfnPrivateDnsNamespace(this, 'HostNamespace', {
-      name: 'cdkd-reroute-common-types-4-host.internal',
-      vpc: hostVpc.ref,
-    });
 
     fixed(
       new servicediscovery.CfnPrivateDnsNamespace(this, 'PrivateNamespace', {
@@ -78,19 +74,6 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
         description: phase,
       }),
       'ReroutePrivateNamespace'
-    );
-
-    fixed(
-      new servicediscovery.CfnService(this, 'DiscoveryService', {
-        name: 'reroute',
-        // A DNS namespace: AWS refuses UpdateService for a service in an
-        // API-only (HTTP) namespace, and Cloud Control's update of one reports
-        // SUCCESS while changing nothing (measured us-east-1, 2026-11-17).
-        namespaceId: hostDnsNamespace.attrId,
-        dnsConfig: { dnsRecords: [{ type: 'A', ttl: 60 }] },
-        description: phase,
-      }),
-      'RerouteDiscoveryService'
     );
 
     fixed(
@@ -133,7 +116,6 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
     );
 
     new cdk.CfnOutput(this, 'HostVpcId', { value: hostVpc.ref });
-    new cdk.CfnOutput(this, 'HostNamespaceId', { value: hostDnsNamespace.attrId });
     new cdk.CfnOutput(this, 'CrawlerRoleName', { value: crawlerRole.ref });
     new cdk.CfnOutput(this, 'CrawlerDatabaseName', { value: crawlerDatabase.ref });
     new cdk.CfnOutput(this, 'CrawlerBucketName', { value: crawlerBucket.ref });
