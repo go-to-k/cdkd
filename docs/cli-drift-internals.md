@@ -579,6 +579,14 @@ the fallback:
 A deny-listed type is fixed by giving it a first-class SDK read-back, which
 makes the deny-list entry unreachable.
 
+Every Cloud Control read, the fallback and a resource Cloud Control
+provisioned alike, also skips the type's schema read-only fields that the
+template does not set. The snapshot recorded at deploy time holds the whole
+Cloud Control model, so without this a field such as `UpdateTime` changed on
+every out-of-band edit, and `--revert` would send the old value in a patch
+Cloud Control refuses. The schema comes from `cloudformation:DescribeType`,
+read once per type; when it cannot be read, every field is compared.
+
 ## Malformed records under `--accept` and `--revert`
 
 **A dropped row is REPORTED, and the run does not exit `0`.** An entry the
