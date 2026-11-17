@@ -228,6 +228,7 @@ witness() { # usage: witness <logicalId> <physicalId>
   case "$1" in
     RerouteRegionalWebAcl | RerouteCloudFrontWebAcl)
       listed=$(listed_acl_id "$1") || { echo "FAIL: cannot list $1's web ACL by name" >&2; return 1; }
+      [ -n "${listed}" ] || { echo "FAIL: no web ACL named $(acl_name "$1") is listed for $1" >&2; return 1; }
       [ "${listed}" = "$(acl_id "$2")" ] || {
         echo "FAIL: $1's name is held by web ACL '${listed}', not by the recorded $2" >&2
         return 1
