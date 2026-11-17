@@ -50,8 +50,9 @@ cc-protection-flip	2026-11-02T01:39:49Z	PASS	551	verify.sh	#5611 final @77ac0cf:
 cc-protection-flip-eks	2026-11-04T07:36:26Z	PASS	807	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 cc-required-name-generation	2026-11-05T04:10:23Z	PASS	53	verify.sh	rc ok on main 8547010bb dist, own temp state bucket, destroy 0 errors, orph clean (state keys + live resources, us-east-1/us-west-2)
 cc-to-sdk-reroute	2026-11-03T04:12:32Z	PASS	210	verify.sh	rc ok, orph clean, 4750ae2de
-cc-to-sdk-reroute-common-types	2026-11-16T17:53:53Z	PASS	346	verify.sh	rc ok, destroy 15 deleted 0 errors, orph clean; re-run at e99135a6a
-cc-to-sdk-reroute-common-types-2	2026-11-16T18:45:03Z	PASS	391	verify.sh	rc ok, destroy 0 errors, orph clean; at 3025b846e
+cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
+cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
+cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-hosted-zone	2026-11-02T17:29:26Z	PASS	177	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 cc-to-sdk-reroute-mount-target	2026-11-03T04:12:32Z	PASS	296	verify.sh	rc ok, orph clean, 4750ae2de

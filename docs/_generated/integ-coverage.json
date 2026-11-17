@@ -1025,11 +1025,16 @@
     {
       "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
       "integs": [
+        "cc-to-sdk-reroute-common-types-3",
         "import-attribute-readback-network",
         "s3-cloudfront",
         "stack-copy-create-tokens"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-3": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-network": [
           "l1"
         ],
@@ -4915,6 +4920,7 @@
     {
       "resourceType": "AWS::ECR::Repository",
       "integs": [
+        "cc-to-sdk-reroute-common-types-3",
         "created-before-failure-revert",
         "cross-region-concurrent-stacks",
         "destroy-data-guard",
@@ -4929,6 +4935,10 @@
         "stage-assets"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-3": [
+          "l1",
+          "literal"
+        ],
         "created-before-failure-revert": [
           "l1",
           "literal"
@@ -5796,6 +5806,7 @@
     {
       "resourceType": "AWS::Glue::Database",
       "integs": [
+        "cc-to-sdk-reroute-common-types-3",
         "data-analytics",
         "drift-revert",
         "firehose-iceberg-destination",
@@ -5803,6 +5814,10 @@
         "import-auto-mode"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-3": [
+          "l1",
+          "literal"
+        ],
         "data-analytics": [
           "l1",
           "literal"
@@ -5826,9 +5841,14 @@
     {
       "resourceType": "AWS::Glue::Job",
       "integs": [
+        "cc-to-sdk-reroute-common-types-3",
         "glue-update-hardening"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-3": [
+          "l1",
+          "literal"
+        ],
         "glue-update-hardening": [
           "l1"
         ]
@@ -6170,6 +6190,7 @@
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-2",
+        "cc-to-sdk-reroute-common-types-3",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -6324,6 +6345,9 @@
           "literal"
         ],
         "cc-to-sdk-reroute-common-types-2": [
+          "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-3": [
           "l1"
         ],
         "cc-write-only-create-only": [
@@ -10417,11 +10441,16 @@
       "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
+        "cc-to-sdk-reroute-common-types-3",
         "servicediscovery-namespaces"
       ],
       "signals": {
         "access-key-cloudmap-fix-forward-orphan": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-3": [
+          "l1",
+          "literal"
         ],
         "servicediscovery-namespaces": [
           "l1",

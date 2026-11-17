@@ -199,6 +199,12 @@ describe('sticky-CC exemption table', () => {
     ['AWS::Cognito::UserPool', { UserPoolTags: { k: 'v' } }],
     ['AWS::CloudFront::OriginAccessControl', { OriginAccessControlConfig: { Name: 'n' } }],
     ['AWS::KMS::Alias', { AliasName: 'alias/a', TargetKeyId: 'k' }],
+    // Batch 3 of go-to-k/cdkd#6454.
+    ['AWS::CloudFront::CloudFrontOriginAccessIdentity', { CloudFrontOriginAccessIdentityConfig: { Comment: 'c' } }],
+    ['AWS::ServiceDiscovery::HttpNamespace', { Name: 'n', Description: 'd' }],
+    ['AWS::Glue::Database', { CatalogId: '123456789012', DatabaseInput: { Name: 'd', Description: 'd' } }],
+    ['AWS::Glue::Job', { Role: 'arn', Description: 'd', Command: { Name: 'pythonshell' } }],
+    ['AWS::ECR::Repository', { ImageTagMutability: 'MUTABLE' }],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {

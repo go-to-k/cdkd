@@ -576,4 +576,68 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'cc-to-sdk-reroute-common-types-2',
     },
   ],
+  [
+    'AWS::CloudFront::CloudFrontOriginAccessIdentity',
+    {
+      // Batch 3 of go-to-k/cdkd#6454, admitted with four other types for the
+      // SDK path's speed. Its fixture observed all five flips on live
+      // resources, each with an identity witness: the AWS-minted id where
+      // AWS mints one, else the resource's creation time (an HttpNamespace's
+      // too: Cloud Map re-mints the same `ns-...` id for a recreated name).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `E...` identity id: the schema primaryIdentifier is ' +
+        'Id and CloudFrontOAIProvider.create records the CreateCloudFrontOriginAccessIdentity Id',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-3',
+    },
+  ],
+  [
+    'AWS::ServiceDiscovery::HttpNamespace',
+    {
+      // Admitted with AWS::CloudFront::CloudFrontOriginAccessIdentity (go-to-k/cdkd#6454, batch 3).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `ns-...` namespace id: the schema primaryIdentifier ' +
+        'is Id and the Service Discovery provider records the Id of the namespace it created',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-3',
+    },
+  ],
+  [
+    'AWS::Glue::Database',
+    {
+      // Admitted with AWS::CloudFront::CloudFrontOriginAccessIdentity (go-to-k/cdkd#6454, batch 3).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare database name: the schema primaryIdentifier is ' +
+        'DatabaseName and the Glue provider records DatabaseInput.Name, else DatabaseName',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-3',
+    },
+  ],
+  [
+    'AWS::Glue::Job',
+    {
+      // Admitted with AWS::CloudFront::CloudFrontOriginAccessIdentity (go-to-k/cdkd#6454, batch 3).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare job name: the schema primaryIdentifier is Name ' +
+        'and GlueJobProvider.create records the CreateJob Name',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-3',
+    },
+  ],
+  [
+    'AWS::ECR::Repository',
+    {
+      // Admitted with AWS::CloudFront::CloudFrontOriginAccessIdentity (go-to-k/cdkd#6454, batch 3).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare repository name: the schema primaryIdentifier is ' +
+        'RepositoryName and ECRProvider.create records the CreateRepository repositoryName',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-3',
+    },
+  ],
 ]);

@@ -135,7 +135,7 @@ describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
  * same baseline, or it names a route the deploy will not take.
  */
 describe('cdkd diff routing annotation for an unrecognized key (#3713)', () => {
-  const TYPE = 'AWS::ECR::Repository';
+  const TYPE = 'AWS::CloudWatch::Alarm';
   const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
 
   it('PREMISE: the type is routable and carries no sticky-escape exemption', () => {
@@ -143,7 +143,7 @@ describe('cdkd diff routing annotation for an unrecognized key (#3713)', () => {
   });
 
   it('does NOT name a key the record already holds unchanged', () => {
-    const bag = { RepositoryName: 'q', [UNKNOWN]: 'same' };
+    const bag = { AlarmName: 'q', [UNKNOWN]: 'same' };
     const hits = routes(templateWith('R', TYPE, { ...bag }), stateWith('R', TYPE, { ...bag }), NO_CHANGES);
     // The record is on 'cc-api', so the sticky arm is what remains.
     expect(hits.get('R')).toEqual(['sticky']);
@@ -151,8 +151,8 @@ describe('cdkd diff routing annotation for an unrecognized key (#3713)', () => {
 
   it('names the key once its value differs from the record', () => {
     const hits = routes(
-      templateWith('R', TYPE, { RepositoryName: 'q', [UNKNOWN]: 'changed' }),
-      stateWith('R', TYPE, { RepositoryName: 'q', [UNKNOWN]: 'same' }), NO_CHANGES
+      templateWith('R', TYPE, { AlarmName: 'q', [UNKNOWN]: 'changed' }),
+      stateWith('R', TYPE, { AlarmName: 'q', [UNKNOWN]: 'same' }), NO_CHANGES
     );
     expect(hits.get('R')).toEqual([UNKNOWN]);
   });
@@ -166,8 +166,8 @@ describe('cdkd diff routing annotation for an unrecognized key (#3713)', () => {
  * dropping that clause turns its case `sticky` again.
  */
 describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () => {
-  const TYPE = 'AWS::ECR::Repository';
-  const OTHER_TYPE = 'AWS::Events::EventBus';
+  const TYPE = 'AWS::CloudWatch::Alarm';
+  const OTHER_TYPE = 'AWS::ECS::Cluster';
 
   const update = (
     resourceType: string,
@@ -184,10 +184,10 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
 
   it('keeps `sticky` on an IN-PLACE update (the control)', () => {
     const hits = routes(
-      templateWith('R', TYPE, { RepositoryName: 'q', ImageTagMutability: 'IMMUTABLE' }),
-      stateWith('R', TYPE, { RepositoryName: 'q', ImageTagMutability: 'MUTABLE' }),
+      templateWith('R', TYPE, { AlarmName: 'q', Threshold: 60 }),
+      stateWith('R', TYPE, { AlarmName: 'q', Threshold: 30 }),
       update(TYPE, [
-        { path: 'ImageTagMutability', oldValue: 'MUTABLE', newValue: 'IMMUTABLE', requiresReplacement: false },
+        { path: 'Threshold', oldValue: 30, newValue: 60, requiresReplacement: false },
       ])
     );
     expect(hits.get('R')).toEqual(['sticky']);
@@ -195,9 +195,9 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
 
   it('drops `sticky` on a create-only property change', () => {
     const hits = routes(
-      templateWith('R', TYPE, { RepositoryName: 'q2' }),
-      stateWith('R', TYPE, { RepositoryName: 'q1' }),
-      update(TYPE, [{ path: 'RepositoryName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true }])
+      templateWith('R', TYPE, { AlarmName: 'q2' }),
+      stateWith('R', TYPE, { AlarmName: 'q1' }),
+      update(TYPE, [{ path: 'AlarmName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true }])
     );
     expect(hits.has('R')).toBe(false);
   });
@@ -207,8 +207,8 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
     // classify this row as replaced. The diff's own Type change carries a
     // `Type` property change too; the case above covers that clause.
     const hits = routes(
-      templateWith('R', OTHER_TYPE, { Name: 'b', Description: 'v' }),
-      stateWith('R', TYPE, { RepositoryName: 'q' }),
+      templateWith('R', OTHER_TYPE, { ClusterName: 'b' }),
+      stateWith('R', TYPE, { AlarmName: 'q' }),
       update(OTHER_TYPE, undefined)
     );
     expect(hits.has('R')).toBe(false);
@@ -216,8 +216,8 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
 
   it('drops `sticky` on the Type change the diff actually produces', () => {
     const hits = routes(
-      templateWith('R', OTHER_TYPE, { Name: 'b', Description: 'v' }),
-      stateWith('R', TYPE, { RepositoryName: 'q' }),
+      templateWith('R', OTHER_TYPE, { ClusterName: 'b' }),
+      stateWith('R', TYPE, { AlarmName: 'q' }),
       update(OTHER_TYPE, [
         { path: 'Type', oldValue: TYPE, newValue: OTHER_TYPE, requiresReplacement: true },
       ])
@@ -231,11 +231,11 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
       // The deploy updates in place until the propagated value is read, and
       // its live label keeps the recorded route meanwhile.
       const hits = routes(
-        templateWith('R', TYPE, { RepositoryName: 'q' }),
-        stateWith('R', TYPE, { RepositoryName: 'q' }),
+        templateWith('R', TYPE, { AlarmName: 'q' }),
+        stateWith('R', TYPE, { AlarmName: 'q' }),
         update(TYPE, [
           {
-            path: 'RepositoryName',
+            path: 'AlarmName',
             oldValue: 'q',
             newValue: { Ref: 'X' },
             requiresReplacement: true,
@@ -250,11 +250,11 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   it('drops `sticky` when a create-only change sits beside an in-place one', () => {
     // A real row usually mixes the two; ANY non-ceiling replacement decides.
     const hits = routes(
-      templateWith('R', TYPE, { RepositoryName: 'q2', ImageTagMutability: 'IMMUTABLE' }),
-      stateWith('R', TYPE, { RepositoryName: 'q1', ImageTagMutability: 'MUTABLE' }),
+      templateWith('R', TYPE, { AlarmName: 'q2', Threshold: 60 }),
+      stateWith('R', TYPE, { AlarmName: 'q1', Threshold: 30 }),
       update(TYPE, [
-        { path: 'ImageTagMutability', oldValue: 'MUTABLE', newValue: 'IMMUTABLE', requiresReplacement: false },
-        { path: 'RepositoryName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true },
+        { path: 'Threshold', oldValue: 30, newValue: 60, requiresReplacement: false },
+        { path: 'AlarmName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true },
       ])
     );
     expect(hits.has('R')).toBe(false);
@@ -262,17 +262,17 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
 
   it('drops `sticky` when a real replacement sits beside a ceiling', () => {
     const hits = routes(
-      templateWith('R', TYPE, { RepositoryName: 'q2', RepositoryPolicyText: { Ref: 'X' } }),
-      stateWith('R', TYPE, { RepositoryName: 'q1' }),
+      templateWith('R', TYPE, { AlarmName: 'q2', AlarmDescription: { Ref: 'X' } }),
+      stateWith('R', TYPE, { AlarmName: 'q1' }),
       update(TYPE, [
         {
-          path: 'RepositoryPolicyText',
+          path: 'AlarmDescription',
           oldValue: 'x',
           newValue: { Ref: 'X' },
           requiresReplacement: true,
           replacementPropagated: true,
         },
-        { path: 'RepositoryName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true },
+        { path: 'AlarmName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true },
       ])
     );
     expect(hits.has('R')).toBe(false);
@@ -294,9 +294,9 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   it('keeps a FRESH hit on a replaced row — the create reads the same template bag', () => {
     const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
     const hits = routes(
-      templateWith('R', TYPE, { RepositoryName: 'q2', [UNKNOWN]: 'changed' }),
-      stateWith('R', TYPE, { RepositoryName: 'q1', [UNKNOWN]: 'same' }),
-      update(TYPE, [{ path: 'RepositoryName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true }])
+      templateWith('R', TYPE, { AlarmName: 'q2', [UNKNOWN]: 'changed' }),
+      stateWith('R', TYPE, { AlarmName: 'q1', [UNKNOWN]: 'same' }),
+      update(TYPE, [{ path: 'AlarmName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true }])
     );
     expect(hits.get('R')).toEqual([UNKNOWN]);
   });

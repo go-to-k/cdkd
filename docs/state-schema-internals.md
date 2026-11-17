@@ -786,8 +786,11 @@ conditional the escape is:
   `AWS::EC2::VPC`, `AWS::EC2::InternetGateway`, `AWS::EC2::NetworkAcl`,
   `AWS::IAM::User`, `AWS::IAM::Group`, `AWS::IAM::InstanceProfile`,
   `AWS::StepFunctions::StateMachine`, `AWS::Lambda::Url`,
-  `AWS::Cognito::UserPool`, `AWS::CloudFront::OriginAccessControl` and
-  `AWS::KMS::Alias` are the members today.
+  `AWS::Cognito::UserPool`, `AWS::CloudFront::OriginAccessControl`,
+  `AWS::KMS::Alias`, `AWS::CloudFront::CloudFrontOriginAccessIdentity`,
+  `AWS::ServiceDiscovery::HttpNamespace`, `AWS::Glue::Database`,
+  `AWS::Glue::Job` and
+  `AWS::ECR::Repository` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api
