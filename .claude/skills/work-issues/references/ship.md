@@ -38,8 +38,8 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
   bucket (#5104);
 - cap fixtures in flight per region at what the account's VPC / EIP / NAT
   quotas carry, else spread across regions;
-- a building fixture runs alone (`/run-integ` step 1's grep, re-run on each
-  fixture ADDED, #6438).
+- a building fixture runs alone in its tree (`/run-integ` step 1's grep,
+  re-run on each fixture ADDED, #6438).
 
 The PARENT checks all six before granting each further lane's integ. ANY
 turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
