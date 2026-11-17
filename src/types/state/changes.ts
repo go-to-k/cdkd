@@ -43,6 +43,15 @@ export interface ResourceChange {
    * (no no-change skip), and `cdkd diff` names why the row updates.
    */
   nestedChildHeal?: true;
+
+  /**
+   * go-to-k/cdkd#6509: the provider carries this UPDATE out by re-creating the
+   * resource inside its own `update()` (an SNS subscription's delete-first
+   * replacement), with the reason why. Display and approval only: the engine
+   * still calls the provider's `update()`, so this never sets
+   * `requiresReplacement`. Set by `markProviderReplacements`.
+   */
+  providerReplacement?: string;
 }
 
 /**

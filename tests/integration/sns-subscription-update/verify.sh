@@ -13,6 +13,10 @@
 #     without #4853 is RED here (the ARN changes: it unsubscribed and
 #     subscribed again).
 #   Phase 2a (+body-scope): FilterPolicyScope MessageBody alone, in place.
+#   Phase 2c (+filter-c): FilterPolicy b -> c with the scope dropped in one
+#     deploy. `cdkd diff` must report the replacement the provider makes
+#     (#6509), `--fail-on=destructive` must fail, and the deploy then
+#     re-creates the subscription (new ARN) with the new policy and scope.
 #   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
 #     template: the policy is cleared on the live subscription (the scope of a
 #     subscription with no policy filters nothing and is left), same ARN.
@@ -405,9 +409,65 @@ if [ "${SCOPE_2A}" != "MessageBody" ] || [ "$(filter_policy_of "${SUB_ARN_1}")" 
 fi
 echo "    OK: FilterPolicyScope MessageBody on ${SUB_ARN_1}, policy kept"
 
+# --- Phase 2c: a policy and scope change in one deploy (#6509) ---------------
+# The provider re-creates the subscription for this change (Subscribe sets the
+# pair together), so the diff must say "replacement", not "update".
+echo "==> Phase 2c: FilterPolicy b -> c and FilterPolicyScope dropped (diff reports the replacement)"
+DIFF_LOG_2C="$(mktemp)"
+DIFF_RC_2C=0
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,filter-c node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --fail-on=destructive </dev/null >"${DIFF_LOG_2C}" 2>&1 || DIFF_RC_2C=$?
+# Sentinel: the resource row itself, independent of the note under it.
+if ! grep -qF '[~] StandaloneSubscription (AWS::SNS::Subscription)' "${DIFF_LOG_2C}"; then
+  echo "FAIL: phase 2c: cdkd diff printed no update row for StandaloneSubscription" >&2
+  cat "${DIFF_LOG_2C}" >&2
+  exit 1
+fi
+if ! grep -qF '[requires replacement: FilterPolicy and FilterPolicyScope change together; deleted, then created again]' "${DIFF_LOG_2C}"; then
+  echo "FAIL: phase 2c: cdkd diff did not report that the deploy re-creates the subscription (#6509)" >&2
+  cat "${DIFF_LOG_2C}" >&2
+  exit 1
+fi
+if [ "${DIFF_RC_2C}" -ne 1 ] || ! grep -qF 'StandaloneSubscription will be replaced' "${DIFF_LOG_2C}"; then
+  echo "FAIL: phase 2c: diff --fail-on=destructive exited ${DIFF_RC_2C} (expected 1 naming the replacement)" >&2
+  cat "${DIFF_LOG_2C}" >&2
+  exit 1
+fi
+rm -f "${DIFF_LOG_2C}"
+echo "    OK: cdkd diff reports the replacement and --fail-on=destructive fails"
+
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,filter-c node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_exactly_one_subscription "phase 2c"
+SUB_ARN_2C=$(sub_arn)
+if [ "${SUB_ARN_2C}" = "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2c: SubscriptionArn unchanged (${SUB_ARN_1}); the diff predicted a replacement" >&2
+  echo "    => either the provider now applies this change in place (then update the diff marker" >&2
+  echo "       in src/analyzer/diff-calculator/provider-replacement.ts) or the replacement was skipped." >&2
+  exit 1
+fi
+SCOPE_2C=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "${SUB_ARN_2C}" \
+  --query 'Attributes.FilterPolicyScope' --output text)
+if [ "$(filter_policy_of "${SUB_ARN_2C}")" != '{"kind":["c"]}' ] || [ "${SCOPE_2C}" != "MessageAttributes" ]; then
+  echo "FAIL: phase 2c: FilterPolicy / scope on ${SUB_ARN_2C} are not kind=c / MessageAttributes (scope '${SCOPE_2C}')" >&2
+  exit 1
+fi
+if [ "$(state_sub_physical_id)" != "${SUB_ARN_2C}" ] || [ "$(state_output SubscriptionArn)" != "${SUB_ARN_2C}" ]; then
+  echo "FAIL: phase 2c: state physicalId / Output SubscriptionArn do not name the new ${SUB_ARN_2C}" >&2
+  exit 1
+fi
+echo "    OK: re-created as ${SUB_ARN_2C} with FilterPolicy kind=c, scope MessageAttributes; state in sync"
+# Later phases follow the subscription the replacement created.
+SUB_ARN_1="${SUB_ARN_2C}"
+
 # --- Phase 2b: attributes dropped from the template --------------------------
 echo "==> Phase 2b: remove FilterPolicy and its scope from the template (reset in place)"
-CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,filter-c,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes

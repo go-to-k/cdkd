@@ -207,6 +207,14 @@ export function renderChangeLines(
           `  [~] ${logicalId} (${change.resourceType})` +
             `${annotateAdoption(logicalId)}${annotateRouting(logicalId)}`
         );
+        // go-to-k/cdkd#6509: the provider re-creates the resource for this
+        // update. The reason is one of the provider's fixed sentences.
+        if (change.providerReplacement !== undefined) {
+          logFn(
+            `      [requires replacement: ${stripForDisplay(change.providerReplacement)}; ` +
+              `deleted, then created again]`
+          );
+        }
         if (change.propertyChanges && change.propertyChanges.length > 0) {
           for (const propChange of change.propertyChanges) {
             // A synthetic change's `requiresReplacement` is a CEILING the deploy

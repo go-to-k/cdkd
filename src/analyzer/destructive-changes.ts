@@ -39,7 +39,8 @@ const PATH_METADATA_KEY = 'aws:cdk:path';
  *   deploy and a destroy both keep — {@link shouldRetainResource}).
  * - An `UPDATE` whose recorded type differs from the template's, or that
  *   changes a create-only property, replaces it. That is the same test the
- *   deploy engine's replacement decision applies.
+ *   deploy engine's replacement decision applies. So does one the provider
+ *   carries out by re-creating the resource (`providerReplacement`).
  * - A replacement CEILING (a `requiresReplacement` the diff set on a value it
  *   could not resolve yet, marked `inPlacePropagated` / `replacementPropagated`)
  *   is "may be replaced": only the deploy learns whether the value moves. It
@@ -98,6 +99,8 @@ function destructiveImpactOf(
     case 'UPDATE': {
       if (record !== undefined && record.resourceType !== change.resourceType)
         return 'WILL_REPLACE';
+      // go-to-k/cdkd#6509: the provider's `update()` re-creates it.
+      if (change.providerReplacement !== undefined) return 'WILL_REPLACE';
       let mayReplace = false;
       for (const pc of change.propertyChanges ?? []) {
         if (!pc.requiresReplacement) continue;

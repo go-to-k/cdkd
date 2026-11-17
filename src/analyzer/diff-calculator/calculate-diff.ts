@@ -1,5 +1,6 @@
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { markUpdatePolicyReplacements } from './update-policy-replacement.js';
+import { markProviderReplacements } from './provider-replacement.js';
 import type { StackState, ResourceChange, PropertyChange } from '../../types/state.js';
 import { acceptedCreateOnlyDropsOf } from '../../types/state.js';
 import {
@@ -673,6 +674,9 @@ export async function calculateDiff(
       freshParameters
     )
   );
+  // After the replacement passes: a resource the engine replaces anyway is
+  // not marked (go-to-k/cdkd#6509).
+  markProviderReplacements(changes, currentResources);
 
   const summary = this.getSummary(changes);
   this.logger.debug(

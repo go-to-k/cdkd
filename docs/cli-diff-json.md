@@ -76,6 +76,7 @@ fields appear only when they apply:
 | `propertyChanges` | At least one property changes. |
 | `attributeChanges` | At least one attribute changes. |
 | `nestedChildHeal` | `true` on a nested stack the deploy updates only so that its own deploy fixes an SSM parameter name an older cdkd recorded with a leading `/`. |
+| `providerReplacement` | An `UPDATE` the deploy carries out by deleting the resource and creating it again; the value says why. |
 | `ccApi` | The resource would go through the Cloud Control API. |
 | `movedTo` | A `DELETE` that [`cdkd refactor`](cli-refactor.md) would keep: `{ "stackName", "logicalId" }` of where the resource reappears. |
 

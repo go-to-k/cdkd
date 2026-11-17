@@ -101,6 +101,14 @@ deploy will treat that property.
 
 - `[requires replacement]`: AWS cannot change this property in place, so the
   deploy replaces the whole resource.
+- `[requires replacement: <reason>; deleted, then created again]`: printed
+  under the resource line rather than a property. The change looks like an
+  update, but the deploy deletes the resource and creates it again. An SNS
+  subscription is replaced this way when its `FilterPolicy` and
+  `FilterPolicyScope` change in one deploy, or when its `DeliveryPolicy`,
+  `ReplayPolicy` or `SubscriptionRoleArn` is removed. The subscription gets a
+  new ARN, messages published in between are not delivered, and an email or
+  HTTP(S) endpoint has to confirm the subscription again.
 - `(known after deploy)`: the new value refers to a resource this deploy will
   create, so the value does not exist yet.
 - `[metadata only, no AWS API call]`: a `DeletionPolicy` or
