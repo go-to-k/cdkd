@@ -170,28 +170,15 @@ describe('providerReplacementReason (#6509)', () => {
   const record = (properties: Record<string, unknown>, extra: Partial<ResourceState> = {}): ResourceState =>
     ({ physicalId: 'p', resourceType: SUB, properties, ...extra }) as ResourceState;
 
-  it.each([
-    ['MessageBody', 'FilterPolicy and FilterPolicyScope change together'],
-    ['MessageAttributes', undefined],
-  ])(
-    'reads a live scope of %s the record no longer names (a dropped policy left it) from observedProperties',
-    (scope, expected) => {
-      expect(
-        providerReplacementReason(SUB, record({}, { observedProperties: { FilterPolicyScope: scope } }), {
-          FilterPolicy: { kind: ['c'] },
-        })
-      ).toBe(expected);
-    }
-  );
-
-  it('prefers the recorded scope over the snapshot', () => {
+  it('reads the record, not observedProperties: SNS drops the scope with the policy, so the record is complete', () => {
     expect(
-      providerReplacementReason(
-        SUB,
-        record(BODY_A, { observedProperties: { FilterPolicyScope: 'MessageAttributes' } }),
-        { FilterPolicy: { kind: ['b'] }, FilterPolicyScope: 'MessageBody' }
-      )
+      providerReplacementReason(SUB, record({}, { observedProperties: { FilterPolicyScope: 'MessageBody' } }), {
+        FilterPolicy: { kind: ['c'] },
+      })
     ).toBeUndefined();
+    expect(
+      providerReplacementReason(SUB, record({}), { FilterPolicy: { kind: ['c'] }, FilterPolicyScope: 'MessageBody' })
+    ).toBe('FilterPolicy and FilterPolicyScope change together');
   });
 
   it('answers undefined for another type and a record of another type', () => {

@@ -29,17 +29,10 @@ export function providerReplacementReason(
 ): string | undefined {
   if (resourceType !== 'AWS::SNS::Subscription') return undefined;
   if (record.resourceType !== resourceType || record.provisionedBy === 'cc-api') return undefined;
-  const recorded: Record<string, unknown> = { ...(record.properties ?? {}) };
-  // A template that dropped its `FilterPolicy` leaves the live scope in
-  // place (the provider does not reset a scope with no policy), so the
-  // record no longer names it: read it from the AWS snapshot instead.
-  const observed = record.observedProperties;
-  const observedScope =
-    typeof observed === 'object' && observed !== null ? observed['FilterPolicyScope'] : undefined;
-  if (recorded['FilterPolicyScope'] === undefined && typeof observedScope === 'string') {
-    recorded['FilterPolicyScope'] = observedScope;
-  }
-  const plan = planSubscriptionAttributes(recordedSubscriptionAttributes(recorded), desired);
+  const plan = planSubscriptionAttributes(
+    recordedSubscriptionAttributes(record.properties ?? {}),
+    desired
+  );
   return plan.kind === 'replace' ? plan.reason : undefined;
 }
 

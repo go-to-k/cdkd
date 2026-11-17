@@ -16,12 +16,12 @@
 #   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
 #     template: the policy is cleared on the live subscription (the scope of a
 #     subscription with no policy filters nothing and is left), same ARN.
-#   Phase 2c (filter-c, drop-filter gone): a new FilterPolicy while the live
-#     scope 2b left is MessageBody and the record names none. `cdkd diff`
-#     must report the replacement the provider makes (#6509), reading the
-#     live scope from observedProperties; `--fail-on=destructive` must fail;
-#     the deploy re-creates the subscription (new ARN) with kind=c and the
-#     MessageAttributes scope.
+#   Phase 2c (filter-c, drop-filter gone): a FilterPolicy on the message
+#     body added to the subscription 2b left with no policy and no scope (SNS
+#     drops the scope with the policy). `cdkd diff` must report the
+#     replacement the provider makes (#6509); `--fail-on=destructive` must
+#     fail; the deploy re-creates the subscription (new ARN) with kind=c and
+#     the MessageBody scope.
 #   Phase 3 (unreadable record): the state physicalId is rewritten to a
 #     malformed subscription ARN; the in-place path's readback is refused, so
 #     cdkd fails the deploy WITHOUT unsubscribing or subscribing anything.
@@ -436,17 +436,15 @@ echo "    OK: FilterPolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still tru
 SUB_ARN_2="${SUB_ARN_1}"
 
 # --- Phase 2c: a policy and scope change in one deploy (#6509) ---------------
-# After 2b the record names no policy and no scope, while the live scope is
-# still MessageBody (2b leaves a scope with no policy in place). A new policy
-# with no scope then makes the provider reset the scope AND set the policy,
-# which it does by re-creating the subscription (Subscribe sets the pair
-# together). The diff must say "replacement", reading the live scope from the
-# record's observedProperties.
-echo "==> Phase 2c: FilterPolicy c added with the live MessageBody scope left by 2b (diff reports the replacement)"
+# After 2b the subscription has no policy and no scope (SNS drops the scope
+# with the policy). A policy on the message body then needs both attributes
+# set, which the provider does by re-creating the subscription (Subscribe sets
+# the pair together). The diff must say "replacement", not "update".
+echo "==> Phase 2c: FilterPolicy c on the message body added after 2b (diff reports the replacement)"
 SCOPE_PRE_2C=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "${SUB_ARN_1}" \
   --query 'Attributes.FilterPolicyScope' --output text)
-if [ "${SCOPE_PRE_2C}" != "MessageBody" ]; then
-  echo "FAIL: phase 2c premise: live FilterPolicyScope after 2b is '${SCOPE_PRE_2C}', expected the MessageBody 2b leaves" >&2
+if [ "${SCOPE_PRE_2C}" = "MessageBody" ]; then
+  echo "FAIL: phase 2c premise: live FilterPolicyScope after 2b is already MessageBody, so 2c would change only the policy" >&2
   exit 1
 fi
 DIFF_LOG_2C="$(mktemp)"
@@ -489,15 +487,15 @@ if [ "${SUB_ARN_2C}" = "${SUB_ARN_1}" ]; then
 fi
 SCOPE_2C=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "${SUB_ARN_2C}" \
   --query 'Attributes.FilterPolicyScope' --output text)
-if [ "$(filter_policy_of "${SUB_ARN_2C}")" != '{"kind":["c"]}' ] || [ "${SCOPE_2C}" != "MessageAttributes" ]; then
-  echo "FAIL: phase 2c: FilterPolicy / scope on ${SUB_ARN_2C} are not kind=c / MessageAttributes (scope '${SCOPE_2C}')" >&2
+if [ "$(filter_policy_of "${SUB_ARN_2C}")" != '{"kind":["c"]}' ] || [ "${SCOPE_2C}" != "MessageBody" ]; then
+  echo "FAIL: phase 2c: FilterPolicy / scope on ${SUB_ARN_2C} are not kind=c / MessageBody (scope '${SCOPE_2C}')" >&2
   exit 1
 fi
 if [ "$(state_sub_physical_id)" != "${SUB_ARN_2C}" ] || [ "$(state_output SubscriptionArn)" != "${SUB_ARN_2C}" ]; then
   echo "FAIL: phase 2c: state physicalId / Output SubscriptionArn do not name the new ${SUB_ARN_2C}" >&2
   exit 1
 fi
-echo "    OK: re-created as ${SUB_ARN_2C} with FilterPolicy kind=c, scope MessageAttributes; state in sync"
+echo "    OK: re-created as ${SUB_ARN_2C} with FilterPolicy kind=c, scope MessageBody; state in sync"
 # Later phases follow the subscription the replacement created.
 SUB_ARN_1="${SUB_ARN_2C}"
 SUB_ARN_2="${SUB_ARN_2C}"
