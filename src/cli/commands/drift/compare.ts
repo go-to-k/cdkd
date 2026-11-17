@@ -52,6 +52,7 @@ import {
 import {
   undeclaredUncomparedDriftKeys,
   preFixBaselineUncomparedDriftKeys,
+  readOnlyUncomparedDriftPaths,
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
 import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
@@ -74,6 +75,11 @@ interface CompareDriftReadbackArgs {
   aws: Record<string, unknown>;
   /** The sibling context the readback was given (`buildReadCurrentStateContext`). */
   readContext?: ReadCurrentStateContext;
+  /**
+   * The type's schema read-only paths, started beside a Cloud Control read
+   * (go-to-k/cdkd#6485); absent for a provider's own read.
+   */
+  readOnlyPathsLookup?: Promise<readonly string[] | undefined>;
 }
 
 /**
@@ -98,6 +104,7 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     printing,
     aws,
     readContext,
+    readOnlyPathsLookup,
   } = args;
   // Providers can declare state property paths they cannot read back
   // from AWS (e.g. Lambda `Code`, Secrets Manager `SecretString`). The
@@ -464,11 +471,20 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     resource.properties,
     aws
   );
+  // go-to-k/cdkd#6485: a read-only position of a Cloud Control model
+  // (`UpdateTime`) is not configuration.
+  const readOnlyIgnorePaths = readOnlyUncomparedDriftPaths(
+    readOnlyPathsLookup ? await readOnlyPathsLookup : undefined,
+    resource.properties
+  );
+  const extraIgnorePaths = [
+    ...observedIgnorePaths,
+    ...ownedIgnorePaths,
+    ...preFixIgnorePaths,
+    ...readOnlyIgnorePaths,
+  ];
   const changes = calculateResourceDrift(comparedBaseline, paired.aws, {
-    ignorePaths:
-      observedIgnorePaths.length || ownedIgnorePaths.length || preFixIgnorePaths.length
-        ? [...ignorePaths, ...observedIgnorePaths, ...ownedIgnorePaths, ...preFixIgnorePaths]
-        : ignorePaths,
+    ignorePaths: extraIgnorePaths.length ? [...ignorePaths, ...extraIgnorePaths] : ignorePaths,
     unionWalkObjects: useObserved,
     unorderedPaths,
   });

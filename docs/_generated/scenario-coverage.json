@@ -1041,6 +1041,11 @@
       ]
     },
     {
+      "name": "drift-cc-read-only-props",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "drift-revert",
       "annotated": true,
       "scenarios": [
@@ -4026,6 +4031,7 @@
     "docdb-fix-forward-orphan",
     "docdb-global-cluster",
     "docdb-restore",
+    "drift-cc-read-only-props",
     "drift-sg-sibling-rules",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
