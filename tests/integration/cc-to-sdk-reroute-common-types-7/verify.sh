@@ -11,7 +11,8 @@
 # Control (--recreate-via-cc-api) and see Cloud Control's form -> the plan
 # announces each return -> --pin-cc-api declines them -> redeploy with a real
 # change: each id in the SDK form, each record flipped to 'sdk', each update
-# reached AWS on the same resource -> no drift -> destroy.
+# reached AWS on the same resource -> no drift -> the three leave the template
+# and are deleted on the SDK route while their REST API stays -> destroy.
 
 set -euo pipefail
 
@@ -435,15 +436,49 @@ done
 rm -f "${DRIFT_JSON}"
 echo "    OK: cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0)"
 
-echo "==> Phase 7: Destroy + gone-probes"
+echo "==> Phase 7: remove the three from the template; each SDK delete must address the flipped id"
+# The REST API stays, so a delete sent to a wrong id leaves its target alive
+# and readable here. After a destroy the API's own delete would take every
+# child with it and pass the gone-probes for any id.
 AUTHORIZER_ID=$(record RerouteAuthorizer '.physicalId')
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone "authorizer ${AUTHORIZER_ID} survived destroy" \
+REMOVE_LOG=$(mktemp)
+env CDKD_TEST_PHASE=removed \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${REMOVE_LOG}"
+REMOVE_PLAIN=$(sed $'s/\033\\[[0-9;]*m//g' "${REMOVE_LOG}")
+rm -f "${REMOVE_LOG}"
+load_state
+for id in "${SUBJECTS[@]}"; do
+  # Spelled out: cdk.out now holds the removed phase's template, which no
+  # longer declares the three.
+  case "${id}" in
+    RerouteAuthorizer) type=AWS::ApiGateway::Authorizer ;;
+    RerouteStage) type=AWS::ApiGateway::Stage ;;
+    RerouteMethod) type=AWS::ApiGateway::Method ;;
+    *) echo "FAIL: phase 7 has no type for ${id}" >&2; exit 1 ;;
+  esac
+  grep -qF "${id} (${type}) deleted" <<<"${REMOVE_PLAIN}" || {
+    echo "FAIL: the removal deploy printed no delete line for ${id} (${type})" >&2
+    exit 1
+  }
+  if printf '%s' "${STATE_JSON}" | jq -e --arg k "${id}" '.resources[$k]' >/dev/null; then
+    echo "FAIL: ${id} is still in state after the removal deploy" >&2
+    exit 1
+  fi
+done
+aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}" >/dev/null || {
+  echo "FAIL: REST API ${API_ID} is not readable after the removal deploy; the gone-probes below would prove nothing" >&2
+  exit 1
+}
+assert_gone "authorizer ${AUTHORIZER_ID} survived its delete under the flipped id" \
   aws apigateway get-authorizer --rest-api-id "${API_ID}" --authorizer-id "${AUTHORIZER_ID}" --region "${REGION}"
-assert_gone "stage ${STAGE_NAME} survived destroy" \
+assert_gone "stage ${STAGE_NAME} survived its delete under the flipped id" \
   aws apigateway get-stage --rest-api-id "${API_ID}" --stage-name "${STAGE_NAME}" --region "${REGION}"
-assert_gone "method GET on ${ROOT_ID} survived destroy" \
+assert_gone "method GET on ${ROOT_ID} survived its delete" \
   aws apigateway get-method --rest-api-id "${API_ID}" --resource-id "${ROOT_ID}" --http-method GET --region "${REGION}"
+echo "    OK: all ${#SUBJECTS[@]} deleted by cdkd with their REST API still alive"
+
+echo "==> Phase 8: Destroy + gone-probes"
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_gone "REST API ${API_ID} survived destroy" \
   aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \

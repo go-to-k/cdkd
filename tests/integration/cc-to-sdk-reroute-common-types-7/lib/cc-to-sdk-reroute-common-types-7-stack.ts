@@ -47,13 +47,29 @@ export class CcToSdkRerouteCommonTypes7Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const value = VALUE_BY_PHASE[process.env.CDKD_TEST_PHASE ?? 'base'] ?? 'a';
+    const phase = process.env.CDKD_TEST_PHASE ?? 'base';
+    const value = VALUE_BY_PHASE[phase] ?? 'a';
+    // `removed`: the three resources under test leave the template while the
+    // REST API stays, so their deletes run on the flipped records and each can
+    // be probed gone with its parent still alive (a deleted API takes its
+    // children with it, which would hide a delete sent to the wrong id).
+    const removed = phase === 'removed';
 
     const api = new apigw.CfnRestApi(this, 'RerouteApi', {
       name: 'cdkd-reroute-common-types-7',
       description: 'cdkd sticky-CC reroute batch 7',
     });
     api.overrideLogicalId('RerouteApi');
+
+    const deployment = new apigw.CfnDeployment(this, 'RerouteDeployment', {
+      restApiId: api.ref,
+      description: 'cdkd sticky-CC reroute batch 7',
+    });
+    deployment.overrideLogicalId('RerouteDeployment');
+
+    new cdk.CfnOutput(this, 'RestApiId', { value: api.ref });
+    new cdk.CfnOutput(this, 'RootResourceId', { value: api.attrRootResourceId });
+    if (removed) return;
 
     const method = new apigw.CfnMethod(this, 'RerouteMethod', {
       restApiId: api.ref,
@@ -70,11 +86,6 @@ export class CcToSdkRerouteCommonTypes7Stack extends cdk.Stack {
     method.overrideLogicalId('RerouteMethod');
 
     // API Gateway refuses a deployment of an API with no method.
-    const deployment = new apigw.CfnDeployment(this, 'RerouteDeployment', {
-      restApiId: api.ref,
-      description: 'cdkd sticky-CC reroute batch 7',
-    });
-    deployment.overrideLogicalId('RerouteDeployment');
     deployment.addDependency(method);
 
     const stage = new apigw.CfnStage(this, 'RerouteStage', {
@@ -95,8 +106,6 @@ export class CcToSdkRerouteCommonTypes7Stack extends cdk.Stack {
     });
     authorizer.overrideLogicalId('RerouteAuthorizer');
 
-    new cdk.CfnOutput(this, 'RestApiId', { value: api.ref });
-    new cdk.CfnOutput(this, 'RootResourceId', { value: api.attrRootResourceId });
     new cdk.CfnOutput(this, 'StageRef', { value: stage.ref });
     new cdk.CfnOutput(this, 'AuthorizerRef', { value: authorizer.ref });
   }

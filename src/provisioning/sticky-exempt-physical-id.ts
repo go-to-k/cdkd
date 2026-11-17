@@ -60,13 +60,25 @@ export function ecsServiceSdkPhysicalId(ccPhysicalId: string): string {
 }
 
 /**
+ * A REST API id as API Gateway mints it: 10 lowercase alphanumerics. AWS
+ * documents no length; every id measured had 10 (three REST APIs, us-east-1,
+ * 2026-11-17), while the five authorizer ids and the deployment and resource
+ * ids measured beside them had 6. Anchoring the
+ * FIRST segment to it is what refuses the reversed `<childId>|<restApiId>`
+ * order, which a shape-only `[a-z0-9]+` on both sides would accept and answer
+ * with the REST API id.
+ */
+const REST_API_ID = '[a-z0-9]{10}';
+
+/**
  * `<restApiId>|<authorizerId>`: what Cloud Control records for an
  * `AWS::ApiGateway::Authorizer` (measured us-east-1, 2026-11-17: the live
  * schema's primaryIdentifier is `[RestApiId, AuthorizerId]`, the reverse of
- * the order the committed schema fixture lists). Both ids are API
- * Gateway-minted lowercase alphanumerics.
+ * the order the committed schema fixture lists). The authorizer id is a
+ * lowercase alphanumeric; every one measured had 6 characters, but AWS
+ * documents no length, so it is not pinned.
  */
-const APIGW_AUTHORIZER_CC_ID = /^[a-z0-9]+\|([a-z0-9]+)$/;
+const APIGW_AUTHORIZER_CC_ID = new RegExp(`^${REST_API_ID}\\|([a-z0-9]+)$`);
 
 /**
  * The bare authorizer id `ApiGatewayProvider` stores as an
@@ -89,9 +101,12 @@ export function apiGatewayAuthorizerSdkPhysicalId(ccPhysicalId: string): string 
  * `<restApiId>|<stageName>`: what Cloud Control records for an
  * `AWS::ApiGateway::Stage` (schema primaryIdentifier `[RestApiId, StageName]`,
  * measured us-east-1, 2026-11-17). API Gateway allows only letters, digits,
- * hyphens and underscores in a stage name, so it cannot hold the `|`.
+ * hyphens and underscores in a stage name, so it cannot hold the `|`. A
+ * reversed `<stageName>|<restApiId>` is refused only when the stage name is not
+ * itself 10 lowercase alphanumerics (`production` is): no shape tells those
+ * apart, and Cloud Control never wrote that order.
  */
-const APIGW_STAGE_CC_ID = /^[a-z0-9]+\|([A-Za-z0-9_-]+)$/;
+const APIGW_STAGE_CC_ID = new RegExp(`^${REST_API_ID}\\|([A-Za-z0-9_-]+)$`);
 
 /**
  * The bare stage name `ApiGatewayProvider` stores as an

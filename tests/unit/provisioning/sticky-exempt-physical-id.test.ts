@@ -69,8 +69,12 @@ describe('apiGatewayAuthorizerSdkPhysicalId', () => {
 
   it.each([
     ['the bare id the SDK route records', 'yj4gsv'],
-    ['the reverse order with an empty segment', 'yj4gsv|'],
+    // The committed schema fixture lists AuthorizerId first.
+    ['the reversed <authorizerId>|<restApiId> order', 'yj4gsv|mm525t8176'],
+    ['an empty authorizer segment', 'mm525t8176|'],
     ['an empty rest API segment', '|yj4gsv'],
+    ['a rest API id one character short', 'mm525t817|yj4gsv'],
+    ['a rest API id one character long', 'mm525t8176x|yj4gsv'],
     ['an extra segment', 'mm525t8176|yj4gsv|x'],
     ['an uppercase id', 'mm525t8176|YJ4GSV'],
     ['an ARN', 'arn:aws:apigateway:us-east-1::/restapis/mm525t8176/authorizers/yj4gsv'],
@@ -100,7 +104,10 @@ describe('apiGatewayStageSdkPhysicalId', () => {
     ['an empty stage segment', 'mm525t8176|'],
     ['an empty rest API segment', '|prod'],
     ['an extra segment', 'mm525t8176|prod|x'],
-    ['the reverse <stageName>|<restApiId> order with an uppercase name', 'Prod|mm525t8176x'],
+    ['the reversed <stageName>|<restApiId> order', 'reroute|mm525t8176'],
+    ['the reversed order with a capitalized stage name', 'Prod|mm525t8176'],
+    ['a rest API id one character short', 'mm525t817|prod'],
+    ['an uppercase rest API id', 'MM525T8176|prod'],
     ['a stage name with a slash', 'mm525t8176|a/b'],
     ['a stage name carrying a newline', 'mm525t8176|prod\nx'],
     ['an empty string', ''],
