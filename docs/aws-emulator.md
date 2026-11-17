@@ -11,6 +11,13 @@ app's functions and APIs against what you deployed. One flag,
 `--aws-emulator`, sets up every command, so the whole loop runs without real
 AWS credentials, shell variables or a redeploy per code edit.
 
+> [!IMPORTANT]
+> **Experimental.** The AWS Emulator target (`--aws-emulator` and its
+> [mixed mode](#mixed-mode)) is experimental. From v1.0.0, an experimental
+> feature is outside the
+> [Compatibility Promise](public-contract.md#experimental-features): a minor
+> release can change or remove it, and the release notes call that out.
+
 Think of `--aws-emulator` as the switch for the target environment. With it,
 the deploy, the state that `--from-state` reads and the calls your code makes
 at run time all move to the emulator together. Without it, all three stay on

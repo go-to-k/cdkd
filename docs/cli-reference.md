@@ -35,16 +35,16 @@ two commands are explained in
 | **Deploy** | `cdkd deploy` | [cdkd deploy](cli-deploy.md): every flag, and how long a deploy waits. |
 | | | [cdkd deploy: tuning](cli-deploy-tuning.md): timeouts, resource names and CDK annotations. |
 | | | [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): replacements and the guards around them. |
-| | [`cdkd publish-assets`](cli-publish-assets.md) | Build and upload assets without deploying. |
+| | [`cdkd publish-assets`](cli-publish-assets.md) | Build and upload assets without deploying. Experimental. |
 | | `cdkd import` | [Import Existing Resources](import.md): adopt resources that already exist. |
 | **Tear down** | `cdkd destroy` | [cdkd destroy](cli-destroy.md): data guards, snapshots and prompts. |
-| | `cdkd orphan` | [Orphan Instead of Destroy](orphan-vs-destroy.md): stop managing a resource without deleting it. |
+| | `cdkd orphan` | [Orphan Instead of Destroy](orphan-vs-destroy.md): stop managing a resource without deleting it. Experimental. |
 | **Recover** | [`cdkd rollback`](cli-rollback.md) | Revert a deploy that failed or was interrupted. |
 | | [`cdkd force-unlock`](cli-force-unlock.md) | Delete a lock that a crashed or cancelled run left behind. |
 | **Inspect** | [`cdkd events`](cli-events.md) | Read what past deploys and destroys did. |
 | | [`cdkd state`](cli-state.md) | Read and operate on the state bucket, with no CDK app. |
 | | [`cdkd drift`](cli-drift.md) | Compare recorded state against live AWS resources. |
-| **Maintain** | [`cdkd refactor`](cli-refactor.md) | Keep a resource whose logical ID a construct rename changed. |
+| **Maintain** | [`cdkd refactor`](cli-refactor.md) | Keep a resource whose logical ID a construct rename changed. Experimental. |
 | | [`cdkd gc`](cli-gc.md) | Delete assets no stack references any more. |
 | | [`cdkd scrub`](cli-scrub.md) | Remove resolved secret values from stored state. |
 | | [`cdkd export`](cli-export.md) | Hand a stack over to CloudFormation. |
@@ -72,7 +72,7 @@ These pages cover behaviour that is the same for every command:
 | --- | --- | --- |
 | `--profile <profile>` | default credential chain | AWS profile for your credentials and config settings. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | IAM role to assume for cdkd's AWS calls. See [`--role-arn`](#role-arn). |
-| `--aws-emulator [url]` | `CDKD_AWS_EMULATOR` | Send every AWS call to a local AWS Emulator, with its keys only. See [Deploying into AWS Emulator](local-emulation.md#deploying-into-aws-emulator); on `cdkd local`, `"real-aws"` in `--env-vars` keeps chosen services on real AWS ([mixed mode](local-emulation.md#aws-emulator-mixed-mode)). |
+| `--aws-emulator [url]` | `CDKD_AWS_EMULATOR` | Experimental. Send every AWS call to a local AWS Emulator, with its keys only. See [Deploying into AWS Emulator](local-emulation.md#deploying-into-aws-emulator); on `cdkd local`, `"real-aws"` in `--env-vars` keeps chosen services on real AWS ([mixed mode](local-emulation.md#aws-emulator-mixed-mode)). |
 | `-y`, `--yes` | `false` | Answer confirmation prompts with the recommended response. |
 | `--verbose` | `false` | Debug-level logging. |
 | `-V`, `--version` | | Print the cdkd version (top level only). |

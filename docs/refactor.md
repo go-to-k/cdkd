@@ -12,6 +12,13 @@ resource and creates a new one, and a table, bucket or database loses its
 data. Run [`cdkd refactor`](cli-refactor.md) after the code change and before
 the deploy to keep the resource instead.
 
+> [!IMPORTANT]
+> **Experimental.** `cdkd refactor` follows `cdk refactor`, which the AWS CDK
+> CLI still marks unstable, so cdkd changes with it. From v1.0.0, an
+> experimental feature is outside the
+> [Compatibility Promise](public-contract.md#experimental-features): a minor
+> release can change or remove it, and the release notes call that out.
+
 ::: steps
 
 1. **Change the CDK code.**

@@ -440,6 +440,13 @@ defaults to `https://127.0.0.1:9297`, and its port selects the run directory
 without the flag. For the whole workflow, from deploy to local runs, see
 [Develop Locally with AWS Emulator](aws-emulator.md).
 
+> [!IMPORTANT]
+> **Experimental.** The AWS Emulator target (`--aws-emulator` and its
+> [mixed mode](#aws-emulator-mixed-mode)) is experimental. From v1.0.0, an
+> experimental feature is outside the
+> [Compatibility Promise](public-contract.md#experimental-features): a minor
+> release can change or remove it, and the release notes call that out.
+
 The URL is optional, so a word right after the flag is taken as the URL:
 `--aws-emulator MyStack/Handler` is refused, because the target is not an
 `http(s)` URL, with the advice to put the flag after the target or to write

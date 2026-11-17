@@ -258,6 +258,9 @@ names need an explicit `cdkd bootstrap`.
 
 ## Bootstrap in AWS Emulator
 
+The AWS Emulator target is experimental; see
+[Develop Locally with AWS Emulator](aws-emulator.md).
+
 AWS Emulator keeps everything in memory, so each emulator start begins with
 no state bucket. Under `--aws-emulator`, `cdkd deploy` and `cdkd import`
 create the state bucket themselves when the emulator has none, configured the
