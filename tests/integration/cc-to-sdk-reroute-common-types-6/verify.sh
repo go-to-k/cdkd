@@ -132,14 +132,17 @@ witness() { # usage: witness <logicalId> <physicalId>
 }
 
 # The id form BOTH layers must record. Phase 1 checks it on the SDK provider's
-# record and phase 2 on Cloud Control's.
+# record and phase 2 on Cloud Control's. GENERATION is the AgentCore name
+# generation the stack declares in that phase.
+GENERATION=1
 form_ok() { # usage: form_ok <logicalId> <physicalId>
   case "$1" in
     RerouteTableBucket)
       grep -qE "^arn:aws:s3tables:${REGION}:[0-9]{12}:bucket/cdkd-reroute-common-types-6\$" <<<"$2" ;;
     RerouteRuntime)
-      # The bare id (AgentCore appends a suffix to the name), never the ARN.
-      grep -qE '^cdkd_reroute_ct6_runtime_[12][A-Za-z0-9_-]+$' <<<"$2" ;;
+      # The bare id (AgentCore appends a suffix to the name), never the ARN,
+      # and of the generation the phase declares (1 before the recreate, 2 on).
+      grep -qE "^cdkd_reroute_ct6_runtime_${GENERATION}[-_][A-Za-z0-9_-]+\$" <<<"$2" ;;
     RerouteEvaluator)
       grep -qE "^arn:aws:bedrock-agentcore:${REGION}:[0-9]{12}:evaluator/[A-Za-z0-9._-]+\$" <<<"$2" ;;
     *) echo "FAIL: form_ok has no arm for $1" >&2; return 1 ;;
@@ -172,6 +175,12 @@ for id in "${SUBJECTS[@]}"; do
   RECREATE_FLAGS+=(--recreate-via-cc-api "${id}")
   PIN_FLAGS+=(--pin-cc-api "${id}")
 done
+
+# A witness read must answer every field: each is two fields, so a missing one
+# prints `None` beside the other and would not equal a bare `None`.
+witness_ok() { # usage: witness_ok <witness>
+  [ -n "$1" ] && ! grep -qw None <<<"$1"
+}
 
 # Per-phase ids and witnesses, indexed like SUBJECTS (bash 3.2 has no
 # associative arrays).
@@ -228,12 +237,13 @@ for i in "${!SUBJECTS[@]}"; do
   P0[$i]=$(record "${id}" '.physicalId')
   form_ok "${id}" "${P0[$i]}" || { echo "FAIL: the SDK provider recorded ${id} as '${P0[$i]}', not the expected id form" >&2; exit 1; }
   W0[$i]=$(witness "${id}" "${P0[$i]}")
-  [ -n "${W0[$i]}" ] && [ "${W0[$i]}" != "None" ] || { echo "FAIL: no identity witness for ${id}" >&2; exit 1; }
+  witness_ok "${W0[$i]}" || { echo "FAIL: no identity witness for ${id}" >&2; exit 1; }
 done
 assert_live_values "phase 1 (SDK create)" a
 echo "    OK: all ${#SUBJECTS[@]} created on the SDK route"
 
 echo "==> Phase 2: force each resource onto Cloud Control (--recreate-via-cc-api)"
+GENERATION=2
 env CDKD_TEST_PHASE=seed \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     "${RECREATE_FLAGS[@]}" --force-stateful-recreation --yes
@@ -248,7 +258,7 @@ for i in "${!SUBJECTS[@]}"; do
     exit 1
   }
   W1[$i]=$(witness "${id}" "${P1[$i]}")
-  [ -n "${W1[$i]}" ] && [ "${W1[$i]}" != "None" ] || { echo "FAIL: no identity witness for ${id} after the recreate" >&2; exit 1; }
+  witness_ok "${W1[$i]}" || { echo "FAIL: no identity witness for ${id} after the recreate" >&2; exit 1; }
   [ "${W1[$i]}" != "${W0[$i]}" ] || {
     echo "FAIL: the recreate kept ${id}'s witness (${W0[$i]}); it was not recreated, so the witness cannot prove phase 5" >&2
     exit 1
