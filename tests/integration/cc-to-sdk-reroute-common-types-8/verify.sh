@@ -247,14 +247,17 @@ assert_forms() { # usage: assert_forms <phase-label> <sdk|cc>
 # (the Cloud Control id itself, then the `Arn` / `VectorBucketArn` attribute
 # the flip carries over). The ARNs are read back from AWS.
 assert_refs() { # usage: assert_refs <phase-label>
-  local id key got want gql_arn vb_arn
+  local id key got want pid gql_id gql_arn vb_arn
   for id in RerouteStage RerouteIntegration RerouteRoute RerouteAuthorizer; do
     key="${id#Reroute}Ref"
     got=$(output "${key}")
-    want=$(bare_id "${id}" "$(record "${id}" '.physicalId')")
+    pid=$(record "${id}" '.physicalId') || cannot_read "$1: cannot read ${id}'s state record" || return 1
+    want=$(bare_id "${id}" "${pid}") || cannot_read "$1: cannot read ${id}'s bare id from '${pid}'" || return 1
     [ "${got}" = "${want}" ] || { echo "FAIL: $1: Ref of ${id} resolved to '${got}', expected ${want}" >&2; exit 1; }
   done
-  gql_arn=$(aws appsync get-graphql-api --api-id "$(bare_id RerouteGraphQLApi "$(record RerouteGraphQLApi '.physicalId')")" \
+  pid=$(record RerouteGraphQLApi '.physicalId') || cannot_read "$1: cannot read RerouteGraphQLApi's state record" || return 1
+  gql_id=$(bare_id RerouteGraphQLApi "${pid}") || cannot_read "$1: cannot read RerouteGraphQLApi's bare id from '${pid}'" || return 1
+  gql_arn=$(aws appsync get-graphql-api --api-id "${gql_id}" \
     --region "${REGION}" --query graphqlApi.arn --output text) || cannot_read "$1: cannot read RerouteGraphQLApi's ARN from AppSync" || return 1
   [ "$(output GraphQLApiRef)" = "${gql_arn}" ] || {
     echo "FAIL: $1: Ref of RerouteGraphQLApi resolved to '$(output GraphQLApiRef)', expected its ARN ${gql_arn}" >&2
