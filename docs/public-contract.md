@@ -34,9 +34,9 @@ describe the intended behaviour, and the fix brings cdkd back to it.
 
 ### Commands and flags
 
-Every command and flag listed in the [CLI Reference](cli-reference.md) is
-covered, except those in [Experimental features](#experimental-features): its
-name, its arguments, and its default value. A minor release does
+Every command and flag listed in the [CLI Reference](cli-reference.md),
+except those in [Experimental features](#experimental-features), is covered:
+its name, its arguments, and its default value. A minor release does
 not remove or rename one, and does not change what an existing flag does or
 defaults to.
 

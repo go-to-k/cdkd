@@ -12,8 +12,8 @@ app's functions and APIs against what you deployed. One flag,
 AWS credentials, shell variables or a redeploy per code edit.
 
 > [!IMPORTANT]
-> **Experimental.** The AWS Emulator target, `--aws-emulator` and its
-> [mixed mode](#mixed-mode), is experimental. From v1.0.0, an experimental
+> **Experimental.** The AWS Emulator target (`--aws-emulator` and its
+> [mixed mode](#mixed-mode)) is experimental. From v1.0.0, an experimental
 > feature is outside the
 > [Compatibility Promise](public-contract.md#experimental-features): a minor
 > release can change or remove it, and the release notes call that out.

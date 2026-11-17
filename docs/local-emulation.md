@@ -441,8 +441,8 @@ without the flag. For the whole workflow, from deploy to local runs, see
 [Develop Locally with AWS Emulator](aws-emulator.md).
 
 > [!IMPORTANT]
-> **Experimental.** The AWS Emulator target, `--aws-emulator` and its
-> [mixed mode](#aws-emulator-mixed-mode), is experimental. From v1.0.0, an
+> **Experimental.** The AWS Emulator target (`--aws-emulator` and its
+> [mixed mode](#aws-emulator-mixed-mode)) is experimental. From v1.0.0, an
 > experimental feature is outside the
 > [Compatibility Promise](public-contract.md#experimental-features): a minor
 > release can change or remove it, and the release notes call that out.

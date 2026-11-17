@@ -18,7 +18,7 @@ keep but no longer want cdkd to manage, such as a bucket whose data must
 outlive the stack. `cdkd orphan` mirrors `cdk orphan` in the AWS CDK CLI.
 
 > [!IMPORTANT]
-> **Experimental.** `cdkd orphan` mirrors `cdk orphan`, its options and its
+> **Experimental.** `cdkd orphan` mirrors `cdk orphan` and its
 > `Stack/Construct` path syntax, and the AWS CDK CLI still marks that command
 > unstable, so cdkd changes with it. From v1.0.0, an experimental feature is
 > outside the [Compatibility Promise](public-contract.md#experimental-features):
