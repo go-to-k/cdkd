@@ -930,9 +930,9 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // changes it and the flip keeps it: the identity witness.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
-        'both layers store the bare distribution Id: the schema primaryIdentifier is Id ' +
-        '(measured us-east-1, 2026-11-18) and the CloudFront Distribution provider records ' +
-        'the CreateDistribution Id',
+        "both layers store the bare distribution Id: Cloud Control's Identifier is the Id " +
+        '(measured us-east-1, 2026-11-18; the schema primaryIdentifier) and the CloudFront ' +
+        'Distribution provider records the CreateDistribution Id',
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-cloudfront-distribution',
     },
@@ -945,9 +945,9 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // mints into its ARN.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
-        'both layers store the proxy name: the schema primaryIdentifier is DBProxyName ' +
-        '(measured us-east-1, 2026-11-18) and the RDS DBProxy provider records the ' +
-        'CreateDBProxy DBProxyName',
+        "both layers store the proxy name: Cloud Control's Identifier is the DBProxyName " +
+        '(measured us-east-1, 2026-11-18; the schema primaryIdentifier) and the RDS DBProxy ' +
+        'provider records the CreateDBProxy DBProxyName',
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-common-types-11',
     },
@@ -959,9 +959,9 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // `prx-endpoint-...` resource id in its ARN.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
-        'both layers store the endpoint name: the schema primaryIdentifier is ' +
-        'DBProxyEndpointName (measured us-east-1, 2026-11-18) and the RDS DBProxyEndpoint ' +
-        'provider records the CreateDBProxyEndpoint DBProxyEndpointName',
+        "both layers store the endpoint name: Cloud Control's Identifier is the " +
+        'DBProxyEndpointName (measured us-east-1, 2026-11-18; the schema primaryIdentifier) ' +
+        'and the RDS DBProxyEndpoint provider records the CreateDBProxyEndpoint DBProxyEndpointName',
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-common-types-11',
     },
