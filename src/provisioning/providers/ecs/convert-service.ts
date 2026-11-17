@@ -354,8 +354,9 @@ export function convertVpcLatticeConfigurations(
  * HealthCheck: {HealthCheckProtocol, HealthCheckPort, HealthCheckPath,
  * HealthCheckTimeoutSeconds, HealthCheckIntervalSeconds,
  * HealthyThresholdCount, UnhealthyThresholdCount, Matcher: {HttpCode,
- * GrpcCode}}, Filters: {AccessTypes}}` is a pure first-letter flip; the
- * enum VALUES (`HTTP`, `PUBLIC`, ...) pass through untouched.
+ * GrpcCode}}, Filters: {AccessTypes}, DeregistrationDelay: {TimeoutSeconds}}`
+ * is a pure first-letter flip; the enum VALUES (`HTTP`, `PUBLIC`, ...) pass
+ * through untouched.
  */
 export function convertGatewayConnectors(
   this: ECSProvider,

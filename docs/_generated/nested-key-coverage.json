@@ -1,8 +1,8 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1527,
-    "wholeDeliveredPathCount": 621,
+    "nestedKeyCount": 1529,
+    "wholeDeliveredPathCount": 623,
     "shapeClean": 182,
     "shapeHandled": 50,
     "shapeAllowListed": 8,
@@ -558,7 +558,7 @@
       "providerFile": "ecs-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-ecs",
       "keyStyle": "lower-first",
-      "nestedKeyCount": 138,
+      "nestedKeyCount": 140,
       "wholeDeliveredPaths": [
         "CapacityProviderStrategy.Base",
         "CapacityProviderStrategy.CapacityProvider",
@@ -598,6 +598,8 @@
         "DeploymentConfiguration.MinimumHealthyPercent",
         "DeploymentConfiguration.Strategy",
         "DeploymentController.Type",
+        "GatewayConnectors.DeregistrationDelay",
+        "GatewayConnectors.DeregistrationDelay.TimeoutSeconds",
         "GatewayConnectors.Filters",
         "GatewayConnectors.Filters.AccessTypes",
         "GatewayConnectors.HealthCheck",

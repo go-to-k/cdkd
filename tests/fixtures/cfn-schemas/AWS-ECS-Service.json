@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ECS::Service",
-  "generatedAt": "2026-10-20",
+  "generatedAt": "2026-11-17",
   "properties": [
     "AvailabilityZoneRebalancing",
     "CapacityProviderStrategy",
@@ -212,6 +212,7 @@
     ],
     "GatewayConnectors": [
       "AccessTypes",
+      "DeregistrationDelay",
       "Filters",
       "GrpcCode",
       "HealthCheck",
@@ -224,6 +225,7 @@
       "HttpCode",
       "Matcher",
       "PortName",
+      "TimeoutSeconds",
       "UnhealthyThresholdCount"
     ]
   },
@@ -381,6 +383,8 @@
       "Strategy"
     ],
     "GatewayConnectors": [
+      "DeregistrationDelay",
+      "DeregistrationDelay.TimeoutSeconds",
       "Filters",
       "Filters.AccessTypes",
       "HealthCheck",
@@ -472,6 +476,9 @@
     "MetricConfiguration": {
       "ResolutionSeconds": "scalar",
       "MetricNames": "array"
+    },
+    "GatewayConnectorDeregistrationDelay": {
+      "TimeoutSeconds": "scalar"
     },
     "ServiceVolumeConfiguration": {
       "ManagedEBSVolume": "object",
@@ -578,6 +585,7 @@
     },
     "GatewayConnector": {
       "Filters": "object",
+      "DeregistrationDelay": "object",
       "HealthCheck": "object",
       "PortName": "scalar"
     },
@@ -838,6 +846,7 @@
     "ForceNewDeployment": "object",
     "GatewayConnectors": "array",
     "GatewayConnectors[]": "object",
+    "GatewayConnectors[].DeregistrationDelay": "object",
     "GatewayConnectors[].Filters": "object",
     "GatewayConnectors[].Filters.AccessTypes": "array",
     "GatewayConnectors[].HealthCheck": "object",
@@ -946,6 +955,8 @@
     "ForceNewDeployment.ForceNewDeploymentNonce": "string",
     "GatewayConnectors": "array",
     "GatewayConnectors[]": "object",
+    "GatewayConnectors[].DeregistrationDelay": "object",
+    "GatewayConnectors[].DeregistrationDelay.TimeoutSeconds": "integer",
     "GatewayConnectors[].Filters": "object",
     "GatewayConnectors[].Filters.AccessTypes": "array",
     "GatewayConnectors[].Filters.AccessTypes[]": "string",

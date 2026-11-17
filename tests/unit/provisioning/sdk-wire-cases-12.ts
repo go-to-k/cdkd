@@ -1055,6 +1055,7 @@ const SERVICE_TOP = {
         Matcher: { HttpCode: '200-299', GrpcCode: '0' },
       },
       Filters: { AccessTypes: ['PUBLIC'] },
+      DeregistrationDelay: { TimeoutSeconds: 120 },
     },
   ],
 };
