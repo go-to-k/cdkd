@@ -1350,6 +1350,128 @@ describe('CloudFrontDistributionProvider', () => {
       ).toHaveLength(1);
       expect(sentCommandNames.filter((n) => n === 'UpdateDistributionCommand')).toHaveLength(1);
     });
+
+    // UpdateDistribution refuses a custom origin without OriginSslProtocols and
+    // a cache behavior without Compress ("The parameter OriginSslProtocols is
+    // required", "The parameter Compress flag is required"; measured us-east-1,
+    // 2026-11-18), which an L1 template may omit (go-to-k/cdkd#6490).
+    describe('OriginSslProtocols and Compress, required on update (#6490)', () => {
+      const customOrigin = (extra: Record<string, unknown> = {}) => ({
+        Id: 'web',
+        DomainName: 'example.com',
+        CustomOriginConfig: { OriginProtocolPolicy: 'https-only', ...extra },
+      });
+      const template = (origin: Record<string, unknown>, behavior: Record<string, unknown> = {}) => ({
+        DistributionConfig: {
+          Enabled: false,
+          Origins: [origin],
+          DefaultCacheBehavior: {
+            TargetOriginId: origin['Id'],
+            ViewerProtocolPolicy: 'redirect-to-https',
+            CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+            ...behavior,
+          },
+        },
+      });
+      const liveWith = (id: string, protocols: string[]) => ({
+        CallerReference: 'ref',
+        Enabled: false,
+        Origins: {
+          Quantity: 1,
+          Items: [
+            {
+              Id: id,
+              DomainName: 'example.com',
+              CustomOriginConfig: {
+                HTTPPort: 80,
+                HTTPSPort: 443,
+                OriginProtocolPolicy: 'https-only',
+                OriginSslProtocols: { Quantity: protocols.length, Items: protocols },
+              },
+            },
+          ],
+        },
+      });
+      const send = async (
+        live: Record<string, unknown>,
+        next: Record<string, unknown>,
+        prev: Record<string, unknown> = next
+      ) => {
+        mockUpdateChain(live);
+        await provider.update('Dist', 'EDFDVBD6EXAMPLE', 'AWS::CloudFront::Distribution', next, prev);
+        return mockSend.mock.calls[1][0].input.DistributionConfig;
+      };
+
+      it("keeps an existing origin's LIVE OriginSslProtocols, never CloudFormation's SSLv3 default", async () => {
+        const sent = await send(liveWith('web', ['TLSv1.2']), template(customOrigin()));
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 1,
+          Items: ['TLSv1.2'],
+        });
+      });
+
+      it('keeps the live value when the template REMOVES OriginSSLProtocols', async () => {
+        const sent = await send(
+          liveWith('web', ['TLSv1.1', 'TLSv1.2']),
+          template(customOrigin()),
+          template(customOrigin({ OriginSSLProtocols: ['TLSv1.1', 'TLSv1.2'] }))
+        );
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 2,
+          Items: ['TLSv1.1', 'TLSv1.2'],
+        });
+      });
+
+      it("gives a NEW custom origin CloudFront's create default", async () => {
+        // The live origin has another Id: nothing to keep for `web`.
+        const sent = await send(liveWith('old', ['SSLv3', 'TLSv1']), template(customOrigin()));
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 3,
+          Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
+        });
+      });
+
+      it('sends a templated OriginSSLProtocols as declared, over the live value', async () => {
+        const sent = await send(
+          liveWith('web', ['SSLv3', 'TLSv1']),
+          template(customOrigin({ OriginSSLProtocols: ['TLSv1.2'] }))
+        );
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 1,
+          Items: ['TLSv1.2'],
+        });
+      });
+
+      it('leaves an S3 origin without OriginSslProtocols', async () => {
+        const sent = await send(
+          liveWith('web', ['TLSv1.2']),
+          template({ Id: 's3', DomainName: 'b.s3.amazonaws.com', S3OriginConfig: { OriginAccessIdentity: '' } })
+        );
+        expect(sent.Origins.Items[0].CustomOriginConfig).toBeUndefined();
+      });
+
+      it('sends Compress false for a behavior that omits it, on the default and each ordered behavior', async () => {
+        mockUpdateChain(liveWith('web', ['TLSv1.2']));
+        const next = template(customOrigin());
+        (next.DistributionConfig as Record<string, unknown>)['CacheBehaviors'] = [
+          {
+            PathPattern: '/api/*',
+            TargetOriginId: 'web',
+            ViewerProtocolPolicy: 'https-only',
+            CachePolicyId: '4135ea2d-6df8-44a3-9df3-4b5a84be39ad',
+          },
+        ];
+        await provider.update('Dist', 'EDFDVBD6EXAMPLE', 'AWS::CloudFront::Distribution', next, next);
+        const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+        expect(sent.DefaultCacheBehavior.Compress).toBe(false);
+        expect(sent.CacheBehaviors.Items[0].Compress).toBe(false);
+      });
+
+      it('sends a declared Compress as declared', async () => {
+        const sent = await send(liveWith('web', ['TLSv1.2']), template(customOrigin(), { Compress: true }));
+        expect(sent.DefaultCacheBehavior.Compress).toBe(true);
+      });
+    });
   });
 
   // CloudFront refuses a TrustedKeyGroups / TrustedSigners wrapper without

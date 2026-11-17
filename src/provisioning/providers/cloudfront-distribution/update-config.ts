@@ -59,8 +59,56 @@ export function mergeUpdateConfig(
 
   Object.assign(merged, templateSdk);
   merged['CallerReference'] = currentConfig['CallerReference'];
+  fillOriginSslProtocols(merged, currentConfig);
   this.completeRequiredUpdateFields(merged);
   return merged;
+}
+
+/**
+ * What CloudFront records for a custom origin created without
+ * `OriginSslProtocols` (measured us-east-1, 2026-11-18). Not CloudFormation's
+ * `[SSLv3, TLSv1]`, which would put SSLv3 back on an origin that never had it.
+ */
+const CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS = {
+  Quantity: 3,
+  Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
+} as const;
+
+/**
+ * `UpdateDistribution` requires `CustomOriginConfig.OriginSslProtocols`
+ * ("The parameter OriginSslProtocols is required", go-to-k/cdkd#6490) while a
+ * template may omit it, and the merge sends the template's custom origins.
+ * Absent-only: a templated value always wins. Otherwise the LIVE value of the
+ * origin with the same `Id` is kept, so the update changes nothing on AWS;
+ * an origin with no live custom-origin value (new in this update) takes what
+ * CloudFront's create would have recorded.
+ */
+function fillOriginSslProtocols(
+  config: Record<string, unknown>,
+  currentConfig: Record<string, unknown>
+): void {
+  const origins = config['Origins'] as Record<string, unknown> | undefined;
+  if (!origins || !Array.isArray(origins['Items'])) return;
+  const liveOrigins = (currentConfig['Origins'] as Record<string, unknown> | undefined)?.['Items'];
+  const liveProtocols = (id: unknown): unknown => {
+    if (!Array.isArray(liveOrigins)) return undefined;
+    const live = (liveOrigins as Record<string, unknown>[]).find((o) => o?.['Id'] === id);
+    const custom = live?.['CustomOriginConfig'] as Record<string, unknown> | undefined;
+    return custom?.['OriginSslProtocols'];
+  };
+  origins['Items'] = (origins['Items'] as Record<string, unknown>[]).map((origin) => {
+    const custom = origin?.['CustomOriginConfig'];
+    if (!custom || typeof custom !== 'object') return origin;
+    if ((custom as Record<string, unknown>)['OriginSslProtocols'] !== undefined) return origin;
+    const live = liveProtocols(origin['Id']);
+    return {
+      ...origin,
+      CustomOriginConfig: {
+        ...(custom as Record<string, unknown>),
+        OriginSslProtocols: structuredClone(live ?? CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS),
+      },
+    };
+  });
 }
 
 /**
@@ -74,7 +122,9 @@ export function mergeUpdateConfig(
  * for updates", "The parameter SmoothStreaming flag is missing", ...).
  *
  * The set below is the EMPIRICALLY REQUIRED list (probed live against
- * UpdateDistribution, 2026-08-09) plus its symmetric CFn-default
+ * UpdateDistribution, 2026-08-09; `Compress` 2026-11-18, with a custom
+ * origin's `OriginSslProtocols` filled by `fillOriginSslProtocols` in
+ * {@link mergeUpdateConfig}, which reads the live config) plus its symmetric CFn-default
  * companions (`FunctionAssociations` / `TrustedSigners` /
  * `TrustedKeyGroups` — same association/signer family, filled with the
  * same disabled/empty CFn defaults CloudFormation submits for an
@@ -107,6 +157,9 @@ export function completeRequiredUpdateFields(
   const fillBehavior = (behavior: Record<string, unknown>): Record<string, unknown> => {
     const b = { ...behavior };
     if (b['SmoothStreaming'] === undefined) b['SmoothStreaming'] = false;
+    // "The parameter Compress flag is required" (go-to-k/cdkd#6490);
+    // CloudFormation's default for an omitted Compress is false.
+    if (b['Compress'] === undefined) b['Compress'] = false;
     if (b['FieldLevelEncryptionId'] === undefined) b['FieldLevelEncryptionId'] = '';
     if (b['LambdaFunctionAssociations'] === undefined) {
       b['LambdaFunctionAssociations'] = { Quantity: 0, Items: [] };
