@@ -1742,14 +1742,17 @@ echo "[verify] step S4: empty SkipBucket and deploy plainly (SkipBucket deleted)
 aws s3 rm "s3://${SKIP_BUCKET_NAME}" --recursive >/dev/null
 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
 # HeadBucket can still answer 200 for a few seconds after DeleteBucket returns
-# (a pre-fix probe run read the bucket as live right after cdkd's "Deleted: 1").
-# Waits up to ~60s; the assert_gone below is the verdict.
-for _ in $(seq 1 12); do
+# (a pre-fix probe run read the bucket as live right after cdkd's "Deleted: 1"),
+# and it can flip back to 200 after a 404, so the loop's own 404 is the verdict:
+# a second probe after it reads the stale answer (go-to-k/cdkd#6476).
+for attempt in $(seq 1 12); do
   gone_probe aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}" && break
+  if [ "${attempt}" = 12 ]; then
+    echo "FAIL: SkipBucket ${SKIP_BUCKET_NAME} still exists after the converging deploy" >&2
+    exit 1
+  fi
   sleep 5
 done
-assert_gone "SkipBucket ${SKIP_BUCKET_NAME} still exists after the converging deploy" \
-  aws s3api head-bucket --bucket "${SKIP_BUCKET_NAME}" --region "${REGION}"
 S4_COUNT="$(state_resource_count "${STATE_KEY}")"
 if [ "${S4_COUNT}" != "3" ]; then
   echo "[verify] FAIL: after the converging deploy state records ${S4_COUNT} resource(s) (expected 3)"
