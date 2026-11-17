@@ -57,9 +57,8 @@ import { reportCreatedResource } from '../created-resource-sink.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-
-const POLL_INTERVAL_MS = 5000;
-const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+import { startInterruptWatch } from '../interrupt-watch.js';
+import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, pauseBeforeNextPoll } from './rds-dbproxy/shared.js';
 
 /**
  * AWS RDS DBProxyEndpoint Provider
@@ -223,8 +222,14 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     let vpcId: string | undefined;
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     let status: string | undefined;
+    // go-to-k/cdkd#6517: Ctrl-C ends the wait, and so does what the resource
+    // deadline leaves, so the timeout below is what fails the resource.
+    const watch = startInterruptWatch(
+      mask(`DBProxyEndpoint ${dbProxyEndpointName} wait for available`)
+    );
     try {
       while (Date.now() < deadline) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
         try {
           // NOTE: filter by DBProxyEndpointName only — passing both
           // `DBProxyName` AND `DBProxyEndpointName` returned an empty array
@@ -275,7 +280,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
             );
           }
         }
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        if (!(await pauseBeforeNextPoll(deadline, watch))) break;
       }
       if (!endpoint || !arn) {
         throw new ProvisioningError(
@@ -291,6 +296,8 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       // for --revert-failed.
       markCreatedBeforeFailure(error, logicalId, resourceType, dbProxyEndpointName);
       throw error;
+    } finally {
+      watch.dispose();
     }
 
     return {
@@ -412,9 +419,11 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
 
   /**
    * Polls `DescribeDBProxyEndpoints` until the endpoint reports `available`
-   * after a `ModifyDBProxyEndpoint`, bounded by the same deadline as create().
-   * A missing endpoint, a terminal failure state or the deadline is a
-   * `ProvisioningError`. The DBProxy provider's update waits the same way.
+   * after a `ModifyDBProxyEndpoint`, bounded by the same cap as create() and
+   * by what the resource deadline leaves (go-to-k/cdkd#6517). A missing
+   * endpoint, a terminal failure state or the cap is a `ProvisioningError`;
+   * Ctrl-C ends it with the interrupt watch's error. The DBProxy provider's
+   * update waits the same way.
    */
   private async waitForAvailableAfterModify(
     physicalId: string,
@@ -425,46 +434,52 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     const client = this.getClient();
     const deadline = Date.now() + POLL_TIMEOUT_MS;
     let status: string | undefined;
-    while (Date.now() < deadline) {
-      try {
-        const describe = await client.send(
-          new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
-        );
-        const ep = describe.DBProxyEndpoints?.[0];
-        // No endpoint is the answer DBProxyEndpointNotFoundFault gives: fail
-        // now instead of waiting out the deadline.
-        if (!ep) {
+    const watch = startInterruptWatch(mask(`DBProxyEndpoint ${physicalId} wait after modify`));
+    try {
+      while (Date.now() < deadline) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        try {
+          const describe = await client.send(
+            new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
+          );
+          const ep = describe.DBProxyEndpoints?.[0];
+          // No endpoint is the answer DBProxyEndpointNotFoundFault gives: fail
+          // now instead of waiting out the deadline.
+          if (!ep) {
+            throw new ProvisioningError(
+              mask(`DBProxyEndpoint ${physicalId} was not found while waiting for it after modify`),
+              resourceType,
+              logicalId,
+              physicalId
+            );
+          }
+          status = ep.Status;
+        } catch (error) {
+          if (error instanceof ProvisioningError) throw error;
+          throw this.wrapCaughtError(
+            error,
+            'UPDATE (poll)',
+            resourceType,
+            logicalId,
+            physicalId,
+            mask
+          );
+        }
+        if (status === 'available') return;
+        if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
           throw new ProvisioningError(
-            mask(`DBProxyEndpoint ${physicalId} was not found while waiting for it after modify`),
+            mask(
+              `DBProxyEndpoint ${physicalId} entered terminal failure state after modify: ${status}`
+            ),
             resourceType,
             logicalId,
             physicalId
           );
         }
-        status = ep.Status;
-      } catch (error) {
-        if (error instanceof ProvisioningError) throw error;
-        throw this.wrapCaughtError(
-          error,
-          'UPDATE (poll)',
-          resourceType,
-          logicalId,
-          physicalId,
-          mask
-        );
+        if (!(await pauseBeforeNextPoll(deadline, watch))) break;
       }
-      if (status === 'available') return;
-      if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
-        throw new ProvisioningError(
-          mask(
-            `DBProxyEndpoint ${physicalId} entered terminal failure state after modify: ${status}`
-          ),
-          resourceType,
-          logicalId,
-          physicalId
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    } finally {
+      watch.dispose();
     }
     throw new ProvisioningError(
       mask(
