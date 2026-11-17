@@ -375,7 +375,8 @@ export async function update(
       newDistributionConfig,
       previousDistributionConfig,
       logicalId,
-      context?.replayingState === true
+      context?.replayingState === true,
+      context?.restoredObservedProperties
     );
 
     await this.cloudFrontClient.send(

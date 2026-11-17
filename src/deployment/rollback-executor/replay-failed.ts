@@ -820,6 +820,7 @@ export async function replayFailedOperationsUnbound(
                   // AWS; the record built below clears them only on success.
                   ...revertUnsettled,
                   typedPayloadLeaves: prev.typedPayloadLeaves, // go-to-k/cdkd#6309
+                  restoredObservedProperties: prev.observedProperties, // go-to-k/cdkd#6519
                   ...revertUpdatePolicyContext(op.updatePolicy),
                 },
               ],
@@ -832,9 +833,8 @@ export async function replayFailedOperationsUnbound(
           );
           // go-to-k/cdkd#4434, the `revert` arm's twin: the returned
           // attributes' `NoEcho` needles, before the redaction below.
-          if (revertFailedResult) {
+          if (revertFailedResult)
             recordNoEchoAttributeValues(revertFailedResult, secrets, desiredProps);
-          }
           stateResources[op.logicalId] = maskRestoredNoEchoRecord(
             redactRollbackRecord(
               // go-to-k/cdkd#5064 phase 2: the failed replacement's create may

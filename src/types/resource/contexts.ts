@@ -246,6 +246,24 @@ export interface UpdateContext extends SecretMaskingContext {
   replayingState?: boolean;
 
   /**
+   * go-to-k/cdkd#6519: the `observedProperties` of the record a rollback
+   * replay RESTORES — the same record whose `properties` are the desired bag —
+   * verbatim. Set beside {@link replayingState} by both revert arms
+   * (`rollback-executor/replay-revert.ts`, `replay-failed.ts`); absent on every
+   * other caller, and absent when the record has no snapshot.
+   *
+   * It is what AWS held after that record's own create / update, so a provider
+   * MAY send a member from it that the restored TEMPLATE omits but AWS
+   * requires, to put back the pre-deploy value instead of the failed deploy's
+   * live one (`AWS::CloudFront::Distribution`'s `OriginSSLProtocols`, the only
+   * reader). It is persisted state: a leaf can be redacted (`***`, a
+   * `{{resolve:...}}` expression) or malformed, so a reader validates each
+   * value it takes and falls back on anything else, and reads it only when
+   * `replayingState` is set. Never a snapshot of another generation.
+   */
+  restoredObservedProperties?: Readonly<Record<string, unknown>> | undefined;
+
+  /**
    * go-to-k/cdkd#6437: the resource's template `UpdatePolicy` attribute, as
    * written (intrinsics unresolved), except an `AWS::Lambda::Alias`'s
    * `CodeDeployLambdaAliasUpdate`, whose names arrive resolved. Set by `cdkd deploy`'s in-place update
