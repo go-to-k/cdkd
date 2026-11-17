@@ -3431,6 +3431,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-4",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -3550,6 +3551,9 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -4177,6 +4181,7 @@
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-2",
+        "cc-to-sdk-reroute-common-types-4",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -4308,6 +4313,9 @@
         "cc-to-sdk-reroute-common-types-2": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -5531,6 +5539,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-common-types-4",
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
@@ -5558,6 +5567,10 @@
         ],
         "apigw-vpclink-integration-target": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1",
+          "literal"
         ],
         "deletion-ordering-complex": [
           "l2",
@@ -5692,6 +5705,7 @@
       "resourceType": "AWS::Events::EventBus",
       "integs": [
         "appsync",
+        "cc-to-sdk-reroute-common-types-4",
         "eventbridge",
         "eventbridge-archive",
         "eventbus-policy",
@@ -5701,6 +5715,10 @@
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1",
+          "literal"
         ],
         "eventbridge": [
           "l2"
@@ -5832,9 +5850,14 @@
     {
       "resourceType": "AWS::Glue::Crawler",
       "integs": [
+        "cc-to-sdk-reroute-common-types-4",
         "glue-update-hardening"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1",
+          "literal"
+        ],
         "glue-update-hardening": [
           "l1"
         ]
@@ -5844,6 +5867,7 @@
       "resourceType": "AWS::Glue::Database",
       "integs": [
         "cc-to-sdk-reroute-common-types-3",
+        "cc-to-sdk-reroute-common-types-4",
         "data-analytics",
         "drift-revert",
         "firehose-iceberg-destination",
@@ -5854,6 +5878,9 @@
         "cc-to-sdk-reroute-common-types-3": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1"
         ],
         "data-analytics": [
           "l1",
@@ -5943,9 +5970,14 @@
     {
       "resourceType": "AWS::Glue::Workflow",
       "integs": [
+        "cc-to-sdk-reroute-common-types-4",
         "glue-update-hardening"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1",
+          "literal"
+        ],
         "glue-update-hardening": [
           "l1"
         ]
@@ -6228,6 +6260,7 @@
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-common-types-3",
+        "cc-to-sdk-reroute-common-types-4",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -6385,6 +6418,9 @@
           "l1"
         ],
         "cc-to-sdk-reroute-common-types-3": [
+          "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
           "l1"
         ],
         "cc-write-only-create-only": [
@@ -8501,6 +8537,7 @@
         "bench-sdk",
         "bucket-deployment",
         "cc-getatt-readback",
+        "cc-to-sdk-reroute-common-types-4",
         "ci-cd",
         "cloudtrail-trail",
         "codebuild-project",
@@ -8585,6 +8622,9 @@
         ],
         "cc-getatt-readback": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1"
         ],
         "ci-cd": [
           "l2",
@@ -10502,11 +10542,16 @@
     {
       "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
       "integs": [
+        "cc-to-sdk-reroute-common-types-4",
         "drift-revert-vpc",
         "local-ecs-service-connect",
         "servicediscovery"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1",
+          "literal"
+        ],
         "drift-revert-vpc": [
           "l2",
           "literal"
@@ -10539,12 +10584,17 @@
       "resourceType": "AWS::ServiceDiscovery::Service",
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
+        "cc-to-sdk-reroute-common-types-4",
         "local-ecs-service-connect",
         "servicediscovery"
       ],
       "signals": {
         "access-key-cloudmap-fix-forward-orphan": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-4": [
+          "l1",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "literal"
