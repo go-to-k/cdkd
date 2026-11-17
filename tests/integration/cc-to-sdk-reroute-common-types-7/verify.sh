@@ -443,7 +443,10 @@ for id in "${SUBJECTS[@]}"; do
   bucket=$(drift_bucket "${id}")
   [ "${bucket}" = "clean" ] || drift_fail "6a: cdkd drift put ${id} in bucket '${bucket}', expected clean"
 done
-# rc after the per-subject buckets, so a non-zero rc names its own cause.
+# The REST API and the Deployment too: nothing in the stack drifted.
+jq -e '[.[].drifted[]] | length == 0' <<<"${DRIFT_OUT}" >/dev/null ||
+  drift_fail "6a: cdkd drift reports a drifted resource beside the subjects"
+# rc after the buckets, so a non-zero rc names its own cause.
 [ "${DRIFT_RC}" -eq 0 ] || drift_fail "6a: cdkd drift exited ${DRIFT_RC} although every subject is clean"
 echo "    OK (6a): cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0) with the witness live"
 
@@ -456,12 +459,14 @@ for id in RerouteAuthorizer RerouteStage; do
 done
 bucket=$(drift_bucket RerouteMethod)
 [ "${bucket}" = "drifted" ] || drift_fail "6b: cdkd drift put RerouteMethod in bucket '${bucket}', expected drifted by the removed ${WITNESS_STATUS} response"
+jq -e '[.[].drifted[]] | length == 1' <<<"${DRIFT_OUT}" >/dev/null ||
+  drift_fail "6b: cdkd drift reports a drifted resource other than RerouteMethod"
 CHANGES=$(jq -c '[.[].drifted[] | select(.logicalId == "RerouteMethod") | .changes[]]' <<<"${DRIFT_OUT}")
 WANT='[{"path":"MethodResponses.'"${WITNESS_STATUS}"'","stateValue":{"statusCode":"'"${WITNESS_STATUS}"'"}}]'
 [ "$(jq -cS '[.[] | del(.awsValue | nulls)]' <<<"${CHANGES}")" = "$(jq -cS . <<<"${WANT}")" ] ||
   drift_fail "6b: RerouteMethod drifted by ${CHANGES}, expected exactly ${WANT}"
 [ "${DRIFT_RC}" -ne 0 ] || drift_fail "6b: cdkd drift exited 0 although it reports RerouteMethod drifted"
-echo "    OK (6b): with the witness removed, only RerouteMethod drifted, by MethodResponses.${WITNESS_STATUS} alone (rc=${DRIFT_RC})"
+echo "    OK (6b): with the witness removed, only RerouteMethod in the stack drifted, by MethodResponses.${WITNESS_STATUS} alone (rc=${DRIFT_RC})"
 
 echo "==> Phase 7: remove the three from the template; each SDK delete must address the flipped id"
 # The REST API stays, so a delete sent to a wrong id leaves its target alive
