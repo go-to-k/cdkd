@@ -55,7 +55,7 @@ cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, de
 cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
-cc-to-sdk-reroute-common-types-5	2026-11-17T06:10:57Z	PASS	251	verify.sh	rc ok, destroy 0 errors, orph clean; at 5735ac32d
+cc-to-sdk-reroute-common-types-5	2026-11-17T06:22:39Z	PASS	240	verify.sh	rc ok, destroy 0 errors, orph clean; at 561a48018
 cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-hosted-zone	2026-11-02T17:29:26Z	PASS	177	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 cc-to-sdk-reroute-mount-target	2026-11-03T04:12:32Z	PASS	296	verify.sh	rc ok, orph clean, 4750ae2de
@@ -453,7 +453,7 @@ secretsmanager-update-value-source	2026-11-07T00:31:21Z	PASS	150	verify.sh	#5940
 select-out-of-bounds	2026-11-13T04:16:36Z	PASS	36	verify.sh	rc ok, orph clean
 serverless-api	2026-11-04T20:25:11Z	PASS	54	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
 servicediscovery	2026-11-17T05:50:34Z	PASS	265	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
-servicediscovery-http-namespace-update	2026-11-17T05:53:54Z	PASS	156	verify.sh	rc ok, destroy 0 errors, orph clean; at a1a08710a (#6484)
+servicediscovery-http-namespace-update	2026-11-17T06:22:39Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 561a48018
 servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
