@@ -247,7 +247,8 @@ export interface UpdateContext extends SecretMaskingContext {
 
   /**
    * go-to-k/cdkd#6437: the resource's template `UpdatePolicy` attribute, as
-   * written (intrinsics unresolved). Set by `cdkd deploy`'s in-place update
+   * written (intrinsics unresolved), except an `AWS::Lambda::Alias`'s
+   * `CodeDeployLambdaAliasUpdate`, whose names arrive resolved. Set by `cdkd deploy`'s in-place update
    * when `--update-policy` (or `cdk.json context.cdkd.updatePolicy: true`) is
    * on and the template declares one, and by a rollback revert of such an
    * update (go-to-k/cdkd#6457), from the policy that update journaled, minus

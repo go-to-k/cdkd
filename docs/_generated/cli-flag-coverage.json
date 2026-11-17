@@ -611,6 +611,7 @@
         "access-key-cloudmap-fix-forward-orphan",
         "alb",
         "appsync",
+        "codedeploy-lambda-deployment-group",
         "created-before-failure-revert",
         "cross-backend-same-stack-migration",
         "custom-resource-physid-replace",
@@ -2263,6 +2264,7 @@
       "flag": "--update-policy",
       "integs": [
         "asg-update-policy",
+        "codedeploy-lambda-deployment-group",
         "launchtemplate-asg-inplace"
       ]
     },
@@ -2974,6 +2976,7 @@
     "--include",
     "--include-deprecated",
     "--include-non-importable",
+    "--include-only-statuses",
     "--include-planned-deletion",
     "--includes",
     "--index-name",

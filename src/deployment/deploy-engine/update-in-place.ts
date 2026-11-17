@@ -428,7 +428,8 @@ export async function updateInPlace(
     resourceType,
     template?.Resources?.[logicalId],
     updateDecision.provisionedBy,
-    changedProperties
+    changedProperties,
+    engine.resolvedUpdatePolicies.get(logicalId)
   );
   try {
     result = await engine.withRetry(

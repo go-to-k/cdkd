@@ -198,6 +198,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
 | `AWS::BedrockAgentCore::Runtime` | Return while `CREATING` / `UPDATING` | Wait for `READY`; a `CREATE_FAILED` or `UPDATE_FAILED` runtime fails the deploy | same as default | Waits | Waits |
+| `AWS::Lambda::Alias` with `--update-policy` and `CodeDeployLambdaAliasUpdate` | Waits, as the default does | Wait for the CodeDeploy deployment that shifts the alias to the new version to succeed; a failed or stopped deployment fails the deploy | same as default | Waits | n/a |
 | `AWS::AutoScaling::AutoScalingGroup` with `--update-policy` | Start the instance refresh an `AutoScalingRollingUpdate` or `AutoScalingInstanceRefresh` asks for, then return; an `AutoScalingReplacingUpdate` still waits for the new group's instances before deleting the old group | Wait for the refresh to succeed; a failed or cancelled refresh fails the deploy | same as default | Waits | Starts a refresh (`instance_refresh`) and does not wait |
 
 [cdkd deploy: wait mode details](cli-deploy-waits.md) explains what each early

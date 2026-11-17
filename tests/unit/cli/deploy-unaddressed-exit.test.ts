@@ -323,6 +323,40 @@ describe('deploy exit code when resources are left unaddressed (issue #1960)', (
     expect(code).toBeUndefined();
   });
 
+  // go-to-k/cdkd#6437: the alias's CodeDeploy policy targets become graph
+  // edges only when `--update-policy` (or the cdk.json key) resolves on.
+  it.each([
+    [true, { updatePolicyReferences: true }],
+    [undefined, {}],
+    [false, {}],
+  ])('builds the DAG with updatePolicyReferences when the policy resolves %s', async (resolved, extra) => {
+    const { DagBuilder } = await import('../../../src/analyzer/dag-builder.js');
+    const { resolveUpdatePolicy } = await import('../../../src/cli/config-loader.js');
+    vi.mocked(resolveUpdatePolicy).mockReturnValue(resolved);
+    try {
+      await runDeploy(['--yes']);
+    } finally {
+      vi.mocked(resolveUpdatePolicy).mockReturnValue(undefined);
+    }
+    expect(vi.mocked(DagBuilder).mock.calls[0]![0]).toEqual({
+      relaxCdkVpcDefensiveDeps: true,
+      ...extra,
+    });
+  });
+
+  it('resolves the DAG option from the --update-policy flag', async () => {
+    const { DagBuilder } = await import('../../../src/analyzer/dag-builder.js');
+    const { resolveUpdatePolicy } = await import('../../../src/cli/config-loader.js');
+    // The CLI value passes through, so the option reads what the command handed it.
+    vi.mocked(resolveUpdatePolicy).mockImplementation((cliValue) => cliValue);
+    try {
+      await runDeploy(['--yes', '--update-policy']);
+    } finally {
+      vi.mocked(resolveUpdatePolicy).mockImplementation(() => undefined);
+    }
+    expect(vi.mocked(DagBuilder).mock.calls[0]![0]).toMatchObject({ updatePolicyReferences: true });
+  });
+
   it('exits 2 when a template DELETE was skipped by the provider', async () => {
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     const code = await runDeploy(['--yes']);

@@ -24,6 +24,14 @@ export interface DagBuilderOptions {
    * `cdk-defensive-deps.ts` for the rationale and the type-pair allowlist.
    */
   relaxCdkVpcDefensiveDeps?: boolean;
+  /**
+   * go-to-k/cdkd#6437: under `--update-policy`, an `AWS::Lambda::Alias` also
+   * depends on what its `UpdatePolicy.CodeDeployLambdaAliasUpdate` refers to
+   * (the CodeDeploy application, deployment group and hook functions), so its
+   * deployment starts after they exist, as in CloudFormation. Off without the
+   * flag, so a deploy's graph is unchanged.
+   */
+  updatePolicyReferences?: boolean;
 }
 
 /**
@@ -95,6 +103,14 @@ export class DagBuilder {
       }
 
       const dependencies = this.parser.extractDependencies(resource);
+      if (this.options.updatePolicyReferences === true && resource.Type === 'AWS::Lambda::Alias') {
+        const aliasPolicy = (resource.UpdatePolicy as Record<string, unknown> | undefined)?.[
+          'CodeDeployLambdaAliasUpdate'
+        ];
+        if (aliasPolicy !== undefined) {
+          for (const ref of this.parser.extractReferences(aliasPolicy)) dependencies.add(ref);
+        }
+      }
       // When relaxation is enabled, compute the subset of DependsOn entries
       // (NOT Ref / GetAtt — those are real data dependencies) that the CDK
       // injected defensively for runtime egress reasons. Skip them at edge

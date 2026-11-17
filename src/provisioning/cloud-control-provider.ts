@@ -79,6 +79,10 @@ import {
   maskDeployedNonAttributeKeys,
 } from './cloud-control/read.js';
 import { enrichResourceAttributes } from './cloud-control/enrich.js';
+import {
+  buildCodeDeployAliasClients,
+  type CodeDeployAliasClients,
+} from './cloud-control/codedeploy-alias-update.js';
 import { importImpl, maskUncertifiedModelValues } from './cloud-control/import.js';
 
 export {
@@ -126,6 +130,15 @@ export class CloudControlProvider implements ResourceProvider {
    * them (#2204).
    */
   readonly protectionFlips = new ProtectionFlipRegistry();
+  /**
+   * go-to-k/cdkd#6437: the CodeDeploy deployment this process started per
+   * `AWS::Lambda::Alias` physical id, so a rollback revert stops only its own.
+   */
+  readonly startedAliasDeployments = new Map<string, string>();
+  /** The CodeDeploy / Lambda clients of a `CodeDeployLambdaAliasUpdate`, in this client's region. */
+  codeDeployAliasClients(): Promise<CodeDeployAliasClients> {
+    return buildCodeDeployAliasClients(() => this.cloudControlClient.config.region());
+  }
 
   // Maximum time to wait for operation completion (15 minutes)
   readonly MAX_WAIT_TIME_MS = 15 * 60 * 1000;

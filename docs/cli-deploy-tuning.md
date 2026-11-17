@@ -311,11 +311,18 @@ cdkd deploy MyStack --update-policy
 | `AutoScalingRollingUpdate` | A launch template, launch configuration, subnet or placement group change replaces the instances with an instance refresh, and the deploy waits for it. |
 | `AutoScalingInstanceRefresh` | The same changes, plus `MixedInstancesPolicy` and the Availability Zones, start the instance refresh the policy declares, and the deploy waits for it. |
 | `AutoScalingReplacingUpdate` (`WillReplace: true`) | The rolling update's changes create a new group, wait for its instances to be in service, then delete the old one. |
+| `CodeDeployLambdaAliasUpdate` | A Lambda alias's `FunctionVersion` change shifts the alias through a CodeDeploy deployment, and the deploy waits for it. |
 | Any other `UpdatePolicy` | Still skipped. |
 
 A refresh needs the `autoscaling:StartInstanceRefresh`,
 `autoscaling:DescribeInstanceRefreshes` and `autoscaling:CancelInstanceRefresh`
-permissions. `--no-wait` starts it without waiting. How a rolling update maps
+permissions. A CodeDeploy deployment needs `codedeploy:CreateDeployment`
+(with `codedeploy:GetDeploymentConfig`, `codedeploy:GetApplicationRevision`
+and `codedeploy:RegisterApplicationRevision`, which the IAM reference lists
+as its dependent actions), `codedeploy:GetDeployment`,
+`codedeploy:GetDeploymentGroup`, `codedeploy:ListDeployments`,
+`codedeploy:StopDeployment`, `lambda:GetAlias` and `lambda:UpdateAlias`. `--no-wait` starts a refresh
+without waiting; a CodeDeploy deployment is waited for anyway. How a rolling update maps
 onto a refresh, and how a rollback reverts one, is in
 [`UpdatePolicy` is opt-in](supported-features.md#updatepolicy-is-opt-in).
 
