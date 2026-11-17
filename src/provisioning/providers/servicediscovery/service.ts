@@ -389,7 +389,7 @@ export async function updateService(
         // (the deploy goes on), says so, and records what AWS still holds.
         serviceChangeRefused = true;
         this.logger.warn(
-          `Cloud Map cannot update service ${logicalId}: it is in an HTTP (API-only) namespace, ` +
+          safeMsg`Cloud Map cannot update service ${logicalId}: it is in an HTTP (API-only) namespace, ` +
             'where AWS refuses UpdateService. Its Description, DnsConfig and HealthCheckConfig ' +
             'changes were not applied, as in CloudFormation, and the state record keeps the ' +
             'values AWS holds; replace the service to change them.'
