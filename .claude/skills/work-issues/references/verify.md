@@ -201,7 +201,9 @@ aws s3 ls "s3://cdkd-state-<acct>/cdkd-bootstrap/"                      # cdkd r
 
 **Docker is an environment blocker: prefer a fixture reaching the same code
 without it.** Where docker is required (any `local-*` fixture),
-verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
+verify registry reach FIRST: `docker pull hello-world` under a 120s cap
+("authorization token has expired" on `public.ecr.aws` is a stale login:
+`docker logout public.ecr.aws`, it pulls anonymously). A
 `[verify] SKIP` exits 0 and is NOT a pass.
 
 ### 8-g. Prose claims are verified to the bar code is

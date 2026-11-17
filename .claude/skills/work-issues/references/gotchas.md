@@ -72,8 +72,9 @@
   so in the USER's language, and it states the problem and each option's fix in
   plain words plus what CloudFormation / the AWS CDK CLI does for the same
   shape, where one applies, what sibling providers do, SURVEYED not recalled
-  (#5699), and which option you recommend as the ideal tool behavior and why;
-  without those the maintainer asks back instead of choosing (#2868).
+  (#5699), and which option you recommend as the ideal tool behavior and why,
+  by ONE criterion over every row of a list (an exception names what differs,
+  #6441); without those the maintainer asks back instead of choosing (#2868).
   Until it is answered, its answer stays out of every public text, and a reply
-  that asks back is no answer (a post published one, the #5637 run).
+  that asks back is no answer (#5637).
   Everything else you decide.
