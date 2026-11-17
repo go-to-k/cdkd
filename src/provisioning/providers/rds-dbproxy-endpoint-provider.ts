@@ -80,10 +80,10 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  *   until `Status === 'available'`. Returns `physicalId = DBProxyEndpointName`
  *   plus `Endpoint` / `DBProxyEndpointArn` / `IsDefault` / `VpcId` in
  *   `attributes`.
- * - `update`: `ModifyDBProxyEndpointCommand` for the mutable fields
- *   (`VpcSecurityGroupIds` → SDK input `VpcSecurityGroupIds`,
- *   `NewDBProxyEndpointName` via rename), then polls until `Status ===
- *   'available'` again, as create does. Tags diff via separate
+ * - `update`: `ModifyDBProxyEndpointCommand` for the one mutable field
+ *   (`VpcSecurityGroupIds` → SDK input `VpcSecurityGroupIds`), then polls
+ *   until `Status === 'available'` again, as create does. A
+ *   `DBProxyEndpointName` change is refused as immutable. Tags diff via separate
  *   `AddTagsToResource` / `RemoveTagsFromResource` calls. DBProxyName /
  *   VpcSubnetIds / TargetRole / EndpointNetworkType are immutable on AWS
  *   (`EndpointNetworkType` is create-only in the CFn schema and
