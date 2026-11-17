@@ -1,7 +1,13 @@
 import {
   apiGatewayAuthorizerSdkPhysicalId,
   apiGatewayStageSdkPhysicalId,
+  apiGatewayV2AuthorizerSdkPhysicalId,
+  apiGatewayV2IntegrationSdkPhysicalId,
+  apiGatewayV2RouteSdkPhysicalId,
+  apiGatewayV2StageSdkPhysicalId,
+  appSyncGraphQLApiSdkPhysicalId,
   ecsServiceSdkPhysicalId,
+  s3VectorsVectorBucketSdkPhysicalId,
 } from '../sticky-exempt-physical-id.js';
 
 /**
@@ -822,6 +828,106 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
         'segments on PutMethod',
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-common-types-7',
+    },
+  ],
+  [
+    'AWS::ApiGatewayV2::Stage',
+    {
+      // Batch 8 (go-to-k/cdkd#6490), admitted with the three API Gateway v2
+      // children and the AppSync and S3 Vectors types below for the SDK path's
+      // speed. A stage keeps its name across a recreate, so the fixture
+      // witnesses it by its createdDate.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<apiId>|<stageName>` (measured us-east-1, 2026-11-17, for a ' +
+        'named stage and `$default`) while the API Gateway v2 provider records the bare ' +
+        'stage name and reads ApiId from the properties; normalizeCcPhysicalId keeps the ' +
+        'stage name, which the fixture observed equal to the live stage',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-8',
+      normalizeCcPhysicalId: apiGatewayV2StageSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::ApiGatewayV2::Integration',
+    {
+      // Batch 8 (go-to-k/cdkd#6490). The integration id is AWS-minted, so a
+      // recreate changes it and the flip keeps it: the identity witness.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<apiId>|<integrationId>` (measured us-east-1, 2026-11-17) ' +
+        'while the API Gateway v2 provider records the bare CreateIntegration id and reads ' +
+        'ApiId from the properties; normalizeCcPhysicalId keeps the integration id, which ' +
+        'the fixture observed equal to the live integration',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-8',
+      normalizeCcPhysicalId: apiGatewayV2IntegrationSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::ApiGatewayV2::Route',
+    {
+      // Batch 8 (go-to-k/cdkd#6490). The route id is AWS-minted: the witness.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<apiId>|<routeId>` (measured us-east-1, 2026-11-17) while ' +
+        'the API Gateway v2 provider records the bare CreateRoute id and reads ApiId from ' +
+        'the properties; normalizeCcPhysicalId keeps the route id, which the fixture ' +
+        'observed equal to the live route',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-8',
+      normalizeCcPhysicalId: apiGatewayV2RouteSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::ApiGatewayV2::Authorizer',
+    {
+      // Batch 8 (go-to-k/cdkd#6490). The authorizer id is AWS-minted: the
+      // witness. Its Cloud Control id puts the API id LAST, unlike its siblings.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<authorizerId>|<apiId>` (measured us-east-1, 2026-11-17; the ' +
+        'live schema primaryIdentifier is AuthorizerId + ApiId, the reverse of the committed ' +
+        'schema fixture) while the API Gateway v2 provider records the bare CreateAuthorizer ' +
+        'id and reads ApiId from the properties; normalizeCcPhysicalId keeps the authorizer ' +
+        'id, which the fixture observed equal to the live authorizer',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-8',
+      normalizeCcPhysicalId: apiGatewayV2AuthorizerSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::AppSync::GraphQLApi',
+    {
+      // Batch 8 (go-to-k/cdkd#6490). The API id is AWS-minted: the witness.
+      // `Ref` is the API ARN on both layers: the Cloud Control id itself, then
+      // the recorded `Arn` attribute the flip carries over.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores the API ARN `arn:<partition>:appsync:<region>:<account>:apis/<apiId>` ' +
+        '(schema primaryIdentifier Arn; measured us-east-1, 2026-11-17) while the AppSync ' +
+        'provider records the bare CreateGraphqlApi apiId; normalizeCcPhysicalId keeps the ' +
+        'apiId, which the fixture observed equal to the live API',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-8',
+      normalizeCcPhysicalId: appSyncGraphQLApiSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::S3Vectors::VectorBucket',
+    {
+      // Batch 8 (go-to-k/cdkd#6490). A vector bucket keeps its name across a
+      // recreate, so the fixture witnesses it by its creationTime. `Ref` is the
+      // bucket ARN on both layers, as for the GraphQL API above.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores the bucket ARN `arn:<partition>:s3vectors:<region>:<account>:bucket/<name>` ' +
+        '(schema primaryIdentifier VectorBucketArn; measured us-east-1, 2026-11-17) while the ' +
+        'S3 Vectors provider records the bare bucket name; normalizeCcPhysicalId keeps the ' +
+        'name, which the fixture observed equal to the live bucket',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-8',
+      normalizeCcPhysicalId: s3VectorsVectorBucketSdkPhysicalId,
     },
   ],
 ]);

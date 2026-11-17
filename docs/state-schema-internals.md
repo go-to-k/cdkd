@@ -751,7 +751,13 @@ applied wherever a cc-api record reaches the SDK provider and persisted with
 [#5654](https://github.com/go-to-k/cdkd/issues/5654); `AWS::ApiGateway::Authorizer`
 and `AWS::ApiGateway::Stage`, whose Cloud Control ids are
 `<restApiId>|<authorizerId>` and `<restApiId>|<stageName>` and SDK ids the
-bare second segment, issue [#6490](https://github.com/go-to-k/cdkd/issues/6490)). Either is a per-type
+bare second segment, issue [#6490](https://github.com/go-to-k/cdkd/issues/6490); the
+API Gateway v2 `Stage`, `Integration` and `Route`, whose Cloud Control ids are
+`<apiId>|<id>`, and `Authorizer`, whose Cloud Control id is
+`<authorizerId>|<apiId>`, each with the bare id as SDK id; and
+`AWS::AppSync::GraphQLApi` and `AWS::S3Vectors::VectorBucket`, whose Cloud
+Control ids are the ARN and SDK ids the bare API id and bucket name, issue
+[#6490](https://github.com/go-to-k/cdkd/issues/6490) batch 8). Either is a per-type
 empirical fact, not an argument, so each entry names an integration fixture
 that OBSERVED it on a live resource; a unit test refuses an entry whose
 fixture does not exist or has never run.
@@ -798,8 +804,11 @@ conditional the escape is:
   `AWS::ElasticLoadBalancingV2::LoadBalancer`,
   `AWS::ServiceDiscovery::Service`, `AWS::S3Tables::TableBucket`,
   `AWS::BedrockAgentCore::Runtime`, `AWS::BedrockAgentCore::Evaluator`,
-  `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Stage` and
-  `AWS::ApiGateway::Method` are the members today.
+  `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Stage`,
+  `AWS::ApiGateway::Method`, `AWS::ApiGatewayV2::Stage`,
+  `AWS::ApiGatewayV2::Integration`, `AWS::ApiGatewayV2::Route`,
+  `AWS::ApiGatewayV2::Authorizer`, `AWS::AppSync::GraphQLApi` and
+  `AWS::S3Vectors::VectorBucket` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

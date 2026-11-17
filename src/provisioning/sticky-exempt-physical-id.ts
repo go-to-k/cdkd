@@ -126,3 +126,165 @@ export function apiGatewayStageSdkPhysicalId(ccPhysicalId: string): string {
   }
   return match[1]!;
 }
+
+/**
+ * An HTTP / WebSocket API id as API Gateway v2 mints it: 10 lowercase
+ * alphanumerics, like a REST API id. AWS documents no length; both measured
+ * had 10 (us-east-1, 2026-11-17), while the integration and route ids
+ * measured beside them had 7 and the authorizer id 6.
+ */
+const V2_API_ID = '[a-z0-9]{10}';
+
+/**
+ * `<apiId>|<integrationId>` and `<apiId>|<routeId>`: what Cloud Control
+ * records for an `AWS::ApiGatewayV2::Integration` / `::Route` (measured
+ * us-east-1, 2026-11-17; schema primaryIdentifier `[ApiId, <ChildId>]`). The
+ * child id is a lowercase alphanumeric whose length AWS does not document, so
+ * it is not pinned: a reversed `<childId>|<apiId>` is refused only while the
+ * child id is not itself 10 characters long, as no measured one was.
+ */
+const V2_API_CHILD_CC_ID = new RegExp(`^${V2_API_ID}\\|([a-z0-9]+)$`);
+
+function v2ApiChildSdkPhysicalId(ccPhysicalId: string, form: string, type: string): string {
+  const match = V2_API_CHILD_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      `its recorded physical id is not the \`${form}\` form Cloud Control records for ${type}`
+    );
+  }
+  return match[1]!;
+}
+
+/**
+ * The bare integration id `ApiGatewayV2Provider` stores as an
+ * `AWS::ApiGatewayV2::Integration` physicalId (it reads `ApiId` from the
+ * properties), from the `<apiId>|<integrationId>` id Cloud Control recorded.
+ * Throws on any other shape. The id is not echoed: the caller names the
+ * resource.
+ */
+export function apiGatewayV2IntegrationSdkPhysicalId(ccPhysicalId: string): string {
+  return v2ApiChildSdkPhysicalId(
+    ccPhysicalId,
+    '<apiId>|<integrationId>',
+    'AWS::ApiGatewayV2::Integration'
+  );
+}
+
+/**
+ * The bare route id `ApiGatewayV2Provider` stores as an
+ * `AWS::ApiGatewayV2::Route` physicalId (it reads `ApiId` from the
+ * properties), from the `<apiId>|<routeId>` id Cloud Control recorded. Throws
+ * on any other shape. The id is not echoed.
+ */
+export function apiGatewayV2RouteSdkPhysicalId(ccPhysicalId: string): string {
+  return v2ApiChildSdkPhysicalId(ccPhysicalId, '<apiId>|<routeId>', 'AWS::ApiGatewayV2::Route');
+}
+
+/**
+ * `<authorizerId>|<apiId>`: what Cloud Control records for an
+ * `AWS::ApiGatewayV2::Authorizer` (measured us-east-1, 2026-11-17: the live
+ * schema's primaryIdentifier is `[AuthorizerId, ApiId]`, the REVERSE of both
+ * the committed schema fixture and the v1 `AWS::ApiGateway::Authorizer`). The
+ * API id is therefore anchored on the SECOND segment; a reversed
+ * `<apiId>|<authorizerId>` is refused only while the authorizer id is not
+ * itself 10 characters long, as the measured one (6) was not.
+ */
+const V2_AUTHORIZER_CC_ID = new RegExp(`^([a-z0-9]+)\\|${V2_API_ID}$`);
+
+/**
+ * The bare authorizer id `ApiGatewayV2Provider` stores as an
+ * `AWS::ApiGatewayV2::Authorizer` physicalId (it reads `ApiId` from the
+ * properties), from the `<authorizerId>|<apiId>` id Cloud Control recorded.
+ * Throws on any other shape. The id is not echoed.
+ */
+export function apiGatewayV2AuthorizerSdkPhysicalId(ccPhysicalId: string): string {
+  const match = V2_AUTHORIZER_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the `<authorizerId>|<apiId>` form Cloud Control records for AWS::ApiGatewayV2::Authorizer'
+    );
+  }
+  return match[1]!;
+}
+
+/**
+ * `<apiId>|<stageName>`: what Cloud Control records for an
+ * `AWS::ApiGatewayV2::Stage` (measured us-east-1, 2026-11-17, for a named stage
+ * and for `$default`; schema primaryIdentifier `[ApiId, StageName]`). A stage
+ * name is letters, digits, hyphens and underscores, or the HTTP API's
+ * `$default`, so it cannot hold the `|`. A reversed `<stageName>|<apiId>` is
+ * refused only when the stage name is not itself 10 lowercase alphanumerics.
+ */
+const V2_STAGE_CC_ID = new RegExp(`^${V2_API_ID}\\|(\\$default|[A-Za-z0-9_-]+)$`);
+
+/**
+ * The bare stage name `ApiGatewayV2Provider` stores as an
+ * `AWS::ApiGatewayV2::Stage` physicalId (it reads `ApiId` from the
+ * properties), from the `<apiId>|<stageName>` id Cloud Control recorded.
+ * Throws on any other shape. The id is not echoed.
+ */
+export function apiGatewayV2StageSdkPhysicalId(ccPhysicalId: string): string {
+  const match = V2_STAGE_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the `<apiId>|<stageName>` form Cloud Control records for AWS::ApiGatewayV2::Stage'
+    );
+  }
+  return match[1]!;
+}
+
+/**
+ * The GraphQL API ARN Cloud Control records for an `AWS::AppSync::GraphQLApi`
+ * (schema primaryIdentifier `[Arn]`, measured us-east-1, 2026-11-17:
+ * `arn:aws:appsync:<region>:<account>:apis/<apiId>`). The API id is 26
+ * lowercase alphanumerics, as measured; an ARN of any other resource kind
+ * (`apis/<id>/types/...`, a merged-API source association) is refused.
+ */
+const APPSYNC_GRAPHQL_API_CC_ID =
+  /^arn:aws(?:-[a-z]+)*:appsync:[a-z0-9-]+:\d{12}:apis\/([a-z0-9]{26})$/;
+
+/**
+ * The bare API id `AppSyncProvider` stores as an `AWS::AppSync::GraphQLApi`
+ * physicalId, from the API ARN Cloud Control recorded. The record's `Arn`
+ * attribute, which `Ref` returns, is carried across the flip unchanged.
+ * Throws on any other shape. The id is not echoed.
+ */
+export function appSyncGraphQLApiSdkPhysicalId(ccPhysicalId: string): string {
+  const match = APPSYNC_GRAPHQL_API_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the GraphQL API ARN Cloud Control records for AWS::AppSync::GraphQLApi'
+    );
+  }
+  return match[1]!;
+}
+
+/**
+ * The vector bucket ARN Cloud Control records for an
+ * `AWS::S3Vectors::VectorBucket` (schema primaryIdentifier `[VectorBucketArn]`,
+ * measured us-east-1, 2026-11-17:
+ * `arn:aws:s3vectors:<region>:<account>:bucket/<name>`). A vector bucket name
+ * is 3 to 63 lowercase letters, digits, hyphens and dots, starting and ending
+ * with a letter or digit (a dotted name was measured accepted, us-east-1,
+ * 2026-11-17: `cdkd-measure-6490.dot-11427`); an index ARN
+ * (`bucket/<name>/index/<index>`) is refused.
+ */
+const S3VECTORS_BUCKET_CC_ID =
+  /^arn:aws(?:-[a-z]+)*:s3vectors:[a-z0-9-]+:\d{12}:bucket\/([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/;
+
+/**
+ * The bare bucket name `S3VectorsProvider` stores as an
+ * `AWS::S3Vectors::VectorBucket` physicalId, from the ARN Cloud Control
+ * recorded. The record's `VectorBucketArn` attribute, which `Ref` returns, is
+ * carried across the flip unchanged. Throws on any other shape. The id is not
+ * echoed.
+ */
+export function s3VectorsVectorBucketSdkPhysicalId(ccPhysicalId: string): string {
+  const match = S3VECTORS_BUCKET_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the vector bucket ARN Cloud Control records for AWS::S3Vectors::VectorBucket'
+    );
+  }
+  return match[1]!;
+}

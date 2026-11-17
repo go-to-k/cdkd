@@ -121,7 +121,17 @@ describe('sticky-CC exemption table', () => {
     // reviewer reads must not describe parity for it.
     const normalized = entries().filter(([, e]) => e.normalizeCcPhysicalId !== undefined);
     expect(normalized.map(([type]) => type)).toEqual(
-      expect.arrayContaining(['AWS::ECS::Service', 'AWS::ApiGateway::Authorizer', 'AWS::ApiGateway::Stage']),
+      expect.arrayContaining([
+        'AWS::ECS::Service',
+        'AWS::ApiGateway::Authorizer',
+        'AWS::ApiGateway::Stage',
+        'AWS::ApiGatewayV2::Stage',
+        'AWS::ApiGatewayV2::Integration',
+        'AWS::ApiGatewayV2::Route',
+        'AWS::ApiGatewayV2::Authorizer',
+        'AWS::AppSync::GraphQLApi',
+        'AWS::S3Vectors::VectorBucket',
+      ]),
     );
     for (const [type, e] of normalized) {
       expect(e.physicalIdForm, `${type}: physicalIdForm must name the normalizer`).toContain(
@@ -244,6 +254,19 @@ describe('sticky-CC exemption table', () => {
       'AWS::ApiGateway::Method',
       { RestApiId: 'a', ResourceId: 'r', HttpMethod: 'GET', AuthorizationType: 'NONE', OperationName: 'o' },
     ],
+    // Batch 8 (go-to-k/cdkd#6490).
+    ['AWS::ApiGatewayV2::Stage', { ApiId: 'a', StageName: 's', Description: 'd' }],
+    [
+      'AWS::ApiGatewayV2::Integration',
+      { ApiId: 'a', IntegrationType: 'HTTP_PROXY', IntegrationMethod: 'GET', IntegrationUri: 'https://e', Description: 'd' },
+    ],
+    ['AWS::ApiGatewayV2::Route', { ApiId: 'a', RouteKey: 'GET /r', Target: 'integrations/i', OperationName: 'o' }],
+    [
+      'AWS::ApiGatewayV2::Authorizer',
+      { ApiId: 'a', Name: 'n', AuthorizerType: 'REQUEST', AuthorizerUri: 'arn', AuthorizerResultTtlInSeconds: 300 },
+    ],
+    ['AWS::AppSync::GraphQLApi', { Name: 'n', AuthenticationType: 'API_KEY', XrayEnabled: true }],
+    ['AWS::S3Vectors::VectorBucket', { VectorBucketName: 'n', Tags: [{ Key: 'k', Value: 'v' }] }],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {
