@@ -58,7 +58,7 @@ cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, 
 cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
 cc-to-sdk-reroute-common-types-5	2026-11-17T06:22:39Z	PASS	240	verify.sh	rc ok, destroy 0 errors, orph clean; at 561a48018
 cc-to-sdk-reroute-common-types-6	2026-11-17T09:19:26Z	PASS	190	verify.sh	rc ok, orph clean (2 AgentCore runtime log groups swept by hand)
-cc-to-sdk-reroute-common-types-7	2026-11-17T11:44:51Z	PASS	141	verify.sh	rc ok, orph clean
+cc-to-sdk-reroute-common-types-7	2026-11-17T18:14:14Z	PASS	145	verify.sh	rc ok, orph clean, A/B vs 5dacb3645 155-175s
 cc-to-sdk-reroute-common-types-8	2026-11-17T13:07:41Z	PASS	200	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-hosted-zone	2026-11-02T17:29:26Z	PASS	177	verify.sh	PR #5662 c63dba225 rc ok, orph clean
@@ -127,7 +127,7 @@ docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0
 docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split head; rc ok, orph clean
 docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #6160
 drift-cc-read-only-props	2026-11-17T06:05:19Z	PASS	95	verify.sh	rc ok, orph clean
-drift-revert	2026-11-17T09:08:06Z	PASS	361	verify.sh	rc ok, orph clean (#6437 PR #6483)
+drift-revert	2026-11-17T18:14:14Z	PASS	386	verify.sh	rc ok, orph clean, pre-release check
 drift-revert-arrays	2026-11-17T06:34:15Z	PASS	206	verify.sh	rc ok, orph clean
 drift-revert-nested-write-only	2026-11-17T15:14:38Z	PASS	236	verify.sh	rc ok, orph clean, versions swept
 drift-revert-vpc	2026-11-17T09:08:06Z	PASS	391	verify.sh	rc ok, orph clean (#6437 PR #6483)
@@ -251,7 +251,7 @@ intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, 
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-06T21:04:05Z	PASS	211	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kms-encryption	2026-11-06T23:01:00Z	PASS	101	verify.sh	#5928 kms split head; rc ok, orph clean
-lambda	2026-11-17T09:08:06Z	PASS	115	verify.sh	rc ok, orph clean (#6437 PR #6483)
+lambda	2026-11-17T18:14:14Z	PASS	125	verify.sh	rc ok, orph clean, pre-release check
 lambda-alias-provisioned-concurrency	2026-11-17T09:08:06Z	PASS	265	verify.sh	rc ok, orph clean (#6437 PR #6483)
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
@@ -331,7 +331,7 @@ migrate-from-cfn	2026-11-17T16:51:17Z	PASS	371	run.sh	ALL CHECKS PASSED (small+l
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
 multi-region-same-stack	2026-11-04T08:31:11Z	PASS	37	standard	standard flow, us-west-2 + us-east-1 arms, both state keys coexisted, destroy 0 errors each, orph clean both regions
-multi-resource	2026-11-17T16:51:17Z	PASS	85	standard	rc ok, destroy 0 errors, orph clean (PR #6506 un-deprecate --region)
+multi-resource	2026-11-17T18:14:14Z	PASS	77	standard	deploy+destroy 0 errors, pre-release check
 multi-stack-deps	2026-11-17T09:08:06Z	PASS	105	standard	rc ok, orph clean (#6437 PR #6483)
 neptune-fix-forward-orphan	2026-11-06T18:41:33Z	PASS	2306	verify.sh	#5899 neptune split head; own bucket; rc ok, orph clean
 neptune-restore	2026-11-06T18:03:07Z	PASS	1800	verify.sh	#5899 neptune split head; rc ok, orph clean
