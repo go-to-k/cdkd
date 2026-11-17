@@ -153,12 +153,13 @@ if [ "$(jq -r --arg id "${SCHEDULE_ID}" '.resources[$id].observedProperties.Rota
 fi
 
 expect_no_pending() { # usage: expect_no_pending <phase label>
-  local pending
-  pending="$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --output json \
-    | jq '[.VersionIdsToStages // {} | to_entries[] | select(.value | index("AWSPENDING"))] | length')" || {
+  local described pending
+  if ! described="$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --output json)"; then
     echo "FAIL: $1: describe-secret failed" >&2
     return 1
-  }
+  fi
+  pending="$(jq '[.VersionIdsToStages // {} | to_entries[] | select(.value | index("AWSPENDING"))] | length' \
+    <<<"${described}")" || return 1
   if [ "${pending}" != "0" ]; then
     echo "FAIL: $1: the secret has an AWSPENDING version — a rotation was started" >&2
     exit 1
