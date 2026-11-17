@@ -444,12 +444,21 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         status = ep.Status;
       } catch (error) {
         if (error instanceof ProvisioningError) throw error;
-        throw this.wrapCaughtError(error, 'UPDATE (poll)', resourceType, logicalId, physicalId, mask);
+        throw this.wrapCaughtError(
+          error,
+          'UPDATE (poll)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
       }
       if (status === 'available') return;
       if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
         throw new ProvisioningError(
-          mask(`DBProxyEndpoint ${physicalId} entered terminal failure state after modify: ${status}`),
+          mask(
+            `DBProxyEndpoint ${physicalId} entered terminal failure state after modify: ${status}`
+          ),
           resourceType,
           logicalId,
           physicalId
