@@ -255,7 +255,9 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           }
           if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
             throw new ProvisioningError(
-              `DBProxyEndpoint ${dbProxyEndpointName} entered terminal failure state: ${status}`,
+              mask(
+                `DBProxyEndpoint ${dbProxyEndpointName} entered terminal failure state: ${status}`
+              ),
               resourceType,
               logicalId,
               dbProxyEndpointName
@@ -284,7 +286,9 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       }
       if (!endpoint || !arn) {
         throw new ProvisioningError(
-          `Timed out waiting for DBProxyEndpoint ${dbProxyEndpointName} to become available (last status: ${status ?? 'unknown'})`,
+          mask(
+            `Timed out waiting for DBProxyEndpoint ${dbProxyEndpointName} to become available (last status: ${status ?? 'unknown'})`
+          ),
           resourceType,
           logicalId,
           dbProxyEndpointName
