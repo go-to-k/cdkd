@@ -436,6 +436,7 @@
         "apigatewayv2-update-removal",
         "cc-api-fallback",
         "cc-api-fallback-transitions",
+        "cc-to-sdk-reroute-common-types-8",
         "drift-revert",
         "export",
         "local-aws-emulator",
@@ -462,6 +463,9 @@
         "cc-api-fallback-transitions": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1"
         ],
         "drift-revert": [
           "l1"
@@ -515,12 +519,17 @@
       "resourceType": "AWS::ApiGatewayV2::Authorizer",
       "integs": [
         "apigatewayv2-update-removal",
+        "cc-to-sdk-reroute-common-types-8",
         "local-start-api-user-pool-authorizer",
         "serverless-api"
       ],
       "signals": {
         "apigatewayv2-update-removal": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1",
+          "literal"
         ],
         "local-start-api-user-pool-authorizer": [
           "literal"
@@ -534,6 +543,7 @@
       "resourceType": "AWS::ApiGatewayV2::Integration",
       "integs": [
         "apigatewayv2-update-removal",
+        "cc-to-sdk-reroute-common-types-8",
         "export",
         "local-aws-emulator",
         "local-invoke-stage",
@@ -547,6 +557,10 @@
       "signals": {
         "apigatewayv2-update-removal": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1",
+          "literal"
         ],
         "export": [
           "l2",
@@ -584,6 +598,7 @@
       "resourceType": "AWS::ApiGatewayV2::Route",
       "integs": [
         "apigatewayv2-update-removal",
+        "cc-to-sdk-reroute-common-types-8",
         "export",
         "local-aws-emulator",
         "local-invoke-stage",
@@ -597,6 +612,10 @@
       "signals": {
         "apigatewayv2-update-removal": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1",
+          "literal"
         ],
         "export": [
           "l2"
@@ -633,6 +652,7 @@
       "resourceType": "AWS::ApiGatewayV2::Stage",
       "integs": [
         "apigatewayv2-update-removal",
+        "cc-to-sdk-reroute-common-types-8",
         "drift-revert",
         "export",
         "local-aws-emulator",
@@ -649,6 +669,10 @@
       "signals": {
         "apigatewayv2-update-removal": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1",
+          "literal"
         ],
         "drift-revert": [
           "l1"
@@ -748,6 +772,7 @@
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
         "appsync",
+        "cc-to-sdk-reroute-common-types-8",
         "getatt-appsync-s3express-s3tables",
         "getatt-cloudtrail-appsync",
         "import-migrate-appsync",
@@ -757,6 +782,10 @@
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1",
+          "literal"
         ],
         "getatt-appsync-s3express-s3tables": [
           "l1",
@@ -9019,12 +9048,17 @@
     {
       "resourceType": "AWS::S3Vectors::VectorBucket",
       "integs": [
+        "cc-to-sdk-reroute-common-types-8",
         "getatt-iam-waf-s3vectors-evaluator",
         "import-attribute-readback-final",
         "ref-shape-vector-namespace-attachment",
         "s3-vectors"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-8": [
+          "l1",
+          "literal"
+        ],
         "getatt-iam-waf-s3vectors-evaluator": [
           "literal"
         ],
