@@ -498,3 +498,15 @@ wafv2	2026-11-12T11:22:31Z	PASS	225	verify.sh	rc ok, orph clean; #6140 (us-east-
 wait-condition-handle	2026-11-04T06:31:22Z	PASS	45	verify.sh	rc ok, orph clean
 wide-independent	2026-11-05T11:50:13Z	PASS	1264	verify.sh	sweep n7 rc ok, orph clean
 wide-web-functions	2026-11-05T11:29:08Z	PASS	362	verify.sh	sweep n7 rc ok, orph clean
+eventbridge 160	2026-11-17T03:26:24Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at e7daeed3c (#6479)
+eventbridge-archive 81	2026-11-17T03:26:24Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at e7daeed3c (#6479)
+eventbus-policy 126	2026-11-17T03:26:24Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at e7daeed3c (#6479)
+getatt-asg-arn-rule-name 135	2026-11-17T03:26:24Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at e7daeed3c (#6479)
+sdk-ccapi-crossref 141	2026-11-17T03:26:24Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at e7daeed3c (#6479)
+appsync 235	2026-11-17T03:26:24Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at e7daeed3c (#6479)
+eventbridge 161	2026-11-17T03:42:27Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
+eventbridge-archive 90	2026-11-17T03:42:27Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
+eventbus-policy 120	2026-11-17T03:42:27Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
+getatt-asg-arn-rule-name 135	2026-11-17T03:42:27Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
+sdk-ccapi-crossref 141	2026-11-17T03:42:27Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
+appsync 240	2026-11-17T03:42:27Z	PASS		verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
