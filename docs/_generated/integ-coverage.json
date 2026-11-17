@@ -789,6 +789,7 @@
     {
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
+        "asg-destroy-running-instances",
         "drift-revert-vpc",
         "getatt-asg-arn-rule-name",
         "launchtemplate-asg-inplace",
@@ -796,6 +797,10 @@
         "remove-protection-compensation"
       ],
       "signals": {
+        "asg-destroy-running-instances": [
+          "l2",
+          "literal"
+        ],
         "drift-revert-vpc": [
           "l1",
           "literal"
@@ -1696,6 +1701,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -1787,6 +1793,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -2045,6 +2054,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -2130,6 +2140,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -2410,6 +2423,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -2498,6 +2512,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -2748,6 +2765,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -2838,6 +2856,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -3376,6 +3397,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -3476,6 +3498,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -3780,6 +3805,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -3865,6 +3891,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -4104,6 +4133,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -4211,6 +4241,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [
@@ -4538,6 +4571,7 @@
         "alb",
         "alb-advanced",
         "apigw-vpclink-integration-target",
+        "asg-destroy-running-instances",
         "batch",
         "bedrock-agentcore",
         "bench-cdk-sample",
@@ -4627,6 +4661,9 @@
           "l2"
         ],
         "apigw-vpclink-integration-target": [
+          "l2"
+        ],
+        "asg-destroy-running-instances": [
           "l2"
         ],
         "batch": [

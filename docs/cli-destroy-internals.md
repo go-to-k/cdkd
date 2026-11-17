@@ -142,7 +142,7 @@ steps are:
 | `AWS::EC2::Instance` | `ModifyInstanceAttribute(DisableApiTermination={Value:false})` |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | `ModifyLoadBalancerAttributes` setting `deletion_protection.enabled` to `false` |
 | `AWS::Cognito::UserPool` | `UpdateUserPool(DeletionProtection='INACTIVE')` |
-| `AWS::AutoScaling::AutoScalingGroup` | `UpdateAutoScalingGroup(DeletionProtection='none')`, the per-instance `DisableApiTermination` flip, then `DeleteAutoScalingGroup(ForceDelete=true)` |
+| `AWS::AutoScaling::AutoScalingGroup` | A check of the recorded ARN against the pre-flip `DescribeAutoScalingGroups` read (a mismatch refuses before any change), `UpdateAutoScalingGroup(DeletionProtection='none')`, the per-instance `DisableApiTermination` flip, then `DeleteAutoScalingGroup(ForceDelete=true)` |
 | `AWS::EMR::Cluster` | `SetTerminationProtection(TerminationProtected=false)`, then `TerminateJobFlows` |
 | `AWS::DSQL::Cluster`, `AWS::SMSVOICE::ProtectConfiguration` | Cloud Control `UpdateResource` patch of `DeletionProtectionEnabled` to `false`, waited, then `DeleteResource` |
 | `AWS::NeptuneGraph::Graph`, `AWS::EKS::Cluster`, `AWS::RDS::GlobalCluster`, `AWS::DocDB::GlobalCluster` | The same Cloud Control patch, of `DeletionProtection` to `false` |
