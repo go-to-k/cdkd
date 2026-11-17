@@ -1,6 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
+const { mockSend, watches } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  /** One entry per watch a poll started, counting its dispose() calls. */
+  watches: [] as { disposed: number }[],
+}));
+
+vi.mock('../../../src/provisioning/interrupt-watch.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/provisioning/interrupt-watch.js')>(
+    '../../../src/provisioning/interrupt-watch.js'
+  );
+  return {
+    ...actual,
+    startInterruptWatch: (what: string) => {
+      const watch = actual.startInterruptWatch(what);
+      const entry = { disposed: 0 };
+      watches.push(entry);
+      return {
+        ...watch,
+        dispose: () => {
+          entry.disposed++;
+          watch.dispose();
+        },
+      };
+    },
+  };
+});
 
 vi.mock('@aws-sdk/client-rds', async () => {
   const actual = await vi.importActual<typeof import('@aws-sdk/client-rds')>('@aws-sdk/client-rds');
@@ -134,6 +159,7 @@ describe('DBProxy / DBProxyEndpoint status polls stop on Ctrl-C and at the resou
 
   beforeEach(() => {
     mockSend.mockReset();
+    watches.length = 0;
     disarmInterruptWatchForTests();
     interruptWatchTestSeam.commandOwnsInterrupts = () => true;
     interruptWatchTestSeam.forceQuit = vi.fn();
@@ -169,8 +195,8 @@ describe('DBProxy / DBProxyEndpoint status polls stop on Ctrl-C and at the resou
           // go-to-k/cdkd#4583 / #2169: the created resource is still named.
           expect(createdBeforeFailure(error, logicalId, type)).toBe(physicalId);
         }
-        // The watch is disposed: no listener of ours is left behind.
-        expect(process.listeners('SIGINT').length).toBeLessThanOrEqual(baseline.length + 1);
+        // The poll's one watch is disposed.
+        expect(watches).toEqual([{ disposed: 1 }]);
       });
 
       it('throws its own timeout, after one read, when the resource deadline leaves no room', async () => {
@@ -196,6 +222,7 @@ describe('DBProxy / DBProxyEndpoint status polls stop on Ctrl-C and at the resou
           const [logicalId, type, physicalId] = site.marked();
           expect(createdBeforeFailure(error, logicalId, type)).toBe(physicalId);
         }
+        expect(watches).toEqual([{ disposed: 1 }]);
       });
     });
   }

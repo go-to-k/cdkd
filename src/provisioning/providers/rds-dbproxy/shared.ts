@@ -12,7 +12,8 @@ export const DEADLINE_MARGIN_MS = 30_000;
 
 /**
  * go-to-k/cdkd#6517: the pause between two reads of a DBProxy or
- * DBProxyEndpoint status poll (create, post-modify and delete waits alike).
+ * DBProxyEndpoint status poll (the create and post-modify waits; the delete
+ * waits are go-to-k/cdkd#6522).
  * Sleeps up to {@link POLL_INTERVAL_MS} in steps of at most a second,
  * throwing the watch's error as soon as Ctrl-C is seen. Answers `false`,
  * without sleeping, once the poll's own `deadline` or the enclosing resource
