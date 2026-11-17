@@ -12,6 +12,14 @@ the AWS resource is replaced: a bucket, table or database loses its data.
 `cdkd refactor` keeps the resource instead. It is cdkd's counterpart of
 `cdk refactor`.
 
+> [!IMPORTANT]
+> **Experimental.** `cdkd refactor` follows `cdk refactor`, its override file
+> format and its rename rules, and the AWS CDK CLI still marks that command
+> unstable, so cdkd changes with it. From v1.0.0, an experimental feature is
+> outside the [Compatibility Promise](public-contract.md#experimental-features):
+> a minor release can change or remove it, and the release notes call that
+> out.
+
 ```bash
 # show what would be renamed
 cdkd refactor --dry-run

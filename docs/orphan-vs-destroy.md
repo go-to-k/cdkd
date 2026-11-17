@@ -17,6 +17,15 @@ Destroy is how you tear a stack down. Orphan is for a resource you want to
 keep but no longer want cdkd to manage, such as a bucket whose data must
 outlive the stack. `cdkd orphan` mirrors `cdk orphan` in the AWS CDK CLI.
 
+> [!IMPORTANT]
+> **Experimental.** `cdkd orphan` mirrors `cdk orphan`, its options and its
+> `Stack/Construct` path syntax, and the AWS CDK CLI still marks that command
+> unstable, so cdkd changes with it. From v1.0.0, an experimental feature is
+> outside the [Compatibility Promise](public-contract.md#experimental-features):
+> a minor release can change or remove it, and the release notes call that
+> out. This covers `cdkd orphan` only, not the state-only
+> `cdkd state orphan`.
+
 ```text diagram=guide-orphan-vs-destroy
                  A deployed stack
              AWS resources + cdkd state

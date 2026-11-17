@@ -10,6 +10,14 @@ synthesizes the CDK app, builds any Docker images, uploads file assets to S3
 and pushes images to ECR. Use it when one CI job builds and uploads the assets
 and a separate job deploys.
 
+> [!IMPORTANT]
+> **Experimental.** `cdkd publish-assets` follows `cdk publish-assets` in its
+> name, its stack selection and the meaning of `--all`, and the AWS CDK CLI
+> still marks that command unstable, so cdkd changes with it. From v1.0.0, an
+> experimental feature is outside the
+> [Compatibility Promise](public-contract.md#experimental-features): a minor
+> release can change or remove it, and the release notes call that out.
+
 ```bash
 # the only stack in the app
 cdkd publish-assets

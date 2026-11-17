@@ -35,7 +35,8 @@ describe the intended behaviour, and the fix brings cdkd back to it.
 ### Commands and flags
 
 Every command and flag listed in the [CLI Reference](cli-reference.md) is
-covered: its name, its arguments, and its default value. A minor release does
+covered, except those in [Experimental features](#experimental-features): its
+name, its arguments, and its default value. A minor release does
 not remove or rename one, and does not change what an existing flag does or
 defaults to.
 
@@ -119,7 +120,6 @@ These environment variables are covered:
 | `CDKD_APP` | [Options every command takes](cli-reference.md#options-every-command-takes) |
 | `CDKD_STATE_BUCKET` | [Which bucket cdkd uses](state-management.md#which-bucket-cdkd-uses) |
 | `CDKD_ROLE_ARN` | [`--role-arn`](cli-reference.md#role-arn) |
-| `CDKD_AWS_EMULATOR` | [Develop Locally with AWS Emulator](aws-emulator.md#cdkd-aws-emulator) |
 | `CDKD_PREFIX_USER_SUPPLIED_NAMES` | [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names) |
 | `CDKD_NO_PREFIX_USER_SUPPLIED_NAMES` (deprecated) | [`--prefix-user-supplied-names`](cli-deploy-tuning.md#prefix-user-supplied-names) |
 | `CDKD_NO_LIVE` | [Troubleshooting](troubleshooting.md) |
@@ -185,8 +185,17 @@ behave differently, and the result is not covered by this page.
 
 From v1.0.0, a feature that these docs explicitly mark as experimental is
 outside this promise. A minor release can change or remove it, and the
-release notes call that out. These docs currently mark no command or feature
-as experimental.
+release notes call that out. These are marked experimental:
+
+| Feature | Page |
+| --- | --- |
+| The AWS Emulator target: `--aws-emulator`, `CDKD_AWS_EMULATOR` and mixed mode | [Develop Locally with AWS Emulator](aws-emulator.md) |
+| `cdkd refactor` | [`cdkd refactor`](cli-refactor.md) |
+| `cdkd orphan` | [Orphan Instead of Destroy](orphan-vs-destroy.md) |
+| `cdkd publish-assets` | [`cdkd publish-assets`](cli-publish-assets.md) |
+
+`cdkd refactor`, `cdkd orphan` and `cdkd publish-assets` follow AWS CDK CLI
+commands that the CDK CLI still marks unstable, so cdkd changes with them.
 
 ## Deprecation
 
