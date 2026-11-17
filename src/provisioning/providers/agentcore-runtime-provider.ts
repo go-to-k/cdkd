@@ -467,7 +467,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
               `${error.message}${survivor}`,
               resourceType,
               logicalId,
-              createdRuntimeId,
+              undefined,
               error
             )
           : error;
@@ -488,7 +488,10 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       if (createdRuntimeId !== undefined) {
         if (survivor === '') {
           // Retired: nothing is left for the failed-CREATE journal to name.
+          // Still terminal: the delete returned while the runtime may be
+          // DELETING, and a replayed create under the same name would meet it.
           retractCreatedResource(logicalId, resourceType, createdRuntimeId);
+          markNonRetryable(thrown);
         } else {
           // The runtime survives (the delete failed, or an interrupt skipped
           // it) with no state record: name it for the failed-CREATE journal

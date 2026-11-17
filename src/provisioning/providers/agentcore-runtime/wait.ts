@@ -192,9 +192,11 @@ export async function waitForRuntimeSettledBeforeDelete(
  * would collide with it. CloudFormation's CREATE_FAILED rollback deletes it
  * too.
  *
- * Safe: `agentRuntimeId` is the id AWS minted in THIS call's
- * `CreateAgentRuntime` response, so the delete can reach no other runtime,
- * and nothing references an id no state records.
+ * Safe: `agentRuntimeId` is the id THIS call's `CreateAgentRuntime`
+ * response named, and nothing references an id no state records. That is the
+ * runtime this call created, or, under a template-declared `ClientToken`, the
+ * same runtime an earlier idempotent call with that token created: never
+ * another one.
  *
  * Returns `''` when the runtime is gone (a not-found counts), or a sentence
  * naming the survivor and the command that retires it, for the caller to

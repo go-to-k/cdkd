@@ -44,6 +44,10 @@ import {
 } from '../../../src/provisioning/providers/agentcore-runtime/wait.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  InterruptedWaitError,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const TYPE = 'AWS::BedrockAgentCore::Runtime';
 const ID = 'rt_one-AbCdEf1234';
@@ -262,6 +266,42 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
       expect((error as Error).message).not.toContain('could not be deleted');
       expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
+    });
+
+    it('deletes nothing on an interrupt, leaving the journaled runtime to cdkd rollback', async () => {
+      answer(['CREATING']);
+      const interrupted = new InterruptedWaitError('BedrockAgentCore Runtime Rt create wait');
+      (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {
+        throw interrupted;
+      };
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      expect(sent()).not.toContain('DeleteAgentRuntimeCommand');
+      expect(isInterruptedWaitError(error)).toBe(true);
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+    });
+
+    it('fails non-retryably once the runtime is retired, since it may still be DELETING', async () => {
+      const tagFailure = Object.assign(new Error('nope'), { name: 'ValidationException', $metadata: {} });
+      mockSend.mockImplementation(async (cmd: object) => {
+        switch (cmd.constructor.name) {
+          case 'CreateAgentRuntimeCommand':
+            return { agentRuntimeId: ID, agentRuntimeArn: ARN, status: 'CREATING' };
+          case 'GetAgentRuntimeCommand':
+            return { status: 'READY' };
+          case 'ListTagsForResourceCommand':
+            return { tags: {} };
+          case 'TagResourceCommand':
+            throw tagFailure;
+          default:
+            return { status: 'DELETING' };
+        }
+      });
+      const error = await provider
+        .create('Rt', TYPE, { ...PROPS, Tags: { A: '1' } })
+        .catch((e: unknown) => e);
+      expect(sent().at(-1)).toBe('DeleteAgentRuntimeCommand');
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
+      expect(isMarkedNonRetryable(error)).toBe(true);
     });
 
     it('deletes nothing when CreateAgentRuntime itself fails', async () => {
