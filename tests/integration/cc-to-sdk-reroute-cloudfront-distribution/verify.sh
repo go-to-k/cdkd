@@ -207,9 +207,11 @@ assert_refs "phase 1"
 echo "    OK: created on the SDK route (${W0})"
 
 echo "==> Phase 2: force the distribution onto Cloud Control (--recreate-via-cc-api)"
+# CloudFront::Distribution is in STATEFUL_TYPES, so cdkd refuses to recreate it
+# without --force-stateful-recreation. It holds no data here.
 env CDKD_TEST_PHASE=seed \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --recreate-via-cc-api "${ID_SUBJECT}" --yes
+    --recreate-via-cc-api "${ID_SUBJECT}" --force-stateful-recreation --yes
 load_state
 # Without this every assertion below would be vacuous.
 assert_layer "phase 2 (after --recreate-via-cc-api)" cc-api
