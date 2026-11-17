@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DBProxyEndpointNotFoundFault, DBProxyNotFoundFault } from '@aws-sdk/client-rds';
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
@@ -224,7 +224,9 @@ describe('RDSDBProxyEndpointProvider', () => {
     });
 
     it('issues ModifyDBProxyEndpoint when VpcSecurityGroupIds change', async () => {
-      mockSend.mockResolvedValueOnce({ DBProxyEndpoint: {} });
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: {} })
+        .mockResolvedValueOnce({ DBProxyEndpoints: [{ Status: 'available' }] });
       await provider.update(
         'EP',
         EP_NAME,
@@ -316,6 +318,109 @@ describe('RDSDBProxyEndpointProvider', () => {
     });
   });
 
+  // ModifyDBProxyEndpoint returns while the endpoint is `modifying` (measured
+  // us-east-1, 2026-11-18), and Cloud Control's update handler returns only
+  // once it is `available` again, so update() waits as create() does: a record
+  // moved from Cloud Control to this provider keeps the wait (go-to-k/cdkd#6490).
+  describe('update waits for available after ModifyDBProxyEndpoint', () => {
+    const statusDescribe = (Status: string) => ({
+      DBProxyEndpoints: [{ DBProxyEndpointName: EP_NAME, DBProxyEndpointArn: EP_ARN, Status }],
+    });
+    const modifyGroups = () =>
+      provider.update(
+        'EP',
+        EP_NAME,
+        RESOURCE_TYPE,
+        { VpcSecurityGroupIds: ['sg-new'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('returns only once DescribeDBProxyEndpoints reports available', async () => {
+      vi.useFakeTimers();
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: {} }) // ModifyDBProxyEndpoint
+        .mockResolvedValueOnce(statusDescribe('modifying'))
+        .mockResolvedValueOnce(statusDescribe('modifying'))
+        .mockResolvedValueOnce(statusDescribe('available'));
+      let settled = false;
+      const done = modifyGroups().then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5000);
+      await done;
+
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names).toEqual([
+        'ModifyDBProxyEndpointCommand',
+        'DescribeDBProxyEndpointsCommand',
+        'DescribeDBProxyEndpointsCommand',
+        'DescribeDBProxyEndpointsCommand',
+      ]);
+      expect(mockSend.mock.calls[1]![0].input).toEqual({ DBProxyEndpointName: EP_NAME });
+    });
+
+    it('fails on a terminal state instead of waiting it out', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: {} })
+        .mockResolvedValueOnce(statusDescribe('incompatible-network'));
+      await expect(modifyGroups()).rejects.toThrow(
+        /terminal failure state after modify: incompatible-network/
+      );
+    });
+
+    it('fails once the deadline passes with the endpoint still modifying', async () => {
+      vi.useFakeTimers();
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: {} })
+        .mockResolvedValue(statusDescribe('modifying'));
+      const result = modifyGroups().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 5000);
+      const error = await result;
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toContain(
+        'to become available after modify (last status: modifying)'
+      );
+    });
+
+    it('fails at once when the poll finds no endpoint, as DBProxyEndpointNotFoundFault does', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: {} })
+        .mockResolvedValueOnce({ DBProxyEndpoints: [] });
+      await expect(modifyGroups()).rejects.toThrow(
+        /was not found while waiting for it after modify/
+      );
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('wraps a failed poll call as an UPDATE (poll) failure', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: {} })
+        .mockRejectedValueOnce(new Error('throttled'));
+      await expect(modifyGroups()).rejects.toThrow(/UPDATE \(poll\) failed for EP/);
+    });
+
+    it('does not poll when the security groups are unchanged', async () => {
+      await provider.update(
+        'EP',
+        EP_NAME,
+        RESOURCE_TYPE,
+        { VpcSecurityGroupIds: ['sg-old'] },
+        { VpcSecurityGroupIds: ['sg-old'] }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
   describe('drift --revert round-trip', () => {
     it('identical readCurrentState shape on both sides → no SDK call', async () => {
       const observed = {
@@ -340,7 +445,9 @@ describe('RDSDBProxyEndpointProvider', () => {
         TargetRole: 'READ_ONLY',
       };
       const awsCurrent = { ...observed, VpcSecurityGroupIds: ['sg-hijacked'] };
-      mockSend.mockResolvedValueOnce({});
+      mockSend
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ DBProxyEndpoints: [{ Status: 'available' }] });
       await provider.update('EP', EP_NAME, RESOURCE_TYPE, observed, awsCurrent);
       expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyEndpointCommand');
       expect(mockSend.mock.calls[0]![0].input.VpcSecurityGroupIds).toEqual(['sg-aaa']);

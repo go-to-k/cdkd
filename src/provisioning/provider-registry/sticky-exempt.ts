@@ -990,4 +990,48 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       ccIdentityAttribute: 'RepositoryId',
     },
   ],
+  [
+    'AWS::CloudFront::Distribution',
+    {
+      // Batch 11 (go-to-k/cdkd#6490), admitted with the two RDS proxy types
+      // below for the SDK path's speed. CloudFront mints the Id, so a recreate
+      // changes it and the flip keeps it: the identity witness.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare distribution Id: the schema primaryIdentifier is Id ' +
+        '(measured us-east-1, 2026-11-18) and the CloudFront Distribution provider records ' +
+        'the CreateDistribution Id',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-cloudfront-distribution',
+    },
+  ],
+  [
+    'AWS::RDS::DBProxy',
+    {
+      // Batch 11 (go-to-k/cdkd#6490). A proxy keeps its name across a
+      // recreate, so the fixture witnesses it by the `prx-...` resource id RDS
+      // mints into its ARN.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the proxy name: the schema primaryIdentifier is DBProxyName ' +
+        '(measured us-east-1, 2026-11-18) and the RDS DBProxy provider records the ' +
+        'CreateDBProxy DBProxyName',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-11',
+    },
+  ],
+  [
+    'AWS::RDS::DBProxyEndpoint',
+    {
+      // Batch 11 (go-to-k/cdkd#6490). Witnessed like the proxy, by the
+      // `prx-endpoint-...` resource id in its ARN.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the endpoint name: the schema primaryIdentifier is ' +
+        'DBProxyEndpointName (measured us-east-1, 2026-11-18) and the RDS DBProxyEndpoint ' +
+        'provider records the CreateDBProxyEndpoint DBProxyEndpointName',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-11',
+    },
+  ],
 ]);

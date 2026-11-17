@@ -82,7 +82,8 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  *   `attributes`.
  * - `update`: `ModifyDBProxyEndpointCommand` for the mutable fields
  *   (`VpcSecurityGroupIds` → SDK input `VpcSecurityGroupIds`,
- *   `NewDBProxyEndpointName` via rename). Tags diff via separate
+ *   `NewDBProxyEndpointName` via rename), then polls until `Status ===
+ *   'available'` again, as create does. Tags diff via separate
  *   `AddTagsToResource` / `RemoveTagsFromResource` calls. DBProxyName /
  *   VpcSubnetIds / TargetRole / EndpointNetworkType are immutable on AWS
  *   (`EndpointNetworkType` is create-only in the CFn schema and
@@ -384,6 +385,11 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       } catch (error) {
         throw this.wrapCaughtError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
       }
+      // ModifyDBProxyEndpoint returns while the endpoint is `modifying`. Wait
+      // for `available`, as create() does and as Cloud Control's update
+      // handler does (go-to-k/cdkd#6490): the next modify, or a delete, is
+      // refused while it is still `modifying`.
+      await this.waitForAvailableAfterModify(physicalId, resourceType, logicalId, mask);
     }
 
     // Invalidate attribute cache BEFORE applyTagDiff so the ARN warm-up
@@ -402,6 +408,63 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     );
 
     return { physicalId, wasReplaced: false };
+  }
+
+  /**
+   * Polls `DescribeDBProxyEndpoints` until the endpoint reports `available`
+   * after a `ModifyDBProxyEndpoint`, bounded by the same deadline as create().
+   * A missing endpoint, a terminal failure state or the deadline is a
+   * `ProvisioningError`. The DBProxy provider's update waits the same way.
+   */
+  private async waitForAvailableAfterModify(
+    physicalId: string,
+    resourceType: string,
+    logicalId: string,
+    mask: MaskerFn
+  ): Promise<void> {
+    const client = this.getClient();
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let status: string | undefined;
+    while (Date.now() < deadline) {
+      try {
+        const describe = await client.send(
+          new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
+        );
+        const ep = describe.DBProxyEndpoints?.[0];
+        // No endpoint is the answer DBProxyEndpointNotFoundFault gives: fail
+        // now instead of waiting out the deadline.
+        if (!ep) {
+          throw new ProvisioningError(
+            mask(`DBProxyEndpoint ${physicalId} was not found while waiting for it after modify`),
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        status = ep.Status;
+      } catch (error) {
+        if (error instanceof ProvisioningError) throw error;
+        throw this.wrapCaughtError(error, 'UPDATE (poll)', resourceType, logicalId, physicalId, mask);
+      }
+      if (status === 'available') return;
+      if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
+        throw new ProvisioningError(
+          mask(`DBProxyEndpoint ${physicalId} entered terminal failure state after modify: ${status}`),
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    throw new ProvisioningError(
+      mask(
+        `Timed out waiting for DBProxyEndpoint ${physicalId} to become available after modify (last status: ${status ?? 'unknown'})`
+      ),
+      resourceType,
+      logicalId,
+      physicalId
+    );
   }
 
   async delete(

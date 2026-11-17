@@ -1116,6 +1116,7 @@
       "resourceType": "AWS::CloudFront::Distribution",
       "integs": [
         "bench-cdk-sample",
+        "cc-to-sdk-reroute-cloudfront-distribution",
         "cloudfront-function-url",
         "local-engine-role-identity",
         "local-start-cloudfront",
@@ -1125,6 +1126,10 @@
       "signals": {
         "bench-cdk-sample": [
           "l2"
+        ],
+        "cc-to-sdk-reroute-cloudfront-distribution": [
+          "l1",
+          "literal"
         ],
         "cloudfront-function-url": [
           "l2"
@@ -1783,6 +1788,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
@@ -1892,6 +1898,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
           "l2"
         ],
         "cc-to-sdk-reroute-common-types-2": [
@@ -2140,6 +2149,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -2243,6 +2253,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
           "l2"
         ],
         "cc-to-sdk-reroute-ecs-service": [
@@ -2513,6 +2526,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -2619,6 +2633,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
           "l2"
         ],
         "cc-to-sdk-reroute-ecs-service": [
@@ -2860,6 +2877,7 @@
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -2972,6 +2990,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
+          "l2"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -3209,6 +3230,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -3283,6 +3305,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
+          "l2"
         ],
         "cc-to-sdk-reroute-ecs-service": [
           "l2"
@@ -3495,6 +3520,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-common-types-4",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
@@ -3614,6 +3640,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
           "l2"
         ],
         "cc-to-sdk-reroute-common-types-4": [
@@ -3911,6 +3940,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -4014,6 +4044,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
           "l2"
         ],
         "cc-to-sdk-reroute-ecs-service": [
@@ -4244,6 +4277,7 @@
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-common-types-4",
         "cc-to-sdk-reroute-common-types-5",
@@ -4374,6 +4408,9 @@
         ],
         "cc-to-sdk-reroute-common-types": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
+          "l2"
         ],
         "cc-to-sdk-reroute-common-types-2": [
           "l1",
@@ -4693,6 +4730,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
@@ -4800,6 +4838,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
           "l2"
         ],
         "cc-to-sdk-reroute-ecs-service": [
@@ -6326,6 +6367,7 @@
         "cc-getatt-readback",
         "cc-protection-flip-eks",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-common-types-3",
         "cc-to-sdk-reroute-common-types-4",
@@ -6482,6 +6524,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
+          "l2"
         ],
         "cc-to-sdk-reroute-common-types-2": [
           "l1"
@@ -8492,11 +8537,28 @@
       }
     },
     {
+      "resourceType": "AWS::RDS::DBProxy",
+      "integs": [
+        "cc-to-sdk-reroute-common-types-11"
+      ],
+      "signals": {
+        "cc-to-sdk-reroute-common-types-11": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::RDS::DBProxyEndpoint",
       "integs": [
+        "cc-to-sdk-reroute-common-types-11",
         "rds-aurora"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-11": [
+          "l1",
+          "literal"
+        ],
         "rds-aurora": [
           "literal"
         ]
@@ -10509,6 +10571,7 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute-common-types",
+        "cc-to-sdk-reroute-common-types-11",
         "composite-stack",
         "cross-stack-secret-import",
         "drift-revert-nested-write-only",
@@ -10540,6 +10603,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-11": [
+          "l2"
         ],
         "composite-stack": [
           "l2",
@@ -10799,10 +10865,6 @@
   ],
   "orphans": [],
   "allowListed": [
-    {
-      "resourceType": "AWS::RDS::DBProxy",
-      "rationale": "rds-aurora provisions it through the L2 rds.DatabaseProxy, whose type name never appears literally in the fixture, so the literal scan cannot credit it."
-    },
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",
       "rationale": "see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945)."

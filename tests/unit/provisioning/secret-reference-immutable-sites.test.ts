@@ -907,7 +907,8 @@ describe('the log lines a secret-derived name newly reaches are masked (go-to-k/
       site: 'RDS DBProxyEndpoint DBProxyEndpointName',
       answers: {
         ModifyDBProxyEndpointCommand: () => ({}),
-        DescribeDBProxyEndpointsCommand: () => ({}),
+        // update() polls for `available` after the modify (go-to-k/cdkd#6490).
+        DescribeDBProxyEndpointsCommand: () => ({ DBProxyEndpoints: [{ Status: 'available' }] }),
       },
       pinned: [`Updating DBProxyEndpoint ${SECRET_MASK} security groups`],
     },
@@ -1644,7 +1645,8 @@ describe('value masks catch a name below the substring floor on every value-mask
       site: 'RDS DBProxyEndpoint DBProxyEndpointName',
       answers: {
         ModifyDBProxyEndpointCommand: () => ({}),
-        DescribeDBProxyEndpointsCommand: () => ({}),
+        // update() polls for `available` after the modify (go-to-k/cdkd#6490).
+        DescribeDBProxyEndpointsCommand: () => ({ DBProxyEndpoints: [{ Status: 'available' }] }),
       },
       pinned: `Updating DBProxyEndpoint ${SECRET_MASK} security groups`,
     },
