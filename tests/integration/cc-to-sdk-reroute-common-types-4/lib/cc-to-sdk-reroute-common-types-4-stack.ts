@@ -40,7 +40,8 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const value = VALUE_BY_PHASE[process.env.CDKD_TEST_PHASE ?? 'base'] ?? 'a';
+    const phaseName = process.env.CDKD_TEST_PHASE ?? 'base';
+    const value = VALUE_BY_PHASE[phaseName] ?? 'a';
     const phase = `phase-${value}`;
     const fixed = (resource: cdk.CfnResource, logicalId: string): void => {
       resource.overrideLogicalId(logicalId);
@@ -83,7 +84,11 @@ export class CcToSdkRerouteCommonTypes4Stack extends cdk.Stack {
       new servicediscovery.CfnService(this, 'DiscoveryService', {
         name: 'reroute',
         namespaceId: hostNamespace.attrId,
-        description: phase,
+        // Cloud Control's update of this type reports SUCCESS but does not
+        // apply a Description change (measured us-east-1, 2026-11-17), so the
+        // pinned phase leaves `phase-b` live. `flip` therefore declares a
+        // third value, or the SDK update would be invisible against it.
+        description: phaseName === 'flip' ? 'phase-c' : phase,
       }),
       'RerouteDiscoveryService'
     );

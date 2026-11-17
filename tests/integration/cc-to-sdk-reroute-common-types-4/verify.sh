@@ -83,6 +83,15 @@ output() { # usage: output <OutputKey>
 # What the template declares for a resource in a phase whose value is <a|b>.
 expected() { # usage: expected <logicalId> <a|b>
   case "$1" in
+    # Cloud Control's update of this type reports SUCCESS without applying a
+    # Description change (measured us-east-1, 2026-11-17): the pinned phase
+    # keeps seed's value live, and flip declares `phase-c` (see the stack).
+    RerouteDiscoveryService)
+      case "${CURRENT_PHASE}" in
+        pinned) printf 'phase-b' ;;
+        flip) printf 'phase-c' ;;
+        *) printf 'phase-%s' "$2" ;;
+      esac ;;
     RerouteLoadBalancer) [ "$2" = a ] && printf '60' || printf '61' ;;
     *) printf 'phase-%s' "$2" ;;
   esac
@@ -129,6 +138,9 @@ witness() { # usage: witness <logicalId> <physicalId>
     *) printf '%s' "$2" ;;
   esac
 }
+
+# Which phase assert_live_values is checking; expected() reads it.
+CURRENT_PHASE=""
 
 # The id form BOTH layers must record. Phase 1 checks it on the SDK provider's
 # record and phase 2 on Cloud Control's, so a type whose layers disagree (an
@@ -230,6 +242,7 @@ for i in "${!SUBJECTS[@]}"; do
   W0[$i]=$(witness "${id}" "${P0[$i]}")
   [ -n "${W0[$i]}" ] && [ "${W0[$i]}" != "None" ] || { echo "FAIL: no identity witness for ${id}" >&2; exit 1; }
 done
+CURRENT_PHASE=base
 assert_live_values "phase 1 (SDK create)" a
 echo "    OK: all ${#SUBJECTS[@]} created on the SDK route"
 
@@ -254,6 +267,7 @@ for i in "${!SUBJECTS[@]}"; do
     exit 1
   }
 done
+CURRENT_PHASE=seed
 assert_live_values "phase 2 (CC recreate)" b
 echo "    OK: all ${#SUBJECTS[@]} pinned to Cloud Control with fresh witnesses"
 
@@ -294,6 +308,7 @@ for i in "${!SUBJECTS[@]}"; do
   }
 done
 # Without this, "still cc-api" is equally explained by a NO_CHANGE deploy.
+CURRENT_PHASE=pinned
 assert_live_values "phase 4 (CC update)" a
 echo "    OK: all ${#SUBJECTS[@]} still on Cloud Control, updates applied via CC"
 
@@ -316,6 +331,7 @@ for i in "${!SUBJECTS[@]}"; do
   }
 done
 # The update reached AWS through the id Cloud Control recorded.
+CURRENT_PHASE=flip
 assert_live_values "phase 5 (SDK update)" b
 echo "    OK: same ids and witnesses, all ${#SUBJECTS[@]} records flipped to sdk, updates applied in place"
 
