@@ -13,9 +13,24 @@ import {
   finalSnapshotDelays,
   finalSnapshotFailure,
   finalSnapshotWaitStopped,
+  startedAtOrAfter,
   type InfoLogger,
   type PreDeleteSnapshotOptions,
 } from './shared.js';
+
+/**
+ * go-to-k/cdkd#6473: how far past the attempt start (local clock) a completed
+ * snapshot's `StartTime` (AWS's clock) must lie before it is reused. With the
+ * local clock behind AWS's, an earlier failed attempt's snapshot, which an
+ * incremental EBS snapshot can complete within seconds, would otherwise read
+ * as started during this attempt. The margin loses nothing: every caller takes
+ * its attempt start right before its single reuse probe, and none probes again
+ * after its own `CreateSnapshot`, so a completed snapshot of THIS attempt
+ * cannot exist at probe time. Only the attempt-start bound takes it; a
+ * recorded `reuseStartedAtOrAfter` (`supersededAt`) is compared as is. It
+ * holds for a skew under 5 minutes; a local clock further behind reopens it.
+ */
+export const ATTEMPT_START_SKEW_MARGIN_MS = 5 * 60 * 1_000;
 
 function isVolumeNotFound(error: unknown): boolean {
   const name = error instanceof Error ? error.name : '';
@@ -27,15 +42,20 @@ function isVolumeNotFound(error: unknown): boolean {
  * until it completes, mirroring CloudFormation's observable behavior — CFn
  * deletes the volume only after the final snapshot is done.
  *
- * Idempotent across destroy re-runs: an existing pending/completed snapshot
- * carrying the `cdkd:final-snapshot-of: <volumeId>` tag is reused instead of
- * creating a second one. Reusing a `completed` snapshot is safe HERE (and
- * only here) because an EBS volume id is AWS-generated and never reused, so
- * the tag can only ever point at THIS volume's data — unlike the name-keyed
- * Redshift / ElastiCache APIs, whose user-chosen ids repeat across
- * generations and therefore only resume an in-flight snapshot (see
+ * Idempotent across destroy re-runs: an in-flight (`pending`) snapshot
+ * carrying the `cdkd:final-snapshot-of: <volumeId>` tag is resumed instead of
+ * creating a second one, whatever its age: it is at most one snapshot's
+ * duration old, as the Redshift / ElastiCache helpers' in-flight rule. A
+ * `completed` one is reused only when it started at or after this delete
+ * attempt's start plus {@link ATTEMPT_START_SKEW_MARGIN_MS}
+ * (`attemptStartedAt`, go-to-k/cdkd#6473): one from an older
+ * attempt whose delete failed predates the writes the volume took since.
+ * Reusing a `completed` snapshot at all is safe HERE (and only here) because
+ * an EBS volume id is AWS-generated and never reused, so the tag can only
+ * ever point at THIS volume's data — unlike the name-keyed Redshift /
+ * ElastiCache APIs, whose user-chosen ids repeat across generations (see
  * `RESUMABLE_SNAPSHOT_STATUS`). A caller deleting a replaced resource's old
- * copy bounds the reuse to a snapshot started for that delete
+ * copy bounds both to a snapshot started for that delete
  * (`reuseStartedAtOrAfter`, go-to-k/cdkd#6463).
  *
  * @returns the snapshot id, or `null` when the volume no longer exists
@@ -55,19 +75,23 @@ export async function createEbsFinalSnapshot(
         OwnerIds: ['self'],
         Filters: [
           { Name: `tag:${EBS_FINAL_SNAPSHOT_TAG_KEY}`, Values: [volumeId] },
+          // go-to-k/cdkd#6473: a snapshot of ANOTHER volume carrying the tag
+          // (a hand-applied or copied tag) never stands in for this one.
+          { Name: 'volume-id', Values: [volumeId] },
           { Name: 'status', Values: ['pending', 'completed'] },
         ],
       })
     );
     // go-to-k/cdkd#6463: under a bound, only a snapshot AWS started for this
     // delete stands in; an older one predates writes the volume took since.
+    // go-to-k/cdkd#6473: without one, an in-flight snapshot is resumed
+    // whatever its age, and a completed one only when AWS dates it past the
+    // attempt start plus the skew margin.
     const bound = options.reuseStartedAtOrAfter;
-    snapshotId = (
-      bound === undefined
-        ? existing.Snapshots?.[0]
-        : existing.Snapshots?.find(
-            (s) => s.StartTime !== undefined && new Date(s.StartTime).getTime() >= bound
-          )
+    const completedBound =
+      bound ?? (options.attemptStartedAt ?? Date.now()) + ATTEMPT_START_SKEW_MARGIN_MS;
+    snapshotId = existing.Snapshots?.find((s) =>
+      startedAtOrAfter(s.StartTime, s.State === 'pending' ? bound : completedBound)
     )?.SnapshotId;
     if (snapshotId) {
       logger.debug(
@@ -149,7 +173,7 @@ export async function createEbsFinalSnapshot(
         const head = `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId})`;
         throw finalSnapshotFailure(
           `${head}: ${failureSentence(logger, head, pollError)} The volume was NOT deleted; ` +
-            `re-run the destroy (the snapshot is reused, not duplicated).`,
+            `re-run the destroy (a snapshot still in progress is resumed, not duplicated).`,
           pollError
         );
       }
@@ -169,7 +193,8 @@ export async function createEbsFinalSnapshot(
       throw new CdkdError(
         `Timed out waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId}) to ` +
           `complete. The volume was NOT deleted; the snapshot continues in AWS — re-run the ` +
-          `destroy once it completes (the existing snapshot is reused, not duplicated).`,
+          `destroy (a snapshot still in progress is resumed; once completed, the re-run ` +
+          `takes a fresh one, which holds any writes since).`,
         'FINAL_SNAPSHOT_TIMEOUT'
       );
     }

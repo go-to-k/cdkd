@@ -149,19 +149,48 @@ export interface PreDeleteSnapshotOptions {
    */
   refuseUnsnapshottableState?: boolean;
   /**
-   * Reuse an existing EBS snapshot of the volume only when AWS started it at
-   * or after this time (Unix milliseconds): one taken for THIS delete, by an
-   * interrupted earlier attempt. Unset reuses any, as before. A completed
-   * snapshot from an older attempt whose delete failed (the volume stayed in
-   * use) would otherwise stand in for one, and the writes since be lost.
+   * Reuse an existing snapshot only when AWS started it at or after this time
+   * (Unix milliseconds), in flight or, for an EBS volume, completed: one taken
+   * for THIS delete, by an interrupted earlier attempt. Set by the deletes of
+   * a replaced resource's old copy, which know when their delete began (the
+   * entry's `supersededAt`). It wins over {@link attemptStartedAt}.
    */
   reuseStartedAtOrAfter?: number;
   /**
+   * When this delete attempt started (Unix milliseconds), for a caller that
+   * knows no earlier bound (go-to-k/cdkd#6473). Without
+   * {@link reuseStartedAtOrAfter}, an EBS volume's in-flight snapshot is
+   * resumed whatever its age (at most one snapshot's duration old, so a
+   * re-run destroy resumes its own), while a completed one is reused only
+   * when it started at or after this time plus the EBS probe's skew margin: a completed snapshot from an older
+   * attempt whose delete failed (the volume stayed in use) predates the writes
+   * since. The EBS probe adds a clock-skew margin to it
+   * (`ATTEMPT_START_SKEW_MARGIN_MS`), and each caller takes it right before
+   * its one snapshot call, so in practice no completed snapshot is reused
+   * there. Unset, the call's own start stands in.
+   */
+  attemptStartedAt?: number;
+  /**
    * Checked before each wait poll: once it answers `true` the wait stops
    * with a `FINAL_SNAPSHOT_FAILED` refusal, so the delete is not sent. The
-   * snapshot itself continues in AWS, and the next attempt resumes it.
+   * snapshot itself continues in AWS, and the next attempt resumes it while
+   * it is in progress.
    */
   stop?: () => boolean;
+}
+
+/**
+ * go-to-k/cdkd#6463: whether an existing snapshot may be reused under a reuse
+ * bound. With a bound, one whose start time AWS does not report is not
+ * reused: the create that follows takes a fresh one, or is refused while the
+ * other runs, and the delete waits for a later attempt.
+ */
+export function startedAtOrAfter(
+  started: Date | string | undefined,
+  bound: number | undefined
+): boolean {
+  if (bound === undefined) return true;
+  return started !== undefined && new Date(started).getTime() >= bound;
 }
 
 /** The refusal a stopped pre-delete snapshot wait throws. */
@@ -174,7 +203,7 @@ export function finalSnapshotWaitStopped(
   return new CdkdError(
     safeMsg`Stopped waiting for final snapshot ${snapshotId} of ${logicalId} (${sourceId}): ` +
       `the run was interrupted. The ${noun} was NOT deleted; the snapshot continues in AWS ` +
-      `and the next attempt resumes it.`,
+      `and the next attempt resumes it while it is in progress.`,
     'FINAL_SNAPSHOT_FAILED'
   );
 }

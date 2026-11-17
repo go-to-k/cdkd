@@ -23,9 +23,13 @@ policy on the cheapest Snapshot-capable type:
    `AWS::EC2::Volume` is a stateful type, so the deploy passes
    `--force-stateful-recreation`.
 4. **`cdkd destroy`** — the **destroy runner** must do the same for the
-   replacement `VolumeKeep`; the state file must be gone afterwards.
-5. The three final snapshots (the test's artifacts — a real user would keep
-   them) are deleted and verified gone, so the run ends orphan-zero.
+   replacement `VolumeKeep`; the state file must be gone afterwards. Before
+   it, the script takes a completed `cdkd:final-snapshot-of`-tagged snapshot
+   of that volume by hand, standing in for an older destroy whose delete
+   failed (issue #6473): the destroy must take a NEW snapshot and leave that
+   one untouched.
+5. The four snapshots (the test's artifacts — a real user would keep them)
+   are deleted and verified gone, so the run ends orphan-zero.
 
 `AWS::EC2::Volume` is CC-API-routed, so both paths exercise the engine-side
 pre-delete `CreateSnapshot`+wait from `src/provisioning/final-snapshot.ts`.

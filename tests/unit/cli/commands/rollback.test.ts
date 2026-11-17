@@ -1703,7 +1703,8 @@ describe('rollbackCommand — plan preview vs the refusal matrix (#1366)', () =>
       'phys-D',
       'D',
       expect.anything(),
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
   });
 

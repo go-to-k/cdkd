@@ -616,6 +616,7 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
   });
 
   it('AWS::EC2::Volume: pre-delete snapshot dispatcher runs before the plain delete', async () => {
+    const testStart = Date.now();
     const state = makeState({
       Vol: res({ resourceType: 'AWS::EC2::Volume', deletionPolicy: 'Snapshot' }),
     });
@@ -627,8 +628,14 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
       'phys-id',
       'Vol',
       ctx.baseAwsClients,
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
+    // go-to-k/cdkd#6473: the attempt start this delete began at.
+    const attempt = (mockCreatePreDeleteFinalSnapshot.mock.calls[0]![5] as { attemptStartedAt: number })
+      .attemptStartedAt;
+    expect(attempt).toBeGreaterThanOrEqual(testStart);
+    expect(attempt).toBeLessThanOrEqual(Date.now());
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
@@ -646,7 +653,8 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
       'phys-id',
       'Cache',
       expect.anything(),
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
   });
 

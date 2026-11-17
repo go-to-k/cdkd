@@ -2301,6 +2301,7 @@ describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#
   });
 
   it('pre-delete type: snapshots FIRST with the context clients, then plain-deletes', async () => {
+    const testStart = Date.now();
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ delete: del });
     ctx.finalSnapshotClients = fakeClients;
@@ -2317,8 +2318,14 @@ describe('replayRollback — DeletionPolicy: Snapshot on a rolled-back CREATE (#
       'phys-res',
       'Res',
       fakeClients,
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
+    // go-to-k/cdkd#6473: the attempt start this delete began at.
+    const attempt = (vi.mocked(createPreDeleteFinalSnapshot).mock.calls[0]![5] as { attemptStartedAt: number })
+      .attemptStartedAt;
+    expect(attempt).toBeGreaterThanOrEqual(testStart);
+    expect(attempt).toBeLessThanOrEqual(Date.now());
     expect(del).toHaveBeenCalledOnce();
     // Pre-delete types have no atomic delete parameter.
     expect(
@@ -2681,6 +2688,7 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
   });
 
   it('Snapshot on a pre-delete type: snapshots FIRST with the context clients, then deletes', async () => {
+    const testStart = Date.now();
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx } = makeCtx({ delete: del });
     ctx.finalSnapshotClients = fakeClients;
@@ -2697,8 +2705,14 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
       'phys-res',
       'Res',
       fakeClients,
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
+    // go-to-k/cdkd#6473: the attempt start this delete began at.
+    const attempt = (vi.mocked(createPreDeleteFinalSnapshot).mock.calls[0]![5] as { attemptStartedAt: number })
+      .attemptStartedAt;
+    expect(attempt).toBeGreaterThanOrEqual(testStart);
+    expect(attempt).toBeLessThanOrEqual(Date.now());
     expect(
       vi.mocked(createPreDeleteFinalSnapshot).mock.invocationCallOrder[0]!
     ).toBeLessThan(del.mock.invocationCallOrder[0]!);

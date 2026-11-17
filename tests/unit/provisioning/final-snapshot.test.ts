@@ -171,7 +171,7 @@ describe('createEbsFinalSnapshot', () => {
     expect(finalSnapshotDelays.sleep).toHaveBeenCalledTimes(1);
   });
 
-  it('reuses an existing pending/completed snapshot from a prior destroy attempt', async () => {
+  it('resumes an existing pending snapshot from a prior destroy attempt', async () => {
     const send = vi
       .fn()
       .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-old', State: 'pending' }] })
@@ -254,6 +254,230 @@ describe('createEbsFinalSnapshot', () => {
       });
       expect(send).toHaveBeenCalledTimes(3);
       expect(finalSnapshotDelays.sleep).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('go-to-k/cdkd#6473: without a reuse bound, the attempt start bounds a completed snapshot', () => {
+    // In the past, so a probe dropping the attempt start for the clock is seen.
+    const ATTEMPT = Date.parse('2026-11-01T10:00:00Z');
+    const OLD = new Date('2026-08-01T00:00:00Z');
+    // ATTEMPT_START_SKEW_MARGIN_MS, as a literal so a changed constant shows.
+    const SKEW_MARGIN = 5 * 60 * 1_000;
+    const kinds = (send: ReturnType<typeof vi.fn>) =>
+      send.mock.calls.map((c) => c[0].constructor.name as string);
+
+    it('does not reuse a completed snapshot from an older attempt, and takes a fresh one', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          // One millisecond before the attempt: the bound is exact.
+          Snapshots: [
+            { SnapshotId: 'snap-stale', State: 'completed', StartTime: new Date(ATTEMPT - 1) },
+          ],
+        })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      const result = await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        attemptStartedAt: ATTEMPT,
+      });
+
+      expect(result).toBe('snap-fresh');
+      expect(kinds(send)).toEqual([
+        'DescribeSnapshotsCommand',
+        'CreateSnapshotCommand',
+        'DescribeSnapshotsCommand',
+      ]);
+      // The stale snapshot is only read, never touched; the wait polls the fresh one.
+      expect(send.mock.calls[2][0].input).toEqual({ SnapshotIds: ['snap-fresh'] });
+    });
+
+    it('the reuse probe asks only for snapshots OF this volume, not every one carrying its tag', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({ Snapshots: [] })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        attemptStartedAt: ATTEMPT,
+      });
+
+      expect(send.mock.calls[0][0].input.Filters).toEqual(
+        expect.arrayContaining([
+          { Name: `tag:${EBS_FINAL_SNAPSHOT_TAG_KEY}`, Values: ['vol-1'] },
+          { Name: 'volume-id', Values: ['vol-1'] },
+        ])
+      );
+    });
+
+    it('with no options at all, the call start bounds it: an older completed snapshot is not reused', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [{ SnapshotId: 'snap-stale', State: 'completed', StartTime: OLD }],
+        })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger)
+      ).resolves.toBe('snap-fresh');
+      expect(kinds(send)).toContain('CreateSnapshotCommand');
+    });
+
+    it('reuses a completed snapshot started at or after the attempt start plus the skew margin', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [
+            { SnapshotId: 'snap-stale', State: 'completed', StartTime: OLD },
+            {
+              SnapshotId: 'snap-mine',
+              State: 'completed',
+              StartTime: new Date(ATTEMPT + SKEW_MARGIN),
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed' }] });
+
+      const result = await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        attemptStartedAt: ATTEMPT,
+      });
+
+      expect(result).toBe('snap-mine');
+      expect(kinds(send)).not.toContain('CreateSnapshotCommand');
+    });
+
+    describe('the clock-skew margin (AWS clock ahead of the local one)', () => {
+      // One millisecond short of the margin: the bound is exact.
+      const AHEAD = new Date(ATTEMPT + SKEW_MARGIN - 1);
+
+      it('does not reuse a completed snapshot AWS dates inside the margin after the attempt start', async () => {
+        const send = vi
+          .fn()
+          .mockResolvedValueOnce({
+            Snapshots: [{ SnapshotId: 'snap-skewed', State: 'completed', StartTime: AHEAD }],
+          })
+          .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+          .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+        await expect(
+          createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+            attemptStartedAt: ATTEMPT,
+          })
+        ).resolves.toBe('snap-fresh');
+        expect(kinds(send)).toContain('CreateSnapshotCommand');
+      });
+
+      it('still resumes a pending snapshot dated inside the margin', async () => {
+        const send = vi
+          .fn()
+          .mockResolvedValueOnce({
+            Snapshots: [{ SnapshotId: 'snap-inflight', State: 'pending', StartTime: AHEAD }],
+          })
+          .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-inflight', State: 'completed' }] });
+
+        await expect(
+          createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+            attemptStartedAt: ATTEMPT,
+          })
+        ).resolves.toBe('snap-inflight');
+        expect(kinds(send)).not.toContain('CreateSnapshotCommand');
+      });
+
+      it('a reuse bound takes no margin: a completed snapshot started at the bound is reused', async () => {
+        const send = vi
+          .fn()
+          .mockResolvedValueOnce({
+            Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed', StartTime: new Date(ATTEMPT) }],
+          })
+          .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed' }] });
+
+        await expect(
+          createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+            reuseStartedAtOrAfter: ATTEMPT,
+          })
+        ).resolves.toBe('snap-mine');
+      });
+    });
+
+    it('resumes a pending snapshot whatever its age (an interrupted destroy re-run)', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [{ SnapshotId: 'snap-inflight', State: 'pending', StartTime: OLD }],
+        })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-inflight', State: 'completed' }] });
+
+      const result = await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        attemptStartedAt: ATTEMPT,
+      });
+
+      expect(result).toBe('snap-inflight');
+      expect(kinds(send)).not.toContain('CreateSnapshotCommand');
+    });
+
+    it('resumes a pending snapshot AWS reports no start time for', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-inflight', State: 'pending' }] })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-inflight', State: 'completed' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+          attemptStartedAt: ATTEMPT,
+        })
+      ).resolves.toBe('snap-inflight');
+    });
+
+    it('does not reuse a completed snapshot AWS reports no start time for', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-unknown', State: 'completed' }] })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+          attemptStartedAt: ATTEMPT,
+        })
+      ).resolves.toBe('snap-fresh');
+    });
+
+    it('a reuse bound wins: a pending snapshot started before it is not resumed', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [{ SnapshotId: 'snap-before', State: 'pending', StartTime: OLD }],
+        })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+          reuseStartedAtOrAfter: ATTEMPT,
+          attemptStartedAt: OLD.getTime(),
+        })
+      ).resolves.toBe('snap-fresh');
+    });
+
+    it('a reuse bound wins over an earlier attempt start for a completed snapshot too', async () => {
+      const MID = new Date('2026-10-01T00:00:00Z');
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({
+          Snapshots: [{ SnapshotId: 'snap-mid', State: 'completed', StartTime: MID }],
+        })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await expect(
+        createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+          reuseStartedAtOrAfter: ATTEMPT,
+          attemptStartedAt: OLD.getTime(),
+        })
+      ).resolves.toBe('snap-fresh');
     });
   });
 
@@ -355,17 +579,22 @@ describe('createEbsFinalSnapshot', () => {
       .mockResolvedValueOnce({ SnapshotId: 'snap-t' })
       .mockResolvedValue({ Snapshots: [{ SnapshotId: 'snap-t', State: 'pending' }] });
 
-    const realNow = Date.now.bind(Date);
-    const start = realNow();
-    let calls = 0;
-    // First Date.now() seeds the deadline; later reads jump past it.
+    const start = Date.now();
+    // The clock stands still until the first wait poll is sent, then jumps
+    // past the deadline: keyed on the calls sent, not on how often the
+    // helper reads the clock (the reuse probe reads it too).
     vi.spyOn(Date, 'now').mockImplementation(() =>
-      calls++ === 0 ? start : start + 61 * 60 * 1_000
+      send.mock.calls.length >= 3 ? start + 61 * 60 * 1_000 : start
     );
     try {
       await expect(
         createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger)
-      ).rejects.toMatchObject({ code: 'FINAL_SNAPSHOT_TIMEOUT' });
+      ).rejects.toMatchObject({
+        code: 'FINAL_SNAPSHOT_TIMEOUT',
+        message: expect.stringContaining(
+          'a snapshot still in progress is resumed; once completed, the re-run takes a fresh one'
+        ),
+      });
     } finally {
       vi.mocked(Date.now).mockRestore();
     }

@@ -24,6 +24,7 @@ import {
   finalSnapshotFailure,
   finalSnapshotNamePrefix,
   finalSnapshotWaitStopped,
+  startedAtOrAfter,
   type InfoLogger,
   type PreDeleteSnapshotOptions,
 } from './shared.js';
@@ -131,7 +132,7 @@ async function waitForNamedSnapshot(opts: {
         const head = `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${sourceId})`;
         throw finalSnapshotFailure(
           `${head}: ${failureSentence(logger, head, pollError)} The ${noun} was NOT deleted; ` +
-            `re-run the delete (the snapshot is reused, not duplicated).`,
+            `re-run the delete (a snapshot still in progress is resumed, not duplicated).`,
           pollError
         );
       }
@@ -151,7 +152,8 @@ async function waitForNamedSnapshot(opts: {
       throw new CdkdError(
         `Timed out waiting for final snapshot ${snapshotId} of ${logicalId} (${sourceId}) to ` +
           `become ready. The ${noun} was NOT deleted; the snapshot continues in AWS — re-run ` +
-          `the delete once it is ready (the existing snapshot is reused, not duplicated).`,
+          `the delete (a snapshot still in progress is resumed; once ready, the re-run takes ` +
+          `a fresh one).`,
         'FINAL_SNAPSHOT_TIMEOUT'
       );
     }
@@ -164,17 +166,6 @@ async function waitForNamedSnapshot(opts: {
 function errorNameOrMessageIncludes(error: unknown, token: string): boolean {
   const name = error instanceof Error ? error.name : '';
   return name === token || errMsg(error).includes(token);
-}
-
-/**
- * go-to-k/cdkd#6463: whether an in-flight snapshot may be resumed under the
- * caller's reuse bound. With a bound, one whose start time AWS does not
- * report is not resumed: the create that follows takes a fresh one, or is
- * refused while the other runs, and the delete waits for a later attempt.
- */
-function startedAtOrAfter(started: Date | string | undefined, bound: number | undefined): boolean {
-  if (bound === undefined) return true;
-  return started !== undefined && new Date(started).getTime() >= bound;
 }
 
 /** Max reuse-probe pages to walk (bounded so a huge snapshot history cannot
