@@ -2911,7 +2911,12 @@ To admit a type:
    a STRICT `normalizeCcPhysicalId` (it throws on anything but the measured
    Cloud Control form) and the fixture must observe its output equal to the
    live SDK id (`AWS::ECS::Service`, issue
-   [#5654](https://github.com/go-to-k/cdkd/issues/5654)).
+   [#5654](https://github.com/go-to-k/cdkd/issues/5654)). A normalizer may
+   also read the record's properties and its region, account and partition,
+   when the SDK id is not inside the Cloud Control id (a web ACL ARN, a
+   repository name). It still validates the Cloud Control id's measured shape,
+   and where the id and the properties name the same value it refuses a
+   mismatch (issue [#6490](https://github.com/go-to-k/cdkd/issues/6490)).
 3. Write or extend an integ fixture that OBSERVES the flip on a live resource:
    deploy, force the resource onto Cloud Control with `--recreate-via-cc-api`,
    redeploy with a real property change, then assert the physical id is

@@ -25,7 +25,10 @@ import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
-import { sdkAddressedPhysicalId } from '../provisioning/provider-registry.js';
+import {
+  assertSdkReadMatchesCcId,
+  sdkAddressedPhysicalId,
+} from '../provisioning/provider-registry.js';
 import {
   isHealExcludedType,
   normalizeHealedAttributes,
@@ -59,11 +62,14 @@ export async function readRecordAttributes(input: {
   // go-to-k/cdkd#5654: every caller routes the record as its own baseline, so
   // a cc-api record of a `'sdk-coverage'` type reaches its SDK provider here,
   // which addresses it by the SDK form of the id. A normalizer refusing the
-  // recorded id rejects, which every caller turns into a failed read.
-  const physicalId =
-    resource.provisionedBy === 'cc-api' && !(provider instanceof CloudControlProvider)
-      ? sdkAddressedPhysicalId(resource.resourceType, resource.physicalId, logicalId)
-      : resource.physicalId;
+  // recorded id rejects, which every caller turns into a failed read. `region`
+  // is the record's (every caller passes the stack's), and the account comes
+  // from the shared per-credential cache (go-to-k/cdkd#6490).
+  const flipped =
+    resource.provisionedBy === 'cc-api' && !(provider instanceof CloudControlProvider);
+  const physicalId = flipped
+    ? await sdkAddressedPhysicalId(resource, logicalId, region)
+    : resource.physicalId;
   const found = await provider.import({
     logicalId,
     resourceType: resource.resourceType,
@@ -82,6 +88,14 @@ export async function readRecordAttributes(input: {
     throw new Error(
       `the provider answered for a different resource (${found.physicalId}) than the one asked about (${physicalId})`
     );
+  }
+  // go-to-k/cdkd#6490: an SDK id read from the record (a CodeCommit name) can
+  // name another resource than the Cloud Control id; its attributes are not
+  // this record's.
+  // Gated on the route, not on the id changing: a repository may be NAMED
+  // like its own RepositoryId.
+  if (flipped) {
+    assertSdkReadMatchesCcId(resource, logicalId, found.attributes ?? {});
   }
   // A value carrying `SECRET_MASK` is not a value: `CloudControlProvider.import`
   // masks every leaf it cannot certify as a read-only attribute — every leaf

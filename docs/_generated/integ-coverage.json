@@ -1277,10 +1277,14 @@
       "resourceType": "AWS::CodeCommit::Repository",
       "integs": [
         "cc-required-name-generation",
+        "cc-to-sdk-reroute-common-types-10",
         "codecommit"
       ],
       "signals": {
         "cc-required-name-generation": [
+          "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-10": [
           "literal"
         ],
         "codecommit": [
@@ -10769,11 +10773,16 @@
     {
       "resourceType": "AWS::WAFv2::WebACL",
       "integs": [
+        "cc-to-sdk-reroute-common-types-10",
         "getatt-iam-waf-s3vectors-evaluator",
         "import-attribute-readback-final",
         "wafv2"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-10": [
+          "l1",
+          "literal"
+        ],
         "getatt-iam-waf-s3vectors-evaluator": [
           "l1",
           "literal"

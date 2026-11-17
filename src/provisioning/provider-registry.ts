@@ -1,10 +1,13 @@
 import type { ResourceProvider } from '../types/resource.js';
+import type { ResourceState } from '../types/state.js';
 import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
 import { getLogger } from '../utils/logger.js';
 import { hasNoCloudControlHandlers, NO_CC_HANDLERS_REASON } from './unsupported-types.js';
 import { findActionableSdkUnwired } from './property-coverage.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { getAccountInfo } from '../deployment/intrinsic-function-resolver.js';
+import { derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { buildUnroutableSdkUnwiredMessage, getProviderFor } from './provider-registry/routing.js';
 import {
   validateCustomResourceSecureReferences,
@@ -23,6 +26,7 @@ import {
   STICKY_CC_MIGRATION_EXEMPT,
   type StickyExemptEntry,
 } from './provider-registry/sticky-exempt.js';
+import type { CcPhysicalIdContext } from './sticky-exempt-physical-id.js';
 
 // The sticky-CC exemption table lives in its own module; re-exported so
 // every importer keeps one entry point.
@@ -178,27 +182,116 @@ export interface AutoRouteHit {
  * success write persists the result with `provisionedBy: 'sdk'`) and
  * `readRecordAttributes` (the attribute heals and the NoEcho read, which
  * route a record as its own baseline and so take the same flip).
+ *
+ * `record` is the state record, read for its type, id and properties (the
+ * RECORD's bag, which names the live resource), and `region` the region it
+ * lives in (the stack's). The partition is the region's. The account comes
+ * from {@link getAccountInfo}, whose per-credential cache the deploy or diff
+ * has usually filled already, and only for an entry declaring
+ * `normalizerReadsAccountId`, so no other type asks STS here
+ * (go-to-k/cdkd#6490). Such an entry's normalizer first runs on a placeholder
+ * account, so an id or properties it refuses never reach STS; a failed lookup
+ * is thrown as it is, with its own class and remedy.
  */
-export function sdkAddressedPhysicalId(
-  resourceType: string,
-  physicalId: string,
-  logicalId: string
-): string {
+export async function sdkAddressedPhysicalId(
+  record: Pick<ResourceState, 'resourceType' | 'physicalId' | 'properties'>,
+  logicalId: string,
+  region: string
+): Promise<string> {
+  const { resourceType, physicalId } = record;
   const entry = STICKY_CC_MIGRATION_EXEMPT.get(resourceType);
   const normalize = entry?.normalizeCcPhysicalId;
   if (normalize === undefined) return physicalId;
+  const reads = entry?.normalizerReadsAccountId === true;
+  const ctx = {
+    properties: record.properties ?? {},
+    region,
+    // Before the account is known, a well-formed placeholder: the first call
+    // only checks the id and the properties, so a refused id never asks STS.
+    accountId: reads ? ACCOUNT_PLACEHOLDER : '',
+    partition: derivePartitionAndUrlSuffix(region).partition,
+  };
+  const normalized = normalizeOrRefuse(entry!, normalize, physicalId, ctx, logicalId, resourceType);
+  if (!reads) return normalized;
+  // Thrown as it is: an account lookup failure is not the id's, and keeps its
+  // own class and remedy (AccountIdUnavailableError, a throttle).
+  const { accountId } = await getAccountInfo(region);
+  return normalizeOrRefuse(
+    entry!,
+    normalize,
+    physicalId,
+    { ...ctx, accountId },
+    logicalId,
+    resourceType
+  );
+}
+
+/** A 12-digit account no lookup returns, for the account-free first pass. */
+const ACCOUNT_PLACEHOLDER = '000000000000';
+
+function normalizeOrRefuse(
+  entry: StickyExemptEntry,
+  normalize: NonNullable<StickyExemptEntry['normalizeCcPhysicalId']>,
+  physicalId: string,
+  ctx: CcPhysicalIdContext,
+  logicalId: string,
+  resourceType: string
+): string {
   try {
-    return normalize(physicalId);
+    return normalize(physicalId, ctx);
   } catch (error) {
     const reason = describeAwsFailure(error).detail;
     const remedy =
-      entry?.mode === 'sdk-coverage'
+      entry.mode === 'sdk-coverage'
         ? ` Pass --pin-cc-api ${logicalId} to keep it on Cloud Control.`
         : '';
     throw new Error(
       `${logicalId} (${resourceType}) cannot move from Cloud Control to its SDK provider: ${reason}.${remedy}`
     );
   }
+}
+
+/**
+ * The record as the SDK provider's in-place update reads it after a flip: the
+ * {@link sdkAddressedPhysicalId} id, and for an entry with a
+ * `ccIdentityAttribute` that attribute set to the Cloud Control id, which IS
+ * its value. The provider's own holder check reads it, so a record missing or
+ * masking it is still checked against the resource Cloud Control recorded
+ * (go-to-k/cdkd#6490).
+ */
+export async function sdkAddressedRecord(
+  record: ResourceState,
+  logicalId: string,
+  region: string
+): Promise<ResourceState> {
+  const physicalId = await sdkAddressedPhysicalId(record, logicalId, region);
+  const attribute = STICKY_CC_MIGRATION_EXEMPT.get(record.resourceType)?.ccIdentityAttribute;
+  if (attribute === undefined) return { ...record, physicalId };
+  return {
+    ...record,
+    physicalId,
+    attributes: { ...record.attributes, [attribute]: record.physicalId },
+  };
+}
+
+/**
+ * Throws, naming the resource, when an SDK provider's read of a normalized
+ * cc-api record answered for a resource other than the one Cloud Control
+ * recorded: the entry's `ccIdentityAttribute` must equal the recorded Cloud
+ * Control id (go-to-k/cdkd#6490). A no-op for any other record.
+ */
+export function assertSdkReadMatchesCcId(
+  record: Pick<ResourceState, 'resourceType' | 'physicalId'>,
+  logicalId: string,
+  attributes: Record<string, unknown>
+): void {
+  const attribute = STICKY_CC_MIGRATION_EXEMPT.get(record.resourceType)?.ccIdentityAttribute;
+  if (attribute === undefined || attributes[attribute] === record.physicalId) return;
+  throw new Error(
+    `${logicalId} (${record.resourceType}) cannot move from Cloud Control to its SDK provider: ` +
+      `the resource its recorded properties name does not carry the ${attribute} Cloud Control recorded. ` +
+      `Pass --pin-cc-api ${logicalId} to keep it on Cloud Control.`
+  );
 }
 
 /** Why a `'cc-broken'` type cannot be routed to Cloud Control, as users read it. */

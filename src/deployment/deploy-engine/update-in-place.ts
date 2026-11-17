@@ -32,7 +32,7 @@ import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import {
   STICKY_CC_MIGRATION_EXEMPT,
-  sdkAddressedPhysicalId,
+  sdkAddressedRecord,
 } from '../../provisioning/provider-registry.js';
 import { ccAutoRouteUpdateFailureRemedy } from '../../provisioning/cc-autoroute-update-remedy.js';
 import {
@@ -161,13 +161,11 @@ export async function updateInPlace(
   // fallback's delete -- takes the SDK form, and the success write persists
   // it with `provisionedBy: 'sdk'`. A failed update writes nothing, so the
   // record keeps its Cloud Control id and layer for the rollback and the next
-  // deploy. A normalizer refusing the id throws here, before any AWS call.
+  // deploy. A normalizer refusing the id throws here, before any call to the
+  // resource. It reads the RECORD's properties, not the desired (#6490).
   const currentResource: ResourceState =
     updateDecision.sdkMigration === true
-      ? {
-          ...recordedResource,
-          physicalId: sdkAddressedPhysicalId(resourceType, recordedResource.physicalId, logicalId),
-        }
+      ? await sdkAddressedRecord(recordedResource, logicalId, engine.stackRegion)
       : recordedResource;
   if (updateDecision.sdkMigration === true) {
     // The ONLY reader of `sdkMigration`, and the reason the field

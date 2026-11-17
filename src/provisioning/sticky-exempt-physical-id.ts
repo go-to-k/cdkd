@@ -9,7 +9,27 @@
  * and throws on anything else, so a hand-edited or legacy record is refused
  * rather than handed to the SDK provider under a guessed id. Each one's output
  * must have been observed equal to the SDK form by the entry's integ fixture.
+ *
+ * A normalizer whose SDK id is not inside the Cloud Control id reads it from
+ * {@link CcPhysicalIdContext}: the record's own properties, and the region,
+ * account and partition the record lives in (go-to-k/cdkd#6490). It still
+ * validates the Cloud Control id's measured shape, and where the id and the
+ * properties both name a value, it refuses when they disagree.
  */
+
+/**
+ * What a normalizer may read beside the Cloud Control id. `properties` is the
+ * RECORD's bag (the resolved desired bag of the last successful deploy, which
+ * names the live resource), never the deploy's new desired side, which may
+ * rename it. `region` is the stack's; `accountId` and `partition` are the
+ * active credentials' account and the region's partition.
+ */
+export interface CcPhysicalIdContext {
+  properties: Record<string, unknown>;
+  region: string;
+  accountId: string;
+  partition: string;
+}
 
 /**
  * `<serviceArn>|<cluster>`: what Cloud Control records for an
@@ -287,4 +307,119 @@ export function s3VectorsVectorBucketSdkPhysicalId(ccPhysicalId: string): string
     );
   }
   return match[1]!;
+}
+
+/** The region, account and partition a derived ARN names, checked before use. */
+function arnScope(ctx: CcPhysicalIdContext, type: string): CcPhysicalIdContext {
+  if (!/^aws(?:-[a-z]+)*$/.test(ctx.partition)) {
+    throw new Error(`the partition it would build the ${type} ARN in is not an AWS partition`);
+  }
+  if (!/^\d{12}$/.test(ctx.accountId)) {
+    throw new Error(`the account it would build the ${type} ARN in is not a 12-digit account id`);
+  }
+  if (!/^[a-z0-9-]+$/.test(ctx.region)) {
+    throw new Error(`the region it would build the ${type} ARN in is not a region name`);
+  }
+  return ctx;
+}
+
+/**
+ * A lowercase UUID: how AWS mints a WAFv2 web ACL id and a CodeCommit
+ * RepositoryId (every one measured, us-east-1, 2026-11-17, and a re-created
+ * web ACL or repository of the same name got a new one).
+ */
+const LOWERCASE_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
+/**
+ * `<Name>|<Id>|<Scope>`: what Cloud Control records for an
+ * `AWS::WAFv2::WebACL` (schema primaryIdentifier `[Name, Id, Scope]`, in that
+ * order, measured us-east-1, 2026-11-17 for both scopes). A web ACL name is 1
+ * to 128 letters, digits, underscores and hyphens (the WAFv2 API's own
+ * pattern), so it cannot hold the `|`; the id is anchored to the UUID, which
+ * refuses any reordering of the three segments.
+ */
+const WAFV2_WEB_ACL_CC_ID = new RegExp(
+  `^([\\w-]{1,128})\\|(${LOWERCASE_UUID})\\|(REGIONAL|CLOUDFRONT)$`
+);
+
+/**
+ * The web ACL ARN `WAFv2Provider` stores as an `AWS::WAFv2::WebACL`
+ * physicalId, built from the `<Name>|<Id>|<Scope>` id Cloud Control recorded:
+ * `arn:<partition>:wafv2:<region>:<account>:<regional|global>/webacl/<Name>/<Id>`
+ * (measured, us-east-1, 2026-11-17). Throws when the id is not that form, when
+ * the record's `Scope` (required) or `Name` (when declared) differs from the
+ * id's segment, or when a CLOUDFRONT web ACL is not in us-east-1, the only
+ * region AWS serves that scope from. `Ref` is `<Name>|<Id>|<Scope>` on both
+ * layers: the Cloud Control id itself, then the compound cdkd rebuilds from
+ * the ARN. The id is not echoed.
+ */
+export function wafv2WebAclSdkPhysicalId(ccPhysicalId: string, ctx: CcPhysicalIdContext): string {
+  const match = WAFV2_WEB_ACL_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the `<Name>|<Id>|<Scope>` form Cloud Control records for AWS::WAFv2::WebACL'
+    );
+  }
+  const [, name, id, scope] = match;
+  if (ctx.properties['Scope'] !== scope) {
+    throw new Error(
+      'the scope in its recorded physical id is not the Scope its recorded properties declare'
+    );
+  }
+  const declaredName = ctx.properties['Name'];
+  if (declaredName !== undefined && declaredName !== name) {
+    throw new Error(
+      'the name in its recorded physical id is not the Name its recorded properties declare'
+    );
+  }
+  const { partition, region, accountId } = arnScope(ctx, 'AWS::WAFv2::WebACL');
+  if (scope === 'CLOUDFRONT' && region !== 'us-east-1') {
+    throw new Error(
+      `it is a CLOUDFRONT web ACL recorded in ${region}, while AWS serves that scope only from us-east-1`
+    );
+  }
+  const kind = scope === 'CLOUDFRONT' ? 'global' : 'regional';
+  return `arn:${partition}:wafv2:${region}:${accountId}:${kind}/webacl/${name}/${id}`;
+}
+
+/**
+ * The repository id Cloud Control records for an `AWS::CodeCommit::Repository`
+ * (schema primaryIdentifier `[RepositoryId]`): a lowercase UUID (measured
+ * us-east-1, 2026-11-17; a repository re-created under the same name got a new
+ * one).
+ */
+const CODECOMMIT_REPOSITORY_CC_ID = new RegExp(`^${LOWERCASE_UUID}$`);
+
+/**
+ * A repository name as CodeCommit accepts it: 1 to 100 letters, digits,
+ * periods, underscores and hyphens. Refuses a `{{resolve:...}}` reference or
+ * cdkd's `***` mask, which a record may hold in place of a secret-derived name.
+ */
+const CODECOMMIT_REPOSITORY_NAME = /^[\w.-]{1,100}$/;
+
+/**
+ * The repository name `CodeCommitRepositoryProvider` stores as an
+ * `AWS::CodeCommit::Repository` physicalId (every CodeCommit API is
+ * name-addressed), from the RepositoryId Cloud Control recorded and the
+ * record's own `RepositoryName`. The id holds no name, so nothing in it can be
+ * compared with the property: the id's shape and the name's are each checked,
+ * and the fixture witnesses the pair by reading the live repository's id
+ * through the name. `Ref` is the RepositoryId on both layers: the Cloud
+ * Control id itself, then the recorded `RepositoryId` attribute the flip
+ * carries over. The id is not echoed.
+ */
+export function codeCommitRepositorySdkPhysicalId(
+  ccPhysicalId: string,
+  ctx: CcPhysicalIdContext
+): string {
+  if (!CODECOMMIT_REPOSITORY_CC_ID.test(ccPhysicalId)) {
+    throw new Error(
+      'its recorded physical id is not the RepositoryId Cloud Control records for AWS::CodeCommit::Repository'
+    );
+  }
+  const name = ctx.properties['RepositoryName'];
+  if (typeof name !== 'string' || !CODECOMMIT_REPOSITORY_NAME.test(name)) {
+    throw new Error('its recorded properties hold no plain RepositoryName to address it by');
+  }
+  return name;
 }
