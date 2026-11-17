@@ -452,7 +452,7 @@ secretsmanager-update-value-source	2026-11-07T00:31:21Z	PASS	150	verify.sh	#5940
 select-out-of-bounds	2026-11-13T04:16:36Z	PASS	36	verify.sh	rc ok, orph clean
 serverless-api	2026-11-04T20:25:11Z	PASS	54	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
 servicediscovery	2026-11-17T05:50:34Z	PASS	265	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
-servicediscovery-http-namespace-update	2026-11-17T05:50:34Z	PASS	156	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
+servicediscovery-http-namespace-update	2026-11-17T05:53:54Z	PASS	156	verify.sh	rc ok, destroy 0 errors, orph clean; at a1a08710a (#6484)
 servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
