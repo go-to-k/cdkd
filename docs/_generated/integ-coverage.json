@@ -10584,17 +10584,12 @@
       "resourceType": "AWS::ServiceDiscovery::Service",
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
-        "cc-to-sdk-reroute-common-types-4",
         "local-ecs-service-connect",
         "servicediscovery"
       ],
       "signals": {
         "access-key-cloudmap-fix-forward-orphan": [
           "l1"
-        ],
-        "cc-to-sdk-reroute-common-types-4": [
-          "l1",
-          "literal"
         ],
         "local-ecs-service-connect": [
           "literal"
