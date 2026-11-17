@@ -245,6 +245,8 @@ describe('appSyncGraphQLApiSdkPhysicalId', () => {
     ['an API id one character long', `${GQL_ARN}x`],
     ['an uppercase API id', GQL_ARN.toUpperCase()],
     ['another service', GQL_ARN.replace(':appsync:', ':s3vectors:')],
+    ['a partition that is not one', GQL_ARN.replace('arn:aws:', 'arn:awsfoo:')],
+    ['a partition with an empty suffix', GQL_ARN.replace('arn:aws:', 'arn:aws-:')],
     ['an endpoint ARN', 'arn:aws:appsync:us-east-1:123456789012:endpoints/graphql-api/5yvlgolsc5bgvkmbp546coh2j4'],
     ['a short account id', GQL_ARN.replace('123456789012', '12345678901')],
     ['a composite', `${GQL_ARN}|x`],
@@ -267,6 +269,7 @@ describe('s3VectorsVectorBucketSdkPhysicalId', () => {
   it.each([
     ['the measured ARN', VB_ARN, 'cdkd-measure-6490-b8-vb'],
     ['a three-character name', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/a1b', 'a1b'],
+    ['a China-partition ARN', 'arn:aws-cn:s3vectors:cn-north-1:123456789012:bucket/a1b', 'a1b'],
   ])('keeps the bucket name of %s', (_label, ccId, sdkId) => {
     expect(s3VectorsVectorBucketSdkPhysicalId(ccId)).toBe(sdkId);
   });
@@ -279,6 +282,7 @@ describe('s3VectorsVectorBucketSdkPhysicalId', () => {
     ['an uppercase name', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/ABC'],
     ['a sixty-four-character name', `arn:aws:s3vectors:us-east-1:123456789012:bucket/${'a'.repeat(64)}`],
     ['an S3 bucket ARN', 'arn:aws:s3:::cdkd-measure-6490-b8-vb'],
+    ['a partition that is not one', VB_ARN.replace('arn:aws:', 'arn:awsfoo:')],
     ['a composite', `${VB_ARN}|x`],
     ['an ARN carrying a newline', `${VB_ARN}\nx`],
     ['an empty string', ''],

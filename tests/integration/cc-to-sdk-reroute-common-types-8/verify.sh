@@ -118,7 +118,7 @@ form_ok() { # usage: form_ok <sdk|cc> <logicalId> <physicalId>
     cc:RerouteIntegration | cc:RerouteRoute) grep -qE "^${API_ID}\\|[a-z0-9]+\$" <<<"$3" ;;
     cc:RerouteAuthorizer) grep -qE "^[a-z0-9]+\\|${API_ID}\$" <<<"$3" ;;
     sdk:RerouteGraphQLApi) grep -qE '^[a-z0-9]{26}$' <<<"$3" ;;
-    cc:RerouteGraphQLApi) grep -qE "^arn:aws[-a-z]*:appsync:${REGION}:[0-9]{12}:apis/[a-z0-9]{26}\$" <<<"$3" ;;
+    cc:RerouteGraphQLApi) grep -qE "^arn:aws(-[a-z]+)*:appsync:${REGION}:[0-9]{12}:apis/[a-z0-9]{26}\$" <<<"$3" ;;
     sdk:RerouteVectorBucket) [ "$3" = "${VECTOR_BUCKET}" ] ;;
     cc:RerouteVectorBucket) [ "$3" = "${VB_ARN}" ] ;;
     *) echo "FAIL: form_ok has no arm for $1:$2" >&2; return 1 ;;
@@ -327,7 +327,7 @@ load_state
 API_ID=$(output HttpApiId)
 VB_ARN=$(output VectorBucketRef)
 grep -qE '^[a-z0-9]+$' <<<"${API_ID}" || { echo "FAIL: no HttpApiId output (got '${API_ID}')" >&2; exit 1; }
-grep -qE "^arn:aws[-a-z]*:s3vectors:${REGION}:[0-9]{12}:bucket/${VECTOR_BUCKET}\$" <<<"${VB_ARN}" ||
+grep -qE "^arn:aws(-[a-z]+)*:s3vectors:${REGION}:[0-9]{12}:bucket/${VECTOR_BUCKET}\$" <<<"${VB_ARN}" ||
   { echo "FAIL: Ref of RerouteVectorBucket is not its ARN after the SDK create (got '${VB_ARN}')" >&2; exit 1; }
 assert_layers "phase 1 (fresh deploy)" sdk
 assert_forms "phase 1 (fresh deploy)" sdk
@@ -341,9 +341,11 @@ assert_refs "phase 1"
 echo "    OK: all ${#SUBJECTS[@]} created on the SDK route"
 
 echo "==> Phase 2: force each resource onto Cloud Control (--recreate-via-cc-api)"
+# The vector bucket is a stateful type (it holds the indexes), and cdkd refuses
+# to recreate one without --force-stateful-recreation. It holds no data here.
 env CDKD_TEST_PHASE=seed \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    "${RECREATE_FLAGS[@]}" --yes
+    "${RECREATE_FLAGS[@]}" --force-stateful-recreation --yes
 load_state
 # Without this every assertion below would be vacuous.
 assert_layers "phase 2 (after --recreate-via-cc-api)" cc-api
@@ -524,7 +526,8 @@ for id in "${SUBJECTS[@]}"; do
   bucket=$(drift_bucket "${id}")
   [ "${bucket}" = "drifted" ] || drift_fail "6b: cdkd drift put ${id} in bucket '${bucket}', expected drifted by its out-of-band $(oob_path "${id}") change"
   want=$(oob_path "${id}")
-  paths=$(jq -c --arg id "${id}" '[.[].drifted[] | select(.logicalId == $id) | .changes[].path]' <<<"${DRIFT_OUT}")
+  paths=$(jq -c --arg id "${id}" '[.[].drifted[] | select(.logicalId == $id) | .changes[].path]' <<<"${DRIFT_OUT}") ||
+    drift_fail "6b: cdkd drift's JSON report is unreadable for ${id}"
   # `Tags` may be reported per key (`Tags.phase`), so a path is the property
   # or a member of it; at least one is required.
   jq -e --arg p "${want}" 'length > 0 and all(. == $p or startswith($p + ".") or startswith($p + "["))' \

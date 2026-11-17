@@ -540,6 +540,7 @@
         "cc-to-sdk-reroute-common-types-4",
         "cc-to-sdk-reroute-common-types-5",
         "cc-to-sdk-reroute-common-types-6",
+        "cc-to-sdk-reroute-common-types-8",
         "deletion-policy-snapshot",
         "diff-fail-on-destructive",
         "dynamodb-autoscaling",

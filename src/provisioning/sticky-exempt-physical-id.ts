@@ -240,7 +240,8 @@ export function apiGatewayV2StageSdkPhysicalId(ccPhysicalId: string): string {
  * lowercase alphanumerics, as measured; an ARN of any other resource kind
  * (`apis/<id>/types/...`, a merged-API source association) is refused.
  */
-const APPSYNC_GRAPHQL_API_CC_ID = /^arn:aws[-a-z]*:appsync:[a-z0-9-]+:\d{12}:apis\/([a-z0-9]{26})$/;
+const APPSYNC_GRAPHQL_API_CC_ID =
+  /^arn:aws(?:-[a-z]+)*:appsync:[a-z0-9-]+:\d{12}:apis\/([a-z0-9]{26})$/;
 
 /**
  * The bare API id `AppSyncProvider` stores as an `AWS::AppSync::GraphQLApi`
@@ -267,7 +268,7 @@ export function appSyncGraphQLApiSdkPhysicalId(ccPhysicalId: string): string {
  * letter or digit; an index ARN (`bucket/<name>/index/<index>`) is refused.
  */
 const S3VECTORS_BUCKET_CC_ID =
-  /^arn:aws[-a-z]*:s3vectors:[a-z0-9-]+:\d{12}:bucket\/([a-z0-9][a-z0-9-]{1,61}[a-z0-9])$/;
+  /^arn:aws(?:-[a-z]+)*:s3vectors:[a-z0-9-]+:\d{12}:bucket\/([a-z0-9][a-z0-9-]{1,61}[a-z0-9])$/;
 
 /**
  * The bare bucket name `S3VectorsProvider` stores as an
