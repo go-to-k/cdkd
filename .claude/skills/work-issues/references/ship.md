@@ -21,8 +21,8 @@ even commit-without-push (the marker hashes that tree's delta, not the sha its
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards the integ's tree
 before the marker, re-running an integ the fix touches. Never two
 merges at once, nor two integs on the SAME fixture (one stack name, one state
-prefix; another REGION is no isolation: cdkd then refuses
-"state in multiple regions" at drift and cleanup, voiding both, #6048): queue
+prefix; another REGION is no isolation: cdkd refuses
+"state in multiple regions", #6048): queue
 the later lane behind the earlier one's merge and rebase it. A
 merge during another lane's integ is allowed, but it moves `main` under that
 lane (#4864): before ITS merge, re-read its marker per `verify.md` §8-b and
