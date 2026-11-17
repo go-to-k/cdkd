@@ -378,6 +378,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       // go-to-k/cdkd#5628: literal master passwords on L1 clusters, which the
       // state records carry; the fixture sweeps the prefix.
       'docdb-restore',
+      // go-to-k/cdkd#6499: an `unsafePlainText` EventBridge connection API key,
+      // which the state records carry; the fixture sweeps the prefix.
+      'drift-revert-nested-write-only',
       'eventbridge-api-destination',
       'iam-access-key',
       // Issue #5364: an AppSync API key, whose id is the credential and the

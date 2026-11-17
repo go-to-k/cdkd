@@ -593,17 +593,17 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     newProperties = writeOnly.properties;
     if (writeOnly.wholesale.length > 0) {
       logger.warn(
-        `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): sent the ` +
-          `template's whole value of ${maskSecretsInText(writeOnly.wholesale.join(', '), secrets)} — ` +
+        safeMsg`  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): sent the ` +
+          safeMsg`template's whole value of ${maskSecretsInText(writeOnly.wholesale.join(', '), secrets)} — ` +
           `its list items could not be matched to the template's one by one, so items an ` +
           `'--accept' changed there go back to the template, as a deploy would send them.`
       );
     }
     if (writeOnly.skipped.length > 0) {
       logger.warn(
-        `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not ` +
+        safeMsg`  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not ` +
           `send the template's write-only fields of ` +
-          `${maskSecretsInText(writeOnly.skipped.join(', '), secrets)} — a reference there did ` +
+          safeMsg`${maskSecretsInText(writeOnly.skipped.join(', '), secrets)} — a reference there did ` +
           `not resolve, or its list elements could not be matched to the template's. Cloud ` +
           `Control may refuse this update, or apply defaults there.`
       );
