@@ -149,7 +149,9 @@ export function withDeclaredWriteOnlyValues(
 /**
  * `send` with `declared`'s value at `path` copied in. A position the template
  * does not declare keeps `send`'s value; one `send` lacks takes the template's
- * whole. `ok: false` when a `*` list could not be matched item by item.
+ * whole. `ok: false` when a `*` list could not be matched item by item, or the
+ * bag holds another shape (a string, a list) where the template has a
+ * container.
  * `writeOnly` is every write-only path under the same top-level key, relative
  * to where the walk started, so a list match ignores those leaves.
  */
@@ -166,7 +168,9 @@ function graftAt(
   const below = writeOnly.filter((p) => p[0] === segment).map((p) => p.slice(1));
   if (segment === '*') {
     if (!Array.isArray(declared)) return { value: send, ok: true };
-    if (!Array.isArray(send)) return { value: declared, ok: true };
+    // A bag holding another shape here cannot take a graft: send the
+    // template whole, reported.
+    if (!Array.isArray(send)) return { value: send, ok: false };
     const partners = pairListItems(send, declared, below);
     if (!partners) return { value: send, ok: false };
     let ok = true;
@@ -178,7 +182,7 @@ function graftAt(
     return { value, ok };
   }
   if (!isPlainRecord(declared) || !hasOwnKey(declared, segment!)) return { value: send, ok: true };
-  if (!isPlainRecord(send)) return { value: send, ok: true };
+  if (!isPlainRecord(send)) return { value: send, ok: false };
   const base: Record<string, unknown> = { ...send };
   const grafted = graftAt(
     hasOwnKey(base, segment!) ? base[segment!] : undefined,

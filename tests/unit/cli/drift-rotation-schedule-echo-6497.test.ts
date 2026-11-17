@@ -435,6 +435,15 @@ describe('withDeclaredWriteOnlyValues', () => {
     expect(r).toEqual({ properties: { L: template }, skipped: [], wholesale: ['L'] });
   });
 
+  it.each([
+    ['a string where the template has an object', { W: 'str' }, { W: { S: 'k' } }, [['W', 'S']]],
+    ['an object where the template has a list', { L: { V: 1 } }, { L: [{ V: 1, S: 'k' }] }, [['L', '*', 'S']]],
+  ])('sends the template whole and reports %s', (_l, send, template, wo) => {
+    const name = Object.keys(template)[0]!;
+    const r = withDeclaredWriteOnlyValues(send, template, [name], wo);
+    expect(r).toEqual({ properties: template, skipped: [], wholesale: [name] });
+  });
+
   it('takes the template value whole where the bag lacks a container on the way', () => {
     const r = withDeclaredWriteOnlyValues(
       { W: { Other: 1 } },
