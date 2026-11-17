@@ -211,9 +211,10 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   wait for disassociation and association. See
   [wait mode details](cli-deploy-waits.md).
 
-- An RDS proxy and a proxy endpoint wait for `available` after a create or a
-  modifying update in every mode, because RDS refuses the next modify or
-  delete while one is `modifying`. See
+- An RDS proxy and a proxy endpoint wait for `available` in every mode after a
+  create, and after an update that calls `ModifyDBProxy` or
+  `ModifyDBProxyEndpoint` (a tag-only change does not wait), because RDS
+  refuses the next modify or delete while one is `modifying`. See
   [wait mode details](cli-deploy-waits.md#the-waits-no-wait-never-skips).
 
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
