@@ -510,9 +510,14 @@ export async function runDriftForStack(
       // so nothing compared, redacted or persisted reads them.
       const printing = printingBagOf(logicalId);
       // go-to-k/cdkd#6485: started BESIDE the read, so the schema lookup (one
-      // per type, cached) overlaps it. Never rejects.
+      // per type, cached) overlaps it. Never rejects. Not for a deny-listed
+      // fallback, which returns `unsupported` without reading.
       const readOnlyPathsLookup =
-        readPath === 'ccApi' ? getReadOnlyPropertyPaths(resource.resourceType) : undefined;
+        readPath === 'ccApi' &&
+        (provider.readCurrentState !== undefined ||
+          !CC_API_FALLBACK_DENY_LIST[resource.resourceType])
+          ? getReadOnlyPropertyPaths(resource.resourceType)
+          : undefined;
       await withPrintingSecrets(printing, async () => {
         try {
           let aws: Record<string, unknown> | ResourceNotFound | undefined;

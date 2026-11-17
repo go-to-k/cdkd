@@ -379,7 +379,7 @@ describe('getReadOnlyPropertyPaths (go-to-k/cdkd#6485)', () => {
     ]);
   });
 
-  it('leaves out a pointer a dotted path cannot spell (an array wildcard, a key holding a dot)', async () => {
+  it('leaves out a pointer a dotted path cannot spell (an array wildcard, a key holding a dot or the leaf-only `[]`)', async () => {
     mockCloudFormationSend.mockResolvedValueOnce({
       Schema: JSON.stringify({
         readOnlyProperties: [
@@ -387,6 +387,7 @@ describe('getReadOnlyPropertyPaths (go-to-k/cdkd#6485)', () => {
           '/properties/Rules/*/Id',
           '/properties/a.b',
           '/properties/x~1y',
+          '/properties/List[]',
           '/properties/',
         ],
       }),

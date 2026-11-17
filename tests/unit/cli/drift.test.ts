@@ -834,6 +834,39 @@ describe('cdkd drift', () => {
       expect(output).toContain('"UpdateTime"');
     });
 
+    it('skips them for a Cloud Control routed record, whose provider reads it (the live repro)', async () => {
+      mockReadOnlyPropertyPaths.mockResolvedValue(['UpdateTime']);
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({ Tracker: { ...tracker(), provisionedBy: 'cc-api' } })
+      );
+      mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => ({ ...live }) });
+      mockRegistryGetProviderFor.mockImplementationOnce((input) => ({
+        provider: mockRegistryGetProvider(input.resourceType),
+        provisionedBy: 'cc-api',
+      }));
+
+      const { output } = await runDrift(['TestStack', '--json']);
+
+      expect(mockReadOnlyPropertyPaths).toHaveBeenCalledWith('AWS::Location::Tracker');
+      expect(output).toContain('"Description"');
+      expect(output).not.toContain('"UpdateTime"');
+    });
+
+    it('makes no lookup for a deny-listed fallback type, which is never read', async () => {
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState({
+          Detector: makeResource({ resourceType: 'AWS::CloudWatch::AnomalyDetector' }),
+        })
+      );
+      mockRegistryGetProvider.mockReturnValue({});
+
+      await runDrift(['TestStack', '--json']);
+
+      expect(mockReadOnlyPropertyPaths).not.toHaveBeenCalled();
+    });
+
     it('does not look the schema up for a provider-owned read', async () => {
       mockReadOnlyPropertyPaths.mockResolvedValue(['UpdateTime']);
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);

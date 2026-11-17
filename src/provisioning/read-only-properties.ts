@@ -326,8 +326,16 @@ async function fetchTopLevelReadOnlyProperties(resourceType: string): Promise<Re
             .slice('/properties/'.length)
             .split('/')
             .map(unescapeJsonPointerSegment);
+          // A `[]` suffix is the drift matcher's leaf-only marker, so a key
+          // spelled with one is left out too.
           if (
-            segments.every((segment) => segment !== '' && segment !== '*' && !segment.includes('.'))
+            segments.every(
+              (segment) =>
+                segment !== '' &&
+                segment !== '*' &&
+                !segment.includes('.') &&
+                !segment.endsWith('[]')
+            )
           ) {
             paths.push(segments.join('.'));
           }
