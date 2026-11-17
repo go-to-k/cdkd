@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { ecsServiceSdkPhysicalId } from '../../../src/provisioning/sticky-exempt-physical-id.js';
+import {
+  apiGatewayAuthorizerSdkPhysicalId,
+  apiGatewayStageSdkPhysicalId,
+  ecsServiceSdkPhysicalId,
+} from '../../../src/provisioning/sticky-exempt-physical-id.js';
 import {
   STICKY_CC_MIGRATION_EXEMPT,
   sdkAddressedPhysicalId,
@@ -56,12 +60,89 @@ describe('ecsServiceSdkPhysicalId', () => {
   });
 });
 
+// The measured Cloud Control forms (us-east-1, 2026-11-17): `mm525t8176|yj4gsv`
+// for an authorizer and `mm525t8176|cdkdmeasure` for a stage.
+describe('apiGatewayAuthorizerSdkPhysicalId', () => {
+  it('keeps the authorizer id of the measured <restApiId>|<authorizerId> form', () => {
+    expect(apiGatewayAuthorizerSdkPhysicalId('mm525t8176|yj4gsv')).toBe('yj4gsv');
+  });
+
+  it.each([
+    ['the bare id the SDK route records', 'yj4gsv'],
+    // The committed schema fixture lists AuthorizerId first.
+    ['the reversed <authorizerId>|<restApiId> order', 'yj4gsv|mm525t8176'],
+    ['an empty authorizer segment', 'mm525t8176|'],
+    ['an empty rest API segment', '|yj4gsv'],
+    ['a rest API id one character short', 'mm525t817|yj4gsv'],
+    ['a rest API id one character long', 'mm525t8176x|yj4gsv'],
+    ['an extra segment', 'mm525t8176|yj4gsv|x'],
+    ['an uppercase id', 'mm525t8176|YJ4GSV'],
+    ['an ARN', 'arn:aws:apigateway:us-east-1::/restapis/mm525t8176/authorizers/yj4gsv'],
+    ['an id carrying a newline', 'mm525t8176|yj4gsv\nx'],
+    ['an empty string', ''],
+  ])('refuses %s', (_label, ccId) => {
+    expect(() => apiGatewayAuthorizerSdkPhysicalId(ccId)).toThrow();
+  });
+
+  it('does not echo the id it refuses', () => {
+    expect(() => apiGatewayAuthorizerSdkPhysicalId('supersecret')).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('supersecret') })
+    );
+  });
+});
+
+describe('apiGatewayStageSdkPhysicalId', () => {
+  it.each([
+    ['the measured form', 'mm525t8176|cdkdmeasure', 'cdkdmeasure'],
+    ['a name with hyphens, underscores and capitals', 'mm525t8176|Prod_v-2', 'Prod_v-2'],
+  ])('keeps the stage name of %s', (_label, ccId, sdkId) => {
+    expect(apiGatewayStageSdkPhysicalId(ccId)).toBe(sdkId);
+  });
+
+  it.each([
+    ['the bare name the SDK route records', 'prod'],
+    ['an empty stage segment', 'mm525t8176|'],
+    ['an empty rest API segment', '|prod'],
+    ['an extra segment', 'mm525t8176|prod|x'],
+    ['the reversed <stageName>|<restApiId> order', 'reroute|mm525t8176'],
+    ['the reversed order with a capitalized stage name', 'Prod|mm525t8176'],
+    ['a rest API id one character short', 'mm525t817|prod'],
+    ['an uppercase rest API id', 'MM525T8176|prod'],
+    ['a stage name with a slash', 'mm525t8176|a/b'],
+    ['a stage name carrying a newline', 'mm525t8176|prod\nx'],
+    ['an empty string', ''],
+  ])('refuses %s', (_label, ccId) => {
+    expect(() => apiGatewayStageSdkPhysicalId(ccId)).toThrow();
+  });
+
+  it('does not echo the id it refuses', () => {
+    expect(() => apiGatewayStageSdkPhysicalId('supersecret')).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('supersecret') })
+    );
+  });
+});
+
 describe('sdkAddressedPhysicalId', () => {
   it('is the ECS::Service entry normalizer', () => {
     expect(STICKY_CC_MIGRATION_EXEMPT.get('AWS::ECS::Service')?.normalizeCcPhysicalId).toBe(
       ecsServiceSdkPhysicalId
     );
     expect(sdkAddressedPhysicalId('AWS::ECS::Service', `${LONG}|my-cluster`, 'Svc')).toBe(LONG);
+  });
+
+  it.each([
+    ['AWS::ApiGateway::Authorizer', apiGatewayAuthorizerSdkPhysicalId, 'mm525t8176|yj4gsv', 'yj4gsv'],
+    ['AWS::ApiGateway::Stage', apiGatewayStageSdkPhysicalId, 'mm525t8176|prod', 'prod'],
+  ])('is the %s entry normalizer', (type, normalizer, ccId, sdkId) => {
+    expect(STICKY_CC_MIGRATION_EXEMPT.get(type)?.normalizeCcPhysicalId).toBe(normalizer);
+    expect(sdkAddressedPhysicalId(type, ccId, 'R')).toBe(sdkId);
+  });
+
+  it('passes the parity AWS::ApiGateway::Method composite through unchanged', () => {
+    expect(STICKY_CC_MIGRATION_EXEMPT.get('AWS::ApiGateway::Method')?.normalizeCcPhysicalId).toBeUndefined();
+    expect(sdkAddressedPhysicalId('AWS::ApiGateway::Method', 'mm525t8176|0gqhttf0ej|GET', 'M')).toBe(
+      'mm525t8176|0gqhttf0ej|GET'
+    );
   });
 
   it('passes a parity type through unchanged, whatever its shape', () => {

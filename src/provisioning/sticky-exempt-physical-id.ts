@@ -58,3 +58,71 @@ export function ecsServiceSdkPhysicalId(ccPhysicalId: string): string {
   }
   return serviceArn!;
 }
+
+/**
+ * A REST API id as API Gateway mints it: 10 lowercase alphanumerics. AWS
+ * documents no length; every id measured had 10 (three REST APIs, us-east-1,
+ * 2026-11-17), while the five authorizer ids and the deployment and resource
+ * ids measured beside them had 6. Anchoring the
+ * FIRST segment to it is what refuses the reversed `<childId>|<restApiId>`
+ * order, which a shape-only `[a-z0-9]+` on both sides would accept and answer
+ * with the REST API id.
+ */
+const REST_API_ID = '[a-z0-9]{10}';
+
+/**
+ * `<restApiId>|<authorizerId>`: what Cloud Control records for an
+ * `AWS::ApiGateway::Authorizer` (measured us-east-1, 2026-11-17: the live
+ * schema's primaryIdentifier is `[RestApiId, AuthorizerId]`, the reverse of
+ * the order the committed schema fixture lists). The authorizer id is a
+ * lowercase alphanumeric; every one measured had 6 characters, but AWS
+ * documents no length, so it is not pinned. A reversed
+ * `<authorizerId>|<restApiId>` is therefore refused only while the authorizer
+ * id is not itself 10 characters long, as no measured one was.
+ */
+const APIGW_AUTHORIZER_CC_ID = new RegExp(`^${REST_API_ID}\\|([a-z0-9]+)$`);
+
+/**
+ * The bare authorizer id `ApiGatewayProvider` stores as an
+ * `AWS::ApiGateway::Authorizer` physicalId (it reads `RestApiId` from the
+ * properties), from the `<restApiId>|<authorizerId>` id Cloud Control
+ * recorded. Throws on any other shape. The id is not echoed: the caller names
+ * the resource.
+ */
+export function apiGatewayAuthorizerSdkPhysicalId(ccPhysicalId: string): string {
+  const match = APIGW_AUTHORIZER_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the `<restApiId>|<authorizerId>` form Cloud Control records for AWS::ApiGateway::Authorizer'
+    );
+  }
+  return match[1]!;
+}
+
+/**
+ * `<restApiId>|<stageName>`: what Cloud Control records for an
+ * `AWS::ApiGateway::Stage` (schema primaryIdentifier `[RestApiId, StageName]`,
+ * measured us-east-1, 2026-11-17). API Gateway allows only letters, digits,
+ * hyphens and underscores in a stage name, so it cannot hold the `|`. A
+ * reversed `<stageName>|<restApiId>` is refused only when the stage name is not
+ * itself 10 lowercase alphanumerics (`production` is): no shape tells those
+ * apart, and Cloud Control never wrote that order.
+ */
+const APIGW_STAGE_CC_ID = new RegExp(`^${REST_API_ID}\\|([A-Za-z0-9_-]+)$`);
+
+/**
+ * The bare stage name `ApiGatewayProvider` stores as an
+ * `AWS::ApiGateway::Stage` physicalId (it reads `RestApiId` from the
+ * properties), from the `<restApiId>|<stageName>` id Cloud Control recorded.
+ * Throws on any other shape. The id is not echoed: the caller names the
+ * resource.
+ */
+export function apiGatewayStageSdkPhysicalId(ccPhysicalId: string): string {
+  const match = APIGW_STAGE_CC_ID.exec(ccPhysicalId);
+  if (match === null) {
+    throw new Error(
+      'its recorded physical id is not the `<restApiId>|<stageName>` form Cloud Control records for AWS::ApiGateway::Stage'
+    );
+  }
+  return match[1]!;
+}

@@ -1,4 +1,8 @@
-import { ecsServiceSdkPhysicalId } from '../sticky-exempt-physical-id.js';
+import {
+  apiGatewayAuthorizerSdkPhysicalId,
+  apiGatewayStageSdkPhysicalId,
+  ecsServiceSdkPhysicalId,
+} from '../sticky-exempt-physical-id.js';
 
 /**
  * How a type escapes the sticky `provisionedBy: 'cc-api'` routing rule.
@@ -764,6 +768,60 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
         'is EvaluatorArn and the AgentCore Evaluator provider records the CreateEvaluator evaluatorArn',
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-common-types-6',
+    },
+  ],
+  [
+    'AWS::ApiGateway::Authorizer',
+    {
+      // Batch 7 (go-to-k/cdkd#6490), admitted with the Stage and Method below
+      // for the SDK path's speed. The ids differ, hence the normalizer. The
+      // authorizer id is AWS-minted, so a recreate changes it and the flip
+      // keeps it: the fixture's identity witness.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<restApiId>|<authorizerId>` (measured us-east-1, 2026-11-17; ' +
+        'the live schema primaryIdentifier is RestApiId + AuthorizerId) while the API ' +
+        'Gateway provider records the bare CreateAuthorizer id and reads RestApiId from the ' +
+        'properties; normalizeCcPhysicalId keeps the authorizer id, which the fixture ' +
+        'observed equal to the live authorizer',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-7',
+      normalizeCcPhysicalId: apiGatewayAuthorizerSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::ApiGateway::Stage',
+    {
+      // Admitted with AWS::ApiGateway::Authorizer (go-to-k/cdkd#6490, batch
+      // 7). A stage keeps its name across a recreate, so the fixture
+      // witnesses it by its createdDate.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<restApiId>|<stageName>` (the schema primaryIdentifier is ' +
+        'RestApiId + StageName; measured us-east-1, 2026-11-17) while the API Gateway ' +
+        'provider records the bare stage name and reads RestApiId from the properties; ' +
+        'normalizeCcPhysicalId keeps the stage name, which the fixture observed equal to ' +
+        'the live stage',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-7',
+      normalizeCcPhysicalId: apiGatewayStageSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::ApiGateway::Method',
+    {
+      // Admitted with AWS::ApiGateway::Authorizer (go-to-k/cdkd#6490, batch
+      // 7). A method has no AWS-minted id or creation time, so the fixture
+      // witnesses it by a method response it adds out of band, which a
+      // recreate deletes and an in-place update keeps.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store `<restApiId>|<resourceId>|<httpMethod>`: the Cloud Control ' +
+        'Identifier takes that order (measured us-east-1, 2026-11-17; the committed schema ' +
+        'fixture lists HttpMethod first) and the API Gateway provider packs the same three ' +
+        'segments on PutMethod',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-7',
     },
   ],
 ]);

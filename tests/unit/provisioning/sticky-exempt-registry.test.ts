@@ -120,7 +120,9 @@ describe('sticky-CC exemption table', () => {
     // A normalizer is the declared exception to parity, so the prose a
     // reviewer reads must not describe parity for it.
     const normalized = entries().filter(([, e]) => e.normalizeCcPhysicalId !== undefined);
-    expect(normalized.map(([type]) => type)).toContain('AWS::ECS::Service');
+    expect(normalized.map(([type]) => type)).toEqual(
+      expect.arrayContaining(['AWS::ECS::Service', 'AWS::ApiGateway::Authorizer', 'AWS::ApiGateway::Stage']),
+    );
     for (const [type, e] of normalized) {
       expect(e.physicalIdForm, `${type}: physicalIdForm must name the normalizer`).toContain(
         'normalizeCcPhysicalId',
@@ -231,6 +233,16 @@ describe('sticky-CC exemption table', () => {
     [
       'AWS::BedrockAgentCore::Evaluator',
       { EvaluatorName: 'e', Description: 'd', Level: 'TRACE', EvaluatorConfig: {} },
+    ],
+    // Batch 7 (go-to-k/cdkd#6490).
+    [
+      'AWS::ApiGateway::Authorizer',
+      { RestApiId: 'a', Name: 'n', Type: 'TOKEN', AuthorizerUri: 'arn', AuthorizerResultTtlInSeconds: 300 },
+    ],
+    ['AWS::ApiGateway::Stage', { RestApiId: 'a', StageName: 's', DeploymentId: 'd', Description: 'd' }],
+    [
+      'AWS::ApiGateway::Method',
+      { RestApiId: 'a', ResourceId: 'r', HttpMethod: 'GET', AuthorizationType: 'NONE', OperationName: 'o' },
     ],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
