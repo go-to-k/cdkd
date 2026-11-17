@@ -307,7 +307,10 @@ export async function deleteStackResource(
           // The delete's own masker, as its DeleteContext carries: the
           // snapshot helper's debug line quotes a withheld AWS failure's
           // text (go-to-k/cdkd#2319).
-          maskedSnapshotLogger(logger, createUnionSecretMasker([printingBagOf(logicalId)]))
+          maskedSnapshotLogger(logger, createUnionSecretMasker([printingBagOf(logicalId)])),
+          // go-to-k/cdkd#6473: an EBS snapshot completed before this delete
+          // began (an older attempt's) predates writes since; not reused.
+          { attemptStartedAt: resourceStartedAt }
         );
       } else {
         throw unsupportedFinalSnapshotError(

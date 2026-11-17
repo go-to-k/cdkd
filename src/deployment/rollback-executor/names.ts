@@ -642,6 +642,7 @@ export async function prepareCreateRollbackFinalSnapshot(
    */
   mask: MaskerFn
 ): Promise<string | undefined> {
+  const attemptStartedAt = Date.now();
   const { logicalId, resourceType } = op;
   // Callers reach this only past the SAME falsy physical-id guard:
   // `replaySingle`'s `!op.physicalId` early return, or `classifyFailedOp`'s
@@ -667,7 +668,10 @@ export async function prepareCreateRollbackFinalSnapshot(
         {
           info: (message) => ctx.logger.info(mask(message)),
           debug: (message) => ctx.logger.debug(mask(message)),
-        }
+        },
+        // go-to-k/cdkd#6473: an EBS snapshot completed before this delete
+        // began (an older attempt's) predates writes since; not reused.
+        { attemptStartedAt }
       );
       return undefined;
     // Raw values: both builders describe a non-plain id or type themselves

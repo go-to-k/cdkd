@@ -13,6 +13,7 @@ import {
   finalSnapshotDelays,
   finalSnapshotFailure,
   finalSnapshotWaitStopped,
+  startedAtOrAfter,
   type InfoLogger,
   type PreDeleteSnapshotOptions,
 } from './shared.js';
@@ -27,15 +28,19 @@ function isVolumeNotFound(error: unknown): boolean {
  * until it completes, mirroring CloudFormation's observable behavior — CFn
  * deletes the volume only after the final snapshot is done.
  *
- * Idempotent across destroy re-runs: an existing pending/completed snapshot
- * carrying the `cdkd:final-snapshot-of: <volumeId>` tag is reused instead of
- * creating a second one. Reusing a `completed` snapshot is safe HERE (and
- * only here) because an EBS volume id is AWS-generated and never reused, so
- * the tag can only ever point at THIS volume's data — unlike the name-keyed
- * Redshift / ElastiCache APIs, whose user-chosen ids repeat across
- * generations and therefore only resume an in-flight snapshot (see
+ * Idempotent across destroy re-runs: an in-flight (`pending`) snapshot
+ * carrying the `cdkd:final-snapshot-of: <volumeId>` tag is resumed instead of
+ * creating a second one, whatever its age: it is at most one snapshot's
+ * duration old, as the Redshift / ElastiCache helpers' in-flight rule. A
+ * `completed` one is reused only when it started at or after this delete
+ * attempt's start (`attemptStartedAt`, go-to-k/cdkd#6473): one from an older
+ * attempt whose delete failed predates the writes the volume took since.
+ * Reusing a `completed` snapshot at all is safe HERE (and only here) because
+ * an EBS volume id is AWS-generated and never reused, so the tag can only
+ * ever point at THIS volume's data — unlike the name-keyed Redshift /
+ * ElastiCache APIs, whose user-chosen ids repeat across generations (see
  * `RESUMABLE_SNAPSHOT_STATUS`). A caller deleting a replaced resource's old
- * copy bounds the reuse to a snapshot started for that delete
+ * copy bounds both to a snapshot started for that delete
  * (`reuseStartedAtOrAfter`, go-to-k/cdkd#6463).
  *
  * @returns the snapshot id, or `null` when the volume no longer exists
@@ -61,13 +66,12 @@ export async function createEbsFinalSnapshot(
     );
     // go-to-k/cdkd#6463: under a bound, only a snapshot AWS started for this
     // delete stands in; an older one predates writes the volume took since.
+    // go-to-k/cdkd#6473: without one, an in-flight snapshot is resumed
+    // whatever its age, and a completed one only from this attempt.
     const bound = options.reuseStartedAtOrAfter;
-    snapshotId = (
-      bound === undefined
-        ? existing.Snapshots?.[0]
-        : existing.Snapshots?.find(
-            (s) => s.StartTime !== undefined && new Date(s.StartTime).getTime() >= bound
-          )
+    const completedBound = bound ?? options.attemptStartedAt ?? Date.now();
+    snapshotId = existing.Snapshots?.find((s) =>
+      startedAtOrAfter(s.StartTime, s.State === 'pending' ? bound : completedBound)
     )?.SnapshotId;
     if (snapshotId) {
       logger.debug(
@@ -149,7 +153,7 @@ export async function createEbsFinalSnapshot(
         const head = `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId})`;
         throw finalSnapshotFailure(
           `${head}: ${failureSentence(logger, head, pollError)} The volume was NOT deleted; ` +
-            `re-run the destroy (the snapshot is reused, not duplicated).`,
+            `re-run the destroy (a snapshot still in progress is resumed, not duplicated).`,
           pollError
         );
       }
@@ -169,7 +173,8 @@ export async function createEbsFinalSnapshot(
       throw new CdkdError(
         `Timed out waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId}) to ` +
           `complete. The volume was NOT deleted; the snapshot continues in AWS — re-run the ` +
-          `destroy once it completes (the existing snapshot is reused, not duplicated).`,
+          `destroy (a snapshot still in progress is resumed; once completed, the re-run ` +
+          `takes a fresh one, which holds any writes since).`,
         'FINAL_SNAPSHOT_TIMEOUT'
       );
     }

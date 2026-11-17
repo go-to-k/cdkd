@@ -26,8 +26,9 @@ expands.
 
 - **`AWS::EC2::Volume`** is Cloud-Control-routed and `DeleteVolume` takes no
   snapshot parameter, which is why the snapshot is a separate pre-delete step.
-  cdkd tags it `cdkd:final-snapshot-of: <volumeId>`, so a destroy re-run reuses
-  the existing snapshot instead of creating and charging for a second one. The
+  cdkd tags it `cdkd:final-snapshot-of: <volumeId>`, so a destroy re-run
+  resumes a snapshot still in progress instead of creating and charging for a
+  second one ([Snapshot reuse across a re-run](#snapshot-reuse-across-a-re-run)). The
   delete itself is always EC2 `DeleteVolume`, never Cloud Control: the Cloud
   Control delete handler has been seen taking a second, untagged snapshot of
   its own and then leaving the volume stuck in `deleting` past cdkd's wait.
@@ -122,8 +123,18 @@ For the name-keyed APIs (Redshift, ElastiCache) a re-run resumes only an
 IN-FLIGHT snapshot: their identifiers are user-chosen and reusable, so adopting
 an already-`available` snapshot could hand you a PREVIOUS generation's data. A
 re-run after the snapshot completed therefore creates a second, timestamped,
-non-colliding one. EC2 Volume reuses a completed snapshot safely — its tag is
-keyed on an AWS-generated volume id that is never reused.
+non-colliding one.
+
+An EC2 volume's tag is keyed on an AWS-generated volume id that is never
+reused, so its snapshot can only hold that volume's data. A re-run still
+resumes only a snapshot in progress, whatever its age. A completed one is
+reused only when it started during the same delete; one left by an earlier
+attempt whose delete failed predates the writes the volume took since, so the
+re-run takes a fresh one, and the older snapshot is left as it is.
+
+The delete of a replaced resource's old copy, after an
+`UpdateReplacePolicy: Snapshot` replacement, is stricter: it resumes or reuses
+only a snapshot started since the copy was replaced.
 
 ## `--remove-protection`
 

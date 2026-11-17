@@ -16,10 +16,14 @@
 #            REPLACEMENT's delete of the OLD volume must honor
 #            UpdateReplacePolicy: Snapshot (issue #1357). EC2 Volume is a
 #            stateful type, so the deploy needs --force-stateful-recreation.
+#   Phase 3a: take a tagged, COMPLETED `cdkd:final-snapshot-of` snapshot of
+#            the replacement VolumeKeep by hand, standing in for an older
+#            destroy attempt whose delete failed (issue #6473).
 #   Phase 3: cdkd destroy — the DESTROY RUNNER must do the same for the
-#            replacement VolumeKeep; state file gone afterwards.
-#   Phase 4: delete the three final snapshots (test artifacts; a real user
-#            would keep them) and verify zero orphans.
+#            replacement VolumeKeep, taking a NEW snapshot rather than reusing
+#            phase 3a's, which it leaves untouched; state file gone afterwards.
+#   Phase 4: delete the four snapshots (test artifacts; a real user would keep
+#            them) and verify zero orphans.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -82,6 +86,14 @@ snapshot_id_for() {
   printf '%s' "${id}"
 }
 
+# snapshot_ids_for <volume-id> — EVERY cdkd-tagged snapshot of the volume,
+# one per line (phase 3a leaves two on the replacement VolumeKeep).
+snapshot_ids_for() {
+  aws ec2 describe-snapshots --owner-ids self --region "${REGION}" \
+    --filters "Name=volume-id,Values=$1" "Name=tag-key,Values=cdkd:final-snapshot-of" \
+    --query 'Snapshots[].SnapshotId' --output text | tr '\t' '\n'
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover snapshots + volumes + state"
   set +eu
@@ -91,10 +103,10 @@ cleanup() {
   if [ -f "${IDS_FILE}" ]; then
     while read -r vol_id; do
       [ -n "${vol_id}" ] || continue
-      snap_id=$(snapshot_id_for "${vol_id}")
-      if [ -n "${snap_id}" ]; then
+      for snap_id in $(snapshot_ids_for "${vol_id}"); do
+        [ "${snap_id}" = "None" ] && continue
         aws ec2 delete-snapshot --snapshot-id "${snap_id}" --region "${REGION}" >/dev/null 2>&1
-      fi
+      done
     done < "${IDS_FILE}"
   fi
   # Volumes by this fixture's tags (survive a failed run without state).
@@ -241,6 +253,24 @@ if [ "${NEW_VOL_AZ}" != "${EXPECTED_NEW_AZ}" ]; then
 fi
 echo "    replacement path OK: ${SNAP_REPLACE_ID} completed for ${VOL_KEEP_ID}; new volume ${VOL_KEEP_NEW_ID} in ${NEW_VOL_AZ}"
 
+# --- Phase 3a: a completed snapshot from an "older attempt" (issue #6473) ---
+# The tag cdkd's reuse probe reads. A destroy whose delete failed after its
+# snapshot completed leaves exactly this; the volume may take writes since, so
+# the next destroy must take a fresh snapshot, not stand this one in.
+echo "==> Phase 3a: pre-made completed cdkd-tagged snapshot of ${VOL_KEEP_NEW_ID}"
+SNAP_STALE_ID=$(aws ec2 create-snapshot --volume-id "${VOL_KEEP_NEW_ID}" --region "${REGION}" \
+  --description "cdkd integ: stale final snapshot stand-in (issue #6473)" \
+  --tag-specifications "ResourceType=snapshot,Tags=[{Key=cdkd:final-snapshot-of,Value=${VOL_KEEP_NEW_ID}}]" \
+  --query 'SnapshotId' --output text)
+if [ -z "${SNAP_STALE_ID}" ] || [ "${SNAP_STALE_ID}" = "None" ]; then
+  echo "FAIL: could not create the pre-made snapshot of ${VOL_KEEP_NEW_ID}" >&2
+  exit 1
+fi
+aws ec2 wait snapshot-completed --snapshot-ids "${SNAP_STALE_ID}" --region "${REGION}"
+SNAP_STALE_START=$(aws ec2 describe-snapshots --snapshot-ids "${SNAP_STALE_ID}" \
+  --region "${REGION}" --query 'Snapshots[0].StartTime' --output text)
+echo "    pre-made ${SNAP_STALE_ID} completed (started ${SNAP_STALE_START})"
+
 # --- Phase 3: destroy (destroy-runner path) ---------------------------------
 echo "==> Phase 3: cdkd destroy (runner final-snapshot path)"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -251,11 +281,24 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "VolumeKeep still exists after destroy" \
   aws ec2 describe-volumes --volume-ids "${VOL_KEEP_NEW_ID}" --region "${REGION}"
 
-SNAP_KEEP_ID=$(snapshot_id_for "${VOL_KEEP_NEW_ID}")
+# The destroy's own snapshot: the tagged one that is NOT phase 3a's.
+SNAP_KEEP_ID=$(aws ec2 describe-snapshots --owner-ids self --region "${REGION}" \
+  --filters "Name=volume-id,Values=${VOL_KEEP_NEW_ID}" "Name=tag-key,Values=cdkd:final-snapshot-of" \
+  --query "Snapshots[?SnapshotId!='${SNAP_STALE_ID}'].SnapshotId | [0]" --output text)
+if [ "${SNAP_KEEP_ID}" = "None" ]; then SNAP_KEEP_ID=""; fi
 if [ -z "${SNAP_KEEP_ID}" ]; then
-  echo "FAIL: no final snapshot created for destroyed volume ${VOL_KEEP_NEW_ID} (DeletionPolicy: Snapshot ignored on the destroy-runner path)" >&2
+  echo "FAIL: destroy took no NEW final snapshot of ${VOL_KEEP_NEW_ID}: it reused the older completed ${SNAP_STALE_ID} (issue #6473), or ignored DeletionPolicy: Snapshot on the destroy-runner path" >&2
   exit 1
 fi
+# Phase 3a's snapshot is left as it was: still there, completed, same start.
+SNAP_STALE_AFTER=$(aws ec2 describe-snapshots --snapshot-ids "${SNAP_STALE_ID}" \
+  --region "${REGION}" --query 'Snapshots[0].[State,StartTime]' --output text)
+if [ "${SNAP_STALE_AFTER}" != "$(printf 'completed\t%s' "${SNAP_STALE_START}")" ]; then
+  echo "FAIL: the pre-made snapshot ${SNAP_STALE_ID} changed across the destroy (now: ${SNAP_STALE_AFTER})" >&2
+  exit 1
+fi
+echo "    stale-snapshot arm OK: new ${SNAP_KEEP_ID} taken, ${SNAP_STALE_ID} untouched"
+
 SNAP_KEEP_STATE=$(aws ec2 describe-snapshots --snapshot-ids "${SNAP_KEEP_ID}" \
   --region "${REGION}" --query 'Snapshots[0].State' --output text)
 if [ "${SNAP_KEEP_STATE}" != "completed" ]; then
@@ -288,17 +331,17 @@ assert_gone "state file still present after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 # --- Phase 4: artifact cleanup + zero-orphan verification -------------------
-echo "==> Phase 4: deleting the three final snapshots (test artifacts)"
-# Delete all three FIRST, then assert all three gone: DescribeSnapshots is
+echo "==> Phase 4: deleting the four snapshots (test artifacts)"
+# Delete all four FIRST, then assert all four gone: DescribeSnapshots is
 # eventually consistent and can still return a snapshot immediately after its
 # DeleteSnapshot, which `gone_probe` would hard-FAIL on.
-for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}"; do
+for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}" "${SNAP_STALE_ID}"; do
   aws ec2 delete-snapshot --snapshot-id "${snap}" --region "${REGION}"
 done
-for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}"; do
+for snap in "${SNAP_REMOVE_ID}" "${SNAP_REPLACE_ID}" "${SNAP_KEEP_ID}" "${SNAP_STALE_ID}"; do
   assert_gone "final snapshot ${snap} still present after artifact cleanup" \
     aws ec2 describe-snapshots --snapshot-ids "${snap}" --region "${REGION}"
 done
 rm -f "${IDS_FILE}"
 
-echo "PASS: DeletionPolicy/UpdateReplacePolicy: Snapshot honored on all three delete paths (engine DELETE + replacement + runner), zero orphans"
+echo "PASS: DeletionPolicy/UpdateReplacePolicy: Snapshot honored on all three delete paths (engine DELETE + replacement + runner), an older completed snapshot not reused, zero orphans"

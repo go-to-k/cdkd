@@ -71,6 +71,7 @@ export async function prepareFinalSnapshotForDelete(
   policy: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined,
   mask?: (text: string) => string
 ): Promise<string | undefined> {
+  const attemptStartedAt = Date.now();
   if (policy !== 'Snapshot' || deps.options.skipFinalSnapshot === true) return undefined;
   if (ATOMIC_FINAL_SNAPSHOT_TYPES.has(resourceType) && currentResource.provisionedBy !== 'cc-api') {
     return buildFinalSnapshotIdentifier(currentResource.physicalId, resourceType);
@@ -90,7 +91,11 @@ export async function prepareFinalSnapshotForDelete(
     throw ccRoutedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
   }
   if (PRE_DELETE_SNAPSHOT_TYPES.has(resourceType)) {
-    await takePreDeleteSnapshot(deps, logicalId, resourceType, currentResource.physicalId, mask);
+    // go-to-k/cdkd#6473: an EBS snapshot completed before this delete began
+    // (an older attempt's) predates writes since; not reused.
+    await takePreDeleteSnapshot(deps, logicalId, resourceType, currentResource.physicalId, mask, {
+      attemptStartedAt,
+    });
     return undefined;
   }
   throw unsupportedFinalSnapshotError(logicalId, resourceType, '--skip-final-snapshot');
@@ -146,15 +151,16 @@ export function owesPreDeleteSnapshot(
 
 /**
  * Take a `PRE_DELETE_SNAPSHOT_TYPES` member's final snapshot and wait for it.
- * A snapshot an earlier attempt took is reused, not duplicated.
+ * An in-flight snapshot an earlier attempt started is resumed, not
+ * duplicated; `options` bounds which ones (go-to-k/cdkd#6463, #6473).
  */
 export async function takePreDeleteSnapshot(
   deps: ReplacementDeps,
   logicalId: string,
   resourceType: string,
   physicalId: string,
-  mask?: (text: string) => string,
-  options?: PreDeleteSnapshotOptions
+  mask: ((text: string) => string) | undefined,
+  options: PreDeleteSnapshotOptions
 ): Promise<void> {
   // Region-pinned clients: `getAwsClients()` is a process-global that a
   // concurrent stack's deploy can repoint at ANOTHER region
@@ -170,8 +176,5 @@ export async function takePreDeleteSnapshot(
           debug: (message: string) => deps.logger.debug(mask(message)),
         };
   const clients = deps.options.finalSnapshotClients ?? getAwsClients();
-  // Without options the call is the one `prepareFinalSnapshotForDelete` always made.
-  await (options === undefined
-    ? createPreDeleteFinalSnapshot(resourceType, physicalId, logicalId, clients, logger)
-    : createPreDeleteFinalSnapshot(resourceType, physicalId, logicalId, clients, logger, options));
+  await createPreDeleteFinalSnapshot(resourceType, physicalId, logicalId, clients, logger, options);
 }

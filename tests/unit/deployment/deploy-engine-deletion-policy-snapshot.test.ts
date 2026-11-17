@@ -244,14 +244,21 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
   });
 
   it('AWS::EC2::Volume: runs the pre-delete snapshot dispatcher, then a plain delete', async () => {
+    const testStart = Date.now();
     await invokeDelete(makeEngine(), 'AWS::EC2::Volume', { deletionPolicy: 'Snapshot' });
     expect(mockCreatePreDeleteFinalSnapshot).toHaveBeenCalledWith(
       'AWS::EC2::Volume',
       'phys-target',
       'Target',
       expect.anything(),
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
+    // go-to-k/cdkd#6473: the attempt start this delete began at.
+    const attempt = (mockCreatePreDeleteFinalSnapshot.mock.calls[0]![5] as { attemptStartedAt: number })
+      .attemptStartedAt;
+    expect(attempt).toBeGreaterThanOrEqual(testStart);
+    expect(attempt).toBeLessThanOrEqual(Date.now());
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
@@ -262,7 +269,8 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
       'phys-target',
       'Target',
       expect.anything(),
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
@@ -332,7 +340,8 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
       'phys-target',
       'Target',
       pinned,
-      expect.anything()
+      expect.anything(),
+      { attemptStartedAt: expect.any(Number) }
     );
   });
 

@@ -276,7 +276,9 @@ A destroy can fail after the snapshot was taken. What the re-run does then
 depends on the type:
 
 - **EC2 volume:** the snapshot is tagged `cdkd:final-snapshot-of: <volumeId>`,
-  so the re-run reuses it.
+  so the re-run resumes it while it is still in progress. Once it has
+  completed, the re-run takes a fresh one, which holds the writes the volume
+  took since, and AWS bills for both.
 - **Redshift and ElastiCache:** the re-run creates a second snapshot with a
   new timestamp, and AWS bills for both. Their snapshot names can be reused,
   so an existing snapshot with that name could hold older data.
