@@ -149,17 +149,16 @@ grep the client's npm `latest` (`npm pack --ignore-scripts` into an empty dir,
 then `tar -xzf`): a newer release is a bump in the lane with its floor raised,
 waiting out pnpm's `minimumReleaseAge` or pinned in `minimumReleaseAgeExclude`,
 never a blocker (#6167); MEASURE that the issue's named engine / class can
-host it (`describe-orderable-*`), and when no CFn handler source covers it
-(archived repo predating it), put `verify.md` §8-b's
+host it (`describe-orderable-*`), and when no CFn handler source covers it, put `verify.md` §8-b's
 create→update→delete probe stack into triage's ONE `AskUserQuestion` (#5640).
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
 maintainer-only step; re-measure as a consumer deploys it: a CDK PR's integ,
 #5984) or closing an AWS-side limit with docs: return its options, each fix and
-what CFn / the CDK CLI do (for a cdkd flag, the CDK CLI's CURRENT option in
-`aws-cdk-cli`'s `lib/cli/cli-config.ts`, never cdkd's deprecation note,
-#6504), for ONE `AskUserQuestion` at triage (gotchas.md),
+what CFn / the CDK CLI do (a flag: its CURRENT entry in aws-cdk-cli's
+`packages/aws-cdk/lib/cli/cli-config.ts`, #6504), for ONE `AskUserQuestion` at
+triage (gotchas.md),
 each cdkd-side premise in it TRACED through the code path, never read off a
 comment (#6463). An "Undecided" line is no question: where the CFn premise
 settles it, take that, unasked (#5637).
