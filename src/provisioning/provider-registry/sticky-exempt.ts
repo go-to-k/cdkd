@@ -704,4 +704,21 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'cc-to-sdk-reroute-common-types-4',
     },
   ],
+  [
+    'AWS::ServiceDiscovery::Service',
+    {
+      // Batch 5 of go-to-k/cdkd#6454, admitted for the SDK path's speed once
+      // its update stopped failing every deploy of a service in an HTTP
+      // namespace (go-to-k/cdkd#6484). Its fixture flipped one service in a DNS
+      // namespace and one in an HTTP namespace, each witnessed by CreateDate:
+      // Cloud Map handed a namespace re-created under the same name its old
+      // `ns-...` id (measured in batch 3), so its ids are not used as witnesses.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `srv-...` service id: the schema primaryIdentifier ' +
+        'is Id and the Service Discovery provider records the CreateService Id',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-5',
+    },
+  ],
 ]);

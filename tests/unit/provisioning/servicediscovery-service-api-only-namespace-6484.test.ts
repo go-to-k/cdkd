@@ -68,6 +68,7 @@ describe('ServiceDiscovery Service update in an HTTP namespace (#6484)', () => {
   it('goes on, warns, and records the description AWS still holds', async () => {
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) return { Service: { Description: 'old' } };
       return {};
     });
     const result = await new ServiceDiscoveryProvider().update(
@@ -87,6 +88,7 @@ describe('ServiceDiscovery Service update in an HTTP namespace (#6484)', () => {
   it('drops a ServiceChange key the record lacks, rather than recording the template value', async () => {
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) return { Service: {} };
       return {};
     });
     const result = await new ServiceDiscoveryProvider().update(
@@ -102,6 +104,7 @@ describe('ServiceDiscovery Service update in an HTTP namespace (#6484)', () => {
   it('puts HealthCheckConfig back too, and drops an UNSETTLED key instead of copying its readback', async () => {
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) return { Service: { Description: 'plaintext-read-back-from-aws', HealthCheckConfig: { Type: 'HTTP', FailureThreshold: 2 } } };
       return {};
     });
     const previous = {
@@ -128,6 +131,40 @@ describe('ServiceDiscovery Service update in an HTTP namespace (#6484)', () => {
     expect(JSON.stringify(result.effectiveProperties)).not.toContain('plaintext-read-back-from-aws');
   });
 
+  it('drops a recorded value AWS does not hold, as a Cloud Control record can carry', async () => {
+    // Cloud Control reports an update of such a service as applied while
+    // changing nothing, so its record can say X while AWS still holds W.
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) return { Service: { Description: 'W' } };
+      return {};
+    });
+    const result = await new ServiceDiscoveryProvider().update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      { Name: 'svc', NamespaceId: 'ns-1', Description: 'Y' },
+      { Name: 'svc', NamespaceId: 'ns-1', Description: 'X' }
+    );
+    expect(result.effectiveProperties).toEqual({ Name: 'svc', NamespaceId: 'ns-1' });
+  });
+
+  it('drops every ServiceChange key when the readback fails', async () => {
+    mockSend.mockImplementation(async (cmd: unknown) => {
+      if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) throw new Error('throttled');
+      return {};
+    });
+    const result = await new ServiceDiscoveryProvider().update(
+      'Svc',
+      'srv-1',
+      TYPE,
+      { Name: 'svc', NamespaceId: 'ns-1', Description: 'new' },
+      { Name: 'svc', NamespaceId: 'ns-1', Description: 'old' }
+    );
+    expect(result.effectiveProperties).toEqual({ Name: 'svc', NamespaceId: 'ns-1' });
+  });
+
   it('still applies a Tags change the same deploy carries', async () => {
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
@@ -147,6 +184,7 @@ describe('ServiceDiscovery Service update in an HTTP namespace (#6484)', () => {
   it('still applies the ServiceAttributes change the same deploy carries', async () => {
     mockSend.mockImplementation(async (cmd: unknown) => {
       if (cmd instanceof UpdateServiceCommand) throw apiOnlyRefusal();
+      if (cmd instanceof GetServiceCommand) return { Service: { Description: 'old' } };
       return {};
     });
     const result = await new ServiceDiscoveryProvider().update(

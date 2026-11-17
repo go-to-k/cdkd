@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   TagResourceCommand,
   UntagResourceCommand,
@@ -369,6 +370,9 @@ export async function updateService(
   // go-to-k/cdkd#6484: set when AWS refused the ServiceChange because the
   // service is in an HTTP (API-only) namespace.
   let serviceChangeRefused = false;
+  // What AWS reports for the ServiceChange keys after that refusal, or
+  // `undefined` when it could not be read.
+  let liveAfterRefusal: Record<string, unknown> | undefined;
   try {
     if (hasServiceChange) {
       if (servicePlan.keepRemovedFromLive) {
@@ -388,11 +392,12 @@ export async function updateService(
         // update as applied while changing nothing. cdkd matches the outcome
         // (the deploy goes on), says so, and records what AWS still holds.
         serviceChangeRefused = true;
+        liveAfterRefusal = await readServiceChangeFields(client, physicalId);
         this.logger.warn(
           safeMsg`Cloud Map cannot update service ${logicalId}: it is in an HTTP (API-only) namespace, ` +
             'where AWS refuses UpdateService. Its Description, DnsConfig and HealthCheckConfig ' +
-            'changes were not applied, as in CloudFormation, and the state record keeps the ' +
-            'values AWS holds; replace the service to change them.'
+            'changes were not applied, as in CloudFormation, and the state record keeps only ' +
+            'values AWS is seen to hold; replace the service to change them.'
         );
       }
 
@@ -502,7 +507,8 @@ export async function updateService(
         effectiveProperties: withServiceChangeKeysKept(
           properties,
           previousProperties,
-          unsettledProperties
+          unsettledProperties,
+          liveAfterRefusal
         ),
       };
     }
@@ -725,23 +731,51 @@ const SERVICE_CHANGE_KEYS = ['Description', 'DnsConfig', 'HealthCheckConfig'] as
 /**
  * The desired bag with every `ServiceChange` key put back to the RECORDED
  * value, for an update AWS refused: the call never ran, so state must keep
- * saying what AWS holds. A key the record lacks is dropped, and so is an
- * UNSETTLED one: its previous value was read back from AWS, so it can be a
- * resolved secret this deploy no longer references and the record's
- * redaction could not match (go-to-k/cdkd#6484 review).
+ * saying what AWS holds. A recorded value is kept only where AWS is SEEN to
+ * hold it: a record Cloud Control wrote can carry a value it reported applied
+ * and never sent (go-to-k/cdkd#6454 batch 5 review), and the live value itself
+ * is never copied in, since it can be a resolved secret the record's
+ * redaction cannot match. So a key is dropped when the record lacks it, when
+ * the live value differs or could not be read, and when it is UNSETTLED (its
+ * previous value is itself a readback; go-to-k/cdkd#6484 review).
  */
 function withServiceChangeKeysKept(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
-  unsettledProperties: ReadonlySet<string> | undefined
+  unsettledProperties: ReadonlySet<string> | undefined,
+  live: Record<string, unknown> | undefined
 ): Record<string, unknown> {
   const kept: Record<string, unknown> = { ...properties };
   for (const key of SERVICE_CHANGE_KEYS) {
-    if (Object.hasOwn(previousProperties, key) && !unsettledProperties?.has(key)) {
-      kept[key] = structuredClone(previousProperties[key]);
-    } else {
-      delete kept[key];
-    }
+    const recordedIsLive =
+      Object.hasOwn(previousProperties, key) &&
+      !unsettledProperties?.has(key) &&
+      live !== undefined &&
+      isDeepStrictEqual(live[key], previousProperties[key]);
+    if (recordedIsLive) kept[key] = structuredClone(previousProperties[key]);
+    else delete kept[key];
   }
   return kept;
+}
+
+/**
+ * The `ServiceChange` keys as AWS reports them, in the CFn spelling the
+ * record uses (`GetService` returns the same member names), or `undefined`
+ * when the read fails: an unread value is never treated as held.
+ */
+async function readServiceChangeFields(
+  client: ReturnType<ServiceDiscoveryProvider['getClient']>,
+  serviceId: string
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    const service = (await client.send(new GetServiceCommand({ Id: serviceId }))).Service;
+    if (!service) return undefined;
+    const live: Record<string, unknown> = {};
+    for (const key of SERVICE_CHANGE_KEYS) {
+      if (service[key] !== undefined) live[key] = service[key];
+    }
+    return live;
+  } catch {
+    return undefined;
+  }
 }
