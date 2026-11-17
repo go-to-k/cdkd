@@ -67,7 +67,7 @@ const proxyStatus = (status: string) => ({ DBProxies: [{ Status: status }] });
 const endpointStatus = (status: string) => ({ DBProxyEndpoints: [{ Status: status }] });
 
 /** Fires the SIGINT listeners the interrupt watch installed since `baseline`. */
-function pressCtrlC(baseline: NodeJS.SignalsListener[]): void {
+function pressCtrlC(baseline: Array<(...args: never[]) => unknown>): void {
   const ours = process.listeners('SIGINT').filter((l) => !baseline.includes(l));
   expect(ours.length).toBeGreaterThan(0);
   for (const l of ours) (l as unknown as () => void)();
@@ -130,14 +130,14 @@ const statusReads = () =>
     .length;
 
 describe('DBProxy / DBProxyEndpoint status polls stop on Ctrl-C and at the resource deadline (#6517)', () => {
-  let baseline: NodeJS.SignalsListener[];
+  let baseline: Array<(...args: never[]) => unknown>;
 
   beforeEach(() => {
     mockSend.mockReset();
     disarmInterruptWatchForTests();
     interruptWatchTestSeam.commandOwnsInterrupts = () => true;
     interruptWatchTestSeam.forceQuit = vi.fn();
-    baseline = process.listeners('SIGINT') as NodeJS.SignalsListener[];
+    baseline = process.listeners('SIGINT') as Array<(...args: never[]) => unknown>;
   });
 
   afterEach(() => {
@@ -217,7 +217,7 @@ describe('pauseBeforeNextPoll (#6517)', () => {
 
   it('wakes within a second of a Ctrl-C during the sleep', async () => {
     vi.useFakeTimers();
-    const baseline = process.listeners('SIGINT') as NodeJS.SignalsListener[];
+    const baseline = process.listeners('SIGINT') as Array<(...args: never[]) => unknown>;
     const watch = startInterruptWatch('test wait');
     try {
       const paused = pauseBeforeNextPoll(Date.now() + 60_000, watch).catch((e: unknown) => e);
@@ -258,7 +258,7 @@ describe('pauseBeforeNextPoll (#6517)', () => {
   });
 
   it('answers a Ctrl-C seen before the pause with the interrupt, not a timeout', async () => {
-    const baseline = process.listeners('SIGINT') as NodeJS.SignalsListener[];
+    const baseline = process.listeners('SIGINT') as Array<(...args: never[]) => unknown>;
     const watch = startInterruptWatch('test wait');
     try {
       pressCtrlC(baseline);
