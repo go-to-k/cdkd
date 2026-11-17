@@ -149,7 +149,7 @@ expected() { # usage: expected <logicalId> <a|b>
 # The value AWS holds for that property, read through the recorded id.
 live_value() { # usage: live_value <logicalId> <physicalId>
   local bare
-  bare=$(bare_id "$1" "$2") || return 1
+  bare=$(bare_id "$1" "$2") || { echo "FAIL: cannot read $1's bare id from its recorded '$2'" >&2; return 1; }
   case "$1" in
     RerouteStage)
       aws apigatewayv2 get-stage --api-id "${API_ID}" --stage-name "${bare}" \
@@ -180,7 +180,7 @@ live_value() { # usage: live_value <logicalId> <physicalId>
 # bucket (a recreated one keeps its name).
 witness() { # usage: witness <logicalId> <physicalId>
   local bare
-  bare=$(bare_id "$1" "$2") || return 1
+  bare=$(bare_id "$1" "$2") || { echo "FAIL: cannot read $1's bare id from its recorded '$2'" >&2; return 1; }
   case "$1" in
     RerouteStage)
       aws apigatewayv2 get-stage --api-id "${API_ID}" --stage-name "${bare}" \
@@ -204,6 +204,12 @@ witness() { # usage: witness <logicalId> <physicalId>
   esac
 }
 
+# Names the subject and phase of a read that failed, then fails the caller.
+cannot_read() { # usage: cannot_read <message>
+  echo "FAIL: $1" >&2
+  return 1
+}
+
 witness_ok() { # usage: witness_ok <witness>
   [ -n "$1" ] && [ "$1" != "None" ]
 }
@@ -213,7 +219,7 @@ assert_live_values() { # usage: assert_live_values <phase-label> <a|b>
   local id pid got want
   for id in "${SUBJECTS[@]}"; do
     pid=$(record "${id}" '.physicalId')
-    got=$(live_value "${id}" "${pid}")
+    got=$(live_value "${id}" "${pid}") || { echo "FAIL: $1: cannot read ${id}'s live value through ${pid}" >&2; exit 1; }
     want=$(expected "${id}" "$2")
     [ "${got}" = "${want}" ] || { echo "FAIL: $1: ${id} (${pid}) holds '${got}', expected '${want}'" >&2; exit 1; }
   done
@@ -249,7 +255,7 @@ assert_refs() { # usage: assert_refs <phase-label>
     [ "${got}" = "${want}" ] || { echo "FAIL: $1: Ref of ${id} resolved to '${got}', expected ${want}" >&2; exit 1; }
   done
   gql_arn=$(aws appsync get-graphql-api --api-id "$(bare_id RerouteGraphQLApi "$(record RerouteGraphQLApi '.physicalId')")" \
-    --region "${REGION}" --query graphqlApi.arn --output text) || return 1
+    --region "${REGION}" --query graphqlApi.arn --output text) || cannot_read "$1: cannot read RerouteGraphQLApi's ARN from AppSync" || return 1
   [ "$(output GraphQLApiRef)" = "${gql_arn}" ] || {
     echo "FAIL: $1: Ref of RerouteGraphQLApi resolved to '$(output GraphQLApiRef)', expected its ARN ${gql_arn}" >&2
     exit 1
@@ -259,7 +265,7 @@ assert_refs() { # usage: assert_refs <phase-label>
     exit 1
   }
   vb_arn=$(aws s3vectors get-vector-bucket --vector-bucket-name "${VECTOR_BUCKET}" \
-    --region "${REGION}" --query vectorBucket.vectorBucketArn --output text) || return 1
+    --region "${REGION}" --query vectorBucket.vectorBucketArn --output text) || cannot_read "$1: cannot read RerouteVectorBucket's ARN from S3 Vectors" || return 1
   [ "$(output VectorBucketRef)" = "${vb_arn}" ] || {
     echo "FAIL: $1: Ref of RerouteVectorBucket resolved to '$(output VectorBucketRef)', expected its ARN ${vb_arn}" >&2
     exit 1
@@ -333,7 +339,8 @@ assert_layers "phase 1 (fresh deploy)" sdk
 assert_forms "phase 1 (fresh deploy)" sdk
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
-  W0[$i]=$(witness "${id}" "$(record "${id}" '.physicalId')")
+  W0[$i]=$(witness "${id}" "$(record "${id}" '.physicalId')") ||
+    { echo "FAIL: phase 1: cannot read ${id}'s identity witness" >&2; exit 1; }
   witness_ok "${W0[$i]}" || { echo "FAIL: no identity witness for ${id}" >&2; exit 1; }
 done
 assert_live_values "phase 1 (SDK create)" a
@@ -355,7 +362,8 @@ assert_forms "phase 2 (after --recreate-via-cc-api)" cc
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   P1[$i]=$(record "${id}" '.physicalId')
-  W1[$i]=$(witness "${id}" "${P1[$i]}")
+  W1[$i]=$(witness "${id}" "${P1[$i]}") ||
+    { echo "FAIL: phase 2: cannot read ${id}'s identity witness through ${P1[$i]}" >&2; exit 1; }
   witness_ok "${W1[$i]}" || { echo "FAIL: no identity witness for ${id} after the recreate" >&2; exit 1; }
   [ "${W1[$i]}" != "${W0[$i]}" ] || {
     echo "FAIL: the recreate kept ${id}'s witness (${W0[$i]}); it was not recreated, so the witness cannot prove phase 5" >&2
@@ -397,7 +405,9 @@ assert_layers "phase 4 (--pin-cc-api)" cc-api
 for i in "${!SUBJECTS[@]}"; do
   id=${SUBJECTS[$i]}
   [ "$(record "${id}" '.physicalId')" = "${P1[$i]}" ] || { echo "FAIL: the pinned deploy changed ${id}'s id" >&2; exit 1; }
-  [ "$(witness "${id}" "${P1[$i]}")" = "${W1[$i]}" ] || {
+  w=$(witness "${id}" "${P1[$i]}") ||
+    { echo "FAIL: phase 4: cannot read ${id}'s identity witness through ${P1[$i]}" >&2; exit 1; }
+  [ "${w}" = "${W1[$i]}" ] || {
     echo "FAIL: the pinned Cloud Control update replaced ${id} (its witness changed)" >&2
     exit 1
   }
@@ -430,7 +440,8 @@ for i in "${!SUBJECTS[@]}"; do
     echo "FAIL: ${id}'s flipped id is ${p2}, expected the bare part of Cloud Control's ${P1[$i]}" >&2
     exit 1
   }
-  w2=$(witness "${id}" "${p2}")
+  w2=$(witness "${id}" "${p2}") ||
+    { echo "FAIL: phase 5: cannot read ${id}'s identity witness through the flipped id ${p2}" >&2; exit 1; }
   [ "${w2}" = "${W1[$i]}" ] || {
     echo "FAIL: ${id}'s witness changed across the flip (${W1[$i]} -> ${w2}); the SDK provider replaced it" >&2
     exit 1

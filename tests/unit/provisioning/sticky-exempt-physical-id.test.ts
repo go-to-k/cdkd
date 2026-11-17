@@ -270,6 +270,12 @@ describe('s3VectorsVectorBucketSdkPhysicalId', () => {
     ['the measured ARN', VB_ARN, 'cdkd-measure-6490-b8-vb'],
     ['a three-character name', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/a1b', 'a1b'],
     ['a China-partition ARN', 'arn:aws-cn:s3vectors:cn-north-1:123456789012:bucket/a1b', 'a1b'],
+    // Measured accepted by CreateVectorBucket (us-east-1, 2026-11-17).
+    [
+      'a dotted name',
+      'arn:aws:s3vectors:us-east-1:123456789012:bucket/cdkd-measure-6490.dot-11427',
+      'cdkd-measure-6490.dot-11427',
+    ],
   ])('keeps the bucket name of %s', (_label, ccId, sdkId) => {
     expect(s3VectorsVectorBucketSdkPhysicalId(ccId)).toBe(sdkId);
   });
@@ -280,6 +286,9 @@ describe('s3VectorsVectorBucketSdkPhysicalId', () => {
     ['a two-character name', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/ab'],
     ['a name ending in a hyphen', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/abc-'],
     ['an uppercase name', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/ABC'],
+    ['an empty name', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/'],
+    ['a name with a slash', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/ab/c'],
+    ['a name ending in a dot', 'arn:aws:s3vectors:us-east-1:123456789012:bucket/abc.'],
     ['a sixty-four-character name', `arn:aws:s3vectors:us-east-1:123456789012:bucket/${'a'.repeat(64)}`],
     ['an S3 bucket ARN', 'arn:aws:s3:::cdkd-measure-6490-b8-vb'],
     ['a partition that is not one', VB_ARN.replace('arn:aws:', 'arn:awsfoo:')],

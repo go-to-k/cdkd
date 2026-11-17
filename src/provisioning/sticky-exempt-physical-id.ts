@@ -264,11 +264,13 @@ export function appSyncGraphQLApiSdkPhysicalId(ccPhysicalId: string): string {
  * `AWS::S3Vectors::VectorBucket` (schema primaryIdentifier `[VectorBucketArn]`,
  * measured us-east-1, 2026-11-17:
  * `arn:aws:s3vectors:<region>:<account>:bucket/<name>`). A vector bucket name
- * is 3 to 63 lowercase letters, digits and hyphens, starting and ending with a
- * letter or digit; an index ARN (`bucket/<name>/index/<index>`) is refused.
+ * is 3 to 63 lowercase letters, digits, hyphens and dots, starting and ending
+ * with a letter or digit (a dotted name was measured accepted, us-east-1,
+ * 2026-11-17: `cdkd-measure-6490.dot-11427`); an index ARN
+ * (`bucket/<name>/index/<index>`) is refused.
  */
 const S3VECTORS_BUCKET_CC_ID =
-  /^arn:aws(?:-[a-z]+)*:s3vectors:[a-z0-9-]+:\d{12}:bucket\/([a-z0-9][a-z0-9-]{1,61}[a-z0-9])$/;
+  /^arn:aws(?:-[a-z]+)*:s3vectors:[a-z0-9-]+:\d{12}:bucket\/([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/;
 
 /**
  * The bare bucket name `S3VectorsProvider` stores as an
