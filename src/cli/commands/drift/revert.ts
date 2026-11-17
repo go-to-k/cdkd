@@ -107,7 +107,7 @@ export async function runRevert(
   // confirmation) and the update read the same names. One lookup per region
   // and type, in that stack's own region scope, as the update's own is.
   const writeOnlyResend = new Map<DriftedOutcome, readonly string[]>();
-  const writeOnlyLookups = new Map<string, Promise<ReadonlySet<string> | undefined>>();
+  const writeOnlyLookups = new Map<string, Map<string, Promise<ReadonlySet<string> | undefined>>>();
   await Promise.all(
     reports.flatMap((report) =>
       report.outcomes.flatMap((o) => {
@@ -120,13 +120,17 @@ export async function runRevert(
           provisionedBy: record.provisionedBy,
         });
         if (provisionedBy !== 'cc-api') return [];
-        const key = `${report.region}\0${o.resourceType}`;
-        let lookup = writeOnlyLookups.get(key);
+        let byType = writeOnlyLookups.get(report.region);
+        if (!byType) {
+          byType = new Map();
+          writeOnlyLookups.set(report.region, byType);
+        }
+        let lookup = byType.get(o.resourceType);
         if (!lookup) {
           lookup = runWithStackAwsClients(scope.clients, () =>
             tryGetTopLevelWriteOnlyProperties(o.resourceType)
           );
-          writeOnlyLookups.set(key, lookup);
+          byType.set(o.resourceType, lookup);
         }
         return [
           lookup.then((writeOnlyNames) => {
