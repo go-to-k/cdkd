@@ -747,8 +747,11 @@ its next write. The one alternative is a declared `normalizeCcPhysicalId` on
 the entry: a strict map from the Cloud Control id to the SDK provider's form,
 applied wherever a cc-api record reaches the SDK provider and persisted with
 `'sdk'` on the flip's write (`AWS::ECS::Service`, whose Cloud Control id is
-`<serviceArn>|<cluster>` and SDK id the bare ARN; issue
-[#5654](https://github.com/go-to-k/cdkd/issues/5654)). Either is a per-type
+`<serviceArn>|<cluster>` and SDK id the bare ARN, issue
+[#5654](https://github.com/go-to-k/cdkd/issues/5654); `AWS::ApiGateway::Authorizer`
+and `AWS::ApiGateway::Stage`, whose Cloud Control ids are
+`<restApiId>|<authorizerId>` and `<restApiId>|<stageName>` and SDK ids the
+bare second segment, issue [#6490](https://github.com/go-to-k/cdkd/issues/6490)). Either is a per-type
 empirical fact, not an argument, so each entry names an integration fixture
 that OBSERVED it on a live resource; a unit test refuses an entry whose
 fixture does not exist or has never run.
@@ -794,8 +797,9 @@ conditional the escape is:
   `AWS::Glue::Workflow`, `AWS::Glue::Crawler`,
   `AWS::ElasticLoadBalancingV2::LoadBalancer`,
   `AWS::ServiceDiscovery::Service`, `AWS::S3Tables::TableBucket`,
-  `AWS::BedrockAgentCore::Runtime` and `AWS::BedrockAgentCore::Evaluator` are
-  the members today.
+  `AWS::BedrockAgentCore::Runtime`, `AWS::BedrockAgentCore::Evaluator`,
+  `AWS::ApiGateway::Authorizer`, `AWS::ApiGateway::Stage` and
+  `AWS::ApiGateway::Method` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

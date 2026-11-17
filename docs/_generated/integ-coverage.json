@@ -176,6 +176,7 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "cc-to-sdk-reroute-common-types-7",
         "local-start-api"
       ],
       "signals": {
@@ -183,6 +184,10 @@
           "l1"
         ],
         "apigateway": [
+          "l1",
+          "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-7": [
           "l1",
           "literal"
         ],
@@ -201,7 +206,8 @@
         "apigw-restapi-spec",
         "apigw-stage-props",
         "apigw-stage-throttling",
-        "apigw-vpclink-integration-target"
+        "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-common-types-7"
       ],
       "signals": {
         "api-cognito": [
@@ -229,6 +235,9 @@
         ],
         "apigw-vpclink-integration-target": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-7": [
+          "l1"
         ]
       }
     },
@@ -243,6 +252,7 @@
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-common-types-7",
         "cc-to-sdk-reroute-rest-api"
       ],
       "signals": {
@@ -270,6 +280,10 @@
           "literal"
         ],
         "apigw-vpclink-integration-target": [
+          "l1",
+          "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-7": [
           "l1",
           "literal"
         ],
@@ -315,6 +329,7 @@
         "apigw-stage-props",
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-common-types-7",
         "cc-to-sdk-reroute-rest-api",
         "destroy-nested-cross-region",
         "local-invoke-nested-stack-from-state",
@@ -341,6 +356,9 @@
           "literal"
         ],
         "apigw-vpclink-integration-target": [
+          "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-7": [
           "l1"
         ],
         "cc-to-sdk-reroute-rest-api": [
@@ -377,7 +395,8 @@
         "apigw-restapi-spec",
         "apigw-stage-props",
         "apigw-stage-throttling",
-        "apigw-vpclink-integration-target"
+        "apigw-vpclink-integration-target",
+        "cc-to-sdk-reroute-common-types-7"
       ],
       "signals": {
         "api-cognito": [
@@ -404,6 +423,10 @@
         ],
         "apigw-vpclink-integration-target": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-7": [
+          "l1",
+          "literal"
         ]
       }
     },
