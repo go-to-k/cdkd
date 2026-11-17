@@ -64,9 +64,11 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 ID_SUBJECT=RerouteDistribution
 TYPE="AWS::CloudFront::Distribution"
-# A distribution Id: `E` and 13 upper-case letters or digits (measured
-# us-east-1, 2026-11-18).
-DIST_ID='E[0-9A-Z]{13}'
+# A distribution Id: `E` and upper-case letters or digits. The length varies:
+# both `E` + 13 (E3A7VW3NAH9ODQ) and `E` + 12 (EFSZZWCJI6W8N) were measured in
+# us-east-1 on 2026-11-18, and AWS documents none. The bare form still refuses
+# an ARN or a `|`-composite.
+DIST_ID='E[0-9A-Z]+'
 
 STATE_JSON=""
 load_state() {
