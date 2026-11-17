@@ -23,11 +23,9 @@ apigw-vpclink-integration-target	2026-11-12T11:22:31Z	PASS	346	verify.sh	rc ok, 
 app-autoscaling-recreate	2026-11-04T07:59:30Z	PASS	141	verify.sh	rc ok, destroy 0 errors, 0 orphans (#4706 imported target cc-api, recreate refused, policy intact)
 appconfig	2026-11-09T08:45:43Z	PASS	70	verify.sh	maintainer merge-gate rerun of PR 6065 (head 4647d5ac3); Environment on SDK provider, 0 errors, 0 orphans
 appconfig-environment-delete-protection	2026-11-10T07:11:19Z	PASS	91	verify.sh	3 consecutive PASS after #6074 settle wait (95/91/91s); APPLY control refused each run, 0 errors, 0 orphans
-appsync	2026-11-06T16:05:56Z	PASS	190	verify.sh	post-hoc on main after #5859/#5867/#5869; state show/resources mask the key; rc ok, orph clean
+appsync	2026-11-17T03:42:27Z	PASS	240	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
 asg-destroy-running-instances	2026-11-17T03:39:15Z	PASS	305	verify.sh	rc ok, orph clean (#6437 PR #6469)
 asg-update-policy	2026-11-17T03:39:15Z	PASS	912	verify.sh	rc ok, orph clean (#6437 PR #6469)
-appsync	2026-11-17T03:42:27Z	PASS	240	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
-asg-destroy-running-instances	2026-11-16T23:45:03Z	PASS	291	verify.sh	rc ok, orph clean (#6466 PR #6467)
 asset-auto-create	2026-11-04T07:52:45Z	PASS	195	verify.sh	rc ok, orph clean; eu-north-1 (auto-create + opt-out + skip-assets; storage/marker/log groups cleaned)
 asset-bootstrap	2026-11-13T08:51:46Z	PASS	165	verify.sh	rc ok, orph clean; eu-west-2, bucket lifecycle rule set (#6185 PR #6196)
 asset-migration	2026-11-13T08:51:46Z	PASS	616	verify.sh	rc 0 in eu-west-1, 0 orphans; abort-MPU lifecycle rule verified on live bucket (#6185 PR #6196)
@@ -190,7 +188,6 @@ gc-custom-asset-names	2026-11-04T07:51:26Z	PASS	163	verify.sh	rc ok, orph clean;
 generated-name-lifecycle	2026-11-05T03:45:05Z	PASS	946	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 generated-name-security-group	2026-11-05T03:29:19Z	PASS	95	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 getatt-appsync-s3express-s3tables	2026-11-14T03:39:08Z	PASS	71	verify.sh	rc ok, orph clean; asserts five (ApiKeyId unit-only: a bearer key) (#6242)
-getatt-asg-arn-rule-name	2026-11-17T03:39:15Z	PASS	140	verify.sh	rc ok, orph clean (#6437 PR #6469)
 getatt-asg-arn-rule-name	2026-11-17T03:42:27Z	PASS	135	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
 getatt-cache-kinesis-lambda-ec2	2026-11-14T19:24:51Z	PASS	757	verify.sh	rc ok, orph clean
 getatt-cloudtrail-appsync	2026-11-14T06:03:17Z	PASS	99	verify.sh	rc ok, orph clean incl. CR log group; CFn A/B measured all three (#6242)
