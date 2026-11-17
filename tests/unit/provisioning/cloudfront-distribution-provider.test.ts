@@ -1420,6 +1420,45 @@ describe('CloudFrontDistributionProvider', () => {
           Quantity: 2,
           Items: ['TLSv1.1', 'TLSv1.2'],
         });
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
+        expect(
+          warned.filter((w) => w.includes("OriginSSLProtocols was removed from origin 'web'"))
+        ).toHaveLength(1);
+      });
+
+      it('does not warn when the previous template never declared OriginSSLProtocols', async () => {
+        await send(liveWith('web', ['TLSv1.2']), template(customOrigin()));
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0]));
+        expect(warned.filter((w) => w.includes('OriginSSLProtocols was removed'))).toHaveLength(0);
+      });
+
+      it('gives the create default when the live origin of that Id is an S3 origin', async () => {
+        const sent = await send(
+          {
+            CallerReference: 'ref',
+            Enabled: false,
+            Origins: {
+              Quantity: 1,
+              Items: [{ Id: 'web', DomainName: 'b.s3.amazonaws.com', S3OriginConfig: { OriginAccessIdentity: '' } }],
+            },
+          },
+          template(customOrigin())
+        );
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 3,
+          Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
+        });
+      });
+
+      it('gives the create default when the live Origins carry no item list', async () => {
+        const sent = await send(
+          { CallerReference: 'ref', Enabled: false, Origins: {} },
+          template(customOrigin())
+        );
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 3,
+          Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
+        });
       });
 
       it("gives a NEW custom origin CloudFront's create default", async () => {

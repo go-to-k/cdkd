@@ -59,7 +59,13 @@ export function mergeUpdateConfig(
 
   Object.assign(merged, templateSdk);
   merged['CallerReference'] = currentConfig['CallerReference'];
-  fillOriginSslProtocols(merged, currentConfig);
+  fillOriginSslProtocols(merged, currentConfig, previousSdk, (originId) =>
+    this.logger.warn(
+      `CloudFront Distribution ${logicalId}: OriginSSLProtocols was removed from origin ` +
+        `'${String(originId)}' in the template; keeping the live value rather than ` +
+        `CloudFormation's SSLv3, TLSv1 default. Set it explicitly in the template to change it.`
+    )
+  );
   this.completeRequiredUpdateFields(merged);
   return merged;
 }
@@ -81,11 +87,15 @@ const CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS = {
  * Absent-only: a templated value always wins. Otherwise the LIVE value of the
  * origin with the same `Id` is kept, so the update changes nothing on AWS;
  * an origin with no live custom-origin value (new in this update) takes what
- * CloudFront's create would have recorded.
+ * CloudFront's create would have recorded. Keeping the live value where the
+ * previous template declared one is announced through `onRemovedKept`, as the
+ * top-level removal with no known default is.
  */
 function fillOriginSslProtocols(
   config: Record<string, unknown>,
-  currentConfig: Record<string, unknown>
+  currentConfig: Record<string, unknown>,
+  previousConfig: Record<string, unknown>,
+  onRemovedKept: (originId: unknown) => void
 ): void {
   const origins = config['Origins'] as Record<string, unknown> | undefined;
   if (!origins || !Array.isArray(origins['Items'])) return;
@@ -96,11 +106,23 @@ function fillOriginSslProtocols(
     const custom = live?.['CustomOriginConfig'] as Record<string, unknown> | undefined;
     return custom?.['OriginSslProtocols'];
   };
+  const previousItems = (previousConfig['Origins'] as Record<string, unknown> | undefined)?.[
+    'Items'
+  ];
+  const previouslyDeclared = (id: unknown): boolean =>
+    Array.isArray(previousItems) &&
+    (previousItems as Record<string, unknown>[]).some(
+      (o) =>
+        o?.['Id'] === id &&
+        (o['CustomOriginConfig'] as Record<string, unknown> | undefined)?.['OriginSslProtocols'] !==
+          undefined
+    );
   origins['Items'] = (origins['Items'] as Record<string, unknown>[]).map((origin) => {
     const custom = origin?.['CustomOriginConfig'];
     if (!custom || typeof custom !== 'object') return origin;
     if ((custom as Record<string, unknown>)['OriginSslProtocols'] !== undefined) return origin;
     const live = liveProtocols(origin['Id']);
+    if (live !== undefined && previouslyDeclared(origin['Id'])) onRemovedKept(origin['Id']);
     return {
       ...origin,
       CustomOriginConfig: {
