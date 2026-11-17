@@ -640,4 +640,80 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'cc-to-sdk-reroute-common-types-3',
     },
   ],
+  [
+    'AWS::Events::EventBus',
+    {
+      // Batch 4 of go-to-k/cdkd#6454, admitted with five other types for the
+      // SDK path's speed once its delete stopped deleting rules from outside
+      // the stack (go-to-k/cdkd#6479). Its fixture observed all six flips on
+      // live resources, each with an identity witness: the AWS-minted ARN,
+      // or the resource's creation time (Cloud Map re-mints its ids).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare bus name, not the ARN: the schema primaryIdentifier ' +
+        'is Name and EventBridgeBusProvider.create records the bus name',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-4',
+    },
+  ],
+  [
+    'AWS::ServiceDiscovery::PrivateDnsNamespace',
+    {
+      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `ns-...` namespace id: the schema primaryIdentifier ' +
+        'is Id and the Service Discovery provider records the Id of the namespace it created',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-4',
+    },
+  ],
+  [
+    'AWS::ServiceDiscovery::Service',
+    {
+      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `srv-...` service id: the schema primaryIdentifier ' +
+        'is Id and the Service Discovery provider records the CreateService Id',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-4',
+    },
+  ],
+  [
+    'AWS::Glue::Workflow',
+    {
+      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare workflow name: the schema primaryIdentifier is Name ' +
+        'and the Glue provider records the CreateWorkflow Name',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-4',
+    },
+  ],
+  [
+    'AWS::Glue::Crawler',
+    {
+      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare crawler name: the schema primaryIdentifier is Name ' +
+        'and GlueCrawlerProvider.create records the crawler name',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-4',
+    },
+  ],
+  [
+    'AWS::ElasticLoadBalancingV2::LoadBalancer',
+    {
+      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the load balancer ARN: the schema primaryIdentifier is ' +
+        'LoadBalancerArn and the ELBv2 provider records the CreateLoadBalancer LoadBalancerArn',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6454',
+      integFixture: 'cc-to-sdk-reroute-common-types-4',
+    },
+  ],
 ]);

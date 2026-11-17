@@ -789,8 +789,10 @@ conditional the escape is:
   `AWS::Cognito::UserPool`, `AWS::CloudFront::OriginAccessControl`,
   `AWS::KMS::Alias`, `AWS::CloudFront::CloudFrontOriginAccessIdentity`,
   `AWS::ServiceDiscovery::HttpNamespace`, `AWS::Glue::Database`,
-  `AWS::Glue::Job` and
-  `AWS::ECR::Repository` are the members today.
+  `AWS::Glue::Job`, `AWS::ECR::Repository`, `AWS::Events::EventBus`,
+  `AWS::ServiceDiscovery::PrivateDnsNamespace`, `AWS::ServiceDiscovery::Service`,
+  `AWS::Glue::Workflow`, `AWS::Glue::Crawler` and
+  `AWS::ElasticLoadBalancingV2::LoadBalancer` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api
