@@ -757,7 +757,15 @@ API Gateway v2 `Stage`, `Integration` and `Route`, whose Cloud Control ids are
 `<authorizerId>|<apiId>`, each with the bare id as SDK id; and
 `AWS::AppSync::GraphQLApi` and `AWS::S3Vectors::VectorBucket`, whose Cloud
 Control ids are the ARN and SDK ids the bare API id and bucket name, issue
-[#6490](https://github.com/go-to-k/cdkd/issues/6490) batch 8). Either is a per-type
+[#6490](https://github.com/go-to-k/cdkd/issues/6490) batch 8). A normalizer
+whose SDK id is not inside the Cloud Control id also reads the record: its
+properties and the region, account and partition it lives in. It still checks
+the Cloud Control id's shape, and where the id and the properties name the
+same value it refuses a mismatch (`AWS::WAFv2::WebACL`, whose Cloud Control id is `<Name>|<Id>|<Scope>`
+and SDK id the web ACL ARN built from those; `AWS::CodeCommit::Repository`,
+whose Cloud Control id is the RepositoryId and SDK id the record's
+`RepositoryName`, a read through which must return that RepositoryId; issue [#6490](https://github.com/go-to-k/cdkd/issues/6490)
+batch 10). Either is a per-type
 empirical fact, not an argument, so each entry names an integration fixture
 that OBSERVED it on a live resource; a unit test refuses an entry whose
 fixture does not exist or has never run.

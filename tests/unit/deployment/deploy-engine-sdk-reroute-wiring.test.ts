@@ -157,7 +157,8 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       stackName: string;
       viaCcApi: ReadonlySet<string>;
       viaSdkProvider: ReadonlySet<string>;
-    }
+    },
+    region = 'us-east-1'
   ) {
     const mockStateBackend = { getState: vi.fn(), saveState: vi.fn().mockResolvedValue('etag') };
     const mockLockManager = {
@@ -189,7 +190,7 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       mockDiffCalculator as unknown as never,
       mockProviderRegistry as unknown as never,
       { ...(pinCcApi ? { pinCcApi } : {}), ...(recreateTargets ? { recreateTargets } : {}) },
-      'us-east-1'
+      region
     );
   }
 
@@ -470,6 +471,118 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
         'arn:aws:sns:us-east-1:1:t'
       );
       expect(state[LOGICAL_ID]!.physicalId).toBe('arn:aws:sns:us-east-1:1:t');
+    });
+
+    /**
+     * go-to-k/cdkd#6490: a normalizer reading the record. The flip hands it
+     * the RECORDED bag (which names the live resource), never the desired one,
+     * and the engine's stack region.
+     */
+    async function flipWith(
+      engine: InstanceType<typeof DeployEngine>,
+      resourceType: string,
+      physicalId: string,
+      recorded: Record<string, unknown>,
+      desired: Record<string, unknown>
+    ): Promise<Record<string, StateRecord>> {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
+      const state = {
+        [LOGICAL_ID]: {
+          physicalId,
+          resourceType,
+          properties: recorded,
+          attributes: {},
+          dependencies: [],
+          provisionedBy: 'cc-api',
+        } as unknown as StateRecord,
+      };
+      await provisionOf(engine)(
+        LOGICAL_ID,
+        {
+          logicalId: LOGICAL_ID,
+          changeType: 'UPDATE',
+          resourceType,
+          currentProperties: recorded,
+          desiredProperties: desired,
+          propertyChanges: [{ path: 'Description', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+        } as unknown as ResourceChange,
+        state,
+        STACK,
+        { Resources: { [LOGICAL_ID]: { Type: resourceType, Properties: desired } } }
+      );
+      return state;
+    }
+
+    it("a CodeCommit flip addresses the repository by the RECORD's RepositoryName, not the desired one", async () => {
+      const id = 'b4019a38-d7a8-4176-96f0-f53991fd3c5a';
+      const state = await flipWith(
+        makeEngine(),
+        'AWS::CodeCommit::Repository',
+        id,
+        { RepositoryName: 'recorded-repo', RepositoryDescription: 'a' },
+        { RepositoryName: 'desired-repo', RepositoryDescription: 'b' }
+      );
+      expect((provider.update as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe('recorded-repo');
+      expect(state[LOGICAL_ID]!.physicalId).toBe('recorded-repo');
+      expect(state[LOGICAL_ID]!.provisionedBy).toBe('sdk');
+      // The provider's holder check reads the recorded RepositoryId: a record
+      // lacking it gets the Cloud Control id, which IS that id.
+      const context = (provider.update as ReturnType<typeof vi.fn>).mock.calls[0]!.find(
+        (arg: unknown) => typeof arg === 'object' && arg !== null && 'recordedAttributes' in arg
+      ) as { recordedAttributes?: Record<string, unknown> } | undefined;
+      expect(context?.recordedAttributes).toMatchObject({ RepositoryId: id });
+    });
+
+    it("a WAFv2 flip builds the ARN in the engine's stack region and the caller's account", async () => {
+      const id = '20803c2a-0b8f-4df4-a600-11eda6efc69b';
+      const arn = `arn:aws:wafv2:eu-west-1:123456789012:regional/webacl/my-acl/${id}`;
+      const state = await flipWith(
+        makeEngine(undefined, undefined, 'eu-west-1'),
+        'AWS::WAFv2::WebACL',
+        `my-acl|${id}|REGIONAL`,
+        { Name: 'my-acl', Scope: 'REGIONAL', Description: 'a' },
+        { Name: 'my-acl', Scope: 'REGIONAL', Description: 'b' }
+      );
+      expect((provider.update as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(arn);
+      expect(state[LOGICAL_ID]!.physicalId).toBe(arn);
+    });
+
+    it("a WAFv2 flip takes the partition from the engine's stack region", async () => {
+      const id = '20803c2a-0b8f-4df4-a600-11eda6efc69b';
+      await flipWith(
+        makeEngine(undefined, undefined, 'us-gov-west-1'),
+        'AWS::WAFv2::WebACL',
+        `my-acl|${id}|REGIONAL`,
+        { Scope: 'REGIONAL', Description: 'a' },
+        { Scope: 'REGIONAL', Description: 'b' }
+      );
+      expect((provider.update as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(
+        `arn:aws-us-gov:wafv2:us-gov-west-1:123456789012:regional/webacl/my-acl/${id}`
+      );
+    });
+
+    it("a WAFv2 flip whose RECORDED Name disagrees with its id fails before the update, record untouched", async () => {
+      const id = '20803c2a-0b8f-4df4-a600-11eda6efc69b';
+      let state: Record<string, StateRecord> | undefined;
+      const failure = await flipWith(
+        makeEngine(),
+        'AWS::WAFv2::WebACL',
+        `my-acl|${id}|REGIONAL`,
+        // The desired Name matches the id; only the recorded one is checked.
+        { Name: 'other-acl', Scope: 'REGIONAL', Description: 'a' },
+        { Name: 'my-acl', Scope: 'REGIONAL', Description: 'b' }
+      ).then(
+        (s) => {
+          state = s;
+          return undefined;
+        },
+        (error: unknown) => error
+      );
+      expect(state).toBeUndefined();
+      expect(String((failure as { cause?: Error } | undefined)?.cause?.message)).toMatch(
+        /MyTopic \(AWS::WAFv2::WebACL\) cannot move from Cloud Control[\s\S]*--pin-cc-api MyTopic/
+      );
+      expect(provider.update).not.toHaveBeenCalled();
     });
   });
 

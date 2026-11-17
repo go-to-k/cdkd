@@ -20,6 +20,16 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
   return { getLogger: () => fns };
 });
+// go-to-k/cdkd#6490: a normalizer's account and partition come from the shared
+// per-credential lookup, answered here for the region it is asked in.
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/intrinsic-function-resolver.js')>()),
+  getAccountInfo: vi.fn(async (region?: string) => ({
+    accountId: '123456789012',
+    region: region ?? 'us-east-1',
+    partition: 'aws',
+  })),
+}));
 
 import { getLogger } from '../../../src/utils/logger.js';
 import {
@@ -184,6 +194,94 @@ describe('readRecordAttributes addresses a cc-api record on the route it took (g
     await expect(
       readEcs(provider, ecsRecord('arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster|my-service'))
     ).rejects.toThrow(/Svc \(AWS::ECS::Service\) cannot move from Cloud Control/);
+    expect(provider.import).not.toHaveBeenCalled();
+  });
+
+  it("hands a normalizer the record's properties and the region the read is in (go-to-k/cdkd#6490)", async () => {
+    const id = '20803c2a-0b8f-4df4-a600-11eda6efc69b';
+    const provider = echo();
+    const acl = {
+      physicalId: `my-acl|${id}|REGIONAL`,
+      resourceType: 'AWS::WAFv2::WebACL',
+      properties: { Name: 'my-acl', Scope: 'REGIONAL' },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'cc-api',
+    } as unknown as ResourceState;
+    await readRecordAttributes({ provider, logicalId: 'Acl', resource: acl, stackName: 'S', region: 'eu-west-1' });
+    expect(provider.import.mock.calls[0]![0].knownPhysicalId).toBe(
+      `arn:aws:wafv2:eu-west-1:123456789012:regional/webacl/my-acl/${id}`
+    );
+    // The record's own Scope is what the id is checked against.
+    const mismatched = { ...acl, properties: { Scope: 'CLOUDFRONT' } } as unknown as ResourceState;
+    await expect(
+      readRecordAttributes({ provider: echo(), logicalId: 'Acl', resource: mismatched, stackName: 'S', region: 'us-east-1' })
+    ).rejects.toThrow(/Acl \(AWS::WAFv2::WebACL\) cannot move from Cloud Control/);
+  });
+
+  it('refuses the attributes of a repository the recorded name reaches but Cloud Control did not record (go-to-k/cdkd#6490)', async () => {
+    const ccId = 'b4019a38-d7a8-4176-96f0-f53991fd3c5a';
+    const repo = {
+      physicalId: ccId,
+      resourceType: 'AWS::CodeCommit::Repository',
+      properties: { RepositoryName: 'my-repo' },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'cc-api',
+    } as unknown as ResourceState;
+    const read = (repositoryId: string) =>
+      readRecordAttributes({
+        provider: providerAnswering((id) => ({ physicalId: id!, attributes: { RepositoryId: repositoryId } })),
+        logicalId: 'Repo',
+        resource: repo,
+        stackName: 'S',
+        region: 'us-east-1',
+      });
+    await expect(read(ccId)).resolves.toEqual({ kind: 'read', attributes: { RepositoryId: ccId } });
+    await expect(read('d26c8cf1-5737-4ea9-8820-394b84eb5bc7')).rejects.toThrow(
+      /Repo \(AWS::CodeCommit::Repository\) cannot move .*RepositoryId Cloud Control recorded/
+    );
+  });
+
+  it('checks the RepositoryId even when the repository is NAMED like it (go-to-k/cdkd#6490)', async () => {
+    const ccId = 'b4019a38-d7a8-4176-96f0-f53991fd3c5a';
+    const repo = {
+      physicalId: ccId,
+      resourceType: 'AWS::CodeCommit::Repository',
+      // The name equals the Cloud Control id, so the normalized id does not change.
+      properties: { RepositoryName: ccId },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'cc-api',
+    } as unknown as ResourceState;
+    const provider = providerAnswering((id) => ({
+      physicalId: id!,
+      attributes: { RepositoryId: 'd26c8cf1-5737-4ea9-8820-394b84eb5bc7' },
+    }));
+    await expect(
+      readRecordAttributes({ provider, logicalId: 'Repo', resource: repo, stackName: 'S', region: 'us-east-1' })
+    ).rejects.toThrow(/Repo \(AWS::CodeCommit::Repository\) cannot move .*RepositoryId Cloud Control recorded/);
+    expect(provider.import.mock.calls[0]![0].knownPhysicalId).toBe(ccId);
+  });
+
+  it('a factory healer turns a failed account lookup into a failed outcome, never a throw', async () => {
+    const { getAccountInfo } = await import('../../../src/deployment/intrinsic-function-resolver.js');
+    vi.mocked(getAccountInfo).mockRejectedValueOnce(new Error('STS is unreachable'));
+    const provider = echo();
+    const { inRegion } = recordingInRegion();
+    const heal = createReadOnlyAttributeHealerFactory({ getProvider: () => provider, inRegion })(
+      'S',
+      'us-east-1'
+    );
+    const acl = {
+      physicalId: 'my-acl|20803c2a-0b8f-4df4-a600-11eda6efc69b|REGIONAL',
+      resourceType: 'AWS::WAFv2::WebACL',
+      properties: { Scope: 'REGIONAL' },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'cc-api',
+    } as unknown as ResourceState;
+    await expect(heal('Acl', acl)).resolves.toMatchObject({ kind: 'failed' });
     expect(provider.import).not.toHaveBeenCalled();
   });
 });

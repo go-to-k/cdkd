@@ -12,11 +12,11 @@ Rule 2 of `ProviderRegistry.getProviderFor` keeps a resource recorded
 replace resources auto-routed before it landed.
 `STICKY_CC_MIGRATION_EXEMPT` is the escape, keyed by type. **The SDK provider
 must address the resource by the id Cloud Control stored, or by a declared,
-strict `normalizeCcPhysicalId` of it** (#5654). EMPIRICAL, so each entry names
-an integ fixture that saw it live; `sticky-exempt-registry.test.ts` rejects
-one whose fixture has no ledger row. Equal ids alone prove nothing (a user-named resource keeps
-its id across a replacement): the fixture needs a witness, an unmanaged child
-that survives or an AWS-minted id the flip keeps.
+strict `normalizeCcPhysicalId` of it and the record** (#5654, #6490). EMPIRICAL:
+each entry names an integ fixture that saw it live, and
+`sticky-exempt-registry.test.ts` rejects one with no ledger row. Equal ids
+prove nothing (a named resource keeps its id across a replacement): the
+fixture needs a witness, an unmanaged child that survives or an AWS-minted id it keeps.
 
 `cc-broken` (Cloud Control cannot manage the type) escapes UNCONDITIONALLY, with
 `--pin-cc-api` ignored, since a pin re-pins the resource to the handler that

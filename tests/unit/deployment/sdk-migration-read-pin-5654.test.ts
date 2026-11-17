@@ -1,4 +1,13 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
+
+vi.mock('../../../src/deployment/intrinsic-function-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/intrinsic-function-resolver.js')>()),
+  getAccountInfo: vi.fn(async (region?: string) => ({
+    accountId: '123456789012',
+    region: region ?? 'us-east-1',
+    partition: 'aws',
+  })),
+}));
 import { AttributeHealer } from '../../../src/deployment/deploy-engine/attribute-healer.js';
 import {
   NoEchoRunState,
@@ -92,5 +101,44 @@ describe('the NoEcho attribute read honors --pin-cc-api (go-to-k/cdkd#5654)', ()
 
   it('an unpinned one is not', async () => {
     expect(await run(false)).not.toHaveProperty('forceCcApi');
+  });
+});
+
+describe('the NoEcho attribute read addresses a flipped record in the stack region (go-to-k/cdkd#6490)', () => {
+  it("hands a WAFv2 normalizer the deps' stack region, and import() the same region", async () => {
+    const id = '20803c2a-0b8f-4df4-a600-11eda6efc69b';
+    const acl = {
+      physicalId: `my-acl|${id}|REGIONAL`,
+      resourceType: 'AWS::WAFv2::WebACL',
+      properties: { Name: 'my-acl', Scope: 'REGIONAL' },
+      attributes: { Secret: SECRET_MASK },
+      noEchoAttributeNames: ['Secret'],
+      dependencies: [],
+      provisionedBy: 'cc-api',
+    } as unknown as ResourceState;
+    const importFn = vi.fn(async (input: { knownPhysicalId?: string }) => ({
+      physicalId: input.knownPhysicalId!,
+      attributes: { Secret: 'live' },
+    }));
+    const deps = {
+      stackRegion: 'eu-west-1',
+      logger: { warn: () => undefined },
+      providerRegistry: {
+        getProviderFor: vi.fn(() => ({ provider: { import: importFn }, provisionedBy: 'sdk' as const })),
+      },
+      perResourceSecrets: () => new Map([['Acl', {}]]),
+    } as unknown as NoEchoDeps;
+    await noEchoAttributeOverridesFor(
+      new NoEchoRunState(),
+      deps,
+      { Value: { 'Fn::GetAtt': ['Acl', 'Secret'] } },
+      { Acl: acl },
+      'App'
+    );
+    expect(importFn).toHaveBeenCalledTimes(1);
+    expect(importFn.mock.calls[0]![0]).toMatchObject({
+      knownPhysicalId: `arn:aws:wafv2:eu-west-1:123456789012:regional/webacl/my-acl/${id}`,
+      region: 'eu-west-1',
+    });
   });
 });

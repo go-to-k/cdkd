@@ -6,8 +6,11 @@ import {
   apiGatewayV2RouteSdkPhysicalId,
   apiGatewayV2StageSdkPhysicalId,
   appSyncGraphQLApiSdkPhysicalId,
+  codeCommitRepositorySdkPhysicalId,
   ecsServiceSdkPhysicalId,
   s3VectorsVectorBucketSdkPhysicalId,
+  wafv2WebAclSdkPhysicalId,
+  type CcPhysicalIdContext,
 } from '../sticky-exempt-physical-id.js';
 
 /**
@@ -60,8 +63,25 @@ export interface StickyExemptEntry {
    * it cannot place is refused rather than addressed under a guess. Its output
    * is evidence like parity is: the entry's fixture must observe it equal to
    * the SDK form on a live resource. Applied by {@link sdkAddressedPhysicalId}.
+   * `ctx` carries the record's properties and its region, account and
+   * partition, for a type whose SDK id is not inside the Cloud Control id
+   * (go-to-k/cdkd#6490); a normalizer needing none of them ignores it.
    */
-  normalizeCcPhysicalId?: (ccPhysicalId: string) => string;
+  normalizeCcPhysicalId?: (ccPhysicalId: string, ctx: CcPhysicalIdContext) => string;
+  /**
+   * Set when the normalizer reads `ctx.accountId`: only then is the account
+   * resolved (from the per-credential cache, else STS), so an STS refusal
+   * never blocks the flip of a type whose normalizer does not need it. Unset,
+   * `ctx.accountId` is `''`, which an ARN-building normalizer refuses.
+   */
+  normalizerReadsAccountId?: true;
+  /**
+   * The attribute whose live value must equal the recorded Cloud Control id
+   * when an SDK provider reads a normalized record: the check that the SDK id
+   * (read from the record, not the id) names the resource Cloud Control
+   * recorded, on reads whose provider path has no holder check of its own.
+   */
+  ccIdentityAttribute?: string;
 }
 
 /**
@@ -928,6 +948,46 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-common-types-8',
       normalizeCcPhysicalId: s3VectorsVectorBucketSdkPhysicalId,
+    },
+  ],
+  [
+    'AWS::WAFv2::WebACL',
+    {
+      // Batch 10 (go-to-k/cdkd#6490), admitted with the CodeCommit repository
+      // below for the SDK path's speed. The web ACL id is AWS-minted, so a
+      // recreate changes it and the flip keeps it: the identity witness. The
+      // SDK id is an ARN the Cloud Control id does not contain, so the
+      // normalizer builds it from the record's region, account and partition.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<Name>|<Id>|<Scope>` (schema primaryIdentifier Name + Id + ' +
+        'Scope, in that order; measured us-east-1, 2026-11-17, for REGIONAL and CLOUDFRONT) ' +
+        'while the WAFv2 provider records the web ACL ARN; normalizeCcPhysicalId builds ' +
+        '`arn:<partition>:wafv2:<region>:<account>:<regional|global>/webacl/<Name>/<Id>`, ' +
+        'which the fixture observed equal to the live ARN',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-10',
+      normalizeCcPhysicalId: wafv2WebAclSdkPhysicalId,
+      normalizerReadsAccountId: true,
+    },
+  ],
+  [
+    'AWS::CodeCommit::Repository',
+    {
+      // Batch 10 (go-to-k/cdkd#6490). The repository id is AWS-minted: the
+      // witness. The SDK id is the repository name, which the Cloud Control id
+      // does not contain, so the normalizer reads the record's RepositoryName.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores the RepositoryId UUID (schema primaryIdentifier RepositoryId; ' +
+        'measured us-east-1, 2026-11-17) while the CodeCommit provider records the ' +
+        'repository name; normalizeCcPhysicalId takes the RepositoryName the record holds, ' +
+        'which the fixture observed naming the repository of that id',
+      issue: 'https://github.com/go-to-k/cdkd/issues/6490',
+      integFixture: 'cc-to-sdk-reroute-common-types-10',
+      normalizeCcPhysicalId: codeCommitRepositorySdkPhysicalId,
+      // The name comes from the record, so a read checks it reaches this id.
+      ccIdentityAttribute: 'RepositoryId',
     },
   ],
 ]);
