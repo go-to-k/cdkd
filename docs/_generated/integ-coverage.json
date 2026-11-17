@@ -10507,6 +10507,7 @@
         "cc-to-sdk-reroute-common-types",
         "composite-stack",
         "cross-stack-secret-import",
+        "drift-revert-nested-write-only",
         "drift-rotation-schedule-revert",
         "event-driven",
         "full-stack-demo",
@@ -10541,6 +10542,9 @@
           "literal"
         ],
         "cross-stack-secret-import": [
+          "l2"
+        ],
+        "drift-revert-nested-write-only": [
           "l2"
         ],
         "drift-rotation-schedule-revert": [

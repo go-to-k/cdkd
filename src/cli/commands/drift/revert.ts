@@ -137,7 +137,6 @@ export async function runRevert(
             const names = revertWriteOnlyResendNames(
               o.resourceType,
               record.properties,
-              o.awsProperties,
               writeOnlyNames
             );
             if (names.length > 0) writeOnlyResend.set(o, names);

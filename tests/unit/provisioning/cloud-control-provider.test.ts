@@ -810,7 +810,6 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     const names = revertWriteOnlyResendNames(
       type,
       declared,
-      readback,
       await tryGetTopLevelWriteOnlyProperties(type)
     );
     expect(names).toEqual(['ReturnMergedResources']);

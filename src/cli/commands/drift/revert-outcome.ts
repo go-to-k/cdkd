@@ -187,6 +187,9 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     for (const token of tokens) unresolvedTokens.add(token);
   };
   let desiredProperties: Record<string, unknown>;
+  // go-to-k/cdkd#6499: the template side, resolved, which the write-only
+  // keys are sent from (`withDeclaredWriteOnlyProperties`).
+  let resolvedDeclared: Record<string, unknown>;
   try {
     desiredProperties = await resolveStateSecretExpressions(
       revertBaseline,
@@ -204,8 +207,9 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // map so a secret the OBSERVED baseline never captured is still a key
     // in it. Revert needs that for the narrowing write below, whose
     // position source can only reach leaves the two bags share.
+    resolvedDeclared = desiredProperties;
     if (stateResource.observedProperties !== undefined) {
-      await resolveStateSecretExpressions(
+      resolvedDeclared = await resolveStateSecretExpressions(
         stateResource.properties ?? {},
         revertSecretResolvers,
         secrets,
@@ -577,12 +581,14 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       );
       return;
     }
-    // go-to-k/cdkd#6498: Cloud Control's read-modify-write needs the declared
-    // write-only values, which no readback-built bag holds. After every pass
-    // above, which reads the readback-built bag only.
+    // go-to-k/cdkd#6498 / #6499: Cloud Control's read-modify-write needs the
+    // template's value of every write-only-bearing key, which no
+    // readback-built bag holds. After every pass above, which reads the
+    // readback-built bag only; the values are resolved into `secrets`, which
+    // masks the update's output.
     newProperties = withDeclaredWriteOnlyProperties(
       maskPreserved.properties,
-      stateResource.properties,
+      resolvedDeclared,
       args.writeOnlyResend
     );
   } catch (err) {

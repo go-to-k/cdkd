@@ -331,23 +331,28 @@ export function sameRecordedJson(candidate: unknown, recorded: unknown): boolean
 }
 
 /**
- * The top-level write-only properties a Cloud Control routed `--revert` sends
- * from `properties` (the recorded template), in schema order
- * (go-to-k/cdkd#6498). `[]` for any other route.
+ * The top-level properties holding a write-only member that a Cloud Control
+ * routed `--revert` sends at their TEMPLATE value, in schema order
+ * (go-to-k/cdkd#6498, #6499). `[]` for any other route.
  *
  * WHY: the revert's send bag is the readback plus the baseline's drifted
- * subtrees, and neither holds a write-only value, since no read returns one.
- * Cloud Control applies the patch read-modify-write, so the handler ran as if
- * the template had left the property out and took its default: a rotation
- * schedule's `RotateImmediatelyOnUpdate: false` became Secrets Manager's
- * `true`, and the revert rotated the secret immediately. Given the declared
- * value, `CloudControlProvider.update` re-adds it to the patch as a deploy
- * does (#809).
+ * subtrees, and no read returns a write-only value. Cloud Control applies the
+ * patch read-modify-write, and `CloudControlProvider.update` re-adds each
+ * write-only-bearing top-level key from the bag it is given (#809), so:
+ * - a wholly write-only key was absent and the handler took its default: a
+ *   rotation schedule's `RotateImmediatelyOnUpdate: false` became `true`, and
+ *   the revert rotated the secret (#6498);
+ * - a readable key holding a NESTED write-only member was re-added
+ *   readback-shaped, without the member: an `AWS::Events::Connection`'s
+ *   `AuthParameters` lost `ApiKeyValue`, and Cloud Control refused every
+ *   revert of a connection (#6499).
+ * A deploy sends the template's value of each such key wholesale, so the
+ * revert does too ({@link withDeclaredWriteOnlyProperties}).
  *
  * Left out:
- * - a value carrying a dynamic reference, a redaction mask or an unresolved
- *   intrinsic object: state holds none of those in a form AWS can be sent, and
- *   resolving one here would widen the revert's secret handling;
+ * - a value holding a redaction mask or an unresolved intrinsic object: state
+ *   holds neither in a form AWS can be sent. A dynamic reference IS named: the
+ *   revert sends the value it resolved, under its masking;
  * - a key holding a create-only path the read cannot return
  *   (`getTopLevelKeysHoldingUnreadableCreateOnly`, #4416: an IoT certificate's
  *   `CertificateSigningRequest`): Cloud Control refuses any patch adding one,
@@ -361,12 +366,11 @@ export function sameRecordedJson(candidate: unknown, recorded: unknown): boolean
  *
  * Coupling: nothing writes these values into state. That holds while the Cloud
  * Control `update()` returns no `effectiveProperties`; one that did would read
- * each as narrowed to absent in `collectNarrowedTopLevelKeys`.
+ * each as narrowed in `collectNarrowedTopLevelKeys`.
  */
 export function revertWriteOnlyResendNames(
   resourceType: string,
   properties: Record<string, unknown> | undefined,
-  awsProperties: Record<string, unknown>,
   writeOnlyNames: ReadonlySet<string> | undefined
 ): string[] {
   if (!writeOnlyNames || writeOnlyNames.size === 0 || !isPlainRecord(properties)) return [];
@@ -374,34 +378,38 @@ export function revertWriteOnlyResendNames(
   const names: string[] = [];
   for (const name of writeOnlyNames) {
     if (!hasOwnKey(properties, name) || unreadableCreateOnly.has(name)) continue;
-    // A key the read returns is a container holding a nested write-only
-    // member; the send bag already carries it, readback-shaped.
-    if (hasOwnKey(awsProperties, name)) continue;
     const value = properties[name];
     if (value === undefined || value === null) continue;
-    if (carriesDynamicReference(value) || carriesSecretMask(value)) continue;
-    if (carriesIntrinsicObject(value)) continue;
+    if (carriesSecretMask(value) || carriesIntrinsicObject(value)) continue;
     names.push(name);
   }
   return names;
 }
 
 /**
- * `send` plus each of `names` (from {@link revertWriteOnlyResendNames}) taken
- * from `properties`, unless `send` already holds it. Returns `send` by
- * identity when nothing is added; never mutates it.
+ * `send` with each of `names` (from {@link revertWriteOnlyResendNames}) set to
+ * its value in `resolvedProperties`: the record's `properties`, through the
+ * revert's dynamic-reference resolution. REPLACES a key `send` holds, which is
+ * the readback-shaped container a nested write-only member is missing from.
+ *
+ * A value that still carries a `{{resolve:...}}` (a reference the run could
+ * not resolve) or a mask is never sent as text: that key keeps what `send`
+ * holds. Returns `send` by identity when nothing changes; never mutates it.
  */
 export function withDeclaredWriteOnlyProperties(
   send: Record<string, unknown>,
-  properties: Record<string, unknown> | undefined,
+  resolvedProperties: Record<string, unknown> | undefined,
   names: readonly string[]
 ): Record<string, unknown> {
-  if (names.length === 0 || !isPlainRecord(properties)) return send;
+  if (names.length === 0 || !isPlainRecord(resolvedProperties)) return send;
   let out = send;
   for (const name of names) {
-    if (hasOwnKey(send, name) || !hasOwnKey(properties, name)) continue;
+    if (!hasOwnKey(resolvedProperties, name)) continue;
+    const value = resolvedProperties[name];
+    if (value === undefined || value === null) continue;
+    if (carriesDynamicReference(value) || carriesSecretMask(value)) continue;
     if (out === send) out = { ...send };
-    defineOwnKey(out, name, properties[name]);
+    defineOwnKey(out, name, value);
   }
   return out;
 }

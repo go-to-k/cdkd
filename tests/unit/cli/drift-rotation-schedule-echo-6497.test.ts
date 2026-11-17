@@ -305,7 +305,7 @@ describe('cdkd drift --revert carries a Cloud Control record\'s declared write-o
     await runDrift(['--revert', '--dry-run']);
     expect(sentBags).toHaveLength(0);
     expect(stdout).toContain(
-      "    + also sends the template's write-only RotateImmediatelyOnUpdate (AWS never returns them on a read)"
+      "    + also sends the template's value of RotateImmediatelyOnUpdate (they hold write-only properties, which AWS never returns on a read)"
     );
   });
 
@@ -326,33 +326,34 @@ describe('revertWriteOnlyResendNames', () => {
   });
 
   it('names a declared plain write-only value', () => {
-    expect(revertWriteOnlyResendNames(TYPE, { A: 1, W: false }, {}, names)).toEqual(['W']);
+    expect(revertWriteOnlyResendNames(TYPE, { A: 1, W: false }, names)).toEqual(['W']);
   });
 
   it.each([
-    ['a dynamic reference', { W: '{{resolve:secretsmanager:s:SecretString:p}}' }],
-    ['a nested dynamic reference', { W: { Pw: '{{resolve:ssm-secure:p}}' } }],
     ['a redaction mask', { W: '***' }],
     ['a nested redaction mask', { W: ['***'] }],
     ['an intrinsic object', { W: { Inner: { 'Fn::GetAtt': ['R', 'Arn'] } } }],
     ['a null value', { W: null }],
     ['an undeclared name', { Y: 1 }],
   ])('names nothing for %s', (_l, properties) => {
-    expect(revertWriteOnlyResendNames(TYPE, properties, {}, names)).toEqual([]);
+    expect(revertWriteOnlyResendNames(TYPE, properties, names)).toEqual([]);
   });
 
-  it('names nothing for a key the readback holds (a container of a nested write-only member)', () => {
-    expect(revertWriteOnlyResendNames(TYPE, { W: { A: 1, S: 'x' } }, { W: { A: 1 } }, names)).toEqual([]);
+  it.each([
+    ['a dynamic reference (sent resolved)', { W: '{{resolve:secretsmanager:s:SecretString:p}}' }],
+    ['a container of a nested write-only member', { W: { A: 1, S: 'x' } }],
+  ])('names %s', (_l, properties) => {
+    expect(revertWriteOnlyResendNames(TYPE, properties, names)).toEqual(['W']);
   });
 
   it('names nothing when the lookup failed or found none', () => {
-    expect(revertWriteOnlyResendNames(TYPE, { W: 1 }, {}, undefined)).toEqual([]);
-    expect(revertWriteOnlyResendNames(TYPE, { W: 1 }, {}, new Set())).toEqual([]);
+    expect(revertWriteOnlyResendNames(TYPE, { W: 1 }, undefined)).toEqual([]);
+    expect(revertWriteOnlyResendNames(TYPE, { W: 1 }, new Set())).toEqual([]);
   });
 
   it('leaves out a key holding an unreadable create-only path', () => {
     mockUnreadableCreateOnly.mockReturnValue(new Set(['W']));
-    expect(revertWriteOnlyResendNames(TYPE, { W: 1, X: 2 }, {}, names)).toEqual(['X']);
+    expect(revertWriteOnlyResendNames(TYPE, { W: 1, X: 2 }, names)).toEqual(['X']);
     expect(mockUnreadableCreateOnly).toHaveBeenCalledWith(TYPE, { W: 1, X: 2 });
   });
 });
@@ -367,10 +368,19 @@ describe('withDeclaredWriteOnlyProperties', () => {
     expect(send).toEqual({ A: 1 });
   });
 
-  it('keeps a value the send bag already holds', () => {
-    expect(withDeclaredWriteOnlyProperties({ W: 'live' }, { W: 'declared' }, ['W'])).toEqual({
-      W: 'live',
-    });
+  it('replaces a readback-shaped container with the template value', () => {
+    expect(
+      withDeclaredWriteOnlyProperties({ W: { A: 1 } }, { W: { A: 1, S: 'x' } }, ['W'])
+    ).toEqual({ W: { A: 1, S: 'x' } });
+  });
+
+  it.each([
+    ['a surviving dynamic reference', { W: { S: '{{resolve:unknownsvc:x}}' } }],
+    ['a mask', { W: { S: '***' } }],
+    ['an absent value', {}],
+  ])('keeps what the send bag holds for %s', (_l, resolved) => {
+    const send = { W: { A: 1 } };
+    expect(withDeclaredWriteOnlyProperties(send, resolved, ['W'])).toBe(send);
   });
 
   it('returns the send bag by identity when nothing is named', () => {
