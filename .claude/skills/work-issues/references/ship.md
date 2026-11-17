@@ -71,7 +71,7 @@ dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
 open PRs touching each fixture: a held one gets a lock watcher, not a runner
 (#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
 re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
-read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`, never bare digits),
+read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`),
 `SendMessage`s the runner as each exits, and alarms when no PID has run for 15
 min unreported.
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
