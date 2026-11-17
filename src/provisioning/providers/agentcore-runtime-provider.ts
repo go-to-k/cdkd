@@ -48,7 +48,8 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
-import { reportCreatedResource } from '../created-resource-sink.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { isInterruptedWaitError } from '../interrupt-watch.js';
 import {
   planTagDiff,
   refuseMalformedDesiredTags,
@@ -69,6 +70,7 @@ import type {
 import { CFN_MAP_KEYS, SDK_MAP_KEYS, isUserTagKey } from './agentcore-runtime/shared.js';
 import { readCurrentState, importImpl } from './agentcore-runtime/read-state.js';
 import {
+  retireFailedRuntimeCreate,
   waitForRuntimeReady,
   waitForRuntimeSettledBeforeDelete,
   type RuntimeWaitDeps,
@@ -417,10 +419,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
 
       this.logger.debug(`Created BedrockAgentCore Runtime: ${agentRuntimeId} (${agentRuntimeArn})`);
 
-      if (desiredTags.length > 0) {
-        await this.ensureCreateTags(agentRuntimeId, agentRuntimeArn, desiredTags);
-      }
-
+      // READY first (go-to-k/cdkd#6490): a tag check that fails then leaves a
+      // settled runtime, which the catch's retire can delete.
       const status = await this.settledStatus(
         agentRuntimeId,
         logicalId,
@@ -430,35 +430,73 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         maskerOrIdentity(context?.maskSecrets)
       );
 
+      if (desiredTags.length > 0) {
+        await this.ensureCreateTags(agentRuntimeId, agentRuntimeArn, desiredTags);
+      }
+
       return {
         physicalId: agentRuntimeId,
         attributes: this.buildAttributes({ ...response, status }, agentRuntimeName),
       };
     } catch (error) {
       if (createdRuntimeId !== undefined) markAuxiliaryFailure(error, logicalId);
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      // go-to-k/cdkd#2169: a runtime this call created is deleted again, as
+      // CloudFormation's CREATE_FAILED rollback does, so the next deploy's
+      // create does not meet it under the same name. Not on Ctrl-C: the
+      // interrupt stops cdkd starting new calls, and the journal mark below
+      // leaves the runtime to `cdkd rollback`.
+      const survivor =
+        createdRuntimeId !== undefined && !isInterruptedWaitError(error)
+          ? await retireFailedRuntimeCreate(
+              this.waitDeps(),
+              createdRuntimeId,
+              await this.client.config.region().catch(() => undefined),
+              mask
+            )
+          : undefined;
       const cause = error instanceof Error ? error : undefined;
       // A cdkd-authored failure (the READY wait's, go-to-k/cdkd#6490) already
-      // names the runtime: pass it through, as update() does, rather than
-      // wrapping it into a doubled message.
-      const thrown =
-        error instanceof CdkdError
-          ? error
-          : this.wrapCaughtError(
-              maskerOrIdentity(context?.maskSecrets),
-              error,
-              (text) =>
-                new ProvisioningError(
-                  `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}`,
-                  resourceType,
-                  logicalId,
-                  undefined,
-                  cause
-                )
-            );
-      // The runtime exists with no state record: name it for the failed-CREATE
-      // journal (`cdkd rollback --revert-failed`).
+      // names the runtime: it is kept as it is, as update() does, rather than
+      // wrapped into a doubled message. A survivor note is APPENDED to the
+      // original failure, never swapped in.
+      let thrown: Error;
+      if (error instanceof CdkdError) {
+        thrown = survivor
+          ? new ProvisioningError(
+              `${error.message}${survivor}`,
+              resourceType,
+              logicalId,
+              createdRuntimeId,
+              error
+            )
+          : error;
+      } else {
+        thrown = this.wrapCaughtError(
+          mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to create BedrockAgentCore Runtime ${logicalId}: ${text}${survivor ?? ''}`,
+              resourceType,
+              logicalId,
+              undefined,
+              cause
+            )
+        );
+      }
       if (createdRuntimeId !== undefined) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdRuntimeId);
+        if (survivor === '') {
+          // Retired: nothing is left for the failed-CREATE journal to name.
+          retractCreatedResource(logicalId, resourceType, createdRuntimeId);
+        } else {
+          // The runtime survives (the delete failed, or an interrupt skipped
+          // it) with no state record: name it for the failed-CREATE journal
+          // (`cdkd rollback --revert-failed`). A replayed create could only
+          // meet it, so a survivor the delete could not remove is terminal.
+          if (survivor !== undefined) markNonRetryable(thrown);
+          markCreatedBeforeFailure(thrown, logicalId, resourceType, createdRuntimeId);
+        }
       }
       throw thrown;
     }

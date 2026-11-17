@@ -1,5 +1,6 @@
 /**
- * The AgentCore Runtime status waits (go-to-k/cdkd#6490).
+ * The AgentCore Runtime status waits (go-to-k/cdkd#6490), and the delete of a
+ * runtime a failing create left behind.
  *
  * `CreateAgentRuntime` and `UpdateAgentRuntime` return while the runtime is
  * `CREATING` / `UPDATING`, and Cloud Control's handler waits for `READY`
@@ -10,7 +11,9 @@
  * AWS refuses while the runtime is in flight would fail the destroy.
  */
 import {
+  DeleteAgentRuntimeCommand,
   GetAgentRuntimeCommand,
+  ResourceNotFoundException,
   type BedrockAgentCoreControlClient,
   type GetAgentRuntimeCommandOutput,
 } from '@aws-sdk/client-bedrock-agentcore-control';
@@ -22,6 +25,7 @@ import {
 } from '../../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import type { MaskerFn } from '../../masked-retry-logger.js';
+import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 
 /** The time between two status reads. */
 export const RUNTIME_WAIT_POLL_MS = 5_000;
@@ -178,5 +182,46 @@ export async function waitForRuntimeSettledBeforeDelete(
     deps.debug(`Runtime ${agentRuntimeId} is still in flight; deleting anyway`);
   } finally {
     watch.dispose();
+  }
+}
+
+/**
+ * Delete the runtime a FAILING create already made (go-to-k/cdkd#2169, the
+ * rule in `.claude/rules/provider-diff-record-folds.md`): no state record
+ * holds it, and the next deploy's `CreateAgentRuntime` under the same name
+ * would collide with it. CloudFormation's CREATE_FAILED rollback deletes it
+ * too.
+ *
+ * Safe: `agentRuntimeId` is the id AWS minted in THIS call's
+ * `CreateAgentRuntime` response, so the delete can reach no other runtime,
+ * and nothing references an id no state records.
+ *
+ * Returns `''` when the runtime is gone (a not-found counts), or a sentence
+ * naming the survivor and the command that retires it, for the caller to
+ * APPEND to the original failure.
+ */
+export async function retireFailedRuntimeCreate(
+  deps: RuntimeWaitDeps,
+  agentRuntimeId: string,
+  region: string | undefined,
+  mask: MaskerFn
+): Promise<string> {
+  try {
+    await deps.client.send(new DeleteAgentRuntimeCommand({ agentRuntimeId }));
+    deps.debug(`Deleted runtime ${agentRuntimeId} left by the failed create`);
+    return '';
+  } catch (cleanupError) {
+    if (cleanupError instanceof ResourceNotFoundException) return '';
+    const failed = describeAwsFailure(cleanupError);
+    deps.debug(
+      mask(`Delete of runtime ${agentRuntimeId} after the failed create failed: ${failed.detail}`)
+    );
+    const aws = pasteableAwsCommand(mask);
+    const regionArg = region ? aws` --region ${region}` : aws``;
+    return (
+      ` The runtime ${agentRuntimeId} it created could not be deleted (${failed.summary}); ` +
+      `delete it with: ` +
+      aws`aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id ${agentRuntimeId}${regionArg}`.render()
+    );
   }
 }

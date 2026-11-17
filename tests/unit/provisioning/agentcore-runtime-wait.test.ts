@@ -126,7 +126,9 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       expect((error as Error).message).toContain('CREATE_FAILED');
       expect((error as Error).message).not.toContain('secret-ish reason text');
       expect(isMarkedNonRetryable(error)).toBe(true);
-      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+      // Retired by the create's catch (go-to-k/cdkd#2169): nothing to journal.
+      expect(sent().at(-1)).toBe('DeleteAgentRuntimeCommand');
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
       expect(debug.mock.calls.some(([m]) => String(m).includes('secret-ish reason text'))).toBe(true);
       expect(sent().filter((c) => c === 'CreateAgentRuntimeCommand')).toHaveLength(1);
     });
@@ -157,7 +159,9 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       expect((error as Error).message).toMatch(/could not be read while cdkd waited for READY/);
       expect(isMarkedNonRetryable(error)).toBe(true);
       expect((error as Error).cause).toBe(denied);
-      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+      // Retired by the create's catch (go-to-k/cdkd#2169): nothing to journal.
+      expect(sent().at(-1)).toBe('DeleteAgentRuntimeCommand');
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
     });
 
     it('throws the wait failure as it is, not wrapped into a doubled message', async () => {
@@ -180,6 +184,92 @@ describe('AgentCoreRuntimeProvider status waits (go-to-k/cdkd#6490)', () => {
       expect(sent().filter((c) => c === 'GetAgentRuntimeCommand')).toHaveLength(
         RUNTIME_WAIT_MAX_POLLS
       );
+    });
+  });
+
+  describe('retiring a runtime the failing create made (go-to-k/cdkd#2169)', () => {
+    it('deletes the runtime by the id CreateAgentRuntime returned and re-throws the original failure', async () => {
+      answer(['CREATE_FAILED']);
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      expect(sent()).toEqual([
+        'CreateAgentRuntimeCommand',
+        'GetAgentRuntimeCommand',
+        'DeleteAgentRuntimeCommand',
+      ]);
+      expect(mockSend.mock.calls[2]![0].input).toEqual({ agentRuntimeId: ID });
+      expect((error as Error).message).toBe(
+        `BedrockAgentCore Runtime Rt (${ID}) entered CREATE_FAILED during create; its failureReason (GetAgentRuntime) says why`
+      );
+      expect(isMarkedNonRetryable(error)).toBe(true);
+    });
+
+    it('appends the survivor and its delete command when the retire fails, and journals it', async () => {
+      answer(['CREATE_FAILED']);
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: object) => {
+        if (cmd.constructor.name === 'DeleteAgentRuntimeCommand') {
+          throw Object.assign(new Error('busy'), { name: 'ConflictException', $metadata: {} });
+        }
+        return inner(cmd);
+      });
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      const message = (error as Error).message;
+      expect(message).toMatch(/^BedrockAgentCore Runtime Rt \(.*\) entered CREATE_FAILED during create/);
+      expect(message).toContain(`The runtime ${ID} it created could not be deleted`);
+      expect(message).toContain(
+        `aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id ${ID} --region us-east-1`
+      );
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+      expect(isMarkedNonRetryable(error)).toBe(true);
+    });
+
+    it('appends the survivor to a wrapped AWS failure too', async () => {
+      const tagFailure = Object.assign(new Error('nope'), { name: 'ValidationException', $metadata: {} });
+      mockSend.mockImplementation(async (cmd: object) => {
+        switch (cmd.constructor.name) {
+          case 'CreateAgentRuntimeCommand':
+            return { agentRuntimeId: ID, agentRuntimeArn: ARN, status: 'CREATING' };
+          case 'GetAgentRuntimeCommand':
+            return { status: 'READY' };
+          case 'ListTagsForResourceCommand':
+            return { tags: {} };
+          case 'TagResourceCommand':
+            throw tagFailure;
+          default:
+            throw Object.assign(new Error('busy'), { name: 'ConflictException', $metadata: {} });
+        }
+      });
+      const error = await provider
+        .create('Rt', TYPE, { ...PROPS, Tags: { A: '1' } })
+        .catch((e: unknown) => e);
+      const message = (error as Error).message;
+      expect(message).toMatch(/^Failed to create BedrockAgentCore Runtime Rt: /);
+      expect(message).toContain(`The runtime ${ID} it created could not be deleted`);
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBe(ID);
+    });
+
+    it('counts a not-found answer to the retire as gone', async () => {
+      answer(['CREATE_FAILED']);
+      const inner = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(async (cmd: object) => {
+        if (cmd.constructor.name === 'DeleteAgentRuntimeCommand') {
+          throw new ResourceNotFoundException({ $metadata: {}, message: 'gone' });
+        }
+        return inner(cmd);
+      });
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      expect((error as Error).message).not.toContain('could not be deleted');
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
+    });
+
+    it('deletes nothing when CreateAgentRuntime itself fails', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('bad'), { name: 'ValidationException', $metadata: {} })
+      );
+      const error = await provider.create('Rt', TYPE, PROPS).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(sent()).toEqual(['CreateAgentRuntimeCommand']);
+      expect(createdBeforeFailure(error, 'Rt', TYPE)).toBeUndefined();
     });
   });
 

@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateAgentRuntimeCommand,
+  DeleteAgentRuntimeCommand,
   GetAgentRuntimeCommand,
   ListTagsForResourceCommand,
   ResourceNotFoundException,
@@ -228,7 +229,10 @@ describe('AgentCoreRuntimeProvider go-to-k/cdkd#2762 backfill', () => {
         () => undefined,
         (e: unknown) => e
       );
-      expect(createdBeforeFailure(err, 'L', TYPE)).toBe(ID);
+      // The delete that retires the new runtime answers not-found too, which
+      // counts as gone (go-to-k/cdkd#2169): nothing is left to journal.
+      expect(countOf(DeleteAgentRuntimeCommand)).toBe(1);
+      expect(createdBeforeFailure(err, 'L', TYPE)).toBeUndefined();
       expect(countOf(TagResourceCommand)).toBe(CREATE_TAG_RETRY_DELAYS_MS.length + 1);
       expect(sleeps).toEqual([...CREATE_TAG_RETRY_DELAYS_MS]);
       expect(countOf(CreateAgentRuntimeCommand)).toBe(1);
@@ -240,7 +244,7 @@ describe('AgentCoreRuntimeProvider go-to-k/cdkd#2762 backfill', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
-    it('marks a failed post-create TagResource as created-before-failure and auxiliary', async () => {
+    it('marks a failed post-create TagResource auxiliary, and created-before-failure when the retire fails', async () => {
       const tagFailure = Object.assign(new Error('Resource already exists'), {
         name: 'ValidationException',
         $fault: 'client',
@@ -249,13 +253,18 @@ describe('AgentCoreRuntimeProvider go-to-k/cdkd#2762 backfill', () => {
       mockSend
         .mockResolvedValueOnce({ agentRuntimeId: ID, agentRuntimeArn: ARN })
         .mockResolvedValueOnce({ tags: {} })
-        .mockRejectedValueOnce(tagFailure);
+        .mockRejectedValueOnce(tagFailure)
+        // go-to-k/cdkd#2169: the delete retiring the new runtime is refused.
+        .mockRejectedValueOnce(
+          Object.assign(new Error('busy'), { name: 'ConflictException', $metadata: {} })
+        );
       const err = await provider.create('L', TYPE, { ...BASE, Tags: { A: '1' } }).then(
         () => undefined,
         (e: unknown) => e
       );
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toMatch(/Failed to create BedrockAgentCore Runtime L/);
+      expect(countOf(DeleteAgentRuntimeCommand)).toBe(1);
       expect(createdBeforeFailure(err, 'L', TYPE)).toBe(ID);
       expect(isAuxiliaryFailure(err)).toBe(true);
     });
