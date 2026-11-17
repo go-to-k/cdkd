@@ -1,5 +1,6 @@
 import type { CloudFrontDistributionProvider } from '../cloudfront-distribution-provider.js';
 import { TOP_LEVEL_CFN_TO_SDK, REMOVAL_RESET_DEFAULTS } from './shared.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 
 /**
  * Build the complete SDK-shape `DistributionConfig` for an update
@@ -61,9 +62,7 @@ export function mergeUpdateConfig(
   merged['CallerReference'] = currentConfig['CallerReference'];
   fillOriginSslProtocols(merged, currentConfig, previousSdk, (originId) =>
     this.logger.warn(
-      `CloudFront Distribution ${logicalId}: OriginSSLProtocols was removed from origin ` +
-        `'${String(originId)}' in the template; keeping the live value rather than ` +
-        `CloudFormation's SSLv3, TLSv1 default. Set it explicitly in the template to change it.`
+      safeMsg`CloudFront Distribution ${logicalId}: OriginSSLProtocols was removed from origin '${String(originId)}' in the template; keeping the live value rather than CloudFormation's SSLv3, TLSv1 default. Set it explicitly in the template to change it.`
     )
   );
   this.completeRequiredUpdateFields(merged);
