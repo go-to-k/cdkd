@@ -132,6 +132,13 @@ one left by an earlier attempt whose delete failed predates the writes the
 volume took since, so the re-run takes a fresh one, and the older snapshot is
 left as it is.
 
+> [!NOTE]
+> A resumed snapshot holds the volume as it was when that snapshot started,
+> not when the re-run deletes it. A snapshot stays in progress until AWS
+> finishes it, which for a large volume's first full snapshot can take hours
+> (well past cdkd's 60-minute wait), so writes made in that window are in no
+> snapshot. This applies to all three types.
+
 The delete of a replaced resource's old copy, after an
 `UpdateReplacePolicy: Snapshot` replacement, is bounded instead by when the
 copy was replaced: it resumes or reuses only a snapshot started since then,
