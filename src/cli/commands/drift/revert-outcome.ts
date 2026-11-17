@@ -21,7 +21,7 @@ import type { ResourceState } from '../../../types/state.js';
 import type { StackDriftReport, DriftedOutcome } from './outcome.js';
 import { resolveStateSecretExpressions, isDriftSecretRefusal } from './secret-resolution.js';
 import { revertPathSegments } from './redaction.js';
-import { otherPhysicalIds } from './baseline-keys.js';
+import { otherPhysicalIds, stripDerivedEchoMembers } from './baseline-keys.js';
 import {
   collectUnresolvedIntrinsicObjectPaths,
   preserveLiveValuesAtUnresolvedTokens,
@@ -30,7 +30,12 @@ import {
   overlayLiveAtUncertifiedPaths,
   preserveLiveValuesAtMaskedLeaves,
 } from './revert-live-values.js';
-import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-payload.js';
+import {
+  buildRevertNewProperties,
+  driftAbsentMeansDefaultKeys,
+  withDeclaredWriteOnlyProperties,
+} from './revert-payload.js';
+import { tryGetTopLevelWriteOnlyProperties } from '../../../provisioning/write-only-properties.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
@@ -149,10 +154,17 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
   // worse than none. The payload build below IS guarded, because that one
   // is reachable: `readCurrentState` is provider-authored and its output
   // is not vetted.
-  const provider: ResourceProvider = scope.registry.getProviderFor({
+  const routing = scope.registry.getProviderFor({
     resourceType: outcome.resourceType,
     provisionedBy: stateResource.provisionedBy,
-  }).provider;
+  });
+  const provider: ResourceProvider = routing.provider;
+  // go-to-k/cdkd#6498: started here so the schema lookup (cached per type)
+  // overlaps the payload build. Never rejects.
+  const writeOnlyNamesLookup =
+    routing.provisionedBy === 'cc-api'
+      ? tryGetTopLevelWriteOnlyProperties(outcome.resourceType)
+      : undefined;
   // The baseline drift was computed against — `observedProperties`
   // when present, else `properties` — is the right "desired" value
   // to push back to AWS. Using `properties` alone would push the
@@ -412,6 +424,10 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
         )
       ).baseline;
     }
+    // go-to-k/cdkd#6497: the baseline's echo of another member leaves the
+    // desired bag, as detection compared without it. The previous side keeps
+    // the live echo, so `update()`'s patch removes it.
+    desiredProperties = stripDerivedEchoMembers(outcome.resourceType, desiredProperties);
     const overlaid = buildRevertNewProperties(
       outcome.changes,
       desiredProperties,
@@ -569,7 +585,14 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       );
       return;
     }
-    newProperties = maskPreserved.properties;
+    // go-to-k/cdkd#6498: Cloud Control's read-modify-write needs the declared
+    // write-only values, which no readback-built bag holds. After every pass
+    // above, which reads the readback-built bag only.
+    newProperties = withDeclaredWriteOnlyProperties(
+      maskPreserved.properties,
+      stateResource.properties,
+      writeOnlyNamesLookup ? await writeOnlyNamesLookup : undefined
+    );
   } catch (err) {
     // Reachability note (issue #1914 review): this arm is narrower than
     // it looks, and is kept only because it is cheap. A bag so malformed
