@@ -4182,6 +4182,7 @@
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-common-types-4",
+        "cc-to-sdk-reroute-common-types-5",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
@@ -4315,6 +4316,9 @@
           "literal"
         ],
         "cc-to-sdk-reroute-common-types-4": [
+          "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-5": [
           "l1"
         ],
         "cc-to-sdk-reroute-ecs-service": [
@@ -10523,6 +10527,7 @@
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
         "cc-to-sdk-reroute-common-types-3",
+        "cc-to-sdk-reroute-common-types-5",
         "servicediscovery-http-namespace-update",
         "servicediscovery-namespaces"
       ],
@@ -10533,6 +10538,9 @@
         "cc-to-sdk-reroute-common-types-3": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-5": [
+          "l1"
         ],
         "servicediscovery-http-namespace-update": [
           "l1",
@@ -10548,6 +10556,7 @@
       "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
       "integs": [
         "cc-to-sdk-reroute-common-types-4",
+        "cc-to-sdk-reroute-common-types-5",
         "drift-revert-vpc",
         "local-ecs-service-connect",
         "servicediscovery"
@@ -10556,6 +10565,9 @@
         "cc-to-sdk-reroute-common-types-4": [
           "l1",
           "literal"
+        ],
+        "cc-to-sdk-reroute-common-types-5": [
+          "l1"
         ],
         "drift-revert-vpc": [
           "l2",
@@ -10589,6 +10601,7 @@
       "resourceType": "AWS::ServiceDiscovery::Service",
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
+        "cc-to-sdk-reroute-common-types-5",
         "local-ecs-service-connect",
         "servicediscovery",
         "servicediscovery-http-namespace-update"
@@ -10596,6 +10609,10 @@
       "signals": {
         "access-key-cloudmap-fix-forward-orphan": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-5": [
+          "l1",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "literal"
