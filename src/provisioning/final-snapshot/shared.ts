@@ -164,10 +164,10 @@ export interface PreDeleteSnapshotOptions {
    * re-run destroy resumes its own), while a completed one is reused only
    * when it started at or after this time: a completed snapshot from an older
    * attempt whose delete failed (the volume stayed in use) predates the writes
-   * since. Each caller takes it right before its one snapshot call, so in
-   * practice no completed snapshot is reused there; a caller that ever takes
-   * the snapshot inside a retry of the same attempt keeps the snapshot of the
-   * first try. Unset, the call's own start stands in.
+   * since. The EBS probe adds a clock-skew margin to it
+   * (`ATTEMPT_START_SKEW_MARGIN_MS`), and each caller takes it right before
+   * its one snapshot call, so in practice no completed snapshot is reused
+   * there. Unset, the call's own start stands in.
    */
   attemptStartedAt?: number;
   /**

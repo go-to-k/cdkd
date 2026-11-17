@@ -18,6 +18,19 @@ import {
   type PreDeleteSnapshotOptions,
 } from './shared.js';
 
+/**
+ * go-to-k/cdkd#6473: how far past the attempt start (local clock) a completed
+ * snapshot's `StartTime` (AWS's clock) must lie before it is reused. With the
+ * local clock behind AWS's, an earlier failed attempt's snapshot, which an
+ * incremental EBS snapshot can complete within seconds, would otherwise read
+ * as started during this attempt. The margin loses nothing: every caller takes
+ * its attempt start right before its single reuse probe, and none probes again
+ * after its own `CreateSnapshot`, so a completed snapshot of THIS attempt
+ * cannot exist at probe time. Only the attempt-start bound takes it; a
+ * recorded `reuseStartedAtOrAfter` (`supersededAt`) is compared as is.
+ */
+export const ATTEMPT_START_SKEW_MARGIN_MS = 5 * 60 * 1_000;
+
 function isVolumeNotFound(error: unknown): boolean {
   const name = error instanceof Error ? error.name : '';
   return name === 'InvalidVolume.NotFound' || errMsg(error).includes('InvalidVolume.NotFound');
@@ -33,7 +46,8 @@ function isVolumeNotFound(error: unknown): boolean {
  * creating a second one, whatever its age: it is at most one snapshot's
  * duration old, as the Redshift / ElastiCache helpers' in-flight rule. A
  * `completed` one is reused only when it started at or after this delete
- * attempt's start (`attemptStartedAt`, go-to-k/cdkd#6473): one from an older
+ * attempt's start plus {@link ATTEMPT_START_SKEW_MARGIN_MS}
+ * (`attemptStartedAt`, go-to-k/cdkd#6473): one from an older
  * attempt whose delete failed predates the writes the volume took since.
  * Reusing a `completed` snapshot at all is safe HERE (and only here) because
  * an EBS volume id is AWS-generated and never reused, so the tag can only
@@ -72,7 +86,8 @@ export async function createEbsFinalSnapshot(
     // go-to-k/cdkd#6473: without one, an in-flight snapshot is resumed
     // whatever its age, and a completed one only from this attempt.
     const bound = options.reuseStartedAtOrAfter;
-    const completedBound = bound ?? options.attemptStartedAt ?? Date.now();
+    const completedBound =
+      bound ?? (options.attemptStartedAt ?? Date.now()) + ATTEMPT_START_SKEW_MARGIN_MS;
     snapshotId = existing.Snapshots?.find((s) =>
       startedAtOrAfter(s.StartTime, s.State === 'pending' ? bound : completedBound)
     )?.SnapshotId;

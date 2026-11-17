@@ -261,6 +261,8 @@ describe('createEbsFinalSnapshot', () => {
     // In the past, so a probe dropping the attempt start for the clock is seen.
     const ATTEMPT = Date.parse('2026-11-01T10:00:00Z');
     const OLD = new Date('2026-08-01T00:00:00Z');
+    // ATTEMPT_START_SKEW_MARGIN_MS, as a literal so a changed constant shows.
+    const SKEW_MARGIN = 5 * 60 * 1_000;
     const kinds = (send: ReturnType<typeof vi.fn>) =>
       send.mock.calls.map((c) => c[0].constructor.name as string);
 
@@ -324,13 +326,17 @@ describe('createEbsFinalSnapshot', () => {
       expect(kinds(send)).toContain('CreateSnapshotCommand');
     });
 
-    it('reuses a completed snapshot started at or after the attempt start (this attempt)', async () => {
+    it('reuses a completed snapshot started at or after the attempt start plus the skew margin', async () => {
       const send = vi
         .fn()
         .mockResolvedValueOnce({
           Snapshots: [
             { SnapshotId: 'snap-stale', State: 'completed', StartTime: OLD },
-            { SnapshotId: 'snap-mine', State: 'completed', StartTime: new Date(ATTEMPT) },
+            {
+              SnapshotId: 'snap-mine',
+              State: 'completed',
+              StartTime: new Date(ATTEMPT + SKEW_MARGIN),
+            },
           ],
         })
         .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed' }] });
@@ -341,6 +347,58 @@ describe('createEbsFinalSnapshot', () => {
 
       expect(result).toBe('snap-mine');
       expect(kinds(send)).not.toContain('CreateSnapshotCommand');
+    });
+
+    describe('the clock-skew margin (AWS clock ahead of the local one)', () => {
+      const AHEAD = new Date(ATTEMPT + SKEW_MARGIN - 30_000);
+
+      it('does not reuse a completed snapshot AWS dates inside the margin after the attempt start', async () => {
+        const send = vi
+          .fn()
+          .mockResolvedValueOnce({
+            Snapshots: [{ SnapshotId: 'snap-skewed', State: 'completed', StartTime: AHEAD }],
+          })
+          .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+          .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+        await expect(
+          createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+            attemptStartedAt: ATTEMPT,
+          })
+        ).resolves.toBe('snap-fresh');
+        expect(kinds(send)).toContain('CreateSnapshotCommand');
+      });
+
+      it('still resumes a pending snapshot dated inside the margin', async () => {
+        const send = vi
+          .fn()
+          .mockResolvedValueOnce({
+            Snapshots: [{ SnapshotId: 'snap-inflight', State: 'pending', StartTime: AHEAD }],
+          })
+          .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-inflight', State: 'completed' }] });
+
+        await expect(
+          createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+            attemptStartedAt: ATTEMPT,
+          })
+        ).resolves.toBe('snap-inflight');
+        expect(kinds(send)).not.toContain('CreateSnapshotCommand');
+      });
+
+      it('a reuse bound takes no margin: a completed snapshot started at the bound is reused', async () => {
+        const send = vi
+          .fn()
+          .mockResolvedValueOnce({
+            Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed', StartTime: new Date(ATTEMPT) }],
+          })
+          .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-mine', State: 'completed' }] });
+
+        await expect(
+          createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+            reuseStartedAtOrAfter: ATTEMPT,
+          })
+        ).resolves.toBe('snap-mine');
+      });
     });
 
     it('resumes a pending snapshot whatever its age (an interrupted destroy re-run)', async () => {
