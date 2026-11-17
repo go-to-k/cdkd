@@ -21,7 +21,7 @@ import type { ResourceState } from '../../../types/state.js';
 import type { StackDriftReport, DriftedOutcome } from './outcome.js';
 import { resolveStateSecretExpressions, isDriftSecretRefusal } from './secret-resolution.js';
 import { revertPathSegments } from './redaction.js';
-import { otherPhysicalIds } from './baseline-keys.js';
+import { otherPhysicalIds, stripDerivedEchoMembers } from './baseline-keys.js';
 import {
   collectUnresolvedIntrinsicObjectPaths,
   preserveLiveValuesAtUnresolvedTokens,
@@ -30,7 +30,11 @@ import {
   overlayLiveAtUncertifiedPaths,
   preserveLiveValuesAtMaskedLeaves,
 } from './revert-live-values.js';
-import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-payload.js';
+import {
+  buildRevertNewProperties,
+  driftAbsentMeansDefaultKeys,
+  withDeclaredWriteOnlyProperties,
+} from './revert-payload.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
@@ -412,6 +416,10 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
         )
       ).baseline;
     }
+    // go-to-k/cdkd#6497: the baseline's echo of another member leaves the
+    // desired bag, as detection compared without it. The previous side keeps
+    // the live echo, so `update()`'s patch removes it.
+    desiredProperties = stripDerivedEchoMembers(outcome.resourceType, desiredProperties);
     const overlaid = buildRevertNewProperties(
       outcome.changes,
       desiredProperties,
@@ -569,7 +577,14 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       );
       return;
     }
-    newProperties = maskPreserved.properties;
+    // go-to-k/cdkd#6498: Cloud Control's read-modify-write needs the declared
+    // write-only values, which no readback-built bag holds. After every pass
+    // above, which reads the readback-built bag only.
+    newProperties = withDeclaredWriteOnlyProperties(
+      maskPreserved.properties,
+      stateResource.properties,
+      args.writeOnlyResend
+    );
   } catch (err) {
     // Reachability note (issue #1914 review): this arm is narrower than
     // it looks, and is kept only because it is cheap. A bag so malformed

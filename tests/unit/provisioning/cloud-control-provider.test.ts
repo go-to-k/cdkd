@@ -134,7 +134,14 @@ import {
   handlerAuthFailureHint,
   s3RedirectRegion,
 } from '../../../src/provisioning/cloud-control-provider.js';
-import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import {
+  clearWriteOnlyPropertiesCache,
+  tryGetTopLevelWriteOnlyProperties,
+} from '../../../src/provisioning/write-only-properties.js';
+import {
+  revertWriteOnlyResendNames,
+  withDeclaredWriteOnlyProperties,
+} from '../../../src/cli/commands/drift/revert-payload.js';
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import {
@@ -778,6 +785,46 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     const patch = sentPatch();
     expect(patch).toContainEqual({ op: 'replace', path: '/Description', value: 'new' });
     expect(patch).toContainEqual({ op: 'add', path: '/TargetParameters', value: targetParameters });
+    expect(patch).toHaveLength(2);
+  });
+
+  it('a drift --revert bag carries a declared write-only key into the patch, never an unreadable create-only one (go-to-k/cdkd#6498)', async () => {
+    // The revert's previous side is the READBACK, which holds no write-only
+    // key, so #4416's unchanged-key skip above cannot fire for `ClientId`.
+    wireUpdateSuccess();
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/UserPoolId', '/properties/ClientId'],
+        writeOnlyProperties: ['/properties/ClientId', '/properties/ReturnMergedResources'],
+      }),
+    });
+    const type = 'AWS::Cognito::ManagedLoginBranding';
+    const declared = {
+      UserPoolId: 'us-east-1_abc',
+      ClientId: 'client-1',
+      ReturnMergedResources: true,
+      Settings: '{"a":1}',
+    };
+    const readback = { UserPoolId: 'us-east-1_abc', Settings: '{"a":2}' };
+
+    const names = revertWriteOnlyResendNames(
+      type,
+      declared,
+      readback,
+      await tryGetTopLevelWriteOnlyProperties(type)
+    );
+    expect(names).toEqual(['ReturnMergedResources']);
+    await provider.update(
+      'WebClientBranding',
+      'us-east-1_abc|mlb-1',
+      type,
+      withDeclaredWriteOnlyProperties({ ...readback, Settings: '{"a":1}' }, declared, names),
+      readback
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'replace', path: '/Settings', value: '{"a":1}' });
+    expect(patch).toContainEqual({ op: 'add', path: '/ReturnMergedResources', value: true });
     expect(patch).toHaveLength(2);
   });
 

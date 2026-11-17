@@ -239,7 +239,12 @@ export function printRevertPlan(
    * pasted one must reach the bucket this run read. A refused value is a hole
    * the line above it explains.
    */
-  recovery?: LockRecoveryContext
+  recovery?: LockRecoveryContext,
+  /**
+   * Per drifted outcome, the template's write-only properties its Cloud
+   * Control update also sends (go-to-k/cdkd#6498, `revertWriteOnlyResendNames`).
+   */
+  writeOnlyResend?: ReadonlyMap<DriftedOutcome, readonly string[]>
 ): void {
   for (const report of reports) {
     // Issue #2135: same exhaustive question `runRevert` asks, for the same
@@ -290,6 +295,15 @@ export function printRevertPlan(
             displayDriftValue(o, change.awsValue),
             displayDriftValue(o, change.stateValue)
           )
+        );
+      }
+      // go-to-k/cdkd#6498: values AWS never reads back, so no change line
+      // names them; printed so the confirmation covers every write. Names only.
+      const resent = writeOnlyResend?.get(o) ?? [];
+      if (resent.length > 0) {
+        out.write(
+          `    + also sends the template's write-only ` +
+            `${maskSecretsInText(resent.join(', '), o.secrets)} (AWS never returns them on a read)\n`
         );
       }
       // Issue #1478. Printed as part of the PLAN, not at update time, so it

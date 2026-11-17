@@ -87,6 +87,20 @@ read-only unless your template sets it, so `--revert` never tries to write one
 back. Reading the schema needs `cloudformation:DescribeType`; without it, those
 fields are compared too.
 
+Secrets Manager reads a rotation schedule set as `rate(N days)` (CDK's
+`automaticallyAfter`) back with `AutomaticallyAfterDays: N` as well, but
+accepts only one of the two in a request. Drift ignores that echo beside the
+expression, and `--revert` sends the expression alone.
+
+For a resource managed through Cloud Control, `--revert` also sends the
+template's write-only properties, which AWS never returns on a read, as a deploy
+does. Without them Cloud Control would apply each property's default: a rotation
+schedule's `RotateImmediatelyOnUpdate: false` would become `true` and rotate the
+secret. The plan lists those properties on a line starting
+`+ also sends the template's write-only`. A write-only value that holds a
+dynamic reference (`{{resolve:...}}`) is not sent, and neither is one Cloud
+Control refuses to receive again after creation.
+
 Drift never compares a bucket's `NotificationConfiguration` unless your
 template sets it on the bucket itself. CDK's `bucket.addEventNotification(...)`
 does not set it. A `Custom::S3BucketNotifications` resource writes it after the

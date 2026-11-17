@@ -53,6 +53,7 @@ import {
   undeclaredUncomparedDriftKeys,
   preFixBaselineUncomparedDriftKeys,
   readOnlyUncomparedDriftPaths,
+  stripDerivedEchoMembers,
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
 import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
@@ -429,7 +430,7 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // against a baseline written in the legacy shape. After the per-side
   // pass, so it sees the same bags the comparator will. `runRevert`
   // applies it to its desired bag as well.
-  const paired = provider.canonicalizeDriftPair
+  const pairCanonicalized = provider.canonicalizeDriftPair
     ? await provider.canonicalizeDriftPair(
         resource.resourceType,
         canonicalized.baseline,
@@ -437,6 +438,13 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
         resource.properties ?? {}
       )
     : canonicalized;
+  // go-to-k/cdkd#6497: a read's echo of another member (a rotation
+  // schedule's `AutomaticallyAfterDays` beside its `ScheduleExpression`) is
+  // not configuration. `runRevert` strips its desired bag too.
+  const paired = {
+    baseline: stripDerivedEchoMembers(resource.resourceType, pairCanonicalized.baseline),
+    aws: stripDerivedEchoMembers(resource.resourceType, pairCanonicalized.aws),
+  };
   // Issue #4081: a declared Pattern B name the live one is DERIVED from
   // (the legacy stack-name prefix, a sanitize rewrite) is the same name.
   // Inside this function's `withStackScope`, which the check needs.

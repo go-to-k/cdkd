@@ -179,6 +179,58 @@ export function readOnlyUncomparedDriftPaths(
 }
 
 /**
+ * Per resource type, nested members a read echoes beside the member they are
+ * derived from, where a WRITE may carry only one of the two
+ * (go-to-k/cdkd#6497).
+ *
+ * `AWS::SecretsManager::RotationSchedule`: a schedule set as
+ * `ScheduleExpression: rate(N days)` (CDK's `automaticallyAfter`) reads back
+ * with `AutomaticallyAfterDays: N` as well, and Secrets Manager refuses a
+ * request carrying both ("You cannot specify both rotation frequency and
+ * schedule expression together"). The observed baseline records the read, so
+ * `--revert` overlaid the echo beside the expression and the update failed.
+ * A schedule set as `AutomaticallyAfterDays` alone reads back without an
+ * expression, so the other direction needs no entry.
+ */
+const DERIVED_ECHO_MEMBERS: Readonly<
+  Record<string, readonly { parent: string; source: string; echo: string }[]>
+> = {
+  'AWS::SecretsManager::RotationSchedule': [
+    { parent: 'RotationRules', source: 'ScheduleExpression', echo: 'AutomaticallyAfterDays' },
+  ],
+};
+
+/**
+ * `bag` without each {@link DERIVED_ECHO_MEMBERS} echo that sits beside its
+ * source member (go-to-k/cdkd#6497). Applied to both comparison sides, and to
+ * `--revert`'s desired bag, so the revert's patch removes the live echo and
+ * sends the source alone. A side holding the echo WITHOUT the source keeps it:
+ * there it is the configured value.
+ *
+ * Copy-on-write: `bag` is returned by identity when nothing is stripped, and
+ * never mutated. A baseline written before this rule needs no heal, since the
+ * strip runs on every comparison.
+ */
+export function stripDerivedEchoMembers(
+  resourceType: string,
+  bag: Record<string, unknown>
+): Record<string, unknown> {
+  const rules = DERIVED_ECHO_MEMBERS[resourceType];
+  if (!rules) return bag;
+  let out = bag;
+  for (const { parent, source, echo } of rules) {
+    const node = hasOwnKey(out, parent) ? out[parent] : undefined;
+    if (typeof node !== 'object' || node === null || Array.isArray(node)) continue;
+    const members = node as Record<string, unknown>;
+    if (!hasOwnKey(members, echo) || !hasOwnKey(members, source)) continue;
+    if (members[source] === undefined || members[source] === null) continue;
+    const { [echo]: _echo, ...rest } = members;
+    out = { ...out, [parent]: rest };
+  }
+  return out;
+}
+
+/**
  * The physical ids of every record of `resources` OTHER than `logicalId`'s
  * (go-to-k/cdkd#4810). Drift resolves state with no resource records, so no
  * `Ref` / `Fn::GetAtt` read records a copy; each of these ids is stored in

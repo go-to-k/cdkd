@@ -38,6 +38,8 @@ import { type StackDriftReport, matchOutcome, type DriftedOutcome } from './outc
 import { DriftSecretResolvers } from './secret-resolution.js';
 import { maskMarkedNoEchoBaseline } from './redaction.js';
 import { revertDriftedOutcome } from './revert-outcome.js';
+import { revertWriteOnlyResendNames } from './revert-payload.js';
+import { tryGetTopLevelWriteOnlyProperties } from '../../../provisioning/write-only-properties.js';
 import {
   humanTextSink,
   printRevertPlan,
@@ -100,7 +102,52 @@ export async function runRevert(
     statePrefix: stateConfig.prefix,
   };
 
-  printRevertPlan(reports, out, lockRecovery);
+  // go-to-k/cdkd#6498: the write-only properties each Cloud Control routed
+  // update also sends, looked up ONCE so the plan (printed before the
+  // confirmation) and the update read the same names. One lookup per region
+  // and type, in that stack's own region scope, as the update's own is.
+  const writeOnlyResend = new Map<DriftedOutcome, readonly string[]>();
+  const writeOnlyLookups = new Map<string, Map<string, Promise<ReadonlySet<string> | undefined>>>();
+  await Promise.all(
+    reports.flatMap((report) =>
+      report.outcomes.flatMap((o) => {
+        if (o.kind !== 'drifted') return [];
+        const record = report.state.resources[o.logicalId];
+        if (!record) return [];
+        const scope = regionScope(report.region);
+        const { provisionedBy } = scope.registry.getProviderFor({
+          resourceType: o.resourceType,
+          provisionedBy: record.provisionedBy,
+        });
+        if (provisionedBy !== 'cc-api') return [];
+        let byType = writeOnlyLookups.get(report.region);
+        if (!byType) {
+          byType = new Map();
+          writeOnlyLookups.set(report.region, byType);
+        }
+        let lookup = byType.get(o.resourceType);
+        if (!lookup) {
+          lookup = runWithStackAwsClients(scope.clients, () =>
+            tryGetTopLevelWriteOnlyProperties(o.resourceType)
+          );
+          byType.set(o.resourceType, lookup);
+        }
+        return [
+          lookup.then((writeOnlyNames) => {
+            const names = revertWriteOnlyResendNames(
+              o.resourceType,
+              record.properties,
+              o.awsProperties,
+              writeOnlyNames
+            );
+            if (names.length > 0) writeOnlyResend.set(o, names);
+          }),
+        ];
+      })
+    )
+  );
+
+  printRevertPlan(reports, out, lockRecovery, writeOnlyResend);
 
   if (options.dryRun) {
     logger.info('--dry-run: AWS will NOT be modified. Re-run without --dry-run to apply.');
@@ -234,6 +281,7 @@ export async function runRevert(
                   reRecordedByLogicalId,
                   settledByRevert,
                   outcome,
+                  writeOnlyResend: writeOnlyResend.get(outcome) ?? [],
                 });
               }
             )
@@ -529,4 +577,9 @@ export interface RevertDriftedOutcomeArgs {
   >;
   settledByRevert: Map<string, ResourceState>;
   outcome: DriftedOutcome;
+  /**
+   * The write-only properties this update also sends (go-to-k/cdkd#6498),
+   * from the lookup the plan printed; `[]` off a Cloud Control route.
+   */
+  writeOnlyResend: readonly string[];
 }
