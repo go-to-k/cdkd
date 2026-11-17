@@ -128,6 +128,7 @@ docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #61
 drift-cc-read-only-props	2026-11-17T06:05:19Z	PASS	95	verify.sh	rc ok, orph clean
 drift-revert	2026-11-17T09:08:06Z	PASS	361	verify.sh	rc ok, orph clean (#6437 PR #6483)
 drift-revert-arrays	2026-11-17T06:34:15Z	PASS	206	verify.sh	rc ok, orph clean
+drift-revert-nested-write-only	2026-11-17T15:14:38Z	PASS	236	verify.sh	rc ok, orph clean, versions swept
 drift-revert-vpc	2026-11-17T09:08:06Z	PASS	391	verify.sh	rc ok, orph clean (#6437 PR #6483)
 drift-rotation-schedule-revert	2026-11-17T14:11:25Z	PASS	140	verify.sh	rc ok, orph clean
 drift-sg-sibling-rules	2026-11-16T12:54:11Z	PASS	175	verify.sh	rc ok, orph clean

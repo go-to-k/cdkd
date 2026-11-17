@@ -70,12 +70,19 @@ const settledWriteOnlyProperties = new Map<string, ReadonlySet<string>>();
 const settledUnreadableCreateOnlyPaths = new Map<string, ReadonlyArray<readonly string[]>>();
 
 /**
+ * Per settled success, every write-only path as segments under `properties`
+ * (`*` for an array element), for {@link getSettledWriteOnlyPropertyPaths}.
+ */
+const settledWriteOnlyPaths = new Map<string, ReadonlyArray<readonly string[]>>();
+
+/**
  * Clear the per-type cache. Test-only helper.
  */
 export function clearWriteOnlyPropertiesCache(): void {
   writeOnlyPropertiesCache.clear();
   settledWriteOnlyProperties.clear();
   settledUnreadableCreateOnlyPaths.clear();
+  settledWriteOnlyPaths.clear();
 }
 
 /**
@@ -219,6 +226,7 @@ async function fetchTopLevelWriteOnlyProperties(
   }
 
   settledUnreadableCreateOnlyPaths.set(resourceType, unreadableCreateOnlyPaths);
+  settledWriteOnlyPaths.set(resourceType, paths);
   logger.debug(
     `Resolved ${result.size} top-level write-only properties for ${resourceType}` +
       (result.size > 0 ? `: ${[...result].join(', ')}` : '')
@@ -255,6 +263,20 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
     if (holdsValueAt(properties, path)) result.add(path[0]!);
   }
   return result;
+}
+
+/**
+ * Every write-only path of `resourceType` as segments under `properties` (`*`
+ * for an array element), from the schema {@link getTopLevelWriteOnlyProperties}
+ * or {@link tryGetTopLevelWriteOnlyProperties} fetched: call it after that
+ * lookup resolved. `[]` when none settled. Keyed by type only, like every
+ * cache here: a type's registry schema is taken to be the same in every
+ * region, so the paths are whichever region's lookup settled first.
+ */
+export function getSettledWriteOnlyPropertyPaths(
+  resourceType: string
+): ReadonlyArray<readonly string[]> {
+  return settledWriteOnlyPaths.get(resourceType) ?? [];
 }
 
 /** A value is present at `path` under `node`; `*` stands for every array element. */

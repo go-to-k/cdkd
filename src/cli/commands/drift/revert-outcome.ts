@@ -30,11 +30,9 @@ import {
   overlayLiveAtUncertifiedPaths,
   preserveLiveValuesAtMaskedLeaves,
 } from './revert-live-values.js';
-import {
-  buildRevertNewProperties,
-  driftAbsentMeansDefaultKeys,
-  withDeclaredWriteOnlyProperties,
-} from './revert-payload.js';
+import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-payload.js';
+import { withDeclaredWriteOnlyValues } from './revert-write-only.js';
+import { getSettledWriteOnlyPropertyPaths } from '../../../provisioning/write-only-properties.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
@@ -187,6 +185,9 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     for (const token of tokens) unresolvedTokens.add(token);
   };
   let desiredProperties: Record<string, unknown>;
+  // go-to-k/cdkd#6499: the template side, resolved, which the write-only
+  // positions are sent from (`withDeclaredWriteOnlyValues`).
+  let resolvedDeclared: Record<string, unknown>;
   try {
     desiredProperties = await resolveStateSecretExpressions(
       revertBaseline,
@@ -204,8 +205,9 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // map so a secret the OBSERVED baseline never captured is still a key
     // in it. Revert needs that for the narrowing write below, whose
     // position source can only reach leaves the two bags share.
+    resolvedDeclared = desiredProperties;
     if (stateResource.observedProperties !== undefined) {
-      await resolveStateSecretExpressions(
+      resolvedDeclared = await resolveStateSecretExpressions(
         stateResource.properties ?? {},
         revertSecretResolvers,
         secrets,
@@ -577,14 +579,35 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       );
       return;
     }
-    // go-to-k/cdkd#6498: Cloud Control's read-modify-write needs the declared
-    // write-only values, which no readback-built bag holds. After every pass
-    // above, which reads the readback-built bag only.
-    newProperties = withDeclaredWriteOnlyProperties(
+    // go-to-k/cdkd#6498 / #6499: Cloud Control's read-modify-write needs the
+    // template's value at every write-only position, which no readback-built
+    // bag holds. After every pass above, which reads the
+    // readback-built bag only; the values are resolved into `secrets`, which
+    // masks the update's output.
+    const writeOnly = withDeclaredWriteOnlyValues(
       maskPreserved.properties,
-      stateResource.properties,
-      args.writeOnlyResend
+      resolvedDeclared,
+      args.writeOnlyResend,
+      getSettledWriteOnlyPropertyPaths(outcome.resourceType)
     );
+    newProperties = writeOnly.properties;
+    if (writeOnly.wholesale.length > 0) {
+      logger.warn(
+        safeMsg`  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): sent the ` +
+          safeMsg`template's whole value of ${maskSecretsInText(writeOnly.wholesale.join(', '), secrets)} — ` +
+          `its list items could not be matched to the template's one by one, so items an ` +
+          `'--accept' changed there go back to the template, as a deploy would send them.`
+      );
+    }
+    if (writeOnly.skipped.length > 0) {
+      logger.warn(
+        safeMsg`  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not ` +
+          `send the template's write-only fields of ` +
+          safeMsg`${maskSecretsInText(writeOnly.skipped.join(', '), secrets)} — a reference there did ` +
+          `not resolve, or its list elements could not be matched to the template's. Cloud ` +
+          `Control may refuse this update, or apply defaults there.`
+      );
+    }
   } catch (err) {
     // Reachability note (issue #1914 review): this arm is narrower than
     // it looks, and is kept only because it is cheap. A bag so malformed

@@ -594,18 +594,37 @@ rotation schedule's `RotationRules.AutomaticallyAfterDays` beside its
 the revert's desired bag, so the patch removes the live echo and sends the
 expression alone.
 
-`--revert` on a Cloud Control routed record adds the template's top-level
-write-only properties to the send bag (`withDeclaredWriteOnlyProperties`,
-go-to-k/cdkd#6498). The bag is built from the readback, which never holds one,
-so `CloudControlProvider.update`'s write-only re-inclusion (#809) had nothing to
-add and Cloud Control's read-modify-write took each default. A value carrying a
-dynamic reference, a redaction mask or an unresolved intrinsic is left out, so
-the revert's secret handling is unchanged. So is a key holding a create-only
-path the read cannot return (#4416): Cloud Control refuses any patch adding
-one, and the update's unchanged-key skip cannot fire when the previous side is
-the readback. The schema comes from the same cached `DescribeType` lookup the
-update uses, and a failed lookup adds nothing. The plan names every property
-sent this way, before the confirmation prompt.
+`--revert` on a Cloud Control routed record sends the template's value at
+every write-only position (`revertWriteOnlyResendNames` /
+`withDeclaredWriteOnlyValues` in `drift/revert-write-only.ts`,
+go-to-k/cdkd#6498, #6499). The send bag is built from the readback, which never
+holds a write-only value, and `CloudControlProvider.update` re-adds each
+write-only-bearing top-level key from that bag (#809). So a wholly write-only
+key was absent, and Cloud Control's read-modify-write took its default. A
+readable container (`AWS::Events::Connection` `AuthParameters`) was re-added
+without its nested member (`ApiKeyValue`), and Cloud Control refused the model.
+
+- **Graft, not replace.** A key the bag lacks takes the template value whole.
+  In a key the bag holds, only the schema's write-only paths take the
+  template's value, so an `--accept`ed readable member survives. A `*` path
+  matches list items one to one: a template item partners a bag item when its
+  leaves outside the write-only paths equal the bag's (keys only the bag holds,
+  such as an AWS-added `Order`, are ignored), and an ambiguous or missing match
+  is no match. Lists that do not match send the template's whole value, as a
+  deploy does, with a warning.
+- **Values.** The template side is the record's `properties` as the revert
+  resolved them into its `secrets` map. A dynamic reference is therefore sent
+  resolved, and masked on everything the update prints. A grafted value still
+  carrying a `{{resolve:...}}` (unresolvable) or a mask is not sent, and the
+  revert warns; an intrinsic is never named.
+- **Exclusion.** A key holding a create-only path the read cannot return is
+  left out (#4416). Cloud Control refuses any patch adding one, and the
+  update's unchanged-key skip cannot fire when the previous side is the
+  readback.
+- **Lookup.** The names come from one `DescribeType` lookup per region and
+  type in `runRevert`, before the plan, and the paths come from that lookup's
+  settled schema. The plan names every key sent this way ahead of the
+  confirmation prompt, and a failed lookup sends none.
 
 ## Malformed records under `--accept` and `--revert`
 

@@ -38,7 +38,7 @@ import { type StackDriftReport, matchOutcome, type DriftedOutcome } from './outc
 import { DriftSecretResolvers } from './secret-resolution.js';
 import { maskMarkedNoEchoBaseline } from './redaction.js';
 import { revertDriftedOutcome } from './revert-outcome.js';
-import { revertWriteOnlyResendNames } from './revert-payload.js';
+import { revertWriteOnlyResendNames } from './revert-write-only.js';
 import { tryGetTopLevelWriteOnlyProperties } from '../../../provisioning/write-only-properties.js';
 import {
   humanTextSink,
@@ -137,7 +137,6 @@ export async function runRevert(
             const names = revertWriteOnlyResendNames(
               o.resourceType,
               record.properties,
-              o.awsProperties,
               writeOnlyNames
             );
             if (names.length > 0) writeOnlyResend.set(o, names);

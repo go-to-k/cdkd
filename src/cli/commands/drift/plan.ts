@@ -297,12 +297,13 @@ export function printRevertPlan(
           )
         );
       }
-      // go-to-k/cdkd#6498: values AWS never reads back, so no change line
-      // names them; printed so the confirmation covers every write. Names only.
+      // go-to-k/cdkd#6498 / #6499: keys whose write-only positions are sent at
+      // their template value, which no change line can name; printed so the
+      // confirmation covers every write. Names only.
       const resent = writeOnlyResend?.get(o) ?? [];
       if (resent.length > 0) {
         out.write(
-          `    + also sends the template's write-only ` +
+          `    + also sends the template's write-only fields of ` +
             `${maskSecretsInText(resent.join(', '), o.secrets)} (AWS never returns them on a read)\n`
         );
       }
