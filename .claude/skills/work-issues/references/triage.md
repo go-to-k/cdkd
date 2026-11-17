@@ -155,11 +155,12 @@ create→update→delete probe stack into triage's ONE `AskUserQuestion` (#5640)
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
-maintainer-only step; re-measure as a consumer deploys it, e.g. a CDK PR's
-integ, #5984) or closing an AWS-side limit with
-docs: return its options, each fix and what CFn / the CDK CLI do, for ONE
-`AskUserQuestion` at triage (gotchas.md). An issue's "Undecided" line is no
-question: where the CFn premise settles it, take that, unasked (#5637, #5656).
+maintainer-only step; re-measure as a consumer deploys it: a CDK PR's integ,
+#5984) or closing an AWS-side limit with docs: return its options, each fix and
+what CFn / the CDK CLI do, for ONE `AskUserQuestion` at triage (gotchas.md),
+each cdkd-side premise in it TRACED through the code path, never read off a
+comment (#6463). An "Undecided" line is no question: where the CFn premise
+settles it, take that, unasked (#5637).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 

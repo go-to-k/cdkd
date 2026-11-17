@@ -27,7 +27,8 @@ and it is no §8-d proof (#4618).
 Sequence: reviewers → early run → EVERY finding, nits included → §8-d probe
 (§8-d says when it follows instead) → rebase → integ → marker (an hour-long
 probe stales the base, #5475). A UNIT-test-only fix round may overlap the
-parent's integ in the lane's tree.
+parent's integ in the lane's tree; a `src/**` one, even unpushed, takes ship.md
+§9's `--detach` sibling.
 Brief the lane: no build, `/check` or `/verify-pr` there (a build rewrites the
 live fixture's `dist/`), no rebase or install, never the live fixture's
 directory, and stage only its own test files (the integ's ledger row lands

@@ -14,10 +14,12 @@ to `AskUserQuestion`, never a reworded retry (#4059); only
 `/run-integ` step 9's one retry (marker set or ledger push) is exempt.
 Ship from a SECOND sibling on the PR's branch while that tree holds a follow-up
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there. A fix
-round DURING that tree's integ edits a `--detach` sibling, pushes
-`HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
-before the marker, re-running an integ the fix touches (#4561). Never two
+running BOTH the integ and the merge there. A `src/**` fix
+round DURING an integ edits a `--detach` sibling, never the integ's tree, not
+even commit-without-push (the marker hashes that tree's delta, not the sha its
+`dist/` ran, #6475), pushes
+`HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards the integ's tree
+before the marker, re-running an integ the fix touches. Never two
 merges at once, nor two integs on the SAME fixture (one stack name, one state
 prefix; another REGION is no isolation: cdkd then refuses
 "state in multiple regions" at drift and cleanup, voiding both, #6048): queue
@@ -42,9 +44,10 @@ turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
-exits — a no-edit brief still names the ledger row it owes (#6242, #6332) —
+exits — a no-edit brief still names the ledger row it owes (#6332) —
 names only fixtures `ls tests/integration/` lists in the PR's OWN repo, has it run `/run-integ` step 5's block AS
-WRITTEN in ONE launch call per fixture, never step 5's SET loop (a zsh loop's
+WRITTEN and UNWRAPPED in ONE launch call per fixture (its `wait` works only in the
+shell that ran the `&`: a wrapper's own `wait` printed `rc=127` for a PASS), never step 5's SET loop (a zsh loop's
 unsplit `set -- $p` killed two in 5 s) under the budget the PARENT computed with that block, named per
 fixture in the brief (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line
@@ -203,9 +206,11 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   required): with `baseRefOid` behind `origin/main`, `vp test run` the PR merged
   onto it first (#5685).
 
-- **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
-  merge the release PR, confirm the npm version, then thank them in English
-  with that version (#3624).
+- **Merge the release PR from `<MAIN_CHECKOUT>`**, or any tree whose branch
+  delta against `origin/main` is empty: `integ-destroy-gate` judges the TREE's
+  delta, so a lane tree touching its scope refuses it (#6470). An OUTSIDE
+  reporter's issue is thanked after that RELEASE, not the fix PR's merge:
+  confirm the npm version, then thank them in English with that version (#3624).
 
 ### Pull, then rebuild the linked binary
 
