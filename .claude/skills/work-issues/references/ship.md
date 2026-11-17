@@ -37,9 +37,11 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
 - a rollback-journal reader or `cdkd rollback` caller gets its own state
   bucket (#5104);
 - cap fixtures in flight per region at what the account's VPC / EIP / NAT
-  quotas carry, else spread across regions.
+  quotas carry, else spread across regions;
+- a building fixture runs alone in its tree (`/run-integ` step 1's grep, re-run
+  on every fixture ADDED to the set: one added unclassified killed `lambda`, #6438).
 
-The PARENT checks all five before granting each further lane's integ. ANY
+The PARENT checks all six before granting each further lane's integ. ANY
 turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
@@ -48,7 +50,7 @@ exits — a no-edit brief still names the ledger row it owes (#6332) —
 names only fixtures `ls tests/integration/` lists in the PR's OWN repo, has it run `/run-integ` step 5's block AS
 WRITTEN and UNWRAPPED in ONE launch call per fixture (its `wait` works only in the
 shell that ran the `&`: a wrapper's own `wait` printed `rc=127` for a PASS), never step 5's SET loop (a zsh loop's
-unsplit `set -- $p` killed two in 5 s) under the budget the PARENT computed with that block, named per
+unsplit `set -- $p` killed two in 5 s; the brief QUOTES this ban, a paraphrase let it recur, #6438) under the budget the PARENT computed with that block, named per
 fixture in the brief (never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line
 (#5519), wait on ONE command exiting with that PID and stop every
