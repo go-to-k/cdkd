@@ -181,7 +181,7 @@ eventbridge-pipes	2026-11-06T22:52:11Z	PASS	235	verify.sh	#5925 pipes split head
 eventbridge-scheduler	2026-11-06T23:59:22Z	PASS	57	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean
 eventbus-policy	2026-11-17T03:42:27Z	PASS	120	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
 eventsourcemapping-race	2026-11-06T20:37:27Z	PASS	109	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
-export	2026-11-17T09:08:06Z	PASS	241	verify.sh	rc ok, orph clean (#6437 PR #6483)
+export	2026-11-17T16:51:17Z	PASS	236	verify.sh	rc ok, destroy 0 errors, orph clean (PR #6506 un-deprecate --region); scratch copy w/o build step, own temp bucket
 export-nested-stack	2026-11-16T12:51:14Z	PASS	192	verify.sh	rc ok, orph clean (#6398)
 fallback-recreate-children	2026-11-04T20:04:01Z	PASS	100	verify.sh	rc ok, orph clean
 fifo-sqs-event-source	2026-11-04T10:39:18Z	PASS	180	verify.sh	rc ok, orph clean, Phase 1c #5749 OK
@@ -235,12 +235,12 @@ import-heal-prefix-record	2026-11-04T20:04:01Z	PASS	170	verify.sh	rc ok, orph cl
 import-lambda-url-attributes	2026-11-04T06:43:31Z	PASS	115	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
 import-migrate-vpc	2026-11-04T22:03:16Z	PASS	356	verify.sh	rc ok, orph clean; VPC confirmed gone; us-east-1; own temp state bucket
-import-nested-stack	2026-11-05T03:25:44Z	PASS	151	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
+import-nested-stack	2026-11-17T16:51:17Z	PASS	151	verify.sh	rc ok, destroy 0 errors, orph clean (PR #6506 un-deprecate --region); scratch copy w/o build step, own temp bucket
 import-noecho-parameter	2026-11-04T20:04:01Z	PASS	126	verify.sh	rc ok, orph clean
 import-reimport-masked-attrs	2026-11-04T21:03:16Z	PASS	174	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 import-retain-destroy	2026-11-04T08:44:47Z	PASS	140	verify.sh	rc 0, destroy clean, retained Kept param removed by fixture, orph clean (own state bucket)
 import-secret-observed	2026-11-04T21:00:19Z	PASS	138	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
-import-value-strong-ref	2026-11-16T19:45:59Z	PASS	250	verify.sh	rc 0, destroy 0 errors, 0 orphans; run from sibling worktree at same sha d21b99b5f
+import-value-strong-ref	2026-11-17T16:51:17Z	PASS	176	verify.sh	rc ok, destroy 0 errors, orph clean (PR #6506 un-deprecate --region); own temp bucket
 importvalue-chain	2026-11-10T16:08:47Z	PASS	125	verify.sh	rc ok, orph clean
 infra-security	2026-11-05T09:19:56Z	PASS	213	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans
 inplace-attr-propagation	2026-11-04T07:36:26Z	PASS	46	verify.sh	rc ok, orph clean (own state bucket, wrasse)
@@ -301,7 +301,7 @@ local-run-task-awsvpc	2026-11-15T18:31:17Z	PASS	10	verify.sh	rc ok, docker sweep
 local-run-task-cdkd-assets	2026-11-13T07:02:34Z	PASS	18	verify.sh	rc ok, docker sweep clean (#6192)
 local-run-task-from-state	2026-11-16T12:42:03Z	PASS	257	verify.sh	rc ok, orph clean; HEAD 23a69cc60 Ref-value mapping
 local-run-task-multi-container	2026-11-13T08:07:28Z	PASS	9	verify.sh	rc ok, docker sweep clean, #6194
-local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
+local-start-agentcore	2026-11-17T16:51:17Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS resources (PR #6506)
 local-start-alb	2026-11-16T18:27:40Z	PASS	25	verify.sh	PR6461 018ba020; rc ok, docker clean
 local-start-alb-cognito-from-state	2026-11-16T18:32:17Z	PASS	100	verify.sh	PR6461 8086f400; rc ok, no-state tampered token 200, orph clean, docker clean
 local-start-alb-from-state	2026-11-16T18:27:40Z	PASS	366	verify.sh	PR6461 018ba020; rc ok, orph clean, docker clean
@@ -326,11 +326,11 @@ logs-loggroup-fix-forward-orphan	2026-11-07T16:00:00Z	PASS	85	verify.sh	#6021 jo
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-10T12:50:06Z	PASS	80	verify.sh	rc ok, orph clean (#6080 marker re-set on branch tree)
 microservices	2026-11-17T09:08:06Z	PASS	50	standard	rc ok, orph clean (#6437 PR #6483)
-migrate-from-cfn	2026-11-04T23:39:52Z	PASS	367	run.sh	ALL CHECKS PASSED (small+large); ran scratch copy of run.sh without build step, on own temp state bucket via CDKD_STATE_BUCKET; CFn stacks gone; orph clean
+migrate-from-cfn	2026-11-17T16:51:17Z	PASS	371	run.sh	ALL CHECKS PASSED (small+large); PR #6506; scratch copy w/o build step, own temp bucket; CFn stacks gone; orph clean
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
 multi-region-same-stack	2026-11-04T08:31:11Z	PASS	37	standard	standard flow, us-west-2 + us-east-1 arms, both state keys coexisted, destroy 0 errors each, orph clean both regions
-multi-resource	2026-11-17T09:08:06Z	PASS	80	standard	rc ok, orph clean (#6437 PR #6483)
+multi-resource	2026-11-17T16:51:17Z	PASS	85	standard	rc ok, destroy 0 errors, orph clean (PR #6506 un-deprecate --region)
 multi-stack-deps	2026-11-17T09:08:06Z	PASS	105	standard	rc ok, orph clean (#6437 PR #6483)
 neptune-fix-forward-orphan	2026-11-06T18:41:33Z	PASS	2306	verify.sh	#5899 neptune split head; own bucket; rc ok, orph clean
 neptune-restore	2026-11-06T18:03:07Z	PASS	1800	verify.sh	#5899 neptune split head; rc ok, orph clean
