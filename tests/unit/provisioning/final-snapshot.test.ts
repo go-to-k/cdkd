@@ -268,7 +268,10 @@ describe('createEbsFinalSnapshot', () => {
       const send = vi
         .fn()
         .mockResolvedValueOnce({
-          Snapshots: [{ SnapshotId: 'snap-stale', State: 'completed', StartTime: OLD }],
+          // One millisecond before the attempt: the bound is exact.
+          Snapshots: [
+            { SnapshotId: 'snap-stale', State: 'completed', StartTime: new Date(ATTEMPT - 1) },
+          ],
         })
         .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
         .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
@@ -285,6 +288,25 @@ describe('createEbsFinalSnapshot', () => {
       ]);
       // The stale snapshot is only read, never touched; the wait polls the fresh one.
       expect(send.mock.calls[2][0].input).toEqual({ SnapshotIds: ['snap-fresh'] });
+    });
+
+    it('the reuse probe asks only for snapshots OF this volume, not every one carrying its tag', async () => {
+      const send = vi
+        .fn()
+        .mockResolvedValueOnce({ Snapshots: [] })
+        .mockResolvedValueOnce({ SnapshotId: 'snap-fresh' })
+        .mockResolvedValueOnce({ Snapshots: [{ SnapshotId: 'snap-fresh', State: 'completed' }] });
+
+      await createEbsFinalSnapshot(mockEc2(send), 'vol-1', 'DataVolume', logger, {
+        attemptStartedAt: ATTEMPT,
+      });
+
+      expect(send.mock.calls[0][0].input.Filters).toEqual(
+        expect.arrayContaining([
+          { Name: `tag:${EBS_FINAL_SNAPSHOT_TAG_KEY}`, Values: ['vol-1'] },
+          { Name: 'volume-id', Values: ['vol-1'] },
+        ])
+      );
     });
 
     it('with no options at all, the call start bounds it: an older completed snapshot is not reused', async () => {

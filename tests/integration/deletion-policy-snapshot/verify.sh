@@ -290,10 +290,13 @@ if [ -z "${SNAP_KEEP_ID}" ]; then
   echo "FAIL: destroy took no NEW final snapshot of ${VOL_KEEP_NEW_ID}: it reused the older completed ${SNAP_STALE_ID} (issue #6473), or ignored DeletionPolicy: Snapshot on the destroy-runner path" >&2
   exit 1
 fi
-# Phase 3a's snapshot is left as it was: still there, completed, same start.
+# Phase 3a's snapshot is left as it was: still there, completed, same start,
+# still tagged. `|| true` so a deleted snapshot reaches the FAIL line below.
 SNAP_STALE_AFTER=$(aws ec2 describe-snapshots --snapshot-ids "${SNAP_STALE_ID}" \
-  --region "${REGION}" --query 'Snapshots[0].[State,StartTime]' --output text)
-if [ "${SNAP_STALE_AFTER}" != "$(printf 'completed\t%s' "${SNAP_STALE_START}")" ]; then
+  --region "${REGION}" \
+  --query "Snapshots[0].[State,StartTime,Tags[?Key=='cdkd:final-snapshot-of'].Value | [0]]" \
+  --output text 2>&1 || true)
+if [ "${SNAP_STALE_AFTER}" != "$(printf 'completed\t%s\t%s' "${SNAP_STALE_START}" "${VOL_KEEP_NEW_ID}")" ]; then
   echo "FAIL: the pre-made snapshot ${SNAP_STALE_ID} changed across the destroy (now: ${SNAP_STALE_AFTER})" >&2
   exit 1
 fi

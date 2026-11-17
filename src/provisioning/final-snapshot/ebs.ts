@@ -60,6 +60,9 @@ export async function createEbsFinalSnapshot(
         OwnerIds: ['self'],
         Filters: [
           { Name: `tag:${EBS_FINAL_SNAPSHOT_TAG_KEY}`, Values: [volumeId] },
+          // go-to-k/cdkd#6473: a snapshot of ANOTHER volume carrying the tag
+          // (a hand-applied or copied tag) never stands in for this one.
+          { Name: 'volume-id', Values: [volumeId] },
           { Name: 'status', Values: ['pending', 'completed'] },
         ],
       })

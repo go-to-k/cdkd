@@ -126,15 +126,16 @@ re-run after the snapshot completed therefore creates a second, timestamped,
 non-colliding one.
 
 An EC2 volume's tag is keyed on an AWS-generated volume id that is never
-reused, so its snapshot can only hold that volume's data. A re-run still
-resumes only a snapshot in progress, whatever its age. A completed one is
-reused only when it started during the same delete; one left by an earlier
-attempt whose delete failed predates the writes the volume took since, so the
-re-run takes a fresh one, and the older snapshot is left as it is.
+reused, so its snapshot can only hold that volume's data. A re-run resumes a
+snapshot still in progress, whatever its age. A completed one is not reused:
+one left by an earlier attempt whose delete failed predates the writes the
+volume took since, so the re-run takes a fresh one, and the older snapshot is
+left as it is.
 
 The delete of a replaced resource's old copy, after an
-`UpdateReplacePolicy: Snapshot` replacement, is stricter: it resumes or reuses
-only a snapshot started since the copy was replaced.
+`UpdateReplacePolicy: Snapshot` replacement, is bounded instead by when the
+copy was replaced: it resumes or reuses only a snapshot started since then,
+including a completed one from an earlier attempt of that delete.
 
 ## `--remove-protection`
 
