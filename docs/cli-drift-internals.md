@@ -600,8 +600,12 @@ go-to-k/cdkd#6498). The bag is built from the readback, which never holds one,
 so `CloudControlProvider.update`'s write-only re-inclusion (#809) had nothing to
 add and Cloud Control's read-modify-write took each default. A value carrying a
 dynamic reference, a redaction mask or an unresolved intrinsic is left out, so
-the revert's secret handling is unchanged; the schema comes from the same
-cached `DescribeType` lookup the update uses, and a failed lookup adds nothing.
+the revert's secret handling is unchanged. So is a key holding a create-only
+path the read cannot return (#4416): Cloud Control refuses any patch adding
+one, and the update's unchanged-key skip cannot fire when the previous side is
+the readback. The schema comes from the same cached `DescribeType` lookup the
+update uses, and a failed lookup adds nothing. The plan names every property
+sent this way, before the confirmation prompt.
 
 ## Malformed records under `--accept` and `--revert`
 

@@ -38,6 +38,7 @@ import { type StackDriftReport, matchOutcome, type DriftedOutcome } from './outc
 import { DriftSecretResolvers } from './secret-resolution.js';
 import { maskMarkedNoEchoBaseline } from './redaction.js';
 import { revertDriftedOutcome } from './revert-outcome.js';
+import { revertWriteOnlyResendNames } from './revert-payload.js';
 import {
   humanTextSink,
   printRevertPlan,
@@ -100,7 +101,36 @@ export async function runRevert(
     statePrefix: stateConfig.prefix,
   };
 
-  printRevertPlan(reports, out, lockRecovery);
+  // go-to-k/cdkd#6498: the write-only properties each Cloud Control routed
+  // update will also send, named in the plan BEFORE the confirmation. Looked
+  // up in each stack's own region scope, as the update looks them up.
+  const writeOnlyResend = new Map<DriftedOutcome, readonly string[]>();
+  await Promise.all(
+    reports.flatMap((report) =>
+      report.outcomes.flatMap((o) => {
+        if (o.kind !== 'drifted') return [];
+        const record = report.state.resources[o.logicalId];
+        if (!record) return [];
+        const scope = regionScope(report.region);
+        const { provisionedBy } = scope.registry.getProviderFor({
+          resourceType: o.resourceType,
+          provisionedBy: record.provisionedBy,
+        });
+        return [
+          runWithStackAwsClients(scope.clients, async () => {
+            const names = await revertWriteOnlyResendNames(
+              provisionedBy,
+              o.resourceType,
+              record.properties
+            );
+            if (names.length > 0) writeOnlyResend.set(o, names);
+          }),
+        ];
+      })
+    )
+  );
+
+  printRevertPlan(reports, out, lockRecovery, writeOnlyResend);
 
   if (options.dryRun) {
     logger.info('--dry-run: AWS will NOT be modified. Re-run without --dry-run to apply.');

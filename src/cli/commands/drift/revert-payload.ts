@@ -8,6 +8,10 @@ import { hasOwnKey, ownValue, defineOwnKey, hasPlainPrototype } from '../../../u
 import { safeMsg } from '../../../utils/display-safe.js';
 import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import { carriesDynamicReference } from '../../../deployment/intrinsic-resolver/context/log-twins.js';
+import {
+  tryGetTopLevelWriteOnlyProperties,
+  getTopLevelKeysHoldingUnreadableCreateOnly,
+} from '../../../provisioning/write-only-properties.js';
 import type { ResourceProvider } from '../../../types/resource.js';
 import {
   mergeUntemplatedValue,
@@ -330,40 +334,73 @@ export function sameRecordedJson(candidate: unknown, recorded: unknown): boolean
 }
 
 /**
- * `send` plus each top-level write-only property `properties` (the recorded
- * template) declares and `send` lacks (go-to-k/cdkd#6498). For a Cloud
- * Control routed record only: the caller passes the type's write-only names.
+ * The top-level write-only properties a Cloud Control routed `--revert` sends
+ * from `properties` (the recorded template), in schema order
+ * (go-to-k/cdkd#6498). `[]` for any other route.
  *
- * WHY: `send` is the readback plus the baseline's drifted subtrees, and
- * neither holds a write-only value, since no read returns one. Cloud Control
- * applies the patch read-modify-write, so the handler then ran as if the
- * template had left the property out and took its default: a rotation
+ * WHY: the revert's send bag is the readback plus the baseline's drifted
+ * subtrees, and neither holds a write-only value, since no read returns one.
+ * Cloud Control applies the patch read-modify-write, so the handler ran as if
+ * the template had left the property out and took its default: a rotation
  * schedule's `RotateImmediatelyOnUpdate: false` became Secrets Manager's
  * `true`, and the revert rotated the secret immediately. Given the declared
  * value, `CloudControlProvider.update` re-adds it to the patch as a deploy
  * does (#809).
  *
- * A value carrying a dynamic reference, a redaction mask or an unresolved
- * intrinsic object is left out: state holds none of those in a form AWS can
- * be sent, and resolving one here would widen the revert's secret handling.
- * Such a property stays as before this rule. `undefined` names (the lookup
- * failed) add nothing. Returns `send` by identity when nothing is added.
+ * Left out:
+ * - a value carrying a dynamic reference, a redaction mask or an unresolved
+ *   intrinsic object: state holds none of those in a form AWS can be sent, and
+ *   resolving one here would widen the revert's secret handling;
+ * - a key holding a create-only path the read cannot return
+ *   (`getTopLevelKeysHoldingUnreadableCreateOnly`, #4416: an IoT certificate's
+ *   `CertificateSigningRequest`): Cloud Control refuses any patch adding one,
+ *   and a deploy's update skips it only because its previous side is the
+ *   template, where a revert's is the readback.
+ *
+ * A failed schema lookup sends none, as before this rule. The plan prints the
+ * same names (`printRevertPlan`), so the user confirms what is written.
+ *
+ * Coupling: nothing writes these values into state. That holds while the Cloud
+ * Control `update()` returns no `effectiveProperties`; one that did would read
+ * each as narrowed to absent in `collectNarrowedTopLevelKeys`.
  */
-export function withDeclaredWriteOnlyProperties(
-  send: Record<string, unknown>,
-  properties: Record<string, unknown> | undefined,
-  writeOnlyNames: ReadonlySet<string> | undefined
-): Record<string, unknown> {
-  if (!writeOnlyNames || writeOnlyNames.size === 0 || !isPlainRecord(properties)) return send;
-  let out = send;
+export async function revertWriteOnlyResendNames(
+  provisionedBy: string | undefined,
+  resourceType: string,
+  properties: Record<string, unknown> | undefined
+): Promise<string[]> {
+  if (provisionedBy !== 'cc-api' || !isPlainRecord(properties)) return [];
+  const writeOnlyNames = await tryGetTopLevelWriteOnlyProperties(resourceType);
+  if (!writeOnlyNames || writeOnlyNames.size === 0) return [];
+  const unreadableCreateOnly = getTopLevelKeysHoldingUnreadableCreateOnly(resourceType, properties);
+  const names: string[] = [];
   for (const name of writeOnlyNames) {
-    if (hasOwnKey(send, name) || !hasOwnKey(properties, name)) continue;
+    if (!hasOwnKey(properties, name) || unreadableCreateOnly.has(name)) continue;
     const value = properties[name];
     if (value === undefined || value === null) continue;
     if (carriesDynamicReference(value) || carriesSecretMask(value)) continue;
     if (carriesIntrinsicObject(value)) continue;
+    names.push(name);
+  }
+  return names;
+}
+
+/**
+ * `send` plus each of `names` (from {@link revertWriteOnlyResendNames}) taken
+ * from `properties`, unless `send` already holds it. Returns `send` by
+ * identity when nothing is added; never mutates it.
+ */
+export function withDeclaredWriteOnlyProperties(
+  send: Record<string, unknown>,
+  properties: Record<string, unknown> | undefined,
+  names: readonly string[]
+): Record<string, unknown> {
+  if (names.length === 0 || !isPlainRecord(properties)) return send;
+  let out = send;
+  for (const name of names) {
+    if (hasOwnKey(send, name) || !hasOwnKey(properties, name)) continue;
     if (out === send) out = { ...send };
-    defineOwnKey(out, name, value);
+    defineOwnKey(out, name, properties[name]);
   }
   return out;
 }

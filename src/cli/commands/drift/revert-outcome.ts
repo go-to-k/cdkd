@@ -34,8 +34,8 @@ import {
   buildRevertNewProperties,
   driftAbsentMeansDefaultKeys,
   withDeclaredWriteOnlyProperties,
+  revertWriteOnlyResendNames,
 } from './revert-payload.js';
-import { tryGetTopLevelWriteOnlyProperties } from '../../../provisioning/write-only-properties.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
@@ -159,12 +159,13 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     provisionedBy: stateResource.provisionedBy,
   });
   const provider: ResourceProvider = routing.provider;
-  // go-to-k/cdkd#6498: started here so the schema lookup (cached per type)
-  // overlaps the payload build. Never rejects.
-  const writeOnlyNamesLookup =
-    routing.provisionedBy === 'cc-api'
-      ? tryGetTopLevelWriteOnlyProperties(outcome.resourceType)
-      : undefined;
+  // go-to-k/cdkd#6498: started here so the schema lookup (cached per type,
+  // already settled by the plan) overlaps the payload build. Never rejects.
+  const writeOnlyResend = revertWriteOnlyResendNames(
+    routing.provisionedBy,
+    outcome.resourceType,
+    stateResource.properties
+  );
   // The baseline drift was computed against — `observedProperties`
   // when present, else `properties` — is the right "desired" value
   // to push back to AWS. Using `properties` alone would push the
@@ -591,7 +592,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     newProperties = withDeclaredWriteOnlyProperties(
       maskPreserved.properties,
       stateResource.properties,
-      writeOnlyNamesLookup ? await writeOnlyNamesLookup : undefined
+      await writeOnlyResend
     );
   } catch (err) {
     // Reachability note (issue #1914 review): this arm is narrower than

@@ -90,13 +90,20 @@ vi.mock('../../../src/provisioning/read-only-properties.js', () => ({
 const mockWriteOnly = vi.hoisted(() =>
   vi.fn<(type: string) => Promise<ReadonlySet<string> | undefined>>()
 );
+const mockUnreadableCreateOnly = vi.hoisted(() =>
+  vi.fn<(type: string, properties: Record<string, unknown>) => ReadonlySet<string>>()
+);
 vi.mock('../../../src/provisioning/write-only-properties.js', () => ({
   tryGetTopLevelWriteOnlyProperties: mockWriteOnly,
+  getTopLevelKeysHoldingUnreadableCreateOnly: mockUnreadableCreateOnly,
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { stripDerivedEchoMembers } from '../../../src/cli/commands/drift/baseline-keys.js';
-import { withDeclaredWriteOnlyProperties } from '../../../src/cli/commands/drift/revert-payload.js';
+import {
+  withDeclaredWriteOnlyProperties,
+  revertWriteOnlyResendNames,
+} from '../../../src/cli/commands/drift/revert-payload.js';
 
 const TYPE = 'AWS::SecretsManager::RotationSchedule';
 const SECRET = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:Sec-abc';
@@ -168,10 +175,15 @@ function stack(): { state: StackState; etag: string } {
 }
 
 let exitSpy: ReturnType<typeof vi.spyOn>;
+let stdout = '';
 
 async function runDrift(flags: string[]): Promise<number | undefined> {
   const original = process.stdout.write.bind(process.stdout);
-  process.stdout.write = (() => true) as typeof process.stdout.write;
+  stdout = '';
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
   exitSpy.mockClear();
   try {
     const cmd = createDriftCommand();
@@ -199,6 +211,8 @@ describe('cdkd drift on a rotation schedule read with its AutomaticallyAfterDays
     routedBy = 'cc-api';
     mockWriteOnly.mockReset();
     mockWriteOnly.mockResolvedValue(new Set(['RotateImmediatelyOnUpdate', 'HostedRotationLambda']));
+    mockUnreadableCreateOnly.mockReset();
+    mockUnreadableCreateOnly.mockReturnValue(new Set());
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('__exit__');
     }) as never);
@@ -242,6 +256,8 @@ describe('cdkd drift --revert carries a Cloud Control record\'s declared write-o
     sentBags.length = 0;
     mockWriteOnly.mockReset();
     mockWriteOnly.mockResolvedValue(new Set(['RotateImmediatelyOnUpdate', 'HostedRotationLambda']));
+    mockUnreadableCreateOnly.mockReset();
+    mockUnreadableCreateOnly.mockReturnValue(new Set());
     liveRules = { AutomaticallyAfterDays: 10 };
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('__exit__');
@@ -274,14 +290,71 @@ describe('cdkd drift --revert carries a Cloud Control record\'s declared write-o
     expect(await runDrift(['--revert', '--yes'])).toBe(0);
     expect(sentBags[0]).not.toHaveProperty('RotateImmediatelyOnUpdate');
   });
+
+  it('names the re-sent write-only property in the plan, under --dry-run too', async () => {
+    routedBy = 'cc-api';
+    await runDrift(['--revert', '--dry-run']);
+    expect(sentBags).toHaveLength(0);
+    expect(stdout).toContain(
+      "    + also sends the template's write-only RotateImmediatelyOnUpdate (AWS never returns them on a read)"
+    );
+  });
+
+  it('neither sends nor names a write-only key holding an unreadable create-only path', async () => {
+    routedBy = 'cc-api';
+    mockUnreadableCreateOnly.mockReturnValue(new Set(['RotateImmediatelyOnUpdate']));
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(sentBags[0]).not.toHaveProperty('RotateImmediatelyOnUpdate');
+    expect(stdout).not.toContain('also sends');
+  });
+});
+
+describe('revertWriteOnlyResendNames', () => {
+  beforeEach(() => {
+    mockWriteOnly.mockReset();
+    mockWriteOnly.mockResolvedValue(new Set(['W', 'X']));
+    mockUnreadableCreateOnly.mockReset();
+    mockUnreadableCreateOnly.mockReturnValue(new Set());
+  });
+
+  it('names a declared plain write-only value', async () => {
+    expect(await revertWriteOnlyResendNames('cc-api', TYPE, { A: 1, W: false })).toEqual(['W']);
+  });
+
+  it.each([
+    ['a dynamic reference', { W: '{{resolve:secretsmanager:s:SecretString:p}}' }],
+    ['a nested dynamic reference', { W: { Pw: '{{resolve:ssm-secure:p}}' } }],
+    ['a redaction mask', { W: '***' }],
+    ['a nested redaction mask', { W: ['***'] }],
+    ['an intrinsic object', { W: { Inner: { 'Fn::GetAtt': ['R', 'Arn'] } } }],
+    ['a null value', { W: null }],
+    ['an undeclared name', { Y: 1 }],
+  ])('names nothing for %s', async (_l, properties) => {
+    expect(await revertWriteOnlyResendNames('cc-api', TYPE, properties)).toEqual([]);
+  });
+
+  it('names nothing off the Cloud Control route, without a lookup', async () => {
+    expect(await revertWriteOnlyResendNames('sdk', TYPE, { W: 1 })).toEqual([]);
+    expect(await revertWriteOnlyResendNames(undefined, TYPE, { W: 1 })).toEqual([]);
+    expect(mockWriteOnly).not.toHaveBeenCalled();
+  });
+
+  it('names nothing when the lookup failed', async () => {
+    mockWriteOnly.mockResolvedValue(undefined);
+    expect(await revertWriteOnlyResendNames('cc-api', TYPE, { W: 1 })).toEqual([]);
+  });
+
+  it('leaves out a key holding an unreadable create-only path', async () => {
+    mockUnreadableCreateOnly.mockReturnValue(new Set(['W']));
+    expect(await revertWriteOnlyResendNames('cc-api', TYPE, { W: 1, X: 2 })).toEqual(['X']);
+    expect(mockUnreadableCreateOnly).toHaveBeenCalledWith(TYPE, { W: 1, X: 2 });
+  });
 });
 
 describe('withDeclaredWriteOnlyProperties', () => {
-  const names = new Set(['W', 'X']);
-
-  it('adds a declared write-only value the send bag lacks, without mutating it', () => {
+  it('adds each named value the send bag lacks, without mutating it', () => {
     const send = { A: 1 };
-    expect(withDeclaredWriteOnlyProperties(send, { A: 1, W: false }, names)).toEqual({
+    expect(withDeclaredWriteOnlyProperties(send, { A: 1, W: false }, ['W'])).toEqual({
       A: 1,
       W: false,
     });
@@ -289,27 +362,14 @@ describe('withDeclaredWriteOnlyProperties', () => {
   });
 
   it('keeps a value the send bag already holds', () => {
-    expect(withDeclaredWriteOnlyProperties({ W: 'live' }, { W: 'declared' }, names)).toEqual({
+    expect(withDeclaredWriteOnlyProperties({ W: 'live' }, { W: 'declared' }, ['W'])).toEqual({
       W: 'live',
     });
   });
 
-  it.each([
-    ['a dynamic reference', { W: '{{resolve:secretsmanager:s:SecretString:p}}' }],
-    ['a nested dynamic reference', { W: { Pw: '{{resolve:ssm-secure:p}}' } }],
-    ['a redaction mask', { W: '***' }],
-    ['an intrinsic object', { W: { Inner: { 'Fn::GetAtt': ['R', 'Arn'] } } }],
-    ['an undeclared name', { Y: 1 }],
-    ['a non-write-only name', { A: 1 }],
-  ])('returns the send bag by identity for %s', (_l, properties) => {
+  it('returns the send bag by identity when nothing is named', () => {
     const send = {};
-    expect(withDeclaredWriteOnlyProperties(send, properties, names)).toBe(send);
-  });
-
-  it('adds nothing without names', () => {
-    const send = {};
-    expect(withDeclaredWriteOnlyProperties(send, { W: 1 }, undefined)).toBe(send);
-    expect(withDeclaredWriteOnlyProperties(send, { W: 1 }, new Set())).toBe(send);
+    expect(withDeclaredWriteOnlyProperties(send, { W: 1 }, [])).toBe(send);
   });
 });
 

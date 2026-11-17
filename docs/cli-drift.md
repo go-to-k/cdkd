@@ -96,8 +96,10 @@ For a resource managed through Cloud Control, `--revert` also sends the
 template's write-only properties, which AWS never returns on a read, as a deploy
 does. Without them Cloud Control would apply each property's default: a rotation
 schedule's `RotateImmediatelyOnUpdate: false` would become `true` and rotate the
-secret. A write-only value that holds a dynamic reference (`{{resolve:...}}`) is
-not sent.
+secret. The plan lists those properties on a line starting
+`+ also sends the template's write-only`. A write-only value that holds a
+dynamic reference (`{{resolve:...}}`) is not sent, and neither is one Cloud
+Control refuses to receive again after creation.
 
 Drift never compares a bucket's `NotificationConfiguration` unless your
 template sets it on the bucket itself. CDK's `bucket.addEventNotification(...)`
