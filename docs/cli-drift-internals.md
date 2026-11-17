@@ -594,27 +594,35 @@ rotation schedule's `RotationRules.AutomaticallyAfterDays` beside its
 the revert's desired bag, so the patch removes the live echo and sends the
 expression alone.
 
-`--revert` on a Cloud Control routed record sends the template's value of
-every top-level key holding a write-only path (`revertWriteOnlyResendNames` /
-`withDeclaredWriteOnlyProperties`, go-to-k/cdkd#6498, #6499). The send bag is
-built from the readback, which never holds a write-only value, and
-`CloudControlProvider.update` re-adds each such key from that bag (#809). So a
-wholly write-only key was absent, and Cloud Control's read-modify-write took
-its default. A readable container (`AWS::Events::Connection` `AuthParameters`)
-was re-added without its nested member (`ApiKeyValue`), and Cloud Control
-refused the model.
+`--revert` on a Cloud Control routed record sends the template's value at
+every write-only position (`revertWriteOnlyResendNames` /
+`withDeclaredWriteOnlyValues` in `drift/revert-write-only.ts`,
+go-to-k/cdkd#6498, #6499). The send bag is built from the readback, which never
+holds a write-only value, and `CloudControlProvider.update` re-adds each
+write-only-bearing top-level key from that bag (#809). So a wholly write-only
+key was absent, and Cloud Control's read-modify-write took its default. A
+readable container (`AWS::Events::Connection` `AuthParameters`) was re-added
+without its nested member (`ApiKeyValue`), and Cloud Control refused the model.
 
-- **Values.** Each key's value comes from the record's `properties` as the
-  revert resolved them into its `secrets` map, so a dynamic reference is sent
-  resolved and masked on everything the update prints. A value still carrying
-  a `{{resolve:...}}` (unresolvable), a mask or an intrinsic is not sent.
+- **Graft, not replace.** A key the bag lacks takes the template value whole.
+  In a key the bag holds, only the schema's write-only paths take the
+  template's value, so an `--accept`ed readable member survives. A `*` path
+  pairs list elements with `pairedLiveItems` (identity field or corroborating
+  literals, never the index alone). An unpaired list skips the key with a
+  warning.
+- **Values.** The template side is the record's `properties` as the revert
+  resolved them into its `secrets` map. A dynamic reference is therefore sent
+  resolved, and masked on everything the update prints. A grafted value still
+  carrying a `{{resolve:...}}` (unresolvable) or a mask is not sent, and the
+  revert warns; an intrinsic is never named.
 - **Exclusion.** A key holding a create-only path the read cannot return is
   left out (#4416). Cloud Control refuses any patch adding one, and the
   update's unchanged-key skip cannot fire when the previous side is the
   readback.
 - **Lookup.** The names come from one `DescribeType` lookup per region and
-  type in `runRevert`, before the plan. The plan names every key sent this way
-  ahead of the confirmation prompt, and a failed lookup sends none.
+  type in `runRevert`, before the plan, and the paths come from that lookup's
+  settled schema. The plan names every key sent this way ahead of the
+  confirmation prompt, and a failed lookup sends none.
 
 ## Malformed records under `--accept` and `--revert`
 

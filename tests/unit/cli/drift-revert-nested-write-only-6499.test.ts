@@ -95,6 +95,7 @@ vi.mock('../../../src/provisioning/read-only-properties.js', () => ({
 vi.mock('../../../src/provisioning/write-only-properties.js', () => ({
   tryGetTopLevelWriteOnlyProperties: vi.fn(async () => new Set(['AuthParameters'])),
   getTopLevelKeysHoldingUnreadableCreateOnly: vi.fn(() => new Set()),
+  getSettledWriteOnlyPropertyPaths: () => [['AuthParameters', 'ApiKeyAuthParameters', 'ApiKeyValue']],
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
@@ -226,12 +227,38 @@ describe('cdkd drift --revert sends a nested write-only member at its template v
     expect(JSON.stringify(provider.update.mock.calls.map((c) => c[3]))).not.toContain(unsupported);
   });
 
+  it('keeps an accepted readable member: only the write-only key comes from the template', async () => {
+    const s = stack('plain-key');
+    const conn = s.state.resources['Conn']!;
+    (conn.observedProperties as Record<string, unknown>)['AuthParameters'] = {
+      ApiKeyAuthParameters: { ApiKeyName: 'x-accepted' },
+    };
+    mockGetState.mockResolvedValue(s);
+    provider.readCurrentState.mockResolvedValue({
+      AuthorizationType: 'API_KEY',
+      Description: 'v1',
+      AuthParameters: { ApiKeyAuthParameters: { ApiKeyName: 'x-third' } },
+    });
+    await runDrift(['--revert', '--yes']);
+    expect(sentAuth()).toEqual({
+      ApiKeyAuthParameters: { ApiKeyName: 'x-accepted', ApiKeyValue: 'plain-key' },
+    });
+  });
+
+  it('warns when a named key could not be sent', async () => {
+    mockGetState.mockResolvedValue(stack('{{resolve:unknownsvc:whatever}}'));
+    await runDrift(['--revert', '--yes']);
+    expect(
+      logLines.some((l) => l.includes("could not send the template's write-only fields of AuthParameters"))
+    ).toBe(true);
+  });
+
   it('names the container in the plan, never the key', async () => {
     mockGetState.mockResolvedValue(stack(SECRET_EXPR));
     await runDrift(['--revert', '--dry-run']);
     expect(provider.update).not.toHaveBeenCalled();
     expect(stdout).toContain(
-      "    + also sends the template's value of AuthParameters (they hold write-only properties, which AWS never returns on a read)"
+      "    + also sends the template's write-only fields of AuthParameters (AWS never returns them on a read)"
     );
     expect(stdout).not.toContain(SECRET_PLAINTEXT);
   });

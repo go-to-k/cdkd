@@ -2831,6 +2831,7 @@
     "--auth-flow",
     "--auth-parameters",
     "--authentication-type",
+    "--authorization-type",
     "--authorizer-id",
     "--authorizer-result-ttl-in-seconds",
     "--auto",

@@ -137,11 +137,12 @@ import {
 import {
   clearWriteOnlyPropertiesCache,
   tryGetTopLevelWriteOnlyProperties,
+  getSettledWriteOnlyPropertyPaths,
 } from '../../../src/provisioning/write-only-properties.js';
 import {
   revertWriteOnlyResendNames,
-  withDeclaredWriteOnlyProperties,
-} from '../../../src/cli/commands/drift/revert-payload.js';
+  withDeclaredWriteOnlyValues,
+} from '../../../src/cli/commands/drift/revert-write-only.js';
 import { clearReadOnlyPropertiesCache } from '../../../src/provisioning/read-only-properties.js';
 import { clearCreateOnlyPropertiesCache } from '../../../src/provisioning/create-only-properties.js';
 import {
@@ -817,7 +818,12 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
       'WebClientBranding',
       'us-east-1_abc|mlb-1',
       type,
-      withDeclaredWriteOnlyProperties({ ...readback, Settings: '{"a":1}' }, declared, names),
+      withDeclaredWriteOnlyValues(
+        { ...readback, Settings: '{"a":1}' },
+        declared,
+        names,
+        getSettledWriteOnlyPropertyPaths(type)
+      ).properties,
       readback
     );
 

@@ -96,14 +96,15 @@ const mockUnreadableCreateOnly = vi.hoisted(() =>
 vi.mock('../../../src/provisioning/write-only-properties.js', () => ({
   tryGetTopLevelWriteOnlyProperties: mockWriteOnly,
   getTopLevelKeysHoldingUnreadableCreateOnly: mockUnreadableCreateOnly,
+  getSettledWriteOnlyPropertyPaths: () => [['RotateImmediatelyOnUpdate'], ['HostedRotationLambda']],
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { stripDerivedEchoMembers } from '../../../src/cli/commands/drift/baseline-keys.js';
 import {
-  withDeclaredWriteOnlyProperties,
+  withDeclaredWriteOnlyValues,
   revertWriteOnlyResendNames,
-} from '../../../src/cli/commands/drift/revert-payload.js';
+} from '../../../src/cli/commands/drift/revert-write-only.js';
 
 const TYPE = 'AWS::SecretsManager::RotationSchedule';
 const SECRET = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:Sec-abc';
@@ -305,7 +306,7 @@ describe('cdkd drift --revert carries a Cloud Control record\'s declared write-o
     await runDrift(['--revert', '--dry-run']);
     expect(sentBags).toHaveLength(0);
     expect(stdout).toContain(
-      "    + also sends the template's value of RotateImmediatelyOnUpdate (they hold write-only properties, which AWS never returns on a read)"
+      "    + also sends the template's write-only fields of RotateImmediatelyOnUpdate (AWS never returns them on a read)"
     );
   });
 
@@ -358,34 +359,67 @@ describe('revertWriteOnlyResendNames', () => {
   });
 });
 
-describe('withDeclaredWriteOnlyProperties', () => {
-  it('adds each named value the send bag lacks, without mutating it', () => {
+describe('withDeclaredWriteOnlyValues', () => {
+  const whole = [['W']];
+
+  it('adds a key the send bag lacks whole, without mutating the bag', () => {
     const send = { A: 1 };
-    expect(withDeclaredWriteOnlyProperties(send, { A: 1, W: false }, ['W'])).toEqual({
-      A: 1,
-      W: false,
+    expect(withDeclaredWriteOnlyValues(send, { A: 1, W: false }, ['W'], whole)).toEqual({
+      properties: { A: 1, W: false },
+      skipped: [],
     });
     expect(send).toEqual({ A: 1 });
   });
 
-  it('replaces a readback-shaped container with the template value', () => {
-    expect(
-      withDeclaredWriteOnlyProperties({ W: { A: 1 } }, { W: { A: 1, S: 'x' } }, ['W'])
-    ).toEqual({ W: { A: 1, S: 'x' } });
+  it('grafts only the write-only position into a container the bag holds', () => {
+    // An accepted readable member (`N: 'accepted'`) survives; only `S` comes
+    // from the template.
+    const r = withDeclaredWriteOnlyValues(
+      { W: { N: 'accepted' } },
+      { W: { N: 'template', S: 'key' } },
+      ['W'],
+      [['W', 'S']]
+    );
+    expect(r).toEqual({ properties: { W: { N: 'accepted', S: 'key' } }, skipped: [] });
+  });
+
+  it('grafts into list elements paired by identity, not by index', () => {
+    const r = withDeclaredWriteOnlyValues(
+      { L: [{ Name: 'b', V: 1 }, { Name: 'a', V: 2 }] },
+      { L: [{ Name: 'a', V: 2, S: 'sa' }, { Name: 'b', V: 1, S: 'sb' }] },
+      ['L'],
+      [['L', '*', 'S']]
+    );
+    expect(r.properties).toEqual({
+      L: [
+        { Name: 'b', V: 1, S: 'sb' },
+        { Name: 'a', V: 2, S: 'sa' },
+      ],
+    });
+    expect(r.skipped).toEqual([]);
+  });
+
+  it('skips a list key whose elements cannot be paired', () => {
+    const send = { L: [{ V: 1 }, { V: 2 }] };
+    const r = withDeclaredWriteOnlyValues(send, { L: [{ V: 9, S: 'x' }] }, ['L'], [['L', '*', 'S']]);
+    expect(r).toEqual({ properties: send, skipped: ['L'] });
   });
 
   it.each([
     ['a surviving dynamic reference', { W: { S: '{{resolve:unknownsvc:x}}' } }],
     ['a mask', { W: { S: '***' } }],
-    ['an absent value', {}],
-  ])('keeps what the send bag holds for %s', (_l, resolved) => {
+  ])('skips and reports %s', (_l, resolved) => {
     const send = { W: { A: 1 } };
-    expect(withDeclaredWriteOnlyProperties(send, resolved, ['W'])).toBe(send);
+    expect(withDeclaredWriteOnlyValues(send, resolved, ['W'], [['W', 'S']])).toEqual({
+      properties: send,
+      skipped: ['W'],
+    });
   });
 
-  it('returns the send bag by identity when nothing is named', () => {
-    const send = {};
-    expect(withDeclaredWriteOnlyProperties(send, { W: 1 }, [])).toBe(send);
+  it('returns the bag by identity when nothing is named or declared', () => {
+    const send = { W: { A: 1 } };
+    expect(withDeclaredWriteOnlyValues(send, { W: 1 }, [], whole).properties).toBe(send);
+    expect(withDeclaredWriteOnlyValues(send, {}, ['W'], whole).properties).toBe(send);
   });
 });
 

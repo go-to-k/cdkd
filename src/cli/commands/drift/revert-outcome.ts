@@ -30,11 +30,9 @@ import {
   overlayLiveAtUncertifiedPaths,
   preserveLiveValuesAtMaskedLeaves,
 } from './revert-live-values.js';
-import {
-  buildRevertNewProperties,
-  driftAbsentMeansDefaultKeys,
-  withDeclaredWriteOnlyProperties,
-} from './revert-payload.js';
+import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-payload.js';
+import { withDeclaredWriteOnlyValues } from './revert-write-only.js';
+import { getSettledWriteOnlyPropertyPaths } from '../../../provisioning/write-only-properties.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
@@ -188,7 +186,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
   };
   let desiredProperties: Record<string, unknown>;
   // go-to-k/cdkd#6499: the template side, resolved, which the write-only
-  // keys are sent from (`withDeclaredWriteOnlyProperties`).
+  // positions are sent from (`withDeclaredWriteOnlyValues`).
   let resolvedDeclared: Record<string, unknown>;
   try {
     desiredProperties = await resolveStateSecretExpressions(
@@ -582,15 +580,26 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       return;
     }
     // go-to-k/cdkd#6498 / #6499: Cloud Control's read-modify-write needs the
-    // template's value of every write-only-bearing key, which no
-    // readback-built bag holds. After every pass above, which reads the
+    // template's value at every write-only position, which no readback-built
+    // bag holds. After every pass above, which reads the
     // readback-built bag only; the values are resolved into `secrets`, which
     // masks the update's output.
-    newProperties = withDeclaredWriteOnlyProperties(
+    const writeOnly = withDeclaredWriteOnlyValues(
       maskPreserved.properties,
       resolvedDeclared,
-      args.writeOnlyResend
+      args.writeOnlyResend,
+      getSettledWriteOnlyPropertyPaths(outcome.resourceType)
     );
+    newProperties = writeOnly.properties;
+    if (writeOnly.skipped.length > 0) {
+      logger.warn(
+        `  ! ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): could not ` +
+          `send the template's write-only fields of ` +
+          `${maskSecretsInText(writeOnly.skipped.join(', '), secrets)} — a reference there did ` +
+          `not resolve, or its list elements could not be matched to the template's. Cloud ` +
+          `Control may refuse this update, or apply defaults there.`
+      );
+    }
   } catch (err) {
     // Reachability note (issue #1914 review): this arm is narrower than
     // it looks, and is kept only because it is cheap. A bag so malformed

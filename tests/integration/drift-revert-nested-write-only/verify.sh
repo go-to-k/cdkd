@@ -22,7 +22,12 @@
 #      key each connection stores is the template's value (the resolved
 #      secret for SecretConn, not the {{resolve:...}} text).
 #   6. `cdkd drift` exits 0 again.
-#   7. Destroy + gone-probes + the state bucket's object versions swept (the
+#   7. Change PlainConn's ApiKeyName (inside the container) out of band;
+#      `--revert` puts it back with the key intact.
+#   8. `--accept` an out-of-band ApiKeyName, change it again, `--revert`: the
+#      ACCEPTED name comes back (only the key comes from the template), key
+#      intact, drift clean.
+#   9. Destroy + gone-probes + the state bucket's object versions swept (the
 #      template carries an unsafePlainText key).
 #
 # Required env vars:
@@ -138,8 +143,14 @@ expect_drift_rc() { # usage: expect_drift_rc <want> <phase label>
 }
 expect_descriptions() { # usage: expect_descriptions <want> <phase label>
   local p s
-  p="$(aws events describe-connection --name "${PLAIN_NAME}" --query Description --output text)" || return 1
-  s="$(aws events describe-connection --name "${SECRET_NAME}" --query Description --output text)" || return 1
+  if ! p="$(aws events describe-connection --name "${PLAIN_NAME}" --query Description --output text)"; then
+    echo "FAIL: $2: describe-connection failed" >&2
+    return 1
+  fi
+  if ! s="$(aws events describe-connection --name "${SECRET_NAME}" --query Description --output text)"; then
+    echo "FAIL: $2: describe-connection failed" >&2
+    return 1
+  fi
   if [ "${p}" != "$1" ] || [ "${s}" != "$1" ]; then
     echo "FAIL: $2: want both descriptions '$1', got '${p}' and '${s}'" >&2
     exit 1
@@ -148,14 +159,40 @@ expect_descriptions() { # usage: expect_descriptions <want> <phase label>
 }
 expect_stored_key() { # usage: expect_stored_key <connection name> <want> <phase label>
   local arn stored
-  arn="$(aws events describe-connection --name "$1" --query SecretArn --output text)" || return 1
-  stored="$(aws secretsmanager get-secret-value --secret-id "${arn}" --query SecretString --output text)" || return 1
+  if ! arn="$(aws events describe-connection --name "$1" --query SecretArn --output text)"; then
+    echo "FAIL: $3: describe-connection failed" >&2
+    return 1
+  fi
+  if ! stored="$(aws secretsmanager get-secret-value --secret-id "${arn}" --query SecretString --output text)"; then
+    echo "FAIL: $3: get-secret-value failed" >&2
+    return 1
+  fi
   # The values are this fixture's own test literals; compared, never printed.
   if [ "$(jq -r '.api_key_value // empty' <<<"${stored}")" != "$2" ]; then
     echo "FAIL: $3: connection $1 does not store the template's API key" >&2
     exit 1
   fi
   echo "    ok: $3: connection $1 stores the template's API key"
+}
+
+set_plain_key_name() { # usage: set_plain_key_name <name> -- out of band, key unchanged
+  aws events update-connection --name "${PLAIN_NAME}" --authorization-type API_KEY \
+    --auth-parameters "{\"ApiKeyAuthParameters\":{\"ApiKeyName\":\"$1\",\"ApiKeyValue\":\"plain-key-1\"}}" \
+    >/dev/null
+  sleep 5
+}
+expect_plain_key_name() { # usage: expect_plain_key_name <want> <phase label>
+  local name
+  if ! name="$(aws events describe-connection --name "${PLAIN_NAME}" \
+    --query AuthParameters.ApiKeyAuthParameters.ApiKeyName --output text)"; then
+    echo "FAIL: $2: describe-connection failed" >&2
+    return 1
+  fi
+  if [ "${name}" != "$1" ]; then
+    echo "FAIL: $2: PlainConn's ApiKeyName is '${name}', want '$1'" >&2
+    exit 1
+  fi
+  echo "    ok: $2: PlainConn's ApiKeyName '$1'"
 }
 
 echo "==> Phase 1: deploy"
@@ -217,7 +254,31 @@ echo "==> Phase 6: cdkd drift is clean again"
 run_drift
 expect_drift_rc 0 "Phase 6"
 
-echo "==> Phase 7: destroy"
+echo "==> Phase 7: change PlainConn's ApiKeyName out of band, then --revert"
+set_plain_key_name x-oob
+expect_plain_key_name x-oob "Phase 7"
+run_drift
+expect_drift_rc 1 "Phase 7"
+run_drift --revert -y
+expect_drift_rc 0 "Phase 7"
+expect_plain_key_name x-api-key "Phase 7"
+expect_stored_key "${PLAIN_NAME}" plain-key-1 "Phase 7"
+
+echo "==> Phase 8: --accept a changed ApiKeyName, change it again, --revert keeps the accepted one"
+set_plain_key_name x-accepted
+run_drift --accept -y
+expect_drift_rc 0 "Phase 8 (accept)"
+run_drift
+expect_drift_rc 0 "Phase 8 (after accept)"
+set_plain_key_name x-third
+run_drift --revert -y
+expect_drift_rc 0 "Phase 8 (revert)"
+expect_plain_key_name x-accepted "Phase 8"
+expect_stored_key "${PLAIN_NAME}" plain-key-1 "Phase 8"
+run_drift
+expect_drift_rc 0 "Phase 8 (after revert)"
+
+echo "==> Phase 9: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "connection ${PLAIN_NAME} leaked" aws events describe-connection --name "${PLAIN_NAME}"
 assert_gone "connection ${SECRET_NAME} leaked" aws events describe-connection --name "${SECRET_NAME}"

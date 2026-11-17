@@ -93,20 +93,27 @@ accepts only one of the two in a request. Drift ignores that echo beside the
 expression, and `--revert` sends the expression alone.
 
 For a resource managed through Cloud Control, `--revert` also sends the
-template's value of every property that holds a write-only field, which AWS
-never returns on a read, as a deploy does. Without it Cloud Control would apply
-each field's default or reject the update:
+template's value of every write-only field, which AWS never returns on a read,
+as a deploy does. Without it Cloud Control would apply each field's default or
+reject the update:
 
 - a rotation schedule's `RotateImmediatelyOnUpdate: false` would become `true`
   and rotate the secret;
 - an EventBridge connection's `AuthParameters` would arrive without its API key,
   and the update would fail.
 
-The plan lists those properties on a line starting
-`+ also sends the template's value of`. A value that holds a dynamic reference
-(`{{resolve:...}}`) is sent resolved and stays masked in the output. A value
-cdkd cannot resolve is not sent, and neither is one Cloud Control refuses to
-receive again after creation.
+Only the write-only fields come from the template. The rest of a property such
+as `AuthParameters` is reverted to the recorded state, including a value you
+took with `--accept`. The plan lists those properties on a line starting
+`+ also sends the template's write-only fields of`.
+
+A value that holds a dynamic reference (`{{resolve:...}}`) is sent resolved and
+stays masked in the output. cdkd warns and sends nothing for a field when:
+
+- the dynamic reference cannot be resolved;
+- the field sits in a list whose items cannot be matched to the template's.
+
+A field that Cloud Control refuses to receive again after creation is not sent.
 
 Drift never compares a bucket's `NotificationConfiguration` unless your
 template sets it on the bucket itself. CDK's `bucket.addEventNotification(...)`
