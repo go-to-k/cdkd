@@ -671,10 +671,7 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   [
     'AWS::ServiceDiscovery::Service',
     {
-      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4). Cloud
-      // Control's update of this type reports SUCCESS without applying a
-      // Description change (measured us-east-1, 2026-11-17), so the flip also
-      // ends that silent drop; `--pin-cc-api` keeps it.
+      // Admitted with AWS::Events::EventBus (go-to-k/cdkd#6454, batch 4).
       mode: 'sdk-coverage' as const,
       physicalIdForm:
         'both layers store the bare `srv-...` service id: the schema primaryIdentifier ' +
