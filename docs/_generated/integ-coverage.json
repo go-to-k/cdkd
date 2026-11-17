@@ -7299,6 +7299,7 @@
         "deep-getatt-chains",
         "destroy-interrupt",
         "docker-image-asset",
+        "drift-rotation-schedule-revert",
         "dynamodb-stream-filter",
         "dynamodb-streams",
         "ecr",
@@ -7512,6 +7513,9 @@
         "docker-image-asset": [
           "l2",
           "literal"
+        ],
+        "drift-rotation-schedule-revert": [
+          "l2"
         ],
         "dynamodb-stream-filter": [
           "l2"
@@ -8087,6 +8091,7 @@
         "cross-region-concurrent-stacks",
         "custom-resource-payload-types",
         "drift-revert",
+        "drift-rotation-schedule-revert",
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
@@ -8162,6 +8167,9 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "drift-rotation-schedule-revert": [
+          "l2"
         ],
         "ec2-vpc": [
           "l2"
@@ -10499,6 +10507,7 @@
         "cc-to-sdk-reroute-common-types",
         "composite-stack",
         "cross-stack-secret-import",
+        "drift-rotation-schedule-revert",
         "event-driven",
         "full-stack-demo",
         "iam-access-key",
@@ -10532,6 +10541,9 @@
           "literal"
         ],
         "cross-stack-secret-import": [
+          "l2"
+        ],
+        "drift-rotation-schedule-revert": [
           "l2"
         ],
         "event-driven": [

@@ -587,6 +587,22 @@ every out-of-band edit, and `--revert` would send the old value in a patch
 Cloud Control refuses. The schema comes from `cloudformation:DescribeType`,
 read once per type; when it cannot be read, every field is compared.
 
+A read can also echo one member beside the member it is derived from, where a
+write accepts only one (`stripDerivedEchoMembers`, go-to-k/cdkd#6497): a
+rotation schedule's `RotationRules.AutomaticallyAfterDays` beside its
+`ScheduleExpression`. The echo is dropped from both comparison sides and from
+the revert's desired bag, so the patch removes the live echo and sends the
+expression alone.
+
+`--revert` on a Cloud Control routed record adds the template's top-level
+write-only properties to the send bag (`withDeclaredWriteOnlyProperties`,
+go-to-k/cdkd#6498). The bag is built from the readback, which never holds one,
+so `CloudControlProvider.update`'s write-only re-inclusion (#809) had nothing to
+add and Cloud Control's read-modify-write took each default. A value carrying a
+dynamic reference, a redaction mask or an unresolved intrinsic is left out, so
+the revert's secret handling is unchanged; the schema comes from the same
+cached `DescribeType` lookup the update uses, and a failed lookup adds nothing.
+
 ## Malformed records under `--accept` and `--revert`
 
 **A dropped row is REPORTED, and the run does not exit `0`.** An entry the
