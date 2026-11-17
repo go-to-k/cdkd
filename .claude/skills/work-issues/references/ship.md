@@ -14,11 +14,11 @@ to `AskUserQuestion`, never a reworded retry (#4059); only
 `/run-integ` step 9's one retry (marker set or ledger push) is exempt.
 Ship from a SECOND sibling on the PR's branch while that tree holds a follow-up
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there. A fix
-round DURING that tree's integ edits a `--detach` sibling, never that tree,
-not even commit-without-push (the marker hashes that tree's delta, not the sha
-its `dist/` ran, and the ledger push carries the commits, #6475), pushes
-`HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
+running BOTH the integ and the merge there. A `src/**` fix
+round DURING an integ edits a `--detach` sibling, never the integ's tree, not
+even commit-without-push (the marker hashes that tree's delta, not the sha its
+`dist/` ran, #6475), pushes
+`HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards the integ's tree
 before the marker, re-running an integ the fix touches. Never two
 merges at once, nor two integs on the SAME fixture (one stack name, one state
 prefix; another REGION is no isolation: cdkd then refuses
@@ -208,9 +208,9 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 
 - **Merge the release PR from `<MAIN_CHECKOUT>`**, or any tree whose branch
   delta against `origin/main` is empty: `integ-destroy-gate` judges the TREE's
-  delta, so a lane tree refuses it (#6470). An OUTSIDE reporter's issue is
-  thanked after that RELEASE, not the merge: confirm the npm version, then
-  thank them in English with that version (#3624).
+  delta, so a lane tree touching its scope refuses it (#6470). An OUTSIDE
+  reporter's issue is thanked after that RELEASE, not the fix PR's merge:
+  confirm the npm version, then thank them in English with that version (#3624).
 
 ### Pull, then rebuild the linked binary
 
