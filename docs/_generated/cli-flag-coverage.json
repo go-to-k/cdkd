@@ -54,7 +54,6 @@
     {
       "flag": "--allow-unaddressed",
       "integs": [
-        "acm-certificate",
         "schema-v10-to-v11-migration"
       ]
     },

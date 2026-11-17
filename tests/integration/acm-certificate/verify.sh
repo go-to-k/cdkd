@@ -34,8 +34,12 @@
 #     correct either way -- but it does not discriminate the two throws.
 #   - The ACM-SPECIFIC in-use rejection (issue #1922): a certificate is only
 #     attachable to a CloudFront distribution / ALB once ISSUED, which needs
-#     that same DNS zone. Phase 2 below therefore drives the SAME code path
-#     through a different delete failure -- see its own note.
+#     that same DNS zone.
+#   - The provider's own create-then-delete replacement inside `update()`
+#     (#1819 / #1960's partial outcome). Since go-to-k/cdkd#6513 no template
+#     edit reaches it: a ValidationMethod change, the last one that did, is a
+#     replacement the engine makes. Its unit tests stay; phase 2 below covers
+#     the engine replacement instead.
 
 set -euo pipefail
 
@@ -58,16 +62,9 @@ echo "Stack: ${STACK}"
 echo "Region: ${REGION}"
 echo "State bucket: ${BUCKET}"
 
-# Set once phase 1 knows the real ARN. Phase 2 rewrites state's physicalId away
-# from it ON PURPOSE, which is precisely what makes cdkd stop tracking it -- so
-# `cdkd destroy` cannot reach it and the fixture has to retire it by hand. This
-# is the orphan class the feature under test exists to REPORT; leaving one
-# behind here would be the fixture committing the bug it verifies.
+# Set once phase 1 knows the real ARN. Phase 2's replacement deletes it; the
+# trap retires it by hand only if the run stops before that delete.
 ORIGINAL_ARN=""
-# Phase 3 repeats the trick, so the certificate phase 2's replacement created is
-# stranded in turn. Tracked separately and retired the same way -- a fixture
-# that verifies orphan REPORTING must not itself leave orphans behind.
-STRANDED_ARN=""
 # Phase 4's Secrets Manager secret (go-to-k/cdkd#4275). A unique name per run,
 # deleted by the trap once the stack is gone.
 SECRET_NAME="cdkd-integ-acm-domain-$(date +%s)-$$"
@@ -98,13 +95,8 @@ cleanup() {
     s3_purge_prefix_versions "${BUCKET}" "${PREFIX}" noncurrent || true
   fi
   if [[ -n "${ORIGINAL_ARN}" ]]; then
-    echo "=== Retiring the deliberately-stranded original certificate ==="
+    echo "=== Retiring the original certificate, if phase 2 did not ==="
     aws acm delete-certificate --certificate-arn "${ORIGINAL_ARN}" --region "${REGION}" \
-      >/dev/null 2>&1 || true
-  fi
-  if [[ -n "${STRANDED_ARN}" ]]; then
-    echo "=== Retiring the certificate phase 3 stranded ==="
-    aws acm delete-certificate --certificate-arn "${STRANDED_ARN}" --region "${REGION}" \
       >/dev/null 2>&1 || true
   fi
   # After the destroy: the stack no longer needs to resolve it. Its failure is
@@ -380,171 +372,48 @@ case "${status}" in
     ;;
 esac
 
-# --- Phase 2: a replacement whose inner delete FAILS (issues #1819 / #1922) --
+# --- Phase 2: a ValidationMethod change is an engine replacement (#6513) -----
 #
-# The partial-update outcome fires when a replacement's inner delete does not
-# retire the old resource. #1922's own scenario -- an old certificate still
-# referenced by a CloudFront distribution -- is NOT reachable here: a cert must
-# be ISSUED to be attached, and this account has no DNS zone to validate one
-# (the same limitation the header records for the poll-until-ISSUED path).
-#
-# So the failure is induced at the same place by a different cause: state's
-# physicalId is rewritten to a MALFORMED ARN. AWS answers DeleteCertificate
-# with an InvalidArnException rather than ResourceNotFoundException -- which
-# matters, because the provider swallows not-found as an idempotent success and
-# would report a CLEAN update instead (measured: a `certificate/<not-a-uuid>`
-# suffix is merely NOT FOUND; it takes extra path segments to be INVALID). Everything downstream of the throw is
-# the code under test and is identical for both causes: the catch, the
-# `'partial'` outcome, the engine's counter, status line, summary row and
-# survivor event. Only the in-use CLASSIFIER's wording differs, and that is
-# unit-tested on both polarities.
-#
-# A malformed ARN also means the "orphan" never existed, so this arm proves the
-# reporting without leaking a real certificate.
-echo "=== Phase 2: replacement whose inner delete fails -> partial outcome ==="
-account=$(aws sts get-caller-identity --query Account --output text)
-# The suffix must contain SLASHES. A plausible-but-absent id
-# (`certificate/<not-a-uuid>`) answers ResourceNotFoundException, which the
-# provider swallows as an idempotent success -- the first version of this arm
-# used exactly that and reported a CLEAN update, passing nothing. Extra path
-# segments make AWS answer InvalidArnException instead, which throws.
-malformed="arn:aws:acm:${REGION}:${account}:certificate/cdkd-integ/not/a/valid"
-
-echo "${state_file}" | python3 -c "
-import json, sys
-s = json.load(sys.stdin)
-for v in s['resources'].values():
-    if v['resourceType'] == 'AWS::CertificateManager::Certificate':
-        v['physicalId'] = sys.argv[1]
-print(json.dumps(s))
-" "${malformed}" > /tmp/cdkd-acm-state.json
-aws s3 cp /tmp/cdkd-acm-state.json "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" --region "${REGION}" >/dev/null
-echo "  state physicalId rewritten to ${malformed}"
-
-# ValidationMethod is immutable to the PROVIDER but not createOnly in the CFn
-# registry, so the engine hands this change to `update()` and the provider does
-# its own create-then-delete -- the path under test.
+# ACM cannot change a certificate's validation method, and CloudFormation (and
+# the AWS CDK CLI's diff) treat the change as a replacement, but the registry
+# schema leaves it out of `createOnlyProperties`. The diff must report it, so
+# the ENGINE replaces the certificate: the new one first, then the old one
+# deleted once its readers have moved. The provider used to do this inside its
+# own `update()` while the diff showed a plain update.
+echo "=== Phase 2: ValidationMethod DNS -> EMAIL is reported and made as a replacement (issue #6513) ==="
 set +e
+diff_out=$(CDKD_TEST_UPDATE=validation $CDKD diff --region "${REGION}" --state-bucket "${BUCKET}" \
+  --fail-on=destructive </dev/null 2>&1)
+diff_rc=$?
+set -e
+diff_txt=$(printf '%s' "${diff_out}" | sed $'s/\033\[[0-9;]*m//g')
+# Sentinel: the property row itself, independent of its replacement note.
+if ! grep -q -- "- ValidationMethod:" <<<"${diff_txt}"; then
+  echo "FAIL: cdkd diff printed no ValidationMethod change"
+  echo "${diff_txt}"
+  exit 1
+fi
+if ! grep -q -- "- ValidationMethod: \[requires replacement\]" <<<"${diff_txt}"; then
+  echo "FAIL: cdkd diff did not mark the ValidationMethod change as a replacement (issue #6513)"
+  echo "${diff_txt}"
+  exit 1
+fi
+if [[ "${diff_rc}" -ne 1 ]] || ! grep -q "TestCertificate6B4956B6 will be replaced" <<<"${diff_txt}"; then
+  echo "FAIL: diff --fail-on=destructive exited ${diff_rc}; expected 1 naming the certificate's replacement"
+  echo "${diff_txt}"
+  exit 1
+fi
+echo "PASS: cdkd diff reports the replacement and --fail-on=destructive fails"
+
 deploy_out=$(CDKD_NO_WAIT=true CDKD_TEST_UPDATE=validation $CDKD deploy \
   --region "${REGION}" --state-bucket "${BUCKET}" 2>&1)
-deploy_rc=$?
-set -e
 echo "${deploy_out}"
-
-# Assert against a COLOR-STRIPPED copy. cdkd colorizes the summary numbers, so
-# `of which left an orphaned predecessor: 1` is really `...: <ESC>[33m1<ESC>[0m`
-# on the wire and a literal grep for the row silently never matches -- which is
-# exactly how this arm reported a missing row that was printed correctly.
 deploy_txt=$(printf '%s' "${deploy_out}" | sed $'s/\033\[[0-9;]*m//g')
-
-# Issue #1960 REVERSED this assertion. It used to require rc 0 on the grounds
-# that a partial update must not fail the run -- but the run left an AWS
-# resource cdkd owned alive and untracked, and reporting success for that is
-# precisely the mis-report #1960 was filed for. `cdkd destroy` has exited 2 for
-# the identical outcome since #1752; deploy now matches. The resource still
-# WAS updated (the RESOURCE_SUCCEEDED assertion below is unchanged) -- what
-# changed is the run-level verdict, not the row's.
-if [[ "${deploy_rc}" -ne 2 ]]; then
-  echo "FAIL: the replacement deploy exited ${deploy_rc}; a run that left an orphaned"
-  echo "      predecessor must exit 2 (issue #1960)"
+if ! grep -q "immutable properties changed: ValidationMethod" <<<"${deploy_txt}"; then
+  echo "FAIL: the deploy did not take the engine's replacement for ValidationMethod"
   exit 1
 fi
-echo "PASS: deploy exited 2 for the orphaned predecessor (issue #1960)"
-
-# The banner must not claim success either -- the exit code was only half the
-# mis-report. A run still printing "Deployment completed successfully" while a
-# resource survived would leave the human-readable half wrong.
-if grep -q "Deployment completed successfully" <<<"${deploy_txt}"; then
-  echo "FAIL: the run still claims it completed successfully (issue #1960)"
-  exit 1
-fi
-if ! grep -q "were left unaddressed" <<<"${deploy_txt}"; then
-  echo "FAIL: no unaddressed-resource verdict line in the summary (issue #1960)"
-  exit 1
-fi
-echo "PASS: the verdict line names the survivor instead of claiming success"
-
-# The status line names the cause instead of printing a bare `updated`.
-if ! grep -q "partial (" <<<"${deploy_txt}"; then
-  echo "FAIL: no 'partial (<reason>)' status line -- the survivor was reported as a clean update"
-  exit 1
-fi
-echo "PASS: status line reports the partial outcome"
-
-# The summary counts it apart from a clean update.
-if ! grep -q "of which left an orphaned predecessor: 1" <<<"${deploy_txt}"; then
-  echo "FAIL: summary has no orphaned-predecessor row"
-  echo "${deploy_txt}" | grep -iE "updated|skipped" || true
-  exit 1
-fi
-echo "PASS: summary counts the orphaned predecessor"
-
-# The reason names the OLD physical id -- state now points at the NEW cert, so
-# this event is the only place the survivor's identity still exists.
-if ! grep -q "${malformed}" <<<"${deploy_txt}"; then
-  echo "FAIL: the reported reason does not name the surviving physical id"
-  exit 1
-fi
-echo "PASS: the reason names the surviving physical id"
-
-# The durable post-mortem: RESOURCE_SKIPPED for the survivor, alongside the
-# RESOURCE_SUCCEEDED the updated row still gets.
-# `cdkd events <stack>` lists RUNS; the per-resource events need `--run <id>`.
-# Grepping the run LIST for RESOURCE_SKIPPED matches nothing however correct the
-# emission is -- which is how this arm first reported a missing event that had
-# in fact been recorded. Take the newest deploy run (this query happens before
-# the destroy, so that is phase 2's).
-runs_out=$($CDKD events "${STACK}" --region "${REGION}" --state-bucket "${BUCKET}" 2>&1 \
-  | sed $'s/\033\[[0-9;]*m//g' || true)
-run_id=$(echo "${runs_out}" | awk '$2 == "deploy" { print $1; exit }')
-if [[ -z "${run_id}" ]]; then
-  echo "FAIL: no deploy run recorded in the events store"
-  echo "${runs_out}" | tail -20
-  exit 1
-fi
-events_out=$($CDKD events "${STACK}" --run "${run_id}" --region "${REGION}" \
-  --state-bucket "${BUCKET}" 2>&1 | sed $'s/\033\[[0-9;]*m//g' || true)
-
-if ! grep -q "RESOURCE_SKIPPED" <<<"${events_out}"; then
-  echo "FAIL: no RESOURCE_SKIPPED event recorded for the survivor"
-  echo "${events_out}" | tail -20
-  exit 1
-fi
-# The updated row must ALSO be recorded as done -- the pair is the whole point.
-# A lone skip would mean the events store claims the resource was not addressed.
-if ! grep -q "RESOURCE_SUCCEEDED" <<<"${events_out}"; then
-  echo "FAIL: no RESOURCE_SUCCEEDED event -- the updated row must still count as done"
-  echo "${events_out}" | tail -20
-  exit 1
-fi
-# The durable record must name the survivor: state points at the NEW cert, so
-# this is the only place its identity still exists.
-if ! grep -q "${malformed}" <<<"${events_out}"; then
-  echo "FAIL: the RESOURCE_SKIPPED event does not name the surviving physical id"
-  exit 1
-fi
-# The run-level counter cdkd events renders as the warn badge.
-if ! grep -q "RUN_FINISHED.*⚠1" <<<"${events_out}"; then
-  echo "FAIL: RUN_FINISHED does not carry the run-level skipped count"
-  echo "${events_out}" | grep RUN_FINISHED || true
-  exit 1
-fi
-# ...and the run RESULT must agree with the exit code (issue #1960). Deploy used
-# to record SUCCEEDED here, on the grounds that the kept state record makes the
-# next deploy re-attempt the delete -- but the same run exits 2, so the durable
-# post-mortem said one thing and the process said another. Asserted through a
-# real S3 round-trip rather than only in the unit test, because what is being
-# checked is that the value PERSISTS and RENDERS, not that it was passed.
-if ! grep -q "RUN_FINISHED.*FAILED.*⚠1" <<<"${events_out}"; then
-  echo "FAIL: RUN_FINISHED does not record the run as FAILED (issue #1960)"
-  echo "${events_out}" | grep RUN_FINISHED || true
-  exit 1
-fi
-echo "PASS: events store carries the success, the survivor skip, and the run count"
-
-# State must now point at the NEW certificate, so the destroy below is clean.
-new_state=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}")
-new_arn=$(echo "${new_state}" | python3 -c '
+new_arn=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - --region "${REGION}" | python3 -c '
 import json, sys
 s = json.load(sys.stdin)
 for v in s["resources"].values():
@@ -552,75 +421,22 @@ for v in s["resources"].values():
         print(v["physicalId"])
         break
 ')
-if [[ "${new_arn}" == "${malformed}" || "${new_arn}" != arn:aws:acm:* ]]; then
-  echo "FAIL: state still holds ${new_arn}; the replacement did not re-point it"
+if [[ "${new_arn}" == "${ORIGINAL_ARN}" || "${new_arn}" != arn:aws:acm:* ]]; then
+  echo "FAIL: state holds '${new_arn}'; expected a new certificate ARN, not ${ORIGINAL_ARN}"
   exit 1
 fi
-echo "PASS: state re-pointed to the replacement cert ${new_arn}"
-
-# --- Phase 3: --allow-unaddressed forces exit 0 for the SAME outcome (#1960) --
-#
-# The opposite polarity of phase 2's assertion. Without an arm that actually
-# reaches exit 0 through the flag, a bug that ignored the flag entirely -- or
-# one that never raised the error in the first place -- would look identical to
-# a pass here: phase 2 alone cannot tell "exit 2 because the flag was honored"
-# from "exit 2 because the flag is unread".
-#
-# Induced the same way, with the ValidationMethod toggle running in REVERSE:
-# phase 2 deployed with CDKD_TEST_UPDATE=validation (DNS -> EMAIL), so omitting
-# it here flips EMAIL -> DNS, which is another change reaching `update()` and
-# therefore another provider-side replacement.
-echo "=== Phase 3: --allow-unaddressed forces exit 0 (issue #1960) ==="
-STRANDED_ARN="${new_arn}"
-
-echo "${new_state}" | python3 -c "
-import json, sys
-s = json.load(sys.stdin)
-for v in s['resources'].values():
-    if v['resourceType'] == 'AWS::CertificateManager::Certificate':
-        v['physicalId'] = sys.argv[1]
-print(json.dumps(s))
-" "${malformed}" > /tmp/cdkd-acm-state-3.json
-aws s3 cp /tmp/cdkd-acm-state-3.json "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" \
-  --region "${REGION}" >/dev/null
-echo "  state physicalId rewritten to ${malformed} again"
-
-set +e
-allow_out=$(CDKD_NO_WAIT=true $CDKD deploy \
-  --region "${REGION}" --state-bucket "${BUCKET}" --allow-unaddressed 2>&1)
-allow_rc=$?
-set -e
-echo "${allow_out}"
-allow_txt=$(printf '%s' "${allow_out}" | sed $'s/\033\[[0-9;]*m//g')
-
-# The arm is only meaningful if this deploy actually reproduced the partial
-# outcome. Checked FIRST: a run that quietly made no change would exit 0 too,
-# and would then "pass" the flag assertion below while proving nothing.
-if ! grep -q "of which left an orphaned predecessor: 1" <<<"${allow_txt}"; then
-  echo "FAIL: phase 3 did not reproduce the partial update, so the flag is untested"
-  echo "${allow_txt}" | grep -iE "updated|skipped|unaddressed" || true
+# The old certificate must be gone, not left beside the new one.
+old_out=$(aws acm describe-certificate --certificate-arn "${ORIGINAL_ARN}" --region "${REGION}" \
+  --query 'Certificate.Status' --output text 2>&1) && {
+  echo "FAIL: the replaced certificate ${ORIGINAL_ARN} still exists (status ${old_out})"
+  exit 1
+}
+if ! grep -qiE 'not ?found|no ?such|does ?not ?exist' <<<"${old_out}"; then
+  echo "FAIL: could not confirm the old certificate is gone: ${old_out}"
   exit 1
 fi
-echo "PASS: phase 3 reproduced the orphaned predecessor"
-
-if [[ "${allow_rc}" -ne 0 ]]; then
-  echo "FAIL: --allow-unaddressed must force exit 0; got ${allow_rc} (issue #1960)"
-  exit 1
-fi
-echo "PASS: --allow-unaddressed exited 0 for an outcome that otherwise exits 2"
-
-# The flag suppresses the EXIT CODE only. If it also silenced the warning the
-# operator would have no signal at all, which is the failure mode the flag must
-# not create.
-if ! grep -q "were left unaddressed" <<<"${allow_txt}"; then
-  echo "FAIL: --allow-unaddressed silenced the survivor warning as well as the exit code"
-  exit 1
-fi
-if ! grep -q "allow-unaddressed was passed" <<<"${allow_txt}"; then
-  echo "FAIL: the verdict line does not say the exit code was suppressed by the flag"
-  exit 1
-fi
-echo "PASS: the survivor warning is still printed under --allow-unaddressed"
+ORIGINAL_ARN=""
+echo "PASS: replaced by ${new_arn}; the old certificate is deleted"
 
 # --- Phase 4: a secret-derived DomainName is updated in place (#4275) ---------
 #
