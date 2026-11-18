@@ -4,11 +4,13 @@
  * emits — `Deny` when `Bool aws:SecureTransport` is `false` — matches every
  * request there. EventBridge → SQS delivery, for one, is then dropped silently.
  *
- * The emulator serves HTTPS only, as AWS does to every SDK and service
- * principal, so on a correct evaluator such a statement can never match:
- * conditions in one statement are AND-ed, so its other conditions, principal
- * and action do not matter. Dropping it while `--aws-emulator` is active
- * changes no access decision AWS would make. CloudFormation parity gives way
+ * On AWS such a statement never matches an HTTPS request — conditions in one
+ * statement are AND-ed, so its other conditions, principal and action do not
+ * matter — and it is the control that refuses a plain-HTTP one. The emulator
+ * serves HTTPS only, so dropping it while `--aws-emulator` is active changes
+ * no access decision AWS would make for the requests the emulator can
+ * receive. That premise is the GATE, never the statement being dead: this must
+ * not run against AWS. CloudFormation parity gives way
  * here on purpose: cdkd keeps AWS's semantics, not the template's bytes, and
  * only on the wire — the state record keeps the templated document.
  */
