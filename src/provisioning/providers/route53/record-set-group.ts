@@ -17,6 +17,7 @@ import type {
   UpdateContext,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { getPriorAttempts } from '../../../deployment/prior-attempt-scope.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
   isRedactedRecordedValue,
@@ -356,10 +357,8 @@ export async function updateRecordSetGroup(
   // here with a desired zone id other than the one the records live in would
   // write them to the old zone while state recorded the new one.
   const desiredZoneId = zone['HostedZoneId'];
-  if (
-    typeof desiredZoneId === 'string' &&
-    desiredZoneId.replace(/^\/hostedzone\//, '') !== hostedZoneId
-  ) {
+  const bareZoneId = (id: string) => id.replace(/^\/hostedzone\//, '');
+  if (typeof desiredZoneId === 'string' && bareZoneId(desiredZoneId) !== bareZoneId(hostedZoneId)) {
     throw groupRefusalError(
       `Record set group ${logicalId}: the template's hosted zone differs from the one its ` +
         `records are in (${hostedZoneId}); moving a group to another zone replaces it`,
@@ -379,11 +378,16 @@ export async function updateRecordSetGroup(
       if (recorded === undefined) {
         // CREATE, not UPSERT: a record of this identity that cdkd did not
         // write (another resource's, or an out-of-band one) is refused by
-        // Route 53 instead of being taken over. A live record already holding
-        // exactly the desired values is this update's own earlier batch,
-        // committed before its state was saved: skipping it keeps the retry
-        // from failing on "already exists" forever.
-        const live = await this.findLiveRecordSet(hostedZoneId, recordBag(record));
+        // Route 53 instead of being taken over. Only on THIS stack's evidence
+        // that its own earlier write may have created the record (a failed
+        // deploy's journaled bag, or an ambiguous send in this dispatch) is a
+        // live record with exactly the desired values taken as that write,
+        // committed before its state was saved — never on equal values alone,
+        // which an identical record of another owner also has
+        // (provider-resource-identity.md).
+        const live = (await ownEarlierWriteMayHold(logicalId, key, desired, this))
+          ? await this.findLiveRecordSet(hostedZoneId, recordBag(record))
+          : undefined;
         if (live && sameRecordSet(live, desired)) {
           this.logger.debug(
             safeMsg`Record set group ${logicalId}: an added record is already live with the desired values; not creating it again`
@@ -438,6 +442,11 @@ export async function updateRecordSetGroup(
     return { physicalId: compositeId, wasReplaced: false, attributes: {} };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
+    // A failure Route 53 did not author as a client refusal may follow a
+    // batch it applied; the engine's retry of this dispatch reads that.
+    if (!(error instanceof Error && (error as { $fault?: unknown }).$fault === 'client')) {
+      getPriorAttempts(logicalId)?.notePossiblyLanded();
+    }
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
       context?.maskSecrets,
@@ -454,7 +463,42 @@ export async function updateRecordSetGroup(
   }
 }
 
-/** Key-order- and name-spelling-insensitive equality of two record sets. */
+/**
+ * Whether this stack's own earlier write of `logicalId` may have created the
+ * record `key` names with the `desired` values: an ambiguous send earlier in
+ * this dispatch, or a failed deploy's journaled bag declaring that record
+ * with those values. An unreadable journal is no evidence.
+ */
+async function ownEarlierWriteMayHold(
+  logicalId: string,
+  key: string,
+  desired: ResourceRecordSet,
+  provider: Route53Provider
+): Promise<boolean> {
+  const lookup = getPriorAttempts(logicalId);
+  if (!lookup) return false;
+  if (lookup.possiblyLanded()) return true;
+  let bags: ReadonlyArray<Record<string, unknown>>;
+  try {
+    bags = await lookup.attempts();
+  } catch {
+    return false;
+  }
+  return bags.some((bag) => {
+    const parsed = groupRecordSets(bag);
+    if ('refusal' in parsed) return false;
+    return parsed.records.some(
+      (r) =>
+        recordSetKey(r) === key &&
+        sameRecordSet(provider.buildResourceRecordSet(recordBag(r)), desired)
+    );
+  });
+}
+
+/**
+ * Equality of two record sets, insensitive to key order and to the spellings
+ * Route 53 rewrites (trailing dot and case of the name and of an alias target).
+ */
 function sameRecordSet(a: ResourceRecordSet, b: ResourceRecordSet): boolean {
   const canonical = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonical);
@@ -466,7 +510,18 @@ function sameRecordSet(a: ResourceRecordSet, b: ResourceRecordSet): boolean {
     );
   };
   const spell = (r: ResourceRecordSet) =>
-    JSON.stringify(canonical({ ...r, Name: normalizeRecordName(r.Name ?? '') }));
+    JSON.stringify(
+      canonical({
+        ...r,
+        Name: normalizeRecordName(r.Name ?? ''),
+        ...(r.AliasTarget && {
+          AliasTarget: {
+            ...r.AliasTarget,
+            DNSName: normalizeRecordName(r.AliasTarget.DNSName ?? ''),
+          },
+        }),
+      })
+    );
   return spell(a) === spell(b);
 }
 
@@ -747,12 +802,6 @@ export async function importRecordSetGroup(
     return { physicalId: known, attributes: {} };
   };
 
-  const parsed = groupRecordSets(input.properties);
-  if ('refusal' in parsed) return adoptVerbatim(parsed.refusal);
-  const zoneProps = groupZoneProperties(input.properties, parsed.records);
-  if ('refusal' in zoneProps) return adoptVerbatim(zoneProps.refusal);
-
-  let hostedZoneId: string;
   // A cdkd id's zone segment is what delete addresses, so an unverified one is
   // never adopted: a wrong zone answers `NoSuchHostedZone`, which delete reads
   // as already gone while the real records stay live.
@@ -763,6 +812,14 @@ export async function importRecordSetGroup(
     );
     return null;
   };
+  const unverified = (reason: string) => (knownComposite ? decline(reason) : adoptVerbatim(reason));
+
+  const parsed = groupRecordSets(input.properties);
+  if ('refusal' in parsed) return unverified(parsed.refusal);
+  const zoneProps = groupZoneProperties(input.properties, parsed.records);
+  if ('refusal' in zoneProps) return unverified(zoneProps.refusal);
+
+  let hostedZoneId: string;
   if (knownComposite) {
     hostedZoneId = knownComposite.hostedZoneId;
   } else {
@@ -790,11 +847,11 @@ export async function importRecordSetGroup(
   } catch (err) {
     const head = `Record set group ${input.logicalId}: verification of '${known}' failed: `;
     const reason = `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`;
-    return knownComposite ? decline(reason) : adoptVerbatim(reason);
+    return unverified(reason);
   }
   if (!observed || observed === RESOURCE_NOT_FOUND) {
     const reason = 'not every record was found under the resolved hosted zone';
-    return knownComposite ? decline(reason) : adoptVerbatim(reason);
+    return unverified(reason);
   }
   return { physicalId: recordSetGroupCompositeId(hostedZoneId, input.logicalId), attributes: {} };
 }

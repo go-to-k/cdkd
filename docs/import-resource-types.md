@@ -170,8 +170,9 @@ These types take the plain physical id: `AWS::ApiGateway::Authorizer`,
   it. CDK emits a trailing dot.
 - **`AWS::Route53::RecordSetGroup`**: cdkd reads the zone and the records from
   the template, checks that every record exists, and records
-  `<hostedZoneId>|<logicalId>`. If it cannot check them, it records the id you
-  gave and warns.
+  `<hostedZoneId>|<logicalId>`. If it cannot check them, it warns and records
+  a CloudFormation group name as given, but does not import a
+  `<hostedZoneId>|<logicalId>` id at all.
 - **`AWS::EC2::Route`**: `<destination>` is the IPv4 CIDR, the IPv6 CIDR or
   the prefix-list id. CloudFormation's id has the same form.
 - **`AWS::S3Tables::Namespace`** and **`AWS::S3Tables::Table`**: only their

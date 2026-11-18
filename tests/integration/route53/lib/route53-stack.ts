@@ -290,6 +290,10 @@ export class Route53Stack extends cdk.Stack {
     });
     // The name lookup needs the zone to exist first.
     recordGroup.node.addDependency(zone);
+    // Phase 2.7c fails the deploy only after the group's CNAME -> A update has
+    // landed, so the rollback it asserts must really undo the group.
+    const failingQueue = this.node.tryFindChild('FailingQueue') as sqs.CfnQueue | undefined;
+    failingQueue?.addDependency(recordGroup);
 
     // Outputs
     new cdk.CfnOutput(this, 'HostedZoneId', {

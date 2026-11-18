@@ -44,6 +44,11 @@ import {
   ListResourceRecordSetsCommand,
   GetHostedZoneCommand,
 } from '@aws-sdk/client-route-53';
+import {
+  priorAttemptLookup,
+  withPriorAttempts,
+  type PriorAttemptLookup,
+} from '../../../src/deployment/prior-attempt-scope.js';
 import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-errors.js';
 import { CNAME_CONFLICT_COLLISION_NOTE } from '../../../src/provisioning/providers/route53/shared.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
@@ -405,18 +410,25 @@ describe('Route53Provider RecordSetGroup', () => {
       expect(sent.map((s) => s.ChangeBatch.Changes.length)).toEqual([2, 1, 1]);
     });
 
-    it('throws a non-"not found" per-record error', async () => {
+    it('throws a non-"not found" per-record error after the batch not-found, naming the group', async () => {
       route({
         liveRecords: [live()],
         change: (input) => {
           const count = (input as { ChangeBatch: { Changes: unknown[] } }).ChangeBatch.Changes.length;
-          if (count > 1) throw awsError('InvalidChangeBatch', 'it was not found');
+          if (count > 1) {
+            throw awsError(
+              'InvalidChangeBatch',
+              "Tried to delete resource record set [name='x', type='A'] but it was not found"
+            );
+          }
           throw awsError('AccessDenied', 'denied');
         },
       });
       await expect(
         provider.delete(LOGICAL, COMPOSITE, TYPE, props([rec(), rec({ Name: 'b.example.com.' })]))
-      ).rejects.toThrow(/Failed to delete record set group/);
+      ).rejects.toThrow(/^Failed to delete record set group Group: denied/);
+      // batch (2 changes) + the first per-record delete, which stops the loop
+      expect(changeInputs().map((c) => c.ChangeBatch.Changes.length)).toEqual([2, 1]);
     });
 
     it('returns normally on NoSuchHostedZone', async () => {
@@ -542,6 +554,21 @@ describe('Route53Provider RecordSetGroup', () => {
   });
 });
 
+/** Run `fn` with prior-attempt evidence bound for LOGICAL: journaled bags, 'landed', or an unreadable journal. */
+function withEvidence<T>(
+  evidence: Array<Record<string, unknown>> | 'landed' | 'unreadable' | 'none',
+  fn: () => T,
+  out?: { lookup?: PriorAttemptLookup }
+): T {
+  const lookup = priorAttemptLookup(LOGICAL, async () => {
+    if (evidence === 'unreadable') throw new Error('journal unreadable');
+    return Array.isArray(evidence) ? evidence : [];
+  });
+  if (evidence === 'landed') lookup.notePossiblyLanded();
+  if (out) out.lookup = lookup;
+  return withPriorAttempts(lookup, fn);
+}
+
 describe('Route53Provider RecordSetGroup (review additions)', () => {
   let provider: Route53Provider;
   const props = (records: Record<string, unknown>[]) => ({ HostedZoneId: ZONE, RecordSets: records });
@@ -647,7 +674,9 @@ describe('Route53Provider RecordSetGroup (review additions)', () => {
           { Name: 'new.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.1' }] },
         ],
       });
-      await provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]));
+      await withEvidence('landed', () =>
+        provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]))
+      );
       expect(calls(ListResourceRecordSetsCommand)).toHaveLength(1);
       expect(changeInputs()).toHaveLength(0);
     });
@@ -658,7 +687,9 @@ describe('Route53Provider RecordSetGroup (review additions)', () => {
           { Name: 'new.example.com.', Type: 'A', TTL: 900, ResourceRecords: [{ Value: '198.51.100.9' }] },
         ],
       });
-      await provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]));
+      await withEvidence('landed', () =>
+        provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]))
+      );
       const sent = changeInputs();
       expect(sent).toHaveLength(1);
       expect(sent[0]!.ChangeBatch.Changes).toEqual([
@@ -918,6 +949,275 @@ describe('Route53Provider RecordSetGroup (review additions)', () => {
         })
       ).toBeUndefined();
       expect(calls(ListResourceRecordSetsCommand)).toHaveLength(0);
+    });
+  });
+});
+
+describe('Route53Provider RecordSetGroup (round 2)', () => {
+  let provider: Route53Provider;
+  const props = (records: Record<string, unknown>[], zone: unknown = ZONE) => ({
+    HostedZoneId: zone,
+    RecordSets: records,
+  });
+  const added = { Name: 'new.example.com', Type: 'A', TTL: 300, ResourceRecords: ['192.0.2.1'] };
+  const liveSame = {
+    Name: 'new.example.com.',
+    Type: 'A',
+    TTL: 300,
+    ResourceRecords: [{ Value: '192.0.2.1' }],
+  };
+  const liveAddedCount = () =>
+    calls(ListResourceRecordSetsCommand).length;
+  const createChange = () => ({
+    Action: 'CREATE',
+    ResourceRecordSet: {
+      Name: 'new.example.com',
+      Type: 'A',
+      TTL: 300,
+      ResourceRecords: [{ Value: '192.0.2.1' }],
+    },
+  });
+  const upd = () =>
+    provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    childLogger.child.mockReturnValue(childLogger);
+    provider = new Route53Provider();
+  });
+
+  describe('update: added-record skip needs this stack evidence', () => {
+    it('CREATEs with no lookup bound, even when an identical record is live, without reading live records', async () => {
+      route({ liveRecords: [liveSame] });
+      await upd();
+      expect(liveAddedCount()).toBe(0);
+      expect(changeInputs()[0]!.ChangeBatch.Changes).toEqual([createChange()]);
+    });
+
+    it('CREATEs with a lookup bound that has no journaled bag and did not land', async () => {
+      route({ liveRecords: [liveSame] });
+      await withEvidence([], upd);
+      expect(liveAddedCount()).toBe(0);
+      expect(changeInputs()[0]!.ChangeBatch.Changes).toEqual([createChange()]);
+    });
+
+    it('skips when a journaled bag holds the same key with the same values', async () => {
+      route({ liveRecords: [liveSame] });
+      await withEvidence([props([rec(), added])], upd);
+      expect(liveAddedCount()).toBe(1);
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it('CREATEs when the journaled bag holds the key with DIFFERENT values', async () => {
+      route({ liveRecords: [liveSame] });
+      await withEvidence([props([rec(), { ...added, TTL: 60 }])], upd);
+      expect(liveAddedCount()).toBe(0);
+      expect(changeInputs()[0]!.ChangeBatch.Changes).toEqual([createChange()]);
+    });
+
+    it('skips when possiblyLanded() is already set', async () => {
+      route({ liveRecords: [liveSame] });
+      await withEvidence('landed', upd);
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it('CREATEs when the journal is unreadable', async () => {
+      route({ liveRecords: [liveSame] });
+      await withEvidence('unreadable', upd);
+      expect(liveAddedCount()).toBe(0);
+      expect(changeInputs()[0]!.ChangeBatch.Changes).toEqual([createChange()]);
+    });
+
+    it('ignores a journaled bag whose RecordSets is not a list', async () => {
+      route({ liveRecords: [liveSame] });
+      await withEvidence([{ RecordSets: 'junk' }], upd);
+      expect(changeInputs()[0]!.ChangeBatch.Changes).toEqual([createChange()]);
+    });
+  });
+
+  describe('update: possiblyLanded on a failed change', () => {
+    const failing = (error: Error) =>
+      route({ change: () => { throw error; } });
+    const run = async () => {
+      const out: { lookup?: PriorAttemptLookup } = {};
+      await withEvidence(
+        'none',
+        () => provider.update(LOGICAL, COMPOSITE, TYPE, props([rec({ TTL: '60' })]), props([rec()])),
+        out
+      ).catch(() => undefined);
+      return out.lookup!;
+    };
+
+    it('notes possibly-landed for a non-client failure', async () => {
+      failing(new Error('socket hang up'));
+      expect((await run()).possiblyLanded()).toBe(true);
+    });
+
+    it('does not note it for a $fault client refusal', async () => {
+      const e = awsError('InvalidChangeBatch', 'refused');
+      (e as unknown as { $fault: string }).$fault = 'client';
+      failing(e);
+      const lookup = await run();
+      expect(lookup.possiblyLanded()).toBe(false);
+      expect(changeInputs()).toHaveLength(1);
+    });
+
+    it('notes it for a $fault server failure', async () => {
+      const e = awsError('InternalFailure', 'boom');
+      (e as unknown as { $fault: string }).$fault = 'server';
+      failing(e);
+      expect((await run()).possiblyLanded()).toBe(true);
+    });
+  });
+
+  describe('update: alias target and key order', () => {
+    const aliasDesired = {
+      Name: 'alias.example.com',
+      Type: 'A',
+      AliasTarget: {
+        HostedZoneId: 'Z35SXDOTRQ7X7K',
+        DNSName: 'Dualstack.My-ALB.us-east-1.elb.amazonaws.com',
+        EvaluateTargetHealth: false,
+      },
+    };
+    const aliasLive = (dns: string) => ({
+      Type: 'A',
+      AliasTarget: { EvaluateTargetHealth: false, DNSName: dns, HostedZoneId: 'Z35SXDOTRQ7X7K' },
+      Name: 'alias.example.com.',
+    });
+    const upd2 = () =>
+      provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), aliasDesired]), props([rec()]));
+
+    it('skips when the live alias differs only by trailing dot, case and key order', async () => {
+      route({ liveRecords: [aliasLive('dualstack.my-alb.us-east-1.elb.amazonaws.com.')] });
+      await withEvidence('landed', upd2);
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it('CREATEs when the live alias points at another target', async () => {
+      route({ liveRecords: [aliasLive('other-alb.us-east-1.elb.amazonaws.com.')] });
+      await withEvidence('landed', upd2);
+      expect(changeInputs()[0]!.ChangeBatch.Changes.map((c) => c.Action)).toEqual(['CREATE']);
+    });
+  });
+
+  describe('update: zone refusal strips /hostedzone/ on both sides', () => {
+    it.each([['Z1'], ['/hostedzone/Z1']])(
+      'physicalId /hostedzone/Z1|Grp with desired %s proceeds',
+      async (desired) => {
+        route();
+        await provider.update(
+          'Grp',
+          '/hostedzone/Z1|Grp',
+          TYPE,
+          props([rec({ TTL: '60' })], desired),
+          props([rec()])
+        );
+        const sent = changeInputs();
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.ChangeBatch.Changes[0]!.Action).toBe('UPSERT');
+      }
+    );
+  });
+
+  describe('foreign-group composite (Z1|OtherGroup) resolves the zone from properties', () => {
+    const byName = { HostedZoneName: 'example.com.', RecordSets: [rec()] };
+
+    it('update', async () => {
+      route();
+      const result = await provider.update(
+        LOGICAL,
+        'Z1|OtherGroup',
+        TYPE,
+        { HostedZoneName: 'example.com.', RecordSets: [rec({ TTL: '60' })] },
+        byName
+      );
+      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+      expect(changeInputs()[0]!.HostedZoneId).toBe(ZONE);
+      expect(result.physicalId).toBe(COMPOSITE);
+    });
+
+    it('readCurrentState', async () => {
+      route({ liveRecords: [live()] });
+      const out = await provider.readCurrentState('Z1|OtherGroup', LOGICAL, TYPE, byName);
+      expect(out).toMatchObject({ RecordSets: expect.any(Array) });
+      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+      expect(
+        (calls(ListResourceRecordSetsCommand)[0]!.input as { HostedZoneId: string }).HostedZoneId
+      ).toBe(ZONE);
+    });
+
+    it('import records the composite for the resolved zone', async () => {
+      route({ liveRecords: [live()] });
+      const result = await provider.import({
+        logicalId: LOGICAL,
+        resourceType: TYPE,
+        stackName: 'MyStack',
+        region: 'us-east-1',
+        properties: byName,
+        knownPhysicalId: 'Z1|OtherGroup',
+      });
+      expect(result).toEqual({ physicalId: COMPOSITE, attributes: {} });
+      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+    });
+  });
+
+  describe('import: unverifiable inputs', () => {
+    const input = (known: string, properties: Record<string, unknown>) => ({
+      logicalId: 'Grp',
+      resourceType: TYPE,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties,
+      knownPhysicalId: known,
+    });
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['RecordSets not a list', { HostedZoneName: 'example.com.', RecordSets: 'nope' }],
+      [
+        'records disagreeing on the zone',
+        { RecordSets: [rec({ HostedZoneId: 'Z9' }), rec({ Name: 'b.example.com.', HostedZoneId: 'Z8' })] },
+      ],
+    ];
+
+    it.each(cases)('a known composite with %s declines', async (_n, properties) => {
+      route();
+      expect(await provider.import(input(`${ZONE}|Grp`, properties))).toBeNull();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each(cases)('a non-composite with %s adopts verbatim', async (_n, properties) => {
+      route();
+      expect(await provider.import(input('MyStack-Grp-ABC', properties))).toEqual({
+        physicalId: 'MyStack-Grp-ABC',
+        attributes: {},
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a known composite whose verification throws declines', async () => {
+      route({ listError: awsError('AccessDenied', 'denied') });
+      expect(
+        await provider.import(
+          input(`${ZONE}|Grp`, { HostedZoneName: 'example.com.', RecordSets: [rec()] })
+        )
+      ).toBeNull();
+    });
+  });
+
+  describe('delete: zone gone by name', () => {
+    it('throws a region refusal when expectedRegion mismatches', async () => {
+      route({ zones: [] });
+      await expect(
+        provider.delete(
+          LOGICAL,
+          'MyStack-Group-ABC',
+          TYPE,
+          { HostedZoneName: 'example.com.', RecordSets: [rec()] },
+          { expectedRegion: 'eu-west-1' }
+        )
+      ).rejects.toThrow(/eu-west-1/);
+      expect(changeInputs()).toHaveLength(0);
     });
   });
 });
