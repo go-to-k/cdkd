@@ -155,7 +155,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     newDistributionConfig: Record<string, unknown>,
     previousDistributionConfig: Record<string, unknown>,
     logicalId: string,
-    replayingState?: boolean
+    replayingState?: boolean,
+    restoredObserved?: Readonly<Record<string, unknown>>
   ): Record<string, unknown> {
     return mergeUpdateConfig.call(
       this,
@@ -163,7 +164,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       newDistributionConfig,
       previousDistributionConfig,
       logicalId,
-      replayingState
+      replayingState,
+      restoredObserved
     );
   }
 

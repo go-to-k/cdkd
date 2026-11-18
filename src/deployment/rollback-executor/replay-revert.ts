@@ -643,6 +643,8 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
           maskSecrets: createSecretMasker(secrets),
           expectedRegion: ctx.region,
           replayingState: true,
+          // go-to-k/cdkd#6519: the snapshot of the record being restored.
+          restoredObservedProperties: previousState.observedProperties,
           recordedAttributes: current.attributes,
           recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
           ...(revertClaimed && { inlinePolicyClaimed: revertClaimed }),

@@ -311,8 +311,11 @@ already has. This includes removing it from a template that declared it.
 CloudFormation instead resets it to its default, `SSLv3` and `TLSv1`, which
 would turn SSLv3 back on. cdkd warns when it keeps a value the previous
 template declared. A rollback that restores a template without
-`OriginSSLProtocols` also leaves the value the failed deploy applied, and says
-so. To change the protocols, declare `OriginSSLProtocols`. A
+`OriginSSLProtocols` puts back the value the origin held before the failed
+deploy, read from the snapshot cdkd recorded after the last successful deploy.
+When that snapshot has no usable value for the origin, the rollback leaves the
+value the failed deploy applied, and says so. To change the protocols, declare
+`OriginSSLProtocols`. A
 custom origin that is new in the update gets what CloudFront records at
 create: `TLSv1`, `TLSv1.1` and `TLSv1.2`.
 

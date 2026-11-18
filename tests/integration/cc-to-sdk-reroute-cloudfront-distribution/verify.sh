@@ -8,8 +8,9 @@
 # (--recreate-via-cc-api), which mints another Id -> the plan announces the
 # return -> --pin-cc-api declines it -> redeploy with a real change: the Id
 # unchanged, the record flipped to 'sdk', the update reached AWS on the same
-# distribution -> drift clean, then exactly the out-of-band change -> destroy
-# on the flipped record.
+# distribution -> drift clean, then exactly the out-of-band change -> a failed
+# deploy narrowing OriginSSLProtocols, whose rollback restores the pre-deploy
+# set (go-to-k/cdkd#6519) -> destroy on the flipped record.
 #
 # The slow part is CloudFront's propagation: Cloud Control's create and update
 # wait for `Deployed`, and every delete waits for it first.
@@ -346,7 +347,56 @@ jq -e '[.[].drifted[]] | length == 1' <<<"${DRIFT_OUT}" >/dev/null ||
 [ "${DRIFT_RC}" -ne 0 ] || drift_fail "6b: cdkd drift exited 0 although it reports ${ID_SUBJECT} drifted"
 echo "    OK (6b): ${ID_SUBJECT} drifted by its out-of-band Comment change alone (rc=${DRIFT_RC})"
 
-echo "==> Phase 7: Destroy on the flipped record + gone-probe"
+echo "==> Phase 7: a failed deploy narrows OriginSSLProtocols; its rollback restores the pre-deploy set"
+# go-to-k/cdkd#6519. The restored template omits OriginSSLProtocols, so the
+# rollback's UpdateDistribution must fill it: from the restored record's
+# observed snapshot, not from the live value the failed deploy applied.
+live_tls() { # usage: live_tls <distributionId>  -> sorted JSON array
+  aws cloudfront get-distribution-config --id "$1" \
+    --query 'DistributionConfig.Origins.Items[0].CustomOriginConfig.OriginSslProtocols.Items' \
+    --output json | jq -c 'sort'
+}
+load_state
+PRE_TLS=$(live_tls "${P2}") || { echo "FAIL: phase 7: cannot read ${ID_SUBJECT}'s origin TLS set through ${P2}" >&2; exit 1; }
+SNAP_TLS=$(record '.observedProperties.DistributionConfig.Origins[0].CustomOriginConfig.OriginSSLProtocols // [] | sort | tojson')
+# Preconditions: the record carries the snapshot the fix reads, it matches AWS,
+# and the failed deploy's [TLSv1] differs from it, or the assertion below is vacuous.
+[ "${SNAP_TLS}" = "${PRE_TLS}" ] || {
+  echo "FAIL: phase 7 precondition: the record's observed OriginSSLProtocols ${SNAP_TLS} differ from AWS's ${PRE_TLS}" >&2
+  exit 1
+}
+[ "${PRE_TLS}" != '["TLSv1"]' ] && [ "${PRE_TLS}" != '[]' ] || {
+  echo "FAIL: phase 7 precondition: the pre-deploy set ${PRE_TLS} cannot tell a restore from the failed deploy's [TLSv1]" >&2
+  exit 1
+}
+set +e
+REPLAY_OUT=$(env CDKD_TEST_PHASE=replay \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee /dev/stderr)
+REPLAY_RC=${PIPESTATUS[0]}
+set -e
+REPLAY_PLAIN=$(sed $'s/\033\\[[0-9;]*m//g' <<<"${REPLAY_OUT}")
+[ "${REPLAY_RC}" -ne 0 ] || { echo "FAIL: phase 7: the deploy with the failing queue exited 0" >&2; exit 1; }
+grep -qF "Rollback: ${ID_SUBJECT} restored successfully" <<<"${REPLAY_PLAIN}" || {
+  echo "FAIL: phase 7: the rollback did not revert ${ID_SUBJECT}'s update" >&2
+  exit 1
+}
+if grep -qF "so the value the failed deploy applied stays" <<<"${REPLAY_PLAIN}"; then
+  echo "FAIL: phase 7: the rollback kept the failed deploy's OriginSSLProtocols instead of restoring the snapshot's" >&2
+  exit 1
+fi
+POST_TLS=$(live_tls "${P2}") || { echo "FAIL: phase 7: cannot read ${ID_SUBJECT}'s origin TLS set after the rollback" >&2; exit 1; }
+[ "${POST_TLS}" = "${PRE_TLS}" ] || {
+  echo "FAIL: phase 7: after the rollback ${ID_SUBJECT}'s origin holds OriginSslProtocols ${POST_TLS}, expected the pre-deploy ${PRE_TLS}" >&2
+  exit 1
+}
+load_state
+assert_layer "phase 7 (rollback replay)" sdk
+[ "$(record '.physicalId')" = "${P2}" ] || { echo "FAIL: phase 7: the rollback changed ${ID_SUBJECT}'s id" >&2; exit 1; }
+printf '%s' "${STATE_JSON}" | jq -e '.resources | has("FailQueue") | not' >/dev/null ||
+  { echo "FAIL: phase 7: state records the queue CreateQueue refused" >&2; exit 1; }
+echo "    OK: the rollback restored ${ID_SUBJECT}'s origin TLS set ${PRE_TLS}"
+
+echo "==> Phase 8: Destroy on the flipped record + gone-probe"
 DESTROY_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee /dev/stderr)
 DESTROY_PLAIN=$(sed $'s/\033\\[[0-9;]*m//g' <<<"${DESTROY_OUT}")
 grep -qF "${ID_SUBJECT} (${TYPE})" <<<"${DESTROY_PLAIN}" || {

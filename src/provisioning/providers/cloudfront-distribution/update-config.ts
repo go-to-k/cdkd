@@ -30,7 +30,8 @@ export function mergeUpdateConfig(
   newDistributionConfig: Record<string, unknown>,
   previousDistributionConfig: Record<string, unknown>,
   logicalId: string,
-  replayingState?: boolean
+  replayingState?: boolean,
+  restoredObserved?: Readonly<Record<string, unknown>>
 ): Record<string, unknown> {
   const templateSdk = this.convertToSdkFormat(newDistributionConfig);
   const previousSdk = this.convertToSdkFormat(previousDistributionConfig);
@@ -62,12 +63,14 @@ export function mergeUpdateConfig(
   Object.assign(merged, templateSdk);
   merged['CallerReference'] = currentConfig['CallerReference'];
   // A rollback replay restores a template that omits OriginSSLProtocols over
-  // a failed deploy that declared it. The live value, which that deploy
-  // applied, stays: restoring the pre-deploy value needs the restored
-  // record's observed snapshot, which `update()` does not receive
-  // (go-to-k/cdkd#6519). CloudFormation's own rollback would send its SSLv3,
-  // TLSv1 default here, so this is no weaker.
-  fillOriginSslProtocols(merged, currentConfig, previousSdk, (originId) =>
+  // a failed deploy that declared it. The live value is the one that deploy
+  // applied, so the replay sends the RESTORED record's observed snapshot for
+  // the origin of the same Id (go-to-k/cdkd#6519). With no usable snapshot the
+  // live value stays and a warning says so; CloudFormation's own rollback would
+  // send its SSLv3, TLSv1 default there, so even that is no weaker.
+  const restoredProtocols =
+    replayingState === true ? snapshotOriginSslProtocols(restoredObserved) : () => undefined;
+  fillOriginSslProtocols(merged, currentConfig, previousSdk, restoredProtocols, (originId) =>
     this.logger.warn(
       replayingState
         ? safeMsg`CloudFront Distribution ${logicalId}: the rollback restores a template without OriginSSLProtocols on origin '${String(originId)}', so the value the failed deploy applied stays; revert it by declaring OriginSSLProtocols.`
@@ -88,6 +91,48 @@ const CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS = {
   Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
 } as const;
 
+/** The `SslProtocol` values CloudFront accepts for a custom origin. */
+const ORIGIN_SSL_PROTOCOLS: ReadonlySet<string> = new Set(['SSLv3', 'TLSv1', 'TLSv1.1', 'TLSv1.2']);
+
+/**
+ * go-to-k/cdkd#6519: a lookup of each origin's `OriginSSLProtocols` in the
+ * observed snapshot (`readCurrentState`'s CFn shape) of the record a rollback
+ * replay RESTORES, in the SDK's Quantity/Items shape. An origin answers only
+ * with a non-empty, duplicate-free list of known protocol names: a redacted
+ * `***` leaf, a `{{resolve:...}}` expression or any other malformed value
+ * answers `undefined`, so the caller keeps the live value and warns instead of
+ * sending it.
+ */
+function snapshotOriginSslProtocols(
+  observed: Readonly<Record<string, unknown>> | undefined
+): (originId: unknown) => { Quantity: number; Items: string[] } | undefined {
+  const config = observed?.['DistributionConfig'];
+  const origins =
+    config && typeof config === 'object'
+      ? (config as Record<string, unknown>)['Origins']
+      : undefined;
+  if (!Array.isArray(origins)) return () => undefined;
+  return (originId) => {
+    const matches = origins.filter(
+      (o) => o && typeof o === 'object' && (o as Record<string, unknown>)['Id'] === originId
+    ) as Record<string, unknown>[];
+    // Origin Ids are unique in a distribution; two matches is not a snapshot to trust.
+    if (matches.length !== 1) return undefined;
+    const custom = matches[0]!['CustomOriginConfig'];
+    if (!custom || typeof custom !== 'object') return undefined;
+    const items = (custom as Record<string, unknown>)['OriginSSLProtocols'];
+    if (
+      !Array.isArray(items) ||
+      items.length === 0 ||
+      new Set(items).size !== items.length ||
+      !items.every((p) => typeof p === 'string' && ORIGIN_SSL_PROTOCOLS.has(p))
+    ) {
+      return undefined;
+    }
+    return { Quantity: items.length, Items: [...(items as string[])] };
+  };
+}
+
 /**
  * `UpdateDistribution` requires `CustomOriginConfig.OriginSslProtocols`
  * ("The parameter OriginSslProtocols is required", go-to-k/cdkd#6490) while a
@@ -95,14 +140,19 @@ const CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS = {
  * Absent-only: a templated value always wins. Otherwise the LIVE value of the
  * origin with the same `Id` is kept, so the update changes nothing on AWS;
  * an origin with no live custom-origin value (new in this update) takes what
- * CloudFront's create would have recorded. Keeping the live value where the
- * previous template declared one is announced through `onRemovedKept`, as the
- * top-level removal with no known default is.
+ * CloudFront's create would have recorded. `restored` (a rollback replay's
+ * snapshot of the record it restores) answers first where the previous
+ * template declared one, or where no live CUSTOM origin has that `Id` (the
+ * failed deploy removed the origin or made it an S3 one, so there is no later
+ * out-of-band value to keep);
+ * keeping the live value instead of a declared one is announced through
+ * `onRemovedKept`, as the top-level removal with no known default is.
  */
 function fillOriginSslProtocols(
   config: Record<string, unknown>,
   currentConfig: Record<string, unknown>,
   previousConfig: Record<string, unknown>,
+  restored: (originId: unknown) => unknown,
   onRemovedKept: (originId: unknown) => void
 ): void {
   const origins = config['Origins'] as Record<string, unknown> | undefined;
@@ -131,12 +181,16 @@ function fillOriginSslProtocols(
     if (!custom || typeof custom !== 'object') return origin;
     if ((custom as Record<string, unknown>)['OriginSslProtocols'] !== undefined) return origin;
     const live = liveProtocols(origin['Id']);
-    if (live !== undefined && previouslyDeclared(origin['Id'])) onRemovedKept(origin['Id']);
+    const declared = previouslyDeclared(origin['Id']);
+    const snapshot = declared || live === undefined ? restored(origin['Id']) : undefined;
+    if (snapshot === undefined && live !== undefined && declared) onRemovedKept(origin['Id']);
     return {
       ...origin,
       CustomOriginConfig: {
         ...(custom as Record<string, unknown>),
-        OriginSslProtocols: structuredClone(live ?? CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS),
+        OriginSslProtocols: structuredClone(
+          snapshot ?? live ?? CREATE_DEFAULT_ORIGIN_SSL_PROTOCOLS
+        ),
       },
     };
   });
