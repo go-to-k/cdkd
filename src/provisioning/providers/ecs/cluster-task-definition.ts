@@ -41,8 +41,9 @@ import {
 } from './shared.js';
 import {
   capacityProvidersChanged,
+  heldCapacityProviders,
   sendWhenAttachmentsSettle,
-  waitForClusterAttachments,
+  waitForOwnCapacityProviderPut,
 } from './cluster-attachments.js';
 
 // ─── AWS::ECS::Cluster ──────────────────────────────────────────
@@ -143,12 +144,18 @@ export async function updateCluster(
   const client = this.getClient();
 
   try {
-    // go-to-k/cdkd#6562: Put only when the template declares the providers AND
-    // they differ from the previous side — an unchanged Put still leaves the
-    // attachments UPDATE_IN_PROGRESS and refuses the UpdateCluster below.
-    const sentCapacityProviders =
-      Boolean(properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']) &&
-      capacityProvidersChanged(properties, previousProperties);
+    // go-to-k/cdkd#6562: Put only when the providers differ from the previous
+    // side — an unchanged Put still leaves the attachments UPDATE_IN_PROGRESS.
+    // Declaring neither clears both when the previous side held either, as
+    // CloudFormation does (measured: both lists read back []); the rollback
+    // replay's desired side is the old record, so it clears what a failed
+    // forward update added.
+    const declaresCapacityProviders = Boolean(
+      properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']
+    );
+    const sentCapacityProviders = declaresCapacityProviders
+      ? capacityProvidersChanged(properties, previousProperties)
+      : heldCapacityProviders(previousProperties);
     if (sentCapacityProviders) {
       await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
         client.send(
@@ -165,6 +172,10 @@ export async function updateCluster(
         )
       );
       log.debug(`Updated capacity providers for ECS cluster ${shownCluster}`);
+      // After EVERY Put, not only before an UpdateCluster: a same-deploy
+      // dependent (a Service on a just-added provider) must not meet a
+      // cluster that is still attaching. A failed attachment throws.
+      await waitForOwnCapacityProviderPut(client, logicalId, physicalId, log);
     }
 
     // Apply ClusterSettings / Configuration / ServiceConnectDefaults via
@@ -207,11 +218,6 @@ export async function updateCluster(
           : { namespace: '' }
         : undefined;
 
-      // go-to-k/cdkd#6562: ECS refuses UpdateCluster while the Put above is
-      // still attaching; the Describe it costs is spent only after a Put.
-      if (sentCapacityProviders) {
-        await waitForClusterAttachments(client, logicalId, physicalId, log);
-      }
       await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
         client.send(
           new UpdateClusterCommand({

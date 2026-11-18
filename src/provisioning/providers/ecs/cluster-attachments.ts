@@ -1,4 +1,4 @@
-import { DescribeClustersCommand, type ECSClient } from '@aws-sdk/client-ecs';
+import { DescribeClustersCommand, type Cluster, type ECSClient } from '@aws-sdk/client-ecs';
 import { isDeepStrictEqual } from 'node:util';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -56,41 +56,56 @@ export function capacityProvidersChanged(
   );
 }
 
-async function attachmentsStatus(client: ECSClient, cluster: string): Promise<string | undefined> {
+/**
+ * Whether a previous side held a NON-EMPTY capacity-provider member: a
+ * template declaring neither then clears both, as CloudFormation does. An
+ * empty or absent previous member has nothing to clear, so a readback-borne
+ * `[]` never costs a Put.
+ */
+export function heldCapacityProviders(previousProperties: Record<string, unknown>): boolean {
+  const held = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
+  return (
+    held(previousProperties['CapacityProviders']) ||
+    held(previousProperties['DefaultCapacityProviderStrategy'])
+  );
+}
+
+async function describeAttachments(
+  client: ECSClient,
+  cluster: string
+): Promise<Cluster | undefined> {
   const out = await client.send(
     new DescribeClustersCommand({ clusters: [cluster], include: ['ATTACHMENTS'] })
   );
-  return out?.clusters?.[0]?.attachmentsStatus;
+  return out?.clusters?.[0];
+}
+
+async function attachmentsStatus(client: ECSClient, cluster: string): Promise<string | undefined> {
+  return (await describeAttachments(client, cluster))?.attachmentsStatus;
 }
 
 /**
  * Wait until the cluster's attachments leave `UPDATE_IN_PROGRESS`. The cap is
  * 600s (the ECS waits' floor), lifted — never lowered — by an explicit
  * `--resource-timeout AWS::ECS::Cluster=...`; Ctrl-C ends it through the
- * shared interrupt watch. Returns the status it settled on.
+ * shared interrupt watch. Returns the cluster as it settled (`UPDATE_FAILED`
+ * included: ECS accepts the next write then, so only the caller that sent the
+ * Put decides whether it failed).
  */
 export async function waitForClusterAttachments(
   client: ECSClient,
   logicalId: string,
   cluster: string,
   log: MaskedLogSinks
-): Promise<string | undefined> {
+): Promise<Cluster | undefined> {
   const maxWaitSeconds = Math.max(600, (resolvedResourceTimeoutMs(CLUSTER_TYPE) ?? 0) / 1000);
   const deadline = clusterAttachmentsWait.now() + maxWaitSeconds * 1000;
   const watch = startInterruptWatch(`ECS cluster ${logicalId} attachments wait`);
   let delay = 1_000;
   try {
     for (;;) {
-      const status = await attachmentsStatus(client, cluster);
-      if (status !== IN_PROGRESS) {
-        if (status === 'UPDATE_FAILED') {
-          log.warn(
-            `ECS cluster ${log.value(cluster)} reports its capacity provider attachments UPDATE_FAILED; ` +
-              'check the attachments DescribeClusters reports for it (include ATTACHMENTS)'
-          );
-        }
-        return status;
-      }
+      const described = await describeAttachments(client, cluster);
+      if (described?.attachmentsStatus !== IN_PROGRESS) return described;
       if (clusterAttachmentsWait.now() >= deadline) {
         // Non-retryable: a deploy-engine retry would re-run this same wait.
         throw markNonRetryable(
@@ -143,4 +158,36 @@ export async function sendWhenAttachmentsSettle<T>(
       await waitForClusterAttachments(client, logicalId, cluster, log);
     }
   }
+}
+
+/**
+ * The wait after a `PutClusterCapacityProviders` THIS update sent: the
+ * attachments settling `UPDATE_FAILED` means the providers were not attached,
+ * so it throws rather than record success. A rollback replay reaching the
+ * same state fails that resource the same way, naming AWS's reason.
+ */
+export async function waitForOwnCapacityProviderPut(
+  client: ECSClient,
+  logicalId: string,
+  cluster: string,
+  log: MaskedLogSinks
+): Promise<void> {
+  const settled = await waitForClusterAttachments(client, logicalId, cluster, log);
+  if (settled?.attachmentsStatus !== 'UPDATE_FAILED') return;
+  const failed = (settled.attachments ?? [])
+    .filter((a) => /FAILED/.test(a.status ?? ''))
+    .map((a) => {
+      const details = (a.details ?? []).map((d) => `${d.name ?? '?'}=${d.value ?? ''}`).join(', ');
+      return `${a.type ?? 'attachment'} ${a.id ?? ''} ${a.status ?? ''}${details ? ` (${details})` : ''}`.trim();
+    });
+  const reason = failed.length > 0 ? `: ${log.mask(failed.join('; '))}` : '';
+  throw markNonRetryable(
+    new ProvisioningError(
+      `ECS cluster ${logicalIdShown(logicalId)} (${log.value(cluster)}): PutClusterCapacityProviders ended with the capacity provider attachments UPDATE_FAILED${reason}. ` +
+        'Check the capacity providers the template names (an Auto Scaling group provider needs its group and the ECS service-linked role), fix them, then re-run.',
+      CLUSTER_TYPE,
+      logicalId,
+      cluster
+    )
+  );
 }

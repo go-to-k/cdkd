@@ -236,8 +236,10 @@ describe('ECSProvider', () => {
 
     describe('update', () => {
       it('should convert DefaultCapacityProviderStrategy PascalCase -> camelCase on PutClusterCapacityProviders (issue #1165)', async () => {
-        // PutClusterCapacityProviders, then DescribeClusters for the ARN.
+        // PutClusterCapacityProviders, the attachments wait after it (#6562),
+        // then DescribeClusters for the ARN.
         mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ clusters: [{ attachmentsStatus: 'UPDATE_COMPLETE' }] });
         mockSend.mockResolvedValueOnce({
           clusters: [{ clusterArn: 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster' }],
         });

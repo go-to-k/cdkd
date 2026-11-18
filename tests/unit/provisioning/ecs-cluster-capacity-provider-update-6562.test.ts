@@ -92,6 +92,7 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
   let attachments: string[];
   let putFailures: Error[];
   let updateFailures: Error[];
+  let attachmentList: Array<Record<string, unknown>>;
 
   beforeEach(() => {
     mockSend.mockReset();
@@ -101,6 +102,7 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
     attachments = ['UPDATE_COMPLETE'];
     putFailures = [];
     updateFailures = [];
+    attachmentList = [];
     clusterAttachmentsWait.sleep = async (ms: number) => {
       sleeps.push(ms);
       clock += ms;
@@ -119,7 +121,9 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
       }
       if (command instanceof DescribeClustersCommand) {
         const status = attachments.length > 1 ? attachments.shift() : attachments[0];
-        return { clusters: [{ clusterArn: ARN, attachmentsStatus: status }] };
+        return {
+          clusters: [{ clusterArn: ARN, attachmentsStatus: status, attachments: attachmentList }],
+        };
       }
       return {};
     });
@@ -216,6 +220,86 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
     });
 
     expect(names()).not.toContain('PutClusterCapacityProvidersCommand');
+  });
+
+  const putInput = (): Record<string, unknown> | undefined =>
+    sent().find((s) => s.name === 'PutClusterCapacityProvidersCommand')?.input;
+  const settingsOnlyTemplate = { ClusterSettings: BEFORE.ClusterSettings };
+
+  it('clears both lists when the template stops declaring them, as CloudFormation does', async () => {
+    await provider.update('Cluster', CLUSTER, TYPE, settingsOnlyTemplate, BEFORE);
+
+    expect(putInput()?.['capacityProviders']).toEqual([]);
+    expect(putInput()?.['defaultCapacityProviderStrategy']).toEqual([]);
+  });
+
+  it('clears on a rollback whose restored record declared no providers', async () => {
+    // The revert arm: desired = the old record (none), previous = attempted.
+    await provider.update('Cluster', CLUSTER, TYPE, settingsOnlyTemplate, PROVIDERS_AND_SETTINGS, {
+      replayingState: true,
+    });
+
+    expect(putInput()?.['capacityProviders']).toEqual([]);
+  });
+
+  it('sends no Put when neither side holds providers', async () => {
+    await provider.update('Cluster', CLUSTER, TYPE, settingsOnlyTemplate, {
+      ...settingsOnlyTemplate,
+      CapacityProviders: [],
+      DefaultCapacityProviderStrategy: [],
+    });
+
+    expect(names()).not.toContain('PutClusterCapacityProvidersCommand');
+    expect(sent().filter(isAttachmentsRead)).toHaveLength(0);
+  });
+
+  it('waits for the attachments after a providers-only Put before returning', async () => {
+    attachments = ['UPDATE_IN_PROGRESS', 'UPDATE_COMPLETE'];
+
+    await provider.update(
+      'Cluster',
+      CLUSTER,
+      TYPE,
+      { ...PROVIDERS_AND_SETTINGS, ClusterSettings: BEFORE.ClusterSettings },
+      BEFORE
+    );
+
+    const put = names().indexOf('PutClusterCapacityProvidersCommand');
+    expect(names()).not.toContain('UpdateClusterCommand');
+    expect(sent().slice(put + 1).filter(isAttachmentsRead).length).toBeGreaterThanOrEqual(2);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  it('fails the update when its own Put ends with the attachments UPDATE_FAILED', async () => {
+    attachments = ['UPDATE_IN_PROGRESS', 'UPDATE_FAILED'];
+    attachmentList = [
+      {
+        id: 'att-1',
+        type: 'as_policy',
+        status: 'UPDATE_FAILED',
+        details: [{ name: 'reason', value: 'scaling plan missing' }],
+      },
+    ];
+
+    const failure = await provider
+      .update('Cluster', CLUSTER, TYPE, PROVIDERS_AND_SETTINGS, BEFORE)
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/attachments UPDATE_FAILED/);
+    expect((failure as Error).message).toMatch(/reason=scaling plan missing/);
+    expect(isMarkedNonRetryable(failure)).toBe(true);
+    expect(names()).not.toContain('UpdateClusterCommand');
+  });
+
+  it('does not fail on UPDATE_FAILED reached by waiting out a Put it did not send', async () => {
+    updateFailures = [awsError('ServerException')];
+    attachments = ['UPDATE_IN_PROGRESS', 'UPDATE_IN_PROGRESS', 'UPDATE_FAILED'];
+
+    await provider.update('Cluster', CLUSTER, TYPE, SETTINGS_ONLY, BEFORE);
+
+    expect(names().filter((n) => n === 'UpdateClusterCommand')).toHaveLength(2);
   });
 
   it('gives up non-retryably when the attachments never settle', async () => {
