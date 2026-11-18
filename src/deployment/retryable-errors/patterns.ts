@@ -30,6 +30,15 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // because of explicit deny" from a different service won't false-
   // positive into the retry loop.
   'Firehose is unable to assume role',
+  // IoT's wording of the same race (issue #6559): an `AWS::IoT::TopicRule`
+  // created through Cloud Control seconds after its action role is refused
+  // with "AWS IoT (iot.amazonaws.com) is unable to assume role
+  // (sts:AssumeRole) on resource: <arn>. If the role was just created or
+  // updated, please try again in a few seconds." None of the other
+  // `unable to assume` entries match `assume role (sts:AssumeRole)`. Anchored
+  // on the service name, like Firehose's; a probe against a fresh role cleared
+  // after 7s (us-east-1, 2026-11-19), inside the dense grid.
+  'AWS IoT (iot.amazonaws.com) is unable to assume role',
   // Glue Crawler / Job / Trigger create validates that the Glue service can
   // assume the same-stack IAM role at create time. cdkd's fast SDK path issues
   // the Crawler create only ~1s after the role's CREATE, before IAM finishes
