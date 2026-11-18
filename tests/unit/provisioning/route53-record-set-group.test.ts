@@ -56,6 +56,7 @@ import { CNAME_CONFLICT_COLLISION_NOTE } from '../../../src/provisioning/provide
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { markReplayMayCollide } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::Route53::RecordSetGroup';
 const ZONE = 'Z1234567890';
@@ -1269,9 +1270,18 @@ describe('Route53Provider RecordSetGroup (round 3: refused before applying)', ()
     expect(changeInputs()).toHaveLength(1);
   });
 
-  // An SDK re-send's "already exists" may answer the batch its first attempt
-  // committed: neither marked nor read as a client refusal.
-  it('does not mark a client refusal returned after an SDK retry and sets possiblyLanded', async () => {
+  // An "already exists" the batch client stamps as following an AMBIGUOUS
+  // attempt may answer the batch that attempt committed: neither marked nor
+  // read as a refusal. After a throttle (no stamp) it is still a refusal.
+  it('does not mark a client refusal following an ambiguous attempt and sets possiblyLanded', async () => {
+    route({ change: () => { throw markReplayMayCollide(exists()); } });
+    const { error, lookup } = await runAdd('none');
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(false);
+    expect(lookup.possiblyLanded()).toBe(true);
+  });
+
+  it('marks a client refusal returned after a throttle retry (no ambiguous attempt)', async () => {
     route({
       change: () => {
         const e = exists();
@@ -1280,9 +1290,8 @@ describe('Route53Provider RecordSetGroup (round 3: refused before applying)', ()
       },
     });
     const { error, lookup } = await runAdd('none');
-    expect(error).toBeInstanceOf(ProvisioningError);
-    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(false);
-    expect(lookup.possiblyLanded()).toBe(true);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+    expect(lookup.possiblyLanded()).toBe(false);
   });
 
   it.each([

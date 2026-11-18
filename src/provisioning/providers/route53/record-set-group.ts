@@ -1,9 +1,13 @@
 import type { Route53Provider } from '../route53-provider.js';
 import {
   ChangeResourceRecordSetsCommand,
+  Route53Client,
   type Change,
   type ResourceRecordSet,
 } from '@aws-sdk/client-route-53';
+import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js';
+import { hasReplayMayCollide } from '../../../deployment/retryable-errors.js';
+import { withoutServerErrorRetries } from '../ambiguous-create.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNameCollision } from '../../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -465,7 +469,7 @@ async function applyRecordSetGroupUpdate(
     if (changes.length > 0) {
       const comment = properties['Comment'];
       progress.sent = true;
-      await this.getClient().send(
+      await updateBatchClient(this).send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
           ChangeBatch: {
@@ -490,7 +494,7 @@ async function applyRecordSetGroupUpdate(
     // batch it applied; the engine's retry of this dispatch reads that. A
     // failure before the send (a lookup) applied nothing.
     if (progress.sent) {
-      if (isFirstAttemptClientRefusal(error)) {
+      if (isUnambiguousClientRefusal(error)) {
         progress.clientRefused = true;
       } else {
         getPriorAttempts(logicalId)?.notePossiblyLanded();
@@ -575,18 +579,38 @@ function sameRecordSet(a: ResourceRecordSet, b: ResourceRecordSet): boolean {
 }
 
 /**
- * A send failure Route 53 authored as a client refusal on the SDK's FIRST
- * attempt — the only case proving the batch applied nothing. A refusal after
- * the SDK re-sent (a 5xx or a lost response replayed) may be answering a
- * batch the earlier attempt already committed: "already exists" is then this
- * group's own record.
+ * The update batch's client. The SDK does not replay a 5xx on it, and stamps
+ * `markReplayMayCollide` on every error a `send` throws after an AMBIGUOUS
+ * attempt (`withoutServerErrorRetries`), so a refusal can be told apart from
+ * one answering a batch an earlier attempt may have committed. One per
+ * provider instance, built on first use like `getClient`.
  */
-function isFirstAttemptClientRefusal(error: unknown): boolean {
+const updateBatchClients = new WeakMap<Route53Provider, Route53Client>();
+function updateBatchClient(provider: Route53Provider): Route53Client {
+  let client = updateBatchClients.get(provider);
+  if (!client) {
+    client = withoutServerErrorRetries(
+      new Route53Client({
+        ...ambientClientDefaults(),
+        ...(provider.providerRegion ? { region: provider.providerRegion } : {}),
+      })
+    );
+    updateBatchClients.set(provider, client);
+  }
+  return client;
+}
+
+/**
+ * A send failure Route 53 authored as a client refusal with no ambiguous
+ * attempt before it in the same `send` — the only case proving the batch
+ * applied nothing. After an ambiguous attempt (a 5xx, a reset), "already
+ * exists" may be this group's own committed record; after a throttle, which
+ * applies nothing, it is still a refusal.
+ */
+function isUnambiguousClientRefusal(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  const e = error as { $fault?: unknown; $metadata?: { attempts?: unknown } };
-  if (e.$fault !== 'client') return false;
-  const attempts = e.$metadata?.attempts;
-  return typeof attempts !== 'number' || attempts <= 1;
+  if ((error as { $fault?: unknown }).$fault !== 'client') return false;
+  return !hasReplayMayCollide(error);
 }
 
 /** A Route 53 refusal that the record a DELETE names does not exist. */
