@@ -688,20 +688,24 @@ export function recordSetGroupRecordZoneChanged(
   const groupZone = (props: Readonly<Record<string, unknown>> | undefined): boolean =>
     props?.['HostedZoneId'] !== undefined || props?.['HostedZoneName'] !== undefined;
   if (groupZone(siblings?.oldProperties) || groupZone(siblings?.newProperties)) return false;
-  const recordZone = (value: unknown): string | undefined => {
+  const recordZone = (value: unknown): Record<string, unknown> | undefined => {
     if (!Array.isArray(value)) return undefined;
     for (const record of value) {
       if (record === null || typeof record !== 'object' || Array.isArray(record)) continue;
       const r = record as Record<string, unknown>;
-      if (r['HostedZoneId'] !== undefined || r['HostedZoneName'] !== undefined) {
-        return JSON.stringify([r['HostedZoneId'] ?? null, r['HostedZoneName'] ?? null]);
-      }
+      if (r['HostedZoneId'] !== undefined || r['HostedZoneName'] !== undefined) return r;
     }
     return undefined;
   };
   const before = recordZone(oldValue);
   const after = recordZone(newValue);
-  return before !== undefined && after !== undefined && before !== after;
+  if (before === undefined || after === undefined) return false;
+  // The same rule as the group-level keys: a switch between the two keys is
+  // checked by `update()`, not replaced (go-to-k/cdkd#6537).
+  return route53ZoneReferenceChanged(undefined, undefined, {
+    oldProperties: before,
+    newProperties: after,
+  });
 }
 
 /**

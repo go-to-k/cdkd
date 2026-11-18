@@ -1164,8 +1164,10 @@ if [ "${GRP_B_UPDATED}" != '"v2"' ]; then
 fi
 echo "    OK: the RecordSetGroup update added, changed and removed its records in one batch"
 # Issue #6537: both switched from HostedZoneName to the same zone's
-# HostedZoneId in 2.7a. An in-place update keeps each physical id; a
-# replacement would have collided with the live record and failed the deploy.
+# HostedZoneId in 2.7a. The discriminator is the 2.7a deploy succeeding: a
+# replacement creates first in the same zone, which Route 53 refuses while
+# the live record holds the name. The checks below pin what that update
+# recorded (the physical ids alone would match after a same-zone replacement).
 ZONE_KEY_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 if [ -z "${ZONE_KEY_STATE}" ]; then
   echo "FAIL: could not read state after the Phase 2.7a redeploy (#6537)" >&2
@@ -1178,8 +1180,8 @@ if [ "${ZONE_KEY_ID_AFTER}" != "${ZONE_KEY_ID_BEFORE}" ] || [ "${GROUP_ID_AFTER}
   echo "FAIL: the HostedZoneName -> HostedZoneId switch changed a physical id (#6537): ZoneKeyRecord '${ZONE_KEY_ID_BEFORE}' -> '${ZONE_KEY_ID_AFTER}', RecordGroup '${GROUP_PHYSICAL_ID}' -> '${GROUP_ID_AFTER}'" >&2
   exit 1
 fi
-if [ -z "${ZONE_KEY_RECORDED}" ]; then
-  echo "FAIL: ZoneKeyRecord's state does not record the switched HostedZoneId (#6537)" >&2
+if [ "${ZONE_KEY_RECORDED}" != "${GROUP_ZONE_ID}" ]; then
+  echo "FAIL: ZoneKeyRecord's state records HostedZoneId '${ZONE_KEY_RECORDED}', not the stack zone '${GROUP_ZONE_ID}' (#6537)" >&2
   exit 1
 fi
 expect_records "${NAME_RENAMED_RECORDS}" "zonekey.${ZONE_NAME}" A "" 1 "the zone-key switch left ZoneKeyRecord not live (#6537)"

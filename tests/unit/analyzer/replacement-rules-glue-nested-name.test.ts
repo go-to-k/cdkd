@@ -69,6 +69,10 @@ describe('recordSetGroupRecordZoneChanged (go-to-k/cdkd#6530)', () => {
     ['a record HostedZoneId changes', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), noGroupZone, true],
     ['a record HostedZoneName changes', rs({ HostedZoneName: 'a.com.' }), rs({ HostedZoneName: 'b.com.' }), noGroupZone, true],
     ['unchanged record zone', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
+    // go-to-k/cdkd#6537: a key switch on the records is checked by update(), not replaced.
+    ['a record name -> id switch', rs({ HostedZoneName: 'a.com.' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
+    ['a record id -> name switch', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneName: 'a.com.' }), noGroupZone, false],
+    ['a record id spelled with the prefix', rs({ HostedZoneId: '/hostedzone/Z1' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
     ['group zone on the old side', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), { oldProperties: { HostedZoneId: 'Z1' }, newProperties: {} }, false],
     ['group zone on the new side', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), { oldProperties: {}, newProperties: { HostedZoneName: 'x.' } }, false],
   ])('%s', (_label, oldValue, newValue, siblings, expected) => {

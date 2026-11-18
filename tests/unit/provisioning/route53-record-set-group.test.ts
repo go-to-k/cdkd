@@ -1482,4 +1482,54 @@ describe('Route53Provider RecordSetGroup zone-key switch (go-to-k/cdkd#6537)', (
     expect(changeInputs()).toHaveLength(1);
     expect(changeInputs()[0]!.HostedZoneId).toBe(ZONE);
   });
+
+  describe('a non-composite (imported) physicalId resolves the RECORDED zone', () => {
+    const imported = 'MyStack-Group-ABC';
+    const prev = (name: unknown) => ({ HostedZoneName: name, RecordSets: [rec()] });
+    const zoneNamed = (id: string) => ({
+      Id: `/hostedzone/${id}`,
+      Name: 'a.com.',
+      Config: { PrivateZone: false },
+    });
+    const run = (desired: Record<string, unknown>, previous: Record<string, unknown>) =>
+      provider.update(LOGICAL, imported, TYPE, desired, previous).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    it('recorded name -> Z_A, desired id Z_B: throws refused-before-applying, no change call', async () => {
+      route({ zones: [zoneNamed('Z_A')] });
+      const error = await run({ HostedZoneId: 'Z_B', RecordSets: [rec()] }, prev('a.com.'));
+      expect((error as Error).message).toMatch(/hosted zone differs/);
+      expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it('recorded name -> Z_A, desired id Z_A: proceeds in Z_A', async () => {
+      route({ zones: [zoneNamed('Z_A')] });
+      expect(await run({ HostedZoneId: 'Z_A', RecordSets: [rec({ TTL: '60' })] }, prev('a.com.'))).toBeUndefined();
+      expect(changeInputs()).toHaveLength(1);
+      expect(changeInputs()[0]!.HostedZoneId).toBe('Z_A');
+    });
+
+    it('recorded name matching two zones: throws refused-before-applying, no change call', async () => {
+      route({ zones: [zoneNamed('Z_A'), zoneNamed('Z_A2')] });
+      const error = await run({ HostedZoneId: 'Z_A', RecordSets: [rec()] }, prev('a.com.'));
+      expect((error as Error).message).toMatch(/cannot confirm/);
+      expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it.each([['***'], ['{{resolve:ssm:/x}}']])(
+      'recorded HostedZoneName %s: throws "redacted", no lookup, no change call',
+      async (name) => {
+        route({ zones: [zoneNamed('Z_A')] });
+        const error = await run({ HostedZoneId: 'Z_A', RecordSets: [rec()] }, prev(name));
+        expect((error as Error).message).toMatch(/redacted/);
+        expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+        expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+        expect(changeInputs()).toHaveLength(0);
+      }
+    );
+  });
 });

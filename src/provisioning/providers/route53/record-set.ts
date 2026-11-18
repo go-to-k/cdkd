@@ -32,6 +32,7 @@ import {
   recordIdentityChanged,
   bareHostedZoneId,
   zoneReferenceChanged,
+  recordedZoneForSwitch,
 } from './shared.js';
 
 // ─── AWS::Route53::RecordSet ───────────────────────────────────────
@@ -130,11 +131,15 @@ export async function updateRecordSet(
     const recordedZone =
       parsed && this.compositeAgreesWithTemplate(parsed, previousProperties)
         ? parsed.hostedZoneId
-        : undefined;
-    if (
-      recordedZone !== undefined &&
-      bareHostedZoneId(recordedZone) !== bareHostedZoneId(hostedZoneId)
-    ) {
+        : await recordedZoneForSwitch(
+            this,
+            previousProperties,
+            logicalId,
+            resourceType,
+            physicalId,
+            'Record set'
+          );
+    if (bareHostedZoneId(recordedZone) !== bareHostedZoneId(hostedZoneId)) {
       throw new ProvisioningError(
         `Record set ${logicalId}: the template's hosted zone (${hostedZoneId}) is not the one ` +
           `the record is in (${recordedZone}). Moving a record to another zone replaces it: ` +

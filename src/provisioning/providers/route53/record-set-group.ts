@@ -39,6 +39,7 @@ import {
   CNAME_CONFLICT_COLLISION_NOTE,
   bareHostedZoneId,
   zoneReferenceChanged,
+  recordedZoneForSwitch,
 } from './shared.js';
 
 // ─── AWS::Route53::RecordSetGroup ──────────────────────────────────
@@ -426,13 +427,31 @@ async function applyRecordSetGroupUpdate(
       subject: groupSubject,
     });
   }
+  // The zone the records are in: the cdkd id's, else (an id `cdkd import`
+  // adopted verbatim, where `hostedZoneId` above was resolved from the
+  // DESIRED side) the recorded reference's, which must resolve.
+  let recordedZone = hostedZoneId;
+  if (
+    !parseRecordSetGroupCompositeId(physicalId, logicalId) &&
+    !('refusal' in previousZone) &&
+    zoneReferenceChanged(previousZone.zone, zone)
+  ) {
+    recordedZone = await recordedZoneForSwitch(
+      this,
+      previousZone.zone,
+      logicalId,
+      resourceType,
+      physicalId,
+      'Record set group'
+    );
+  }
   if (
     desiredZone !== undefined &&
-    bareHostedZoneId(desiredZone) !== bareHostedZoneId(hostedZoneId)
+    bareHostedZoneId(desiredZone) !== bareHostedZoneId(recordedZone)
   ) {
     throw groupRefusalError(
       `Record set group ${logicalId}: the template's hosted zone differs from the one its ` +
-        `records are in (${hostedZoneId}). Moving a group to another zone replaces it: name ` +
+        `records are in (${recordedZone}). Moving a group to another zone replaces it: name ` +
         `the new zone with the key the group already uses (HostedZoneId or HostedZoneName) so ` +
         `cdkd plans the replacement`,
       logicalId,

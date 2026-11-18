@@ -684,6 +684,8 @@ const MESSAGE_SINK_FACTORIES: ReadonlySet<string> = new Set([
   'busHasRulesError',
   // Route53 RecordSetGroup's pre-call refusals (go-to-k/cdkd#6530).
   'groupRefusalError',
+  // Route 53's zone-key switch refusal (go-to-k/cdkd#6537).
+  'zoneSwitchRefusalError',
   'handleError',
   'wrapError',
   'wrapUpdateError',
