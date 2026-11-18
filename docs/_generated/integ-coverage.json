@@ -6224,6 +6224,7 @@
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
+        "imagebuilder-infra-update",
         "import-attribute-readback-misc",
         "propagation-races-2",
         "remove-protection"
@@ -6259,6 +6260,10 @@
           "l1"
         ],
         "iam-recreate-reattach": [
+          "l1",
+          "literal"
+        ],
+        "imagebuilder-infra-update": [
           "l1",
           "literal"
         ],
@@ -6471,6 +6476,7 @@
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
         "iam-sibling-managed-policy-drift",
+        "imagebuilder-infra-update",
         "import-attribute-readback",
         "import-attribute-readback-final",
         "import-attribute-readback-misc",
@@ -6746,6 +6752,9 @@
         "iam-sibling-managed-policy-drift": [
           "l2",
           "literal"
+        ],
+        "imagebuilder-infra-update": [
+          "l2"
         ],
         "import-attribute-readback": [
           "l2",
@@ -11048,6 +11057,7 @@
     "AWS::GuardDuty::Detector",
     "AWS::HealthImaging::Datastore",
     "AWS::IAM::RolePolicy",
+    "AWS::ImageBuilder::InfrastructureConfiguration",
     "AWS::IoT::TopicRule",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",

@@ -1627,6 +1627,11 @@
       "scenarios": []
     },
     {
+      "name": "imagebuilder-infra-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "import-attribute-readback",
       "annotated": true,
       "scenarios": [
@@ -4197,6 +4202,7 @@
     "iam-secret-derived-principals",
     "iam-sibling-managed-policy-drift",
     "iam-user-group-fix-forward-orphan",
+    "imagebuilder-infra-update",
     "import-noecho-parameter",
     "import-reimport-masked-attrs",
     "import-secret-observed",
