@@ -218,7 +218,20 @@ ARN3B="$(record '.physicalId')"
 EIP="$(live_eip_type)"
 [ "${EIP}" = "ServiceManaged" ] || { echo "FAIL (#6567): live ElasticIpConfiguration.Type is ${EIP}, expected ServiceManaged" >&2; exit 1; }
 [ "$(live .State)" = "ACTIVE" ] || { echo "FAIL (#6567): the connector is not ACTIVE after phase 3b" >&2; exit 1; }
-echo "    OK: same ARN, ElasticIpConfiguration.Type ServiceManaged"
+# The readback now carries the member: a live ServiceManaged against the
+# recorded one must compare clean.
+DRIFT_OUT="$(env CONNECTOR_NAME="${CONNECTOR_NAME}" SUBNET_IDS="${SUBNET_IDS_ALT}" SECURITY_GROUP_ID="${SECURITY_GROUP_ID}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 ELASTIC_IP_TYPE=ServiceManaged \
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
+  echo "${DRIFT_OUT}"
+  echo "FAIL (#6567): cdkd drift reported drift (or failed) with ElasticIpConfiguration ServiceManaged" >&2
+  exit 1
+}
+if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(2 resources checked, 0 unsupported)'; then
+  echo "${DRIFT_OUT}"
+  echo "FAIL (#6567): drift did not compare both resources -- expected '(2 resources checked, 0 unsupported)'" >&2
+  exit 1
+fi
+echo "    OK: same ARN, ElasticIpConfiguration.Type ServiceManaged, no drift"
 
 echo "==> Phase 3c: removing ElasticIpConfiguration from the template resets it to None (#6567)"
 # Measured: an UpdateNetworkConnector that omits the member keeps the live

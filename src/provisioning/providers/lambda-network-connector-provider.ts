@@ -449,23 +449,21 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
   /**
    * A connector reset to `{ Type: 'None' }` reads back with it, while one that
    * never had the member reads back without it (measured): the two are the
-   * same live state, so both drift sides drop a `None`.
+   * same live state. A `None` is dropped only when the OTHER side lacks the
+   * member, so a declared `None` against a live `ServiceManaged` still drifts
+   * (a dropped baseline `None` would leave nothing for a baseline-key walk to
+   * compare).
    */
-  canonicalizeDriftProperties(
+  async canonicalizeDriftPair(
     _resourceType: string,
-    properties: Record<string, unknown>
-  ): Record<string, unknown> {
-    const config = properties['Configuration'];
-    if (!isPlainRecord(config)) return properties;
-    const vpc = config['VpcEgressConfiguration'];
-    if (!isPlainRecord(vpc)) return properties;
-    const eip = vpc[ELASTIC_IP_KEY];
-    if (!isPlainRecord(eip) || eip['Type'] !== 'None') return properties;
-    const { [ELASTIC_IP_KEY]: _dropped, ...rest } = vpc;
-    // Computed keys: a named member in a spread-and-patch literal reads to
-    // gen-nested-key-coverage as a whole-blob hand-off of that path.
-    const [configKey, vpcKey] = ['Configuration', 'VpcEgressConfiguration'];
-    return { ...properties, [configKey]: { ...config, [vpcKey]: rest } };
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const b = declaredElasticIp(baseline);
+    const a = declaredElasticIp(aws);
+    if (isNoneElasticIp(b) && a === undefined) return { baseline: withoutElasticIp(baseline), aws };
+    if (isNoneElasticIp(a) && b === undefined) return { baseline, aws: withoutElasticIp(aws) };
+    return { baseline, aws };
   }
 
   // -- helpers -------------------------------------------------------------
@@ -517,9 +515,9 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
 
   /**
    * `Configuration.VpcEgressConfiguration.ElasticIpConfiguration`, or
-   * `undefined` when absent. A declared value that is not an object with a
-   * string `Type` is refused on a template path, and omitted with a warning on
-   * a state-borne bag, like {@link readOperatorRole}.
+   * `undefined` when absent. A declared value that is not an object whose
+   * `Type` is `None` or `ServiceManaged` is refused on a template path, and
+   * omitted with a warning on a state-borne bag, like {@link readOperatorRole}.
    */
   private readElasticIp(
     properties: Record<string, unknown>,
@@ -530,12 +528,18 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
   ): ElasticIpConfiguration | undefined {
     const eip = declaredElasticIp(properties);
     if (eip === undefined) return undefined;
-    if (isPlainRecord(eip) && typeof eip['Type'] === 'string') {
+    // An unknown Type is refused here too: on an update the tags are written
+    // before the configuration call, so AWS's own refusal would land after them.
+    if (
+      isPlainRecord(eip) &&
+      typeof eip['Type'] === 'string' &&
+      ELASTIC_IP_TYPES.has(eip['Type'])
+    ) {
       return { Type: eip['Type'] as ElasticIpType };
     }
     const message =
-      `Configuration.VpcEgressConfiguration.${ELASTIC_IP_KEY} must be an object with a string Type ` +
-      `for Lambda network connector ${logicalIdShown(logicalId)}`;
+      `Configuration.VpcEgressConfiguration.${ELASTIC_IP_KEY} must be an object whose Type is ` +
+      `${[...ELASTIC_IP_TYPES].join(' or ')} for Lambda network connector ${logicalIdShown(logicalId)}`;
     const stateBorne =
       context?.replayingState === true ||
       (context !== undefined &&
@@ -720,11 +724,29 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
 
 const ELASTIC_IP_KEY = 'ElasticIpConfiguration';
 
+/** The `Type` values `ElasticIpType` admits; anything else AWS refuses. */
+const ELASTIC_IP_TYPES: ReadonlySet<string> = new Set<ElasticIpType>(['None', 'ServiceManaged']);
+
 /** The declared `ElasticIpConfiguration`, or `undefined` when the template omits it. */
 function declaredElasticIp(properties: Record<string, unknown>): unknown {
   const config = properties['Configuration'];
   const vpc = isPlainRecord(config) ? config['VpcEgressConfiguration'] : undefined;
   return isPlainRecord(vpc) ? vpc[ELASTIC_IP_KEY] : undefined;
+}
+
+function isNoneElasticIp(value: unknown): boolean {
+  return isPlainRecord(value) && value['Type'] === 'None';
+}
+
+/** `properties` without `ElasticIpConfiguration`, copied, the input untouched. */
+function withoutElasticIp(properties: Record<string, unknown>): Record<string, unknown> {
+  const config = properties['Configuration'] as Record<string, unknown>;
+  const vpc = config['VpcEgressConfiguration'] as Record<string, unknown>;
+  const { [ELASTIC_IP_KEY]: _dropped, ...rest } = vpc;
+  // Computed keys: a named member in a spread-and-patch literal reads to
+  // gen-nested-key-coverage as a whole-blob hand-off of that path.
+  const [configKey, vpcKey] = ['Configuration', 'VpcEgressConfiguration'];
+  return { ...properties, [configKey]: { ...config, [vpcKey]: rest } };
 }
 
 /**

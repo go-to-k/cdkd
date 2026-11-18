@@ -160,7 +160,7 @@ const VPC_EGRESS_REQUIRED: Throw = {
 
 const ELASTIC_IP_TYPE_REQUIRED: Throw = {
   why: 'ElasticIpConfiguration.Type is required by the schema; a block without it is refused before any call',
-  says: /ElasticIpConfiguration must be an object with a string Type/,
+  says: /ElasticIpConfiguration must be an object whose Type is None or ServiceManaged/,
 };
 
 /** A Tags entry without its Key: refused before any call. */

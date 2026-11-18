@@ -88,10 +88,9 @@ export class LambdaNetworkConnectorStack extends cdk.Stack {
     });
     // The connector's ENIs are created with the operator role's permissions.
     connector.node.addDependency(operatorRole);
-    // ELASTIC_IP_PROBE declares a member no @aws-sdk/client-lambda-core
-    // release models (#5123). cdkd must REFUSE the deploy before any call;
-    // before that it dropped the member and reported success. The value is
-    // never sent, so its spelling does not matter (the schema leaves it untyped).
+    // ELASTIC_IP_TYPE declares ElasticIpConfiguration with that Type, which cdkd
+    // sends on create and update (#6567); a later deploy without it must reset
+    // the live value to None.
     const elasticIpType = process.env['ELASTIC_IP_TYPE'];
     if (elasticIpType) {
       connector.addPropertyOverride('Configuration.VpcEgressConfiguration.ElasticIpConfiguration', {

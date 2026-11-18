@@ -534,7 +534,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
           VpcEgressConfiguration: Record<string, unknown>;
         }
       ).VpcEgressConfiguration['ElasticIpConfiguration'];
-    const MALFORMED = /ElasticIpConfiguration must be an object with a string Type/;
+    const MALFORMED = /ElasticIpConfiguration must be an object whose Type is None or ServiceManaged/;
     const allOk = () =>
       respond(
         new Map<string, unknown[]>([
@@ -571,11 +571,22 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
       // An already-None previous value has nothing to reset.
       await provider.update('Nc', ARN, TYPE, props, withEip({ Type: 'None' }));
       expect(sentEip(UpdateNetworkConnectorCommand, 1)).toBeUndefined();
+      // A malformed previous value (a record no template path could write) is
+      // reset too: what it left live is unknown.
+      await provider.update('Nc', ARN, TYPE, props, withEip('AUTO'));
+      expect(sentEip(UpdateNetworkConnectorCommand, 2)).toEqual({ Type: 'None' });
+      // Declaring None on a connector that never had one is sent as declared;
+      // AWS answers "No configuration changes detected" (measured).
+      await provider.update('Nc', ARN, TYPE, withEip({ Type: 'None' }), props);
+      expect(sentEip(UpdateNetworkConnectorCommand, 3)).toEqual({ Type: 'None' });
     });
 
     it('a malformed value is refused on the template path before any call', async () => {
       await expect(provider.create('Nc', TYPE, withEip('AUTO'))).rejects.toThrow(MALFORMED);
       await expect(provider.create('Nc', TYPE, withEip({ Type: 1 }))).rejects.toThrow(MALFORMED);
+      // A Type outside the enum: AWS would refuse it only after an update's tag writes.
+      await expect(provider.create('Nc', TYPE, withEip({ Type: 'AUTO' }))).rejects.toThrow(MALFORMED);
+      await expect(provider.update('Nc', ARN, TYPE, withEip({ Type: 'AUTO' }), props)).rejects.toThrow(MALFORMED);
       await expect(provider.update('Nc', ARN, TYPE, withEip('AUTO'), props)).rejects.toThrow(MALFORMED);
       expect(mockSend).not.toHaveBeenCalled();
     });
@@ -615,11 +626,18 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
       expect(read['Configuration']).toEqual(withEip({ Type: 'ServiceManaged' }).Configuration);
 
       const none = withEip({ Type: 'None' });
-      expect(provider.canonicalizeDriftProperties(TYPE, none)).toEqual(props);
-      expect(none.Configuration.VpcEgressConfiguration).toHaveProperty('ElasticIpConfiguration');
       const managed = withEip({ Type: 'ServiceManaged' });
-      expect(provider.canonicalizeDriftProperties(TYPE, managed)).toBe(managed);
-      expect(provider.canonicalizeDriftProperties(TYPE, props)).toBe(props);
+      // None against absent, either way round: the same live state.
+      await expect(provider.canonicalizeDriftPair(TYPE, props, none)).resolves.toEqual({ baseline: props, aws: props });
+      await expect(provider.canonicalizeDriftPair(TYPE, none, props)).resolves.toEqual({ baseline: props, aws: props });
+      expect(none.Configuration.VpcEgressConfiguration).toHaveProperty('ElasticIpConfiguration');
+      // A declared None against a live ServiceManaged keeps both sides, so the
+      // drift is still seen on a baseline-key walk; nothing applies -> identity.
+      const pair = await provider.canonicalizeDriftPair(TYPE, none, managed);
+      expect(pair.baseline).toBe(none);
+      expect(pair.aws).toBe(managed);
+      const same = await provider.canonicalizeDriftPair(TYPE, props, props);
+      expect(same.baseline).toBe(props);
     });
   });
 
