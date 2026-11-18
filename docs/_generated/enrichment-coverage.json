@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 142,
+    "classifiedCount": 145,
     "enriched": 50,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 74,
-    "allowListedTypes": 88
+    "sdkFallbackGap": 77,
+    "allowListedTypes": 89
   },
   "types": [
     {
@@ -2561,6 +2561,96 @@
         "RevisionId",
         "State",
         "StateReason"
+      ]
+    },
+    {
+      "resourceType": "AWS::Logs::Delivery",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "DeliveryDestinationType",
+        "DeliveryId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "DeliveryDestinationType",
+          "status": "gap"
+        },
+        {
+          "name": "DeliveryId",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "DeliveryDestinationType"
+      ]
+    },
+    {
+      "resourceType": "AWS::Logs::DeliveryDestination",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
+    },
+    {
+      "resourceType": "AWS::Logs::DeliverySource",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn",
+        "ResourceArns",
+        "Service",
+        "Status",
+        "StatusReason"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        },
+        {
+          "name": "ResourceArns",
+          "status": "gap"
+        },
+        {
+          "name": "Service",
+          "status": "gap"
+        },
+        {
+          "name": "Status",
+          "status": "gap"
+        },
+        {
+          "name": "StatusReason",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn",
+        "ResourceArns",
+        "Service",
+        "Status",
+        "StatusReason"
       ]
     },
     {

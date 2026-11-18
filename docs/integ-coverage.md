@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run integ-coverage` to regenerate.
 
-**141 / 142 registered SDK Providers** have at least one integ fixture exercising them. 1 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 0 are orphans — registered with neither an integ nor an allow-list rationale.
+**141 / 145 registered SDK Providers** have at least one integ fixture exercising them. 1 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 3 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -21,9 +21,15 @@ For each fixture under `tests/integration/<name>/`, the script scans `lib/*.ts` 
 
 L2 detection is a hand-curated lower bound — a missed L2 wrapper produces a false-negative ("type appears uncovered"). When you add a fixture that uses an L2 the matrix does not see, extend `CDK_L2_TO_L1` in [scripts/build-integ-coverage-matrix.ts](https://github.com/go-to-k/cdkd/blob/main/scripts/build-integ-coverage-matrix.ts).
 
-## Orphan providers
+## Orphan providers (3)
 
-_None._ Every registered SDK Provider has at least one integ fixture or an explicit `// allow-no-integ:` rationale.
+These SDK Providers are registered but have NO integ fixture exercising them and NO `// allow-no-integ:` rationale. Each is a real-AWS verification gap — a refactor that breaks one will not surface in any existing integ run. Either back the type with a fixture (literal type id, `Cfn<Type>(` L1, or extend the L2 lookup table) or add a rationale comment on the register line.
+
+| Resource Type |
+|---|
+| `AWS::Logs::Delivery` |
+| `AWS::Logs::DeliveryDestination` |
+| `AWS::Logs::DeliverySource` |
 
 ## Allow-listed providers (1)
 
