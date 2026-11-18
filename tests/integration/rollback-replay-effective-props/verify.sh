@@ -828,12 +828,24 @@ route_live() { # usage: route_live <destination> -- prints the route's destinati
   aws ec2 describe-route-tables --route-table-ids "${ROUTE_TABLE_ID}" \
     --query "RouteTables[0].Routes[?DestinationCidrBlock=='$1'].DestinationCidrBlock" --output text
 }
+# DescribeRouteTables can lag a delete-route or a rollback's route change, so a
+# route's presence is read on a short bounded schedule. Each read is captured
+# under errexit, so a failed describe stops the run instead of reading as "absent".
+route_settles() { # usage: route_settles <destination> present|absent -- rc 0 once it does
+  local want="$2" live attempt
+  for attempt in $(seq 1 10); do
+    live="$(route_live "$1")"
+    if [ "${want}" = "present" ] && [ "${live}" = "$1" ]; then return 0; fi
+    if [ "${want}" = "absent" ] && [ -z "${live}" ]; then return 0; fi
+    sleep 3
+  done
+  return 1
+}
 # Both copies of each route must be live: the new one proves the replacement
 # COMPLETED (else the rollback would see a failed or absent CREATE), the old one
 # that its delete was deferred.
 for d in "${DEST_V1}" "${DEST_V2}" "${READOPT_DEST_V1}" "${READOPT_DEST_V2}"; do
-  live="$(route_live "${d}")"
-  if [ "${live}" != "${d}" ]; then
+  if ! route_settles "${d}" present; then
     echo "FAIL: phase 3b: the route to ${d} is not live in ${ROUTE_TABLE_ID} after the failed deploy." >&2
     echo "      Both copies of each replaced route must be: a missing OLD copy means the" >&2
     echo "      replacement's delete no longer waits for the cleanup phase (#6374), and this" >&2
@@ -875,8 +887,9 @@ if [ "${INGRESS_V2_LIVE}" != "${INGRESS_V1_ID}" ]; then
 fi
 aws ec2 revoke-security-group-ingress --group-id "${INGRESS_SG_ID}" \
   --security-group-rule-ids "${INGRESS_V1_ID}" >/dev/null
-if [ -n "$(live_ingress_rule_ids)" ]; then
-  echo "FAIL: phase 3b: ${INGRESS_V1_ID} survived its out-of-band revoke" >&2
+INGRESS_REVOKED_LIVE="$(live_ingress_rule_ids)"
+if [ -n "${INGRESS_REVOKED_LIVE}" ]; then
+  echo "FAIL: phase 3b: ${INGRESS_V1_ID} survived its out-of-band revoke (live: ${INGRESS_REVOKED_LIVE})" >&2
   exit 1
 fi
 
@@ -903,10 +916,16 @@ for t in ${OLD_TABLES}; do
 done
 assert_gone_eventually "phase 3b: bucket ${BUCKET_V1} survived its out-of-band delete" \
   aws s3api head-bucket --bucket "${BUCKET_V1}"
-live="$(route_live "${DEST_V1}")"
-if [ -n "${live}" ]; then
+if ! route_settles "${DEST_V1}" absent; then
   echo "FAIL: phase 3b: the route to ${DEST_V1} survived its out-of-band delete" >&2
   exit 1
+fi
+if [ "${MULTI_REGION}" = "1" ]; then
+  # What #3569's replica-add wait meets: the home table is gone, but its copy in
+  # the replica region can still be DELETING. Printed, not asserted; AWS decides.
+  XR_V1_REMOTE="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" --region "${XR_REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1 || true)"
+  echo "[verify] phase 3b: NOTE ${XR_REGION} copy of ${GTX_NAME_V1} before the rollback: ${XR_V1_REMOTE}"
 fi
 echo "[verify] phase 3b: OK (old copies were live; route ${DEST_V1}, ${OLD_TABLES} and ${BUCKET_V1} now gone)"
 
@@ -1078,15 +1097,13 @@ if [ "${POST_READOPT_ID}" != "${ROUTE_TABLE_ID}|${READOPT_DEST_V1}" ]; then
   exit 1
 fi
 for d in "${DEST_V1}" "${READOPT_DEST_V1}"; do
-  live="$(route_live "${d}")"
-  if [ "${live}" != "${d}" ]; then
+  if ! route_settles "${d}" present; then
     echo "FAIL: phase 4: the route to ${d} is not live after the rollback" >&2
     exit 1
   fi
 done
 for d in "${DEST_V2}" "${READOPT_DEST_V2}"; do
-  live="$(route_live "${d}")"
-  if [ -n "${live}" ]; then
+  if ! route_settles "${d}" absent; then
     echo "FAIL: phase 4: the replacement route to ${d} survived the rollback" >&2
     exit 1
   fi

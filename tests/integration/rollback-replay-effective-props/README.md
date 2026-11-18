@@ -29,7 +29,9 @@ alive and re-adopts it, which never reaches the re-create arm above (issue
 under `--no-rollback`, phase 3b deletes the old copies out of band, and phase
 3c's `cdkd rollback` reads each one as gone and re-creates it.
 `ReadoptRoute`, a second route replaced in the same deploy, keeps its old copy,
-so the same rollback also covers the re-adopt arm.
+so the same rollback also covers the re-adopt arm. The re-create arm inside
+the deploy's own automatic rollback is no longer reached by this fixture: that
+rollback runs before anything could delete the old copies.
 
 ## The engine subject and the per-provider subjects
 
