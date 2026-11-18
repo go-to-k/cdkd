@@ -1069,6 +1069,8 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
     const PINNED: readonly string[] = [
       "cannot be assumed",
       "Firehose is unable to assume role",
+      // Issue #6559 — see its EXAMINED_NON_FRONT_DOOR entry below.
+      "AWS IoT (iot.amazonaws.com) is unable to assume role",
       "is unable to assume provided role",
       "is unable to assume the role",
       "security token included in the request is invalid. (Service:",
@@ -1180,12 +1182,18 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // `(Service: Ecs,` trailer, which a Lambda `Invoke` or SNS `Publish`
       // rejection (cdkd's JS SDK, those services' own errors) cannot carry.
       'AWS was not able to validate the provided access credentials (Service: Ecs,',
+      // Issue #6559, argument (a) for both `Invoke` and `Publish`. The IoT
+      // topic rule handler rejecting a same-stack action role under Cloud
+      // Control, after its own request was accepted. Unreachable here: the
+      // whole substring opens with IoT's own service name and principal,
+      // which no CR `Invoke` or SNS `Publish` failure carries.
+      'AWS IoT (iot.amazonaws.com) is unable to assume role',
     ];
     // Cardinality FIRST, and asserted rather than derived: an empty list
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(7);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(8);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);
