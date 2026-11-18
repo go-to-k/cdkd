@@ -70,6 +70,12 @@ import {
 // same shape (`generateResourceName`), and an imported group keeps
 // CloudFormation's own name (go-to-k/cdkd#6530). Neither segment can carry `|`.
 
+/** The usable entries of `RecordSets` (none when it is not a list). */
+function listedRecords(properties: Record<string, unknown>): Record<string, unknown>[] {
+  const parsed = groupRecordSets(properties);
+  return 'refusal' in parsed ? [] : parsed.records;
+}
+
 /**
  * The group shapes CloudFormation refuses (go-to-k/cdkd#6540, measured):
  * - a zone key on a `RecordSets` entry ("Encountered unsupported property
@@ -110,7 +116,10 @@ function refuseCfnGroupZoneShape(
         `specified (the group names ${zoneKeys.length === 0 ? 'neither' : 'both'})`
     );
   }
-  if (records.length === 0) {
+  // Only an absent or empty list is "empty"; a malformed one keeps
+  // `desiredGroup`'s own message.
+  const listed = properties['RecordSets'];
+  if (listed === undefined || listed === null || (Array.isArray(listed) && listed.length === 0)) {
     refuse(`Record set group ${logicalId}: RecordSets cannot be empty`);
   }
   refuseCfnUnresolvableZoneName(
@@ -177,17 +186,20 @@ export async function createRecordSetGroup(
 ): Promise<ResourceCreateResult> {
   this.logger.debug(safeMsg`Creating Route 53 record set group ${logicalId}`);
 
-  const { records, zone } = desiredGroup(properties, logicalId, undefined);
+  // CloudFormation's own refusals first, then cdkd's shape checks.
   refuseCfnGroupZoneShape(
     this,
     properties,
-    records,
+    listedRecords(properties),
     logicalId,
     resourceType,
     undefined,
     replayingState
   );
-  // Unambiguous, as CloudFormation: a split-horizon name is refused (#6540).
+  const { records, zone } = desiredGroup(properties, logicalId, undefined);
+  // Unambiguous, as CloudFormation: a split-horizon name is refused (#6540),
+  // on a replay too (the stated exception: the alternative is guessing the
+  // zone the records are written into).
   const hostedZoneId = await this.resolveHostedZoneId(zone, logicalId, resourceType, undefined, {
     requireUnambiguousZoneName: true,
     subject: groupSubject,
@@ -311,16 +323,16 @@ async function applyRecordSetGroupUpdate(
 ): Promise<ResourceUpdateResult> {
   this.logger.debug(safeMsg`Updating Route 53 record set group ${logicalId}: ${physicalId}`);
 
-  const { records, zone } = desiredGroup(properties, logicalId, physicalId);
   refuseCfnGroupZoneShape(
     this,
     properties,
-    records,
+    listedRecords(properties),
     logicalId,
     resourceType,
     physicalId,
     context?.replayingState === true || context?.desiredFromAwsReadback === true
   );
+  const { records, zone } = desiredGroup(properties, logicalId, physicalId);
 
   // The previous side is a cdkd STATE record (or, on `drift --revert`, a
   // readback). A record in it cdkd cannot identify would make the batch below

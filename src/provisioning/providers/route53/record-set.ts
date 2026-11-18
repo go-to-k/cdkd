@@ -57,7 +57,10 @@ export async function createRecordSet(
     replayingState
   );
   // Unambiguous, as CloudFormation: a name shared by a public and a private
-  // zone is refused ("specify HostedZoneId"), never guessed (#6540).
+  // zone is refused ("specify HostedZoneId"), never guessed (#6540). NOT
+  // downgraded on a replay (`replayingState`), the stated exception to the
+  // replay rule: the only alternative is guessing which zone to write the
+  // record into, and a wrong guess leaves a live record no state tracks.
   const hostedZoneId = await this.resolveHostedZoneId(
     properties,
     logicalId,
@@ -143,13 +146,19 @@ export async function updateRecordSet(
     physicalId,
     stateBorne
   );
-  const hostedZoneId = await this.resolveHostedZoneId(
-    properties,
-    logicalId,
-    resourceType,
-    physicalId,
-    { requireUnambiguousZoneName: true }
-  );
+  // A state-borne update (rollback replay, drift revert) of a cdkd id writes
+  // to the zone the id names: re-resolving a name there could only refuse
+  // (a split-horizon name, #6540) or guess, and neither restores the record.
+  const recordedComposite = parseRecordSetCompositeId(physicalId);
+  const hostedZoneId =
+    stateBorne &&
+    recordedComposite &&
+    !zoneReferenceChanged(previousProperties, properties) &&
+    this.compositeAgreesWithTemplate(recordedComposite, previousProperties)
+      ? recordedComposite.hostedZoneId
+      : await this.resolveHostedZoneId(properties, logicalId, resourceType, physicalId, {
+          requireUnambiguousZoneName: true,
+        });
 
   // go-to-k/cdkd#6537: a switch between `HostedZoneName` and `HostedZoneId`
   // is not a replacement (CloudFormation updates it in place), so it reaches

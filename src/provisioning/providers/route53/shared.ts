@@ -442,8 +442,8 @@ export function refuseCfnUnresolvableZoneName(
   if (value.endsWith('.') && value === value.toLowerCase()) return;
   const message =
     `${noun} ${logicalId}: HostedZoneName ${zoneNameShown(value)} is not the zone's exact ` +
-    `name; CloudFormation resolves only the lower-case name with its trailing dot ` +
-    `(${zoneNameShown(`${value.replace(/\.$/, '').toLowerCase()}.`)}), and fails this one`;
+    `name; CloudFormation resolves only the zone's lower-case name with its trailing dot, ` +
+    `and fails this one`;
   if (stateBorne) {
     provider.logger.warn(safeMsg`${message}. Resolving it anyway for this state replay.`);
     return;

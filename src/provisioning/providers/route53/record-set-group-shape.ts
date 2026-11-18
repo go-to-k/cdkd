@@ -93,7 +93,7 @@ export function existingGroupName(physicalId: string, logicalId: string): string
 /**
  * The group's `RecordSets` as a list of record bags, or a refusal message
  * when the list (or one entry) is not usable. An ABSENT list is the empty
- * list: CloudFormation does not require the property.
+ * list here; a template path refuses one, as CloudFormation does (#6540).
  */
 export function groupRecordSets(
   properties: Record<string, unknown> | undefined

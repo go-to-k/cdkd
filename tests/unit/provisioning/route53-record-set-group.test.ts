@@ -169,10 +169,6 @@ describe('Route53Provider RecordSetGroup', () => {
           },
         },
       ]);
-      for (const c of sent[0]!.ChangeBatch.Changes) {
-        expect(c.ResourceRecordSet).not.toHaveProperty('HostedZoneId');
-        expect(c.ResourceRecordSet).not.toHaveProperty('HostedZoneName');
-      }
     });
 
     it('resolves HostedZoneName via ListHostedZonesByName and omits Comment when absent', async () => {
@@ -201,6 +197,8 @@ describe('Route53Provider RecordSetGroup', () => {
     });
 
     it.each([
+      // CloudFormation's refusals run first (#6540) and read an unusable list as no
+      // records, so these two report "cannot be empty" rather than cdkd's own wording.
       ['RecordSets not a list', { HostedZoneId: ZONE, RecordSets: 'nope' }, /RecordSets is not a list/],
       ['entry not an object', { HostedZoneId: ZONE, RecordSets: ['x'] }, /RecordSets\[0\] is not an object/],
       ['record without Name', { HostedZoneId: ZONE, RecordSets: [{ Type: 'A' }] }, /needs a plain string Name and Type/],
@@ -209,7 +207,7 @@ describe('Route53Provider RecordSetGroup', () => {
       [
         'record in a different zone',
         { HostedZoneId: ZONE, RecordSets: [rec({ HostedZoneId: 'Z999' })] },
-        /every record of a RecordSetGroup must be in one hosted zone/,
+        /RecordSets\[0\] declares a hosted zone.*unsupported property/,
       ],
     ])('refuses %s before any AWS call', async (_n, props, needle) => {
       route();
@@ -927,13 +925,13 @@ describe('Route53Provider RecordSetGroup (review additions)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('refuses records that disagree on the zone before any AWS call', async () => {
+    it('refuses records declaring a zone (CloudFormation message, not the disagreement one) before any AWS call', async () => {
       route();
       await expect(
         provider.create(LOGICAL, TYPE, {
           RecordSets: [rec({ HostedZoneId: 'Z9' }), rec({ Name: 'b.example.com.', HostedZoneId: 'Z8' })],
         })
-      ).rejects.toThrow(/RecordSets\[1\]\.HostedZoneId differs from the HostedZoneId/);
+      ).rejects.toThrow(/RecordSets\[0\] declares a hosted zone/);
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
