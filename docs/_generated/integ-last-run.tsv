@@ -54,7 +54,7 @@ cc-to-sdk-reroute	2026-11-03T04:12:32Z	PASS	210	verify.sh	rc ok, orph clean, 475
 cc-to-sdk-reroute-cloudfront-distribution	2026-11-18T01:46:29Z	PASS	666	verify.sh	rc ok, orph clean; phase 7 replay restore (pre-fix probe red at phase 7)
 cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-10	2026-11-17T16:32:48Z	PASS	191	verify.sh	rc ok, orph clean
-cc-to-sdk-reroute-common-types-11	2026-11-18T01:23:40Z	PASS	1989	verify.sh	rc ok, orph clean
+cc-to-sdk-reroute-common-types-11	2026-11-18T04:18:23Z	PASS	2545	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
@@ -366,7 +366,7 @@ pipes-input-template-removal	2026-11-13T18:07:10Z	PASS	115	verify.sh	rc ok, orph
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-11-05T10:06:21Z	PASS	101	verify.sh	rc 0, 0 orphans, own state bucket, on cognito sms retry branch
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-18T02:10:34Z	PASS	4791	verify.sh	rc 0, 0 orphans; #6517 poll interrupt/deadline
+rds-aurora	2026-11-18T04:58:35Z	PASS	4961	verify.sh	rc 0, 0 orphans; #6522 delete wait
 rds-dbcluster-pitr-restore	2026-11-13T12:45:42Z	PASS	501	verify.sh	rc ok, orph clean (#6212 RDS wait delegators to base class)
 rds-dbinstance-additional-storage-volumes	2026-11-12T04:20:11Z	PASS	2256	verify.sh	rc ok, orph clean; sqlserver-se us-east-1, 4 phases sdk route
 rds-dbinstance-backfill	2026-11-09T06:52:36Z	PASS	4822	verify.sh	rc ok, orph clean; #5640 SourceRegion cross-region replica (us-west-2 source) sdk-routed
