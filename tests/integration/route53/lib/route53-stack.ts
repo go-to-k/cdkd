@@ -292,8 +292,11 @@ export class Route53Stack extends cdk.Stack {
     recordGroup.node.addDependency(zone);
     // Phase 2.7c fails the deploy only after the group's CNAME -> A update has
     // landed, so the rollback it asserts must really undo the group.
-    const failingQueue = this.node.tryFindChild('FailingQueue') as sqs.CfnQueue | undefined;
-    failingQueue?.addDependency(recordGroup);
+    if (renameModes.includes('inject-fail')) {
+      const failingQueue = this.node.tryFindChild('FailingQueue') as sqs.CfnQueue | undefined;
+      if (!failingQueue) throw new Error('inject-fail mode declares no FailingQueue');
+      failingQueue.addDependency(recordGroup);
+    }
 
     // Outputs
     new cdk.CfnOutput(this, 'HostedZoneId', {

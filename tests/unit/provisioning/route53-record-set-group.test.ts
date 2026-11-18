@@ -45,7 +45,9 @@ import {
   GetHostedZoneCommand,
 } from '@aws-sdk/client-route-53';
 import {
+  isRefusedBeforeApplying,
   priorAttemptLookup,
+  priorAttemptsInJournal,
   withPriorAttempts,
   type PriorAttemptLookup,
 } from '../../../src/deployment/prior-attempt-scope.js';
@@ -1217,6 +1219,169 @@ describe('Route53Provider RecordSetGroup (round 2)', () => {
           { expectedRegion: 'eu-west-1' }
         )
       ).rejects.toThrow(/eu-west-1/);
+      expect(changeInputs()).toHaveLength(0);
+    });
+  });
+});
+
+describe('Route53Provider RecordSetGroup (round 3: refused before applying)', () => {
+  let provider: Route53Provider;
+  const props = (records: Record<string, unknown>[]) => ({ HostedZoneId: ZONE, RecordSets: records });
+  const added = { Name: 'new.example.com', Type: 'A', TTL: 300, ResourceRecords: ['192.0.2.1'] };
+  const liveSame = {
+    Name: 'new.example.com.',
+    Type: 'A',
+    TTL: 300,
+    ResourceRecords: [{ Value: '192.0.2.1' }],
+  };
+  const withFault = (e: Error, fault: string): Error => {
+    (e as unknown as { $fault: string }).$fault = fault;
+    return e;
+  };
+  const exists = () =>
+    withFault(awsError('InvalidChangeBatch', 'Tried to create resource record set but it already exists'), 'client');
+
+  /** Run an UPDATE adding `added` (a send) under `evidence`; resolves the thrown error and the bound lookup. */
+  async function runAdd(evidence: Parameters<typeof withEvidence>[0]) {
+    const out: { lookup?: PriorAttemptLookup } = {};
+    const error = await withEvidence(
+      evidence,
+      () => provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()])),
+      out
+    ).catch((e: unknown) => e);
+    return { error, lookup: out.lookup! };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    childLogger.child.mockReturnValue(childLogger);
+    provider = new Route53Provider();
+  });
+
+  it('marks a client-refused send and leaves possiblyLanded false', async () => {
+    route({ change: () => { throw exists(); } });
+    const { error, lookup } = await runAdd('none');
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+    expect(isRefusedBeforeApplying(error, 'Other')).toBe(false);
+    expect(lookup.possiblyLanded()).toBe(false);
+    expect(changeInputs()).toHaveLength(1);
+  });
+
+  it.each([
+    ['$fault server', () => withFault(awsError('InternalFailure', 'boom'), 'server')],
+    ['a plain Error', () => new Error('socket hang up')],
+  ])('does not mark a send failing with %s and sets possiblyLanded', async (_n, make) => {
+    route({ change: () => { throw make(); } });
+    const { error, lookup } = await runAdd('none');
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(false);
+    expect(lookup.possiblyLanded()).toBe(true);
+  });
+
+  it('marks a pre-send refusal (unreadable recorded identity) without possiblyLanded', async () => {
+    route();
+    const out: { lookup?: PriorAttemptLookup } = {};
+    const error = await withEvidence(
+      'none',
+      () => provider.update(LOGICAL, COMPOSITE, TYPE, props([rec()]), props([rec({ Name: '***' })])),
+      out
+    ).catch((e: unknown) => e);
+    expect(String((error as Error).message)).toMatch(/no readable Name/);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+    expect(out.lookup!.possiblyLanded()).toBe(false);
+    expect(changeInputs()).toHaveLength(0);
+  });
+
+  it('marks a pre-send ListResourceRecordSets failure without $fault', async () => {
+    route({ listError: new Error('connect ETIMEDOUT') });
+    const out: { lookup?: PriorAttemptLookup } = {};
+    // the removed record is looked up live before any send
+    const error = await withEvidence(
+      'none',
+      () =>
+        provider.update(
+          LOGICAL,
+          COMPOSITE,
+          TYPE,
+          props([rec()]),
+          props([rec(), rec({ Name: 'gone.example.com.' })])
+        ),
+      out
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+    expect(out.lookup!.possiblyLanded()).toBe(false);
+    expect(changeInputs()).toHaveLength(0);
+  });
+
+  it('does not mark a client refusal when possiblyLanded was already true', async () => {
+    route({ change: () => { throw exists(); } });
+    const { error, lookup } = await runAdd('landed');
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(false);
+    expect(lookup.possiblyLanded()).toBe(true);
+  });
+
+  describe('two-deploy scenario', () => {
+    /** The journal the engine writes for a failed UPDATE: the bag only when the error is not refused-before-applying. */
+    const journalOf = (error: unknown, attempted: Record<string, unknown>) =>
+      ({
+        version: 1,
+        segments: [
+          {
+            timestamp: 1,
+            reason: 'no-rollback-failure',
+            operations: [],
+            failedOperations: [
+              {
+                logicalId: LOGICAL,
+                resourceType: TYPE,
+                changeType: 'UPDATE',
+                ...(isRefusedBeforeApplying(error, LOGICAL) ? {} : { attemptedProperties: attempted }),
+              },
+            ],
+          },
+        ],
+      }) as never;
+
+    it('a refused "already exists" deploy leaves no evidence, so deploy 2 sends CREATE over the identical live record', async () => {
+      route({ change: () => { throw exists(); } });
+      const deploy1 = await runAdd('none');
+      expect(isRefusedBeforeApplying(deploy1.error, LOGICAL)).toBe(true);
+      const bags = priorAttemptsInJournal(
+        journalOf(deploy1.error, props([rec(), added])),
+        LOGICAL,
+        TYPE
+      );
+      expect(bags).toEqual([]);
+
+      mockSend.mockReset();
+      route({ liveRecords: [liveSame] });
+      await withEvidence(bags, () =>
+        provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]))
+      );
+      expect(calls(ListResourceRecordSetsCommand)).toHaveLength(0);
+      expect(changeInputs()).toHaveLength(1);
+      expect(changeInputs()[0]!.ChangeBatch.Changes.map((c) => c.Action)).toEqual(['CREATE']);
+    });
+
+    it('control: an ambiguous (server) failure keeps its bag, so deploy 2 skips the identical live record', async () => {
+      route({ change: () => { throw withFault(awsError('InternalFailure', 'boom'), 'server'); } });
+      const deploy1 = await runAdd('none');
+      expect(isRefusedBeforeApplying(deploy1.error, LOGICAL)).toBe(false);
+      const bags = priorAttemptsInJournal(
+        journalOf(deploy1.error, props([rec(), added])),
+        LOGICAL,
+        TYPE
+      );
+      expect(bags).toHaveLength(1);
+
+      mockSend.mockReset();
+      route({ liveRecords: [liveSame] });
+      await withEvidence(bags, () =>
+        provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]))
+      );
       expect(changeInputs()).toHaveLength(0);
     });
   });

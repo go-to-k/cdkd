@@ -17,7 +17,10 @@ import type {
   UpdateContext,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
-import { getPriorAttempts } from '../../../deployment/prior-attempt-scope.js';
+import {
+  getPriorAttempts,
+  markRefusedBeforeApplying,
+} from '../../../deployment/prior-attempt-scope.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
   isRedactedRecordedValue,
@@ -314,6 +317,46 @@ export async function updateRecordSetGroup(
   previousProperties: Record<string, unknown>,
   context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
+  const progress = { sent: false, clientRefused: false };
+  try {
+    return await applyRecordSetGroupUpdate.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context,
+      progress
+    );
+  } catch (error) {
+    // The journal keeps a failed update's bag as evidence that this stack may
+    // have written its records (`ownEarlierWriteMayHold`). A failure before
+    // the batch was sent, or a batch Route 53 refused as a client error
+    // (applied all or nothing), wrote nothing, so it must not become that
+    // evidence; unless an earlier send of this dispatch may have landed.
+    const wroteNothing = !progress.sent || progress.clientRefused;
+    if (
+      error instanceof Error &&
+      wroteNothing &&
+      getPriorAttempts(logicalId)?.possiblyLanded() !== true
+    ) {
+      throw markRefusedBeforeApplying(error);
+    }
+    throw error;
+  }
+}
+
+async function applyRecordSetGroupUpdate(
+  this: Route53Provider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined,
+  progress: { sent: boolean; clientRefused: boolean }
+): Promise<ResourceUpdateResult> {
   this.logger.debug(safeMsg`Updating Route 53 record set group ${logicalId}: ${physicalId}`);
 
   const { records, zone } = desiredGroup(properties, logicalId, physicalId);
@@ -421,6 +464,7 @@ export async function updateRecordSetGroup(
 
     if (changes.length > 0) {
       const comment = properties['Comment'];
+      progress.sent = true;
       await this.getClient().send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
@@ -442,10 +486,15 @@ export async function updateRecordSetGroup(
     return { physicalId: compositeId, wasReplaced: false, attributes: {} };
   } catch (error) {
     if (error instanceof ProvisioningError) throw error;
-    // A failure Route 53 did not author as a client refusal may follow a
-    // batch it applied; the engine's retry of this dispatch reads that.
-    if (!(error instanceof Error && (error as { $fault?: unknown }).$fault === 'client')) {
-      getPriorAttempts(logicalId)?.notePossiblyLanded();
+    // A send failure Route 53 did not author as a client refusal may follow a
+    // batch it applied; the engine's retry of this dispatch reads that. A
+    // failure before the send (a lookup) applied nothing.
+    if (progress.sent) {
+      if (error instanceof Error && (error as { $fault?: unknown }).$fault === 'client') {
+        progress.clientRefused = true;
+      } else {
+        getPriorAttempts(logicalId)?.notePossiblyLanded();
+      }
     }
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapCaughtError(
