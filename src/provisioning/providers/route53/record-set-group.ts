@@ -35,6 +35,7 @@ import {
   zoneReferenceChanged,
   recordedZoneForSwitch,
   refuseCfnUnresolvableZoneName,
+  withTemplateAliasConflicts,
 } from './shared.js';
 import {
   RECORD_SET_GROUP_TYPE,
@@ -224,7 +225,9 @@ export async function createRecordSetGroup(
           ...(typeof comment === 'string' && comment ? { Comment: comment } : {}),
           Changes: records.map((record): Change => ({
             Action: 'CREATE',
-            ResourceRecordSet: this.buildResourceRecordSet(recordBag(record)),
+            ResourceRecordSet: replayingState
+              ? this.buildResourceRecordSet(recordBag(record))
+              : withTemplateAliasConflicts(this.buildResourceRecordSet(recordBag(record)), record),
           })),
         },
       })
@@ -434,7 +437,10 @@ async function applyRecordSetGroupUpdate(
     for (const record of records) {
       const key = recordSetKey(record) as string;
       desiredKeys.add(key);
-      const desired = this.buildResourceRecordSet(recordBag(record));
+      const built = this.buildResourceRecordSet(recordBag(record));
+      const stateBorne =
+        context?.replayingState === true || context?.desiredFromAwsReadback === true;
+      const desired = stateBorne ? built : withTemplateAliasConflicts(built, record);
       const recorded = previousByKey.get(key);
       if (recorded === undefined) {
         // CREATE, not UPSERT: a record of this identity that cdkd did not

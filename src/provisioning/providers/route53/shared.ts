@@ -6,6 +6,7 @@ import { isPlainImportValue, VALUE_NOT_SHOWN } from '../../import-helpers.js';
 import { COMPOSITE_ID_SEPARATOR } from '../../composite-id.js';
 import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import type { Route53Provider } from '../route53-provider.js';
+import type { ResourceRecordSet } from '@aws-sdk/client-route-53';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -449,4 +450,35 @@ export function refuseCfnUnresolvableZoneName(
     return;
   }
   throw new ProvisioningError(message, resourceType, logicalId, physicalId);
+}
+
+/**
+ * `recordSet` with the template's `TTL` / `ResourceRecords` put back beside an
+ * `AliasTarget` (go-to-k/cdkd#6544). `buildResourceRecordSet` drops them for
+ * an alias, so Route 53 never saw the conflict it refuses for CloudFormation
+ * ("Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords]
+ * ...]", measured). Create and template-path update only: a DELETE carrying
+ * the conflict is refused with `InvalidChangeBatch`, which the delete path
+ * reads as already deleted, and a state record cannot be edited.
+ */
+export function withTemplateAliasConflicts(
+  recordSet: ResourceRecordSet,
+  properties: Record<string, unknown>
+): ResourceRecordSet {
+  if (!recordSet.AliasTarget) return recordSet;
+  const ttl = properties['TTL'];
+  const records = properties['ResourceRecords'];
+  // Declared means a value: an explicit null or an empty list is not one.
+  const declaresTtl = ttl !== undefined && ttl !== null;
+  const declaresRecords = Array.isArray(records) && records.length > 0;
+  if (!declaresTtl && !declaresRecords) return recordSet;
+  return {
+    ...recordSet,
+    ...(declaresTtl && { TTL: Number(ttl) }),
+    ...(declaresRecords && {
+      ResourceRecords: records.map((r) =>
+        typeof r === 'string' ? { Value: r } : (r as { Value: string })
+      ),
+    }),
+  };
 }
