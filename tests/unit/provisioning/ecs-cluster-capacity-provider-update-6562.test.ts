@@ -323,6 +323,15 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
     expect(names()).not.toContain('UpdateClusterCommand');
   });
 
+  it('fails when the Put response showed in progress and the first read is already UPDATE_FAILED', async () => {
+    attachments = ['UPDATE_FAILED'];
+
+    const failure = await failureOf(PROVIDERS_AND_SETTINGS);
+
+    expect((failure as Error).message).toMatch(/attachments UPDATE_FAILED/);
+    expect(sleeps).toEqual([]);
+  });
+
   it('names only the attachments this Put touched', async () => {
     putCluster = {
       clusterArn: ARN,
