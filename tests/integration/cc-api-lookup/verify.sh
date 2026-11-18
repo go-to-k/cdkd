@@ -119,6 +119,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
   rm -f "${CONTEXT_FILE}" "${CONTEXT_FILE}.tmp"
+  # The pre-run call runs in the main shell: restore strict mode, or every
+  # later failing command would be ignored.
+  set -eu
   return 0
 }
 trap cleanup EXIT
