@@ -39,6 +39,11 @@ import {
   convertTags,
   markNotGoneOnNotFoundClass,
 } from './shared.js';
+import {
+  capacityProvidersChanged,
+  sendWhenAttachmentsSettle,
+  waitForClusterAttachments,
+} from './cluster-attachments.js';
 
 // ─── AWS::ECS::Cluster ──────────────────────────────────────────
 
@@ -138,19 +143,26 @@ export async function updateCluster(
   const client = this.getClient();
 
   try {
-    // Update capacity providers if specified
-    if (properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']) {
-      await client.send(
-        new PutClusterCapacityProvidersCommand({
-          cluster: physicalId,
-          capacityProviders: (properties['CapacityProviders'] as string[]) || [],
-          defaultCapacityProviderStrategy:
-            this.convertCapacityProviderStrategy(
-              properties['DefaultCapacityProviderStrategy'] as
-                | Array<Record<string, unknown>>
-                | undefined
-            ) || [],
-        })
+    // go-to-k/cdkd#6562: Put only when the template declares the providers AND
+    // they differ from the previous side — an unchanged Put still leaves the
+    // attachments UPDATE_IN_PROGRESS and refuses the UpdateCluster below.
+    const sentCapacityProviders =
+      Boolean(properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']) &&
+      capacityProvidersChanged(properties, previousProperties);
+    if (sentCapacityProviders) {
+      await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
+        client.send(
+          new PutClusterCapacityProvidersCommand({
+            cluster: physicalId,
+            capacityProviders: (properties['CapacityProviders'] as string[]) || [],
+            defaultCapacityProviderStrategy:
+              this.convertCapacityProviderStrategy(
+                properties['DefaultCapacityProviderStrategy'] as
+                  | Array<Record<string, unknown>>
+                  | undefined
+              ) || [],
+          })
+        )
       );
       log.debug(`Updated capacity providers for ECS cluster ${shownCluster}`);
     }
@@ -195,17 +207,24 @@ export async function updateCluster(
           : { namespace: '' }
         : undefined;
 
-      await client.send(
-        new UpdateClusterCommand({
-          cluster: physicalId,
-          ...(settingsChanged && { settings: settingsInput }),
-          ...(configChanged && {
-            configuration: this.convertClusterConfiguration(
-              properties['Configuration'] as Record<string, unknown> | undefined
-            ),
-          }),
-          ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
-        })
+      // go-to-k/cdkd#6562: ECS refuses UpdateCluster while the Put above is
+      // still attaching; the Describe it costs is spent only after a Put.
+      if (sentCapacityProviders) {
+        await waitForClusterAttachments(client, logicalId, physicalId, log);
+      }
+      await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
+        client.send(
+          new UpdateClusterCommand({
+            cluster: physicalId,
+            ...(settingsChanged && { settings: settingsInput }),
+            ...(configChanged && {
+              configuration: this.convertClusterConfiguration(
+                properties['Configuration'] as Record<string, unknown> | undefined
+              ),
+            }),
+            ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
+          })
+        )
       );
       log.debug(
         `Updated ECS cluster ${shownCluster} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`
