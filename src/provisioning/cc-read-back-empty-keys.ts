@@ -66,7 +66,7 @@ export function withCcReadBackEmptyKeyRemovals(
   for (const key of keys) {
     const path = `/${key}`;
     if (patch.some((op) => op.path === path)) continue;
-    if (!Object.prototype.hasOwnProperty.call(liveModel, key)) continue;
+    // An absent key is not an empty collection, so it gets no `remove`.
     if (!isEmptyCollection(liveModel[key])) continue;
     if (Object.prototype.hasOwnProperty.call(desired, key) && !isEmptyCollection(desired[key])) {
       continue;
