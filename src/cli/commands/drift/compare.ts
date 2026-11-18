@@ -4,7 +4,6 @@
  */
 import type { ConsoleLogger } from '../../../utils/logger.js';
 import type { Logger } from '../../../types/config.js';
-import { isReadableResourceEntry } from '../../../state/malformed-resources-bag.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import {
@@ -684,65 +683,9 @@ export function warnIfPreV10BaselineGap(
   return [finding, note];
 }
 
-/**
- * Set a value at a dotted path inside a plain object, creating intermediate
- * objects as needed. Mirrors `lodash.set` for the subset of paths the drift
- * comparator actually emits — dotted nested keys, no array indices.
- *
- * The drift comparator (`src/analyzer/drift-calculator.ts`) only synthesizes
- * paths through plain objects; arrays and scalars surface as a single drift
- * entry on the parent path. So we do not need to parse `[i]` segments.
- */
-/**
- * Issue #323: build the cross-resource context passed to
- * `provider.readCurrentState` so IAM Role / User / Group readers can
- * filter out inline policies managed by a sibling `AWS::IAM::Policy`
- * resource. `excludedLogicalId` is the resource being read — it's
- * omitted from the siblings map so a self-reference can never collide.
- */
-export function buildReadCurrentStateContext(
-  state: StackState,
-  excludedLogicalId: string
-): ReadCurrentStateContext {
-  const siblings: NonNullable<ReadCurrentStateContext['siblings']> = {};
-  for (const [lid, res] of Object.entries(state.resources ?? {})) {
-    if (lid === excludedLogicalId) continue;
-    // go-to-k/cdkd#3018, and this one IS at the loop rather than at a load,
-    // deliberately: the helper is EXPORTED and its three callers reach it with
-    // three different guarantees — `cdkd drift` and `cdkd state refresh-observed`
-    // now settle the record's shape at their own load sites, while `cdkd import`
-    // hands it a record it is midway through building.
-    //
-    // TWO outcomes, not one, and the second is why a `try` around the next lines
-    // would not do instead: a `null` sibling CRASHES on `res.resourceType`,
-    // while a string, a number, a list or an OBJECT WITH NO TYPE does NOT — it
-    // yields `undefined` for every field it lacks and enters the map as a
-    // sibling record naming no resource. A provider reading that map to resolve
-    // a cross-resource reference is then answered about a resource that does
-    // not exist. The predicate asks for the resource TYPE for that reason: it
-    // is the field every reader of an entry touches first.
-    if (!isReadableResourceEntry(res)) continue;
-    siblings[lid] = {
-      resourceType: res.resourceType,
-      physicalId: res.physicalId,
-      properties: res.properties ?? {},
-      attributes: res.attributes ?? {},
-    };
-  }
-  // go-to-k/cdkd#4447: the read resource's own recorded attributes, through
-  // the same readability gate as a sibling's.
-  const own: unknown = (state.resources ?? {})[excludedLogicalId];
-  const ownAttributesValue = isReadableResourceEntry(own)
-    ? (own as { attributes?: unknown }).attributes
-    : undefined;
-  const ownAttributes =
-    typeof ownAttributesValue === 'object' &&
-    ownAttributesValue !== null &&
-    !Array.isArray(ownAttributesValue)
-      ? (ownAttributesValue as Record<string, unknown>)
-      : undefined;
-  return { siblings, ...(ownAttributes && { attributes: ownAttributes }) };
-}
+// go-to-k/cdkd#6526: moved to the deployment layer, which the rollback
+// replay's baseline refresh reads too; re-exported for this command's callers.
+export { buildReadCurrentStateContext } from '../../../deployment/read-current-state-context.js';
 
 /**
  * The comparison baseline with a Pattern B resource's declared name replaced

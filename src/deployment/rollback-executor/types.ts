@@ -353,6 +353,14 @@ export interface RollbackExecutorContext {
    */
   skipFinalSnapshot?: boolean | undefined;
   /**
+   * go-to-k/cdkd#6526: `false` under `cdkd deploy --no-capture-observed-state`
+   * (`DeployEngineOptions.captureObservedState`), so the automatic rollback
+   * skips the drift-baseline re-read after an in-place revert, as the deploy
+   * skips its own capture. Absent (`cdkd rollback`, which has no such flag)
+   * reads as `true`.
+   */
+  captureObservedState?: boolean | undefined;
+  /**
    * `--remove-protection`: a failed CREATE's resource, and under `cdkd
    * rollback` one a completed CREATE made, is deleted with its deletion /
    * termination protection turned off first (go-to-k/cdkd#4678).

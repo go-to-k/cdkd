@@ -56,6 +56,7 @@ import {
 } from './messages.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
+import { withRefreshedObservedBaseline } from './replay-observed-refresh.js';
 import { queueMovedIdCleanup } from './replay-moved-id-cleanup.js';
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -683,10 +684,8 @@ export async function replayFailedOperationsUnbound(
           // properties when resolution never got that far.
           // Re-resolve redacted secret expressions on BOTH sides for the
           // provider call (GHSA fix); `secrets` redacts the rebuilt record.
-          // See {@link updateWithRollbackRetry} — same three concerns as the
-          // `revert` arm (retry / disableOuterRetry / interrupt). `secrets` is
-          // this iteration's bag, hoisted above the `try` so the shared catch
-          // can mask with it too.
+          // See {@link updateWithRollbackRetry} (retry / disableOuterRetry /
+          // interrupt); `secrets` is hoisted above the `try` for the catch's mask.
           // go-to-k/cdkd#4043 Phase C, the `revert` arm's twin: a marked
           // NoEcho leaf takes the value AWS holds, or the op refuses.
           const noEcho = await substituteMarkedNoEchoLeaves({
@@ -790,23 +789,13 @@ export async function replayFailedOperationsUnbound(
                 op.logicalId,
                 current.physicalId,
                 op.resourceType,
-                // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard above (same reason
-                // as the other two sites). The previous-side one below is LIVE, but not for the
-                // reason an earlier spelling of this comment gave: `op.attemptedProperties` being
-                // optional does NOT reach it, because `?? current.properties` already covers that
-                // and `ResourceState.properties` is required. It is live because a malformed STATE
-                // record can lack `properties` altogether -- the same premise this whole guard
-                // rests on.
+                // Desired-side `?? {}` DEAD AT RUNTIME since issue #3203's guard above. The
+                // previous-side one is LIVE: a malformed STATE record can lack `properties`.
                 desiredProps ?? {},
                 attemptedProps ?? {},
-                // Same as the `revert` arm: masker, no readback flag, `ctx.region` as
-                // `expectedRegion` (issue #2301 item 1), and `replayingState` (issue #3141). The
-                // DESIRED bag here is `prev.properties` — a cdkd state record, exactly as on the
-                // `revert` arm — so the replay licence is the same one. (The PREVIOUS side is
-                // `op.attemptedProperties`, the failed attempt's desired bag; `replayingState`
-                // describes the desired side, which is the side a provider's refusals read.)
-                // `recordedAttributes` (issue #4051) and `recordedCreateOnlyDrops` (#6104), as on
-                // the `revert` arm. The forward's honored `updatePolicy` too (go-to-k/cdkd#6457).
+                // As on the `revert` arm (#2301, #3141, #4051, #6104, #6457): the DESIRED bag is
+                // `prev.properties`, a cdkd state record, so the replay licence is the same one;
+                // no `desiredFromAwsReadback`, and `replayingState` describes the desired side.
                 {
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: ctx.region,
@@ -814,10 +803,7 @@ export async function replayFailedOperationsUnbound(
                   recordedAttributes: current.attributes,
                   recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
                   ...(revertFailedClaimed && { inlinePolicyClaimed: revertFailedClaimed }),
-                  // go-to-k/cdkd#5380: the failed update's unsettled keys may
-                  // hold either side in AWS while the attempted bag equals the
-                  // restored one there, so the provider converges them against
-                  // AWS; the record built below clears them only on success.
+                  // go-to-k/cdkd#5380: converged against AWS, cleared below only on success.
                   ...revertUnsettled,
                   typedPayloadLeaves: prev.typedPayloadLeaves, // go-to-k/cdkd#6309
                   restoredObservedProperties: prev.observedProperties, // go-to-k/cdkd#6519
@@ -831,16 +817,30 @@ export async function replayFailedOperationsUnbound(
               mask
             )
           );
-          // go-to-k/cdkd#4434, the `revert` arm's twin: the returned
-          // attributes' `NoEcho` needles, before the redaction below.
+          // go-to-k/cdkd#4434, the `revert` arm's twin, before the redaction below.
           if (revertFailedResult)
             recordNoEchoAttributeValues(revertFailedResult, secrets, desiredProps);
           stateResources[op.logicalId] = maskRestoredNoEchoRecord(
             redactRollbackRecord(
-              // go-to-k/cdkd#5064 phase 2: the failed replacement's create may
-              // have made a resource under the generation it asked for.
+              // go-to-k/cdkd#5064 phase 2: the generation the failed replacement asked for.
               withNameGenerationReached(
-                recordAfterRollbackUpdate(prev, revertFailedResult),
+                // go-to-k/cdkd#6526, the `revert` arm's twin.
+                await withRefreshedObservedBaseline(
+                  recordAfterRollbackUpdate(prev, revertFailedResult),
+                  {
+                    provider,
+                    op,
+                    desiredProps,
+                    restored: prev,
+                    stateResources,
+                    secrets,
+                    noEcho,
+                    mask,
+                    logger,
+                    inScope: inOriginalPrefix,
+                    capture: ctx.captureObservedState,
+                  }
+                ),
                 op.logicalId,
                 op.nameGeneration
               ),

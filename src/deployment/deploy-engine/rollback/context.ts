@@ -52,6 +52,8 @@ export function rollbackExecutorContext(
     // opt-out the engine's own delete sites use.
     finalSnapshotClients: deps.options.finalSnapshotClients,
     skipFinalSnapshot: deps.options.skipFinalSnapshot,
+    // go-to-k/cdkd#6526: the opt-out covers the rollback's baseline re-read.
+    captureObservedState: deps.options.captureObservedState,
     // A nested child's own rollback: its segment is replayed only by a
     // rollback of the CHILD, so the refusals' `--orphan` command names it
     // (go-to-k/cdkd#3859).

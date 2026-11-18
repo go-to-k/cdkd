@@ -289,6 +289,11 @@ cdkd state refresh-observed MyStack
   The first deploy that loads such a record fills the baseline in, with the
   same background reads, and later deploys are unaffected.
   `--no-capture-observed-state` skips this as well.
+- **A rollback that restores a resource.** When a failed deploy's rollback
+  puts an updated resource back as it was, cdkd reads that resource back and
+  records it as the new baseline, so `cdkd drift` compares against what the
+  restore left in AWS. `--no-capture-observed-state` skips this read too.
+  `cdkd rollback` has no such flag and always takes it.
 - **One read that the flag does not skip.** When a
   [`NoEcho` custom resource](state-management-secrets.md#custom-resource-responses-marked-noecho)
   runs again, and another resource holds its value in a property that cannot
