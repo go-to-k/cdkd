@@ -859,6 +859,25 @@ for b in "${BUCKET_V1}" "${BUCKET_V2}"; do
   fi
 done
 
+# The revert-arm rule (go-to-k/cdkd#4434). Since go-to-k/cdkd#6514 the deploy
+# edits its Description IN PLACE, so the rule keeps its phase-1 id, and so
+# would the rollback's revert: the record's id would match the live one
+# whatever the revert recorded. Revoking it out of band sends the revert down
+# its re-create route (revoke + authorize), which mints a NEW id the record
+# must then hold.
+INGRESS_V2_LIVE="$(live_ingress_rule_ids)"
+if [ "${INGRESS_V2_LIVE}" != "${INGRESS_V1_ID}" ]; then
+  echo "FAIL: phase 3b: after the failed deploy ${INGRESS_SG_ID} holds ingress rule(s)" >&2
+  echo "      '${INGRESS_V2_LIVE}', expected the phase-1 rule ${INGRESS_V1_ID} edited in place (#6514)." >&2
+  exit 1
+fi
+aws ec2 revoke-security-group-ingress --group-id "${INGRESS_SG_ID}" \
+  --security-group-rule-ids "${INGRESS_V1_ID}" >/dev/null
+if [ -n "$(live_ingress_rule_ids)" ]; then
+  echo "FAIL: phase 3b: ${INGRESS_V1_ID} survived its out-of-band revoke" >&2
+  exit 1
+fi
+
 aws ec2 delete-route --route-table-id "${ROUTE_TABLE_ID}" --destination-cidr-block "${DEST_V1}"
 for t in ${OLD_TABLES}; do
   if [ "${MULTI_REGION}" = "1" ] && [ "${t}" = "${GTX_NAME_V1}" ]; then
@@ -1065,8 +1084,8 @@ done
 echo "[verify] phase 4: OK (routes to ${DEST_V1} and ${READOPT_DEST_V1} live, both v2 copies gone)"
 
 # --- go-to-k/cdkd#4434: the revert arm records the rule id that is LIVE -----
-# Phase 3 re-authorized the rule twice (the update, then the revert), so the
-# phase-1 id is revoked. Before the fix the record kept it.
+# Phase 3b revoked the phase-1 rule out of band, so the revert re-authorized
+# it under a new id. Before the fix the record kept the phase-1 one.
 INGRESS_POST_ID="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
   '.resources[$id].attributes.Id // "MISSING"' "${WORK_DIR}/state-rolled-back.json")"
 INGRESS_POST_DESC="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
@@ -1079,7 +1098,7 @@ if [ "${INGRESS_POST_DESC}" != "cdkd revert-arm subject for ${DEST_V1}" ]; then
 fi
 if [ "${INGRESS_POST_LIVE}" = "${INGRESS_V1_ID}" ]; then
   echo "FAIL: phase 4: ${INGRESS_SG_ID} still holds the phase-1 rule ${INGRESS_V1_ID}, so the" >&2
-  echo "      update and its revert never re-authorized it and the #4434 check is vacuous." >&2
+  echo "      revert never re-authorized it and the #4434 check is vacuous." >&2
   exit 1
 fi
 case "${INGRESS_POST_LIVE}" in

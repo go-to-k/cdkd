@@ -90,11 +90,11 @@ export class RollbackReplayStack extends cdk.Stack {
     //
     // Every subject above takes the reverse-REPLACEMENT arm; this one takes the
     // plain `revert` UPDATE arm. Its `Description` follows `ROUTE_DEST`, and
-    // `Description` is not create-only, so phase 3 UPDATES the rule in place —
-    // which `EC2Provider` does by revoking and re-authorizing it, minting a new
-    // `sgr-` id — and the rollback's revert does the same again. The
-    // post-rollback record must hold the id of the rule that is live THEN, not
-    // the phase-1 one the revert revoked.
+    // `Description` is not create-only, so phase 3 UPDATES the rule in place
+    // (go-to-k/cdkd#6514: the rule keeps its `sgr-` id). verify.sh then
+    // revokes it out of band, so the rollback's revert re-authorizes it under
+    // a NEW id. The post-rollback record must hold the id of the rule that is
+    // live THEN, not the phase-1 one.
     const ingressSg = new ec2.CfnSecurityGroup(this, 'RevertSg', {
       vpcId: vpc.ref,
       groupDescription: 'cdkd rollback-replay revert-arm subject',

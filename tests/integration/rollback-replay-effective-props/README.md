@@ -64,7 +64,7 @@ Issue [#1706](https://github.com/go-to-k/cdkd/issues/1706) adds two of them:
 | 1 | Deploy v1 (`DestinationCidrBlock: 0.0.0.0/0`) | state records the one destination key |
 | 2 | Doctor state: add `DestinationIpv6CidrBlock: ::/0` to the route; malformed values into each table's record; `StreamSpecification: ""` + `BillingMode: ""` into `StreamTable`'s and `VersioningConfiguration: "Enabled"` into `ReplayBucket`'s | every injection took (else every later assertion is vacuous) |
 | 3 | Deploy v2 under `--no-rollback` — create-only flips (both route destinations, table names, bucket name) **plus** an injected SQS failure that `DependsOn` every subject | deploy exits non-zero and leaves the rollback journal without replaying it |
-| 3b | Delete the replaced old copies out of band, except `ReadoptRoute`'s | every old and new copy was live first (the old ones' deletes wait for the cleanup phase, issue #6374); each deleted one reads gone |
+| 3b | Delete the replaced old copies out of band, except `ReadoptRoute`'s, and revoke `RevertIngress`'s rule | every old and new copy was live first, and the rule kept its phase-1 id (the old ones' deletes wait for the cleanup phase, issue #6374); each deleted one reads gone |
 | 3c | `cdkd rollback` | each deleted subject logs `is gone — re-creating it` and its own `replacement reversed (old resource re-created as` line; `ReadoptRoute` logs `was not deleted yet — re-adopting it`; every replay-CREATE downgrade warning fired (proving the arms ran) |
 | 4 | **The point** | post-rollback record has `DestinationCidrBlock` restored and `DestinationIpv6CidrBlock` **gone**; the stream table records the substituted view type (composed with the substituted `BillingMode`) and streams with it; the bucket records no versioning and is unversioned |
 | 5 | `cdkd drift` twice | both converge — the user-visible consequence |
@@ -79,9 +79,10 @@ the key the provider warned it was dropping and never sent to AWS.
 `RevertIngress` (`AWS::EC2::SecurityGroupIngress`) is the one subject that
 takes the plain `revert` UPDATE arm instead of the reverse-replacement one: its
 `Description` follows `ROUTE_DEST` and is not create-only, so phase 3 updates
-it in place, which `EC2Provider` does by revoking and re-authorizing the rule,
-and the rollback's revert does it again. Phase 1 records the rule's `sgr-` id
-and proves it is the group's one live ingress rule; phase 3 asserts the
+it in place, and the rule keeps its `sgr-` id (issue #6514). Phase 3b revokes
+the rule out of band, so the rollback's revert re-authorizes it under a new id.
+Phase 1 records the rule's `sgr-` id and proves it is the group's one live
+ingress rule; phase 3b proves the deploy kept that id; phase 3c asserts the
 `restored successfully` line; phase 4 asserts the record's `attributes.Id`
 equals the rule live AFTER the rollback and differs from phase 1's. Before
 the fix the revert kept the restored record's attributes, so the record still
