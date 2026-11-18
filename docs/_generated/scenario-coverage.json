@@ -3094,6 +3094,11 @@
       "scenarios": []
     },
     {
+      "name": "ssm-document-replace",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ssm-generated-name-grant",
       "annotated": false,
       "scenarios": []
@@ -4321,6 +4326,7 @@
     "sns-topic-attr-removal",
     "sqs-esm-max-concurrency",
     "sqs-fifo-unnamed",
+    "ssm-document-replace",
     "ssm-generated-name-grant",
     "ssm-typed-parameter-not-found",
     "stack-id-uuid",
