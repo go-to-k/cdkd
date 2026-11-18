@@ -30,9 +30,7 @@ property-coverage table:
 1. **A type with no SDK Provider** — `AWS::EventSchemas::Discoverer` is pure
    Cloud Control fallback on a plain fresh deploy. Only a newly registered SDK
    Provider for it changes that, and the baseline FAIL line says so and says
-   what to swap. (The fixture used `AWS::Events::Archive` until
-   [#6578](https://github.com/go-to-k/cdkd/issues/6578) gave it an SDK
-   Provider.)
+   what to swap.
 2. **The explicit `--recreate-via-cc-api` flag** — moves `CcLambda`, an
    SDK-registered type, onto Cloud Control in Phase 2.
 

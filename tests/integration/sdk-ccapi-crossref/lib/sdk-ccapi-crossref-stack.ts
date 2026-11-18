@@ -30,8 +30,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *   1. `Discoverer` (`AWS::EventSchemas::Discoverer`) is a type with NO SDK
  *      Provider, so it is pure Cloud Control fallback on a plain fresh deploy.
  *      Only a newly added SDK Provider for it can change that, and verify.sh's
- *      baseline FAIL line says so. (The fixture used `AWS::Events::Archive`
- *      until go-to-k/cdkd#6578 gave that type an SDK Provider.) A replacement
+ *      baseline FAIL line says so. A replacement
  *      must be cheap, absent from `register-providers.ts`, not
  *      NON_PROVISIONABLE, take an ARN (the bus's), and expose a read-only
  *      `Fn::GetAtt` attribute other than what `Ref` returns.

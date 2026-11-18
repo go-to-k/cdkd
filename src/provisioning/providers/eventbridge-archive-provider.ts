@@ -374,6 +374,7 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
           if (!isThrottlingError(error) && !isTransientServerError(error)) throw error;
           if (Date.now() >= deadline) throw error;
           this.logger.debug(mask(`EventBridge archive ${name}: state read failed transiently`));
+          if (watch.isInterrupted()) throw watch.onInterrupted();
           await sleep(pollIntervalMs);
           continue;
         }
@@ -581,7 +582,10 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
    * template wrote it; the comparator reads an object and a JSON string of it
    * alike). `Description`, `RetentionDays` and `KmsKeyIdentifier` always emit
    * the value an archive without them holds (`''`, `0`, `''`), so a console
-   * change on an archive that declared none still reads as drift.
+   * change on an archive that declared none still reads as drift. A property
+   * REMOVED from the template stays live (update sends only declared fields,
+   * as CloudFormation does), so drift keeps reporting its live value until it
+   * is cleared by hand; `--revert` cannot clear it either.
    */
   async readCurrentState(
     physicalId: string,
