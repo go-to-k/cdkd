@@ -18,7 +18,8 @@ import { markNonRetryable } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
-import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { getPriorAttempts } from '../../deployment/prior-attempt-scope.js';
 import { reportCreatedResource } from '../created-resource-sink.js';
 import { definedAttributes } from '../attribute-map.js';
 import type {
@@ -122,6 +123,9 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
       );
       created = true;
       reportCreatedResource(logicalId, resourceType, name);
+      // The engine's retry of this create must not refuse the destination this
+      // dispatch just made (refuseExisting reads the flag).
+      getPriorAttempts(logicalId)?.notePossiblyLanded();
       if (policy !== undefined) {
         await this.client.send(
           new PutDeliveryDestinationPolicyCommand({
@@ -132,6 +136,9 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
       }
       return { physicalId: name, attributes: destinationAttributes(resp.deliveryDestination) };
     } catch (error) {
+      // A failure after the Put is the policy call's, not the destination's:
+      // its "already exists" must not read as a name collision on this resource.
+      if (created) markAuxiliaryFailure(error, logicalId);
       const thrown = this.wrapError('create', logicalId, resourceType, name, error);
       // The destination exists once PutDeliveryDestination returned; name it
       // for --revert-failed when the policy call after it failed.
@@ -300,25 +307,33 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
       result['DeliveryDestinationType'] = destination.deliveryDestinationType;
     }
     if (destination.outputFormat !== undefined) result['OutputFormat'] = destination.outputFormat;
+    let policy: string | undefined;
     try {
-      const policy = (
+      policy = (
         await this.client.send(
           new GetDeliveryDestinationPolicyCommand({ deliveryDestinationName: physicalId })
         )
       ).policy?.deliveryDestinationPolicy;
-      if (policy !== undefined && policy !== '') {
-        const declared = properties?.['DeliveryDestinationPolicy'];
-        result['DeliveryDestinationPolicy'] = {
-          // Echo the name member only where the record declares it.
-          ...(isPlainRecord(declared) &&
-            declared['DeliveryDestinationName'] !== undefined && {
-              DeliveryDestinationName: physicalId,
-            }),
-          DeliveryDestinationPolicy: parsePolicy(policy),
-        };
-      }
+    } catch (error) {
+      // No policy, not a missing destination: GetDeliveryDestination above
+      // already proved the destination exists.
+      if (!isLogsNotFound(error)) throw error;
+    }
+    if (policy !== undefined && policy !== '') {
+      const declared = properties?.['DeliveryDestinationPolicy'];
+      result['DeliveryDestinationPolicy'] = {
+        // Echo the name member only where the record declares it.
+        ...(isPlainRecord(declared) &&
+          declared['DeliveryDestinationName'] !== undefined && {
+            DeliveryDestinationName: physicalId,
+          }),
+        DeliveryDestinationPolicy: parsePolicy(policy),
+      };
+    }
+    try {
       if (destination.arn) result['Tags'] = await readTags(this.client, destination.arn);
     } catch (error) {
+      // The destination vanished between the reads.
       if (isLogsNotFound(error)) return RESOURCE_NOT_FOUND;
       throw error;
     }
@@ -386,7 +401,7 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
       problem = 'DeliveryDestinationPolicy.DeliveryDestinationName must equal the destination Name';
     } else if (document === undefined) {
       problem =
-        'DeliveryDestinationPolicy.DeliveryDestinationPolicy must be a policy document object or JSON string';
+        'DeliveryDestinationPolicy.DeliveryDestinationPolicy must be a policy document object';
     }
     if (problem === undefined) return document;
     const message = `${problem} for ${WHAT} ${logicalIdShown(logicalId)}`;
@@ -397,8 +412,13 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
     throw new ProvisioningError(message, resourceType, logicalId, physicalId);
   }
 
-  /** Refuse a create whose name is already a destination (an upsert would take it over). */
+  /**
+   * Refuse a create whose name is already a destination (an upsert would take
+   * it over), unless this dispatch's own earlier attempt made it: a retry after
+   * the policy call failed meets the destination it created.
+   */
   private async refuseExisting(name: string, resourceType: string, logicalId: string) {
+    if (getPriorAttempts(logicalId)?.possiblyLanded() === true) return;
     try {
       await this.client.send(new GetDeliveryDestinationCommand({ name }));
     } catch (error) {
@@ -421,7 +441,7 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
 function policyDocument(block: unknown): string | undefined {
   if (!isPlainRecord(block)) return undefined;
   const document = block['DeliveryDestinationPolicy'];
-  if (typeof document === 'string' && document !== '') return document;
+  // An object only, as the schema types it: CloudFormation refuses a string.
   if (isPlainRecord(document)) return JSON.stringify(document);
   return undefined;
 }

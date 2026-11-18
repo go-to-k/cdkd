@@ -48,6 +48,10 @@ import { LogsDeliveryProvider } from '../../../src/provisioning/providers/logs-d
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  priorAttemptLookup,
+  withPriorAttempts,
+} from '../../../src/deployment/prior-attempt-scope.js';
 
 const SOURCE_ARN = 'arn:aws:logs:us-east-1:123456789012:delivery-source:src';
 const DEST_ARN = 'arn:aws:logs:us-east-1:123456789012:delivery-destination:dst';
@@ -196,7 +200,7 @@ describe('LogsDeliverySourceProvider', () => {
     mockSend.mockRejectedValueOnce(notFound());
     await expect(
       provider.delete('Src', 'src', TYPE, undefined, { expectedRegion: 'us-east-1' })
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Refusing to treat NotFound/);
   });
 
   it('getAttribute, import and readCurrentState read the live source', async () => {
@@ -469,5 +473,269 @@ describe('LogsDeliveryProvider', () => {
       S3EnableHiveCompatiblePath: true,
       Tags: [{ Key: 'team', Value: 'a' }],
     });
+  });
+});
+
+function accessDenied(): Error {
+  return Object.assign(new Error('not authorized'), {
+    name: 'AccessDeniedException',
+    $fault: 'client',
+    $metadata: {},
+  });
+}
+
+function throttled(): Error {
+  return Object.assign(new Error('Rate exceeded'), {
+    name: 'ThrottlingException',
+    $fault: 'client',
+    $metadata: {},
+  });
+}
+
+type Handlers = Map<unknown, (i: Record<string, unknown>) => unknown>;
+
+describe('the delivery providers: guards and edge paths', () => {
+  const source = new LogsDeliverySourceProvider();
+  const destination = new LogsDeliveryDestinationProvider();
+  const delivery = new LogsDeliveryProvider();
+  const policyDoc = { Version: '2012-10-17', Statement: [{ Effect: 'Allow' }] };
+  const destProps = {
+    Name: 'dst',
+    DestinationResourceArn: GROUP_ARN,
+    DeliveryDestinationPolicy: { DeliveryDestinationPolicy: policyDoc },
+  };
+  const liveDest = { name: 'dst', arn: DEST_ARN, deliveryDestinationType: 'CWL' };
+  const srcProps = { Name: 'src', ResourceArn: BUS_ARN, LogType: 'INFO_LOGS' };
+  const delProps = { DeliverySourceName: 'src', DeliveryDestinationArn: DEST_ARN, RecordFields: ['a'] };
+
+  it('a name probe failing with AccessDenied rejects the create and sends no Put (source and destination)', async () => {
+    mockSend.mockRejectedValue(accessDenied());
+    await expect(source.create('Src', 'AWS::Logs::DeliverySource', srcProps)).rejects.toThrow(
+      /Failed to create/
+    );
+    await expect(
+      destination.create('Dst', 'AWS::Logs::DeliveryDestination', destProps)
+    ).rejects.toThrow(/Failed to create/);
+    expect(inputsOf(PutDeliverySourceCommand)).toHaveLength(0);
+    expect(inputsOf(PutDeliveryDestinationCommand)).toHaveLength(0);
+  });
+
+  it('refuses to create over an existing destination of the same name', async () => {
+    respond(new Map([[GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })]]) as Handlers);
+    const error = await destination
+      .create('Dst', 'AWS::Logs::DeliveryDestination', destProps)
+      .catch((e: unknown) => e);
+    expect(String(error)).toMatch(/already exists/);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(inputsOf(PutDeliveryDestinationCommand)).toHaveLength(0);
+  });
+
+  it('a retried create after the policy Put was throttled adopts the destination it made', async () => {
+    let exists = false;
+    let policyCalls = 0;
+    respond(
+      new Map([
+        [
+          GetDeliveryDestinationCommand,
+          () => (exists ? { deliveryDestination: liveDest } : Promise.reject(notFound())),
+        ],
+        [
+          PutDeliveryDestinationCommand,
+          () => {
+            exists = true;
+            return { deliveryDestination: liveDest };
+          },
+        ],
+        [
+          PutDeliveryDestinationPolicyCommand,
+          () => (++policyCalls === 1 ? Promise.reject(throttled()) : {}),
+        ],
+      ]) as Handlers
+    );
+    const lookup = priorAttemptLookup('Dst', () => Promise.resolve([]));
+    await withPriorAttempts(lookup, async () => {
+      const first = await destination
+        .create('Dst', 'AWS::Logs::DeliveryDestination', destProps)
+        .catch((e: unknown) => e);
+      expect(String(first)).toMatch(/ThrottlingException/);
+      expect(String(first)).not.toMatch(/already exists/);
+      const second = await destination.create('Dst', 'AWS::Logs::DeliveryDestination', destProps);
+      expect(second.physicalId).toBe('dst');
+    });
+    expect(inputsOf(PutDeliveryDestinationPolicyCommand)).toHaveLength(2);
+  });
+
+  it('update refuses a policy naming another destination before any call', async () => {
+    const bad = {
+      ...destProps,
+      DeliveryDestinationPolicy: { DeliveryDestinationName: 'other', DeliveryDestinationPolicy: policyDoc },
+    };
+    await expect(
+      destination.update('Dst', 'dst', 'AWS::Logs::DeliveryDestination', bad, destProps)
+    ).rejects.toThrow(/must equal the destination Name/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('refuses a policy document given as a JSON string, as CloudFormation does', async () => {
+    const bad = { ...destProps, DeliveryDestinationPolicy: { DeliveryDestinationPolicy: '{}' } };
+    await expect(destination.create('Dst', 'AWS::Logs::DeliveryDestination', bad)).rejects.toThrow(
+      /must be a policy document object/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged policy sends no Put; a changed one sends the new document', async () => {
+    respond(
+      new Map([
+        [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
+        [PutDeliveryDestinationPolicyCommand, () => ({})],
+      ]) as Handlers
+    );
+    await destination.update('Dst', 'dst', 'AWS::Logs::DeliveryDestination', destProps, destProps);
+    expect(inputsOf(PutDeliveryDestinationPolicyCommand)).toHaveLength(0);
+    const next = { ...policyDoc, Id: 'x' };
+    await destination.update(
+      'Dst',
+      'dst',
+      'AWS::Logs::DeliveryDestination',
+      { ...destProps, DeliveryDestinationPolicy: { DeliveryDestinationPolicy: next } },
+      destProps
+    );
+    expect(inputsOf(PutDeliveryDestinationPolicyCommand)).toEqual([
+      { deliveryDestinationName: 'dst', deliveryDestinationPolicy: JSON.stringify(next) },
+    ]);
+  });
+
+  it('a removed policy already gone is not an error', async () => {
+    respond(
+      new Map([
+        [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
+        [DeleteDeliveryDestinationPolicyCommand, () => Promise.reject(notFound())],
+      ]) as Handlers
+    );
+    const { DeliveryDestinationPolicy: _drop, ...removed } = destProps;
+    await expect(
+      destination.update('Dst', 'dst', 'AWS::Logs::DeliveryDestination', removed, destProps)
+    ).resolves.toMatchObject({ physicalId: 'dst' });
+  });
+
+  it.each([
+    ['source', () => source.update('Src', 'src', 'AWS::Logs::DeliverySource', srcProps, srcProps, { expectedRegion: 'us-east-1' })],
+    ['destination', () => destination.update('Dst', 'dst', 'AWS::Logs::DeliveryDestination', destProps, destProps, { expectedRegion: 'us-east-1' })],
+    ['delivery', () => delivery.update('Del', 'abc123', 'AWS::Logs::Delivery', delProps, delProps, { expectedRegion: 'us-east-1' })],
+  ])('the %s update refuses a client in another region before any call', async (_n, run) => {
+    clientRegion = 'eu-west-1';
+    await expect(run()).rejects.toThrow(/Refusing/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['destination', () => destination.delete('Dst', 'dst', 'AWS::Logs::DeliveryDestination', undefined, { expectedRegion: 'us-east-1' })],
+    ['delivery', () => delivery.delete('Del', 'abc123', 'AWS::Logs::Delivery', undefined, { expectedRegion: 'us-east-1' })],
+  ])('the %s delete refuses a not-found from a client in another region', async (_n, run) => {
+    clientRegion = 'eu-west-1';
+    mockSend.mockRejectedValueOnce(notFound());
+    await expect(run()).rejects.toThrow(/Refusing to treat NotFound/);
+  });
+
+  it('a state-borne malformed value warns and is skipped rather than refused', async () => {
+    respond(
+      new Map([
+        [GetDeliveryDestinationCommand, () => Promise.reject(notFound())],
+        [PutDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
+      ]) as Handlers
+    );
+    const bad = { ...destProps, DeliveryDestinationPolicy: 'nope' };
+    await expect(
+      destination.create('Dst', 'AWS::Logs::DeliveryDestination', bad, { replayingState: true })
+    ).resolves.toMatchObject({ physicalId: 'dst' });
+    expect(inputsOf(PutDeliveryDestinationPolicyCommand)).toHaveLength(0);
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('state-borne'));
+
+    mockSend.mockReset();
+    respond(
+      new Map([
+        [UpdateDeliveryConfigurationCommand, () => ({})],
+        [GetDeliveryCommand, () => ({ delivery: { id: 'abc123', arn: DELIVERY_ARN } })],
+      ]) as Handlers
+    );
+    await expect(
+      delivery.update(
+        'Del',
+        'abc123',
+        'AWS::Logs::Delivery',
+        { ...delProps, RecordFields: 'x', FieldDelimiter: '|' },
+        delProps,
+        { replayingState: true }
+      )
+    ).resolves.toMatchObject({ physicalId: 'abc123' });
+    expect(inputsOf(UpdateDeliveryConfigurationCommand)).toEqual([{ id: 'abc123', fieldDelimiter: '|' }]);
+  });
+
+  it('readCurrentState reports a destination without a policy, and echoes no undeclared name member', async () => {
+    respond(
+      new Map([
+        [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
+        [GetDeliveryDestinationPolicyCommand, () => Promise.reject(notFound())],
+        [ListTagsForResourceCommand, () => ({ tags: {} })],
+      ]) as Handlers
+    );
+    const none = await destination.readCurrentState('dst', 'Dst', 'AWS::Logs::DeliveryDestination', destProps);
+    expect(none).not.toBe(RESOURCE_NOT_FOUND);
+    expect(none).not.toHaveProperty('DeliveryDestinationPolicy');
+
+    mockSend.mockReset();
+    respond(
+      new Map([
+        [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
+        [GetDeliveryDestinationPolicyCommand, () => ({ policy: { deliveryDestinationPolicy: JSON.stringify(policyDoc) } })],
+        [ListTagsForResourceCommand, () => ({ tags: {} })],
+      ]) as Handlers
+    );
+    const withPolicy = await destination.readCurrentState('dst', 'Dst', 'AWS::Logs::DeliveryDestination', destProps);
+    expect(withPolicy).toMatchObject({ DeliveryDestinationPolicy: { DeliveryDestinationPolicy: policyDoc } });
+    expect((withPolicy as Record<string, Record<string, unknown>>)['DeliveryDestinationPolicy']).not.toHaveProperty(
+      'DeliveryDestinationName'
+    );
+  });
+
+  it('destination getAttribute and import read the live destination', async () => {
+    respond(
+      new Map([
+        [GetDeliveryDestinationCommand, (i) => (i['name'] === 'dst' ? { deliveryDestination: liveDest } : Promise.reject(notFound()))],
+      ]) as Handlers
+    );
+    expect(await destination.getAttribute('dst', 'AWS::Logs::DeliveryDestination', 'Arn')).toBe(DEST_ARN);
+    expect(
+      await destination.import({ logicalId: 'Dst', resourceType: 'AWS::Logs::DeliveryDestination', properties: { Name: 'dst' } } as never)
+    ).toMatchObject({ physicalId: 'dst', attributes: { Arn: DEST_ARN } });
+    expect(
+      await destination.import({ logicalId: 'Dst', resourceType: 'AWS::Logs::DeliveryDestination', properties: { Name: 'gone' } } as never)
+    ).toBeNull();
+  });
+
+  it('delivery import follows DescribeDeliveries pages', async () => {
+    respond(
+      new Map([
+        [
+          DescribeDeliveriesCommand,
+          (i) =>
+            i['nextToken'] === undefined
+              ? { deliveries: [{ id: 'other', deliverySourceName: 'src', deliveryDestinationArn: 'x' }], nextToken: 't1' }
+              : { deliveries: [{ id: 'abc123', arn: DELIVERY_ARN, deliverySourceName: 'src', deliveryDestinationArn: DEST_ARN }] },
+        ],
+      ]) as Handlers
+    );
+    expect(
+      await delivery.import({ logicalId: 'Del', resourceType: 'AWS::Logs::Delivery', properties: delProps } as never)
+    ).toMatchObject({ physicalId: 'abc123' });
+    expect(inputsOf(DescribeDeliveriesCommand)).toHaveLength(2);
+  });
+
+  it('a CreateDelivery answer without an id fails the create', async () => {
+    respond(new Map([[CreateDeliveryCommand, () => ({ delivery: {} })]]) as Handlers);
+    await expect(delivery.create('Del', 'AWS::Logs::Delivery', delProps)).rejects.toThrow(
+      /returned no delivery id/
+    );
   });
 });

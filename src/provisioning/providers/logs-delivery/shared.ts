@@ -15,6 +15,7 @@ import { safeMsg } from '../../../utils/display-safe.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../../deployment/retryable-errors.js';
+import { isAuxiliaryFailure } from '../../auxiliary-failure.js';
 import { logicalIdShown } from '../../composite-id.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import { configBooleanRefusal, coerceCfnBoolean } from '../../config-shape.js';
@@ -210,5 +211,7 @@ export function wrapLogsError(
   const failure = describeAwsFailure(error);
   if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
   logger.debug(build(failure.detail).message);
-  return markRedactedCause(build(`${failure.summary}${relayedNameCollision(failure.detail)}`));
+  // An auxiliary call's "already exists" is not this resource's name collision.
+  const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+  return markRedactedCause(build(`${failure.summary}${relay}`));
 }

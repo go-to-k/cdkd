@@ -5888,6 +5888,7 @@
         "eventbridge-archive",
         "eventbus-policy",
         "getatt-asg-arn-rule-name",
+        "logs-delivery",
         "sdk-ccapi-crossref"
       ],
       "signals": {
@@ -5911,6 +5912,9 @@
           "literal"
         ],
         "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
+        "logs-delivery": [
           "l2"
         ],
         "sdk-ccapi-crossref": [
@@ -8224,6 +8228,42 @@
       }
     },
     {
+      "resourceType": "AWS::Logs::Delivery",
+      "integs": [
+        "logs-delivery"
+      ],
+      "signals": {
+        "logs-delivery": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Logs::DeliveryDestination",
+      "integs": [
+        "logs-delivery"
+      ],
+      "signals": {
+        "logs-delivery": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Logs::DeliverySource",
+      "integs": [
+        "logs-delivery"
+      ],
+      "signals": {
+        "logs-delivery": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
         "apigatewayv2-update-removal",
@@ -8255,6 +8295,7 @@
         "loggroup-class-guard",
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
+        "logs-delivery",
         "logs-loggroup-fix-forward-orphan",
         "monitoring",
         "orphan-getatt-takeover",
@@ -8371,6 +8412,9 @@
         ],
         "loggroup-never-expire-guard": [
           "l1",
+          "l2"
+        ],
+        "logs-delivery": [
           "l2"
         ],
         "logs-loggroup-fix-forward-orphan": [
@@ -11007,11 +11051,7 @@
       }
     }
   ],
-  "orphans": [
-    "AWS::Logs::Delivery",
-    "AWS::Logs::DeliveryDestination",
-    "AWS::Logs::DeliverySource"
-  ],
+  "orphans": [],
   "allowListed": [
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",

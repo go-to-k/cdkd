@@ -73,11 +73,11 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
   'AWS::KMS::Alias': flat('AliasName'),
   'AWS::Lambda::MicrovmImage': flat('Name'),
   'AWS::Lambda::NetworkConnector': flat('Name'),
+  'AWS::Lambda::WebFunctionEndpoint': { name: [['EndpointName']], scope: [['FunctionName']] },
   // The create-only `Name` is the physical id, unique per account and region;
   // the SDK create refuses an existing one rather than upserting it.
   'AWS::Logs::DeliveryDestination': flat('Name'),
   'AWS::Logs::DeliverySource': flat('Name'),
-  'AWS::Lambda::WebFunctionEndpoint': { name: [['EndpointName']], scope: [['FunctionName']] },
   // The schema's create-only `Name` is the pipe's physical id (issue #4423).
   'AWS::Pipes::Pipe': flat('Name'),
   'AWS::RDS::DBProxyTargetGroup': { name: [['TargetGroupName']], scope: [['DBProxyName']] },
