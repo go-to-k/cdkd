@@ -703,3 +703,34 @@ export function recordSetGroupRecordZoneChanged(
   const after = recordZone(newValue);
   return before !== undefined && after !== undefined && before !== after;
 }
+
+/**
+ * Whether a Route 53 record's (or record set group's) `HostedZoneId` /
+ * `HostedZoneName` change moves it to another zone (go-to-k/cdkd#6537). Two
+ * ids, or two names, that differ do. A switch between the keys does not by
+ * itself: CloudFormation updates `HostedZoneName` -> the same zone's
+ * `HostedZoneId` in place (measured), and the provider's `update()` refuses a
+ * switch that names another zone. Anything unreadable replaces, as before.
+ */
+export function route53ZoneReferenceChanged(
+  _oldValue: unknown,
+  _newValue: unknown,
+  siblings?: ReplacementSiblings
+): boolean {
+  if (!siblings) return true;
+  const read = (props: Readonly<Record<string, unknown>>) => {
+    const id = props['HostedZoneId'];
+    const name = props['HostedZoneName'];
+    return {
+      id: typeof id === 'string' ? id.replace(/^\/hostedzone\//, '') : id,
+      name,
+    };
+  };
+  const before = read(siblings.oldProperties);
+  const after = read(siblings.newProperties);
+  const readable = (v: unknown) => v === undefined || typeof v === 'string';
+  if (![before.id, before.name, after.id, after.name].every(readable)) return true;
+  if (before.id !== undefined && after.id !== undefined) return before.id !== after.id;
+  if (before.id === undefined && after.id === undefined) return before.name !== after.name;
+  return false;
+}

@@ -30,6 +30,8 @@ import {
   isCnameConflictRefusal,
   CNAME_CONFLICT_COLLISION_NOTE,
   recordIdentityChanged,
+  bareHostedZoneId,
+  zoneReferenceChanged,
 } from './shared.js';
 
 // ─── AWS::Route53::RecordSet ───────────────────────────────────────
@@ -117,6 +119,33 @@ export async function updateRecordSet(
     resourceType,
     physicalId
   );
+
+  // go-to-k/cdkd#6537: a switch between `HostedZoneName` and `HostedZoneId`
+  // is not a replacement (CloudFormation updates it in place), so it reaches
+  // here; one naming ANOTHER zone would write the record there and leave the
+  // old one live and untracked. The recorded zone is the composite's, when
+  // the id is cdkd's (an imported CloudFormation id carries none).
+  if (zoneReferenceChanged(previousProperties, properties)) {
+    const parsed = parseRecordSetCompositeId(physicalId);
+    const recordedZone =
+      parsed && this.compositeAgreesWithTemplate(parsed, previousProperties)
+        ? parsed.hostedZoneId
+        : undefined;
+    if (
+      recordedZone !== undefined &&
+      bareHostedZoneId(recordedZone) !== bareHostedZoneId(hostedZoneId)
+    ) {
+      throw new ProvisioningError(
+        `Record set ${logicalId}: the template's hosted zone (${hostedZoneId}) is not the one ` +
+          `the record is in (${recordedZone}). Moving a record to another zone replaces it: ` +
+          `name the new zone with the key the record already uses (HostedZoneId or ` +
+          `HostedZoneName) so cdkd plans the replacement.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+  }
 
   const recordName = properties['Name'] as string;
   const recordType = properties['Type'] as string;

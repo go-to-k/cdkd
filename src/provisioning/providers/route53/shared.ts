@@ -349,3 +349,25 @@ export function recordIdentityChanged(
 export function zoneNameShown(name: string): string {
   return isPlainImportValue(name.replace(/\\[0-7]{3}/g, 'x')) ? `"${name}"` : VALUE_NOT_SHOWN;
 }
+
+/** A hosted zone id without the `/hostedzone/` prefix Route 53 sometimes returns. */
+export function bareHostedZoneId(id: string): string {
+  return id.replace(/^\/hostedzone\//, '');
+}
+
+/**
+ * Whether `desired` addresses its hosted zone differently from `previous`
+ * (`HostedZoneId` / `HostedZoneName`, compared as written). The replacement
+ * rules do not replace a switch between the two keys (go-to-k/cdkd#6537, as
+ * CloudFormation updates it in place), so an `update()` seeing this must check
+ * the new reference still names the zone the record lives in.
+ */
+export function zoneReferenceChanged(
+  previous: Record<string, unknown>,
+  desired: Record<string, unknown>
+): boolean {
+  return (
+    JSON.stringify([previous['HostedZoneId'] ?? null, previous['HostedZoneName'] ?? null]) !==
+    JSON.stringify([desired['HostedZoneId'] ?? null, desired['HostedZoneName'] ?? null])
+  );
+}

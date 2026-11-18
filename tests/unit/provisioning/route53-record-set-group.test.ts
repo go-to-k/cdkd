@@ -1411,3 +1411,75 @@ describe('Route53Provider RecordSetGroup (round 3: refused before applying)', ()
     });
   });
 });
+
+// go-to-k/cdkd#6537: a HostedZoneName <-> HostedZoneId switch is not a
+// replacement, so a desired HostedZoneName is resolved when the reference changed.
+describe('Route53Provider RecordSetGroup zone-key switch (go-to-k/cdkd#6537)', () => {
+  let provider: Route53Provider;
+  const byId = (extra: Record<string, unknown> = {}) => ({
+    HostedZoneId: ZONE,
+    RecordSets: [rec(extra)],
+  });
+  const byName = (extra: Record<string, unknown> = {}) => ({
+    HostedZoneName: ZONE_NAME,
+    RecordSets: [rec(extra)],
+  });
+  const otherZone = [
+    { Id: '/hostedzone/Z9999999999', Name: `${ZONE_NAME}.`, Config: { PrivateZone: false } },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    childLogger.child.mockReturnValue(childLogger);
+    provider = new Route53Provider();
+  });
+
+  it('id -> name resolving to the composite zone proceeds', async () => {
+    route();
+    await provider.update(LOGICAL, COMPOSITE, TYPE, byName({ TTL: '60' }), byId());
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+    const sent = changeInputs();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.HostedZoneId).toBe(ZONE);
+    expect(sent[0]!.ChangeBatch.Changes[0]!.Action).toBe('UPSERT');
+  });
+
+  it('id -> name resolving to ANOTHER zone throws, marked refused-before-applying, no change call', async () => {
+    route({ zones: otherZone });
+    const error = await provider
+      .update(LOGICAL, COMPOSITE, TYPE, byName({ TTL: '60' }), byId())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(
+      new RegExp(`Record set group ${LOGICAL}: the template's hosted zone differs from the one its records are in \\(${ZONE}\\)`)
+    );
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+    expect(changeInputs()).toHaveLength(0);
+  });
+
+  it('name -> id of the composite zone proceeds without a name lookup', async () => {
+    route();
+    await provider.update(LOGICAL, COMPOSITE, TYPE, byId({ TTL: '60' }), byName());
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+    expect(changeInputs()).toHaveLength(1);
+  });
+
+  it('name -> id of ANOTHER zone throws, marked refused-before-applying, no change call', async () => {
+    route();
+    const error = await provider
+      .update(LOGICAL, COMPOSITE, TYPE, { HostedZoneId: 'Z9999999999', RecordSets: [rec()] }, byName())
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toMatch(/the template's hosted zone differs from the one its records are in/);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(true);
+    expect(changeInputs()).toHaveLength(0);
+  });
+
+  it('an unchanged HostedZoneName makes no ListHostedZonesByName call (composite names the zone)', async () => {
+    route({ zones: otherZone });
+    await provider.update(LOGICAL, COMPOSITE, TYPE, byName({ TTL: '60' }), byName());
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+    expect(changeInputs()).toHaveLength(1);
+    expect(changeInputs()[0]!.HostedZoneId).toBe(ZONE);
+  });
+});
