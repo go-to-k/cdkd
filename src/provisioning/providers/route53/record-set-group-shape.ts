@@ -246,6 +246,19 @@ export function isUnambiguousClientRefusal(error: unknown): boolean {
   return !hasReplayMayCollide(error);
 }
 
+/**
+ * A Route 53 refusal of a DELETE whose values differ from the live record's
+ * ("... but the values provided do not match the current values", measured
+ * 2026-11-18): the recorded values lag an out-of-band edit.
+ */
+export function isRecordValuesMismatchRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'InvalidChangeBatch' &&
+    /values provided do not match the current values/i.test(error.message)
+  );
+}
+
 /** A Route 53 refusal that the record a DELETE names does not exist. */
 export function isRecordNotFoundRefusal(error: unknown): boolean {
   return (

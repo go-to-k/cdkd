@@ -53,8 +53,32 @@ export function wrapCaughtError(
   if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
   this.logger.debug(m(build(m(failure.detail)).message));
   const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-  const wrapped = build(`${m(failure.summary)}${relay}`);
+  const wrapped = build(`${m(failure.summary)}${relay}${recordSetProtectionNote(error)}`);
   return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+}
+
+/**
+ * What the class-only summary hides when Route 53 refuses a change because of a
+ * resource record set protection (go-to-k/cdkd#6549): without it a run that is
+ * not `--verbose` reads a bare `InvalidChangeBatch` / `HostedZoneInUse`. The
+ * protection is set outside the template (no CloudFormation property declares
+ * it), so `--remove-protection` does not lift it. Texts measured 2026-11-18.
+ */
+function recordSetProtectionNote(error: unknown): string {
+  if (!(error instanceof Error)) return '';
+  if (
+    error.name === 'InvalidChangeBatch' &&
+    /is protected and cannot be changed/.test(error.message)
+  ) {
+    return ' The record set has a Route 53 resource record set protection; remove it with DeleteResourceRecordSetProtections and re-run (--remove-protection does not, as no template property declares it).';
+  }
+  if (
+    error.name === 'HostedZoneInUse' &&
+    /has resource record set protections/.test(error.message)
+  ) {
+    return ' The hosted zone has Route 53 resource record set protections; remove them with DeleteResourceRecordSetProtections and re-run (--remove-protection does not, as no template property declares them).';
+  }
+  return '';
 }
 
 /**

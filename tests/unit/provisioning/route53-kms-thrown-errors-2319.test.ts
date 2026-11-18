@@ -670,3 +670,51 @@ describe('Route 53 / KMS thrown wraps keep the caller identity out (go-to-k/cdkd
     expect(warned()).not.toContain(SECRET);
   });
 });
+
+describe('a resource record set protection refusal names its cause (go-to-k/cdkd#6549)', () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    debugSpy.mockReset();
+    warnSpy.mockReset();
+  });
+
+  // Route 53's texts, measured 2026-11-18.
+  const RECORD_PROTECTED =
+    '[RRSet with DNS name www.example.com., type A is protected and cannot be changed. Call DeleteResourceRecordSetProtections for this record set before changing it.]';
+  const ZONE_PROTECTED = `Hosted Zone HostedZoneId:${ZONE} has resource record set protections. All resource record set protections need to be deleted (DeleteResourceRecordSetProtections) before deleting hosted zone.`;
+
+  it('fails a protected RecordSet delete with the protection named, not as already deleted', async () => {
+    const r53 = new Route53Provider();
+    failOn('ChangeResourceRecordSetsCommand', awsError('InvalidChangeBatch', RECORD_PROTECTED));
+    const failure = await thrown(r53.delete('Res', `${ZONE}|www.example.com.|A`, RS, RECORD));
+
+    expect(failure).toBeInstanceOf(ProvisioningError);
+    expect(failure.message).toBe(
+      `Failed to delete record set Res: InvalidChangeBatch. ${VERBOSE_POINTER} The record set has a Route 53 resource record set protection; remove it with DeleteResourceRecordSetProtections and re-run (--remove-protection does not, as no template property declares it).`
+    );
+  });
+
+  it('names the protection on a refused HostedZone delete', async () => {
+    const r53 = new Route53Provider();
+    failOn('DeleteHostedZoneCommand', awsError('HostedZoneInUse', ZONE_PROTECTED));
+    const failure = await thrown(r53.delete('Res', ZONE, HZ));
+
+    expect(failure.message).toBe(
+      `Failed to delete hosted zone Res: HostedZoneInUse. ${VERBOSE_POINTER} The hosted zone has Route 53 resource record set protections; remove them with DeleteResourceRecordSetProtections and re-run (--remove-protection does not, as no template property declares them).`
+    );
+  });
+
+  it('adds nothing to the same classes refusing for another reason', async () => {
+    const r53 = new Route53Provider();
+    failOn(
+      'ChangeResourceRecordSetsCommand',
+      awsError('InvalidChangeBatch', '[Invalid Resource Record: FATAL problem: ARRDATAIllegalIPv4Address]')
+    );
+    const failure = await thrown(r53.create('Res', RS, RECORD));
+    expect(failure.message).not.toContain('resource record set protection');
+
+    failOn('DeleteHostedZoneCommand', awsError('HostedZoneInUse', 'Hosted zone is in use by a VPC association.'));
+    const zoneFailure = await thrown(r53.delete('Res', ZONE, HZ));
+    expect(zoneFailure.message).not.toContain('resource record set protection');
+  });
+});

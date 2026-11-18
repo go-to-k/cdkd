@@ -62,6 +62,12 @@ is the one you see.
   The flag reaches it when cdkd can prove it is still the resource the failed
   deploy created. The proof rules are in
   [cdkd destroy internals](cli-destroy-internals.md#behaviour).
+- **Route 53 resource record set protection.** The flag does not remove it.
+  The protection is set outside the template, and no CloudFormation property
+  declares it. A protected record set fails its delete, and its state record
+  is kept. A hosted zone holding any protection fails its delete too. The
+  error says the protection is the cause. Remove the protection with the
+  Route 53 `DeleteResourceRecordSetProtections` API, then re-run the destroy.
 
 ## Cognito user pools
 
