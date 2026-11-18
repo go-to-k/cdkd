@@ -458,8 +458,8 @@ export function refuseCfnUnresolvableZoneName(
  * an alias, so Route 53 never saw the conflict it refuses for CloudFormation
  * ("Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords]
  * ...]", measured). Create and template-path update only: a DELETE carrying
- * the conflict is refused with `InvalidChangeBatch`, which the delete path
- * reads as already deleted, and a state record cannot be edited.
+ * the conflict is refused with `InvalidChangeBatch`, which fails the delete,
+ * and a state record cannot be edited.
  */
 export function withTemplateAliasConflicts(
   recordSet: ResourceRecordSet,

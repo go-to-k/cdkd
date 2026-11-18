@@ -118,14 +118,14 @@ record_protection() {
   node --input-type=module -e '
     import { createRequire } from "node:module";
     const r53 = createRequire(process.argv[1])("@aws-sdk/client-route-53");
-    const [op, HostedZoneId, RecordName, RecordType] = process.argv.slice(2);
-    const client = new r53.Route53Client({ region: process.env.AWS_REGION || "us-east-1" });
+    const [region, op, HostedZoneId, RecordName, RecordType] = process.argv.slice(2);
+    const client = new r53.Route53Client({ region });
     const Protections = [{ RecordName, RecordType }];
     const Command = op === "create"
       ? r53.CreateResourceRecordSetProtectionsCommand
       : r53.DeleteResourceRecordSetProtectionsCommand;
     await client.send(new Command({ HostedZoneId, Protections }));
-  ' "${PWD}/../../../package.json" "$@"
+  ' "${PWD}/../../../package.json" "${REGION}" "$@"
 }
 
 cleanup() {
@@ -1357,10 +1357,11 @@ if [ "${PIPE_LEFT}" != "0" ]; then
   exit 1
 fi
 PROTECTED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
-PROTECTED_IN_STATE=$(printf '%s' "${PROTECTED_STATE}" | jq --arg id "${EXPECTED_A_RECORD_ID}" \
-  '[.resources[] | select(.resourceType == "AWS::Route53::RecordSet" and .physicalId == $id)] | length')
-if [ "${PROTECTED_IN_STATE}" != "1" ]; then
-  echo "FAIL: state no longer holds the protected record ${EXPECTED_A_RECORD_ID} after the failed destroy (issue #6549)" >&2
+# By logical id (the ARecord L2's `TestARecord<hash>`), then its physical id.
+PROTECTED_IN_STATE=$(printf '%s' "${PROTECTED_STATE}" | jq -r \
+  '[.resources | to_entries[] | select(.key | startswith("TestARecord")) | .value.physicalId] | join(" ")')
+if [ "${PROTECTED_IN_STATE}" != "${EXPECTED_A_RECORD_ID}" ]; then
+  echo "FAIL: state's TestARecord is '${PROTECTED_IN_STATE}' after the failed destroy, expected '${EXPECTED_A_RECORD_ID}' (issue #6549)" >&2
   rm -f "${DESTROY_LOG}"
   exit 1
 fi

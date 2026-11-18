@@ -36,6 +36,7 @@ import {
   refuseCfnUnresolvableZoneName,
   withTemplateAliasConflicts,
 } from './shared.js';
+import { isRecordValuesMismatchRefusal } from './record-set-group-shape.js';
 
 // ─── AWS::Route53::RecordSet ───────────────────────────────────────
 export async function createRecordSet(
@@ -341,9 +342,10 @@ export async function deleteRecordSet(
 
   // go-to-k/cdkd#3952: a record-set DELETE must match the live record set
   // EXACTLY, so every field `buildResourceRecordSet` sends is part of the
-  // address, and the InvalidChangeBatch arm below reads any mismatch as
-  // "already deleted" -- a TXT value (or a HealthCheckId, a Weight) holding
-  // the mask of a NoEcho value would DROP the record over a live DNS record.
+  // address. A TXT value (or a HealthCheckId, a Weight) holding the mask of a
+  // NoEcho value used to read as "already deleted" and DROP the record over a
+  // live DNS record; a mismatch is now retried against the live record
+  // (#6549), and a value cdkd redacted is still never sent.
   const redactedSkip = redactedDeleteAddressSkip(
     this.logger,
     logicalId,
@@ -444,7 +446,7 @@ export async function deleteRecordSet(
   try {
     const resourceRecordSet = this.buildResourceRecordSet(properties);
 
-    const sendDelete = () =>
+    const sendDelete = (recordSet: ResourceRecordSet) =>
       this.getClient().send(
         new ChangeResourceRecordSetsCommand({
           HostedZoneId: hostedZoneId,
@@ -452,32 +454,50 @@ export async function deleteRecordSet(
             Changes: [
               {
                 Action: 'DELETE',
-                ResourceRecordSet: resourceRecordSet,
+                ResourceRecordSet: recordSet,
               },
             ],
           },
         })
       );
+    const deleteRecord = async (recordSet: ResourceRecordSet): Promise<void> => {
+      try {
+        await sendDelete(recordSet);
+      } catch (error) {
+        // While the zone's AcceleratedRecoveryStatus is transitioning
+        // (ENABLING / DISABLING / *_HOSTED_ZONE_LOCKED), Route 53 refuses
+        // EVERY mutation with "HostedZone <id> is marked disabled for
+        // mutation" (issue #1467). Record sets are deleted BEFORE the zone
+        // in the destroy DAG, so the zone-side pre-delete guard
+        // (`ensureAcceleratedRecoveryDisabledForDelete`) never runs first.
+        // Wait for the transition to settle (ENABLED is fine — mutations
+        // are allowed again; deliberately NOT disabling the feature here,
+        // since a record-only delete must not flip a zone-level setting),
+        // then retry the change once.
+        if (!isZoneDisabledForMutationError(error)) throw error;
+        this.logger.info(
+          `Hosted zone ${hostedZoneId} is mid AcceleratedRecovery transition (marked disabled for mutation); waiting for it to settle before retrying delete of record set ${logicalId}`
+        );
+        await this.waitForAcceleratedRecoveryMutable(hostedZoneId, logicalId, resourceType);
+        await sendDelete(recordSet);
+      }
+    };
 
     try {
-      await sendDelete();
+      await deleteRecord(resourceRecordSet);
     } catch (error) {
-      // While the zone's AcceleratedRecoveryStatus is transitioning
-      // (ENABLING / DISABLING / *_HOSTED_ZONE_LOCKED), Route 53 refuses
-      // EVERY mutation with "HostedZone <id> is marked disabled for
-      // mutation" (issue #1467). Record sets are deleted BEFORE the zone
-      // in the destroy DAG, so the zone-side pre-delete guard
-      // (`ensureAcceleratedRecoveryDisabledForDelete`) never runs first.
-      // Wait for the transition to settle (ENABLED is fine — mutations
-      // are allowed again; deliberately NOT disabling the feature here,
-      // since a record-only delete must not flip a zone-level setting),
-      // then retry the change once.
-      if (!isZoneDisabledForMutationError(error)) throw error;
-      this.logger.info(
-        `Hosted zone ${hostedZoneId} is mid AcceleratedRecovery transition (marked disabled for mutation); waiting for it to settle before retrying delete of record set ${logicalId}`
+      // The recorded values lag the live record (an out-of-band edit): delete
+      // what Route 53 holds at this record's name, type and SetIdentifier, as
+      // the update and RecordSetGroup paths do. Only on this refusal, so an
+      // ordinary delete costs no lookup (#6549). No live record keeps the
+      // refusal: the lookup cannot prove the record gone by itself.
+      if (!isRecordValuesMismatchRefusal(error)) throw error;
+      const live = await this.findLiveRecordSet(hostedZoneId, properties);
+      if (!live) throw error;
+      this.logger.debug(
+        safeMsg`Record set ${logicalId}: the recorded values differ from the live record; deleting the live record`
       );
-      await this.waitForAcceleratedRecoveryMutable(hostedZoneId, logicalId, resourceType);
-      await sendDelete();
+      await deleteRecord(live);
     }
 
     this.logger.debug(`Successfully deleted record set ${logicalId}`);

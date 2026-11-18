@@ -1182,6 +1182,49 @@ describe('Route53Provider', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
+      describe('a DELETE refused because the recorded values lag the live record (issue #6549)', () => {
+        // Route 53's text, measured 2026-11-18.
+        const mismatch = () =>
+          Object.assign(
+            new Error(
+              "[Tried to delete resource record set [name='www.example.com.', type='A'] but the values provided do not match the current values]"
+            ),
+            { name: 'InvalidChangeBatch' }
+          );
+        const recorded = {
+          HostedZoneId: 'Z1234567890',
+          Name: 'www.example.com.',
+          Type: 'A',
+          TTL: '300',
+          ResourceRecords: ['1.2.3.4'],
+        };
+        const live = { Name: 'www.example.com.', Type: 'A', TTL: 60, ResourceRecords: [{ Value: '1.2.3.4' }] };
+
+        it('deletes the live record instead', async () => {
+          mockSend
+            .mockRejectedValueOnce(mismatch())
+            .mockResolvedValueOnce({ ResourceRecordSets: [live] })
+            .mockResolvedValueOnce({});
+
+          await provider.delete('MyRecord', 'Z1234567890|www.example.com.|A', 'AWS::Route53::RecordSet', recorded);
+
+          expect(mockSend).toHaveBeenCalledTimes(3);
+          expect(mockSend.mock.calls[1][0].constructor.name).toBe('ListResourceRecordSetsCommand');
+          const retry = mockSend.mock.calls[2][0];
+          expect(retry.constructor.name).toBe('ChangeResourceRecordSetsCommand');
+          expect(retry.input.ChangeBatch.Changes[0]).toEqual({ Action: 'DELETE', ResourceRecordSet: live });
+        });
+
+        it('keeps the refusal when no live record answers the lookup', async () => {
+          mockSend.mockRejectedValueOnce(mismatch()).mockResolvedValueOnce({ ResourceRecordSets: [] });
+
+          await expect(
+            provider.delete('MyRecord', 'Z1234567890|www.example.com.|A', 'AWS::Route53::RecordSet', recorded)
+          ).rejects.toThrow('Failed to delete record set MyRecord: ');
+          expect(mockSend).toHaveBeenCalledTimes(2);
+        });
+      });
+
       // ─── issue #1467: zone mid AcceleratedRecovery transition ─────────
       // While the zone's AcceleratedRecoveryStatus is ENABLING, Route 53
       // refuses ChangeResourceRecordSets with "HostedZone <id> is marked
