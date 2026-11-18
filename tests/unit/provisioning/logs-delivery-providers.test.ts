@@ -492,8 +492,6 @@ function throttled(): Error {
   });
 }
 
-type Handlers = Map<unknown, (i: Record<string, unknown>) => unknown>;
-
 describe('the delivery providers: guards and edge paths', () => {
   const source = new LogsDeliverySourceProvider();
   const destination = new LogsDeliveryDestinationProvider();
@@ -521,7 +519,7 @@ describe('the delivery providers: guards and edge paths', () => {
   });
 
   it('refuses to create over an existing destination of the same name', async () => {
-    respond(new Map([[GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })]]) as Handlers);
+    respond(new Map<unknown, (i: Record<string, unknown>) => unknown>([[GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })]]));
     const error = await destination
       .create('Dst', 'AWS::Logs::DeliveryDestination', destProps)
       .catch((e: unknown) => e);
@@ -534,7 +532,7 @@ describe('the delivery providers: guards and edge paths', () => {
     let exists = false;
     let policyCalls = 0;
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [
           GetDeliveryDestinationCommand,
           () => (exists ? { deliveryDestination: liveDest } : Promise.reject(notFound())),
@@ -550,7 +548,7 @@ describe('the delivery providers: guards and edge paths', () => {
           PutDeliveryDestinationPolicyCommand,
           () => (++policyCalls === 1 ? Promise.reject(throttled()) : {}),
         ],
-      ]) as Handlers
+      ])
     );
     const lookup = priorAttemptLookup('Dst', () => Promise.resolve([]));
     await withPriorAttempts(lookup, async () => {
@@ -586,10 +584,10 @@ describe('the delivery providers: guards and edge paths', () => {
 
   it('an unchanged policy sends no Put; a changed one sends the new document', async () => {
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
         [PutDeliveryDestinationPolicyCommand, () => ({})],
-      ]) as Handlers
+      ])
     );
     await destination.update('Dst', 'dst', 'AWS::Logs::DeliveryDestination', destProps, destProps);
     expect(inputsOf(PutDeliveryDestinationPolicyCommand)).toHaveLength(0);
@@ -608,10 +606,10 @@ describe('the delivery providers: guards and edge paths', () => {
 
   it('a removed policy already gone is not an error', async () => {
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
         [DeleteDeliveryDestinationPolicyCommand, () => Promise.reject(notFound())],
-      ]) as Handlers
+      ])
     );
     const { DeliveryDestinationPolicy: _drop, ...removed } = destProps;
     await expect(
@@ -640,10 +638,10 @@ describe('the delivery providers: guards and edge paths', () => {
 
   it('a state-borne malformed value warns and is skipped rather than refused', async () => {
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [GetDeliveryDestinationCommand, () => Promise.reject(notFound())],
         [PutDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
-      ]) as Handlers
+      ])
     );
     const bad = { ...destProps, DeliveryDestinationPolicy: 'nope' };
     await expect(
@@ -654,10 +652,10 @@ describe('the delivery providers: guards and edge paths', () => {
 
     mockSend.mockReset();
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [UpdateDeliveryConfigurationCommand, () => ({})],
         [GetDeliveryCommand, () => ({ delivery: { id: 'abc123', arn: DELIVERY_ARN } })],
-      ]) as Handlers
+      ])
     );
     await expect(
       delivery.update(
@@ -674,11 +672,11 @@ describe('the delivery providers: guards and edge paths', () => {
 
   it('readCurrentState reports a destination without a policy, and echoes no undeclared name member', async () => {
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
         [GetDeliveryDestinationPolicyCommand, () => Promise.reject(notFound())],
         [ListTagsForResourceCommand, () => ({ tags: {} })],
-      ]) as Handlers
+      ])
     );
     const none = await destination.readCurrentState('dst', 'Dst', 'AWS::Logs::DeliveryDestination', destProps);
     expect(none).not.toBe(RESOURCE_NOT_FOUND);
@@ -686,11 +684,11 @@ describe('the delivery providers: guards and edge paths', () => {
 
     mockSend.mockReset();
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [GetDeliveryDestinationCommand, () => ({ deliveryDestination: liveDest })],
         [GetDeliveryDestinationPolicyCommand, () => ({ policy: { deliveryDestinationPolicy: JSON.stringify(policyDoc) } })],
         [ListTagsForResourceCommand, () => ({ tags: {} })],
-      ]) as Handlers
+      ])
     );
     const withPolicy = await destination.readCurrentState('dst', 'Dst', 'AWS::Logs::DeliveryDestination', destProps);
     expect(withPolicy).toMatchObject({ DeliveryDestinationPolicy: { DeliveryDestinationPolicy: policyDoc } });
@@ -701,9 +699,9 @@ describe('the delivery providers: guards and edge paths', () => {
 
   it('destination getAttribute and import read the live destination', async () => {
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [GetDeliveryDestinationCommand, (i) => (i['name'] === 'dst' ? { deliveryDestination: liveDest } : Promise.reject(notFound()))],
-      ]) as Handlers
+      ])
     );
     expect(await destination.getAttribute('dst', 'AWS::Logs::DeliveryDestination', 'Arn')).toBe(DEST_ARN);
     expect(
@@ -716,7 +714,7 @@ describe('the delivery providers: guards and edge paths', () => {
 
   it('delivery import follows DescribeDeliveries pages', async () => {
     respond(
-      new Map([
+      new Map<unknown, (i: Record<string, unknown>) => unknown>([
         [
           DescribeDeliveriesCommand,
           (i) =>
@@ -724,7 +722,7 @@ describe('the delivery providers: guards and edge paths', () => {
               ? { deliveries: [{ id: 'other', deliverySourceName: 'src', deliveryDestinationArn: 'x' }], nextToken: 't1' }
               : { deliveries: [{ id: 'abc123', arn: DELIVERY_ARN, deliverySourceName: 'src', deliveryDestinationArn: DEST_ARN }] },
         ],
-      ]) as Handlers
+      ])
     );
     expect(
       await delivery.import({ logicalId: 'Del', resourceType: 'AWS::Logs::Delivery', properties: delProps } as never)
@@ -733,7 +731,7 @@ describe('the delivery providers: guards and edge paths', () => {
   });
 
   it('a CreateDelivery answer without an id fails the create', async () => {
-    respond(new Map([[CreateDeliveryCommand, () => ({ delivery: {} })]]) as Handlers);
+    respond(new Map<unknown, (i: Record<string, unknown>) => unknown>([[CreateDeliveryCommand, () => ({ delivery: {} })]]));
     await expect(delivery.create('Del', 'AWS::Logs::Delivery', delProps)).rejects.toThrow(
       /returned no delivery id/
     );
