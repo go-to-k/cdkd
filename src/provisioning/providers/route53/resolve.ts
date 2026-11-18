@@ -109,8 +109,9 @@ export async function resolveHostedZoneId(
           DNSName: canonicalizeQueryName(hostedZoneName),
           // Deliberately > 1: split-horizon DNS lets a public and a private
           // zone share one name, and `MaxItems: 1` silently picks whichever
-          // AWS lists first. Callers that DELETE through this resolution ask
-          // for the ambiguity to be refused instead.
+          // AWS lists first. Callers that DELETE through this resolution, and
+          // the RecordSet / RecordSetGroup create and update paths (as
+          // CloudFormation, #6540), ask for the ambiguity to be refused.
           MaxItems: 5,
         })
       );

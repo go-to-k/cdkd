@@ -1,5 +1,6 @@
 import { isAwsAuthoredFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { isTruthyCfnBoolean } from '../../data-delete-intent.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../../import-helpers.js';
 import { COMPOSITE_ID_SEPARATOR } from '../../composite-id.js';
@@ -418,4 +419,34 @@ export async function recordedZoneForSwitch(
       error instanceof Error ? error : undefined
     );
   }
+}
+
+/**
+ * Refuse a `HostedZoneName` CloudFormation would not resolve (go-to-k/cdkd#6540):
+ * CloudFormation matches the zone's stored spelling exactly, lower case with
+ * the trailing dot, and fails `<zone>` or `<ZONE>.` with NotFound (measured),
+ * while cdkd's lookup normalizes both. Template paths only: a state record
+ * replayed (`replayingState`) or a drift readback cannot be edited through the
+ * template, so there it warns and the normalized lookup proceeds.
+ */
+export function refuseCfnUnresolvableZoneName(
+  provider: Route53Provider,
+  value: unknown,
+  noun: string,
+  logicalId: string,
+  resourceType: string,
+  physicalId: string | undefined,
+  stateBorne: boolean
+): void {
+  if (typeof value !== 'string' || value === '') return;
+  if (value.endsWith('.') && value === value.toLowerCase()) return;
+  const message =
+    `${noun} ${logicalId}: HostedZoneName ${zoneNameShown(value)} is not the zone's exact ` +
+    `name; CloudFormation resolves only the lower-case name with its trailing dot ` +
+    `(${zoneNameShown(`${value.replace(/\.$/, '').toLowerCase()}.`)}), and fails this one`;
+  if (stateBorne) {
+    provider.logger.warn(safeMsg`${message}. Resolving it anyway for this state replay.`);
+    return;
+  }
+  throw new ProvisioningError(message, resourceType, logicalId, physicalId);
 }

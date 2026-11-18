@@ -727,7 +727,10 @@ export function route53ZoneReferenceChanged(
     const name = props['HostedZoneName'];
     return {
       id: typeof id === 'string' ? id.replace(/^\/hostedzone\//, '') : id,
-      name,
+      // A respelling of one zone (trailing dot, case) is not a move: the
+      // provider refuses the spellings CloudFormation fails (#6540), and
+      // correcting one must update in place rather than collide.
+      name: typeof name === 'string' ? name.replace(/\.$/, '').toLowerCase() : name,
     };
   };
   const before = read(siblings.oldProperties);

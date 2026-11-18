@@ -1,13 +1,9 @@
 import type { Route53Provider } from '../route53-provider.js';
 import {
   ChangeResourceRecordSetsCommand,
-  Route53Client,
   type Change,
   type ResourceRecordSet,
 } from '@aws-sdk/client-route-53';
-import { ambientClientDefaults } from '../../../utils/ambient-client-defaults.js';
-import { hasReplayMayCollide } from '../../../deployment/retryable-errors.js';
-import { withoutServerErrorRetries } from '../ambiguous-create.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNameCollision } from '../../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -27,20 +23,37 @@ import {
 } from '../../../deployment/prior-attempt-scope.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
-  isRedactedRecordedValue,
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../../redacted-delete-address.js';
 import {
   isZoneDisabledForMutationError,
   HostedZoneNameNotFoundError,
-  normalizeRecordName,
   isCnameConflictRefusal,
   CNAME_CONFLICT_COLLISION_NOTE,
   bareHostedZoneId,
   zoneReferenceChanged,
   recordedZoneForSwitch,
+  refuseCfnUnresolvableZoneName,
 } from './shared.js';
+import {
+  RECORD_SET_GROUP_TYPE,
+  RECORD_IDENTITY_FIELDS,
+  RECORD_VALUE_FIELDS,
+  recordSetGroupCompositeId,
+  generatedGroupName,
+  parseRecordSetGroupCompositeId,
+  existingGroupName,
+  groupRecordSets,
+  recordSetKey,
+  groupZoneProperties,
+  recordBag,
+  groupRefusalError,
+  sameRecordSet,
+  updateBatchClient,
+  isUnambiguousClientRefusal,
+  isRecordNotFoundRefusal,
+} from './record-set-group-shape.js';
 
 // ─── AWS::Route53::RecordSetGroup ──────────────────────────────────
 //
@@ -49,146 +62,66 @@ import {
 // `ChangeResourceRecordSets` batch, which Route 53 applies all or nothing, so
 // a refused record leaves the whole group as it was.
 //
-// The physicalId is `<hostedZoneId>|<logicalId>`: the zone the records were
+// The physicalId is `<hostedZoneId>|<groupName>`: the zone the records were
 // written to, so update / delete / drift never re-resolve a `HostedZoneName`
-// (which can match a public and a private zone of one name), plus the logical
-// id, which `Ref` returns (CloudFormation returns a generated group name,
-// which names nothing in AWS either). Neither segment can carry `|`.
-
-const RECORD_SET_GROUP_TYPE = 'AWS::Route53::RecordSetGroup';
-
-/** The keys that identify a record inside a hosted zone. */
-const RECORD_IDENTITY_FIELDS = ['Name', 'Type', 'SetIdentifier'] as const;
+// (which can match a public and a private zone of one name), plus the group's
+// name, which `Ref` returns. CloudFormation's `Ref` is a generated
+// `<StackName>-<LogicalId>-<suffix>` naming nothing in AWS; cdkd generates the
+// same shape (`generateResourceName`), and an imported group keeps
+// CloudFormation's own name (go-to-k/cdkd#6530). Neither segment can carry `|`.
 
 /**
- * The per-record fields a DELETE must match exactly (every field
- * `buildResourceRecordSet` sends), used for the redaction guard when a delete
- * falls back to the recorded values.
+ * The group shapes CloudFormation refuses (go-to-k/cdkd#6540, measured):
+ * - a zone key on a `RecordSets` entry ("Encountered unsupported property
+ *   HostedZoneName" / "... HostedZoneId");
+ * - a group naming neither or both of `HostedZoneId` / `HostedZoneName`
+ *   ("Exactly one of HostedZoneId and HostedZoneName must be specified");
+ * - an empty or absent `RecordSets` ("Property RecordSets cannot be empty.");
+ * - a group `HostedZoneName` other than the zone's exact spelling.
+ * Template paths only; a state record warns.
  */
-const RECORD_VALUE_FIELDS = [
-  'TTL',
-  'ResourceRecords',
-  'AliasTarget',
-  'Weight',
-  'Region',
-  'Failover',
-  'MultiValueAnswer',
-  'HealthCheckId',
-  'GeoLocation',
-  'GeoProximityLocation',
-  'CidrRoutingConfig',
-] as const;
-
-function recordSetGroupCompositeId(hostedZoneId: string, logicalId: string): string {
-  return `${hostedZoneId}|${logicalId}`;
-}
-
-/**
- * The zone a cdkd-minted id of THIS group names, or `undefined` for any other
- * shape (CloudFormation's generated group name, adopted by `cdkd import`). The
- * second segment must be the group's own logical id: two non-empty segments
- * alone are not proof of a cdkd id (the #1711 class).
- */
-function parseRecordSetGroupCompositeId(
-  physicalId: string,
-  logicalId: string
-): { hostedZoneId: string } | undefined {
-  const parts = physicalId.split('|');
-  if (parts.length !== 2) return undefined;
-  const [hostedZoneId, idLogicalId] = parts;
-  if (!hostedZoneId || idLogicalId !== logicalId) return undefined;
-  return { hostedZoneId };
-}
-
-/**
- * The group's `RecordSets` as a list of record bags, or a refusal message
- * when the list (or one entry) is not usable. An ABSENT list is the empty
- * list: CloudFormation does not require the property.
- */
-function groupRecordSets(
-  properties: Record<string, unknown> | undefined
-): { records: Record<string, unknown>[] } | { refusal: string } {
-  const raw = properties?.['RecordSets'];
-  if (raw === undefined || raw === null) return { records: [] };
-  if (!Array.isArray(raw)) return { refusal: 'RecordSets is not a list' };
-  const records: Record<string, unknown>[] = [];
-  for (const [index, entry] of raw.entries()) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      return { refusal: `RecordSets[${index}] is not an object` };
-    }
-    records.push(entry as Record<string, unknown>);
-  }
-  return { records };
-}
-
-/**
- * A record's identity inside its zone — normalized name, type and
- * SetIdentifier — or `undefined` when it cannot be compared: a missing or
- * non-string field, a redacted dynamic reference (`{{resolve:...}}`), or
- * cdkd's `***` mask (go-to-k/cdkd#3952), either of which would address a
- * record that is not the one recorded.
- */
-function recordSetKey(record: Record<string, unknown>): string | undefined {
-  const comparable = (value: unknown): value is string =>
-    typeof value === 'string' &&
-    value !== '' &&
-    !value.includes('{{resolve:') &&
-    !isRedactedRecordedValue(value);
-  const name = record['Name'];
-  const type = record['Type'];
-  const setIdentifier = record['SetIdentifier'];
-  if (!comparable(name) || !comparable(type)) return undefined;
-  if (setIdentifier !== undefined && !comparable(setIdentifier)) return undefined;
-  return JSON.stringify([normalizeRecordName(name), type, setIdentifier ?? '']);
-}
-
-/**
- * The zone properties the group resolves against: the group's own
- * `HostedZoneId` / `HostedZoneName`, else the ones its records declare. A
- * record may repeat the group's zone, but a batch is per zone, so records
- * naming a DIFFERENT zone (or records disagreeing with each other) are
- * refused rather than written to whichever one wins.
- */
-function groupZoneProperties(
+function refuseCfnGroupZoneShape(
+  provider: Route53Provider,
   properties: Record<string, unknown>,
-  records: Record<string, unknown>[]
-): { zone: Record<string, unknown> } | { refusal: string } {
-  const zone: Record<string, unknown> = {};
-  for (const key of ['HostedZoneId', 'HostedZoneName'] as const) {
-    const groupValue = properties[key];
-    let value: unknown = groupValue;
-    for (const [index, record] of records.entries()) {
-      const recordValue = record[key];
-      if (recordValue === undefined) continue;
-      if (value === undefined) {
-        value = recordValue;
-        continue;
-      }
-      if (JSON.stringify(recordValue) !== JSON.stringify(value)) {
-        return {
-          refusal:
-            `RecordSets[${index}].${key} differs from the ${key} the rest of the group uses; ` +
-            `every record of a RecordSetGroup must be in one hosted zone`,
-        };
-      }
-    }
-    if (value !== undefined) zone[key] = value;
-  }
-  return { zone };
-}
-
-/** The bag `buildResourceRecordSet` reads, without the per-record zone keys. */
-function recordBag(record: Record<string, unknown>): Record<string, unknown> {
-  const { HostedZoneId: _zoneId, HostedZoneName: _zoneName, ...rest } = record;
-  return rest;
-}
-
-function groupRefusalError(
-  message: string,
+  records: Record<string, unknown>[],
   logicalId: string,
-  physicalId: string | undefined
-): ProvisioningError {
-  return new ProvisioningError(message, RECORD_SET_GROUP_TYPE, logicalId, physicalId);
+  resourceType: string,
+  physicalId: string | undefined,
+  stateBorne: boolean
+): void {
+  const refuse = (message: string) => {
+    if (stateBorne) provider.logger.warn(safeMsg`${message}. Proceeding for this state replay.`);
+    else throw groupRefusalError(message, logicalId, physicalId);
+  };
+  const index = records.findIndex(
+    (record) => record['HostedZoneName'] !== undefined || record['HostedZoneId'] !== undefined
+  );
+  if (index >= 0) {
+    refuse(
+      `Record set group ${logicalId}: RecordSets[${index}] declares a hosted zone, which ` +
+        `CloudFormation refuses as an unsupported property of a group's record; name the zone ` +
+        `on the group`
+    );
+  }
+  const zoneKeys = ['HostedZoneId', 'HostedZoneName'].filter((k) => properties[k] !== undefined);
+  if (zoneKeys.length !== 1) {
+    refuse(
+      `Record set group ${logicalId}: exactly one of HostedZoneId and HostedZoneName must be ` +
+        `specified (the group names ${zoneKeys.length === 0 ? 'neither' : 'both'})`
+    );
+  }
+  if (records.length === 0) {
+    refuse(`Record set group ${logicalId}: RecordSets cannot be empty`);
+  }
+  refuseCfnUnresolvableZoneName(
+    provider,
+    properties['HostedZoneName'],
+    'Record set group',
+    logicalId,
+    resourceType,
+    physicalId,
+    stateBorne
+  );
 }
 
 /**
@@ -239,15 +172,27 @@ export async function createRecordSetGroup(
   logicalId: string,
   resourceType: string,
   properties: Record<string, unknown>,
-  mask: ((text: string) => string) | undefined
+  mask: ((text: string) => string) | undefined,
+  replayingState = false
 ): Promise<ResourceCreateResult> {
   this.logger.debug(safeMsg`Creating Route 53 record set group ${logicalId}`);
 
   const { records, zone } = desiredGroup(properties, logicalId, undefined);
+  refuseCfnGroupZoneShape(
+    this,
+    properties,
+    records,
+    logicalId,
+    resourceType,
+    undefined,
+    replayingState
+  );
+  // Unambiguous, as CloudFormation: a split-horizon name is refused (#6540).
   const hostedZoneId = await this.resolveHostedZoneId(zone, logicalId, resourceType, undefined, {
+    requireUnambiguousZoneName: true,
     subject: groupSubject,
   });
-  const compositeId = recordSetGroupCompositeId(hostedZoneId, logicalId);
+  const compositeId = recordSetGroupCompositeId(hostedZoneId, generatedGroupName(logicalId));
 
   // Route 53 refuses an empty change batch, and a group with no records holds
   // nothing in AWS, so there is nothing to write.
@@ -367,6 +312,15 @@ async function applyRecordSetGroupUpdate(
   this.logger.debug(safeMsg`Updating Route 53 record set group ${logicalId}: ${physicalId}`);
 
   const { records, zone } = desiredGroup(properties, logicalId, physicalId);
+  refuseCfnGroupZoneShape(
+    this,
+    properties,
+    records,
+    logicalId,
+    resourceType,
+    physicalId,
+    context?.replayingState === true || context?.desiredFromAwsReadback === true
+  );
 
   // The previous side is a cdkd STATE record (or, on `drift --revert`, a
   // readback). A record in it cdkd cannot identify would make the batch below
@@ -401,7 +355,10 @@ async function applyRecordSetGroupUpdate(
     logicalId,
     resourceType
   );
-  const compositeId = recordSetGroupCompositeId(hostedZoneId, logicalId);
+  const compositeId = recordSetGroupCompositeId(
+    hostedZoneId,
+    existingGroupName(physicalId, logicalId)
+  );
 
   // A zone change is a replacement (`replacement-rules/rules.ts`), so reaching
   // here with a desired zone id other than the one the records live in would
@@ -591,80 +548,6 @@ async function ownEarlierWriteMayHold(
         sameRecordSet(provider.buildResourceRecordSet(recordBag(r)), desired)
     );
   });
-}
-
-/**
- * Equality of two record sets, insensitive to key order and to the spellings
- * Route 53 rewrites (trailing dot and case of the name and of an alias target).
- */
-function sameRecordSet(a: ResourceRecordSet, b: ResourceRecordSet): boolean {
-  const canonical = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(canonical);
-    if (value === null || typeof value !== 'object') return value;
-    return Object.fromEntries(
-      Object.keys(value)
-        .sort()
-        .map((k) => [k, canonical((value as Record<string, unknown>)[k])])
-    );
-  };
-  const spell = (r: ResourceRecordSet) =>
-    JSON.stringify(
-      canonical({
-        ...r,
-        Name: normalizeRecordName(r.Name ?? ''),
-        ...(r.AliasTarget && {
-          AliasTarget: {
-            ...r.AliasTarget,
-            DNSName: normalizeRecordName(r.AliasTarget.DNSName ?? ''),
-          },
-        }),
-      })
-    );
-  return spell(a) === spell(b);
-}
-
-/**
- * The update batch's client. The SDK does not replay a 5xx on it, and stamps
- * `markReplayMayCollide` on every error a `send` throws after an AMBIGUOUS
- * attempt (`withoutServerErrorRetries`), so a refusal can be told apart from
- * one answering a batch an earlier attempt may have committed. One per
- * provider instance, built on first use like `getClient`.
- */
-const updateBatchClients = new WeakMap<Route53Provider, Route53Client>();
-function updateBatchClient(provider: Route53Provider): Route53Client {
-  let client = updateBatchClients.get(provider);
-  if (!client) {
-    client = withoutServerErrorRetries(
-      new Route53Client({
-        ...ambientClientDefaults(),
-        ...(provider.providerRegion ? { region: provider.providerRegion } : {}),
-      })
-    );
-    updateBatchClients.set(provider, client);
-  }
-  return client;
-}
-
-/**
- * A send failure Route 53 authored as a client refusal with no ambiguous
- * attempt before it in the same `send` — the only case proving the batch
- * applied nothing. After an ambiguous attempt (a 5xx, a reset), "already
- * exists" may be this group's own committed record; after a throttle, which
- * applies nothing, it is still a refusal.
- */
-function isUnambiguousClientRefusal(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if ((error as { $fault?: unknown }).$fault !== 'client') return false;
-  return !hasReplayMayCollide(error);
-}
-
-/** A Route 53 refusal that the record a DELETE names does not exist. */
-function isRecordNotFoundRefusal(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.name === 'InvalidChangeBatch' &&
-    /but it was not found/i.test(error.message)
-  );
 }
 
 export async function deleteRecordSetGroup(
@@ -973,7 +856,7 @@ export async function importRecordSetGroup(
   try {
     observed = await readRecordSetGroup.call(
       this,
-      recordSetGroupCompositeId(hostedZoneId, input.logicalId),
+      recordSetGroupCompositeId(hostedZoneId, existingGroupName(known, input.logicalId)),
       input.logicalId,
       input.properties
     );
@@ -986,5 +869,8 @@ export async function importRecordSetGroup(
     const reason = 'not every record was found under the resolved hosted zone';
     return unverified(reason);
   }
-  return { physicalId: recordSetGroupCompositeId(hostedZoneId, input.logicalId), attributes: {} };
+  return {
+    physicalId: recordSetGroupCompositeId(hostedZoneId, existingGroupName(known, input.logicalId)),
+    attributes: {},
+  };
 }

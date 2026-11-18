@@ -104,6 +104,11 @@ describe('route53ZoneReferenceChanged (go-to-k/cdkd#6537)', () => {
     ['same id, /hostedzone/ spelling differs', { HostedZoneId: '/hostedzone/Z1' }, { HostedZoneId: 'Z1' }, false],
     ['two different names', { HostedZoneName: 'a.com.' }, { HostedZoneName: 'b.com.' }, true],
     ['same name', { HostedZoneName: 'a.com.' }, { HostedZoneName: 'a.com.' }, false],
+    // #6540: a respelling of one zone is not a move.
+    ['same name, trailing dot respelled', { HostedZoneName: 'a.com' }, { HostedZoneName: 'a.com.' }, false],
+    ['same name, case respelled', { HostedZoneName: 'A.COM.' }, { HostedZoneName: 'a.com.' }, false],
+    ['same name, case and dot respelled', { HostedZoneName: 'A.com' }, { HostedZoneName: 'a.COM.' }, false],
+    ['different names, one respelled', { HostedZoneName: 'a.com' }, { HostedZoneName: 'B.com.' }, true],
     ['a non-string (intrinsic object) id', { HostedZoneId: 'Z1' }, { HostedZoneId: { Ref: 'X' } }, true],
     ['a non-string (intrinsic object) name on the other side', { HostedZoneName: { Ref: 'X' } }, { HostedZoneId: 'Z1' }, true],
   ])('%s', (_label, o, n, expected) => {

@@ -552,26 +552,25 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(mockSend.mock.calls[0]?.[0].input.HostedZoneId).toBe('Z0123456789ABCDEFGHIJ');
     });
 
-    it('does NOT refuse split-horizon on create (first-match preserved)', async () => {
-      // Deliberate asymmetry: refusing here would break deploys that work
-      // today. Only the destructive / state-freezing paths require an
-      // unambiguous zone.
-      mockSend
-        .mockResolvedValueOnce({
-          HostedZones: [
-            { Id: '/hostedzone/ZPUBLIC000000000000', Name: 'example.com.' },
-            { Id: '/hostedzone/ZPRIVATE00000000000', Name: 'example.com.' },
-          ],
-        })
-        .mockResolvedValueOnce({});
-
-      const result = await provider.create('WebsiteRecord', 'AWS::Route53::RecordSet', {
-        ...RECORD_PROPS,
-        HostedZoneId: undefined,
-        HostedZoneName: 'example.com',
+    it('refuses split-horizon on create, as CloudFormation does (#6540)', async () => {
+      // CloudFormation fails this create with "Multiple hosted zones with name
+      // ... Please specify HostedZoneId instead" (measured), so cdkd no longer
+      // takes the first zone the listing returns.
+      mockSend.mockResolvedValueOnce({
+        HostedZones: [
+          { Id: '/hostedzone/ZPUBLIC000000000000', Name: 'example.com.' },
+          { Id: '/hostedzone/ZPRIVATE00000000000', Name: 'example.com.' },
+        ],
       });
 
-      expect(result.physicalId).toBe('ZPUBLIC000000000000|record.example.com.|A');
+      await expect(
+        provider.create('WebsiteRecord', 'AWS::Route53::RecordSet', {
+          ...RECORD_PROPS,
+          HostedZoneId: undefined,
+          HostedZoneName: 'example.com.',
+        })
+      ).rejects.toThrow(/matches 2 hosted zones/);
+      expect(mockSend).toHaveBeenCalledTimes(1);
     });
   });
 

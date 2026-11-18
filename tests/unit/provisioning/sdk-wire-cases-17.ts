@@ -478,7 +478,12 @@ const record = (extra: Bag): Bag => ({
   ...extra,
 });
 
-const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] = [
+const RECORD_BAGS: {
+  name: string;
+  bag: Bag;
+  variants?: Record<string, unknown>;
+  throws?: Record<string, Throw>;
+}[] = [
   {
     name: 'plain',
     bag: record({ TTL: '300', ResourceRecords: ['192.0.2.1', '192.0.2.2'], Comment: 'plain record' }),
@@ -492,6 +497,9 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
       TTL: '60',
       ResourceRecords: ['"v=spf1 -all"'],
     },
+    // The varied zone must stay a name CloudFormation resolves (lower case with
+    // the trailing dot, #6540), or create() refuses it before any write.
+    variants: { HostedZoneName: 'other.example.org.' },
     throws: {
       'create:HostedZoneName': {
         why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (route53/record-set.ts, createRecordSet)`,
@@ -623,9 +631,10 @@ const RECORD_SET_CASE: TypeCase = {
   exempt: {},
   // UPSERT writes the whole record built from next; no per-key call.
   targets: [],
-  bags: RECORD_BAGS.map(({ name, bag, throws }) => ({
+  bags: RECORD_BAGS.map(({ name, bag, throws, variants }) => ({
     name,
     bag: fresh(bag),
+    ...(variants ? { variants } : {}),
     expectedSilent: Object.fromEntries(
       paths(bag)
         .map((p) => p.join('.'))
@@ -684,10 +693,17 @@ const GROUP_REMOVAL_THROWS: Record<string, Throw> = Object.fromEntries([
   [
     'create:HostedZoneId',
     {
-      why: `a group with neither HostedZoneId nor HostedZoneName is refused before any write (route53/record-set-group.ts, createRecordSetGroup via resolveHostedZoneId)`,
-      says: NO_ZONE_NEEDLE,
+      why: `a group with neither HostedZoneId nor HostedZoneName is refused before any write (route53/record-set-group.ts, refuseCfnGroupZoneShape)`,
+      says: /exactly one of HostedZoneId and HostedZoneName must be specified/,
     } satisfies Throw,
   ],
+  ...['create', 'update-add', 'update-remove'].map((d) => [
+    `${d}:RecordSets`,
+    {
+      why: `CloudFormation refuses an empty or absent RecordSets ("Property RecordSets cannot be empty."), so the group is refused before any write (route53/record-set-group.ts, refuseCfnGroupZoneShape)`,
+      says: /RecordSets cannot be empty/,
+    } satisfies Throw,
+  ]),
   ...Array.from({ length: GROUP_RECORD_COUNT }, (_, i) =>
     ['Name', 'Type'].flatMap((key) =>
       ['create', 'update-add', 'update-remove'].map((d) => [
@@ -715,8 +731,8 @@ const RECORD_SET_GROUP_CASE: TypeCase = {
     HostedZoneName: `a group in one zone resolves it by HostedZoneId or by name; a bag carries one, and the by-name lookup is the RecordSet case's (route53/resolve.ts, resolveHostedZoneId)`,
   },
   nestedExempt: {
-    'RecordSets.HostedZoneId': `a record may repeat the group's zone, but a different one is refused (route53/record-set-group.ts, groupZoneProperties), so a varied value cannot be delivered; the field is stripped from the wire`,
-    'RecordSets.HostedZoneName': `a record may repeat the group's zone, but a different one is refused (route53/record-set-group.ts, groupZoneProperties), so a varied value cannot be delivered; the field is stripped from the wire`,
+    'RecordSets.HostedZoneId': `CloudFormation refuses a zone key on a group's record ("Encountered unsupported property", #6540), so a bag cannot carry one (route53/record-set-group.ts, refuseCfnGroupZoneShape); the group names its zone itself`,
+    'RecordSets.HostedZoneName': `CloudFormation refuses a zone key on a group's record ("Encountered unsupported property", #6540), so a bag cannot carry one (route53/record-set-group.ts, refuseCfnGroupZoneShape); the group names its zone itself`,
   },
   targets: [],
   bags: [

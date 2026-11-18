@@ -60,7 +60,8 @@ import { markReplayMayCollide } from '../../../src/deployment/retryable-errors.j
 
 const TYPE = 'AWS::Route53::RecordSetGroup';
 const ZONE = 'Z1234567890';
-const ZONE_NAME = 'example.com';
+// The exact spelling CloudFormation resolves: lower case with the trailing dot (#6540).
+const ZONE_NAME = 'example.com.';
 const LOGICAL = 'Group';
 const COMPOSITE = `${ZONE}|${LOGICAL}`;
 
@@ -92,7 +93,7 @@ function route(r: Route = {}): void {
     if (command instanceof ListHostedZonesByNameCommand) {
       return {
         HostedZones: r.zones ?? [
-          { Id: `/hostedzone/${ZONE}`, Name: `${ZONE_NAME}.`, Config: { PrivateZone: false } },
+          { Id: `/hostedzone/${ZONE}`, Name: ZONE_NAME, Config: { PrivateZone: false } },
         ],
         IsTruncated: false,
       };
@@ -132,14 +133,14 @@ describe('Route53Provider RecordSetGroup', () => {
   });
 
   describe('create', () => {
-    it('sends one batch of one CREATE per record, zone from HostedZoneId, comment forwarded, per-record zone keys stripped', async () => {
+    it('sends one batch of one CREATE per record, zone from HostedZoneId, comment forwarded', async () => {
       route();
       const result = await provider.create(LOGICAL, TYPE, {
         HostedZoneId: ZONE,
         Comment: 'grp comment',
         RecordSets: [
-          rec({ HostedZoneId: ZONE }),
-          rec({ Name: 'b.example.com.', Type: 'CNAME', ResourceRecords: ['a.example.com'], HostedZoneName: 'example.com.' , HostedZoneId: ZONE }),
+          rec(),
+          rec({ Name: 'b.example.com.', Type: 'CNAME', ResourceRecords: ['a.example.com'] }),
         ],
       });
       expect(result.physicalId).toBe(COMPOSITE);
@@ -188,14 +189,15 @@ describe('Route53Provider RecordSetGroup', () => {
       expect(sent[0]!.ChangeBatch).not.toHaveProperty('Comment');
     });
 
+    // CloudFormation: "Property RecordSets cannot be empty." (#6540), so an empty or
+    // absent list is refused, not a no-op.
     it.each([
       ['empty list', { HostedZoneId: ZONE, RecordSets: [] }],
       ['absent list', { HostedZoneId: ZONE }],
-    ])('makes no ChangeResourceRecordSets call for %s', async (_n, props) => {
+    ])('refuses %s before any AWS call', async (_n, props) => {
       route();
-      const result = await provider.create(LOGICAL, TYPE, props);
-      expect(result.physicalId).toBe(COMPOSITE);
-      expect(changeInputs()).toHaveLength(0);
+      await expect(provider.create(LOGICAL, TYPE, props)).rejects.toThrow(/RecordSets cannot be empty/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -543,10 +545,11 @@ describe('Route53Provider RecordSetGroup', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('records the composite id when the CFn group name is given and every record is live', async () => {
+    it('records <zone>|<CFn group name> when the CFn group name is given and every record is live', async () => {
       route({ liveRecords: [live()] });
       const result = await provider.import(input('MyStack-Group-ABC'));
-      expect(result).toEqual({ physicalId: COMPOSITE, attributes: {} });
+      // The adopted CloudFormation name is kept, not replaced by the logical id.
+      expect(result).toEqual({ physicalId: `${ZONE}|MyStack-Group-ABC`, attributes: {} });
     });
 
     it('adopts the known id verbatim when a record is missing', async () => {
@@ -912,16 +915,16 @@ describe('Route53Provider RecordSetGroup (review additions)', () => {
   });
 
   describe('zone from records only', () => {
-    it('writes to the zone the records declare', async () => {
+    // CloudFormation: a record's HostedZoneId is "unsupported property" and a group with
+    // no zone of its own is refused (#6540).
+    it('refuses a zone taken from the records, before any AWS call', async () => {
       route();
-      const result = await provider.create(LOGICAL, TYPE, {
-        RecordSets: [rec({ HostedZoneId: 'Z9' }), rec({ Name: 'b.example.com.', HostedZoneId: 'Z9' })],
-      });
-      expect(result.physicalId).toBe('Z9|Group');
-      const sent = changeInputs();
-      expect(sent).toHaveLength(1);
-      expect(sent[0]!.HostedZoneId).toBe('Z9');
-      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+      await expect(
+        provider.create(LOGICAL, TYPE, {
+          RecordSets: [rec({ HostedZoneId: 'Z9' }), rec({ Name: 'b.example.com.', HostedZoneId: 'Z9' })],
+        })
+      ).rejects.toThrow(/RecordSets\[0\] declares a hosted zone/);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('refuses records that disagree on the zone before any AWS call', async () => {
@@ -1138,7 +1141,10 @@ describe('Route53Provider RecordSetGroup (round 2)', () => {
       );
       expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
       expect(changeInputs()[0]!.HostedZoneId).toBe(ZONE);
-      expect(result.physicalId).toBe(COMPOSITE);
+      // `Z1|OtherGroup` is not this group's id (its name is neither the logical id nor
+      // carries it as a segment), so the zone came from the properties, not from `Z1`.
+      // The rewritten id keeps two segments: the resolved zone and the name segment.
+      expect(result.physicalId).toBe(`${ZONE}|OtherGroup`);
     });
 
     it('readCurrentState', async () => {
@@ -1161,8 +1167,9 @@ describe('Route53Provider RecordSetGroup (round 2)', () => {
         properties: byName,
         knownPhysicalId: 'Z1|OtherGroup',
       });
-      expect(result).toEqual({ physicalId: COMPOSITE, attributes: {} });
-      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+      expect((result as { physicalId: string }).physicalId).toBe(`${ZONE}|OtherGroup`);
+      // The foreign id is not a cdkd composite, so the zone is looked up by name.
+      expect(calls(ListHostedZonesByNameCommand).length).toBeGreaterThan(0);
     });
   });
 
@@ -1425,7 +1432,7 @@ describe('Route53Provider RecordSetGroup zone-key switch (go-to-k/cdkd#6537)', (
     RecordSets: [rec(extra)],
   });
   const otherZone = [
-    { Id: '/hostedzone/Z9999999999', Name: `${ZONE_NAME}.`, Config: { PrivateZone: false } },
+    { Id: '/hostedzone/Z9999999999', Name: ZONE_NAME, Config: { PrivateZone: false } },
   ];
 
   beforeEach(() => {
