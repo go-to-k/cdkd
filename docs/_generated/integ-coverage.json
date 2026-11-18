@@ -72,6 +72,7 @@
     "AWS::ElasticLoadBalancingV2::Listener",
     "AWS::ElasticLoadBalancingV2::LoadBalancer",
     "AWS::ElasticLoadBalancingV2::TargetGroup",
+    "AWS::Events::Archive",
     "AWS::Events::EventBus",
     "AWS::Events::Rule",
     "AWS::FSx::FileSystem",
@@ -106,6 +107,9 @@
     "AWS::Lambda::Url",
     "AWS::Lambda::WebFunctionEndpoint",
     "AWS::Lambda::WebFunctionRevision",
+    "AWS::Logs::Delivery",
+    "AWS::Logs::DeliveryDestination",
+    "AWS::Logs::DeliverySource",
     "AWS::Logs::LogGroup",
     "AWS::Neptune::DBCluster",
     "AWS::Neptune::DBInstance",
@@ -5865,6 +5869,17 @@
       }
     },
     {
+      "resourceType": "AWS::Events::Archive",
+      "integs": [
+        "eventbridge-archive"
+      ],
+      "signals": {
+        "eventbridge-archive": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Events::EventBus",
       "integs": [
         "appsync",
@@ -5873,6 +5888,7 @@
         "eventbridge-archive",
         "eventbus-policy",
         "getatt-asg-arn-rule-name",
+        "logs-delivery",
         "sdk-ccapi-crossref"
       ],
       "signals": {
@@ -5896,6 +5912,9 @@
           "literal"
         ],
         "getatt-asg-arn-rule-name": [
+          "l2"
+        ],
+        "logs-delivery": [
           "l2"
         ],
         "sdk-ccapi-crossref": [
@@ -8209,6 +8228,42 @@
       }
     },
     {
+      "resourceType": "AWS::Logs::Delivery",
+      "integs": [
+        "logs-delivery"
+      ],
+      "signals": {
+        "logs-delivery": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Logs::DeliveryDestination",
+      "integs": [
+        "logs-delivery"
+      ],
+      "signals": {
+        "logs-delivery": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Logs::DeliverySource",
+      "integs": [
+        "logs-delivery"
+      ],
+      "signals": {
+        "logs-delivery": [
+          "l1",
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Logs::LogGroup",
       "integs": [
         "apigatewayv2-update-removal",
@@ -8240,6 +8295,7 @@
         "loggroup-class-guard",
         "loggroup-kms-associate",
         "loggroup-never-expire-guard",
+        "logs-delivery",
         "logs-loggroup-fix-forward-orphan",
         "monitoring",
         "orphan-getatt-takeover",
@@ -8356,6 +8412,9 @@
         ],
         "loggroup-never-expire-guard": [
           "l1",
+          "l2"
+        ],
+        "logs-delivery": [
           "l2"
         ],
         "logs-loggroup-fix-forward-orphan": [
@@ -11065,8 +11124,8 @@
     "AWS::ElastiCache::ParameterGroup",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::EventSchemas::Discoverer",
     "AWS::Events::ApiDestination",
-    "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
     "AWS::GuardDuty::Detector",

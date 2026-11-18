@@ -191,6 +191,8 @@ const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> 
   'AWS::S3Vectors::VectorBucket': { sdk: 'mystack-resource', cc: undefined },
   // go-to-k/cdkd#5348: the same, for a Cloud Map service.
   'AWS::ServiceDiscovery::Service': { sdk: 'MyStack-Resource', cc: undefined },
+  // go-to-k/cdkd#6578: no SDK provider before; the handler named it.
+  'AWS::Events::Archive': { sdk: 'MyStack-Resource', cc: undefined },
 };
 
 /**
@@ -201,6 +203,8 @@ const LEGACY_DIVERGENT: Record<string, { sdk: string; cc: string | undefined }> 
 const SDK_NAMED_SINCE: readonly string[] = [
   'AWS::S3Vectors::VectorBucket',
   'AWS::ServiceDiscovery::Service',
+  // go-to-k/cdkd#6578: an SDK provider since, which names it through the rule.
+  'AWS::Events::Archive',
 ];
 
 const sdkGeneratedTypes = [...Object.keys(OLD_SDK), ...SDK_NAMED_SINCE];
@@ -386,6 +390,7 @@ describe("a legacy stack's names do not move (#5095)", () => {
       'AWS::KinesisFirehose::DeliveryStream',
       'AWS::S3Vectors::VectorBucket',
       'AWS::ServiceDiscovery::Service',
+      'AWS::Events::Archive',
       // go-to-k/cdkd#6555: Cloud Control only.
       'AWS::CloudWatch::MetricStream',
     ]) {

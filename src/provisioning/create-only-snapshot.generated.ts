@@ -313,6 +313,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
       ['Name'],
     ],
   ],
+  ['AWS::Events::Archive', [['ArchiveName'], ['SourceArn']]],
   ['AWS::Events::EventBus', [['Name']]],
   ['AWS::Events::Rule', [['Name']]],
   [
@@ -402,6 +403,12 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     'AWS::Lambda::WebFunctionRevision',
     [['BuildConfig'], ['Description'], ['FunctionName'], ['KmsKeyArn'], ['ServiceConfig']],
   ],
+  ['AWS::Logs::Delivery', [['DeliveryDestinationArn'], ['DeliverySourceName']]],
+  [
+    'AWS::Logs::DeliveryDestination',
+    [['DeliveryDestinationType'], ['DestinationResourceArn'], ['Name'], ['OutputFormat']],
+  ],
+  ['AWS::Logs::DeliverySource', [['Name']]],
   ['AWS::Logs::LogGroup', [['LogGroupName']]],
   [
     'AWS::Neptune::DBCluster',

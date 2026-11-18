@@ -92,6 +92,7 @@ import { KinesisStreamProvider } from '../../../src/provisioning/providers/kines
 import { KMSProvider } from '../../../src/provisioning/providers/kms-provider.js';
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
+import { LogsDeliveryDestinationProvider } from '../../../src/provisioning/providers/logs-delivery-destination-provider.js';
 import { RDSDBProxyTargetGroupProvider } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
@@ -741,6 +742,28 @@ const CASES: Case[] = [
     aux: 'EnableKeyRotationCommand',
     responses: {
       CreateKeyCommand: { KeyMetadata: { KeyId: 'k1', Arn: 'arn:aws:kms:us-east-1:123456789012:key/k1' } },
+    },
+  },
+  {
+    // The destination policy is put after the destination exists.
+    name: 'logs-delivery-destination AWS::Logs::DeliveryDestination',
+    provider: () => new LogsDeliveryDestinationProvider(),
+    resourceType: 'AWS::Logs::DeliveryDestination',
+    properties: {
+      Name: 'dst',
+      DestinationResourceArn: 'arn:aws:logs:us-east-1:123456789012:log-group:lg',
+      DeliveryDestinationPolicy: { DeliveryDestinationPolicy: { Version: '2012-10-17', Statement: [] } },
+    },
+    clients: [CloudWatchLogsClient],
+    main: 'PutDeliveryDestinationCommand',
+    aux: 'PutDeliveryDestinationPolicyCommand',
+    responses: {
+      PutDeliveryDestinationCommand: {
+        deliveryDestination: { name: 'dst', arn: 'arn:aws:logs:us-east-1:123456789012:delivery-destination:dst' },
+      },
+    },
+    notFound: {
+      GetDeliveryDestinationCommand: { name: 'ResourceNotFoundException', message: 'not found' },
     },
   },
   {

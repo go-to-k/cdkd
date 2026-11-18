@@ -476,6 +476,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       TargetGroupAttributes: ['Attributes'],
     },
   },
+  'AWS::Events::Archive': {
+    members: {
+      SourceArn: ['EventSourceArn'],
+    },
+  },
   'AWS::Events::Rule': {
     containers: {
       'Targets.EcsParameters.PlacementStrategies': ['PlacementStrategy'],
@@ -639,6 +644,19 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   'AWS::Lambda::Url': {
     members: {
       TargetFunctionArn: ['FunctionName'],
+    },
+  },
+  'AWS::Logs::Delivery': {
+    members: {
+      // The two flat CFn members are the request's `s3DeliveryConfiguration` block.
+      S3SuffixPath: ['s3DeliveryConfiguration.suffixPath'],
+      S3EnableHiveCompatiblePath: ['s3DeliveryConfiguration.enableHiveCompatiblePath'],
+    },
+  },
+  'AWS::Logs::DeliveryDestination': {
+    transformed: {
+      'DeliveryDestinationPolicy.DeliveryDestinationPolicy.Version':
+        'the policy document is sent as its JSON text in deliveryDestinationPolicy',
     },
   },
   'AWS::Logs::LogGroup': {

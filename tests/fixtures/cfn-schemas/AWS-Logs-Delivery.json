@@ -1,0 +1,103 @@
+{
+  "resourceType": "AWS::Logs::Delivery",
+  "generatedAt": "2026-11-18",
+  "properties": [
+    "Arn",
+    "DeliveryDestinationArn",
+    "DeliveryDestinationType",
+    "DeliveryId",
+    "DeliverySourceName",
+    "FieldDelimiter",
+    "RecordFields",
+    "S3EnableHiveCompatiblePath",
+    "S3SuffixPath",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "DeliveryDestinationType",
+    "DeliveryId"
+  ],
+  "createOnlyProperties": [
+    "DeliveryDestinationArn",
+    "DeliverySourceName"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "DeliveryDestinationArn"
+    ],
+    [
+      "DeliverySourceName"
+    ]
+  ],
+  "primaryIdentifier": [
+    "DeliveryId"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "DeliveryId": "scalar",
+      "Arn": "scalar",
+      "DeliverySourceName": "scalar",
+      "DeliveryDestinationArn": "scalar",
+      "DeliveryDestinationType": "scalar",
+      "Tags": "array",
+      "RecordFields": "array",
+      "FieldDelimiter": "scalar",
+      "S3SuffixPath": "scalar",
+      "S3EnableHiveCompatiblePath": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "DeliveryDestinationArn",
+      "DeliverySourceName"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "RecordFields": "array",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "DeliveryDestinationArn": "string",
+    "DeliveryDestinationType": "string",
+    "DeliveryId": "string",
+    "DeliverySourceName": "string",
+    "FieldDelimiter": "string",
+    "RecordFields": "array",
+    "RecordFields[]": "string",
+    "S3EnableHiveCompatiblePath": "boolean",
+    "S3SuffixPath": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  }
+}

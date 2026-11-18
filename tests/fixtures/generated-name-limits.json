@@ -222,6 +222,12 @@
       "schemaPattern": "[0-z]*",
       "schemaPatternUnanchored": "The registry's [0-z]* omits '-', which the RDS API accepts (letters, digits and hyphens): matched unanchored, as a character the name must contain"
     },
+    "AWS::Events::Archive": {
+      "nameProperty": "ArchiveName",
+      "schemaMaxLength": 48,
+      "schemaMinLength": 1,
+      "schemaPattern": "[\\.\\-_A-Za-z0-9]+"
+    },
     "AWS::Scheduler::Schedule": {
       "nameProperty": "Name",
       "schemaMaxLength": 64,

@@ -12,8 +12,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Summary
 
-- SDK-backed types classified: **141**
-- Covered (every Arn/ARN/Url/URL readOnly resolvable): **72**
+- SDK-backed types classified: **145**
+- Covered (every Arn/ARN/Url/URL readOnly resolvable): **76**
 - No Arn/ARN/Url/URL readOnly attribute: **69**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
@@ -62,6 +62,7 @@ None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed t
 | `AWS::ElasticLoadBalancingV2::Listener` | covered | `ListenerArn` (cached) |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | covered | `LoadBalancerArn` (cached) |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | covered | `TargetGroupArn` (cached) |
+| `AWS::Events::Archive` | covered | `Arn` (cached) |
 | `AWS::Events::EventBus` | covered | `Arn` (cached) |
 | `AWS::Events::Rule` | covered | `Arn` (cached) |
 | `AWS::FSx::FileSystem` | covered | `ResourceARN` (cached) |
@@ -82,6 +83,9 @@ None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed t
 | `AWS::Lambda::Url` | covered | `FunctionArn` (cached), `FunctionUrl` (cached) |
 | `AWS::Lambda::WebFunctionEndpoint` | covered | `EndpointArn` (cached), `FunctionArn` (cached) |
 | `AWS::Lambda::WebFunctionRevision` | covered | `FunctionArn` (cached), `RevisionArn` (cached) |
+| `AWS::Logs::Delivery` | covered | `Arn` (cached) |
+| `AWS::Logs::DeliveryDestination` | covered | `Arn` (cached) |
+| `AWS::Logs::DeliverySource` | covered | `Arn` (cached) |
 | `AWS::Logs::LogGroup` | covered | `Arn` (cached) |
 | `AWS::Pipes::Pipe` | covered | `Arn` (cached) |
 | `AWS::RDS::DBCluster` | covered | `DBClusterArn` (ctor) |

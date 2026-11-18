@@ -210,6 +210,7 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     'AWS::EMR::InstanceGroupConfig',
     '{"AutoScalingPolicy":"object","AutoScalingPolicy.Constraints":"object","AutoScalingPolicy.Rules":"array","AutoScalingPolicy.Rules[]":"object","AutoScalingPolicy.Rules[].Action":"object","AutoScalingPolicy.Rules[].Action.SimpleScalingPolicyConfiguration":"object","AutoScalingPolicy.Rules[].Trigger":"object","AutoScalingPolicy.Rules[].Trigger.CloudWatchAlarmDefinition":"object","AutoScalingPolicy.Rules[].Trigger.CloudWatchAlarmDefinition.Dimensions":"array","AutoScalingPolicy.Rules[].Trigger.CloudWatchAlarmDefinition.Dimensions[]":"object","Configurations":"array","Configurations[]":"object","Configurations[].ConfigurationProperties":"object","Configurations[].Configurations":"array","EbsConfiguration":"object","EbsConfiguration.EbsBlockDeviceConfigs":"array","EbsConfiguration.EbsBlockDeviceConfigs[]":"object","EbsConfiguration.EbsBlockDeviceConfigs[].VolumeSpecification":"object"}',
   ],
+  ['AWS::Events::Archive', '{"EventPattern":"object"}'],
   [
     'AWS::Events::EventBus',
     '{"DeadLetterConfig":"object","LogConfig":"object","Tags":"array","Tags[]":"object"}',
@@ -304,6 +305,15 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
   [
     'AWS::Lambda::WebFunctionRevision',
     '{"BuildConfig":"object","BuildConfig.CodeConfig":"object","BuildConfig.CodeConfig.S3Object":"object","BuildConfig.RuntimeConfig":"object","ServiceConfig":"object","ServiceConfig.EnvironmentVariables":"object","ServiceConfig.TelemetryConfig":"object","ServiceConfig.TelemetryConfig.LoggingConfig":"object"}',
+  ],
+  ['AWS::Logs::Delivery', '{"RecordFields":"array","Tags":"array","Tags[]":"object"}'],
+  [
+    'AWS::Logs::DeliveryDestination',
+    '{"DeliveryDestinationPolicy":"object","DeliveryDestinationPolicy.DeliveryDestinationPolicy":"object","Tags":"array","Tags[]":"object"}',
+  ],
+  [
+    'AWS::Logs::DeliverySource',
+    '{"DeliverySourceConfiguration":"object","ResourceArns":"array","Tags":"array","Tags[]":"object"}',
   ],
   [
     'AWS::Logs::LogGroup',

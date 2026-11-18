@@ -44,6 +44,7 @@ import { CASES_18 } from './sdk-wire-cases-18.js';
 import { CASES_18_GLOBAL_TABLE } from './sdk-wire-cases-18-globaltable.js';
 import { CASES_19 } from './sdk-wire-cases-19.js';
 import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
+import { CASES_LOGS_DELIVERY } from './sdk-wire-cases-logs-delivery.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
@@ -78,6 +79,7 @@ import { SNSTopicPolicyProvider } from '../../../src/provisioning/providers/sns-
 import { SQSQueuePolicyProvider } from '../../../src/provisioning/providers/sqs-queue-policy-provider.js';
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
 import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
+import { EventBridgeArchiveProvider } from '../../../src/provisioning/providers/eventbridge-archive-provider.js';
 import { CloudWatchAlarmProvider } from '../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
 
 /**
@@ -195,6 +197,14 @@ const BUS_NAME_REQUIRED: Throw = {
   why: 'Name is refused when absent, before CreateEventBus',
   says: /Name is required for EventBus/,
 };
+const ARCHIVE_SOURCE_REQUIRED: Throw = {
+  why: 'SourceArn is refused when absent, before CreateArchive',
+  says: /SourceArn is required for EventBridge archive/,
+};
+// go-to-k/cdkd#6578, measured CFn A/B: a removed archive property stays live,
+// because CloudFormation's UpdateArchive sends only the declared fields.
+const ARCHIVE_CFN_KEEPS_ON_REMOVAL =
+  'CloudFormation keeps a removed archive property live (measured A/B); update() sends no clear';
 const BUS_POLICY_KEPT_ON_REMOVAL =
   'a removed Policy is left live and warned about, as CloudFormation leaves it (go-to-k/cdkd#5044)';
 // Not a gap: a partner bus's Name must equal its EventSourceName, and Name is
@@ -558,6 +568,35 @@ const CASES: TypeCase[] = [
     ],
   },
   {
+    resourceType: 'AWS::Events::Archive',
+    provider: () => new EventBridgeArchiveProvider(),
+    physicalId: 'a',
+    createOnly: createOnlyOf('AWS::Events::Archive'),
+    // The create / update answer ENABLED, so the settle wait reads nothing.
+    arm: () =>
+      setOutputOverrides({
+        CreateArchiveCommand: () => ({ State: 'ENABLED' }),
+        UpdateArchiveCommand: () => ({ State: 'ENABLED' }),
+      }),
+    exempt: {},
+    targets: [],
+    bags: [
+      {
+        name: 'every declared property',
+        bag: {
+          ArchiveName: 'a',
+          SourceArn: `arn:aws:events:us-east-1:${ACCOUNT}:event-bus/b`,
+          Description: 'd',
+          EventPattern: { source: ['x'] },
+          RetentionDays: 7,
+          KmsKeyIdentifier: 'alias/k',
+        },
+        expectedSilent: { 'update-remove:RetentionDays': ARCHIVE_CFN_KEEPS_ON_REMOVAL },
+        expectedRemovalThrows: { 'create:SourceArn': ARCHIVE_SOURCE_REQUIRED },
+      },
+    ],
+  },
+  {
     resourceType: 'AWS::Events::EventBus',
     provider: () => new EventBridgeBusProvider(),
     physicalId: 'b',
@@ -858,6 +897,11 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
     cases: CASES_CLOUDMAP,
     name: 'CASES_CLOUDMAP',
     file: 'sdk-wire-coverage-cloudmap.test.ts',
+  },
+  {
+    cases: CASES_LOGS_DELIVERY,
+    name: 'CASES_LOGS_DELIVERY',
+    file: 'sdk-wire-coverage-logs-delivery.test.ts',
   },
   {
     cases: CASES_NO_PROPERTIES,

@@ -16,12 +16,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **141**
+- Classified types (cached schema): **145**
 - Fully enriched: **50**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **73**
-- Types with allow-listed (not-a-gap) attributes: **88**
+- SDK-fallback gaps (informational, #614 path only): **77**
+- Types with allow-listed (not-a-gap) attributes: **89**
 
 ## Pure-CC latent gaps
 
@@ -66,6 +66,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | `CanonicalHostedZoneID`, `DNSName`, `LoadBalancerFullName`, `LoadBalancerName` |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupFullName`, `TargetGroupName` |
 | `AWS::EMR::Cluster` | `MasterPublicDNS` |
+| `AWS::Events::Archive` | `Arn` |
 | `AWS::Events::EventBus` | `Arn` |
 | `AWS::Events::Rule` | `RuleName` |
 | `AWS::FSx::FileSystem` | `DNSName`, `LustreMountName`, `ResourceARN`, `RootVolumeId` |
@@ -84,6 +85,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::NetworkConnector` | `LatestVersion`, `LatestVersionArn`, `State` |
 | `AWS::Lambda::WebFunctionEndpoint` | `CreatedAt`, `DomainName`, `FunctionArn`, `RegionalEndpoints`, `State`, `StateReason`, `UpdatedAt`, `UpdateStatus`, `UpdateStatusReason` |
 | `AWS::Lambda::WebFunctionRevision` | `CreatedAt`, `FunctionArn`, `RevisionId`, `State`, `StateReason` |
+| `AWS::Logs::Delivery` | `Arn`, `DeliveryDestinationType` |
+| `AWS::Logs::DeliveryDestination` | `Arn` |
+| `AWS::Logs::DeliverySource` | `Arn`, `ResourceArns`, `Service`, `Status`, `StatusReason` |
 | `AWS::Logs::LogGroup` | `Arn` |
 | `AWS::Neptune::DBCluster` | `ClusterResourceId`, `Endpoint`, `Port`, `ReadEndpoint` |
 | `AWS::Neptune::DBInstance` | `Endpoint`, `Port` |
@@ -183,6 +187,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EMR::Cluster` | yes | sdk-fallback-gap | `Id` (allow), `MasterPublicDNS` (GAP) |
 | `AWS::EMR::InstanceFleetConfig` | yes | enriched | `InstanceFleetId` (allow) |
 | `AWS::EMR::InstanceGroupConfig` | yes | enriched | `InstanceGroupId` (allow) |
+| `AWS::Events::Archive` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Events::EventBus` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Events::Rule` | yes | sdk-fallback-gap | `Arn` (allow), `RuleName` (GAP) |
 | `AWS::FSx::FileSystem` | yes | sdk-fallback-gap | `DNSName` (GAP), `Id` (allow), `LustreMountName` (GAP), `ResourceARN` (GAP), `RootVolumeId` (GAP) |
@@ -217,6 +222,9 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::Url` | yes | enriched | `FunctionArn` (OK), `FunctionUrl` (OK) |
 | `AWS::Lambda::WebFunctionEndpoint` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `DomainName` (GAP), `EndpointArn` (allow), `FunctionArn` (GAP), `RegionalEndpoints` (GAP), `State` (GAP), `StateReason` (GAP), `UpdatedAt` (GAP), `UpdateStatus` (GAP), `UpdateStatusReason` (GAP) |
 | `AWS::Lambda::WebFunctionRevision` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `FunctionArn` (GAP), `RevisionArn` (allow), `RevisionId` (GAP), `State` (GAP), `StateReason` (GAP) |
+| `AWS::Logs::Delivery` | yes | sdk-fallback-gap | `Arn` (GAP), `DeliveryDestinationType` (GAP), `DeliveryId` (allow) |
+| `AWS::Logs::DeliveryDestination` | yes | sdk-fallback-gap | `Arn` (GAP) |
+| `AWS::Logs::DeliverySource` | yes | sdk-fallback-gap | `Arn` (GAP), `ResourceArns` (GAP), `Service` (GAP), `Status` (GAP), `StatusReason` (GAP) |
 | `AWS::Logs::LogGroup` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Neptune::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Port` (GAP), `ReadEndpoint` (GAP) |
 | `AWS::Neptune::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |

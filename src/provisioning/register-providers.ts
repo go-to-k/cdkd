@@ -53,12 +53,16 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     DynamoDBTableProvider,
     DynamoDBGlobalTableProvider,
     LogsLogGroupProvider,
+    LogsDeliverySourceProvider,
+    LogsDeliveryDestinationProvider,
+    LogsDeliveryProvider,
     CloudWatchAlarmProvider,
     CloudWatchAnomalyDetectorProvider,
     SecretsManagerSecretProvider,
     SSMParameterProvider,
     EventBridgeRuleProvider,
     EventBridgeBusProvider,
+    EventBridgeArchiveProvider,
     EC2Provider,
     ApiGatewayProvider,
     ApiGatewayV2Provider,
@@ -162,6 +166,9 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
 
   // Monitoring
   registry.register('AWS::Logs::LogGroup', new LogsLogGroupProvider());
+  registry.register('AWS::Logs::DeliverySource', new LogsDeliverySourceProvider());
+  registry.register('AWS::Logs::DeliveryDestination', new LogsDeliveryDestinationProvider());
+  registry.register('AWS::Logs::Delivery', new LogsDeliveryProvider());
   registry.register('AWS::CloudWatch::Alarm', new CloudWatchAlarmProvider());
   registry.register('AWS::CloudWatch::AnomalyDetector', new CloudWatchAnomalyDetectorProvider());
 
@@ -172,6 +179,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   // EventBridge
   registry.register('AWS::Events::Rule', new EventBridgeRuleProvider());
   registry.register('AWS::Events::EventBus', new EventBridgeBusProvider());
+  registry.register('AWS::Events::Archive', new EventBridgeArchiveProvider());
 
   // EC2 / Networking
   const ec2Provider = new EC2Provider();

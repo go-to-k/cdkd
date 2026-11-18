@@ -294,6 +294,16 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     legacy: { cloudControl: 'none' },
     notAdopted: true,
   },
+  // The same, for an EventBridge archive: the SDK provider names an archive
+  // the template does not (CloudFormation generates one). CreateArchive takes
+  // 1-48 characters of `[.\-_A-Za-z0-9]`, which the generator emits. A legacy
+  // stack's Cloud Control create still leaves the name to the handler.
+  'AWS::Events::Archive': {
+    nameProperty: 'ArchiveName',
+    options: { maxLength: 48 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
   // ...and the handler named these, which a legacy stack keeps.
   'AWS::Scheduler::Schedule': {
     nameProperty: 'Name',

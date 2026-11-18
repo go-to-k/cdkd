@@ -40,6 +40,9 @@ nothing. When you do pass `--resource` for one, use this form:
 | `AWS::ECS::Service` | The service ARN, or `<clusterArn>\|<serviceName>`. |
 | `AWS::Glue::Table` | `<databaseName>\|<tableName>`, or the bare table name. |
 | `AWS::Pipes::Pipe` | The pipe name. |
+| `AWS::Logs::DeliverySource` | The delivery source name. |
+| `AWS::Logs::DeliveryDestination` | The delivery destination name. |
+| `AWS::Logs::Delivery` | The delivery id. |
 | `AWS::EMR::Cluster` | The cluster id `j-XXXX`. |
 
 Notes on single types:
@@ -51,6 +54,9 @@ Notes on single types:
 - **`AWS::ECS::Service`**: cdkd stores the service ARN.
 - **`AWS::Pipes::Pipe`** and **`AWS::Budgets::Budget`**: the template's `Name`
   and `Budget.BudgetName` find them without a flag.
+- **`AWS::Logs::Delivery`**: without `--resource`, cdkd finds the delivery
+  that links the template's `DeliverySourceName` to its
+  `DeliveryDestinationArn`.
 - **`AWS::BedrockAgentCore::Browser`** and
   **`AWS::BedrockAgentCore::CodeInterpreter`**: these stand for the defaults
   AWS manages. cdkd finds them with `GetBrowser` and `GetCodeInterpreter` and

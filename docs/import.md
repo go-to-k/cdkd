@@ -488,7 +488,7 @@ with no `--resource`, or with `--auto`.
 | Budgets | `AWS::Budgets::Budget` |
 | CloudFront | `AWS::CloudFront::Distribution` |
 | CloudTrail | `AWS::CloudTrail::Trail` |
-| CloudWatch, Logs | `AWS::CloudWatch::Alarm`, `AWS::Logs::LogGroup` |
+| CloudWatch, Logs | `AWS::CloudWatch::Alarm`, `AWS::Logs::Delivery`, `AWS::Logs::DeliveryDestination`, `AWS::Logs::DeliverySource`, `AWS::Logs::LogGroup` |
 | CodeBuild, CodeCommit | `AWS::CodeBuild::Project`, `AWS::CodeCommit::Repository` |
 | Cognito | `AWS::Cognito::UserPool` |
 | DLM | `AWS::DLM::LifecyclePolicy` |
@@ -500,7 +500,7 @@ with no `--resource`, or with `--auto`.
 | ElastiCache | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::SubnetGroup` |
 | ELB v2 | `AWS::ElasticLoadBalancingV2::LoadBalancer`, `AWS::ElasticLoadBalancingV2::TargetGroup` |
 | EMR | `AWS::EMR::Cluster` |
-| EventBridge, Pipes | `AWS::Events::EventBus`, `AWS::Events::Rule`, `AWS::Pipes::Pipe` |
+| EventBridge, Pipes | `AWS::Events::EventBus`, `AWS::Events::Rule`, `AWS::Events::Archive` (by `ArchiveName`; an archive without one needs `--resource <id>=<archiveName>`, since archives carry no tags), `AWS::Pipes::Pipe` |
 | Glue | `AWS::Glue::Database`, `AWS::Glue::Table`, `AWS::Glue::Job`, `AWS::Glue::Crawler`, `AWS::Glue::Connection`, `AWS::Glue::Trigger`, `AWS::Glue::Workflow`, `AWS::Glue::SecurityConfiguration` |
 | IAM | `AWS::IAM::Role`, `AWS::IAM::ManagedPolicy`, `AWS::IAM::InstanceProfile`, `AWS::IAM::User`, `AWS::IAM::Group` |
 | Kinesis, Firehose | `AWS::Kinesis::Stream`, `AWS::Kinesis::StreamConsumer`, `AWS::KinesisFirehose::DeliveryStream` |

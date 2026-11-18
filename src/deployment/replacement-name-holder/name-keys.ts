@@ -47,6 +47,9 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
     scope: [['Cluster']],
     scopeDefaults: ['default'],
   },
+  // Not in the adoption table (its generated-name rule is `notAdopted`); the
+  // name is account + region scoped, and the physical id is the name.
+  'AWS::Events::Archive': flat('ArchiveName'),
   'AWS::Events::Rule': {
     name: [['Name']],
     scope: [['EventBusName']],
@@ -71,6 +74,10 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
   'AWS::Lambda::MicrovmImage': flat('Name'),
   'AWS::Lambda::NetworkConnector': flat('Name'),
   'AWS::Lambda::WebFunctionEndpoint': { name: [['EndpointName']], scope: [['FunctionName']] },
+  // The create-only `Name` is the physical id, unique per account and region;
+  // the SDK create refuses an existing one rather than upserting it.
+  'AWS::Logs::DeliveryDestination': flat('Name'),
+  'AWS::Logs::DeliverySource': flat('Name'),
   // The schema's create-only `Name` is the pipe's physical id (issue #4423).
   'AWS::Pipes::Pipe': flat('Name'),
   'AWS::RDS::DBProxyTargetGroup': { name: [['TargetGroupName']], scope: [['DBProxyName']] },
@@ -114,6 +121,8 @@ export const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
   'AWS::Lambda::Permission',
   // `FunctionName` names the parent; the revision id is AWS-assigned.
   'AWS::Lambda::WebFunctionRevision',
+  // `DeliverySourceName` names the parent source; the delivery id is AWS-assigned.
+  'AWS::Logs::Delivery',
   'AWS::Route53::HostedZone',
   // `HostedZoneName` names the parent zone; a group has no name of its own.
   'AWS::Route53::RecordSetGroup',

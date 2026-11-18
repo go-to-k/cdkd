@@ -459,7 +459,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::ElastiCache` | `CacheCluster`, `SubnetGroup` |
 | `AWS::ElasticLoadBalancingV2` | `Listener`, `LoadBalancer`, `TargetGroup` |
 | `AWS::EMR` | `Cluster` |
-| `AWS::Events` | `EventBus`, `Rule` |
+| `AWS::Events` | `Archive`, `EventBus`, `Rule` |
 | `AWS::FSx` | `FileSystem` |
 | `AWS::Glue` | `Connection`, `Crawler`, `Database`, `Job`, `SecurityConfiguration`, `Table`, `Trigger`, `Workflow` |
 | `AWS::IAM` | `AccessKey`, `Group`, `InstanceProfile`, `ManagedPolicy`, `Policy`, `Role`, `User`, `UserToGroupAddition` |
@@ -467,7 +467,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::KinesisFirehose` | `DeliveryStream` |
 | `AWS::KMS` | `Alias`, `Key` |
 | `AWS::Lambda` | `EventInvokeConfig`, `EventSourceMapping`, `Function`, `LayerVersion`, `MicrovmImage`, `NetworkConnector`, `Permission`, `Url`, `WebFunctionEndpoint`, `WebFunctionRevision` |
-| `AWS::Logs` | `LogGroup` |
+| `AWS::Logs` | `Delivery`, `DeliveryDestination`, `DeliverySource`, `LogGroup` |
 | `AWS::Neptune` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
 | `AWS::Pipes` | `Pipe` |
 | `AWS::RDS` | `DBCluster`, `DBInstance`, `DBProxy`, `DBProxyEndpoint`, `DBProxyTargetGroup`, `DBSubnetGroup` |

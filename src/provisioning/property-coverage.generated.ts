@@ -1938,6 +1938,24 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Events::Archive',
+    {
+      handled: new Set<string>([
+        'ArchiveName',
+        'Description',
+        'EventPattern',
+        'KmsKeyIdentifier',
+        'RetentionDays',
+        'SourceArn',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn']),
+      primaryIdentifier: new Set<string>(['ArchiveName']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::Events::EventBus',
     {
       handled: new Set<string>([
@@ -2650,6 +2668,60 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StateReason',
       ]),
       primaryIdentifier: new Set<string>(['RevisionArn']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
+    'AWS::Logs::Delivery',
+    {
+      handled: new Set<string>([
+        'DeliveryDestinationArn',
+        'DeliverySourceName',
+        'FieldDelimiter',
+        'RecordFields',
+        'S3EnableHiveCompatiblePath',
+        'S3SuffixPath',
+        'Tags',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn', 'DeliveryDestinationType', 'DeliveryId']),
+      primaryIdentifier: new Set<string>(['DeliveryId']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
+    'AWS::Logs::DeliveryDestination',
+    {
+      handled: new Set<string>([
+        'DeliveryDestinationPolicy',
+        'DeliveryDestinationType',
+        'DestinationResourceArn',
+        'Name',
+        'OutputFormat',
+        'Tags',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn']),
+      primaryIdentifier: new Set<string>(['Name']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
+    'AWS::Logs::DeliverySource',
+    {
+      handled: new Set<string>([
+        'DeliverySourceConfiguration',
+        'LogType',
+        'Name',
+        'ResourceArn',
+        'Tags',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn', 'ResourceArns', 'Service', 'Status', 'StatusReason']),
+      primaryIdentifier: new Set<string>(['Name']),
       ccRouteUnavailable: false,
     },
   ],
