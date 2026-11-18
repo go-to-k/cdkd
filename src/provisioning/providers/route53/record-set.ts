@@ -34,6 +34,7 @@ import {
   zoneReferenceChanged,
   recordedZoneForSwitch,
   refuseCfnUnresolvableZoneName,
+  withTemplateAliasConflicts,
 } from './shared.js';
 
 // ─── AWS::Route53::RecordSet ───────────────────────────────────────
@@ -79,7 +80,9 @@ export async function createRecordSet(
   const compositeId = recordSetCompositeId(hostedZoneId, recordName, recordType);
 
   try {
-    const resourceRecordSet = this.buildResourceRecordSet(properties);
+    const resourceRecordSet = replayingState
+      ? this.buildResourceRecordSet(properties)
+      : withTemplateAliasConflicts(this.buildResourceRecordSet(properties), properties);
 
     const comment = properties['Comment'] as string | undefined;
 
@@ -218,7 +221,9 @@ export async function updateRecordSet(
     recordIdentityChanged(previousProperties, properties);
 
   try {
-    const resourceRecordSet = this.buildResourceRecordSet(properties);
+    const resourceRecordSet = stateBorne
+      ? this.buildResourceRecordSet(properties)
+      : withTemplateAliasConflicts(this.buildResourceRecordSet(properties), properties);
 
     const comment = properties['Comment'] as string | undefined;
 
