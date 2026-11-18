@@ -257,6 +257,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   const route53Provider = new Route53Provider();
   registry.register('AWS::Route53::HostedZone', route53Provider);
   registry.register('AWS::Route53::RecordSet', route53Provider);
+  registry.register('AWS::Route53::RecordSetGroup', route53Provider);
 
   // WAFv2
   registry.register('AWS::WAFv2::WebACL', new WAFv2WebACLProvider());

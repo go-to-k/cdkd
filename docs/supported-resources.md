@@ -83,7 +83,7 @@ part of the type name.
 | Neptune | `AWS::Neptune::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBSubnetGroup` |
 | Pipes | `AWS::Pipes::Pipe` |
 | RDS | `AWS::RDS::DBCluster`, `AWS::RDS::DBInstance`, `AWS::RDS::DBProxy`, `AWS::RDS::DBProxyEndpoint`, `AWS::RDS::DBProxyTargetGroup`, `AWS::RDS::DBSubnetGroup` |
-| Route53 | `AWS::Route53::HostedZone`, `AWS::Route53::RecordSet` |
+| Route53 | `AWS::Route53::HostedZone`, `AWS::Route53::RecordSet`, `AWS::Route53::RecordSetGroup` |
 | S3 | `AWS::S3::Bucket`, `AWS::S3::BucketPolicy` |
 | S3Express | `AWS::S3Express::DirectoryBucket` |
 | S3Tables | `AWS::S3Tables::Namespace`, `AWS::S3Tables::Table`, `AWS::S3Tables::TableBucket` |

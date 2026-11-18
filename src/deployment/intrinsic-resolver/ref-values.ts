@@ -286,12 +286,17 @@ export const REF_RETURNS_NAME_FROM_ARN = new Map<string, string>([
  * name on the recorded `Name` / `Type`, and only an id it cannot anchor falls
  * through to the raw physical id.
  *
+ * `AWS::Route53::RecordSetGroup` stores `<hostedZoneId>|<logicalId>` while
+ * CloudFormation's `Ref` returns the group's NAME, a generated string naming
+ * nothing in AWS (go-to-k/cdkd#6530); the logical id segment stands in for it.
+ *
  * Same maintenance rules as the two Sets: docs-verified `Ref` semantics per
  * type, a whole-service-family audit before adding one, and a pinning unit test
  * asserting the RESOLVED value (not merely map membership).
  */
 export const REF_RETURNS_SEGMENT_AT_INDEX = new Map<string, { arity: number; index: number }>([
   ['AWS::Route53::RecordSet', { arity: 3, index: 1 }],
+  ['AWS::Route53::RecordSetGroup', { arity: 2, index: 1 }],
 ]);
 
 /**

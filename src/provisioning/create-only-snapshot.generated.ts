@@ -509,6 +509,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
   ['AWS::RDS::DBSubnetGroup', [['DBSubnetGroupName']]],
   ['AWS::Route53::HostedZone', [['DelegationSetId'], ['Name']]],
   ['AWS::Route53::RecordSet', [['HostedZoneId'], ['HostedZoneName']]],
+  ['AWS::Route53::RecordSetGroup', [['HostedZoneId'], ['HostedZoneName']]],
   ['AWS::S3::Bucket', [['BucketName'], ['BucketNamePrefix'], ['BucketNamespace']]],
   ['AWS::S3::BucketPolicy', [['Bucket']]],
   ['AWS::S3Express::DirectoryBucket', [['BucketName'], ['DataRedundancy'], ['LocationName']]],

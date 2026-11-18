@@ -1286,6 +1286,14 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
     ]),
   ],
   [
+    'AWS::Route53::RecordSetGroup',
+    new Map<string, readonly string[]>([
+      ['RecordSets', ['Name', 'Type']],
+      ['RecordSets.AliasTarget', ['DNSName', 'HostedZoneId']],
+      ['RecordSets.CidrRoutingConfig', ['CollectionId', 'LocationName']],
+    ]),
+  ],
+  [
     'AWS::S3::Bucket',
     new Map<string, readonly string[]>([
       ['AccelerateConfiguration', ['AccelerationStatus']],

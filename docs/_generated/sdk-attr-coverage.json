@@ -10,9 +10,9 @@
     }
   ],
   "summary": {
-    "classifiedCount": 140,
+    "classifiedCount": 141,
     "covered": 72,
-    "noArnAttr": 68,
+    "noArnAttr": 69,
     "gap": 0,
     "knownGap": 0,
     "refused": 2
@@ -1052,6 +1052,12 @@
     },
     {
       "resourceType": "AWS::Route53::RecordSet",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetGroup",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

@@ -119,6 +119,7 @@
     "AWS::RDS::DBSubnetGroup",
     "AWS::Route53::HostedZone",
     "AWS::Route53::RecordSet",
+    "AWS::Route53::RecordSetGroup",
     "AWS::S3::Bucket",
     "AWS::S3::BucketPolicy",
     "AWS::S3Express::DirectoryBucket",
@@ -8714,6 +8715,18 @@
         "route53": [
           "l1",
           "l2",
+          "literal"
+        ]
+      }
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetGroup",
+      "integs": [
+        "route53"
+      ],
+      "signals": {
+        "route53": [
+          "l1",
           "literal"
         ]
       }

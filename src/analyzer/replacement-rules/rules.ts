@@ -424,6 +424,16 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
     conditionalReplacements: new Map([['TableInput', glueTableNameChanged]]),
   });
 
+  // Route 53 RecordSetGroup — the type has no registry schema, so no
+  // create-only fallback exists: the zone is classified here. A group's
+  // records are written in one batch against ONE zone, so moving the group is
+  // a replacement (CFn "Update requires: Replacement"); its records and
+  // comment update in place.
+  this.rules.set('AWS::Route53::RecordSetGroup', {
+    replacementProperties: new Set(['HostedZoneId', 'HostedZoneName']),
+    updateableProperties: new Set(['Comment', 'RecordSets']),
+  });
+
   // CloudWatch Alarm — AlarmName is immutable (CFn "Update requires:
   // Replacement"). A rename was attempted as an in-place PutMetricAlarm with
   // the NEW name, which CREATES a second alarm and orphans the old one.

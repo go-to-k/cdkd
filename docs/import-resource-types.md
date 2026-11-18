@@ -153,6 +153,7 @@ with `--auto` and a CloudFormation stack of the same name.
 | `AWS::S3Tables::Namespace` | `<tableBucketARN>\|<namespaceName>` |
 | `AWS::S3Tables::Table` | `<tableBucketARN>\|<namespace>\|<name>` |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
+| `AWS::Route53::RecordSetGroup` | CloudFormation's group name, or `<hostedZoneId>\|<logicalId>` |
 | `AWS::EC2::Route` | `<routeTableId>\|<destination>` |
 | `AWS::EC2::NetworkAclEntry` | `<networkAclId>\|<ruleNumber>\|<egress>` |
 | `AWS::EC2::SecurityGroupIngress` | The `sgr-...` rule id. |
@@ -167,6 +168,10 @@ These types take the plain physical id: `AWS::ApiGateway::Authorizer`,
 
 - **`AWS::Route53::RecordSet`**: write `<name>` exactly as the template spells
   it. CDK emits a trailing dot.
+- **`AWS::Route53::RecordSetGroup`**: cdkd reads the zone and the records from
+  the template, checks that every record exists, and records
+  `<hostedZoneId>|<logicalId>`. If it cannot check them, it records the id you
+  gave and warns.
 - **`AWS::EC2::Route`**: `<destination>` is the IPv4 CIDR, the IPv6 CIDR or
   the prefix-list id. CloudFormation's id has the same form.
 - **`AWS::S3Tables::Namespace`** and **`AWS::S3Tables::Table`**: only their

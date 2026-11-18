@@ -636,10 +636,117 @@ const RECORD_SET_CASE: TypeCase = {
   })),
 };
 
+// --- AWS::Route53::RecordSetGroup -------------------------------------------
+
+/**
+ * Every lookup of a record answers with a live record of the asked-for name,
+ * type and SetIdentifier, so a removed record's DELETE carries it.
+ */
+const armRecordSetGroup = (_physicalId: string, _bag: Bag): void => {
+  setOutputOverrides({
+    ListHostedZonesByNameCommand: (input) => ({
+      HostedZones: [
+        {
+          Id: `/hostedzone/Z-${String(input['DNSName'])}`,
+          Name: input['DNSName'],
+          CallerReference: 'ref',
+          Config: { PrivateZone: false },
+        },
+      ],
+      IsTruncated: false,
+    }),
+    ListResourceRecordSetsCommand: (input) => ({
+      ResourceRecordSets: [
+        {
+          Name: input['StartRecordName'],
+          Type: input['StartRecordType'],
+          ...(input['StartRecordIdentifier'] !== undefined
+            ? { SetIdentifier: input['StartRecordIdentifier'] }
+            : {}),
+          TTL: '60',
+          ResourceRecords: [{ Value: 'live' }],
+        },
+      ],
+      IsTruncated: false,
+    }),
+  });
+};
+
+const GROUP_RECORD_COUNT = RECORD_BAGS.length - 1;
+const NAME_TYPE_SAYS = /needs a plain string Name and Type|has no readable Name \/ Type/;
+/**
+ * Name and Type identify a record, are required by the CloudFormation schema,
+ * and are refused before any write when absent (route53/record-set-group.ts,
+ * desiredGroup / updateRecordSetGroup); the alias zone id is required too and
+ * reaches the Route 53 client's id normalizer as undefined.
+ */
+const GROUP_REMOVAL_THROWS: Record<string, Throw> = Object.fromEntries([
+  [
+    'create:HostedZoneId',
+    {
+      why: `a group with neither HostedZoneId nor HostedZoneName is refused before any write (route53/record-set-group.ts, createRecordSetGroup via resolveHostedZoneId)`,
+      says: NO_ZONE_NEEDLE,
+    } satisfies Throw,
+  ],
+  ...Array.from({ length: GROUP_RECORD_COUNT }, (_, i) =>
+    ['Name', 'Type'].flatMap((key) =>
+      ['create', 'update-add', 'update-remove'].map((d) => [
+        `${d}:RecordSets.${i}.${key}`,
+        {
+          why: `${key} is required by the CloudFormation schema; a record without it is refused before any write (route53/record-set-group.ts)`,
+          says: NAME_TYPE_SAYS,
+        } satisfies Throw,
+      ])
+    )
+  ).flat(),
+  ...['create', 'update-remove'].map((d) => [
+    `${d}:RecordSets.1.AliasTarget.HostedZoneId`,
+    ALIAS_ZONE_REQUIRED,
+  ]),
+]);
+
+const RECORD_SET_GROUP_CASE: TypeCase = {
+  resourceType: 'AWS::Route53::RecordSetGroup',
+  provider: () => new Route53Provider(),
+  physicalId: `${ZONE_ID}|Group`,
+  createOnly: createOnlyOf('AWS::Route53::RecordSetGroup'),
+  arm: armRecordSetGroup,
+  exempt: {
+    HostedZoneName: `a group in one zone resolves it by HostedZoneId or by name; a bag carries one, and the by-name lookup is the RecordSet case's (route53/resolve.ts, resolveHostedZoneId)`,
+  },
+  nestedExempt: {
+    'RecordSets.HostedZoneId': `a record may repeat the group's zone, but a different one is refused (route53/record-set-group.ts, groupZoneProperties), so a varied value cannot be delivered; the field is stripped from the wire`,
+    'RecordSets.HostedZoneName': `a record may repeat the group's zone, but a different one is refused (route53/record-set-group.ts, groupZoneProperties), so a varied value cannot be delivered; the field is stripped from the wire`,
+  },
+  targets: [],
+  bags: [
+    {
+      name: 'plain records',
+      bag: fresh({
+        HostedZoneId: ZONE_ID,
+        Comment: 'group comment',
+        // One identity per record: records sharing name, type and SetIdentifier
+        // are one key to the group's diff.
+        RecordSets: RECORD_BAGS.filter((b) => b.name !== 'plain, by HostedZoneName').map((b, i) => {
+          const { HostedZoneId: _zone, Comment: _comment, ...rest } = b.bag;
+          return { ...rest, Name: `r${i}.example.com` };
+        }),
+      }),
+      expectedSilent: {
+        'update-remove:Comment': `the group Comment rides on a batch only when a record changes (route53/record-set-group.ts, updateRecordSetGroup), so changing it alone sends nothing`,
+        'update-add:Comment': `the group Comment rides on a batch only when a record changes (route53/record-set-group.ts, updateRecordSetGroup), so changing it alone sends nothing`,
+        'update-vary:Comment': `the group Comment rides on a batch only when a record changes (route53/record-set-group.ts, updateRecordSetGroup), so changing it alone sends nothing`,
+      },
+      expectedRemovalThrows: GROUP_REMOVAL_THROWS,
+    },
+  ],
+};
+
 export const CASES_17: TypeCase[] = [
   FILE_SYSTEM_CASE,
   MOUNT_TARGET_CASE,
   ACCESS_POINT_CASE,
   HOSTED_ZONE_CASE,
   RECORD_SET_CASE,
+  RECORD_SET_GROUP_CASE,
 ];

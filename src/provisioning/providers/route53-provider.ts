@@ -52,6 +52,13 @@ import {
   buildResourceRecordSet,
 } from './route53/record-set.js';
 import {
+  createRecordSetGroup,
+  updateRecordSetGroup,
+  deleteRecordSetGroup,
+  readRecordSetGroup,
+  importRecordSetGroup,
+} from './route53/record-set-group.js';
+import {
   applyHostedZoneTags,
   readHostedZoneTags,
   applyQueryLoggingConfig,
@@ -89,6 +96,7 @@ export {
  * Implements resource provisioning for Route 53 resources:
  * - AWS::Route53::HostedZone
  * - AWS::Route53::RecordSet
+ * - AWS::Route53::RecordSetGroup
  *
  * WHY: Route 53 operations are synchronous - the CC API adds unnecessary polling
  * overhead for operations that complete immediately. This SDK provider eliminates
@@ -157,6 +165,10 @@ export class Route53Provider implements ResourceProvider {
         'GeoProximityLocation',
         'CidrRoutingConfig',
       ]),
+    ],
+    [
+      'AWS::Route53::RecordSetGroup',
+      new Set(['HostedZoneId', 'HostedZoneName', 'Comment', 'RecordSets']),
     ],
   ]);
 
@@ -315,6 +327,63 @@ export class Route53Provider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
     return deleteRecordSet.call(this, logicalId, physicalId, resourceType, properties, context);
+  }
+
+  createRecordSetGroup(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
+  ): Promise<ResourceCreateResult> {
+    return createRecordSetGroup.call(this, logicalId, resourceType, properties, mask);
+  }
+
+  updateRecordSetGroup(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    return updateRecordSetGroup.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
+  }
+
+  deleteRecordSetGroup(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: DeleteContext
+  ): Promise<void | ResourceDeleteResult> {
+    return deleteRecordSetGroup.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      context
+    );
+  }
+
+  readRecordSetGroup(
+    physicalId: string,
+    logicalId: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    return readRecordSetGroup.call(this, physicalId, logicalId, properties);
+  }
+
+  importRecordSetGroup(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importRecordSetGroup.call(this, input);
   }
 
   waitForAcceleratedRecoveryFeatureSettled(

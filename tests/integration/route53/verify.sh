@@ -408,6 +408,41 @@ if [ "${CIDR_REF}" != "${EXPECTED_CIDR_NAME}" ] &&
 fi
 echo "    OK: Ref to the RecordSet resolved to the record name (${CIDR_REF})"
 
+# --- Assertion: the RecordSetGroup's records are live, and its Ref (#6530) ----
+GROUP_REF=$(echo "${STATE}" | jq -r '.outputs.RecordGroupRef // empty')
+if [ "${GROUP_REF}" != "RecordGroup" ]; then
+  echo "FAIL: Ref to the RecordSetGroup is not its logical id (got '${GROUP_REF}', expected 'RecordGroup')" >&2
+  exit 1
+fi
+GROUP_PHYSICAL_ID=$(echo "${STATE}" | jq -r '.resources.RecordGroup.physicalId // empty')
+case "${GROUP_PHYSICAL_ID}" in
+  *'|RecordGroup') ;;
+  *)
+    echo "FAIL: RecordSetGroup physical id is not '<zoneId>|RecordGroup' (got '${GROUP_PHYSICAL_ID}')" >&2
+    exit 1
+    ;;
+esac
+GROUP_ZONE_ID="${GROUP_PHYSICAL_ID%%|*}"
+GROUP_RECORDS=$(aws route53 list-resource-record-sets --hosted-zone-id "${GROUP_ZONE_ID}" \
+  --region "${REGION}" --output json)
+for grp_check in "grp-a A 1" "grp-b TXT 1" "grp-c A 1" "grp-d A 0"; do
+  read -r grp_name grp_type grp_want <<<"${grp_check}"
+  grp_got=$(printf '%s' "${GROUP_RECORDS}" | jq --arg n "${grp_name}.cdkd-test-${ACCOUNT_ID}.internal." --arg t "${grp_type}" \
+    '[.ResourceRecordSets[] | select(.Name == $n and .Type == $t)] | length')
+  if [ "${grp_got}" != "${grp_want}" ]; then
+    echo "FAIL: RecordSetGroup record ${grp_name} ${grp_type}: found ${grp_got}, expected ${grp_want} (#6530)" >&2
+    printf '%s' "${GROUP_RECORDS}" | jq -c '.ResourceRecordSets[] | {Name, Type}' >&2
+    exit 1
+  fi
+done
+GRP_B_VALUE=$(printf '%s' "${GROUP_RECORDS}" | jq -r --arg n "grp-b.cdkd-test-${ACCOUNT_ID}.internal." \
+  '[.ResourceRecordSets[] | select(.Name == $n and .Type == "TXT") | .ResourceRecords[].Value] | join(",")')
+if [ "${GRP_B_VALUE}" != '"v1"' ]; then
+  echo "FAIL: RecordSetGroup record grp-b is '${GRP_B_VALUE}', expected '\"v1\"' (#6530)" >&2
+  exit 1
+fi
+echo "    OK: RecordSetGroup created its three records in zone ${GROUP_ZONE_ID}; Ref is '${GROUP_REF}'"
+
 # --- Assertion: a record whose NAME contains `|` deploys (issue #3890) ----
 # Route 53 accepts `|` in a record name and stores it as `\174`; cdkd joins
 # its physical id with `|`, and pre-fix REFUSED this record at deploy time, so
@@ -477,8 +512,20 @@ if [ -z "${DRIFT_ZONE_ID}" ] || [ "${ZONE_DRIFT_BUCKET}" != "clean" ]; then
   rm -f "${PIPE_DRIFT_JSON}"
   exit 1
 fi
+# Issue #6530: the same run reads every record of the group back.
+GROUP_DRIFT_BUCKET=$(jq -r '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == "RecordGroup") | $bucket] | join(",")' \
+  "${PIPE_DRIFT_JSON}" 2>/dev/null || true)
+if [ "${GROUP_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report RecordGroup clean (bucket '${GROUP_DRIFT_BUCKET}', rc=${PIPE_DRIFT_RC}) (#6530):" >&2
+  cat "${PIPE_DRIFT_JSON}" >&2
+  rm -f "${PIPE_DRIFT_JSON}"
+  exit 1
+fi
 rm -f "${PIPE_DRIFT_JSON}"
 echo "    OK: cdkd drift read PipeRecord back and reported it clean"
+echo "    OK: cdkd drift read the RecordSetGroup back and reported it clean (#6530)"
 echo "    OK: cdkd drift reported hosted zone ${DRIFT_ZONE_ID} clean (#2762)"
 
 # --- Assertion: GeoProximityLocation reached AWS ----------------------
@@ -1097,6 +1144,16 @@ expect_records "${NAME_RENAMED_RECORDS}" "test-renamed.${ZONE_NAME}" A "" 1 "the
 expect_records "${NAME_RENAMED_RECORDS}" "swap.${ZONE_NAME}" A "" 1 "the swap A record changed before its own phase"
 expect_records "${NAME_RENAMED_RECORDS}" "geo.${ZONE_NAME}" A "${SET_IDENTIFIER}" 1 "the geo record changed before its own phase"
 echo "    OK: the Name rename replaced the old record (no leftover)"
+expect_records "${NAME_RENAMED_RECORDS}" "grp-c.${ZONE_NAME}" A "" 0 "the group record removed from the template is still live (#6530)"
+expect_records "${NAME_RENAMED_RECORDS}" "grp-d.${ZONE_NAME}" A "" 1 "the group record added to the template is not live (#6530)"
+expect_records "${NAME_RENAMED_RECORDS}" "grp-a.${ZONE_NAME}" A "" 1 "the unchanged group record is gone (#6530)"
+GRP_B_UPDATED=$(printf '%s' "${NAME_RENAMED_RECORDS}" | jq -r --arg n "grp-b.${ZONE_NAME}" \
+  '[.ResourceRecordSets[] | select(.Name == $n and .Type == "TXT") | .ResourceRecords[].Value] | join(",")')
+if [ "${GRP_B_UPDATED}" != '"v2"' ]; then
+  echo "FAIL: the changed group record grp-b is '${GRP_B_UPDATED}', expected '\"v2\"' (#6530)" >&2
+  exit 1
+fi
+echo "    OK: the RecordSetGroup update added, changed and removed its records in one batch"
 
 # Issue #3890: the same redeploy raises PipeRecord's TTL 300 -> 600, an
 # in-place UPDATE of a record whose name contains `|` -- one record, new TTL.
@@ -1120,6 +1177,9 @@ expect_records "${POST_RENAME_RECORDS}" "swap.${ZONE_NAME}" A "" 0 "the swapped 
 expect_records "${POST_RENAME_RECORDS}" "swap.${ZONE_NAME}" CNAME "" 1 "the swapped record's NEW type (CNAME) is not live"
 expect_records "${POST_RENAME_RECORDS}" "test-renamed.${ZONE_NAME}" A "" 1 "the renamed A record is gone after 2.7b"
 echo "    OK: the SetIdentifier and Type renames replaced the old records"
+expect_records "${POST_RENAME_RECORDS}" "grp-a.${ZONE_NAME}" A "" 0 "the group record's OLD type (A) is still live (#6530)"
+expect_records "${POST_RENAME_RECORDS}" "grp-a.${ZONE_NAME}" CNAME "" 1 "the group record's NEW type (CNAME) is not live (#6530)"
+echo "    OK: the RecordSetGroup swapped grp-a from A to CNAME in one batch"
 
 # --- Phase 2.7c: roll back a CNAME -> A rename (issue #3741) ----------------
 # Swaps TypeSwapRecord back from CNAME to A and fails the deploy AFTER the swap

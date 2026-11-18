@@ -4792,6 +4792,29 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('https://www.example.com.');
   });
 
+  // go-to-k/cdkd#6530: a RecordSetGroup's id is `<hostedZoneId>|<logicalId>`;
+  // `Ref` returns the group-name segment, never the zone id.
+  it('Ref to AWS::Route53::RecordSetGroup returns the group segment, not the zone id', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyGroup: { Type: 'AWS::Route53::RecordSetGroup', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyGroup: {
+          physicalId: 'Z1D633PJN98FT9|MyGroup',
+          resourceType: 'AWS::Route53::RecordSetGroup',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'MyGroup' }, context);
+    expect(result).toBe('MyGroup');
+  });
+
   // Negative polarity for the interior-segment entry: the extraction is
   // EXACT-arity, so anything that is not a 3-part id passes through raw rather
   // than confidently returning a wrong middle segment. Exercised through the

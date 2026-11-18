@@ -3183,6 +3183,17 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Route53::RecordSetGroup',
+    {
+      handled: new Set<string>(['Comment', 'HostedZoneId', 'HostedZoneName', 'RecordSets']),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(),
+      primaryIdentifier: new Set<string>(),
+      ccRouteUnavailable: true,
+    },
+  ],
+  [
     'AWS::S3::Bucket',
     {
       handled: new Set<string>([

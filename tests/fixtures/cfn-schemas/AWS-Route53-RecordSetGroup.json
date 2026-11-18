@@ -1,0 +1,196 @@
+{
+  "resourceType": "AWS::Route53::RecordSetGroup",
+  "generatedAt": "2026-11-18",
+  "properties": [
+    "Comment",
+    "HostedZoneId",
+    "HostedZoneName",
+    "RecordSets"
+  ],
+  "readOnlyProperties": [],
+  "createOnlyProperties": [
+    "HostedZoneId",
+    "HostedZoneName"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "HostedZoneId"
+    ],
+    [
+      "HostedZoneName"
+    ]
+  ],
+  "primaryIdentifier": [],
+  "nestedProperties": {
+    "RecordSets": [
+      "AliasTarget",
+      "CidrRoutingConfig",
+      "Failover",
+      "GeoLocation",
+      "HealthCheckId",
+      "HostedZoneId",
+      "HostedZoneName",
+      "MultiValueAnswer",
+      "Name",
+      "Region",
+      "ResourceRecords",
+      "SetIdentifier",
+      "TTL",
+      "Type",
+      "Weight"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "RecordSets": [
+      "AliasTarget",
+      "AliasTarget.DNSName",
+      "AliasTarget.EvaluateTargetHealth",
+      "AliasTarget.HostedZoneId",
+      "CidrRoutingConfig",
+      "CidrRoutingConfig.CollectionId",
+      "CidrRoutingConfig.LocationName",
+      "Failover",
+      "GeoLocation",
+      "GeoLocation.ContinentCode",
+      "GeoLocation.CountryCode",
+      "GeoLocation.SubdivisionCode",
+      "HealthCheckId",
+      "HostedZoneId",
+      "HostedZoneName",
+      "MultiValueAnswer",
+      "Name",
+      "Region",
+      "ResourceRecords",
+      "SetIdentifier",
+      "TTL",
+      "Type",
+      "Weight"
+    ]
+  },
+  "definitionShapes": {
+    "AliasTarget": {
+      "HostedZoneId": "scalar",
+      "DNSName": "scalar",
+      "EvaluateTargetHealth": "scalar"
+    },
+    "Coordinates": {
+      "Latitude": "scalar",
+      "Longitude": "scalar"
+    },
+    "CidrRoutingConfig": {
+      "CollectionId": "scalar",
+      "LocationName": "scalar"
+    },
+    "GeoProximityLocation": {
+      "Bias": "scalar",
+      "Coordinates": "object",
+      "AWSRegion": "scalar",
+      "LocalZoneGroup": "scalar"
+    },
+    "GeoLocation": {
+      "ContinentCode": "scalar",
+      "CountryCode": "scalar",
+      "SubdivisionCode": "scalar"
+    },
+    "RecordSet": {
+      "HealthCheckId": "scalar",
+      "AliasTarget": "object",
+      "HostedZoneName": "scalar",
+      "ResourceRecords": "array",
+      "HostedZoneId": "scalar",
+      "SetIdentifier": "scalar",
+      "TTL": "scalar",
+      "Weight": "scalar",
+      "Name": "scalar",
+      "Type": "scalar",
+      "CidrRoutingConfig": "object",
+      "Failover": "scalar",
+      "Region": "scalar",
+      "GeoLocation": "object",
+      "MultiValueAnswer": "scalar"
+    },
+    "#top": {
+      "Comment": "scalar",
+      "HostedZoneId": "scalar",
+      "HostedZoneName": "scalar",
+      "RecordSets": "array"
+    }
+  },
+  "definitionRequired": {
+    "AliasTarget": [
+      "DNSName",
+      "HostedZoneId"
+    ],
+    "Coordinates": [
+      "Latitude",
+      "Longitude"
+    ],
+    "CidrRoutingConfig": [
+      "CollectionId",
+      "LocationName"
+    ],
+    "RecordSet": [
+      "Name",
+      "Type"
+    ]
+  },
+  "nestedRequired": {
+    "RecordSets": [
+      "Name",
+      "Type"
+    ],
+    "RecordSets.AliasTarget": [
+      "DNSName",
+      "HostedZoneId"
+    ],
+    "RecordSets.CidrRoutingConfig": [
+      "CollectionId",
+      "LocationName"
+    ]
+  },
+  "propertyShapes": {
+    "RecordSets": "array",
+    "RecordSets[]": "object",
+    "RecordSets[].AliasTarget": "object",
+    "RecordSets[].CidrRoutingConfig": "object",
+    "RecordSets[].GeoLocation": "object",
+    "RecordSets[].ResourceRecords": "array"
+  },
+  "propertyTypes": {
+    "Comment": "string",
+    "HostedZoneId": "string",
+    "HostedZoneName": "string",
+    "RecordSets": "array",
+    "RecordSets[]": "object",
+    "RecordSets[].AliasTarget": "object",
+    "RecordSets[].AliasTarget.DNSName": "string",
+    "RecordSets[].AliasTarget.EvaluateTargetHealth": "boolean",
+    "RecordSets[].AliasTarget.HostedZoneId": "string",
+    "RecordSets[].CidrRoutingConfig": "object",
+    "RecordSets[].CidrRoutingConfig.CollectionId": "string",
+    "RecordSets[].CidrRoutingConfig.LocationName": "string",
+    "RecordSets[].Failover": "string",
+    "RecordSets[].GeoLocation": "object",
+    "RecordSets[].GeoLocation.ContinentCode": "string",
+    "RecordSets[].GeoLocation.CountryCode": "string",
+    "RecordSets[].GeoLocation.SubdivisionCode": "string",
+    "RecordSets[].HealthCheckId": "string",
+    "RecordSets[].HostedZoneId": "string",
+    "RecordSets[].HostedZoneName": "string",
+    "RecordSets[].MultiValueAnswer": "boolean",
+    "RecordSets[].Name": "string",
+    "RecordSets[].Region": "string",
+    "RecordSets[].ResourceRecords": "array",
+    "RecordSets[].ResourceRecords[]": "string",
+    "RecordSets[].SetIdentifier": "string",
+    "RecordSets[].TTL": "string",
+    "RecordSets[].Type": "string",
+    "RecordSets[].Weight": "integer"
+  },
+  "propertyEnums": {
+    "RecordSets[].Failover": [
+      "PRIMARY",
+      "SECONDARY"
+    ]
+  }
+}

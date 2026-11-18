@@ -22,6 +22,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *   removal, each waited for (#5465)
  * - RecordSet renames (Name / Type / SetIdentifier) under CDKD_TEST_RENAME (#3741)
  * - A RecordSet whose name contains `|`, its `Ref`, and an in-place update (#3890)
+ * - AWS::Route53::RecordSetGroup: create, add / change / remove / type-swap
+ *   updates, `Ref` and drift (#6530)
  * - HostedZone `DelegationSetId` on a reusable delegation set verify.sh makes (#2762)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
@@ -237,6 +239,57 @@ export class Route53Stack extends cdk.Stack {
       resourceRecords: ['198.51.100.9'],
     });
 
+    // Issue #6530: a RecordSetGroup is one ChangeResourceRecordSets batch per
+    // write. Addressed by HostedZoneName so the create resolves the zone by
+    // name. Under `name`, grp-b's value changes (UPSERT), grp-c leaves (DELETE)
+    // and grp-d arrives (CREATE); under `swap`, grp-a turns from an A into a
+    // CNAME on the same name, valid only with the DELETE ahead of the CREATE.
+    const groupZoneName = `cdkd-test-${this.account}.internal`;
+    const recordGroup = new route53.CfnRecordSetGroup(this, 'RecordGroup', {
+      hostedZoneName: `${groupZoneName}.`,
+      comment: 'cdkd integ record set group',
+      recordSets: [
+        renameSwap
+          ? {
+              name: `grp-a.${groupZoneName}`,
+              type: 'CNAME',
+              ttl: '300',
+              resourceRecords: ['target.example.com'],
+            }
+          : {
+              name: `grp-a.${groupZoneName}`,
+              type: 'A',
+              ttl: '300',
+              resourceRecords: ['198.51.100.10'],
+            },
+        {
+          name: `grp-b.${groupZoneName}`,
+          type: 'TXT',
+          ttl: '300',
+          resourceRecords: [renameName ? '"v2"' : '"v1"'],
+        },
+        ...(renameName
+          ? [
+              {
+                name: `grp-d.${groupZoneName}`,
+                type: 'A',
+                ttl: '300',
+                resourceRecords: ['198.51.100.13'],
+              },
+            ]
+          : [
+              {
+                name: `grp-c.${groupZoneName}`,
+                type: 'A',
+                ttl: '300',
+                resourceRecords: ['198.51.100.12'],
+              },
+            ]),
+      ],
+    });
+    // The name lookup needs the zone to exist first.
+    recordGroup.node.addDependency(zone);
+
     // Outputs
     new cdk.CfnOutput(this, 'HostedZoneId', {
       value: zone.hostedZoneId,
@@ -298,6 +351,12 @@ export class Route53Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'PipeRecordRef', {
       value: pipeRecord.ref,
       description: 'Ref of the RecordSet whose name contains | — must be the whole record NAME',
+    });
+
+    // Issue #6530: the group's `Ref` is its logical id, never the zone id.
+    new cdk.CfnOutput(this, 'RecordGroupRef', {
+      value: recordGroup.ref,
+      description: 'Ref of the RecordSetGroup — must be the group logical id',
     });
 
     cdk.Tags.of(this).add('Project', 'cdkd');

@@ -16,9 +16,9 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **140**
+- Classified types (cached schema): **141**
 - Fully enriched: **49**
-- No computed attribute (Ref == physicalId is correct): **18**
+- No computed attribute (Ref == physicalId is correct): **19**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **73**
 - Types with allow-listed (not-a-gap) attributes: **87**
@@ -230,6 +230,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::RDS::DBSubnetGroup` | yes | sdk-fallback-gap | `DBSubnetGroupArn` (GAP) |
 | `AWS::Route53::HostedZone` | yes | sdk-fallback-gap | `Id` (allow), `NameServers` (GAP) |
 | `AWS::Route53::RecordSet` | yes | no-computed-attr | _(none)_ |
+| `AWS::Route53::RecordSetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::S3::Bucket` | yes | sdk-fallback-gap | `Arn` (OK), `DomainName` (GAP), `DualStackDomainName` (GAP), `RegionalDomainName` (GAP), `WebsiteURL` (GAP) |
 | `AWS::S3::BucketPolicy` | yes | no-computed-attr | _(none)_ |
 | `AWS::S3Express::DirectoryBucket` | yes | sdk-fallback-gap | `Arn` (GAP), `AvailabilityZoneName` (GAP) |
