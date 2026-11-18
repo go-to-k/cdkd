@@ -497,7 +497,7 @@ stepfunctions-s3-definition	2026-11-07T00:18:55Z	PASS	70	verify.sh	#5936 stepfun
 stepfunctions-sync-managed-rule	2026-11-10T13:24:25Z	PASS	100	verify.sh	rc ok, orph clean, managed-rule window hit and retried (#6081), rebuilt tree rerun for marker
 stream-delete-redeploy	2026-11-01T14:08:38Z	PASS	914	verify.sh	rc ok, orph clean
 subnet-mappublicip-removal	2026-11-15T12:58:41Z	PASS	90	verify.sh	rc ok, orph clean; #6342 pre-fix RED at remove phase
-synthetics-canary	2026-11-18T12:47:19Z	PASS	170	verify.sh	rc ok, orph clean puppeteer-10.0 l10 script UPDATE layer 1->2 (#6553 PR #6554 r2)
+synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; marker re-set after comment-only commit e44c0ae38 (#6553 PR #6554)
 tags-propagation	2026-11-10T18:27:43Z	PASS	221	verify.sh	rc ok, orph clean
 termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
 throttle-wide-dag	2026-11-05T12:05:22Z	PASS	241	verify.sh	rc ok, orph clean
