@@ -1,8 +1,8 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1529,
-    "wholeDeliveredPathCount": 623,
+    "nestedKeyCount": 1536,
+    "wholeDeliveredPathCount": 628,
     "shapeClean": 182,
     "shapeHandled": 50,
     "shapeAllowListed": 8,
@@ -1143,7 +1143,7 @@
       "providerFile": "lambda-network-connector-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-lambda-core",
       "keyStyle": "exact",
-      "nestedKeyCount": 7,
+      "nestedKeyCount": 9,
       "wholeDeliveredPaths": [],
       "shapeEntries": [
         {
@@ -1157,6 +1157,7 @@
       "shapeCleanCount": 3,
       "unmatchedDefinitions": [
         "Config",
+        "ElasticIpConfiguration",
         "Tag",
         "VpcEgressConfiguration"
       ],
@@ -1524,7 +1525,7 @@
       "providerFile": "scheduler-schedule-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-scheduler",
       "keyStyle": "exact",
-      "nestedKeyCount": 47,
+      "nestedKeyCount": 52,
       "wholeDeliveredPaths": [
         "FlexibleTimeWindow.MaximumWindowInMinutes",
         "FlexibleTimeWindow.Mode",
@@ -1552,6 +1553,11 @@
         "Target.EventBridgeParameters",
         "Target.EventBridgeParameters.DetailType",
         "Target.EventBridgeParameters.Source",
+        "Target.EventBridgePutEventsV2Parameters",
+        "Target.EventBridgePutEventsV2Parameters.DetailType",
+        "Target.EventBridgePutEventsV2Parameters.Source",
+        "Target.EventBridgePutRawEventsParameters",
+        "Target.EventBridgePutRawEventsParameters.Metadata",
         "Target.Input",
         "Target.KinesisParameters",
         "Target.KinesisParameters.PartitionKey",
