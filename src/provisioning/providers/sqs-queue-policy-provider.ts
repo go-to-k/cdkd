@@ -4,6 +4,7 @@ import {
   GetQueueAttributesCommand,
 } from '@aws-sdk/client-sqs';
 import { getLogger } from '../../utils/logger.js';
+import { serializeResourcePolicy } from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
@@ -108,8 +109,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     const applied: string[] = [];
     try {
       // Serialize policy document
-      const policyDoc =
-        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+      const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
       // Apply policy to all queues
       for (const queueUrl of queues) {
@@ -205,8 +205,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
 
     try {
       // Serialize policy document
-      const policyDoc =
-        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+      const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
       // Apply policy to all queues
       for (const queueUrl of queues) {

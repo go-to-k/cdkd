@@ -11,6 +11,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { getCurrentStackName } from '../resource-name/stack-scope.js';
 import { getStackRecords } from '../../deployment/stack-records-scope.js';
 import { getLogger } from '../../utils/logger.js';
+import { serializeResourcePolicy } from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import {
@@ -210,8 +211,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
 
     const mask = context?.maskSecrets ?? ((t: string) => t);
     // Serialize policy document
-    const policyDoc =
-      typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+    const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
     // go-to-k/cdkd#6109: PutBucketPolicy REPLACES whatever policy the bucket
     // holds, so a create without this look is an upsert that silently drops
@@ -322,8 +322,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
 
     try {
       // Serialize policy document
-      const policyDoc =
-        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+      const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
       await this.s3Client.send(
         new PutBucketPolicyCommand({

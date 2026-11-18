@@ -1,5 +1,6 @@
 import { SetTopicAttributesCommand, GetTopicAttributesCommand } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
+import { serializeResourcePolicy } from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
@@ -100,8 +101,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       );
     }
 
-    const policyDoc =
-      typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+    const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
     // go-to-k/cdkd#4583: the topics whose policy this create already wrote.
     const applied: string[] = [];
@@ -173,8 +173,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       );
     }
 
-    const policyDoc =
-      typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+    const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
     // go-to-k/cdkd#4610: a topic the record wrote and the new list drops keeps
     // the old statement unless it is reset, as CloudFormation's update does.
