@@ -66,8 +66,8 @@
 # grow an assertion for it. Replica provisioning costs minutes per create and
 # per delete: the arm takes the run from ~3 min to ~12-20 min.
 # The arm also depends on issue #3569: the rollback re-creates v1 straight
-# after the replacement deleted it, while v1's copy in the replica region is
-# still DELETING, and the replica-add must wait that copy out.
+# after phase 3b's out-of-band delete of it, while v1's copy in the replica
+# region may still be DELETING, and the replica-add must wait that copy out.
 #
 # BSD/macOS-portable: no grep -P, no date -d. Integ-exit-code-capture pattern
 # (bash ...; rc=$?) so a piped/teed harness can't mask a failure; the script
@@ -231,14 +231,15 @@ cd "${TEST_DIR}"
 # Cleanup: destroy the stack, then sweep by the fixture tag. This fixture
 # INTENTIONALLY creates a failed deploy, so the trap must not leak.
 # --------------------------------------------------------------------------
-# Best-effort, cleanup-only: every non-local replica of <table> is deleted and
-# waited out, then the table itself. Runs under `set +eu` (subshell), so a
+# Best-effort: every non-local replica of <table> is deleted and waited out,
+# then the table itself. Used by the cleanup trap and by phase 3b, whose own
+# waiter and gone-probe then assert the outcome. Runs under `set +eu` (subshell), so a
 # half-gone table never re-arms strict mode mid-sweep.
 delete_global_table_with_replicas() { (
   set +eu
   local t="$1" regions r i left
   aws dynamodb describe-table --table-name "${t}" >/dev/null 2>&1 || exit 0
-  echo "[verify] cleanup: deleting leftover global table ${t} (replicas first)"
+  echo "[verify] deleting global table ${t} (replicas first)"
   regions="$(aws dynamodb describe-table --table-name "${t}" \
     --query "Table.Replicas[?RegionName!='${REGION}'].RegionName" --output text 2>/dev/null)"
   for r in ${regions}; do
@@ -831,7 +832,8 @@ route_live() { # usage: route_live <destination> -- prints the route's destinati
 # COMPLETED (else the rollback would see a failed or absent CREATE), the old one
 # that its delete was deferred.
 for d in "${DEST_V1}" "${DEST_V2}" "${READOPT_DEST_V1}" "${READOPT_DEST_V2}"; do
-  if [ "$(route_live "${d}")" != "${d}" ]; then
+  live="$(route_live "${d}")"
+  if [ "${live}" != "${d}" ]; then
     echo "FAIL: phase 3b: the route to ${d} is not live in ${ROUTE_TABLE_ID} after the failed deploy." >&2
     echo "      Both copies of each replaced route must be: a missing OLD copy means the" >&2
     echo "      replacement's delete no longer waits for the cleanup phase (#6374), and this" >&2
@@ -878,26 +880,31 @@ if [ -n "$(live_ingress_rule_ids)" ]; then
   exit 1
 fi
 
-aws ec2 delete-route --route-table-id "${ROUTE_TABLE_ID}" --destination-cidr-block "${DEST_V1}"
+aws ec2 delete-route --route-table-id "${ROUTE_TABLE_ID}" --destination-cidr-block "${DEST_V1}" ||
+  { echo "FAIL: phase 3b: could not delete the old route to ${DEST_V1} out of band" >&2; exit 1; }
 for t in ${OLD_TABLES}; do
   if [ "${MULTI_REGION}" = "1" ] && [ "${t}" = "${GTX_NAME_V1}" ]; then
     # AWS refuses delete-table while a cross-region replica lives.
     delete_global_table_with_replicas "${t}"
   else
-    aws dynamodb delete-table --table-name "${t}" >/dev/null
+    aws dynamodb delete-table --table-name "${t}" >/dev/null ||
+      { echo "FAIL: phase 3b: could not delete the old table ${t} out of band" >&2; exit 1; }
   fi
 done
-aws s3api delete-bucket --bucket "${BUCKET_V1}"
+aws s3api delete-bucket --bucket "${BUCKET_V1}" ||
+  { echo "FAIL: phase 3b: could not delete the old bucket ${BUCKET_V1} out of band" >&2; exit 1; }
 # Wait until AWS reports each one GONE, not merely deleting: a survivor read
 # that still sees a DELETING table or a lingering bucket would re-adopt it.
 for t in ${OLD_TABLES}; do
-  aws dynamodb wait table-not-exists --table-name "${t}"
+  aws dynamodb wait table-not-exists --table-name "${t}" ||
+    { echo "FAIL: phase 3b: table ${t} never reached not-exists after its out-of-band delete" >&2; exit 1; }
   assert_gone "phase 3b: table ${t} survived its out-of-band delete" \
     aws dynamodb describe-table --table-name "${t}"
 done
 assert_gone_eventually "phase 3b: bucket ${BUCKET_V1} survived its out-of-band delete" \
   aws s3api head-bucket --bucket "${BUCKET_V1}"
-if [ -n "$(route_live "${DEST_V1}")" ]; then
+live="$(route_live "${DEST_V1}")"
+if [ -n "${live}" ]; then
   echo "FAIL: phase 3b: the route to ${DEST_V1} survived its out-of-band delete" >&2
   exit 1
 fi
@@ -924,7 +931,8 @@ echo "[verify] phase 3c: rollback exited 0"
 # it is the arm this run was opted into for and the generic check below would
 # report its failure under a less specific message. Its known cause is issue
 # #3569: the replay re-adds the replica while v1's copy in the replica region
-# is still DELETING from the replacement's delete.
+# may still be DELETING from phase 3b's out-of-band delete (deliberately not
+# waited out there: that state is what #3569 covers).
 if [ "${MULTI_REGION}" = "1" ]; then
   if ! grep -qF "${GTX_LOGICAL_ID} replacement reversed" "${RB_LOG}"; then
     echo "FAIL: phase 3: the cross-region table ${GTX_LOGICAL_ID} was NOT re-created" >&2
@@ -1070,13 +1078,15 @@ if [ "${POST_READOPT_ID}" != "${ROUTE_TABLE_ID}|${READOPT_DEST_V1}" ]; then
   exit 1
 fi
 for d in "${DEST_V1}" "${READOPT_DEST_V1}"; do
-  if [ "$(route_live "${d}")" != "${d}" ]; then
+  live="$(route_live "${d}")"
+  if [ "${live}" != "${d}" ]; then
     echo "FAIL: phase 4: the route to ${d} is not live after the rollback" >&2
     exit 1
   fi
 done
 for d in "${DEST_V2}" "${READOPT_DEST_V2}"; do
-  if [ -n "$(route_live "${d}")" ]; then
+  live="$(route_live "${d}")"
+  if [ -n "${live}" ]; then
     echo "FAIL: phase 4: the replacement route to ${d} survived the rollback" >&2
     exit 1
   fi
@@ -1184,7 +1194,7 @@ if [ "${GTO_HAS_GSI}" != "false" ]; then
   echo "      --- recorded keys for ${GTO_LOGICAL_ID} ---" >&2
   jq -r --arg gto "${GTO_LOGICAL_ID}" \
     '.resources[$gto].properties | keys | join(", ")' "${WORK_DIR}/state-rolled-back.json" >&2
-  echo "      --- rollback / replay lines from the failed deploy ---" >&2
+  echo "      --- rollback / replay lines from cdkd rollback ---" >&2
   grep -aE "Rollback|reversed|must be an array|ValidationException|Failed to" \
     "${RB_LOG}" | tail -15 >&2
   exit 1
