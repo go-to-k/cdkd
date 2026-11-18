@@ -42,7 +42,7 @@ against live AWS.
    code **0** (revert succeeds for every drifted resource). Reverting the
    ingress rule's description updates it in place, as CloudFormation does:
    the rule keeps its `sgr-` id (issue #6514), its `Description` is restored
-   in AWS and in state, and the record's `attributes.Id` still names that
+   in AWS (state keeps the templated value), and the record's `attributes.Id` still names that
    live rule (issue #4476).
 5. `cdkd drift CdkdDriftRevertVpcExample` again — assert exit code
    **0** (state and AWS are back in sync).

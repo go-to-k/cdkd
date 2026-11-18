@@ -12,7 +12,7 @@
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
 #   5b. the revert restored the ingress rule's description in place: same
-#       sgr- id (#6514), Description restored in AWS and in state, and the
+#       sgr- id (#6514), Description restored in AWS (state keeps the templated one), and the
 #       record's attributes.Id still names the live rule (#4476)
 #   6. cdkd drift  -> assert exit 0 (clean)
 #   6b. attach tg2 out-of-band, rewrite the recorded TargetGroupARNs to an
@@ -186,7 +186,8 @@ wait_restored_ingress() { # $1 = group id, $2 = old rule id, $3 = wanted descrip
     ids="$(live_ingress_ids "$1")" || return 1
     n=$(printf '%s\n' ${ids} | grep -c . || true)
     if [ "${n}" = 1 ] && [ "${ids}" = "$2" ]; then
-      desc="$(live_ingress_desc "$2")" || return 1
+      desc="$(live_ingress_desc "$2")" \
+        || { echo "[verify] FAIL: step 5b: could not read rule '$2' after the revert" >&2; return 1; }
       [ "${desc}" = "$3" ] && return 0
     fi
     sleep 5
@@ -207,6 +208,9 @@ if [ "${RECORDED_INGRESS_ID}" != "${OLD_INGRESS_ID}" ]; then
   echo "[verify] FAIL: step 5b: the record names '${RECORDED_INGRESS_ID}', the live rule is '${OLD_INGRESS_ID}' (#4476)"
   exit 1
 fi
+# Guard: the out-of-band edit changed AWS only, so the record held the
+# templated Description all along; the revert must not write the drifted
+# value it read back into state.
 RECORDED_INGRESS_DESC="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | python3 -c "
 import json, sys
 print(json.load(sys.stdin)['resources']['DriftSgIngress']['properties'].get('Description', ''))")"
@@ -214,7 +218,7 @@ if [ "${RECORDED_INGRESS_DESC}" != "drift-revert-vpc standalone ingress (templat
   echo "[verify] FAIL: step 5b: the record's Description is '${RECORDED_INGRESS_DESC}' after the revert"
   exit 1
 fi
-echo "[verify] step 5b ok: rule ${OLD_INGRESS_ID} kept its id, its description is restored in AWS and in state, and the record names it"
+echo "[verify] step 5b ok: rule ${OLD_INGRESS_ID} kept its id, its description is restored in AWS, and the record still names it with the templated description"
 
 # Known intermittent failure (go-to-k/cdkd#4147): AWS returns the ALB's
 # undeclared `ddos_protection.syn_cookie.mode` attribute only some of the time.
