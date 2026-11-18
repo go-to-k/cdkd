@@ -4815,6 +4815,28 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('MyGroup');
   });
 
+  // go-to-k/cdkd#6540: the group name is a generated `<Stack>-<LogicalId>-<suffix>`.
+  it('Ref to AWS::Route53::RecordSetGroup returns the generated name segment', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { RecordGroup: { Type: 'AWS::Route53::RecordSetGroup', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        RecordGroup: {
+          physicalId: 'Z1|Route53Stack-RecordGroup-abcdef012345',
+          resourceType: 'AWS::Route53::RecordSetGroup',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'RecordGroup' }, context);
+    expect(result).toBe('Route53Stack-RecordGroup-abcdef012345');
+  });
+
   it('Ref to AWS::Route53::RecordSetGroup with a non-composite id resolves it raw', async () => {
     const template: CloudFormationTemplate = {
       Resources: { MyGroup: { Type: 'AWS::Route53::RecordSetGroup', Properties: {} } },

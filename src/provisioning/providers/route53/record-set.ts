@@ -33,6 +33,7 @@ import {
   bareHostedZoneId,
   zoneReferenceChanged,
   recordedZoneForSwitch,
+  refuseCfnUnresolvableZoneName,
 } from './shared.js';
 
 // ─── AWS::Route53::RecordSet ───────────────────────────────────────
@@ -41,11 +42,32 @@ export async function createRecordSet(
   logicalId: string,
   resourceType: string,
   properties: Record<string, unknown>,
-  mask: ((text: string) => string) | undefined
+  mask: ((text: string) => string) | undefined,
+  replayingState = false
 ): Promise<ResourceCreateResult> {
   this.logger.debug(`Creating Route 53 record set ${logicalId}`);
 
-  const hostedZoneId = await this.resolveHostedZoneId(properties, logicalId, resourceType);
+  refuseCfnUnresolvableZoneName(
+    this,
+    properties['HostedZoneName'],
+    'Record set',
+    logicalId,
+    resourceType,
+    undefined,
+    replayingState
+  );
+  // Unambiguous, as CloudFormation: a name shared by a public and a private
+  // zone is refused ("specify HostedZoneId"), never guessed (#6540). NOT
+  // downgraded on a replay (`replayingState`), the stated exception to the
+  // replay rule: the only alternative is guessing which zone to write the
+  // record into, and a wrong guess leaves a live record no state tracks.
+  const hostedZoneId = await this.resolveHostedZoneId(
+    properties,
+    logicalId,
+    resourceType,
+    undefined,
+    { requireUnambiguousZoneName: true }
+  );
 
   const recordName = properties['Name'] as string;
   const recordType = properties['Type'] as string;
@@ -114,12 +136,29 @@ export async function updateRecordSet(
 ): Promise<ResourceUpdateResult> {
   this.logger.debug(`Updating Route 53 record set ${logicalId}: ${physicalId}`);
 
-  const hostedZoneId = await this.resolveHostedZoneId(
-    properties,
+  const stateBorne = context?.replayingState === true || context?.desiredFromAwsReadback === true;
+  refuseCfnUnresolvableZoneName(
+    this,
+    properties['HostedZoneName'],
+    'Record set',
     logicalId,
     resourceType,
-    physicalId
+    physicalId,
+    stateBorne
   );
+  // A state-borne update (rollback replay, drift revert) of a cdkd id writes
+  // to the zone the id names: re-resolving a name there could only refuse
+  // (a split-horizon name, #6540) or guess, and neither restores the record.
+  const recordedComposite = parseRecordSetCompositeId(physicalId);
+  const hostedZoneId =
+    stateBorne &&
+    recordedComposite &&
+    !zoneReferenceChanged(previousProperties, properties) &&
+    this.compositeAgreesWithTemplate(recordedComposite, previousProperties)
+      ? recordedComposite.hostedZoneId
+      : await this.resolveHostedZoneId(properties, logicalId, resourceType, physicalId, {
+          requireUnambiguousZoneName: true,
+        });
 
   // go-to-k/cdkd#6537: a switch between `HostedZoneName` and `HostedZoneId`
   // is not a replacement (CloudFormation updates it in place), so it reaches

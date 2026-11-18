@@ -122,9 +122,21 @@ export async function create(
         context
       );
     case 'AWS::Route53::RecordSet':
-      return this.createRecordSet(logicalId, resourceType, properties, context?.maskSecrets);
+      return this.createRecordSet(
+        logicalId,
+        resourceType,
+        properties,
+        context?.maskSecrets,
+        context?.replayingState === true
+      );
     case 'AWS::Route53::RecordSetGroup':
-      return this.createRecordSetGroup(logicalId, resourceType, properties, context?.maskSecrets);
+      return this.createRecordSetGroup(
+        logicalId,
+        resourceType,
+        properties,
+        context?.maskSecrets,
+        context?.replayingState === true
+      );
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,

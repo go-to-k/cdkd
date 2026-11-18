@@ -409,19 +409,18 @@ fi
 echo "    OK: Ref to the RecordSet resolved to the record name (${CIDR_REF})"
 
 # --- Assertion: the RecordSetGroup's records are live, and its Ref (#6530) ----
+# `Ref` is a CloudFormation-shaped `<StackName>-<LogicalId>-<suffix>` name
+# (#6540), and the physical id records it after the zone.
 GROUP_REF=$(echo "${STATE}" | jq -r '.outputs.RecordGroupRef // empty')
-if [ "${GROUP_REF}" != "RecordGroup" ]; then
-  echo "FAIL: Ref to the RecordSetGroup is not its logical id (got '${GROUP_REF}', expected 'RecordGroup')" >&2
+if ! [[ "${GROUP_REF}" =~ ^${STACK}-RecordGroup-[0-9a-f]{12}$ ]]; then
+  echo "FAIL: Ref to the RecordSetGroup is not '${STACK}-RecordGroup-<12 hex>' (got '${GROUP_REF}') (#6540)" >&2
   exit 1
 fi
 GROUP_PHYSICAL_ID=$(echo "${STATE}" | jq -r '.resources.RecordGroup.physicalId // empty')
-case "${GROUP_PHYSICAL_ID}" in
-  *'|RecordGroup') ;;
-  *)
-    echo "FAIL: RecordSetGroup physical id is not '<zoneId>|RecordGroup' (got '${GROUP_PHYSICAL_ID}')" >&2
-    exit 1
-    ;;
-esac
+if [ "${GROUP_PHYSICAL_ID}" != "${GROUP_PHYSICAL_ID%%|*}|${GROUP_REF}" ] || [ "${GROUP_PHYSICAL_ID}" = "${GROUP_REF}" ]; then
+  echo "FAIL: RecordSetGroup physical id is not '<zoneId>|${GROUP_REF}' (got '${GROUP_PHYSICAL_ID}')" >&2
+  exit 1
+fi
 GROUP_ZONE_ID="${GROUP_PHYSICAL_ID%%|*}"
 if [ "${GROUP_ZONE_ID}" != "${ZONE_ID}" ]; then
   echo "FAIL: RecordSetGroup resolved HostedZoneName to zone '${GROUP_ZONE_ID}', not the stack's zone '${ZONE_ID}' (#6530)" >&2

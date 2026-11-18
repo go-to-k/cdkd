@@ -501,7 +501,13 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
     // Cloud Control route in cdkd, so it has no rule. A Lambda permission has
     // no name property: its statement id is generated (go-to-k/cdkd#5137),
     // and Cloud Control's handler picks its own, so there is no rule to share.
-    expect(own).toEqual(['budgets-budget/create.ts', 'lambda-permission-provider.ts']);
+    // A Route 53 record set group has no name property and no Cloud Control
+    // route either; its generated name is only its `Ref` (go-to-k/cdkd#6540).
+    expect(own).toEqual([
+      'budgets-budget/create.ts',
+      'lambda-permission-provider.ts',
+      'route53/record-set-group-shape.ts',
+    ]);
   });
 
   it("each generatedNameFor call is the fallback of its own type's name property", () => {

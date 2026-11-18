@@ -288,9 +288,10 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replayingState?: boolean
   ): Promise<ResourceCreateResult> {
-    return createRecordSet.call(this, logicalId, resourceType, properties, mask);
+    return createRecordSet.call(this, logicalId, resourceType, properties, mask, replayingState);
   }
 
   updateRecordSet(
@@ -333,9 +334,17 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replayingState?: boolean
   ): Promise<ResourceCreateResult> {
-    return createRecordSetGroup.call(this, logicalId, resourceType, properties, mask);
+    return createRecordSetGroup.call(
+      this,
+      logicalId,
+      resourceType,
+      properties,
+      mask,
+      replayingState
+    );
   }
 
   updateRecordSetGroup(
