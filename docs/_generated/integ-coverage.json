@@ -7408,6 +7408,7 @@
         "drift-rotation-schedule-revert",
         "dynamodb-stream-filter",
         "dynamodb-streams",
+        "dynamodb-ttl-attr-change",
         "ecr",
         "efs-lambda",
         "elasticache-snapshot-arns",
@@ -7627,6 +7628,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "dynamodb-ttl-attr-change": [
           "l2"
         ],
         "ecr": [

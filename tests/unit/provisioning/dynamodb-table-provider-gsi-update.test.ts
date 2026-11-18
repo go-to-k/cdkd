@@ -250,7 +250,6 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
   });
 
   it('throws on a same-name GSI KeySchema change (immutable in place, no silent drop)', async () => {
-    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
     const reKeyed = {
       IndexName: 'gsi1',
       KeySchema: [{ AttributeName: 'otherpk', KeyType: 'HASH' }],
@@ -274,8 +273,9 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
         }
       )
     ).rejects.toThrow(/KeySchema or Projection/);
-    // No UpdateTable was issued (it threw before applying anything).
-    expect(findCalls(UpdateTableCommand)).toHaveLength(0);
+    // go-to-k/cdkd#6560: refused pre-flight, before ANY call (not even the
+    // DescribeTable), so nothing else in the same update is applied first.
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   describe('Projection compare ignores key order (issue #1812)', () => {
@@ -386,7 +386,6 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
   });
 
   it('throws when a created GSI is missing KeySchema', async () => {
-    mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN, TableStatus: 'ACTIVE' } });
 
     await expect(
       provider.update(
@@ -405,7 +404,8 @@ describe('DynamoDBTableProvider GSI in-place update', () => {
         }
       )
     ).rejects.toThrow(/missing KeySchema/);
-    expect(findCalls(UpdateTableCommand)).toHaveLength(0);
+    // go-to-k/cdkd#6560: refused pre-flight, before any call.
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('forwards OnDemandThroughput on a GSI create when present', async () => {

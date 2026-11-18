@@ -215,6 +215,54 @@ export function sameJsonValue(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * go-to-k/cdkd#6560: the `GlobalSecondaryIndexes` change `applyGsiUpdates`
+ * cannot send — a new index without `KeySchema`, or a same-name index whose
+ * `KeySchema` / `Projection` changed (DynamoDB has no in-place modify for
+ * either) — as the refusal message, so `update()` can refuse it before its
+ * first mutating call instead of after the billing, stream and SSE changes of
+ * the same deploy went out. Same walk and messages as `applyGsiUpdates`,
+ * which keeps its own throws; a list that is not an array is left to it.
+ */
+export function gsiUnsendableChangeRefusal(
+  previousGsis: unknown,
+  desiredGsis: unknown,
+  logicalId: string
+): string | undefined {
+  const asEntries = (value: unknown): Array<Record<string, unknown>> | undefined =>
+    value === undefined || value === null
+      ? []
+      : Array.isArray(value)
+        ? value.filter(
+            (entry): entry is Record<string, unknown> =>
+              typeof entry === 'object' && entry !== null && Boolean(entry['IndexName'])
+          )
+        : undefined;
+  const prev = asEntries(previousGsis);
+  const desired = asEntries(desiredGsis);
+  if (prev === undefined || desired === undefined) return undefined;
+  const prevByName = new Map(prev.map((g) => [String(g['IndexName']), g]));
+  for (const gsi of desired) {
+    const name = String(gsi['IndexName']);
+    const before = prevByName.get(name);
+    if (before === undefined) {
+      if (!gsi['KeySchema']) {
+        return `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} is missing KeySchema`;
+      }
+    } else if (
+      !sameJsonValue(before['KeySchema'], gsi['KeySchema']) ||
+      !sameJsonValue(before['Projection'], gsi['Projection'])
+    ) {
+      return (
+        `GlobalSecondaryIndex ${name} on DynamoDB table ${logicalId} changed its ` +
+        `KeySchema or Projection, which DynamoDB cannot modify in place. Rename the ` +
+        `index (so it is dropped and re-created) or replace the table.`
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
  * Does the DESIRED entry for one index declare this block (issue #1767)?
  *
  * The question is always "would cdkd SEND this block", because that is what
