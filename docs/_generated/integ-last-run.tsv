@@ -6,7 +6,7 @@
 # INVARIANT: exactly one row per test, rows sorted by test name. Duplicates break
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 access-key-cloudmap-fix-forward-orphan	2026-11-17T05:50:34Z	PASS	191	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
-acm-certificate	2026-11-06T23:01:29Z	PASS	127	verify.sh	#5927 acm-certificate split head; rc ok, orph clean
+acm-certificate	2026-11-18T00:51:59Z	PASS	120	verify.sh	#6513 ValidationMethod engine replacement; rc ok, orph clean
 agentcore-tools	2026-11-04T09:11:36Z	PASS	75	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy 0 errors, orph clean; own state bucket
 alb	2026-11-06T16:12:24Z	PASS	585	verify.sh	#5881 split head; rc ok, orph clean
 alb-advanced	2026-11-06T16:14:57Z	PASS	151	standard	#5881 split head; rc ok, orph clean

@@ -724,6 +724,19 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   // A volume replacement is real data loss, so `AWS::EC2::Volume` is also
   // in `STATEFUL_TYPES` — the deploy engine's property-driven replacement
   // path requires `--force-stateful-recreation` to confirm it.
+  // ACM Certificate — ACM has no call that changes a certificate's
+  // validation method, and CloudFormation documents `ValidationMethod` as
+  // "Update requires: Replacement", but the registry schema leaves it out of
+  // `createOnlyProperties` (its other immutable fields are there and reach
+  // the schema fallback). Without this rule the diff called the change an
+  // update and the provider replaced the certificate inside `update()`,
+  // deleting the old one before its readers moved to the new ARN
+  // (go-to-k/cdkd#6513). Only the gap is listed, so the schema still
+  // classifies the rest.
+  this.rules.set('AWS::CertificateManager::Certificate', {
+    replacementProperties: new Set(['ValidationMethod']),
+  });
+
   this.rules.set('AWS::EC2::Volume', {
     replacementProperties: new Set([
       'AvailabilityZone',
