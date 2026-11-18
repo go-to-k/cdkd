@@ -90,6 +90,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **guardduty-detector-patch.ts** - GuardDuty detector's Cloud Control update patch (#4910).
 - **apigwv2-body-import-patch.ts** - imported HTTP API's definition updates via `ReimportApi` (#5260).
+- **cc-read-back-empty-keys.ts** - per-type keys whose EMPTY Cloud Control read-back the update API refuses, removed from the patch; a type joins by measurement, and only a listed type's update reads the live model (#6569).
 
 - **delete-gone-wait.ts** - The wait after an accepted delete whose resource holds its NAME while deleting (Kinesis, Firehose, #3872; DynamoDB `Table`, #5514; RDS DBProxy, endpoint, #6522). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, record kept) — never on a first read alone.
 

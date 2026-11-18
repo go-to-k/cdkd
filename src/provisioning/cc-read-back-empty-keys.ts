@@ -30,9 +30,7 @@ export function hasCcReadBackEmptyKeys(resourceType: string): boolean {
 
 function isEmptyCollection(value: unknown): boolean {
   if (Array.isArray(value)) return value.length === 0;
-  return (
-    value !== null && typeof value === 'object' && Object.keys(value as object).length === 0
-  );
+  return value !== null && typeof value === 'object' && Object.keys(value as object).length === 0;
 }
 
 /**
