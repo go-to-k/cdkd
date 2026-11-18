@@ -24,6 +24,8 @@ import type { Construct } from 'constructs';
  *   `MessageRetentionPeriod` that AWS rejects. It DependsOn the route, so the
  *   route's replacement has already COMPLETED when the failure fires and the
  *   rollback classifies it `reverse-replacement` rather than a plain CREATE.
+ *   verify.sh deploys it under `--no-rollback`, deletes the replaced old
+ *   copies out of band, and only then runs `cdkd rollback` (go-to-k/cdkd#6524).
  */
 export class RollbackReplayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -66,6 +68,23 @@ export class RollbackReplayStack extends cdk.Stack {
     // A route to an internet gateway is only creatable once the gateway is
     // attached to the VPC.
     route.addDependency(attachment);
+
+    // ── The rollback RE-ADOPT subject (go-to-k/cdkd#6524) ─────────────────
+    //
+    // Replaced alongside the route above, but verify.sh leaves ITS old copy
+    // alone. Since go-to-k/cdkd#6374 a replaced resource's old copy is deleted
+    // only in the deploy's cleanup phase, which a failed deploy never reaches,
+    // so the rollback finds this one whole and re-adopts it. Every other
+    // replaced subject has its old copy deleted out of band before
+    // `cdkd rollback`, which is what sends those through the re-CREATE arm
+    // #1682 is about. Its destination follows `ROUTE_DEST`, so it flips in the
+    // same deploy and needs no env knob of its own.
+    const readoptRoute = new ec2.CfnRoute(this, 'ReadoptRoute', {
+      routeTableId: routeTable.ref,
+      destinationCidrBlock: destination === '0.0.0.0/0' ? '10.201.0.0/16' : '10.202.0.0/16',
+      gatewayId: igw.ref,
+    });
+    readoptRoute.addDependency(attachment);
 
     // ── The rollback REVERT-arm subject (go-to-k/cdkd#4434) ───────────────
     //
@@ -308,6 +327,7 @@ export class RollbackReplayStack extends cdk.Stack {
         messageRetentionPeriod: 999999999,
       });
       failing.addDependency(route);
+      failing.addDependency(readoptRoute);
       failing.addDependency(capacityTable);
       failing.addDependency(gsiOmitTable);
       failing.addDependency(streamTable);
