@@ -142,12 +142,12 @@ tree, allowed files, "do NOT touch other lanes' files; STOP and report
 if the fix needs a forbidden one or meets a design branch (options plus what
 CFn does, never a lenient pick of its own; #5109)", any premise you
 did not measure as a hypothesis for it to measure, never as fact (#5664) — an
-AWS precondition (call ORDER, a value AWS may refuse) too: probe it on ONE throwaway resource before a
-mock or fixture arm encodes it, and SHIP the probed literals verbatim — a probe
-proves only the values it SENT (#5830), so a pattern ANCHORS on AWS's documented
-constraint or ≥2 samples, `+` where no length is documented (#6512) — a fixture
-passing `--recreate-via-cc-api` a `STATEFUL_TYPES` type adds
-`--force-stateful-recreation` (#6512), and **the REPORT
+AWS precondition (call ORDER, a value AWS may refuse) too: probe it on ONE
+throwaway resource before a mock or fixture arm encodes it, and SHIP the probed
+literals verbatim — a probe proves only the values it SENT (#5830), so a pattern
+ANCHORS on AWS's documented constraint or ≥2 samples, `+` where no length is
+documented (#6512); and a fixture passing `--recreate-via-cc-api` a
+`STATEFUL_TYPES` type adds `--force-stateful-recreation` (#6512), and **the REPORT
 SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
 never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
@@ -158,8 +158,9 @@ continue — this is not a handback" (#6282), and relay that to the user
 unasked. A lane reporting "CI pending": read
 `gh pr view <N> --json mergeStateStatus` yourself, as at `DIRTY` no CI fires
 (#6110). Read
-a completion when it arrives, and check the PR and tree before believing it; one
-still waiting on a reply you sent crossed it: resend (#6512).
+a completion when it arrives, and check the PR and tree before believing it; a
+completion still waiting on a reply you already sent crossed it: resend the
+reply (#6512).
 A subagent's Bash bypasses the PreToolUse hooks.
 
 **Guardrails every lane prompt must carry:**
