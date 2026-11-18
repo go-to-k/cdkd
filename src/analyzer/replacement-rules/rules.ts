@@ -22,6 +22,7 @@ import {
   elastiCachePreferredAvailabilityZonesReplaced,
   recordSetGroupRecordZoneChanged,
   route53ZoneReferenceChanged,
+  ssmDocumentChangeReplaces,
 } from './predicates.js';
 
 /**
@@ -393,6 +394,27 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
       'DataType',
       'Tags',
     ]),
+  });
+
+  // SSM Document — `Name` and `DocumentType` are create-only. Six more
+  // properties replace the document only under the default
+  // `UpdateMethod: Replace`; with `NewVersion` the diff keeps their change
+  // in place (the schema's `UpdateMethod` doc; measured for `Content` only,
+  // where it adds a document version). The registry schema lists them as
+  // updatable, so without this rule the diff called a `Content` change an update and the Cloud
+  // Control handler refused it ("Create-Only Property cannot be updated")
+  // where CloudFormation replaces the document (go-to-k/cdkd#6568). A named
+  // document under `Replace` is replaced create-first like any named
+  // resource: the create collides on the name and the deploy refuses
+  // (`NAMED_REPLACEMENT_COLLISION`), as CloudFormation refuses to replace a
+  // custom-named resource; `--replace` deletes first.
+  this.rules.set('AWS::SSM::Document', {
+    replacementProperties: new Set(['Name', 'DocumentType']),
+    conditionalReplacements: new Map(
+      ['Content', 'Attachments', 'DocumentFormat', 'Requires', 'TargetType', 'VersionName'].map(
+        (prop): [string, ConditionalReplacement] => [prop, ssmDocumentChangeReplaces]
+      )
+    ),
   });
 
   // Budgets Budget — the budget NAME is the physical id and is createOnly

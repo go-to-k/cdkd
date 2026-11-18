@@ -741,3 +741,25 @@ export function route53ZoneReferenceChanged(
   if (before.id === undefined && after.id === undefined) return before.name !== after.name;
   return false;
 }
+
+/**
+ * Whether a change to one of an `AWS::SSM::Document`'s "may replace"
+ * properties (`Content`, `Attachments`, `DocumentFormat`, `Requires`,
+ * `TargetType`, `VersionName`) replaces the document (go-to-k/cdkd#6568).
+ * The NEW template's `UpdateMethod` decides, as the registry schema documents
+ * it: `Replace` (the default when absent) replaces the document, `NewVersion`
+ * adds a document version in place. Measured (us-east-1): CloudFormation
+ * replaced a document on a `Content` change under the default, and a
+ * `NewVersion` document's `Content` change is an in-place Cloud Control
+ * update. Anything but `NewVersion` is read as the default (the schema's
+ * enum has only the two). The values themselves are not read: the diff calls
+ * this only for a moved value, and a promotion asks it with none. Without the
+ * sibling bags the default answers.
+ */
+export function ssmDocumentChangeReplaces(
+  _oldValue: unknown,
+  _newValue: unknown,
+  siblings?: ReplacementSiblings
+): boolean {
+  return siblings?.newProperties['UpdateMethod'] !== 'NewVersion';
+}
