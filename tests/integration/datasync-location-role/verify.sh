@@ -97,7 +97,7 @@ cleanup() {
     STATE_LEFT=0
   fi
   # A deploy that failed before state recorded them leaves a role nothing here
-  # knows, named `<stack>-Role...` by cdkd. The account is shared and a peer may
+  # knows: the location role (`<stack>-Role...`) and the auto-delete CR provider role (`<stack>-Custom...`), which has a managed policy attached. The account is shared and a peer may
   # be running this fixture, so only this run's own teardown deletes by prefix:
   # before the run, a match is reported and stops it. Locations and tasks have
   # generated ids with no prefix to sweep; a failed create leaves none (Cloud
@@ -112,6 +112,9 @@ cleanup() {
           if [ "${PRE_RUN}" = "1" ]; then
             LEFT_BY_PREFIX="${LEFT_BY_PREFIX} role:${role}"
           else
+            for pol in $(aws iam list-attached-role-policies --role-name "${role}" --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+              aws iam detach-role-policy --role-name "${role}" --policy-arn "${pol}" >/dev/null 2>&1 || true
+            done
             for policy in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames[]' --output text 2>/dev/null); do
               aws iam delete-role-policy --role-name "${role}" --policy-name "${policy}" >/dev/null 2>&1 || true
             done
@@ -217,7 +220,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # DataSync answers a describe on a deleted resource with InvalidRequestException
 # whose text may not say "not found": read the (strict) lists instead.
 for arn in "${SRC_ARN}" "${DST_ARN}"; do
-  [ -z "$(location_in_list "${arn}")" ] ||
+  LEFT="$(location_in_list "${arn}")"
+  [ -z "${LEFT}" ] ||
     { echo "FAIL: location ${arn} still exists after destroy" >&2; exit 1; }
 done
 TASKS_LEFT="$(aws datasync list-tasks --region "${REGION}" \

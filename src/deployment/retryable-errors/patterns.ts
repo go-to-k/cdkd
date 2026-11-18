@@ -46,6 +46,14 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // the existing entries match it. Anchored on the service name, like
   // Firehose's and IoT's.
   'DataSync service was unable to perform sts:AssumeRole',
+  // The second wording of the same race (issue #6573): once DataSync can assume
+  // the role, its create-time access test runs before the role's same-stack
+  // policy has propagated and is refused with "DataSync location access test
+  // failed: could not perform s3:ListObjectsV2 on bucket ... Access denied".
+  // Anchored on DataSync's own sentence. A genuinely missing permission burns
+  // only the bounded IAM-propagation retries before surfacing, the same
+  // trade-off the Glue `is unable to assume the role` entry accepts.
+  'DataSync location access test failed',
   // Glue Crawler / Job / Trigger create validates that the Glue service can
   // assume the same-stack IAM role at create time. cdkd's fast SDK path issues
   // the Crawler create only ~1s after the role's CREATE, before IAM finishes
