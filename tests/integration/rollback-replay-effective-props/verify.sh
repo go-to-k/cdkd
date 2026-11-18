@@ -64,7 +64,7 @@
 # omitted was still sent AND recorded, although the table has no such index
 # and the re-created replica holds no override. Phases 1-6 each
 # grow an assertion for it. Replica provisioning costs minutes per create and
-# per delete: the arm takes the run from ~3 min to ~12-20 min.
+# per delete: the arm takes the run from ~5 min to over 25 min (README.md).
 # The arm also depends on issue #3569: the rollback re-creates v1 straight
 # after phase 3b's out-of-band delete of it, while v1's copy in the replica
 # region may still be DELETING, and the replica-add must wait that copy out.
@@ -897,8 +897,24 @@ aws ec2 delete-route --route-table-id "${ROUTE_TABLE_ID}" --destination-cidr-blo
   { echo "FAIL: phase 3b: could not delete the old route to ${DEST_V1} out of band" >&2; exit 1; }
 for t in ${OLD_TABLES}; do
   if [ "${MULTI_REGION}" = "1" ] && [ "${t}" = "${GTX_NAME_V1}" ]; then
-    # AWS refuses delete-table while a cross-region replica lives.
-    delete_global_table_with_replicas "${t}"
+    # Issue #3569's state: the replica's removal is REQUESTED and the home table
+    # deleted as soon as AWS accepts it, without waiting the replica out, so
+    # its copy in the replica region can still be DELETING when the rollback
+    # re-adds that replica. (The cleanup trap's helper waits; this must not.)
+    for _ in $(seq 1 30); do
+      aws dynamodb update-table --table-name "${t}" \
+        --replica-updates "Delete={RegionName=${XR_REGION}}" >/dev/null 2>&1 && break
+      sleep 20
+    done
+    XR_HOME_DELETED=0
+    for _ in $(seq 1 60); do
+      if aws dynamodb delete-table --table-name "${t}" >/dev/null 2>&1; then XR_HOME_DELETED=1; break; fi
+      sleep 10
+    done
+    if [ "${XR_HOME_DELETED}" != "1" ]; then
+      echo "FAIL: phase 3b: could not delete the old cross-region table ${t} out of band" >&2
+      exit 1
+    fi
   else
     aws dynamodb delete-table --table-name "${t}" >/dev/null ||
       { echo "FAIL: phase 3b: could not delete the old table ${t} out of band" >&2; exit 1; }
@@ -923,8 +939,10 @@ fi
 if [ "${MULTI_REGION}" = "1" ]; then
   # What #3569's replica-add wait meets: the home table is gone, but its copy in
   # the replica region can still be DELETING. Printed, not asserted; AWS decides.
-  XR_V1_REMOTE="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" --region "${XR_REGION}" \
-    --query 'Table.TableStatus' --output text 2>&1 || true)"
+  if XR_V1_REMOTE="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" --region "${XR_REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then :; else
+    XR_V1_REMOTE="absent or unreadable: $(printf '%s' "${XR_V1_REMOTE}" | tail -c 160)"
+  fi
   echo "[verify] phase 3b: NOTE ${XR_REGION} copy of ${GTX_NAME_V1} before the rollback: ${XR_V1_REMOTE}"
 fi
 echo "[verify] phase 3b: OK (old copies were live; route ${DEST_V1}, ${OLD_TABLES} and ${BUCKET_V1} now gone)"
@@ -951,7 +969,8 @@ echo "[verify] phase 3c: rollback exited 0"
 # report its failure under a less specific message. Its known cause is issue
 # #3569: the replay re-adds the replica while v1's copy in the replica region
 # may still be DELETING from phase 3b's out-of-band delete (deliberately not
-# waited out there: that state is what #3569 covers).
+# waited out there: that state is what #3569 covers; 3b's NOTE line prints what
+# the replica region reported just before the rollback).
 if [ "${MULTI_REGION}" = "1" ]; then
   if ! grep -qF "${GTX_LOGICAL_ID} replacement reversed" "${RB_LOG}"; then
     echo "FAIL: phase 3: the cross-region table ${GTX_LOGICAL_ID} was NOT re-created" >&2

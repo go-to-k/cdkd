@@ -100,7 +100,10 @@ adds the cross-region replica. Before the fix, the override for the index the
 create had just omitted was still sent and recorded, although the table has no
 such index and the re-created replica holds no override. The arm also depends
 on issue #3569: the rollback re-adds the replica while v1's copy in the replica
-region can still be deleting.
+region can still be deleting. Phase 3b produces that state on purpose: it
+requests the replica's removal and deletes v1's home table as soon as AWS
+accepts it, without waiting the replica out, and it prints the replica
+region's status of v1 just before the rollback.
 
 | # | What the arm adds |
 |---|-------------------|
@@ -112,7 +115,9 @@ region can still be deleting.
 | 6 | both table names gone, in the deploy region and in the replica region |
 
 Replicas take minutes to create and delete, so the arm takes the run from
-~3 min to ~12-20 min; `/run-integ`'s default watchdog is enough.
+~5 min to over 25 min (a 2026-11-18 run was still in phase 5b at 27 min).
+`/run-integ`'s default watchdog (25 min for this fixture) is too short for
+it: set the budget to at least 3000 s.
 
 ## Running
 
