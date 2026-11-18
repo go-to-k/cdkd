@@ -2,6 +2,7 @@ import {
   CloudControlClient,
   GetResourceCommand,
   ListResourcesCommand,
+  type ResourceDescription,
 } from '@aws-sdk/client-cloudcontrol';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
@@ -35,6 +36,39 @@ function parseResourceModel(body: string, typeName: string): ResourceModel {
   }
 }
 
+const CC_API_CONTEXT_KEY_PREFIX = 'cc-api-provider:';
+
+/**
+ * Drop `cdk.context.json` entries an older cdkd wrote for a `cc-api-provider`
+ * lookup as a bare object (issue
+ * [#6542](https://github.com/go-to-k/cdkd/issues/6542)). The CDK CLI only ever
+ * stores an array there (a result or an array `dummyValue`), so a non-array
+ * value is that old shape; dropping it makes the app report the key missing,
+ * and the fresh lookup overwrites the entry. Never mutates `context`.
+ */
+export function withoutStaleCcApiContext(
+  context: Record<string, unknown>
+): Record<string, unknown> {
+  const stale = Object.keys(context).filter(
+    (key) => key.startsWith(CC_API_CONTEXT_KEY_PREFIX) && !Array.isArray(context[key])
+  );
+  if (stale.length === 0) return context;
+  getLogger()
+    .child('CcApiContextProvider')
+    .debug(`Re-resolving ${stale.length} cc-api-provider context value(s) stored as an object`);
+  const kept: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(context)) {
+    if (!stale.includes(key)) kept[key] = value;
+  }
+  return kept;
+}
+
+/**
+ * No resource matched the query. Only this miss returns `dummyValue` under
+ * `ignoreErrorOnMissingContext`; every other failure is raised.
+ */
+class NoResultsFoundError extends Error {}
+
 /**
  * Cloud Control API context provider
  *
@@ -42,6 +76,12 @@ function parseResourceModel(body: string, typeName: string): ResourceModel {
  * CDK provider type: "cc-api-provider"
  *
  * Used by CDK for lookups like IAM Roles, ECR repositories, RDS instances, etc.
+ *
+ * Mirrors the AWS CDK CLI's provider (toolkit-lib `cc-api-provider.ts`, issue
+ * [#6542](https://github.com/go-to-k/cdkd/issues/6542)): the value is ALWAYS an
+ * array with one object per match, each carrying the requested properties plus
+ * `Identifier`, because aws-cdk-lib's `fromLookup` methods read `response[0]` /
+ * `response.length`. An unset `expectedMatchCount` validates nothing.
  */
 export class CcApiContextProvider implements ContextProvider {
   private logger = getLogger().child('CcApiContextProvider');
@@ -57,12 +97,34 @@ export class CcApiContextProvider implements ContextProvider {
     const exactIdentifier = props['exactIdentifier'] as string | undefined;
     const propertiesToReturn = (props['propertiesToReturn'] as string[]) || [];
     const propertyMatch = props['propertyMatch'] as Record<string, unknown> | undefined;
-    const expectedMatchCount = (props['expectedMatchCount'] as string) || 'exactly-one';
+    const expectedMatchCount = props['expectedMatchCount'] as string | undefined;
+    const resourceModel = props['resourceModel'] as Record<string, unknown> | undefined;
     const dummyValue = props['dummyValue'];
     const ignoreErrorOnMissingContext = props['ignoreErrorOnMissingContext'] as boolean | undefined;
 
     if (!typeName) {
       throw new Error('CC API context provider requires typeName property');
+    }
+    if (exactIdentifier && propertyMatch) {
+      throw new Error(
+        'CC API context provider: specify either exactIdentifier or propertyMatch, but not both'
+      );
+    }
+    if (!exactIdentifier && !propertyMatch) {
+      throw new Error(
+        'CC API context provider: neither exactIdentifier nor propertyMatch is specified'
+      );
+    }
+    if (ignoreErrorOnMissingContext && dummyValue === undefined) {
+      throw new Error(
+        'CC API context provider: if ignoreErrorOnMissingContext is set, a dummyValue must be supplied'
+      );
+    }
+    if (
+      dummyValue !== undefined &&
+      (!Array.isArray(dummyValue) || !dummyValue.every((v) => isPlainObject(v)))
+    ) {
+      throw new Error('CC API context provider: dummyValue must be an array of objects');
     }
 
     this.logger.debug(
@@ -75,116 +137,145 @@ export class CcApiContextProvider implements ContextProvider {
     });
 
     try {
-      let resources: ResourceModel[];
+      const resources = exactIdentifier
+        ? await this.getResource(client, typeName, exactIdentifier)
+        : await this.listResources(
+            client,
+            typeName,
+            propertyMatch!,
+            expectedMatchCount,
+            resourceModel
+          );
 
-      if (exactIdentifier) {
-        // Get specific resource by identifier
-        const resource = await this.getResource(client, typeName, exactIdentifier);
-        resources = resource ? [resource] : [];
-      } else {
-        // List resources and filter
-        resources = await this.listResources(client, typeName);
-
-        // Apply property match filter
-        if (propertyMatch && Object.keys(propertyMatch).length > 0) {
-          resources = resources.filter((r) => this.matchesProperties(r, propertyMatch));
-        }
+      return resources.map((r) =>
+        this.extractProperties(r.properties, r.identifier, propertiesToReturn)
+      );
+    } catch (error) {
+      if (error instanceof NoResultsFoundError && ignoreErrorOnMissingContext) {
+        this.logger.debug(`No resources found, returning dummy value`);
+        return dummyValue;
       }
-
-      // Validate match count
-      this.validateMatchCount(resources, expectedMatchCount, typeName, exactIdentifier);
-
-      if (resources.length === 0) {
-        if (ignoreErrorOnMissingContext && dummyValue !== undefined) {
-          this.logger.debug(`No resources found, returning dummy value`);
-          return dummyValue;
-        }
-        throw new Error(
-          `No ${typeName} resource found${exactIdentifier ? ` with identifier ${exactIdentifier}` : ''}`
-        );
-      }
-
-      // Extract requested properties
-      if (resources.length === 1) {
-        return this.extractProperties(resources[0]!, propertiesToReturn);
-      }
-
-      return resources.map((r) => this.extractProperties(r, propertiesToReturn));
+      throw error;
     } finally {
       client.destroy();
     }
   }
 
   /**
-   * Get a single resource by identifier
+   * Get a single resource by identifier. Returns exactly one resource or throws.
    */
   private async getResource(
     client: CloudControlClient,
     typeName: string,
     identifier: string
-  ): Promise<ResourceModel | null> {
+  ): Promise<FoundResource[]> {
+    let response;
     try {
-      const response = await client.send(
+      response = await client.send(
         new GetResourceCommand({
           TypeName: typeName,
           Identifier: identifier,
         })
       );
-
-      if (!response.ResourceDescription?.Properties) {
-        return null;
-      }
-
-      return parseResourceModel(response.ResourceDescription.Properties, typeName);
     } catch (error) {
       const err = error as { name?: string };
       if (err.name === 'ResourceNotFoundException') {
-        return null;
+        throw new NoResultsFoundError(
+          `No ${typeName} resource found with identifier ${identifier}`
+        );
       }
       throw error;
     }
+
+    if (!response.ResourceDescription) {
+      throw new Error(
+        `Cloud Control returned an empty response for ${typeName} resource ${identifier}`
+      );
+    }
+
+    return [this.foundResource(response.ResourceDescription, identifier, typeName)];
   }
 
   /**
-   * List all resources of a type
+   * List resources of a type matching `propertyMatch`, enforcing
+   * `expectedMatchCount` (unset: any number, zero included).
    */
   private async listResources(
     client: CloudControlClient,
-    typeName: string
-  ): Promise<ResourceModel[]> {
-    const resources: ResourceModel[] = [];
+    typeName: string,
+    propertyMatch: Record<string, unknown>,
+    expectedMatchCount: string | undefined,
+    resourceModel: Record<string, unknown> | undefined
+  ): Promise<FoundResource[]> {
+    const found: FoundResource[] = [];
     let nextToken: string | undefined;
 
     do {
       const response = await client.send(
         new ListResourcesCommand({
           TypeName: typeName,
+          ...(resourceModel && { ResourceModel: JSON.stringify(resourceModel) }),
+          MaxResults: 100,
           ...(nextToken && { NextToken: nextToken }),
         })
       );
 
       for (const desc of response.ResourceDescriptions ?? []) {
-        if (desc.Properties) {
-          resources.push(parseResourceModel(desc.Properties, typeName));
+        const resource = this.foundResource(desc, '*MISSING*', typeName);
+        if (this.matchesProperties(resource.properties, propertyMatch)) {
+          found.push(resource);
         }
       }
 
       nextToken = response.NextToken;
+
+      // Fail before consuming the remaining pages.
+      if (
+        (expectedMatchCount === 'at-most-one' || expectedMatchCount === 'exactly-one') &&
+        found.length > 1
+      ) {
+        throw new Error(
+          `Expected ${expectedMatchCountText(expectedMatchCount)} ${typeName}, found ` +
+            `${nextToken ? 'at least ' : ''}${found.length}`
+        );
+      }
     } while (nextToken);
 
-    return resources;
+    if (
+      (expectedMatchCount === 'at-least-one' || expectedMatchCount === 'exactly-one') &&
+      found.length === 0
+    ) {
+      throw new NoResultsFoundError(
+        `Expected ${expectedMatchCountText(expectedMatchCount)} ${typeName}, found none`
+      );
+    }
+
+    return found;
+  }
+
+  private foundResource(
+    desc: ResourceDescription,
+    fallbackIdentifier: string,
+    typeName: string
+  ): FoundResource {
+    return {
+      identifier: desc.Identifier ?? fallbackIdentifier,
+      properties: parseResourceModel(desc.Properties ?? '{}', typeName),
+    };
   }
 
   /**
-   * Check if resource matches property filter
+   * Check if resource matches property filter. Strict equality, as the CDK
+   * CLI's `propertyMatchesFilter`, so an object or array filter value never
+   * matches; a resource lacking the path is a non-match where the CDK CLI
+   * throws.
    */
   private matchesProperties(
     resource: ResourceModel,
     propertyMatch: Record<string, unknown>
   ): boolean {
     for (const [key, expectedValue] of Object.entries(propertyMatch)) {
-      const actualValue = this.getNestedProperty(resource, key);
-      if (JSON.stringify(actualValue) !== JSON.stringify(expectedValue)) {
+      if (this.getNestedProperty(resource, key) !== expectedValue) {
         return false;
       }
     }
@@ -192,13 +283,15 @@ export class CcApiContextProvider implements ContextProvider {
   }
 
   /**
-   * Get nested property value using dot notation
+   * Get nested property value using dot notation, stepping into primitives
+   * too (`Name.length`), as the CDK CLI's `findJsonValue` does. A missing
+   * path is `undefined` where the CDK CLI throws.
    */
   private getNestedProperty(obj: Record<string, unknown>, path: string): unknown {
     const parts = path.split('.');
     let current: unknown = obj;
     for (const part of parts) {
-      if (current === null || current === undefined || typeof current !== 'object') {
+      if (current === null || current === undefined) {
         return undefined;
       }
       current = (current as Record<string, unknown>)[part];
@@ -207,56 +300,43 @@ export class CcApiContextProvider implements ContextProvider {
   }
 
   /**
-   * Validate that the number of matches meets expectations
-   */
-  private validateMatchCount(
-    resources: ResourceModel[],
-    expectedMatchCount: string,
-    typeName: string,
-    identifier?: string
-  ): void {
-    const count = resources.length;
-    const context = identifier ? ` with identifier ${identifier}` : '';
-
-    switch (expectedMatchCount) {
-      case 'exactly-one':
-        if (count !== 1) {
-          throw new Error(`Expected exactly one ${typeName}${context}, found ${count}`);
-        }
-        break;
-      case 'at-least-one':
-        if (count < 1) {
-          throw new Error(`Expected at least one ${typeName}${context}, found none`);
-        }
-        break;
-      case 'at-most-one':
-        if (count > 1) {
-          throw new Error(`Expected at most one ${typeName}${context}, found ${count}`);
-        }
-        break;
-      case 'any':
-        // No validation needed
-        break;
-    }
-  }
-
-  /**
-   * Extract requested properties from resource model
+   * The requested properties plus `Identifier`, as the CDK CLI's `getResultObj`
+   * builds it.
    */
   private extractProperties(
     resource: ResourceModel,
+    identifier: string,
     propertiesToReturn: string[]
   ): Record<string, unknown> {
-    if (propertiesToReturn.length === 0) {
-      return resource;
-    }
-
     const result: Record<string, unknown> = {};
     for (const prop of propertiesToReturn) {
       result[prop] = this.getNestedProperty(resource, prop);
     }
+    result['Identifier'] = identifier;
     return result;
   }
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function expectedMatchCountText(expectedMatchCount: string): string {
+  switch (expectedMatchCount) {
+    case 'at-least-one':
+      return 'at least one';
+    case 'at-most-one':
+      return 'at most one';
+    case 'exactly-one':
+      return 'exactly one';
+    default:
+      return expectedMatchCount;
+  }
+}
+
 type ResourceModel = Record<string, unknown>;
+
+interface FoundResource {
+  readonly identifier: string;
+  readonly properties: ResourceModel;
+}

@@ -7,6 +7,7 @@ import { rememberSynthesizedStacks } from './synthesized-stacks.js';
 import { ContextStore, isTransientContextValue } from './context-store.js';
 import { failedLookupsError, type FailedLookup } from './failed-lookups.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
+import { withoutStaleCcApiContext } from './context-providers/cc-api-provider.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { expandMacros, type ExpandMacrosOptions } from './macro-expander.js';
 import {
@@ -286,8 +287,10 @@ export class Synthesizer {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      // Load cdk.context.json (re-read each iteration — providers may have updated it)
-      const cdkContextJson = this.contextStore.load();
+      // Load cdk.context.json (re-read each iteration — providers may have
+      // updated it), minus the object-shaped cc-api-provider values an older
+      // cdkd stored, which re-resolve (go-to-k/cdkd#6542)
+      const cdkContextJson = withoutStaleCcApiContext(this.contextStore.load());
 
       // Merge context: defaults < ~/.cdk.json < cdk.json < cdk.context.json
       // < this run's unsaved lookup results < CLI -c (CLI wins)

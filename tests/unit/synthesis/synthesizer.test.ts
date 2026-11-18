@@ -273,6 +273,27 @@ describe('Synthesizer', () => {
       expect(passedContext['project-only']).toBe('value');
     });
 
+    // go-to-k/cdkd#6542: an older cdkd stored a single cc-api-provider match
+    // as an object, which aws-cdk-lib's fromLookup rejects; the CDK CLI only
+    // stores arrays there, so the object is withheld and re-resolved.
+    it('withholds an object-shaped cc-api-provider value from cdk.context.json', async () => {
+      const ccKey = 'cc-api-provider:account=123456789012:exactIdentifier=my-role:region=us-east-1:typeName=AWS::IAM::Role';
+      const ccArrayKey = 'cc-api-provider:account=123456789012:exactIdentifier=other:region=us-east-1:typeName=AWS::IAM::Role';
+      const ssmKey = 'ssm:account=123456789012:parameterName=/p:region=us-east-1';
+      mockContextStoreLoad.mockReturnValue({
+        [ccKey]: { Arn: 'arn:aws:iam::123456789012:role/my-role' },
+        [ccArrayKey]: [{ Arn: 'arn:x', Identifier: 'other' }],
+        [ssmKey]: { kept: true },
+      });
+
+      await synthesizer.synthesize({ app: 'node app.ts' });
+
+      const passedContext = mockExecute.mock.calls[0]![0].context as Record<string, unknown>;
+      expect(passedContext).not.toHaveProperty([ccKey]);
+      expect(passedContext[ccArrayKey]).toEqual([{ Arn: 'arn:x', Identifier: 'other' }]);
+      expect(passedContext[ssmKey]).toEqual({ kept: true });
+    });
+
     it('should merge cdk.context.json over cdk.json', async () => {
       mockLoadCdkJson.mockReturnValue({
         context: { key: 'from-cdk-json' },

@@ -10017,6 +10017,7 @@
       "resourceType": "AWS::SSM::Parameter",
       "integs": [
         "bench-sdk",
+        "cc-api-lookup",
         "cc-to-sdk-reroute-common-types",
         "cdk-cross-account-lookup-role",
         "composite-stack",
@@ -10151,6 +10152,10 @@
       "signals": {
         "bench-sdk": [
           "l2"
+        ],
+        "cc-api-lookup": [
+          "l2",
+          "literal"
         ],
         "cc-to-sdk-reroute-common-types": [
           "l1",

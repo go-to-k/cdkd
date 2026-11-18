@@ -607,6 +607,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-api-lookup",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-final-snapshot-handlers",
       "annotated": false,
       "scenarios": []
@@ -4054,6 +4059,7 @@
     "cc-abandoned-create-resume",
     "cc-api-fallback",
     "cc-api-fallback-transitions",
+    "cc-api-lookup",
     "cc-final-snapshot-handlers",
     "cc-nested-create-only-update",
     "cc-required-name-generation",
