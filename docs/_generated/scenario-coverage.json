@@ -973,6 +973,11 @@
       "scenarios": []
     },
     {
+      "name": "datasync-location-role",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "deep-getatt-chains",
       "annotated": true,
       "scenarios": [
@@ -4137,6 +4142,7 @@
     "custom-resource-payload-types",
     "custom-resource-physid-replace",
     "custom-resource-service-token-change",
+    "datasync-location-role",
     "depends-on-flip",
     "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",

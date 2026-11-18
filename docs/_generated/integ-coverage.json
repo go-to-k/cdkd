@@ -6440,6 +6440,7 @@
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
         "custom-resource-payload-types",
+        "datasync-location-role",
         "deep-getatt-chains",
         "destroy-interrupt",
         "diff-intrinsic-target-change",
@@ -6631,6 +6632,9 @@
           "literal"
         ],
         "custom-resource-payload-types": [
+          "l2"
+        ],
+        "datasync-location-role": [
           "l2"
         ],
         "deep-getatt-chains": [
@@ -8791,6 +8795,7 @@
         "cross-stack-references",
         "custom-resource-provider",
         "data-analytics",
+        "datasync-location-role",
         "destroy-data-guard",
         "destroy-failed-delete-keeps-dependencies",
         "diff-intrinsic-target-change",
@@ -8910,6 +8915,9 @@
         "data-analytics": [
           "l2",
           "literal"
+        ],
+        "datasync-location-role": [
+          "l2"
         ],
         "destroy-data-guard": [
           "l2"
@@ -11032,6 +11040,8 @@
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::DSQL::Cluster",
+    "AWS::DataSync::LocationS3",
+    "AWS::DataSync::Task",
     "AWS::DocDB::DBClusterParameterGroup",
     "AWS::DocDB::GlobalCluster",
     "AWS::EC2::IPAM",

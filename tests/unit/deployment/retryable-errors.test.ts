@@ -106,6 +106,17 @@ describe('isRetryableTransientError', () => {
         'CREATE failed for Rule: AWS IoT (iot.amazonaws.com) is unable to assume role (sts:AssumeRole) on resource: arn:aws:iam::111122223333:role/Stack-RuleRole85A02A56-f2fd560c1d1b.  If the role was just created or updated, please try again in a few seconds. (Service: Iot, Status Code: 400, Request ID: 1b3a151b-ff73-4914-81fb-aa175db27ff2) (SDK Attempt Count: 1)',
         'IoT topic rule IAM propagation',
       ],
+      // DataSync S3 location created through Cloud Control seconds after its
+      // bucket access role (issue #6573); AWS's sentence is verbatim from the
+      // failed deploy.
+      [
+        'CREATE failed for LocSrc: Invalid request provided: Invalid IAM role, arn:aws:iam::111122223333:role/Stack-Role1ABCC5F0-542ae8bc0a1b. DataSync service was unable to perform sts:AssumeRole. (Service: DataSync, Status Code: 400, Request ID: 56209a0d-eb08-44cc-b6c5-5bec992e71af) (SDK Attempt Count: 1)',
+        'DataSync S3 location IAM propagation',
+      ],
+      [
+        'CREATE failed for LocSrc: Invalid request provided: DataSync location access test failed: could not perform s3:ListObjectsV2 on bucket cdkddatasynclocationrole-srcbucket613e28a1-3f120b676f56. Access denied. Ensure bucket access role has s3:ListBucket permission. (Service: DataSync, Status Code: 400, Request ID: 71019c4f-1504-4663-b17e-c184801938e5) (SDK Attempt Count: 1)',
+        'DataSync S3 location access test IAM propagation',
+      ],
       // Glue Crawler / Job / Trigger same-stack role IAM-propagation race:
       // the Glue create is issued before the just-created role's trust policy
       // propagates to Glue's assume layer (surfaced by glue-update-hardening
@@ -469,6 +480,29 @@ describe('isRetryableTransientError', () => {
       // refusal in the same shape stays permanent.
       const other =
         'User: arn:aws:iam::111122223333:user/u is unable to assume role (sts:AssumeRole) on resource: arn:aws:iam::111122223333:role/r because of an explicit deny';
+      expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+      expect(isIamPropagationError(other)).toBe(false);
+    });
+
+    it('retries the DataSync S3 location assume-role rejection on the dense cadence (#6573)', () => {
+      const ds =
+        'CREATE failed for LocSrc: Invalid request provided: Invalid IAM role, arn:aws:iam::111122223333:role/Stack-Role1ABCC5F0-542ae8bc0a1b. DataSync service was unable to perform sts:AssumeRole. (Service: DataSync, Status Code: 400, Request ID: 56209a0d-eb08-44cc-b6c5-5bec992e71af) (SDK Attempt Count: 1)';
+      expect(isRetryableTransientError(new Error(ds), ds)).toBe(true);
+      expect(isIamPropagationError(ds)).toBe(true);
+      // The service name is the anchor: another service's refusal that does not
+      // carry DataSync's sentence stays permanent.
+      const other =
+        'Invalid request provided: Invalid IAM role, arn:aws:iam::111122223333:role/r. The role is malformed. (Service: DataSync, Status Code: 400)';
+      expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+      expect(isIamPropagationError(other)).toBe(false);
+    });
+
+    it('retries the DataSync location access-test refusal on the dense cadence (#6573)', () => {
+      const ds =
+        'CREATE failed for LocSrc: Invalid request provided: DataSync location access test failed: could not perform s3:ListObjectsV2 on bucket cdkddatasynclocationrole-srcbucket613e28a1-3f120b676f56. Access denied. Ensure bucket access role has s3:ListBucket permission. (Service: DataSync, Status Code: 400, Request ID: 71019c4f-1504-4663-b17e-c184801938e5) (SDK Attempt Count: 1)';
+      expect(isRetryableTransientError(new Error(ds), ds)).toBe(true);
+      expect(isIamPropagationError(ds)).toBe(true);
+      const other = 'Invalid request provided: Invalid location uri. (Service: DataSync, Status Code: 400)';
       expect(isRetryableTransientError(new Error(other), other)).toBe(false);
       expect(isIamPropagationError(other)).toBe(false);
     });
