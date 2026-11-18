@@ -100,6 +100,12 @@ describe('isRetryableTransientError', () => {
         'Firehose is unable to assume role arn:aws:iam::111:role/FirehoseDeliveryRole. Please check the role provided.',
         'Firehose IAM propagation',
       ],
+      // IoT topic rule created through Cloud Control seconds after its action
+      // role (issue #6559); AWS's sentence is verbatim from the failed deploy.
+      [
+        'CREATE failed for Rule: AWS IoT (iot.amazonaws.com) is unable to assume role (sts:AssumeRole) on resource: arn:aws:iam::111122223333:role/Stack-RuleRole85A02A56-f2fd560c1d1b.  If the role was just created or updated, please try again in a few seconds. (Service: Iot, Status Code: 400, Request ID: 1b3a151b-ff73-4914-81fb-aa175db27ff2) (SDK Attempt Count: 1)',
+        'IoT topic rule IAM propagation',
+      ],
       // Glue Crawler / Job / Trigger same-stack role IAM-propagation race:
       // the Glue create is issued before the just-created role's trust policy
       // propagates to Glue's assume layer (surfaced by glue-update-hardening
@@ -452,6 +458,19 @@ describe('isRetryableTransientError', () => {
       const affirmative = "'arn:aws:iam::111122223333:role/r' is authorized to create managed-rule.";
       expect(isRetryableTransientError(new Error(affirmative), affirmative)).toBe(false);
       expect(isIamPropagationError(affirmative)).toBe(false);
+    });
+
+    it('retries the IoT topic rule assume-role rejection on the dense cadence (#6559)', () => {
+      const iot =
+        'CREATE failed for Rule: AWS IoT (iot.amazonaws.com) is unable to assume role (sts:AssumeRole) on resource: arn:aws:iam::111122223333:role/Stack-RuleRole. If the role was just created or updated, please try again in a few seconds. (Service: Iot, Status Code: 400)';
+      expect(isRetryableTransientError(new Error(iot), iot)).toBe(true);
+      expect(isIamPropagationError(iot)).toBe(true);
+      // The service name is the anchor: another principal's assume-role
+      // refusal in the same shape stays permanent.
+      const other =
+        'User: arn:aws:iam::111122223333:user/u is unable to assume role (sts:AssumeRole) on resource: arn:aws:iam::111122223333:role/r because of an explicit deny';
+      expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+      expect(isIamPropagationError(other)).toBe(false);
     });
 
     it('does not retry an SFN error that carries neither propagation phrase', () => {

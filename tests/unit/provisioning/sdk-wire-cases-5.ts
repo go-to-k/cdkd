@@ -512,6 +512,12 @@ export const CASES_5: TypeCase[] = [
     createOnly: createOnlyOf('AWS::Lambda::NetworkConnector'),
     arm: armActiveConnector,
     exempt: {},
+    nestedExempt: {
+      'Configuration.VpcEgressConfiguration.ElasticIpConfiguration':
+        'refused before any call: the installed @aws-sdk/client-lambda-core does not model the member, so it could not reach the wire (lambda-network-connector-provider.ts, elasticIpRefusalMessage; pinned by lambda-network-connector-provider.test.ts and sdk-pending-members.test.ts; lift tracked in #6567)',
+      'Configuration.VpcEgressConfiguration.ElasticIpConfiguration.Type':
+        'a member of the refused ElasticIpConfiguration block above, refused with it (#6567)',
+    },
     targets: [
       { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
       { path: ['Tags', 1], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },

@@ -5,7 +5,7 @@ import { streamMemberRefusals } from '../../dynamodb-stream-members.js';
 import type { UpdateContext, SecretMasker } from '../../../types/resource.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
 import { onDemandCeilingRefusal, zeroCapacityIndexRefusal } from './capacity.js';
-import { deletionProtectionRefusal } from './indexes.js';
+import { deletionProtectionRefusal, gsiUnsendableChangeRefusal } from './indexes.js';
 import { pointInTimeRecoveryRefusal, sseSpecificationRefusal } from './table-helpers.js';
 
 /**
@@ -201,6 +201,49 @@ export function refuseUnsendableUpdate(
       logicalId,
       physicalId
     );
+  }
+
+  // go-to-k/cdkd#6560: the two refusals `update()` used to reach only AFTER
+  // the tag, billing, SSE, stream and (pre-flip) GSI calls had gone out —
+  // a TTL AttributeName rename between two enabled specs, and a GSI change
+  // `applyGsiUpdates` cannot send. Refusing there left those changes
+  // applied, and the rollback that reverted them could re-mint the table's
+  // stream (a StreamViewType revert), stranding its event source mapping on
+  // the deleted stream. CloudFormation refuses the TTL rename before it
+  // touches the stream. NOT downgraded on the state-borne callers, as before
+  // this move: AWS rejects both shapes every time (an enable while TTL is
+  // active on another attribute; an in-place KeySchema / Projection modify),
+  // so a replay or `drift --revert` sending them could never succeed, and
+  // refusing here only means it now fails before changing anything.
+  if (
+    JSON.stringify(properties['TimeToLiveSpecification']) !==
+    JSON.stringify(previousProperties['TimeToLiveSpecification'])
+  ) {
+    this.assertNoActiveTtlAttributeNameChange(
+      logicalId,
+      resourceType,
+      physicalId,
+      properties['TimeToLiveSpecification'],
+      previousProperties['TimeToLiveSpecification']
+    );
+  }
+  if (
+    JSON.stringify(properties['GlobalSecondaryIndexes']) !==
+    JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
+  ) {
+    const gsiRefusal = gsiUnsendableChangeRefusal(
+      previousProperties['GlobalSecondaryIndexes'],
+      properties['GlobalSecondaryIndexes'],
+      logicalId
+    );
+    if (gsiRefusal !== undefined) {
+      throw new ProvisioningError(
+        `${maskSecrets(gsiRefusal)} Nothing was applied to the table.`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
   }
 
   return { deletionProtectionChanged, sseChanged, sseRefusal };

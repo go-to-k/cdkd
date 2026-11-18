@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "classifiedCount": 141,
-    "enriched": 49,
-    "noComputedAttr": 19,
+    "enriched": 50,
+    "noComputedAttr": 18,
     "unenrichedGap": 0,
     "sdkFallbackGap": 73,
-    "allowListedTypes": 87
+    "allowListedTypes": 88
   },
   "types": [
     {
@@ -2988,11 +2988,19 @@
     },
     {
       "resourceType": "AWS::Route53::RecordSetGroup",
-      "bucket": "no-computed-attr",
+      "bucket": "enriched",
       "sdkBacked": true,
-      "readOnlyProperties": [],
+      "readOnlyProperties": [
+        "Id"
+      ],
       "enrichedKeys": [],
-      "attributes": [],
+      "attributes": [
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
       "gaps": []
     },
     {

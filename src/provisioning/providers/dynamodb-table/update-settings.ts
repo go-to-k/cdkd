@@ -391,14 +391,8 @@ export async function applyIndexUpdates(
     JSON.stringify(properties['TimeToLiveSpecification']) !==
     JSON.stringify(previousProperties['TimeToLiveSpecification'])
   ) {
-    this.assertNoActiveTtlAttributeNameChange(
-      logicalId,
-      resourceType,
-      physicalId,
-      properties['TimeToLiveSpecification'],
-      previousProperties['TimeToLiveSpecification']
-    );
-    // After the refusal: a refused change sent nothing.
+    // An AttributeName rename was refused pre-flight
+    // (`refuseUnsendableUpdate`, go-to-k/cdkd#6560), before any call.
     markUnsettled('TimeToLiveSpecification');
     await this.applyTimeToLive(
       physicalId,

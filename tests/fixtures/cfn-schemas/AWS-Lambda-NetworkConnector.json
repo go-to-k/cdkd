@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::NetworkConnector",
-  "generatedAt": "2026-11-07",
+  "generatedAt": "2026-11-18",
   "properties": [
     "Arn",
     "Configuration",
@@ -31,9 +31,11 @@
   "nestedProperties": {
     "Configuration": [
       "AssociatedComputeResourceTypes",
+      "ElasticIpConfiguration",
       "NetworkProtocol",
       "SecurityGroupIds",
       "SubnetIds",
+      "Type",
       "VpcEgressConfiguration"
     ],
     "Tags": [
@@ -45,6 +47,8 @@
     "Configuration": [
       "VpcEgressConfiguration",
       "VpcEgressConfiguration.AssociatedComputeResourceTypes",
+      "VpcEgressConfiguration.ElasticIpConfiguration",
+      "VpcEgressConfiguration.ElasticIpConfiguration.Type",
       "VpcEgressConfiguration.NetworkProtocol",
       "VpcEgressConfiguration.SecurityGroupIds",
       "VpcEgressConfiguration.SubnetIds"
@@ -56,35 +60,36 @@
   },
   "definitionShapes": {
     "#top": {
+      "Arn": "scalar",
+      "Name": "scalar",
       "Configuration": "object",
       "OperatorRole": "scalar",
-      "LatestVersion": "scalar",
       "State": "scalar",
       "LatestVersionArn": "scalar",
-      "Arn": "scalar",
-      "Tags": "array",
-      "Name": "scalar"
+      "LatestVersion": "scalar",
+      "Tags": "array"
+    },
+    "VpcEgressConfiguration": {
+      "SubnetIds": "array",
+      "SecurityGroupIds": "array",
+      "NetworkProtocol": "scalar",
+      "AssociatedComputeResourceTypes": "array",
+      "ElasticIpConfiguration": "object"
+    },
+    "ElasticIpConfiguration": {
+      "Type": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
     },
     "Config": {
       "VpcEgressConfiguration": "object"
-    },
-    "VpcEgressConfiguration": {
-      "AssociatedComputeResourceTypes": "array",
-      "NetworkProtocol": "scalar",
-      "SubnetIds": "array",
-      "SecurityGroupIds": "array"
-    },
-    "Tag": {
-      "Value": "scalar",
-      "Key": "scalar"
     }
   },
   "definitionRequired": {
     "#top": [
       "Configuration"
-    ],
-    "Config": [
-      "VpcEgressConfiguration"
     ],
     "VpcEgressConfiguration": [
       "AssociatedComputeResourceTypes",
@@ -92,8 +97,14 @@
       "SecurityGroupIds",
       "SubnetIds"
     ],
+    "ElasticIpConfiguration": [
+      "Type"
+    ],
     "Tag": [
       "Key"
+    ],
+    "Config": [
+      "VpcEgressConfiguration"
     ]
   },
   "nestedRequired": {
@@ -106,6 +117,9 @@
       "SecurityGroupIds",
       "SubnetIds"
     ],
+    "Configuration.VpcEgressConfiguration.ElasticIpConfiguration": [
+      "Type"
+    ],
     "Tags": [
       "Key"
     ]
@@ -114,6 +128,7 @@
     "Configuration": "object",
     "Configuration.VpcEgressConfiguration": "object",
     "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes": "array",
+    "Configuration.VpcEgressConfiguration.ElasticIpConfiguration": "object",
     "Configuration.VpcEgressConfiguration.SecurityGroupIds": "array",
     "Configuration.VpcEgressConfiguration.SubnetIds": "array",
     "Tags": "array",
@@ -125,6 +140,8 @@
     "Configuration.VpcEgressConfiguration": "object",
     "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes": "array",
     "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes[]": "string",
+    "Configuration.VpcEgressConfiguration.ElasticIpConfiguration": "object",
+    "Configuration.VpcEgressConfiguration.ElasticIpConfiguration.Type": "string",
     "Configuration.VpcEgressConfiguration.NetworkProtocol": "string",
     "Configuration.VpcEgressConfiguration.SecurityGroupIds": "array",
     "Configuration.VpcEgressConfiguration.SecurityGroupIds[]": "string",
@@ -144,6 +161,10 @@
     "Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes[]": [
       "MicroVm",
       "WebFunction"
+    ],
+    "Configuration.VpcEgressConfiguration.ElasticIpConfiguration.Type": [
+      "None",
+      "ServiceManaged"
     ],
     "Configuration.VpcEgressConfiguration.NetworkProtocol": [
       "DualStack",

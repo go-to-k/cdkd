@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::WebFunctionRevision",
-  "generatedAt": "2026-10-14",
+  "generatedAt": "2026-11-18",
   "properties": [
     "BuildConfig",
     "CreatedAt",
@@ -50,15 +50,6 @@
     "RevisionArn"
   ],
   "nestedProperties": {
-    "BuildConfig": [
-      "Bucket",
-      "CodeConfig",
-      "Key",
-      "Runtime",
-      "RuntimeConfig",
-      "S3Object",
-      "VersionId"
-    ],
     "ServiceConfig": [
       "ApplicationLogLevel",
       "EgressNetworkConnectorArn",
@@ -70,18 +61,18 @@
       "SystemLogLevel",
       "TelemetryConfig",
       "TimeoutSeconds"
+    ],
+    "BuildConfig": [
+      "Bucket",
+      "CodeConfig",
+      "Key",
+      "Runtime",
+      "RuntimeConfig",
+      "S3Object",
+      "VersionId"
     ]
   },
   "nestedPropertyPaths": {
-    "BuildConfig": [
-      "CodeConfig",
-      "CodeConfig.S3Object",
-      "CodeConfig.S3Object.Bucket",
-      "CodeConfig.S3Object.Key",
-      "CodeConfig.S3Object.VersionId",
-      "RuntimeConfig",
-      "RuntimeConfig.Runtime"
-    ],
     "ServiceConfig": [
       "EgressNetworkConnectorArn",
       "EnvironmentVariables",
@@ -93,31 +84,40 @@
       "TelemetryConfig.LoggingConfig.LogGroup",
       "TelemetryConfig.LoggingConfig.SystemLogLevel",
       "TimeoutSeconds"
+    ],
+    "BuildConfig": [
+      "CodeConfig",
+      "CodeConfig.S3Object",
+      "CodeConfig.S3Object.Bucket",
+      "CodeConfig.S3Object.Key",
+      "CodeConfig.S3Object.VersionId",
+      "RuntimeConfig",
+      "RuntimeConfig.Runtime"
     ]
   },
   "definitionShapes": {
     "#top": {
       "FunctionName": "scalar",
       "FunctionArn": "scalar",
-      "RevisionId": "scalar",
-      "RevisionArn": "scalar",
       "Description": "scalar",
       "KmsKeyArn": "scalar",
-      "BuildConfig": "object",
       "ServiceConfig": "object",
       "State": "scalar",
       "StateReason": "scalar",
-      "CreatedAt": "scalar"
-    },
-    "S3Object": {
-      "Bucket": "scalar",
-      "Key": "scalar",
-      "VersionId": "scalar"
+      "CreatedAt": "scalar",
+      "RevisionArn": "scalar",
+      "BuildConfig": "object",
+      "RevisionId": "scalar"
     },
     "LoggingConfig": {
-      "LogGroup": "scalar",
       "ApplicationLogLevel": "scalar",
+      "LogGroup": "scalar",
       "SystemLogLevel": "scalar"
+    },
+    "S3Object": {
+      "VersionId": "scalar",
+      "Bucket": "scalar",
+      "Key": "scalar"
     }
   },
   "definitionRequired": {

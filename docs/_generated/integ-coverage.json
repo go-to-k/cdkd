@@ -6478,6 +6478,7 @@
         "import-heal-prefix-record",
         "infra-security",
         "intrinsic-functions",
+        "iot-topic-rule-role",
         "lambda-esm-self-managed-kafka",
         "lambda-fix-forward-orphan",
         "lambda-microvm-image",
@@ -6766,6 +6767,9 @@
           "l2"
         ],
         "intrinsic-functions": [
+          "l2"
+        ],
+        "iot-topic-rule-role": [
           "l2"
         ],
         "lambda-esm-self-managed-kafka": [
@@ -7413,6 +7417,7 @@
         "drift-rotation-schedule-revert",
         "dynamodb-stream-filter",
         "dynamodb-streams",
+        "dynamodb-ttl-attr-change",
         "ecr",
         "efs-lambda",
         "elasticache-snapshot-arns",
@@ -7632,6 +7637,9 @@
           "l2"
         ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "dynamodb-ttl-attr-change": [
           "l2"
         ],
         "ecr": [
@@ -9631,6 +9639,7 @@
         "iam-role-policies-drift-clean",
         "import-retain-destroy",
         "intrinsics-torture",
+        "iot-topic-rule-role",
         "lambda-destinations",
         "lambda-event-invoke-config-update",
         "lambda-url-authtype-replay",
@@ -9812,6 +9821,9 @@
           "l1"
         ],
         "intrinsics-torture": [
+          "l2"
+        ],
+        "iot-topic-rule-role": [
           "l2"
         ],
         "lambda-destinations": [
@@ -11036,6 +11048,7 @@
     "AWS::GuardDuty::Detector",
     "AWS::HealthImaging::Datastore",
     "AWS::IAM::RolePolicy",
+    "AWS::IoT::TopicRule",
     "AWS::KMS::Grant",
     "AWS::Lambda::Alias",
     "AWS::Lambda::CapacityProvider",

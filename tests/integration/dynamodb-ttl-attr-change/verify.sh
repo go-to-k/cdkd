@@ -10,8 +10,12 @@
 # Phase 1   deploy with TTL enabled on `ttlA`              -> succeeds; AWS
 #           DescribeTimeToLive shows AttributeName=ttlA, ENABLED/ENABLING.
 # Phase 2   re-deploy (CDKD_TEST_UPDATE=true) requesting   -> MUST FAIL with the
-#           TTL on `ttlB`                                      actionable message;
-#           AWS TTL must still be on `ttlA` (guard fired before any API call).
+#           TTL on `ttlB` AND StreamViewType                   actionable message;
+#           NEW_IMAGE -> NEW_AND_OLD_IMAGES                    AWS TTL must still be
+#           on `ttlA` (guard fired before any API call), and (issue #6560) the
+#           table's LatestStreamArn unchanged, nothing for the rollback to
+#           revert, and the stream's Lambda event source mapping still Enabled
+#           on that same stream ARN.
 # Phase 2c  re-deploy (CDKD_TEST_TTL=disable) declaring    -> MUST SUCCEED with
 #           TimeToLiveSpecification {Enabled:false} with       TTL DISABLED/DISABLING
 #           no AttributeName, minutes after the Phase 1         on ttlA (#5447), after
@@ -64,6 +68,7 @@ STACK="CdkdDynamodbTtlAttrChangeExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE_NAME="cdkd-ttl-attr-change-test"
+FUNCTION_NAME="cdkd-ttl-attr-change-stream-consumer"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -78,6 +83,12 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  for uuid in $(aws lambda list-event-source-mappings --function-name "${FUNCTION_NAME}" --region "${REGION}" \
+    --query 'EventSourceMappings[].UUID' --output text 2>/dev/null); do
+    aws lambda delete-event-source-mapping --uuid "${uuid}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
+  aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws logs delete-log-group --log-group-name "/aws/lambda/${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -145,8 +156,48 @@ if [ -z "${TTL_OK}" ]; then
 fi
 echo "    OK: TTL enabled on ttlA ($(ttl_status))"
 
+# The stream and its event source mapping (issue #6560), recorded before the
+# refused deploy. The mapping is polled to Enabled first, so a later
+# non-Enabled state is the refused deploy's doing.
+latest_stream_arn() {
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'Table.LatestStreamArn' --output text
+}
+mapping_field() { # usage: mapping_field <EventSourceArn|State>
+  aws lambda list-event-source-mappings --function-name "${FUNCTION_NAME}" --region "${REGION}" \
+    --query "EventSourceMappings[0].$1" --output text
+}
+MAPPING_COUNT=$(aws lambda list-event-source-mappings --function-name "${FUNCTION_NAME}" --region "${REGION}" \
+  --query 'length(EventSourceMappings)' --output text)
+if [ "${MAPPING_COUNT}" != "1" ]; then
+  echo "FAIL: expected exactly 1 event source mapping on ${FUNCTION_NAME}, found ${MAPPING_COUNT}" >&2
+  exit 1
+fi
+STREAM_BEFORE=$(latest_stream_arn)
+case "${STREAM_BEFORE}" in
+  arn:aws:dynamodb:*/stream/*) ;;
+  *) echo "FAIL: table ${TABLE_NAME} has no LatestStreamArn after Phase 1 (got '${STREAM_BEFORE}')" >&2; exit 1 ;;
+esac
+MAPPING_OK=""
+for _ in $(seq 1 36); do
+  if [ "$(mapping_field State)" = "Enabled" ]; then
+    MAPPING_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${MAPPING_OK}" ]; then
+  echo "FAIL: the event source mapping did not reach Enabled after Phase 1 (state=$(mapping_field State))" >&2
+  exit 1
+fi
+if [ "$(mapping_field EventSourceArn)" != "${STREAM_BEFORE}" ]; then
+  echo "FAIL: after Phase 1 the mapping reads $(mapping_field EventSourceArn), not the table's stream ${STREAM_BEFORE}" >&2
+  exit 1
+fi
+echo "    OK: stream ${STREAM_BEFORE} with its mapping Enabled"
+
 # --- Phase 2: re-deploy requesting ttlB -> must FAIL with the guard ----
-echo "==> Phase 2: re-deploy requesting TTL on ttlB (expected actionable failure)"
+echo "==> Phase 2: re-deploy requesting TTL on ttlB + StreamViewType NEW_AND_OLD_IMAGES (expected actionable failure)"
 DEPLOY_OUT="$(mktemp)"
 set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -177,6 +228,14 @@ if ! grep -q "two deploys" "${DEPLOY_OUT}"; then
   rm -f "${DEPLOY_OUT}"
   exit 1
 fi
+# Issue #6560: refused before the stream change, so the rollback has nothing
+# of the table's to revert. Before the fix it reverted StreamSpecification.
+if grep -q "reverting what the failed UPDATE of TtlTable" "${DEPLOY_OUT}"; then
+  echo "FAIL: the rollback reverted a change of the refused table update — the TTL refusal fired after other changes went out (#6560)" >&2
+  cat "${DEPLOY_OUT}" >&2
+  rm -f "${DEPLOY_OUT}"
+  exit 1
+fi
 rm -f "${DEPLOY_OUT}"
 echo "    OK: deploy rejected the TTL AttributeName change with the actionable error (rc=${DEPLOY_RC})"
 
@@ -187,6 +246,20 @@ if [ "${ATTR_AFTER}" != "ttlA" ]; then
   exit 1
 fi
 echo "    OK: AWS TTL still on ttlA — no partial UpdateTimeToLive happened"
+
+# --- Phase 2b': the stream and its mapping are untouched (#6560) --------
+STREAM_AFTER=$(latest_stream_arn)
+if [ "${STREAM_AFTER}" != "${STREAM_BEFORE}" ]; then
+  echo "FAIL: the refused deploy re-minted the table's stream (${STREAM_BEFORE} -> ${STREAM_AFTER}) — the stream change went out before the TTL refusal (#6560)" >&2
+  exit 1
+fi
+MAPPING_ARN_AFTER=$(mapping_field EventSourceArn)
+MAPPING_STATE_AFTER=$(mapping_field State)
+if [ "${MAPPING_ARN_AFTER}" != "${STREAM_AFTER}" ] || [ "${MAPPING_STATE_AFTER}" != "Enabled" ]; then
+  echo "FAIL: after the refused deploy the mapping is ${MAPPING_STATE_AFTER} on ${MAPPING_ARN_AFTER}, expected Enabled on the table's stream ${STREAM_AFTER} (#6560)" >&2
+  exit 1
+fi
+echo "    OK: stream ARN unchanged and its mapping still Enabled on it"
 
 # --- Phase 2c: name-less TTL disable inside the rate-limit window -------
 # The disable (#5447) lands minutes after the Phase 1 enable, inside
@@ -250,8 +323,11 @@ if [ -z "${TABLE_GONE}" ]; then
 fi
 echo "    OK: DynamoDB table is gone"
 
+assert_gone "Lambda function ${FUNCTION_NAME} still exists after destroy" aws lambda get-function --function-name "${FUNCTION_NAME}" --region "${REGION}"
+echo "    OK: stream consumer function is gone"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> dynamodb-ttl-attr-change test passed (TTL AttributeName change rejected with actionable error; AWS TTL unchanged; name-less disable reached AWS; clean destroy)"
+echo "==> dynamodb-ttl-attr-change test passed (TTL AttributeName change rejected with actionable error before any change; AWS TTL, stream and its mapping unchanged; name-less disable reached AWS; clean destroy)"

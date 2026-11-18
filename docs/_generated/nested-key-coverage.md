@@ -13,8 +13,8 @@ For every SDK provider that forwards a nested CFn config blob, compares the SHAP
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths under handled top-levels: **1529**
-- Paths delivered whole by a generic hand-off: **623**
+- Nested CFn key paths under handled top-levels: **1536**
+- Paths delivered whole by a generic hand-off: **628**
 - Bare-array pairs clean: **182**
 - Explicitly handled in provider: **50**
 - Allow-listed (does NOT block CI): **8**
@@ -122,10 +122,10 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Glue::Table` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 88 | 24 | 2 |
 | `AWS::Glue::Trigger` | `glue-provider.ts` | `@aws-sdk/client-glue` | exact | 16 | 7 | 0 |
 | `AWS::Lambda::EventSourceMapping` | `lambda-eventsource-provider.ts` | `@aws-sdk/client-lambda` | exact | 38 | 35 | 6 |
-| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | 7 | 0 | 3 |
+| `AWS::Lambda::NetworkConnector` | `lambda-network-connector-provider.ts` | `@aws-sdk/client-lambda-core` | exact | 9 | 0 | 4 |
 | `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 4 | 0 | 0 |
 | `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 17 | 0 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | 208 | 2 | 0 |
 | `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | 221 | 12 | 15 |
-| `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | 47 | 39 | 0 |
+| `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | 52 | 44 | 0 |
 

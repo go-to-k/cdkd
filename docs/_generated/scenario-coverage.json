@@ -1777,6 +1777,11 @@
       ]
     },
     {
+      "name": "iot-topic-rule-role",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "kinesis-esm-filter",
       "annotated": false,
       "scenarios": []
@@ -4191,6 +4196,7 @@
     "import-reimport-masked-attrs",
     "import-secret-observed",
     "inplace-attr-propagation",
+    "iot-topic-rule-role",
     "kinesis-esm-filter",
     "kinesis-stream-mode-switch",
     "lambda-alias-provisioned-concurrency",
