@@ -257,7 +257,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection on a pool that refu
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('was left on'));
   });
 
-  it('a re-enable re-send with NO answer is reported, never a bare write', async () => {
+  it('a re-enable re-send with NO answer never falls back to a bare write', async () => {
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     script({
       resendError: { ACTIVE: timeout },
