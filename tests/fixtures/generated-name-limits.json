@@ -33,6 +33,13 @@
       "apiMaxLength": 64,
       "apiSource": "measured: CreateCapacityProvider refuses a name over 64 (go-to-k/cdkd#5064)"
     },
+    "AWS::CloudWatch::MetricStream": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 255,
+      "schemaMinLength": 1,
+      "apiMaxLength": 255,
+      "apiSource": "PutMetricStream Name: 1-255 of [A-Za-z0-9_-]; measured: 255 accepted, 256 refused (go-to-k/cdkd#6555)"
+    },
     "AWS::IAM::Role": {
       "nameProperty": "RoleName",
       "apiMaxLength": 64,

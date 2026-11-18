@@ -124,6 +124,19 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
     nameProperty: 'CapacityProviderName',
     options: { maxLength: 64 },
   },
+  // go-to-k/cdkd#6555: the same, for a metric stream (no SDK provider): the
+  // schema leaves `Name` optional, and a create without one fails with
+  // `Cannot invoke "java.lang.CharSequence.length()" because "this.text" is
+  // null`. PutMetricStream takes 1-255 characters of `[A-Za-z0-9_-]` (255
+  // accepted and 256 refused, measured); the default `allowedPattern` emits a
+  // subset. No `legacy`: every Cloud Control create without a name failed, so
+  // no legacy stack holds a handler-named stream to keep. Not adopted: added
+  // for its generated name alone.
+  'AWS::CloudWatch::MetricStream': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    notAdopted: true,
+  },
 
   'AWS::IAM::Role': { nameProperty: 'RoleName', options: { maxLength: 64 } },
   'AWS::IAM::Policy': { nameProperty: 'PolicyName', options: { maxLength: 64 } },

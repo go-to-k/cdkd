@@ -6425,6 +6425,7 @@
         "cdk-cross-account-lookup-role",
         "ci-cd",
         "cloudtrail-trail",
+        "cloudwatch-metric-stream-default-name",
         "composite-stack",
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
@@ -6600,6 +6601,9 @@
           "l2"
         ],
         "cloudtrail-trail": [
+          "l2"
+        ],
+        "cloudwatch-metric-stream-default-name": [
           "l2"
         ],
         "composite-stack": [
@@ -7277,12 +7281,16 @@
     {
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
+        "cloudwatch-metric-stream-default-name",
         "firehose-iceberg-destination",
         "firehose-msk-source",
         "log-pipeline",
         "stream-delete-redeploy"
       ],
       "signals": {
+        "cloudwatch-metric-stream-default-name": [
+          "literal"
+        ],
         "firehose-iceberg-destination": [
           "l1",
           "literal"
@@ -8183,6 +8191,7 @@
         "cache-streaming",
         "cloudtrail-trail",
         "cloudwatch",
+        "cloudwatch-metric-stream-default-name",
         "composite-stack",
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
@@ -8242,6 +8251,9 @@
           "l2"
         ],
         "cloudwatch": [
+          "l2"
+        ],
+        "cloudwatch-metric-stream-default-name": [
           "l2"
         ],
         "composite-stack": [
@@ -8747,6 +8759,7 @@
         "cc-to-sdk-reroute-common-types-4",
         "ci-cd",
         "cloudtrail-trail",
+        "cloudwatch-metric-stream-default-name",
         "codebuild-project",
         "composite-stack",
         "conditions",
@@ -8839,6 +8852,9 @@
           "literal"
         ],
         "cloudtrail-trail": [
+          "l2"
+        ],
+        "cloudwatch-metric-stream-default-name": [
           "l2"
         ],
         "codebuild-project": [
@@ -10972,6 +10988,7 @@
     "AWS::Backup::BackupVault",
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudWatch::CompositeAlarm",
+    "AWS::CloudWatch::MetricStream",
     "AWS::CodeDeploy::Application",
     "AWS::CodeDeploy::DeploymentGroup",
     "AWS::CodePipeline::CustomActionType",

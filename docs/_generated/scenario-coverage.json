@@ -759,6 +759,11 @@
       "scenarios": []
     },
     {
+      "name": "cloudwatch-metric-stream-default-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "codebuild-project",
       "annotated": false,
       "scenarios": []
@@ -4087,6 +4092,7 @@
     "cc-write-only-create-only",
     "cdk-cross-account-lookup-role",
     "cloudtrail-trail",
+    "cloudwatch-metric-stream-default-name",
     "codebuild-project",
     "codebuild-webhook",
     "codedeploy-lambda-deployment-group",
