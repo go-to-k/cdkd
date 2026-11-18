@@ -398,8 +398,9 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
 
   // SSM Document — `Name` and `DocumentType` are create-only. Six more
   // properties replace the document only under the default
-  // `UpdateMethod: Replace`; with `NewVersion` their change adds a document
-  // version in place. The registry schema lists them as updatable, so without
+  // `UpdateMethod: Replace`; with `NewVersion` the diff keeps their change
+  // in place (the schema's `UpdateMethod` doc; measured for `Content` only,
+  // where it adds a document version). The registry schema lists them as updatable, so without
   // this rule the diff called a `Content` change an update and the Cloud
   // Control handler refused it ("Create-Only Property cannot be updated")
   // where CloudFormation replaces the document (go-to-k/cdkd#6568). A named

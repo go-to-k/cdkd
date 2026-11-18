@@ -100,8 +100,9 @@ cleanup() {
   # A deploy that failed before state recorded a document leaves a name
   # nothing here knows (the handler generates the unnamed one's), so the
   # documents are found by the stack tag both carry. The account is shared
-  # and a peer may be running this fixture, so only this run's own teardown
-  # deletes: before the run, a match is reported and stops it.
+  # and a peer may be running this fixture, so the pre-run pass only reports
+  # a match and stops. The teardown deletes every tagged document, a peer's
+  # started mid-run included; that peer collides on the named document anyway.
   LEFT_BY_TAG=""
   case "${STACK}" in
     CdkdSsm?*)
