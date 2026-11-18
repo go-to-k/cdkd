@@ -188,36 +188,45 @@ export async function waitForOwnCapacityProviderPut(
 ): Promise<void> {
   let sawInProgress = putCluster?.attachmentsStatus === IN_PROGRESS;
   if (!sawInProgress) {
-    for (let read = 0; ; read++) {
-      const status = await attachmentsStatus(client, cluster);
-      if (status === IN_PROGRESS) {
-        sawInProgress = true;
-        break;
+    const watch = startInterruptWatch(`ECS cluster ${logicalId} attachments wait`);
+    try {
+      for (let read = 0; ; read++) {
+        const status = await attachmentsStatus(client, cluster);
+        if (status === IN_PROGRESS) {
+          sawInProgress = true;
+          break;
+        }
+        if (status !== 'UPDATE_FAILED') return;
+        if (read >= OWN_PUT_GRACE_READS) {
+          log.warn(
+            `ECS cluster ${log.value(cluster)} still reports UPDATE_FAILED attachments from before this update's PutClusterCapacityProviders, which never showed UPDATE_IN_PROGRESS; continuing`
+          );
+          return;
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await clusterAttachmentsWait.sleep(1_000);
+        if (watch.isInterrupted()) throw watch.onInterrupted();
       }
-      if (status !== 'UPDATE_FAILED') return;
-      if (read >= OWN_PUT_GRACE_READS) {
-        log.warn(
-          `ECS cluster ${log.value(cluster)} still reports UPDATE_FAILED attachments from before this update's PutClusterCapacityProviders, which never showed UPDATE_IN_PROGRESS; continuing`
-        );
-        return;
-      }
-      await clusterAttachmentsWait.sleep(1_000);
+    } finally {
+      watch.dispose();
     }
   }
   const settled = await waitForClusterAttachments(client, logicalId, cluster, log);
   if (settled?.attachmentsStatus !== 'UPDATE_FAILED') return;
-  // Only the attachments this Put touched (its response lists them), else
-  // any whose status says a create / update / delete failed.
+  // The attachments this Put touched (its response lists them). A Put can
+  // also CREATE one its response does not list, so when none of the touched
+  // ones failed, any whose status says a create / update / delete failed.
   const touched = new Set(
     (putCluster?.attachments ?? []).map((a) => a.id).filter((id): id is string => Boolean(id))
   );
-  const failed = (settled.attachments ?? [])
-    .filter((a) => FAILED_ATTACHMENT.test(a.status ?? ''))
-    .filter((a) => touched.size === 0 || (a.id !== undefined && touched.has(a.id)))
-    .map((a) => {
-      const details = (a.details ?? []).map((d) => `${d.name ?? '?'}=${d.value ?? ''}`).join(', ');
-      return `${a.type ?? 'attachment'} ${a.id ?? ''} ${a.status ?? ''}${details ? ` (${details})` : ''}`.trim();
-    });
+  const failedAll = (settled.attachments ?? []).filter((a) =>
+    FAILED_ATTACHMENT.test(a.status ?? '')
+  );
+  const failedTouched = failedAll.filter((a) => a.id !== undefined && touched.has(a.id));
+  const failed = (failedTouched.length > 0 ? failedTouched : failedAll).map((a) => {
+    const details = (a.details ?? []).map((d) => `${d.name ?? '?'}=${d.value ?? ''}`).join(', ');
+    return `${a.type ?? 'attachment'} ${a.id ?? ''} ${a.status ?? ''}${details ? ` (${details})` : ''}`.trim();
+  });
   const reason = failed.length > 0 ? `: ${log.mask(failed.join('; '))}` : '';
   throw markNonRetryable(
     new ProvisioningError(

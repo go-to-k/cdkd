@@ -50,6 +50,11 @@ import {
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { clusterAttachmentsWait } from '../../../src/provisioning/providers/ecs/cluster-attachments.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const TYPE = 'AWS::ECS::Cluster';
 const CLUSTER = 'my-cluster';
@@ -348,6 +353,49 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
 
     expect((failure as Error).message).toMatch(/att-new UPDATE_FAILED/);
     expect((failure as Error).message).not.toMatch(/att-stale/);
+  });
+
+  it('names a failed attachment the Put response did not list when none it listed failed', async () => {
+    putCluster = {
+      clusterArn: ARN,
+      attachmentsStatus: 'UPDATE_IN_PROGRESS',
+      attachments: [{ id: 'att-kept', status: 'UPDATE_IN_PROGRESS' }],
+    };
+    attachments = ['UPDATE_FAILED'];
+    attachmentList = [
+      { id: 'att-kept', type: 'as_policy', status: 'UPDATE_COMPLETE' },
+      { id: 'att-created', type: 'as_policy', status: 'CREATE_FAILED' },
+    ];
+
+    const failure = await failureOf(PROVIDERS_AND_SETTINGS);
+
+    expect((failure as Error).message).toMatch(/att-created CREATE_FAILED/);
+  });
+
+  describe('with the command owning interrupts', () => {
+    beforeEach(() => {
+      disarmInterruptWatchForTests();
+      interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    });
+    afterEach(() => {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+    });
+
+    it('stops the stale-FAILED grace re-reads on Ctrl-C', async () => {
+      putCluster = { clusterArn: ARN };
+      attachments = ['UPDATE_FAILED'];
+      clusterAttachmentsWait.sleep = async (ms: number) => {
+        sleeps.push(ms);
+        process.emit('SIGINT');
+      };
+
+      const failure = await failureOf(PROVIDERS_AND_SETTINGS);
+
+      expect(isInterruptedWaitError(failure)).toBe(true);
+      expect(sleeps).toEqual([1_000]);
+      expect(names()).not.toContain('UpdateClusterCommand');
+    });
   });
 
   it('does not fail on UPDATE_FAILED reached by waiting out a Put it did not send', async () => {
