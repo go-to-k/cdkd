@@ -13,6 +13,10 @@ import { quietS3Logger } from '../../utils/sdk-call-log.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { withGuardDutyDetectorReadBackOps } from '../guardduty-detector-patch.js';
 import {
+  hasCcReadBackEmptyKeys,
+  withCcReadBackEmptyKeyRemovals,
+} from '../cc-read-back-empty-keys.js';
+import {
   apiGatewayV2DefinitionObject,
   isApiGatewayV2Import,
   splitApiGatewayV2ImportPatch,
@@ -240,6 +244,21 @@ export async function updateInIdLogScope(
       cleanProperties,
       context?.desiredFromAwsReadback === true ? { previous: cleanPreviousProperties } : undefined
     );
+
+    // go-to-k/cdkd#6569: some read models spell "not set" as an empty
+    // collection the update API refuses (an Image Builder infrastructure
+    // configuration's `ResourceTags: {}`); see the helper. The live model is
+    // read ONLY for a listed type, so no other type pays a GetResource. It is
+    // read rather than taken from `cleanPreviousProperties`, which is the
+    // template's view on a deploy and so never holds the read-back value.
+    if (hasCcReadBackEmptyKeys(resourceType)) {
+      patch = withCcReadBackEmptyKeyRemovals(
+        resourceType,
+        patch,
+        cleanProperties,
+        await this.readCcResourceModel(resourceType, physicalId, idLog)
+      );
+    }
 
     // go-to-k/cdkd#6294: a whole-object op drops the AWS-defaulted nested
     // create-only members Cloud Control reads; see the helper. The schema
