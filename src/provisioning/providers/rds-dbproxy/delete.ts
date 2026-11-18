@@ -4,10 +4,9 @@ import {
   DescribeDBProxiesCommand,
   DBProxyNotFoundFault,
 } from '@aws-sdk/client-rds';
-import { ProvisioningError } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
-import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS } from './shared.js';
+import { waitForDBProxyDeleteGone } from './shared.js';
 
 export async function deleteImpl(
   this: RDSDBProxyProvider,
@@ -20,7 +19,7 @@ export async function deleteImpl(
   const client = this.getClient();
   const mask = maskerOrIdentity(context?.maskSecrets);
 
-  this.logger.debug(`Deleting DBProxy ${physicalId}`);
+  this.logger.debug(mask(`Deleting DBProxy ${physicalId}`));
 
   try {
     await client.send(new DeleteDBProxyCommand({ DBProxyName: physicalId }));
@@ -28,7 +27,7 @@ export async function deleteImpl(
     if (error instanceof DBProxyNotFoundFault) {
       const clientRegion = await client.config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
-      this.logger.debug(`DBProxy ${physicalId} already gone, treating as success`);
+      this.logger.debug(mask(`DBProxy ${physicalId} already gone, treating as success`));
       return;
     }
     throw this.wrapDeleteError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
@@ -38,23 +37,22 @@ export async function deleteImpl(
   // `deleting` state for ~30-60s before DescribeDBProxies starts
   // returning DBProxyNotFoundFault — without this wait, a subsequent
   // `cdkd deploy` of a same-named proxy can race AWS's eventual delete.
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
-    } catch (error) {
-      if (error instanceof DBProxyNotFoundFault) {
-        this.logger.debug(`DBProxy ${physicalId} fully deleted`);
-        return;
-      }
-      throw this.wrapDeleteError(error, 'DELETE (poll)', resourceType, logicalId, physicalId, mask);
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-  throw new ProvisioningError(
-    `Timed out waiting for DBProxy ${physicalId} to fully delete`,
+  // Outside the try: the wait's only throw is its own marked error.
+  await waitForDBProxyDeleteGone({
+    what: `DBProxy ${physicalId}`,
     resourceType,
     logicalId,
-    physicalId
-  );
+    physicalId,
+    readStatus: async () => {
+      try {
+        const out = await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
+        return out.DBProxies?.[0]?.Status ?? 'unknown';
+      } catch (error) {
+        if (error instanceof DBProxyNotFoundFault) return undefined;
+        throw error;
+      }
+    },
+    logger: this.logger,
+    mask,
+  });
 }
