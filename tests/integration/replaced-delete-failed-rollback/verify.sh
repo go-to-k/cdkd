@@ -12,8 +12,10 @@
 # `TargetNote`, and its old record is kept in state as superseded until the
 # delete runs. The same NoEcho value is why step 2b's `cdkd rollback`, once the
 # old policy is gone, refuses to re-create it: its baseline holds that value
-# only as the mask. The re-adopt of a refused delete that changed nothing is
-# step 5's, a certificate the ACM provider replaced inside its own update.
+# only as the mask. Step 5 is the same deferral for an ordinary record (no
+# NoEcho value): a certificate the engine replaces on a `ValidationMethod`
+# change (go-to-k/cdkd#6515), whose old record is kept in state as superseded
+# until the cleanup phase.
 #
 # Phases:
 #   1. Baseline deploy: `Target` = managed policy `cdkd-rdfr-target-a`,
@@ -41,23 +43,26 @@
 #          `Holder`, state still names it and the journal is kept.
 #   3. `cdkd destroy` (it sweeps the kept journal with the state): every
 #      policy, `Holder`, the state file, the journal and the role are gone.
-#   4. go-to-k/cdkd#4911, the provider's own replacement: baseline deploy with
-#      `Cert`, a DNS-validated ACM certificate (`CERT_MODE=dns`).
+#   4. Baseline deploy with `Cert`, a DNS-validated ACM certificate
+#      (`CERT_MODE=dns`).
 #   5. As a role that may not delete that certificate nor create Breaker,
-#      `CERT_MODE=email BREAK=true` deploys with the automatic rollback. The
-#      ACM provider replaces the certificate inside its `update()` (a
-#      `ValidationMethod` change), its delete of the old one is refused, and
-#      it reports a partial update saying AWS refused that delete outright;
-#      Breaker then fails the deploy. Asserted: the rollback read AWS, found
-#      the old certificate alive and re-adopted it, deleting the replacement;
-#      only the old certificate exists and state names it. Before #4911 the
-#      rollback requested a new copy of the old certificate (a duplicate).
+#      `CERT_MODE=email BREAK=true` deploys with the automatic rollback. A
+#      `ValidationMethod` change is an ENGINE replacement (go-to-k/cdkd#6515):
+#      the new certificate is requested first and the old one's delete waits
+#      for the cleanup phase (go-to-k/cdkd#6374), which Breaker's refused
+#      create keeps the deploy from reaching. Asserted: the old certificate's
+#      delete was never sent (the role's deny would have refused it), the
+#      rollback re-adopted it and deleted the replacement, only the old
+#      certificate exists, and state names it with no superseded entry.
+#      The arm used to be go-to-k/cdkd#4911's (the ACM provider replacing the
+#      certificate inside its own `update()`); no CDK template edit reaches a
+#      provider-internal replacement that leaves its old copy whole any more,
+#      so that arm is unit-tested only.
 #   6. `cdkd destroy`: every policy and certificate, `Holder`, the state file,
 #      the journal and the role are gone, and the state prefix's object versions
 #      are swept.
 #
-# Cost: up to three IAM managed policies and one role of the stack, two ACM certificates (three on a
-# pre-#4911 binary) left in
+# Cost: up to three IAM managed policies and one role of the stack, two ACM certificates left in
 # PENDING_VALIDATION on a synthetic `.example.test` domain under
 # `CDKD_NO_WAIT=true` (free, no DNS) and one role at a time. On any failure,
 # cleanup deletes the policies and this run's certificates by ARN, destroys
@@ -715,8 +720,9 @@ echo "[verify] step 5: a role that may not delete ${CERT_OLD} nor create ${BREAK
 # Breaker's create.
 DENY_POLICY="$(node -e 'const [bucket,stack,acct,cert]=process.argv.slice(1);const p=`arn:aws:iam::${acct}:policy/`;process.stdout.write(JSON.stringify({Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:ListBucket","s3:ListBucketVersions","s3:GetBucketLocation","s3:GetReplicationConfiguration"],Resource:`arn:aws:s3:::${bucket}`},{Effect:"Allow",Action:["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:DeleteObjectVersion"],Resource:`arn:aws:s3:::${bucket}/cdkd/${stack}/*`},{Effect:"Allow",Action:["iam:CreatePolicy","iam:TagPolicy","iam:GetPolicy","iam:GetPolicyVersion","iam:ListPolicyVersions","iam:ListPolicyTags","iam:ListEntitiesForPolicy","iam:DeletePolicy","iam:DeletePolicyVersion"],Resource:`${p}cdkd-rdfr-*`},{Effect:"Allow",Action:["acm:RequestCertificate","acm:DescribeCertificate","acm:GetCertificate","acm:ListCertificates","acm:ListTagsForCertificate"],Resource:"*"},{Effect:"Allow",Action:"acm:AddTagsToCertificate",Resource:"*",Condition:{StringEquals:{"aws:RequestTag/cdkd-integ":"rdfr"}}},{Effect:"Allow",Action:"acm:DeleteCertificate",Resource:"*",Condition:{StringEquals:{"aws:ResourceTag/cdkd-integ":"rdfr"}}},{Effect:"Allow",Action:["ssm:GetParameter","ssm:GetParameters"],Resource:`arn:aws:ssm:*:${acct}:parameter/cdk-bootstrap/*`},{Effect:"Allow",Action:["kms:Decrypt","kms:GenerateDataKey"],Resource:`arn:aws:kms:*:${acct}:key/*`,Condition:{StringLike:{"kms:ViaService":"s3.*.amazonaws.com"}}},{Effect:"Allow",Action:["cloudformation:Describe*","cloudformation:List*","iam:ListPolicies","sts:GetCallerIdentity"],Resource:"*"},{Effect:"Deny",Action:"acm:DeleteCertificate",Resource:cert},{Effect:"Deny",Action:"iam:CreatePolicy",Resource:`${p}cdkd-rdfr-breaker`},{Effect:"Deny",Action:["iam:PassRole","sts:AssumeRole"],Resource:"*"}]}))' "${STATE_BUCKET}" "${STACK}" "${ACCOUNT_ID}" "${CERT_OLD}")"
 make_deny_role "${DENY_POLICY}"
-# The explicit deny must bind first, or the old certificate's delete goes
-# through and nothing survives for the rollback to read.
+# The explicit deny must bind first: the deferred delete is never sent, and a
+# regression that sent it before the cleanup phase must meet the refusal (a
+# named failure below) rather than delete the old certificate.
 DENY_PROBE=""
 for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws acm delete-certificate --certificate-arn "${CERT_OLD}" 2>&1)"; then
@@ -745,7 +751,7 @@ if [ -z "${ALLOW_PROBE}" ]; then
   exit 1
 fi
 
-echo "[verify] step 5: ValidationMethod change as ${DENY_ROLE}: the provider's replacement cannot delete the old certificate, then Breaker fails the deploy"
+echo "[verify] step 5: ValidationMethod change as ${DENY_ROLE}: the engine replaces the certificate, defers the old one's delete, then Breaker fails the deploy"
 set +e
 as_deny_role env -u TARGET_SUFFIX CERT_MODE=email BREAK=true CDKD_NO_WAIT=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" > "${LOG_DIR}/deploy-cert.log" 2>&1
@@ -765,25 +771,34 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   exit 1
 fi
 DEPLOY_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy-cert.log" | tr '\n' ' ' | tr -s ' ')"
-# The premise: the PROVIDER replaced the certificate inside its update() and
-# its delete of the old one was refused (the engine's own replacement would
-# print step 2's "Could not delete old ... yet" instead).
-if ! grep -qF "Failed to delete old ACM certificate" <<<"${DEPLOY_FLAT}" \
+# The premise: the ENGINE replaced the certificate on its ValidationMethod
+# (go-to-k/cdkd#6515) and deferred the old one's delete to the cleanup phase
+# (go-to-k/cdkd#6374). Sentinels: the ACM provider's own in-update replacement
+# ("Failed to delete old ACM certificate", the pre-#6515 route) and an inline
+# delete the role's deny refused ("Could not delete old Cert") each name a
+# route this step must not take.
+if ! grep -qF "Replacing Cert (AWS::CertificateManager::Certificate) - immutable properties changed: ValidationMethod" <<<"${DEPLOY_FLAT}"; then
+  echo "[verify] FAIL: precondition -- the deploy did not report the engine's ValidationMethod replacement of Cert (go-to-k/cdkd#6515; output above)" >&2
+  exit 1
+fi
+if grep -qF "Failed to delete old ACM certificate" <<<"${DEPLOY_FLAT}" \
   || grep -qF "Could not delete old Cert" <<<"${DEPLOY_FLAT}"; then
-  echo "[verify] FAIL: precondition -- the deploy did not report the ACM provider's refused delete of the old certificate inside its own replacement (output above)" >&2
+  echo "[verify] FAIL: the deploy sent the old certificate's delete before the cleanup phase (the role's deny refused it) -- its delete must wait for the cleanup phase (go-to-k/cdkd#6374; output above)" >&2
+  exit 1
+fi
+if ! grep -qF "Old Cert (${CERT_OLD}) is deleted after the rest of the deploy succeeds" <<<"${DEPLOY_FLAT}"; then
+  echo "[verify] FAIL: the deploy did not report deferring the old certificate's delete to the cleanup phase -- the deferral's wording drifted, or the replacement took another route (output above)" >&2
   exit 1
 fi
 if ! grep -qF "Failed to create IAM managed policy Breaker" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: precondition -- the deploy did not fail on Breaker's create (output above)" >&2
   exit 1
 fi
-# go-to-k/cdkd#4911: the journaled op carried the survivor mark, `kept` on the
-# provider's word that AWS refused the delete by name (an explicit deny), so
-# the rollback read AWS, found the old certificate alive, re-adopted it and
-# deleted the replacement. Before the fix it requested a new copy of the old
+# The rollback read AWS, found the old certificate whole and re-adopted it,
+# deleting the replacement. A re-create would request a new copy of the old
 # certificate (a duplicate), leaving the old one untracked.
-if ! grep -qF "the old resource of Cert (${CERT_OLD}) still exists" <<<"${DEPLOY_FLAT}"; then
-  echo "[verify] FAIL: the rollback did not report re-adopting the surviving old certificate (${CERT_OLD}) -- go-to-k/cdkd#4911: a provider's in-update replacement journals no survivor mark (output above)" >&2
+if ! grep -qF "the old resource of Cert (${CERT_OLD}) was not deleted yet — re-adopting it" <<<"${DEPLOY_FLAT}"; then
+  echo "[verify] FAIL: the rollback did not report re-adopting the old certificate (${CERT_OLD}) whose delete was never sent (output above)" >&2
   exit 1
 fi
 if grep -qF "Rollback failed for Cert" <<<"${DEPLOY_FLAT}"; then
@@ -801,9 +816,14 @@ if [ "${STEP5_CERTS}" != "${CERT_OLD}" ]; then
   echo "[verify] FAIL: the certificates for ${CERT_DOMAIN} after step 5 are '${STEP5_CERTS}' (expected only the re-adopted ${CERT_OLD}: no copy of it, and the replacement deleted)" >&2
   exit 1
 fi
-STATE_5_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Cert.physicalId // "<absent>"')"
+STATE_5="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+STATE_5_ID="$(printf '%s' "${STATE_5}" | jq -r '.resources.Cert.physicalId // "<absent>"')"
 if [ "${STATE_5_ID}" != "${CERT_OLD}" ]; then
   echo "[verify] FAIL: state's Cert is '${STATE_5_ID}' after the rollback (expected the re-adopted ${CERT_OLD})" >&2
+  exit 1
+fi
+if [ "$(printf '%s' "${STATE_5}" | jq '(.supersededResources // []) | length')" != "0" ]; then
+  echo "[verify] FAIL: state still lists a superseded resource after the rollback re-adopted ${CERT_OLD}" >&2
   exit 1
 fi
 echo "[verify] step 5 ok: the rollback re-adopted ${CERT_OLD} instead of requesting a copy, and deleted the replacement (deploy rc=${DEPLOY_RC})"
@@ -835,4 +855,4 @@ rm -rf "${LOG_DIR}"
 s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "replaced-delete-failed-rollback state teardown"
 
-echo "[verify] PASS -- a replaced policy holding a NoEcho value waited for the cleanup phase and the rollback re-adopted it whole (go-to-k/cdkd#6445); under --no-rollback it stayed in state, and cdkd rollback read it as gone once deleted by hand (go-to-k/cdkd#2631) and refused to re-create it from a masked NoEcho baseline; and the rollback re-adopted a provider-replaced certificate whose refused delete changed nothing (go-to-k/cdkd#4911)"
+echo "[verify] PASS -- a replaced policy holding a NoEcho value waited for the cleanup phase and the rollback re-adopted it whole (go-to-k/cdkd#6445); under --no-rollback it stayed in state, and cdkd rollback read it as gone once deleted by hand (go-to-k/cdkd#2631) and refused to re-create it from a masked NoEcho baseline; and the rollback re-adopted an engine-replaced certificate whose delete waited for the cleanup phase (go-to-k/cdkd#6515, #6374)"

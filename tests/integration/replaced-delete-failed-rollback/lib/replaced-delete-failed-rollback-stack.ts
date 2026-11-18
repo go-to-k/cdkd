@@ -25,11 +25,12 @@ import type { Construct } from 'constructs';
  * create fails the deploy before the cleanup phase, so the old policy is never
  * sent its delete, and the automatic rollback re-adopts it, still on `Holder`.
  *
- * go-to-k/cdkd#4911: `CERT_MODE=dns|email` adds `Cert`, an ACM certificate
- * whose `ValidationMethod` is the mode. That key is not create-only, so
- * changing it reaches the ACM provider's replacement inside its own
- * `update()`; with `BREAK=true` the failing `Breaker` depends on it, so it
- * runs after that replacement. A synthetic `.example.test` domain under
+ * `CERT_MODE=dns|email` adds `Cert`, an ACM certificate whose
+ * `ValidationMethod` is the mode. Changing it is an engine replacement
+ * (go-to-k/cdkd#6515): the new certificate is requested first and the old
+ * one's delete waits for the cleanup phase; with `BREAK=true` the failing
+ * `Breaker` depends on it, so it runs after that replacement and keeps the
+ * deploy from reaching the cleanup phase. A synthetic `.example.test` domain under
  * `CDKD_NO_WAIT=true`: the certificate stays PENDING_VALIDATION.
  *
  * L1 resources with explicit names, on the SDK route.
