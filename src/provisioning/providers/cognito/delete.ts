@@ -474,7 +474,7 @@ export async function sendEchoedDeletionProtection(
     // Kept at debug: if the re-send fails too, the caller's warn names only
     // that second failure.
     this.logger.debug(
-      safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${mask(describeAwsFailure(echoError).summary)}`
+      safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${mask(physicalId)}: ${mask(describeAwsFailure(echoError).summary)}`
     );
     try {
       await echo(true);

@@ -97,8 +97,13 @@ cleanup() {
   local pid
   pid="$(pool_id 2>/dev/null)"
   if [ -n "${pid}" ] && [ "${pid}" != "None" ]; then
-    [ -n "${OOB_DOMAIN}" ] && aws cognito-idp delete-user-pool-domain --region "${REGION}" \
-      --domain "${OOB_DOMAIN}" --user-pool-id "${pid}" >/dev/null 2>&1 && wait_pool_domain_gone "${pid}"
+    # The domain as the POOL reports it, so one a killed earlier run left is
+    # found too (OOB_DOMAIN is empty then).
+    local domain
+    domain="$(pool_field "${pid}" Domain 2>/dev/null)"
+    [ "${domain}" = "None" ] && domain=""
+    [ -n "${domain:-${OOB_DOMAIN}}" ] && aws cognito-idp delete-user-pool-domain --region "${REGION}" \
+      --domain "${domain:-${OOB_DOMAIN}}" --user-pool-id "${pid}" >/dev/null 2>&1 && wait_pool_domain_gone "${pid}"
     # The guard off with the verification settings kept: a write omitting
     # AutoVerifiedAttributes is refused on this pool.
     aws cognito-idp update-user-pool --region "${REGION}" --user-pool-id "${pid}" \
@@ -174,8 +179,16 @@ if ! grep -q 'Failed to delete Cognito User Pool' "${DESTROY_LOG}"; then
   tail -40 "${DESTROY_LOG}" >&2
   exit 1
 fi
-# AWS's own refusal text (debug lines under --verbose). The domain refusal
-# proves the flip-off landed; the protection refusal is the pre-fix failure.
+# cdkd's own warn when the flip-off was refused (the pre-fix failure, observed
+# on 0.356.0), then AWS's own refusal texts (debug lines under --verbose,
+# both observed): the domain refusal proves the flip-off landed; the
+# protection refusal ("The user pool cannot be deleted because deletion
+# protection is activated.") is the pre-fix delete failure.
+if grep -q 'DeletionProtection was left on' "${DESTROY_LOG}"; then
+  echo "FAIL: cdkd could not turn DeletionProtection off (issue #6548)" >&2
+  grep -E 'UpdateUserPool|DeletionProtection' "${DESTROY_LOG}" >&2 || true
+  exit 1
+fi
 if grep -q 'deletion protection is activated' "${DESTROY_LOG}"; then
   echo "FAIL: DeleteUserPool was refused for deletion protection: the flip-off did not land (issue #6548)" >&2
   grep -E 'UpdateUserPool|DeletionProtection' "${DESTROY_LOG}" >&2 || true

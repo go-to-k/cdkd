@@ -104,8 +104,11 @@ function script(opts: {
   refuseUnused?: boolean;
   refuseSes?: boolean;
   echoRefusal?: string;
+  /** Fails the re-send WITHOUT the member (DeletionProtection value -> error), once per value. */
+  resendError?: { INACTIVE?: Error; ACTIVE?: Error };
   dels?: Array<Error | undefined>;
 }): void {
+  const resendError = { ...opts.resendError };
   let dp: 'ACTIVE' | 'INACTIVE' = 'ACTIVE';
   let deleted = 0;
   const dels = opts.dels ?? [undefined];
@@ -117,6 +120,12 @@ function script(opts: {
       const acuc = input['AdminCreateUserConfig'] as Record<string, unknown> | undefined;
       if ((opts.refuseUnused ?? true) && acuc && 'UnusedAccountValidityDays' in acuc) {
         throw named('InvalidParameterException', UNUSED_REFUSAL);
+      }
+      const want = input['DeletionProtection'] as 'ACTIVE' | 'INACTIVE';
+      if (acuc && !('UnusedAccountValidityDays' in acuc) && resendError[want]) {
+        const err = resendError[want]!;
+        delete resendError[want];
+        throw err;
       }
       const bare = Object.keys(input).length <= 2;
       if (!bare && opts.echoRefusal) throw named('InvalidParameterException', opts.echoRefusal);
@@ -226,6 +235,38 @@ describe('CognitoUserPoolProvider.delete --remove-protection on a pool that refu
     expect(reEnable[1]).toMatchObject({ LambdaConfig: { PreAuthentication: TRIGGER } });
     // No bare (DeletionProtection-only) write went out either way.
     expect(sent.every((u) => Object.keys(u).length > 2)).toBe(true);
+  });
+
+  it('a re-send with NO answer takes the existing no-answer arm: no bare write, and the re-enable still writes the guard back', async () => {
+    const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    script({
+      resendError: { INACTIVE: timeout },
+      dels: [named('InvalidParameterException', 'User pool cannot be deleted. It has a domain configured that should be deleted first.')],
+    });
+    await expect(del()).rejects.toThrow();
+    const sent = updates();
+    // Flip-off: the echo, its member-less re-send (no answer). No bare write.
+    // Re-enable: the echo, its member-less re-send.
+    expect(sent.map((u) => [Object.keys(u).length > 2, u['DeletionProtection']])).toEqual([
+      [true, 'INACTIVE'],
+      [true, 'INACTIVE'],
+      [true, 'ACTIVE'],
+      [true, 'ACTIVE'],
+    ]);
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('failed without an answer from AWS'));
+    expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('was left on'));
+  });
+
+  it('a re-enable re-send with NO answer is reported, never a bare write', async () => {
+    const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+    script({
+      resendError: { ACTIVE: timeout },
+      dels: [named('InvalidParameterException', 'User pool cannot be deleted. It has a domain configured that should be deleted first.')],
+    });
+    await expect(del()).rejects.toThrow();
+    const sent = updates();
+    expect(sent.every((u) => Object.keys(u).length > 2)).toBe(true);
+    expect(sent.filter((u) => u['DeletionProtection'] === 'ACTIVE')).toHaveLength(2);
   });
 
   it('a pool that accepts the member is echoed once, with it', async () => {
