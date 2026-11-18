@@ -1269,6 +1269,22 @@ describe('Route53Provider RecordSetGroup (round 3: refused before applying)', ()
     expect(changeInputs()).toHaveLength(1);
   });
 
+  // An SDK re-send's "already exists" may answer the batch its first attempt
+  // committed: neither marked nor read as a client refusal.
+  it('does not mark a client refusal returned after an SDK retry and sets possiblyLanded', async () => {
+    route({
+      change: () => {
+        const e = exists();
+        (e as unknown as { $metadata: { attempts: number } }).$metadata = { attempts: 2 };
+        throw e;
+      },
+    });
+    const { error, lookup } = await runAdd('none');
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(isRefusedBeforeApplying(error, LOGICAL)).toBe(false);
+    expect(lookup.possiblyLanded()).toBe(true);
+  });
+
   it.each([
     ['$fault server', () => withFault(awsError('InternalFailure', 'boom'), 'server')],
     ['a plain Error', () => new Error('socket hang up')],

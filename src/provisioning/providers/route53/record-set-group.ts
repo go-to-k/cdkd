@@ -490,7 +490,7 @@ async function applyRecordSetGroupUpdate(
     // batch it applied; the engine's retry of this dispatch reads that. A
     // failure before the send (a lookup) applied nothing.
     if (progress.sent) {
-      if (error instanceof Error && (error as { $fault?: unknown }).$fault === 'client') {
+      if (isFirstAttemptClientRefusal(error)) {
         progress.clientRefused = true;
       } else {
         getPriorAttempts(logicalId)?.notePossiblyLanded();
@@ -572,6 +572,21 @@ function sameRecordSet(a: ResourceRecordSet, b: ResourceRecordSet): boolean {
       })
     );
   return spell(a) === spell(b);
+}
+
+/**
+ * A send failure Route 53 authored as a client refusal on the SDK's FIRST
+ * attempt — the only case proving the batch applied nothing. A refusal after
+ * the SDK re-sent (a 5xx or a lost response replayed) may be answering a
+ * batch the earlier attempt already committed: "already exists" is then this
+ * group's own record.
+ */
+function isFirstAttemptClientRefusal(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const e = error as { $fault?: unknown; $metadata?: { attempts?: unknown } };
+  if (e.$fault !== 'client') return false;
+  const attempts = e.$metadata?.attempts;
+  return typeof attempts !== 'number' || attempts <= 1;
 }
 
 /** A Route 53 refusal that the record a DELETE names does not exist. */
