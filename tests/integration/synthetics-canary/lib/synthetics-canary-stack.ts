@@ -61,6 +61,9 @@ export class SyntheticsCanaryStack extends cdk.Stack {
 
     const scheduleExpr =
       process.env.CDKD_TEST_UPDATE === 'true' ? 'rate(1 hour)' : 'rate(30 minutes)';
+    // go-to-k/cdkd#6553: the UPDATE also changes the script, a whole-object op
+    // on `Code`, which must carry the live read-only `Code.SourceLocationArn`.
+    const scriptResult = process.env.CDKD_TEST_UPDATE === 'true' ? 'ok-v2' : 'ok';
 
     new synthetics.CfnCanary(this, 'Canary', {
       // Canary names are lowercase, max 21 chars — the stack name won't fit.
@@ -72,7 +75,8 @@ export class SyntheticsCanaryStack extends cdk.Stack {
       code: {
         handler: 'index.handler',
         script:
-          "const synthetics = require('Synthetics');\nexports.handler = async () => { return 'ok'; };\n",
+          "const synthetics = require('Synthetics');\n" +
+          `exports.handler = async () => { return '${scriptResult}'; };\n`,
       },
       schedule: { expression: scheduleExpr },
       runConfig: { timeoutInSeconds: 60 },

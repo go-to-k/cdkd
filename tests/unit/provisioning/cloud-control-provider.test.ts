@@ -3556,3 +3556,121 @@ describe('CloudControlProvider update: an AWS-defaulted nested create-only membe
     ]);
   });
 });
+
+describe('CloudControlProvider update: a nested read-only member (go-to-k/cdkd#6553)', () => {
+  // A canary script change is sent as a whole-object op on `Code`; Cloud
+  // Control applies it to the model it reads, where `Code` also carries the
+  // read-only `SourceLocationArn`. Dropping it reads as a read-only change
+  // (`readOnlyProperties [/properties/Code/SourceLocationArn] cannot be
+  // updated`), so the live value must ride along in the op.
+  let provider: CloudControlProvider;
+
+  const TYPE = 'AWS::Synthetics::Canary';
+  const LAYER = 'arn:aws:lambda:us-east-1:123456789012:layer:cwsyn-can-1:1';
+  // The live schema's shape: `Script` is write-only, `SourceLocationArn` read-only.
+  const SCHEMA = JSON.stringify({
+    readOnlyProperties: ['/properties/Id', '/properties/State', '/properties/Code/SourceLocationArn'],
+    writeOnlyProperties: ['/properties/Code/Script'],
+  });
+  let liveModel: Record<string, unknown> | undefined;
+
+  function updatePatches(): Array<Array<{ op: string; path: string; value?: unknown }>> {
+    return mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'UpdateResourceCommand')
+      .map(
+        (c) =>
+          JSON.parse((c[0] as { input: { PatchDocument: string } }).input.PatchDocument) as Array<{
+            op: string;
+            path: string;
+            value?: unknown;
+          }>
+      );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
+    clearReadOnlyPropertiesCache();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudFormationSend.mockResolvedValue({ Schema: SCHEMA });
+    liveModel = {
+      Name: 'can',
+      Id: 'id-1',
+      State: 'RUNNING',
+      Code: { Handler: 'index.handler', SourceLocationArn: LAYER },
+    };
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'can' } });
+      }
+      if (name === 'GetResourceCommand') {
+        return Promise.resolve(
+          liveModel === undefined
+            ? {}
+            : { ResourceDescription: { Identifier: 'can', Properties: JSON.stringify(liveModel) } }
+        );
+      }
+      return Promise.resolve({});
+    });
+    provider = new CloudControlProvider();
+  });
+
+  it('carries the live Code.SourceLocationArn into the op writing Code', async () => {
+    await provider.update(
+      'Can',
+      'can',
+      TYPE,
+      { Name: 'can', Code: { Handler: 'index.handler', Script: 'two' } },
+      { Name: 'can', Code: { Handler: 'index.handler', Script: 'one' } }
+    );
+
+    const patches = updatePatches();
+    expect(patches).toHaveLength(1);
+    const codeOps = patches[0]!.filter((op) => op.path === '/Code');
+    expect(codeOps).toHaveLength(1);
+    expect(codeOps[0]!.value).toEqual({
+      Handler: 'index.handler',
+      Script: 'two',
+      SourceLocationArn: LAYER,
+    });
+    // A top-level read-only key is never written by the patch.
+    expect(patches[0]!.some((op) => op.path === '/Id' || op.path === '/State')).toBe(false);
+  });
+
+  it('sends the template object unchanged when the live model has no such member', async () => {
+    liveModel = { Name: 'can', Code: { Handler: 'index.handler' } };
+
+    await provider.update(
+      'Can',
+      'can',
+      TYPE,
+      { Name: 'can', Code: { Handler: 'index.handler', Script: 'two' } },
+      { Name: 'can', Code: { Handler: 'index.handler', Script: 'one' } }
+    );
+
+    const codeOps = updatePatches()[0]!.filter((op) => op.path === '/Code');
+    expect(codeOps.map((op) => op.value)).toEqual([{ Handler: 'index.handler', Script: 'two' }]);
+  });
+
+  it('carries nothing when the read-only schema cannot be resolved', async () => {
+    mockCloudFormationSend.mockRejectedValue(
+      Object.assign(new Error('AccessDenied'), { $metadata: { httpStatusCode: 403 } })
+    );
+
+    await provider.update(
+      'Can',
+      'can',
+      TYPE,
+      { Name: 'can', Code: { Handler: 'index.handler', Script: 'two' } },
+      { Name: 'can', Code: { Handler: 'index.handler', Script: 'one' } }
+    );
+
+    const codeOps = updatePatches()[0]!.filter((op) => op.path === '/Code');
+    expect(codeOps.map((op) => op.value)).toEqual([{ Handler: 'index.handler', Script: 'two' }]);
+  });
+});

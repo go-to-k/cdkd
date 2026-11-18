@@ -12,6 +12,11 @@
  * CloudFormation applies the same template change in place: its handler
  * compares the template models, where the member is absent on both sides.
  *
+ * A nested READ-ONLY member is refused the same way (go-to-k/cdkd#6553:
+ * `readOnlyProperties [/properties/Code/SourceLocationArn] cannot be updated`
+ * on every canary script change), so the caller passes those paths too; the
+ * functions below take any path list and name create-only for #6294's case.
+ *
  * Only create-only members the DESIRED object omits are carried, and only
  * from the live model: a declared one is the template's (a change there is a
  * replacement the engine decided before this runs), and nothing else under

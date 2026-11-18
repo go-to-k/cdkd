@@ -24,7 +24,10 @@ import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
 } from '../write-only-properties.js';
-import { getTopLevelDeployAttributeNames } from '../read-only-properties.js';
+import {
+  getReadOnlyPropertyPaths,
+  getTopLevelDeployAttributeNames,
+} from '../read-only-properties.js';
 import { getCreateOnlyPropertyPaths } from '../create-only-properties.js';
 import {
   nestedCreateOnlyGaps,
@@ -241,8 +244,18 @@ export async function updateInIdLogScope(
     // create-only members Cloud Control reads; see the helper. The schema
     // lookup is cached (the diff already ran it) and runs only when an op
     // writes an object; the read only when a gap exists.
+    // go-to-k/cdkd#6553: a nested READ-ONLY member (a canary's
+    // `Code.SourceLocationArn`) is refused the same way, so it is carried
+    // too. Its lookup is the one `attributeNamesLookup` already started.
     if (writesTopLevelObject(patch)) {
-      const gaps = nestedCreateOnlyGaps(patch, await getCreateOnlyPropertyPaths(resourceType));
+      const [createOnlyPaths, readOnlyPaths] = await Promise.all([
+        getCreateOnlyPropertyPaths(resourceType),
+        getReadOnlyPropertyPaths(resourceType),
+      ]);
+      const gaps = nestedCreateOnlyGaps(patch, [
+        ...createOnlyPaths,
+        ...(readOnlyPaths ?? []).map((path) => path.split('.')),
+      ]);
       if (gaps.length > 0) {
         const liveModel = await this.readCcResourceModel(resourceType, physicalId, idLog);
         if (liveModel !== undefined) {

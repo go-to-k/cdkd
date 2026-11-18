@@ -5,7 +5,9 @@
 # routinely fails the first attempt — without the cleanup every retry dies
 # with AlreadyExists and the ERROR canary orphans. Deploy succeeding at all
 # exercises the fix whenever the race fires (it did on both /hunt-bugs runs).
-# Phases: deploy -> assert canary -> UPDATE (schedule) -> destroy -> orphan sweep.
+# Phases: deploy -> assert canary -> UPDATE (schedule + script) -> destroy -> orphan sweep.
+# The script change is a whole-object op on Code, which must carry the live
+# read-only Code.SourceLocationArn or Cloud Control refuses it (#6553).
 
 set -euo pipefail
 
@@ -102,14 +104,33 @@ EXPR=$(aws synthetics get-canary --name "${CANARY}" --region "${REGION}" \
   --query 'Canary.Schedule.Expression' --output text)
 [ "${EXPR}" = "rate(30 minutes)" ] || { echo "FAIL: base schedule is '${EXPR}'" >&2; exit 1; }
 echo "    OK: canary reached AWS (State: ${STATE}, Schedule: ${EXPR})"
+BASE_LAYER=$(aws synthetics get-canary --name "${CANARY}" --region "${REGION}" \
+  --query 'Canary.Code.SourceLocationArn' --output text)
+[ -n "${BASE_LAYER}" ] && [ "${BASE_LAYER}" != "None" ] \
+  || { echo "FAIL: base canary has no Code.SourceLocationArn" >&2; exit 1; }
 
-echo "==> UPDATE (schedule -> rate(1 hour))"
+echo "==> UPDATE (schedule -> rate(1 hour), script -> 'ok-v2')"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 EXPR=$(aws synthetics get-canary --name "${CANARY}" --region "${REGION}" \
   --query 'Canary.Schedule.Expression' --output text)
 [ "${EXPR}" = "rate(1 hour)" ] || { echo "FAIL: updated schedule is '${EXPR}'" >&2; exit 1; }
 echo "    OK: in-place UPDATE reached AWS (Schedule: ${EXPR})"
+NEW_LAYER=$(aws synthetics get-canary --name "${CANARY}" --region "${REGION}" \
+  --query 'Canary.Code.SourceLocationArn' --output text)
+[ "${NEW_LAYER}" != "${BASE_LAYER}" ] \
+  || { echo "FAIL: script change published no new code layer (${NEW_LAYER})" >&2; exit 1; }
+LAYER_URL=$(aws lambda get-layer-version-by-arn --arn "${NEW_LAYER}" --region "${REGION}" \
+  --query 'Content.Location' --output text)
+LAYER_ZIP="$(mktemp -d)/layer.zip"
+curl -fsS -o "${LAYER_ZIP}" "${LAYER_URL}"
+if ! unzip -p "${LAYER_ZIP}" | grep -q "ok-v2"; then
+  rm -rf "$(dirname "${LAYER_ZIP}")"
+  echo "FAIL: the canary's new code layer does not carry the updated script" >&2
+  exit 1
+fi
+rm -rf "$(dirname "${LAYER_ZIP}")"
+echo "    OK: script UPDATE reached AWS (code layer ${BASE_LAYER##*:} -> ${NEW_LAYER##*:})"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
