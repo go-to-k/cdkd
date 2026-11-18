@@ -26,6 +26,8 @@ import {
   EMAIL_RESET_BEFORE_DELETE_CLAUSE,
   sentWithoutEmail,
   isAmbiguousWriteFailure,
+  echoesUnusedAccountValidityDays,
+  isUnusedAccountValidityRefusal,
 } from './shared.js';
 import { maskerOrIdentity, type MaskerFn } from '../../masked-retry-logger.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -432,10 +434,38 @@ export async function sendEchoedDeletionProtection(
 ): Promise<'echoed' | 'without-email'> {
   // The class is AWS-authored text too, so the warns below mask it.
   const mask = maskerOrIdentity(opts.mask);
+  // Each write goes out once with the deprecated `UnusedAccountValidityDays`
+  // and, only when AWS refuses that member, once more without it (#6548). The
+  // re-send's own failure is what the arms below see.
+  let withoutUnusedAccountValidityDays = false;
+  const echo = async (withoutDeveloperEmail: boolean): Promise<void> => {
+    const build = (): UpdateUserPoolCommand =>
+      new UpdateUserPoolCommand(
+        userPoolDeletionProtectionUpdate(physicalId, pool, value, {
+          withoutDeveloperEmail,
+          withoutUnusedAccountValidityDays,
+        })
+      );
+    try {
+      await this.getClient().send(build());
+    } catch (error) {
+      if (
+        withoutUnusedAccountValidityDays ||
+        !echoesUnusedAccountValidityDays(pool) ||
+        !isUnusedAccountValidityRefusal(error)
+      ) {
+        throw error;
+      }
+      this.logger.debug(
+        safeMsg`UpdateUserPool refused the deprecated UnusedAccountValidityDays of ${mask(physicalId)}; ` +
+          safeMsg`re-sending without it (the pool's PasswordPolicy holds the value)`
+      );
+      withoutUnusedAccountValidityDays = true;
+      await this.getClient().send(build());
+    }
+  };
   try {
-    await this.getClient().send(
-      new UpdateUserPoolCommand(userPoolDeletionProtectionUpdate(physicalId, pool, value))
-    );
+    await echo(false);
     return 'echoed';
   } catch (echoError) {
     if (!echoesDeveloperEmail(pool) || !isRefusedEcho(echoError)) throw echoError;
@@ -447,13 +477,7 @@ export async function sendEchoedDeletionProtection(
       safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${mask(describeAwsFailure(echoError).summary)}`
     );
     try {
-      await this.getClient().send(
-        new UpdateUserPoolCommand(
-          userPoolDeletionProtectionUpdate(physicalId, pool, value, {
-            withoutDeveloperEmail: true,
-          })
-        )
-      );
+      await echo(true);
     } catch (resendError) {
       // The write that failed OMITTED the SES EmailConfiguration: if it
       // landed after all, that member was reset.
