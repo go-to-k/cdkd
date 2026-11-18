@@ -12,6 +12,13 @@
  * CloudFormation applies the same template change in place: its handler
  * compares the template models, where the member is absent on both sides.
  *
+ * A nested READ-ONLY member is refused the same way (go-to-k/cdkd#6553:
+ * `readOnlyProperties [/properties/Code/SourceLocationArn] cannot be updated`
+ * on every canary script change), so those are carried too
+ * ({@link nestedReadOnlyGaps}). A template cannot declare a read-only member,
+ * so the live one is the only value it can have; only a leaf whose parent
+ * object the op still writes is carried.
+ *
  * Only create-only members the DESIRED object omits are carried, and only
  * from the live model: a declared one is the template's (a change there is a
  * replacement the engine decided before this runs), and nothing else under
@@ -80,6 +87,32 @@ export function nestedCreateOnlyGaps(
     for (const path of createOnlyPaths) {
       if (path.length < 2 || path[0] !== key) continue;
       if (omitsThroughObjects(op.value, path.slice(1))) gaps.push([...path]);
+    }
+  }
+  return gaps;
+}
+
+/**
+ * Each nested READ-ONLY path (go-to-k/cdkd#6553) whose LEAF alone an `add` /
+ * `replace` op of `patch` omits: every object above the leaf is present in
+ * the op's value. Unlike {@link nestedCreateOnlyGaps}, an absent object above
+ * the leaf is never listed: the template removed that block, and carrying the
+ * leaf would write it back holding only an AWS-owned value.
+ */
+export function nestedReadOnlyGaps(
+  patch: readonly JsonPatchOp[],
+  readOnlyPaths: ReadonlyArray<readonly string[]>
+): string[][] {
+  const gaps: string[][] = [];
+  for (const op of patch) {
+    const key = topLevelKeyOf(op);
+    if (key === undefined || !isPlainObject(op.value)) continue;
+    for (const path of readOnlyPaths) {
+      if (path.length < 2 || path[0] !== key) continue;
+      const parent = path.length === 2 ? op.value : valueAt(op.value, path.slice(1, -1));
+      if (isPlainObject(parent) && !Object.hasOwn(parent, path[path.length - 1]!)) {
+        gaps.push([...path]);
+      }
     }
   }
   return gaps;

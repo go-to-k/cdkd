@@ -2953,6 +2953,7 @@
     "--default-action",
     "--delete",
     "--delete-automated-backups",
+    "--delete-lambda",
     "--deletion-protection",
     "--deletion-protection-check",
     "--deletion-protection-enabled",
