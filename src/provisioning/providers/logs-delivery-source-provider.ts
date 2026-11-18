@@ -338,7 +338,7 @@ export class LogsDeliverySourceProvider implements ResourceProvider {
       new ProvisioningError(
         `${WHAT} ${logicalIdShown(logicalId)} cannot be created: a delivery source with its Name ` +
           'already exists in this account and region. Delete it, choose another Name, or adopt it ' +
-          'with `cdkd import`.',
+          'into this stack with an import.',
         resourceType,
         logicalId
       )
