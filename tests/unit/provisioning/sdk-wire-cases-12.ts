@@ -583,11 +583,6 @@ const CLUSTER_CASE: TypeCase = {
   physicalId: CLUSTER_NAME,
   createOnly: createOnlyOf('AWS::ECS::Cluster'),
   arm: armCluster,
-  wholeFromNext: {
-    keys: (key) => key === 'CapacityProviders' || key === 'DefaultCapacityProviderStrategy',
-    reason:
-      'PutClusterCapacityProviders replaces BOTH lists from the desired bag whenever either is declared, a removed one as `[]` (`updateCluster` in ecs/cluster-task-definition.ts): the previous side is never read',
-  },
   exempt: {},
   targets: ECS_TAG_TARGETS,
   bags: [

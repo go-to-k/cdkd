@@ -5194,6 +5194,7 @@
         "cc-to-sdk-reroute-ecs-service",
         "drift-revert",
         "ecs-bluegreen",
+        "ecs-cluster-capacity-settings",
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-gateway-connectors",
@@ -5218,6 +5219,10 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "ecs-cluster-capacity-settings": [
+          "l1",
+          "literal"
         ],
         "ecs-fargate": [
           "l2"

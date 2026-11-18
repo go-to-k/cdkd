@@ -39,6 +39,12 @@ import {
   convertTags,
   markNotGoneOnNotFoundClass,
 } from './shared.js';
+import {
+  capacityProvidersChanged,
+  heldCapacityProviders,
+  sendWhenAttachmentsSettle,
+  waitForOwnCapacityProviderPut,
+} from './cluster-attachments.js';
 
 // ─── AWS::ECS::Cluster ──────────────────────────────────────────
 
@@ -138,21 +144,38 @@ export async function updateCluster(
   const client = this.getClient();
 
   try {
-    // Update capacity providers if specified
-    if (properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']) {
-      await client.send(
-        new PutClusterCapacityProvidersCommand({
-          cluster: physicalId,
-          capacityProviders: (properties['CapacityProviders'] as string[]) || [],
-          defaultCapacityProviderStrategy:
-            this.convertCapacityProviderStrategy(
-              properties['DefaultCapacityProviderStrategy'] as
-                | Array<Record<string, unknown>>
-                | undefined
-            ) || [],
-        })
+    // go-to-k/cdkd#6562: Put only when the providers differ from the previous
+    // side — an unchanged Put still leaves the attachments UPDATE_IN_PROGRESS.
+    // Declaring neither clears both when the previous side held either, as
+    // CloudFormation does (measured: both lists read back []); the rollback
+    // replay's desired side is the old record, so it clears what a failed
+    // forward update added.
+    const declaresCapacityProviders = Boolean(
+      properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']
+    );
+    const sentCapacityProviders = declaresCapacityProviders
+      ? capacityProvidersChanged(properties, previousProperties)
+      : heldCapacityProviders(previousProperties);
+    if (sentCapacityProviders) {
+      const putResponse = await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
+        client.send(
+          new PutClusterCapacityProvidersCommand({
+            cluster: physicalId,
+            capacityProviders: (properties['CapacityProviders'] as string[]) || [],
+            defaultCapacityProviderStrategy:
+              this.convertCapacityProviderStrategy(
+                properties['DefaultCapacityProviderStrategy'] as
+                  | Array<Record<string, unknown>>
+                  | undefined
+              ) || [],
+          })
+        )
       );
       log.debug(`Updated capacity providers for ECS cluster ${shownCluster}`);
+      // After EVERY Put, not only before an UpdateCluster: a same-deploy
+      // dependent (a Service on a just-added provider) must not meet a
+      // cluster that is still attaching. A failed attachment throws.
+      await waitForOwnCapacityProviderPut(client, logicalId, physicalId, log, putResponse?.cluster);
     }
 
     // Apply ClusterSettings / Configuration / ServiceConnectDefaults via
@@ -195,17 +218,19 @@ export async function updateCluster(
           : { namespace: '' }
         : undefined;
 
-      await client.send(
-        new UpdateClusterCommand({
-          cluster: physicalId,
-          ...(settingsChanged && { settings: settingsInput }),
-          ...(configChanged && {
-            configuration: this.convertClusterConfiguration(
-              properties['Configuration'] as Record<string, unknown> | undefined
-            ),
-          }),
-          ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
-        })
+      await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
+        client.send(
+          new UpdateClusterCommand({
+            cluster: physicalId,
+            ...(settingsChanged && { settings: settingsInput }),
+            ...(configChanged && {
+              configuration: this.convertClusterConfiguration(
+                properties['Configuration'] as Record<string, unknown> | undefined
+              ),
+            }),
+            ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
+          })
+        )
       );
       log.debug(
         `Updated ECS cluster ${shownCluster} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`

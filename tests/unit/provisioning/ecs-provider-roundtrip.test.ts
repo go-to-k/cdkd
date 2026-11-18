@@ -90,11 +90,8 @@ describe('ECSProvider read-update round-trip', () => {
 
   it('Cluster: no-drift round-trip is a logical no-op (no PutClusterCapacityProviders, no Tag* mutation)', async () => {
     // Diff-based providers must produce zero AWS-side mutations when
-    // state == AWS. UpdateCluster uses a truthy gate
-    // `if (CapacityProviders || DefaultCapacityProviderStrategy)`; an
-    // empty-array placeholder is truthy and would call AWS even though
-    // nothing changed. State that holds the same values must stay
-    // mutation-free on round-trip.
+    // state == AWS: PutClusterCapacityProviders is sent only when the
+    // providers or the default strategy changed (go-to-k/cdkd#6562).
     const observed = {
       ClusterName: CLUSTER_NAME,
       CapacityProviders: ['FARGATE'],
@@ -105,8 +102,7 @@ describe('ECSProvider read-update round-trip', () => {
       Tags: [{ Key: 'env', Value: 'prod' }],
     };
 
-    // Mock: PutClusterCapacityProviders → DescribeClusters (for ARN)
-    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
+    // Mock: DescribeClusters (for ARN) — no Put: the providers are unchanged (#6562).
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
     });
@@ -118,6 +114,7 @@ describe('ECSProvider read-update round-trip', () => {
       (c) => c[0] instanceof TagResourceCommand || c[0] instanceof UntagResourceCommand
     );
     expect(tagSends).toHaveLength(0);
+    expect(mutatingSends()).toHaveLength(0);
   });
 
   it('Cluster: ClusterSettings change fires UpdateClusterCommand with new settings', async () => {
@@ -138,8 +135,7 @@ describe('ECSProvider read-update round-trip', () => {
       ClusterSettings: [{ Name: 'containerInsights', Value: 'enhanced' }],
     };
 
-    // Mock: PutClusterCapacityProviders → UpdateCluster → DescribeClusters.
-    mockSend.mockResolvedValueOnce({});
+    // Mock: UpdateCluster → DescribeClusters (no Put: providers unchanged, #6562).
     mockSend.mockResolvedValueOnce({});
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
@@ -186,7 +182,6 @@ describe('ECSProvider read-update round-trip', () => {
       },
     };
 
-    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders (truthy-gated, fires on empty arrays)
     mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
@@ -222,7 +217,6 @@ describe('ECSProvider read-update round-trip', () => {
       },
     };
 
-    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
     mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
@@ -268,7 +262,6 @@ describe('ECSProvider read-update round-trip', () => {
       Tags: [],
     };
 
-    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
     mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
@@ -298,7 +291,6 @@ describe('ECSProvider read-update round-trip', () => {
       ClusterSettings: [{ Name: 'containerInsights', Value: 'enhanced' }],
     };
 
-    mockSend.mockResolvedValueOnce({}); // PutClusterCapacityProviders
     mockSend.mockResolvedValueOnce({}); // UpdateClusterCommand
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
@@ -320,8 +312,7 @@ describe('ECSProvider read-update round-trip', () => {
   it('Cluster: no Settings/Configuration diff → no UpdateClusterCommand', async () => {
     // No-diff no-op guard for the new code path. State == AWS for
     // ClusterSettings + Configuration must NOT issue UpdateClusterCommand
-    // even when CapacityProviders is truthy-gated (which still does fire
-    // PutClusterCapacityProviders — separate concern).
+    // and, since go-to-k/cdkd#6562, no PutClusterCapacityProviders either.
     const observed = {
       ClusterName: CLUSTER_NAME,
       CapacityProviders: ['FARGATE'],
@@ -335,7 +326,6 @@ describe('ECSProvider read-update round-trip', () => {
       Tags: [],
     };
 
-    mockSend.mockResolvedValueOnce({}); // Put
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN, clusterName: CLUSTER_NAME }],
     });
@@ -753,9 +743,8 @@ describe('ECSProvider read-update round-trip', () => {
 
   it('Cluster no-drift round-trip: zero mutating SDK calls', async () => {
     // Stronger structural guard: on a no-drift round-trip, the only
-    // SDK calls allowed are reads. Tag* must be silent; the truthy-
-    // gated PutClusterCapacityProviders is allowed (it's a no-op on
-    // AWS when values match) but Tag mutations are not.
+    // SDK calls allowed are reads. Since go-to-k/cdkd#6562 that includes
+    // PutClusterCapacityProviders: unchanged providers send none.
     const observed = {
       ClusterName: CLUSTER_NAME,
       CapacityProviders: [],
@@ -764,9 +753,6 @@ describe('ECSProvider read-update round-trip', () => {
       Tags: [{ Key: 'env', Value: 'prod' }],
     };
 
-    // Mock: PutClusterCapacityProviders (truthy-gate guard does fire
-    // because both arrays are truthy even when empty) → Describe.
-    mockSend.mockResolvedValueOnce({}); // Put
     mockSend.mockResolvedValueOnce({
       clusters: [{ clusterArn: CLUSTER_ARN }],
     });
@@ -779,10 +765,9 @@ describe('ECSProvider read-update round-trip', () => {
     );
     expect(tagMutations).toHaveLength(0);
 
-    // Sanity: only Put + Describe were issued.
-    expect(mockSend.mock.calls.length).toBe(2);
-    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(PutClusterCapacityProvidersCommand);
-    expect(mockSend.mock.calls[1]![0]).toBeInstanceOf(DescribeClustersCommand);
+    // Sanity: only the ARN Describe was issued.
+    expect(mockSend.mock.calls.length).toBe(1);
+    expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(DescribeClustersCommand);
   });
 
   it('Service no-drift round-trip: no Tag* mutation, single UpdateService + Describe', async () => {
