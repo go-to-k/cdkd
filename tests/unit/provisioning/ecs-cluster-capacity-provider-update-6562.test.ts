@@ -23,6 +23,35 @@ vi.mock('@aws-sdk/client-ecs', async () => {
   };
 });
 
+/**
+ * Every interrupt watch the provider starts, until it is disposed: a watch
+ * left undisposed stays live for the rest of the command, so each test
+ * asserts the set is empty afterwards. A SIGINT listener count cannot pin
+ * this — the shared listener outlives every watch by design.
+ */
+const { openWatches } = vi.hoisted(() => ({ openWatches: new Set<object>() }));
+
+vi.mock('../../../src/provisioning/interrupt-watch.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/provisioning/interrupt-watch.js')>(
+    '../../../src/provisioning/interrupt-watch.js'
+  );
+  return {
+    ...actual,
+    startInterruptWatch: (what: string) => {
+      const watch = actual.startInterruptWatch(what);
+      const handle = {};
+      openWatches.add(handle);
+      return {
+        ...watch,
+        dispose: () => {
+          openWatches.delete(handle);
+          watch.dispose();
+        },
+      };
+    },
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
@@ -140,6 +169,11 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
   afterEach(() => {
     clusterAttachmentsWait.sleep = realSleep;
     clusterAttachmentsWait.now = realNow;
+    // Every wait disposed its interrupt watch, on every exit path. Cleared
+    // before asserting, so one leak fails only the test that leaked it.
+    const leaked = openWatches.size;
+    openWatches.clear();
+    expect(leaked).toBe(0);
   });
 
   it('sends no PutClusterCapacityProviders when only ClusterSettings changed', async () => {
@@ -316,6 +350,7 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
 
     expect(names()).toContain('UpdateClusterCommand');
     expect(sleeps).toEqual([1_000, 1_000, 1_000]);
+    expect(openWatches.size).toBe(0);
   });
 
   it('fails when a Put without a status in its response is then seen in progress and ends UPDATE_FAILED', async () => {
