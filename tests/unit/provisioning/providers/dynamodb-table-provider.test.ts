@@ -233,7 +233,6 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
     const ttl = (attr: string, enabled = true) => ({ AttributeName: attr, Enabled: enabled });
 
     it('throws an actionable error when the TTL AttributeName changes between two enabled specs', async () => {
-      mockSend.mockResolvedValueOnce(activeTable()); // DescribeTable
 
       await expect(
         provider.update(
@@ -245,12 +244,13 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
         )
       ).rejects.toThrow(/cannot change the TimeToLive AttributeName from 'oldTtl' to 'newTtl'/);
 
-      // Must NOT have attempted the doomed UpdateTimeToLive call.
+      // Must NOT have attempted the doomed UpdateTimeToLive call -- nor any
+      // other: go-to-k/cdkd#6560 refuses it pre-flight, before the DescribeTable.
       expect(commandSent(UpdateTimeToLiveCommand)).toBe(false);
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('does not double-wrap the actionable error behind "Failed to update"', async () => {
-      mockSend.mockResolvedValueOnce(activeTable()); // DescribeTable
 
       const err = await provider
         .update(

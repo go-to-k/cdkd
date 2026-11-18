@@ -187,25 +187,6 @@ export async function update(
     // (or cleared) stream ARN rather than the pre-update value.
     let latestStreamArn = table?.LatestStreamArn;
 
-    // Apply tag diff if changed. DynamoDB's TagResource takes
-    // [{ Key, Value }] arrays; UntagResource takes a TagKeys list.
-    if (table?.TableArn) {
-      await this.applyTagDiff(
-        table.TableArn,
-        resourceType,
-        logicalId,
-        previousProperties['Tags'],
-        properties['Tags'],
-        {
-          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
-          beforeWrite: () => markUnsettled('Tags'),
-          afterAdded: (keys) => {
-            if (keys.length > 0) context?.markAttempted?.('Tags', keys);
-          },
-        }
-      );
-    }
-
     // BillingMode / ProvisionedThroughput — both ride on UpdateTable and are
     // mutable (CFn createOnly = only TableName + ImportSourceSpecification).
     // Fire a SINGLE UpdateTable when either changed so:
@@ -484,9 +465,7 @@ export async function update(
     // rejects the whole request and an otherwise-valid per-index CAPACITY
     // edit sharing that action goes down with it — after the BillingMode flip
     // has already been applied. Refusing here is what keeps the pre-flight
-    // ahead of the mutation. (`applyTagDiff` above has already run, exactly
-    // as it has for the table-level arm since #1553; the ordering that
-    // matters is against the flip and the GSI ops.)
+    // ahead of the mutation; the tag diff runs after it too (#6560).
     //
     // A mid-update warn-and-SKIP was the first shape tried, in PR
     // go-to-k/cdkd#3380, and a review returned a BLOCKER against it: the
@@ -522,6 +501,27 @@ export async function update(
       billingOrThroughputChanged,
       effectiveBillingMode
     );
+    // Apply tag diff if changed — the first mutating call, so AFTER every
+    // refusal above (go-to-k/cdkd#6560): a refused update changes nothing.
+    // DynamoDB's TagResource takes
+    // [{ Key, Value }] arrays; UntagResource takes a TagKeys list.
+    if (table?.TableArn) {
+      await this.applyTagDiff(
+        table.TableArn,
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags'],
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+          afterAdded: (keys) => {
+            if (keys.length > 0) context?.markAttempted?.('Tags', keys);
+          },
+        }
+      );
+    }
+
     // The LIVE index list and the DESIRED index map, hoisted out of the flip
     // block because the pre-flip REMOVAL below needs both before the flip is
     // built, and the flip's per-index capacity block then needs the live list
