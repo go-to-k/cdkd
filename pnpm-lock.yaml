@@ -284,8 +284,8 @@ importers:
         specifier: ^3.1169.0
         version: 3.1169.0
       '@aws-sdk/client-lambda-core':
-        specifier: ^3.1169.0
-        version: 3.1169.0
+        specifier: ^3.1170.0
+        version: 3.1170.0
       '@aws-sdk/client-lambda-microvms':
         specifier: ^3.1169.0
         version: 3.1169.0
@@ -727,8 +727,8 @@ packages:
     resolution: {integrity: sha512-wkki8YnsO6p7xX7bdb2Sg3qUhygHQ/Sks/DzSCRL4t99vI85P/CLsD1imEVIz9ma2N0iMyW5xVqJYTwnayaLHQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-lambda-core@3.1169.0':
-    resolution: {integrity: sha512-V8ct9w/K1VerQjLAaDLTh4Go9qnpCI2+5mw5OiEEFHlYWwjeKbgg6Yl1nnnagoEZpzWR9bOJZUVF8JflstEa9w==}
+  '@aws-sdk/client-lambda-core@3.1170.0':
+    resolution: {integrity: sha512-ij/kfMCNKVNZ9yXckZjKUUZMy9cHojbO63zGivmf1fMPXPUai457ZwmPT2JjrnskaboPqoIteR2xcEWy3k5KnQ==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-lambda-microvms@3.1169.0':
@@ -5466,7 +5466,7 @@ snapshots:
       '@smithy/types': 4.20.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-lambda-core@3.1169.0':
+  '@aws-sdk/client-lambda-core@3.1170.0':
     dependencies:
       '@aws-sdk/core': 3.981.0
       '@aws-sdk/credential-provider-node': 3.972.97

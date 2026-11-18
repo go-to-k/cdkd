@@ -158,6 +158,11 @@ const VPC_EGRESS_REQUIRED: Throw = {
   says: /Configuration\.VpcEgressConfiguration must be an object/,
 };
 
+const ELASTIC_IP_TYPE_REQUIRED: Throw = {
+  why: 'ElasticIpConfiguration.Type is required by the schema; a block without it is refused before any call',
+  says: /ElasticIpConfiguration must be an object with a string Type/,
+};
+
 /** A Tags entry without its Key: refused before any call. */
 const TAG_KEY_THROWS = (directions: string[], count: number): Record<string, Throw> =>
   Object.fromEntries(
@@ -512,12 +517,6 @@ export const CASES_5: TypeCase[] = [
     createOnly: createOnlyOf('AWS::Lambda::NetworkConnector'),
     arm: armActiveConnector,
     exempt: {},
-    nestedExempt: {
-      'Configuration.VpcEgressConfiguration.ElasticIpConfiguration':
-        'refused before any call: the installed @aws-sdk/client-lambda-core does not model the member, so it could not reach the wire (lambda-network-connector-provider.ts, elasticIpRefusalMessage; pinned by lambda-network-connector-provider.test.ts and sdk-pending-members.test.ts; lift tracked in #6567)',
-      'Configuration.VpcEgressConfiguration.ElasticIpConfiguration.Type':
-        'a member of the refused ElasticIpConfiguration block above, refused with it (#6567)',
-    },
     targets: [
       { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
       { path: ['Tags', 1], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },
@@ -533,6 +532,7 @@ export const CASES_5: TypeCase[] = [
               SecurityGroupIds: ['sg-1', 'sg-2'],
               NetworkProtocol: 'IPv4',
               AssociatedComputeResourceTypes: ['MicroVm', 'WebFunction'],
+              ElasticIpConfiguration: { Type: 'ServiceManaged' },
             },
           },
           OperatorRole: `arn:aws:iam::${ACCOUNT}:role/operator`,
@@ -544,6 +544,7 @@ export const CASES_5: TypeCase[] = [
             ALL_DIRECTIONS.flatMap((d) => [
               [`${d}:Configuration`, VPC_EGRESS_REQUIRED],
               [`${d}:Configuration.VpcEgressConfiguration`, VPC_EGRESS_REQUIRED],
+              [`${d}:Configuration.VpcEgressConfiguration.ElasticIpConfiguration.Type`, ELASTIC_IP_TYPE_REQUIRED],
             ])
           ),
           'update-remove:OperatorRole': {

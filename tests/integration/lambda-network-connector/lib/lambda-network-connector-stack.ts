@@ -8,8 +8,9 @@ import type { Construct } from 'constructs';
  * verify.sh looks the subnets and the default security group up and hands them
  * in, so the stack creates no VPC resource a lingering ENI could hold.
  *
- * ELASTIC_IP_PROBE declares Configuration.VpcEgressConfiguration.ElasticIpConfiguration
- * (a refused deploy, #5123).
+ * ELASTIC_IP_TYPE declares Configuration.VpcEgressConfiguration.ElasticIpConfiguration
+ * with that Type (#6567). The operator role carries the EC2 Elastic IP actions
+ * a ServiceManaged connector needs: without them AWS refuses the call (measured).
  *
  * TAG_KEY / TAG_VALUE change the tag (a tags-only update: untag the old key,
  * tag the new one); a different SUBNET_IDS pair is an UpdateNetworkConnector
@@ -51,6 +52,17 @@ export class LambdaNetworkConnectorStack extends cdk.Stack {
                 },
               },
             }),
+            new iam.PolicyStatement({
+              actions: [
+                'ec2:AllocateAddress',
+                'ec2:AssociateAddress',
+                'ec2:DisassociateAddress',
+                'ec2:ReleaseAddress',
+                'ec2:DescribeAddresses',
+                'ec2:CreateTags',
+              ],
+              resources: ['*'],
+            }),
           ],
         }),
       },
@@ -80,9 +92,11 @@ export class LambdaNetworkConnectorStack extends cdk.Stack {
     // release models (#5123). cdkd must REFUSE the deploy before any call;
     // before that it dropped the member and reported success. The value is
     // never sent, so its spelling does not matter (the schema leaves it untyped).
-    const elasticIp = process.env['ELASTIC_IP_PROBE'];
-    if (elasticIp) {
-      connector.addPropertyOverride('Configuration.VpcEgressConfiguration.ElasticIpConfiguration', elasticIp);
+    const elasticIpType = process.env['ELASTIC_IP_TYPE'];
+    if (elasticIpType) {
+      connector.addPropertyOverride('Configuration.VpcEgressConfiguration.ElasticIpConfiguration', {
+        Type: elasticIpType,
+      });
     }
 
     new cdk.CfnOutput(this, 'ConnectorArn', { value: connector.attrArn });

@@ -19,7 +19,6 @@ On this page:
 - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
 - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
 - ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be changed on an existing event source mapping"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-changed-on-an-existing-event-source-mapping)
-- ["Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"](#configuration-vpcegressconfiguration-elasticipconfiguration-cannot-be-sent-by-cdkd-yet)
 
 ## An unsupported resource type
 
@@ -272,26 +271,6 @@ one first, and Lambda refuses a second mapping for the same function, topic and
 brokers: the deploy fails with `the create-first attempt collided` and deletes
 nothing. `--replace` refuses that case too. To move, remove the mapping from the
 template, deploy, then add it back with the new mode.
-
-## "Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"
-
-```text
-AWS::Lambda::NetworkConnector MyConnector: Configuration.VpcEgressConfiguration.ElasticIpConfiguration
-cannot be sent by cdkd yet — the AWS SDK for JavaScript (@aws-sdk/client-lambda-core) does not
-model the member, so it would be dropped from the CreateNetworkConnector request without an error.
-Remove ElasticIpConfiguration from Configuration.VpcEgressConfiguration to deploy the connector without it.
-```
-
-The CloudFormation schema declares `ElasticIpConfiguration` on a Lambda network
-connector's VPC egress configuration, but the version of the Lambda Core SDK
-that cdkd ships does not, so the setting cannot reach AWS yet. cdkd refuses a
-create that declares it, and an
-update that adds or changes it, rather than deploy a connector without the
-setting you asked for.
-
-Remove `ElasticIpConfiguration` from `Configuration.VpcEgressConfiguration`. A
-`cdkd rollback` or `cdkd drift --revert` only warns, because those commands
-re-apply a recorded configuration.
 
 ## Related
 

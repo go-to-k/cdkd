@@ -521,28 +521,21 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     }
   });
 
-  describe('ElasticIpConfiguration, which no client-lambda-core release models (#5123)', () => {
+  describe('ElasticIpConfiguration (#6567)', () => {
     const withEip = (value: unknown) => ({
       ...props,
       Configuration: {
         VpcEgressConfiguration: { ...props.Configuration.VpcEgressConfiguration, ElasticIpConfiguration: value },
       },
     });
-    const REFUSED = /Configuration\.VpcEgressConfiguration\.ElasticIpConfiguration cannot be sent by cdkd yet/;
-
-    it('is refused on a template-path create and a changed update, before any call', async () => {
-      await expect(provider.create('Nc', TYPE, withEip('AUTO'))).rejects.toThrow(REFUSED);
-      await expect(provider.create('Nc', TYPE, withEip('AUTO'))).rejects.toThrow(
-        /dropped from the CreateNetworkConnector request/
-      );
-      await expect(provider.update('Nc', ARN, TYPE, withEip('AUTO'), props)).rejects.toThrow(
-        /dropped from the UpdateNetworkConnector request/
-      );
-      await expect(provider.update('Nc', ARN, TYPE, withEip('B'), withEip('A'))).rejects.toThrow(REFUSED);
-      expect(mockSend).not.toHaveBeenCalled();
-    });
-
-    it('an unchanged value or its removal is not refused; a replay and a drift revert proceed without it', async () => {
+    const sentEip = (klass: { new (...args: never[]): unknown }, index: number): unknown =>
+      (
+        callsOf(klass)[index]!.input['Configuration'] as {
+          VpcEgressConfiguration: Record<string, unknown>;
+        }
+      ).VpcEgressConfiguration['ElasticIpConfiguration'];
+    const MALFORMED = /ElasticIpConfiguration must be an object with a string Type/;
+    const allOk = () =>
       respond(
         new Map<string, unknown[]>([
           ['CreateNetworkConnectorCommand', [{ Arn: ARN }]],
@@ -552,20 +545,81 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
           ['UntagResourceCommand', [{}]],
         ])
       );
-      // Unchanged (a record an older cdkd wrote) and removed: nothing pending.
-      await provider.update('Nc', ARN, TYPE, { ...withEip('A'), Tags: [] }, withEip('A'));
-      await provider.update('Nc', ARN, TYPE, props, withEip('A'));
+
+    it('is sent on create and on a changed update', async () => {
+      allOk();
+      await provider.create('Nc', TYPE, withEip({ Type: 'ServiceManaged' }));
+      expect(sentEip(CreateNetworkConnectorCommand, 0)).toEqual({ Type: 'ServiceManaged' });
+      await provider.update('Nc', ARN, TYPE, withEip({ Type: 'ServiceManaged' }), props);
+      expect(sentEip(UpdateNetworkConnectorCommand, 0)).toEqual({ Type: 'ServiceManaged' });
+      await provider.update('Nc', ARN, TYPE, withEip({ Type: 'None' }), withEip({ Type: 'ServiceManaged' }));
+      expect(sentEip(UpdateNetworkConnectorCommand, 1)).toEqual({ Type: 'None' });
+    });
+
+    it('a template that never declares it sends nothing', async () => {
+      allOk();
+      await provider.create('Nc', TYPE, props);
+      expect(sentEip(CreateNetworkConnectorCommand, 0)).toBeUndefined();
+      await provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props);
+      expect(sentEip(UpdateNetworkConnectorCommand, 0)).toBeUndefined();
+    });
+
+    it('removing it sends Type None, because an update that omits it keeps the live value (measured)', async () => {
+      allOk();
+      await provider.update('Nc', ARN, TYPE, props, withEip({ Type: 'ServiceManaged' }));
+      expect(sentEip(UpdateNetworkConnectorCommand, 0)).toEqual({ Type: 'None' });
+      // An already-None previous value has nothing to reset.
+      await provider.update('Nc', ARN, TYPE, props, withEip({ Type: 'None' }));
+      expect(sentEip(UpdateNetworkConnectorCommand, 1)).toBeUndefined();
+    });
+
+    it('a malformed value is refused on the template path before any call', async () => {
+      await expect(provider.create('Nc', TYPE, withEip('AUTO'))).rejects.toThrow(MALFORMED);
+      await expect(provider.create('Nc', TYPE, withEip({ Type: 1 }))).rejects.toThrow(MALFORMED);
+      await expect(provider.update('Nc', ARN, TYPE, withEip('AUTO'), props)).rejects.toThrow(MALFORMED);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a malformed value on a state-borne bag is omitted, never turned into a reset', async () => {
+      allOk();
       await provider.create('Nc', TYPE, withEip('AUTO'), { replayingState: true });
-      await provider.update('Nc', ARN, TYPE, withEip('AUTO'), props, { replayingState: true });
-      await provider.update('Nc', ARN, TYPE, withEip('AUTO'), props, { desiredFromAwsReadback: true });
-      for (const klass of [CreateNetworkConnectorCommand, UpdateNetworkConnectorCommand]) {
-        for (const call of callsOf(klass)) {
-          const vpc = (call.input['Configuration'] as { VpcEgressConfiguration: object }).VpcEgressConfiguration;
-          expect(vpc).not.toHaveProperty('ElasticIpConfiguration');
-        }
-      }
-      expect(callsOf(CreateNetworkConnectorCommand)).toHaveLength(1);
-      expect(callsOf(UpdateNetworkConnectorCommand)).toHaveLength(3);
+      expect(sentEip(CreateNetworkConnectorCommand, 0)).toBeUndefined();
+      const previous = withEip({ Type: 'ServiceManaged' });
+      await provider.update('Nc', ARN, TYPE, withEip('AUTO'), previous, { replayingState: true });
+      expect(sentEip(UpdateNetworkConnectorCommand, 0)).toBeUndefined();
+      await provider.update('Nc', ARN, TYPE, withEip('AUTO'), previous, { desiredFromAwsReadback: true });
+      expect(sentEip(UpdateNetworkConnectorCommand, 1)).toBeUndefined();
+    });
+
+    it('readCurrentState reports it, and drift reads a None the same as absent on both sides', async () => {
+      respond(
+        new Map<string, unknown[]>([
+          [
+            'GetNetworkConnectorCommand',
+            [
+              {
+                ...active,
+                Configuration: {
+                  VpcEgressConfiguration: {
+                    ...props.Configuration.VpcEgressConfiguration,
+                    ElasticIpConfiguration: { Type: 'ServiceManaged' },
+                  },
+                },
+              },
+            ],
+          ],
+          ['ListTagsCommand', [{ Tags: {} }]],
+        ])
+      );
+      const read = (await provider.readCurrentState(ARN, 'Nc', TYPE)) as Record<string, unknown>;
+      expect(read['Configuration']).toEqual(withEip({ Type: 'ServiceManaged' }).Configuration);
+
+      const none = withEip({ Type: 'None' });
+      expect(provider.canonicalizeDriftProperties(TYPE, none)).toEqual(props);
+      expect(none.Configuration.VpcEgressConfiguration).toHaveProperty('ElasticIpConfiguration');
+      const managed = withEip({ Type: 'ServiceManaged' });
+      expect(provider.canonicalizeDriftProperties(TYPE, managed)).toBe(managed);
+      expect(provider.canonicalizeDriftProperties(TYPE, props)).toBe(props);
     });
   });
 

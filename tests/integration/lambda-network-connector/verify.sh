@@ -9,9 +9,9 @@
 # to another subnet pair through UpdateNetworkConnector (a new connector
 # version; AWS refuses a change of AssociatedComputeResourceTypes on an
 # existing connector, measured), `cdkd drift` compares it, and destroy deletes
-# it through the SDK provider. Between the update and drift, a deploy declaring
-# ElasticIpConfiguration (which the SDK cannot send) is refused (#5123). A last
-# phase creates a fresh connector through
+# it through the SDK provider. Between the update and drift, a deploy sets
+# ElasticIpConfiguration to ServiceManaged and the next one removes it, which
+# must reset it to None (#6567). A last phase creates a fresh connector through
 # the SDK provider and destroys it again.
 #
 # The connector lives in the account's default VPC; its subnets and default
@@ -132,6 +132,22 @@ live() { # usage: live <jq-expression-over-the-properties>
   printf '%s' "${props}" | jq -r "$1"
 }
 
+# The live connector's ElasticIpConfiguration.Type, or 'absent', read through
+# the SDK this checkout installs: the member is newer than the AWS CLI's
+# lambda-core model, and an omitted member is part of what is asserted.
+live_eip_type() {
+  local arn
+  arn="$(record '.physicalId')" || return 1
+  ARN="${arn}" REGION="${REGION}" REPO_ROOT="${PWD}/../../.." node --input-type=module -e '
+    import { createRequire } from "node:module";
+    const require = createRequire(`${process.env.REPO_ROOT}/package.json`);
+    const { LambdaCoreClient, GetNetworkConnectorCommand } = require("@aws-sdk/client-lambda-core");
+    const client = new LambdaCoreClient({ region: process.env.REGION });
+    const r = await client.send(new GetNetworkConnectorCommand({ Identifier: process.env.ARN }));
+    console.log(r.Configuration?.VpcEgressConfiguration?.ElasticIpConfiguration?.Type ?? "absent");
+  ' || return 1
+}
+
 echo "==> Installing the previous release (@go-to-k/cdkd@${OLD_CDKD_VERSION})"
 OLD_TMPDIR="$(mktemp -d)"
 (cd "${OLD_TMPDIR}" && npm init -y >/dev/null && npm install --silent "@go-to-k/cdkd@${OLD_CDKD_VERSION}" >/dev/null)
@@ -191,33 +207,27 @@ RECORDED_V="$(record '.attributes.LatestVersion')"
 [ "${RECORDED_V}" = "${V_AFTER}" ] || { echo "FAIL: state records LatestVersion ${RECORDED_V}, live is ${V_AFTER}" >&2; exit 1; }
 echo "    OK: version ${V_BEFORE} -> ${V_AFTER}, subnets moved, recorded"
 
-echo "==> Phase 3b: declaring ElasticIpConfiguration is refused before any call (#5123)"
-# No @aws-sdk/client-lambda-core release models the member, so before #5123 cdkd
-# dropped it, sent an UpdateNetworkConnector (a new version) and exited 0. The
-# deploy must now fail naming the member, and leave the connector and its
-# record exactly as phase 3 left them. Every input but ELASTIC_IP_PROBE is
-# phase 3's, so the member is the only template difference.
-NEEDLE_EIP='Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet'
-RECORD_BEFORE="$(record '.' | jq -cS .)"
-case "${RECORD_BEFORE}" in '{'*) ;; *) echo "FAIL (#5123): could not read the connector's record (${RECORD_BEFORE})" >&2; exit 1 ;; esac
-RC=0
-OUT="$(deploy "${LOCAL_DIST}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 SUBNET_IDS="${SUBNET_IDS_ALT}" ELASTIC_IP_PROBE=cdkd-integ-probe)" || RC=$?
-OUT="$(printf '%s\n' "${OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
-if [ "${RC}" = 0 ]; then
-  printf '%s\n' "${OUT}" >&2
-  echo "FAIL (#5123): the deploy declaring ElasticIpConfiguration SUCCEEDED; cdkd cannot send the member, so it must refuse it" >&2
-  exit 1
-fi
-if ! grep -qF "${NEEDLE_EIP}" <<<"${OUT}"; then
-  printf '%s\n' "${OUT}" >&2
-  echo "FAIL (#5123): the deploy failed (rc=${RC}), but not with the ElasticIpConfiguration refusal" >&2
-  exit 1
-fi
-V_REFUSED="$(version_of "$(live .LatestVersionArn)")"
-[ "${V_REFUSED}" = "${V_AFTER}" ] || { echo "FAIL (#5123): the refused deploy changed the connector (version ${V_AFTER} -> ${V_REFUSED})" >&2; exit 1; }
-[ "$(live .State)" = "ACTIVE" ] || { echo "FAIL (#5123): the connector is not ACTIVE after the refused deploy" >&2; exit 1; }
-[ "$(record '.' | jq -cS .)" = "${RECORD_BEFORE}" ] || { echo "FAIL (#5123): the refused deploy changed the connector's state record" >&2; exit 1; }
-echo "    OK: refused (rc=${RC}) naming ElasticIpConfiguration; connector still at version ${V_AFTER}, record unchanged"
+echo "==> Phase 3b: set ElasticIpConfiguration to ServiceManaged in place (#6567)"
+[ "$(live_eip_type)" = "absent" ] || { echo "FAIL (#6567): the connector has an ElasticIpConfiguration before phase 3b" >&2; exit 1; }
+T0="$(date +%s)"
+OUT="$(deploy "${LOCAL_DIST}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 SUBNET_IDS="${SUBNET_IDS_ALT}" ELASTIC_IP_TYPE=ServiceManaged)" || { echo "${OUT}"; echo "FAIL (#6567): phase 3b deploy" >&2; exit 1; }
+echo "${OUT}"
+echo "    phase 3b deploy took $(($(date +%s) - T0)) s"
+ARN3B="$(record '.physicalId')"
+[ "${ARN3B}" = "${ARN1}" ] || { echo "FAIL (#6567): the connector was replaced (${ARN1} -> ${ARN3B}); the member is mutable in place" >&2; exit 1; }
+EIP="$(live_eip_type)"
+[ "${EIP}" = "ServiceManaged" ] || { echo "FAIL (#6567): live ElasticIpConfiguration.Type is ${EIP}, expected ServiceManaged" >&2; exit 1; }
+[ "$(live .State)" = "ACTIVE" ] || { echo "FAIL (#6567): the connector is not ACTIVE after phase 3b" >&2; exit 1; }
+echo "    OK: same ARN, ElasticIpConfiguration.Type ServiceManaged"
+
+echo "==> Phase 3c: removing ElasticIpConfiguration from the template resets it to None (#6567)"
+# Measured: an UpdateNetworkConnector that omits the member keeps the live
+# value, so cdkd must send Type None for the removal to take effect.
+OUT="$(deploy "${LOCAL_DIST}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 SUBNET_IDS="${SUBNET_IDS_ALT}")" || { echo "${OUT}"; echo "FAIL (#6567): phase 3c deploy" >&2; exit 1; }
+echo "${OUT}"
+EIP="$(live_eip_type)"
+[ "${EIP}" = "None" ] || { echo "FAIL (#6567): live ElasticIpConfiguration.Type is ${EIP} after the template removed it, expected None" >&2; exit 1; }
+echo "    OK: ElasticIpConfiguration.Type None after the removal"
 
 echo "==> Phase 4: cdkd drift compares the connector and finds nothing"
 DRIFT_OUT="$(env CONNECTOR_NAME="${CONNECTOR_NAME}" SUBNET_IDS="${SUBNET_IDS_ALT}" SECURITY_GROUP_ID="${SECURITY_GROUP_ID}" TAG_KEY=cdkd-integ-2 TAG_VALUE=v2 \
