@@ -96,10 +96,11 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1; then
     STATE_LEFT=0
   fi
-  # A deploy that failed before state recorded them leaves a role nothing here
-  # knows: the location role (`<stack>-Role...`) and the auto-delete CR provider role (`<stack>-Custom...`), which has a managed policy attached. The account is shared and a peer may
-  # be running this fixture, so only this run's own teardown deletes by prefix:
-  # before the run, a match is reported and stops it. Locations and tasks have
+  # A deploy that failed before state recorded them leaves roles nothing here
+  # knows: the location role (`<stack>-Role...`) and the auto-delete CR
+  # provider role (`<stack>-Custom...`), which has a managed policy attached.
+  # The account is shared and a peer may be running this fixture, so only
+  # this run's own teardown deletes by prefix: before the run, a match is reported and stops it. Locations and tasks have
   # generated ids with no prefix to sweep; a failed create leaves none (Cloud
   # Control rolls it back).
   LEFT_BY_PREFIX=""
