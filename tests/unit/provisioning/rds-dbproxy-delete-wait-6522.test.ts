@@ -305,6 +305,28 @@ describe('DBProxy / DBProxyEndpoint delete waits (#6522)', () => {
         expect(statusReads(site)).toBe(1);
       });
 
+      it('returns when the resource goes without a deleting read in between', async () => {
+        vi.useFakeTimers();
+        answer(site, [() => site.status('available'), site.gone]);
+        expect(await settle(site)).toBe('resolved');
+        expect(statusReads(site)).toBe(2);
+      });
+
+      it('does not count a read with no status as the last status when the wait stops', async () => {
+        answer(site, [() => ({})]);
+        const outcome = await withResourceDeadline(() => site.run(), {
+          warnAfterMs: 10_000,
+          timeoutMs: 20_000,
+          onTimeout: () => new Error('resource deadline fired'),
+        }).then(
+          () => 'resolved',
+          (e: unknown) => e
+        );
+        expect(outcome).toBe('resolved');
+        expect(statusReads(site)).toBe(1);
+        expect(warnLines()).toHaveLength(1);
+      });
+
       it('throws on a Ctrl-C too when no read has shown deleting yet', async () => {
         vi.useFakeTimers();
         answer(site, [() => site.status('available')], () => pressCtrlC(baseline));
