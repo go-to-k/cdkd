@@ -4,6 +4,7 @@ import {
   GetQueueAttributesCommand,
 } from '@aws-sdk/client-sqs';
 import { getLogger } from '../../utils/logger.js';
+import { sentPolicyDocument, serializeResourcePolicy } from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
@@ -108,8 +109,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     const applied: string[] = [];
     try {
       // Serialize policy document
-      const policyDoc =
-        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+      const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
       // Apply policy to all queues
       for (const queueUrl of queues) {
@@ -205,8 +205,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
 
     try {
       // Serialize policy document
-      const policyDoc =
-        typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
+      const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
       // Apply policy to all queues
       for (const queueUrl of queues) {
@@ -392,7 +391,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     }
     // IAM-equivalent spellings folded: SQS stores a bare account-id principal
     // as its root ARN, for one.
-    const reference = policyContentKey(attempted.document);
+    const reference = policyContentKey(sentPolicyDocument(attempted.document));
     // A queue a QueuePolicy of this very deploy wrote: a read may still return
     // the failed create's document (SQS propagates in up to 60 seconds), so it
     // is never read back here.
@@ -570,7 +569,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   ): Promise<string[]> {
     const carrying: string[] = [];
     if (candidates.length === 0) return carrying;
-    const reference = policyReference(document);
+    const reference = policyReference(sentPolicyDocument(document));
     if (reference === undefined) {
       this.logger.warn(
         safeMsg`The queues ${candidates.join(', ')} listed by ${logicalId} were not checked (no policy document recorded to compare with) and may still carry its policy.`

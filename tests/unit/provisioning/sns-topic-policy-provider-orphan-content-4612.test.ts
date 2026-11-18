@@ -5,7 +5,8 @@
  * attempted document. SetTopicAttributes replaces a policy, so any other
  * content (bar the default itself) is left, named, and reported.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 import { GetTopicAttributesCommand, SetTopicAttributesCommand } from '@aws-sdk/client-sns';
 
 const mockSend = vi.fn();
@@ -281,5 +282,41 @@ describe('SNSTopicPolicyProvider: a failed create orphan is reset by content (go
       expectedRegion: 'us-east-1',
     });
     expect(sets().map(([t]) => t)).toEqual([T1, T2]);
+  });
+});
+
+describe('SNSTopicPolicyProvider: under --aws-emulator the topic holds the document as sent (go-to-k/cdkd#6574)', () => {
+  const SSL_DENY = {
+    Effect: 'Deny',
+    Principal: { AWS: '*' },
+    Action: 'sns:Publish',
+    Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+  };
+  const WITH_DENY = { Version: '2012-10-17', Statement: [SSL_DENY, { Sid: 'Failed', Effect: 'Allow' }] };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockRegion.mockImplementation(() => Promise.resolve('us-east-1'));
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9297' }));
+  });
+  afterEach(() => setAwsEndpointOverrideSource(undefined));
+
+  it('a failed create orphan is reset when the topic holds the attempted document without its enforceSSL Deny', async () => {
+    routeSend({ [T1]: DOC_LIVE });
+    await del(T1, { Topics: [T1], PolicyDocument: WITH_DENY });
+    expect(sets().map(([arn]) => arn)).toEqual([T1]);
+  });
+
+  it('an update resets a dropped topic holding the previous document without its enforceSSL Deny', async () => {
+    routeSend({ [T2]: DOC_LIVE });
+    await new SNSTopicPolicyProvider().update(
+      'P',
+      T1,
+      TYPE,
+      { Topics: [T1], PolicyDocument: WITH_DENY },
+      { Topics: [T1, T2], PolicyDocument: WITH_DENY },
+      { expectedRegion: 'us-east-1' }
+    );
+    expect(sets().map(([arn]) => arn)).toContain(T2);
   });
 });

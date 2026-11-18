@@ -57,6 +57,7 @@ import {
   withPriorAttempts,
 } from '../../../src/deployment/prior-attempt-scope.js';
 import { withRetry } from '../../../src/deployment/retry.js';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 import { withStackRecords } from '../../../src/deployment/stack-records-scope.js';
 import { withStackScope } from '../../../src/provisioning/resource-name/stack-scope.js';
 import type { ResourceState } from '../../../src/types/state.js';
@@ -419,6 +420,31 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
       await withPriorAttempts(lookup, () =>
         provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
       );
+
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('under --aws-emulator, matches the journaled document as it was sent, without its enforceSSL Deny (go-to-k/cdkd#6574)', async () => {
+      const allow = { ...DESIRED.Statement[0], Sid: 'Earlier' };
+      const sslDeny = {
+        Effect: 'Deny',
+        Principal: { AWS: '*' },
+        Action: 's3:*',
+        Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+      };
+      const journaled = { ...DESIRED, Statement: [sslDeny, allow] };
+      respond(() => Promise.resolve({ Policy: JSON.stringify({ ...DESIRED, Statement: [allow] }) }));
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: journaled }])
+      );
+      setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9297' }));
+      try {
+        await withPriorAttempts(lookup, () =>
+          provider.create(LOGICAL_ID, RESOURCE_TYPE, PROPERTIES)
+        );
+      } finally {
+        setAwsEndpointOverrideSource(undefined);
+      }
 
       expect(sentPuts()).toBe(1);
     });

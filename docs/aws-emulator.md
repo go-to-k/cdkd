@@ -379,6 +379,7 @@ to `0.0.0.0` on the host itself: that opens it to your network.
 | Several emulators | Run each on its own port and pass its URL: `--aws-emulator https://127.0.0.1:9300`. The port selects `~/.aws/emulator/<port>/`. |
 | Region | `--region`, `AWS_REGION` or `AWS_DEFAULT_REGION` when set; else, on every `cdkd local` command, the stack's `env.region` or deployed region; else the run's `config` region. |
 | SQS queue URLs | The emulator's queue URLs are rewritten so SQS calls stay local; see the note below. |
+| `enforceSSL` policies | Sent without their `aws:SecureTransport` `Deny` statement, with a warning; see the note below. State keeps the templated policy. |
 | Docker image assets | Refused before anything is built. The emulator's ECR does not accept image pushes yet, and before 1.0.338 it returned repository URIs on the real `amazonaws.com` registry, so a push would have left your machine. File assets publish normally. |
 | Other emulators | `--aws-emulator` is specific to AWS Emulator. For LocalStack and the like, `cdkd local` forwards your `AWS_ENDPOINT_URL*` variables and `--ca-bundle`; see [Local AWS endpoints](local-emulation.md#local-aws-endpoints). |
 
@@ -399,6 +400,16 @@ gets neither.
 In a Docker container, mind the port: it must be the same on both sides of
 Docker's `-p` and in the emulator's own `-p`, because the emulator writes its
 port into the run files. Do not use the emulator's `-p 0` in a container.
+
+AWS Emulator does not evaluate the `aws:SecureTransport` condition key, so
+the `Deny` statement CDK's `enforceSSL: true` adds to a queue, bucket or topic
+policy denies every request there, and an EventBridge rule's deliveries to such
+a queue are dropped without an error. On AWS that statement never matches an
+HTTPS request, so under `--aws-emulator` cdkd sends `AWS::SQS::QueuePolicy`,
+`AWS::S3::BucketPolicy` and `AWS::SNS::TopicPolicy` documents without a `Deny`
+statement conditioned on `Bool` or `BoolIfExists` `aws:SecureTransport` =
+`false`, and warns naming the resource. Other statements, and deploys to AWS,
+are unchanged.
 
 ### Calling a deployed API Gateway API
 
