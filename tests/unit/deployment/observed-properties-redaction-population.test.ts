@@ -226,6 +226,15 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'NOT a write: the destructuring rename that STRIPS `observedProperties` off a ' +
       'previous-generation record before a reverse-replacement replay re-adopts it.',
   },
+  'src/deployment/rollback-executor/replay-observed-refresh.ts': {
+    sites: 2,
+    why:
+      '`withRefreshedObservedBaseline` (go-to-k/cdkd#6526), two `:`-form sites: the ' +
+      "rollback revert's readback handed to `scrubResourceRecord` as its input, and " +
+      'the record taking the bag that call returned. Nothing reaches the record ' +
+      'unscrubbed; the redaction is `tests/unit/deployment/' +
+      "rollback-revert-observed-refresh-6526.test.ts`'s to pin.",
+  },
   'src/deployment/deploy-engine/noecho.ts': {
     sites: 1,
     why:
@@ -336,9 +345,10 @@ describe('observedProperties write population (issue #2828)', () => {
     // keep over the redacted observed bag: 16 across 13. go-to-k/cdkd#6343's
     // sibling-member prune in `observed-capture.ts` added one: 17 across 13.
     // go-to-k/cdkd#6420's security-group twin of it added one: 18 across 13.
+    // go-to-k/cdkd#6526's rollback baseline refresh added two: 20 across 14.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(18);
-    expect(Object.keys(EXPECTED)).toHaveLength(13);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(20);
+    expect(Object.keys(EXPECTED)).toHaveLength(14);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

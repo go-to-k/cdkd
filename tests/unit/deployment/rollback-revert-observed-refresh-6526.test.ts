@@ -20,8 +20,9 @@ vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
 const SECRET = 'hunter2-plaintext-6526';
 const SECRET_EXPR = '{{resolve:secretsmanager:s6526:SecretString}}';
 const smSend = vi.fn(async () => ({ SecretString: SECRET }));
+const ssmSend = vi.fn(async () => ({ Parameter: { Value: 'pubval6526', Type: 'String' } }));
 vi.mock('../../../src/utils/aws-clients.js', () => ({
-  getAwsClients: () => ({ secretsManager: { send: smSend }, ssm: { send: vi.fn() } }),
+  getAwsClients: () => ({ secretsManager: { send: smSend }, ssm: { send: ssmSend } }),
   setAwsClients: vi.fn(),
   AwsClients: vi.fn(),
 }));
@@ -34,7 +35,8 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../../../src/types/resource.js';
+import { withRefreshedObservedBaseline } from '../../../src/deployment/rollback-executor/replay-observed-refresh.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
 const BUCKET = 'AWS::S3::Bucket';
@@ -183,6 +185,23 @@ describe.each(['completed', 'failed'] as const)(
       expect(JSON.stringify(record)).not.toContain(SECRET);
     });
 
+    it('positions a readback at a reference leaf as the reference, with no secret in the map', async () => {
+      // A PUBLIC `ssm` parameter: the replay resolves it but records no secret,
+      // so only this refresh's own scrub (the deploy capture's rules) keeps the
+      // live value at the reference's position out of the baseline.
+      const withRef = { ...V1, Description: '{{resolve:ssm:/p6526}}' };
+      const readCurrentState = vi
+        .fn()
+        .mockResolvedValue({ ...RESTORED_LIVE, Description: 'pubval6526' });
+      const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526' });
+      const record = await restore(arm, res(withRef, { ...V1_OBSERVED, ...withRef }), {
+        update,
+        readCurrentState,
+      });
+      expect(update.mock.calls[0]![3]).toMatchObject({ Description: 'pubval6526' });
+      expect(record?.observedProperties).toEqual({ ...RESTORED_LIVE, Description: '{{resolve:ssm:/p6526}}' });
+    });
+
     it('keeps the previous baseline when the read fails, and the rollback still succeeds', async () => {
       const readCurrentState = vi.fn().mockRejectedValue(new Error(`boom ${SECRET}`));
       const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526' });
@@ -212,7 +231,7 @@ describe.each(['completed', 'failed'] as const)(
 
     it.each([
       ['no baseline at all', res(V1)],
-      ['a refused import baseline', res(V1, undefined, { observedBaselineRefused: true })],
+      ['a refused import baseline', res(V1, V1_OBSERVED, { observedBaselineRefused: true })],
       ['a NoEcho-marked record', res(V1, V1_OBSERVED, { noEchoLeaves: [['BucketName']] })],
       [
         'a record declaring NoEcho attributes',
@@ -228,3 +247,32 @@ describe.each(['completed', 'failed'] as const)(
     });
   }
 );
+
+
+describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
+  // Unreachable from the executor, which refuses a masked baseline before the
+  // revert (`refuseMaskedReplayBaseline`): pinned on the helper, so the guard
+  // still holds should that refusal ever move.
+  it.each([
+    ['whose properties hold a mask', res({ ...V1, Description: '***' }, V1_OBSERVED), []],
+    // The executor substitutes only at a `noEchoLeaves` coordinate, so its
+    // record is refused by that guard first.
+    ['the revert substituted a NoEcho value into', res(V1, V1_OBSERVED), [{ coordinate: ['X'] }]],
+  ])('reads nothing for a restored record %s', async (_label, restored, substituted) => {
+    const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
+    const out = await withRefreshedObservedBaseline(restored, {
+      provider: { readCurrentState } as unknown as ResourceProvider,
+      op: { logicalId: 'Bkt', resourceType: BUCKET },
+      desiredProps: V1,
+      restored,
+      stateResources: {},
+      secrets: new Map(),
+      noEcho: { substituted },
+      mask: (text) => text,
+      logger: { debug: vi.fn() },
+      inScope: (fn) => fn(),
+    });
+    expect(readCurrentState).not.toHaveBeenCalled();
+    expect(out).toBe(restored);
+  });
+});

@@ -317,6 +317,10 @@
       "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans."
     },
     {
+      "tag": "rollback-restore-drift-baseline",
+      "description": "An automatic rollback that restores an UPDATED resource in place re-reads its drift baseline (issue #6526). An S3 bucket's lifecycle rule declared without an `Id` gets a fresh S3-generated id on the restore's re-PUT; verify.sh asserts the id changed (the premise), the restored record's `observedProperties` holds the new id, and `cdkd drift` after the rollback is clean."
+    },
+    {
       "tag": "rollback-reverse-replacement-explicit-name-rewrite",
       "description": "`cdkd rollback` reverse-replacement of an EXPLICITLY named resource whose provider rewrites even a user-supplied name (IAM Role via `generateResourceNameWithFallback`), under the user-supplied-name prefix flag the failed deploy recorded in its journal segment (issue #4018). The re-create must ask AWS for exactly the name the deploy sent (the bare name by default, `<stack>-<name>` for a deploy with --prefix-user-supplied-names, whatever the rollback's own environment says); the old role, kept by the failed deploy until its cleanup phase (issue #6374), is deleted out of band first so the replay reaches the re-create; an automatic rollback re-adopts the kept role (same RoleId); an in-place UPDATE revert of the same role must stay in place (same RoleId, no prefixed role). Pass condition = the journal segment's recorded flag read raw from S3, the old role kept and recorded as superseded after the failed deploy, and every restored/deleted role name read back from IAM. A squatter role created out of band under the deleted old role's name (issue #4010) must be REFUSED, not re-adopted (issue #6393): the rollback compares the RoleId the stack recorded with the live one, exits non-zero naming the old role and saying its RoleId differs, and leaves the squatter (same RoleId), the new role, state and the journal untouched."
     },
@@ -2697,6 +2701,13 @@
       ]
     },
     {
+      "name": "rollback-observed-baseline-refresh",
+      "annotated": true,
+      "scenarios": [
+        "rollback-restore-drift-baseline"
+      ]
+    },
+    {
       "name": "rollback-replacement-retain",
       "annotated": true,
       "scenarios": [
@@ -3877,6 +3888,13 @@
       "description": "Reverse-replacement rollback records the replay-CREATE's `effectiveProperties` (issue #1682). Distinct from `rollback-failure-injection`, which rolls back CREATEs (a delete): here the resource is REPLACED before the failure, so rollback re-creates the OLD one from `previousState.properties` — a cdkd STATE record, which can carry a malformed block an older binary wrote and which the provider WARNS about and SUBSTITUTES (the #1544 replayWarn downgrade) rather than refusing. Pre-fix the engine typed that call's result as `{physicalId, attributes?}` and rebuilt the record from `prev.properties`, discarding the substitution. The vehicle is `AWS::EC2::Route` rather than the `AWS::S3::Bucket` #1682 names, because a bucket's reverse-replacement re-create must re-acquire a just-deleted GLOBALLY unique name whose release is not immediate (flaky for an unrelated reason), while a route's `<RouteTableId>|<Destination>` identity is stack-scoped and deterministic; `createRoute`'s multi-destination warn arm is gated on the same `CreateContext.replayingState` flag, so the engine path is identical. verify.sh deploys v1, injects a second destination key into the state record, flips the create-only destination with a failure wired AFTER the route (so rollback classifies reverse-replacement, asserted via the substitution warning), then asserts the post-rollback record restored the v1 destination and DROPPED the injected key, that two consecutive `cdkd drift` runs converge, and that destroy leaves 0 orphans.",
       "fixtures": [
         "rollback-replay-effective-props"
+      ]
+    },
+    {
+      "scenario": "rollback-restore-drift-baseline",
+      "description": "An automatic rollback that restores an UPDATED resource in place re-reads its drift baseline (issue #6526). An S3 bucket's lifecycle rule declared without an `Id` gets a fresh S3-generated id on the restore's re-PUT; verify.sh asserts the id changed (the premise), the restored record's `observedProperties` holds the new id, and `cdkd drift` after the rollback is clean.",
+      "fixtures": [
+        "rollback-observed-baseline-refresh"
       ]
     },
     {

@@ -70,8 +70,10 @@ export interface ReadCurrentStateContext {
   >;
   /**
    * Set only by the deploy's `observedProperties` capture right after cdkd's
-   * own CREATE / UPDATE / replacement of this resource (issue #4112): the
-   * write succeeded, and the `properties` bag is the template it deployed. A
+   * own CREATE / UPDATE / replacement of this resource (issue #4112), and by
+   * the rollback replay's baseline refresh right after its in-place revert
+   * (go-to-k/cdkd#6526): the write succeeded, and the `properties` bag is
+   * what it wrote. A
    * provider whose reads are eventually consistent may then keep a DECLARED
    * member its read still reports ABSENT, rather than freeze a lagging
    * "absent" into the baseline.
@@ -82,7 +84,7 @@ export interface ReadCurrentStateContext {
   /**
    * The read resource's OWN recorded `attributes` (cdkd state), set by
    * `buildReadCurrentStateContext` on drift / import / `state refresh-observed`
-   * reads. A provider may use an id recorded there as ownership evidence
+   * reads and the rollback replay's baseline refresh. A provider may use an id recorded there as ownership evidence
    * before it binds a live object the physicalId alone cannot single out
    * (go-to-k/cdkd#4447: a standalone `AWS::EC2::SecurityGroupIngress`'s `Id`).
    * Absent on the deploy capture and on records that carry none.

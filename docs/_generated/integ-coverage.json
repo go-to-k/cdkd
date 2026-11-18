@@ -8787,6 +8787,7 @@
         "recreate-via-cc-api",
         "retain-orphan-redeploy",
         "rollback-command",
+        "rollback-observed-baseline-refresh",
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
         "s3-autodelete-objects-disable",
@@ -8982,6 +8983,9 @@
           "literal"
         ],
         "rollback-command": [
+          "l2"
+        ],
+        "rollback-observed-baseline-refresh": [
           "l2"
         ],
         "rollback-replay-effective-props": [
@@ -9634,6 +9638,7 @@
         "rollback-explicit-name-rewrite",
         "rollback-failure-injection",
         "rollback-nested-cross-region-secret",
+        "rollback-observed-baseline-refresh",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
@@ -9894,6 +9899,10 @@
         ],
         "rollback-nested-cross-region-secret": [
           "l1"
+        ],
+        "rollback-observed-baseline-refresh": [
+          "l1",
+          "literal"
         ],
         "rollback-replacement-retain": [
           "l1"
