@@ -468,11 +468,14 @@ export function withTemplateAliasConflicts(
   if (!recordSet.AliasTarget) return recordSet;
   const ttl = properties['TTL'];
   const records = properties['ResourceRecords'];
-  if (ttl === undefined && records === undefined) return recordSet;
+  // Declared means a value: an explicit null or an empty list is not one.
+  const declaresTtl = ttl !== undefined && ttl !== null;
+  const declaresRecords = Array.isArray(records) && records.length > 0;
+  if (!declaresTtl && !declaresRecords) return recordSet;
   return {
     ...recordSet,
-    ...(ttl !== undefined && { TTL: Number(ttl) }),
-    ...(Array.isArray(records) && {
+    ...(declaresTtl && { TTL: Number(ttl) }),
+    ...(declaresRecords && {
       ResourceRecords: records.map((r) =>
         typeof r === 'string' ? { Value: r } : (r as { Value: string })
       ),

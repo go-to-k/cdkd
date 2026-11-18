@@ -98,6 +98,16 @@ describe('alias record with TTL / ResourceRecords (go-to-k/cdkd#6544)', () => {
       expect(set!.ResourceRecords).toEqual([{ Value: '198.51.100.9' }]);
     });
 
+    it('an explicit null TTL or an empty ResourceRecords is not a declared value', async () => {
+      await provider.create('Rec', RECORD_TYPE, {
+        HostedZoneId: ZONE,
+        ...aliasRecord({ TTL: null, ResourceRecords: [] }),
+      });
+      const [set] = sentSets();
+      expect(set).not.toHaveProperty('TTL');
+      expect(set).not.toHaveProperty('ResourceRecords');
+    });
+
     it('create of a plain alias sends neither', async () => {
       await provider.create('Rec', RECORD_TYPE, { HostedZoneId: ZONE, ...aliasRecord() });
       const [set] = sentSets();
