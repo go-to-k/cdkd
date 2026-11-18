@@ -100,6 +100,7 @@ describe('generated names fit their name property (#5064)', () => {
     'AWS::Scheduler::Schedule',
     'AWS::S3Vectors::VectorBucket',
     'AWS::ServiceDiscovery::Service',
+    'AWS::Events::Archive',
     // CodeBuild has no Cloud Control handlers; its old rule still names it.
     ...BARE_LOGICAL_ID.filter((t) => t !== 'AWS::CodeBuild::Project'),
   ];

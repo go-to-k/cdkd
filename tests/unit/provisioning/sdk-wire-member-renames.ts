@@ -476,6 +476,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       TargetGroupAttributes: ['Attributes'],
     },
   },
+  'AWS::Events::Archive': {
+    members: {
+      SourceArn: ['EventSourceArn'],
+    },
+  },
   'AWS::Events::Rule': {
     containers: {
       'Targets.EcsParameters.PlacementStrategies': ['PlacementStrategy'],

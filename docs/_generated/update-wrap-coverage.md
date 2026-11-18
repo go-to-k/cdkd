@@ -12,8 +12,8 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **92**
-- Wrapped: **85**
+- Provider classes with `update()`: **93**
+- Wrapped: **86**
 - No AWS call in update(): **7**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
@@ -63,6 +63,7 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `EMRClusterProvider` | `emr-cluster-provider.ts` | wrapped |
 | `EMRInstanceFleetConfigProvider` | `emr-instance-fleet-config-provider.ts` | wrapped |
 | `EMRInstanceGroupConfigProvider` | `emr-instance-group-config-provider.ts` | wrapped |
+| `EventBridgeArchiveProvider` | `eventbridge-archive-provider.ts` | wrapped |
 | `EventBridgeBusProvider` | `eventbridge-bus-provider.ts` | wrapped |
 | `EventBridgeRuleProvider` | `eventbridge-rule-provider.ts` | wrapped |
 | `FirehoseProvider` | `firehose-provider.ts` | wrapped |

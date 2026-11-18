@@ -313,6 +313,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
       ['Name'],
     ],
   ],
+  ['AWS::Events::Archive', [['ArchiveName'], ['SourceArn']]],
   ['AWS::Events::EventBus', [['Name']]],
   ['AWS::Events::Rule', [['Name']]],
   [

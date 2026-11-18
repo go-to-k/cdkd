@@ -111,6 +111,13 @@ and ARN are available first. A later delete of the runtime, by `cdkd destroy`
 or a replacement, waits for it to leave `CREATING` / `UPDATING` first, in
 every mode.
 
+### `AWS::Events::Archive`
+
+cdkd returns while the archive is `CREATING` or `UPDATING`, so an archive
+that ends in `CREATE_FAILED` or `UPDATE_FAILED` does not fail the deploy, and
+events sent before it is `ENABLED` are not archived. Its name and ARN are
+available first.
+
 ### Auto Scaling group instance refresh
 
 With `--update-policy`, an Auto Scaling group whose `AutoScalingRollingUpdate`

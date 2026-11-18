@@ -459,7 +459,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::ElastiCache` | `CacheCluster`, `SubnetGroup` |
 | `AWS::ElasticLoadBalancingV2` | `Listener`, `LoadBalancer`, `TargetGroup` |
 | `AWS::EMR` | `Cluster` |
-| `AWS::Events` | `EventBus`, `Rule` |
+| `AWS::Events` | `Archive`, `EventBus`, `Rule` |
 | `AWS::FSx` | `FileSystem` |
 | `AWS::Glue` | `Connection`, `Crawler`, `Database`, `Job`, `SecurityConfiguration`, `Table`, `Trigger`, `Workflow` |
 | `AWS::IAM` | `AccessKey`, `Group`, `InstanceProfile`, `ManagedPolicy`, `Policy`, `Role`, `User`, `UserToGroupAddition` |
