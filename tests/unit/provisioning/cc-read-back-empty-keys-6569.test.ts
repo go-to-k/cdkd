@@ -92,6 +92,18 @@ describe('withCcReadBackEmptyKeyRemovals (go-to-k/cdkd#6569)', () => {
     expect(out).toBe(patch);
   });
 
+  it('turns a replace OF an empty map into a remove (revert of a {} baseline over tags added out of band)', () => {
+    const patch: JsonPatchOp[] = [...CHANGE, { op: 'replace', path: '/ResourceTags', value: {} }];
+    expect(
+      withCcReadBackEmptyKeyRemovals(TYPE, patch, { ResourceTags: {} }, { ResourceTags: { a: 'b' } })
+    ).toEqual([...CHANGE, REMOVE_TAGS]);
+  });
+
+  it('drops an add OF an empty map when the live model lacks the key', () => {
+    const patch: JsonPatchOp[] = [...CHANGE, { op: 'add', path: '/ResourceTags', value: [] }];
+    expect(withCcReadBackEmptyKeyRemovals(TYPE, patch, { ResourceTags: [] }, {})).toEqual(CHANGE);
+  });
+
   it('returns the same array for an unlisted type, an empty patch, or no live model', () => {
     expect(
       withCcReadBackEmptyKeyRemovals('AWS::Logs::LogGroup', CHANGE, {}, { ResourceTags: {} })
@@ -174,6 +186,27 @@ describe('CloudControlProvider.update wiring (go-to-k/cdkd#6569)', () => {
       .catch(() => undefined);
 
     expect(sentPatch).toContainEqual(REMOVE_TAGS);
+  });
+
+  it('sends no UpdateResource when the only op set an empty map the live model lacks', async () => {
+    mockCcSend.mockImplementation((command: unknown) =>
+      command instanceof GetResourceCommand
+        ? Promise.resolve({
+            ResourceDescription: { Properties: JSON.stringify({ Name: 'infra' }) },
+          })
+        : Promise.reject(new Error(`unexpected command ${String(command)}`))
+    );
+    const result = await new CloudControlProvider().update(
+      'Infra',
+      'arn:aws:imagebuilder:us-east-1:123456789012:infrastructure-configuration/infra',
+      TYPE,
+      { Name: 'infra', ResourceTags: {} },
+      { Name: 'infra' }
+    );
+    expect(result).toMatchObject({ wasReplaced: false, sentNothing: true });
+    expect(
+      mockCcSend.mock.calls.some(([c]) => c instanceof UpdateResourceCommand)
+    ).toBe(false);
   });
 
   it('sends no GetResource for an unlisted type', async () => {

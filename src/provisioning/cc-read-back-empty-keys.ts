@@ -37,8 +37,7 @@ function isEmptyCollection(value: unknown): boolean {
  * Extend a Cloud Control update patch with `remove /<key>` for each listed
  * key of the type when ALL hold:
  *
- * - the patch has no op on `/<key>` (the generator emits top-level ops only,
- *   so a change the template makes there is left as the generator wrote it);
+ * - the patch has no op on `/<key>` (the generator emits top-level ops only);
  * - `liveModel` (the Cloud Control read model the patch is applied to) HAS
  *   the key with an empty value: a `remove` on a path the model lacks fails
  *   the whole patch (RFC 6902), and a non-empty value is something AWS holds
@@ -48,7 +47,13 @@ function isEmptyCollection(value: unknown): boolean {
  *   snapshot, which may carry the read-back empty value. Either way the
  *   request then omits the key, as a CloudFormation update does.
  *
- * Every other type, an empty patch, or nothing to add returns the same array.
+ * An `add` / `replace` the patch already has on `/<key>` whose value is an
+ * empty collection is the same refused request, so it becomes a `remove`
+ * while the live model holds the key and is dropped when it does not; any
+ * other op there is left as the generator wrote it.
+ *
+ * Every other type, an empty patch, or nothing to change returns the same
+ * array.
  */
 export function withCcReadBackEmptyKeyRemovals(
   resourceType: string,
@@ -56,14 +61,26 @@ export function withCcReadBackEmptyKeyRemovals(
   desired: Record<string, unknown>,
   liveModel: Record<string, unknown> | undefined
 ): JsonPatchOp[] {
-  const keys = hasCcReadBackEmptyKeys(resourceType) ? CC_READ_BACK_EMPTY_KEYS[resourceType] : [];
-  if (keys === undefined || keys.length === 0 || patch.length === 0 || liveModel === undefined) {
-    return patch;
-  }
+  const keys = hasCcReadBackEmptyKeys(resourceType) ? CC_READ_BACK_EMPTY_KEYS[resourceType]! : [];
+  if (keys.length === 0 || patch.length === 0 || liveModel === undefined) return patch;
+  let out = patch;
   const extra: JsonPatchOp[] = [];
   for (const key of keys) {
-    const path = `/${key}`;
-    if (patch.some((op) => op.path === path)) continue;
+    const path = `/${escapeJsonPointer(key)}`;
+    const existing = out.findIndex((op) => op.path === path);
+    if (existing !== -1) {
+      // An `add` / `replace` OF an empty collection is the same refused
+      // request (a `drift --revert` restoring a `{}` baseline over tags added
+      // out of band): send `remove` instead while the model holds the key,
+      // and nothing when it does not (a missing-path remove fails).
+      const op = out[existing]!;
+      if ((op.op === 'add' || op.op === 'replace') && isEmptyCollection(op.value)) {
+        out = Object.prototype.hasOwnProperty.call(liveModel, key)
+          ? out.map((o, i) => (i === existing ? { op: 'remove', path } : o))
+          : out.filter((_, i) => i !== existing);
+      }
+      continue;
+    }
     // An absent key is not an empty collection, so it gets no `remove`.
     if (!isEmptyCollection(liveModel[key])) continue;
     if (Object.prototype.hasOwnProperty.call(desired, key) && !isEmptyCollection(desired[key])) {
@@ -71,5 +88,10 @@ export function withCcReadBackEmptyKeyRemovals(
     }
     extra.push({ op: 'remove', path });
   }
-  return extra.length === 0 ? patch : [...patch, ...extra];
+  return extra.length === 0 && out === patch ? patch : [...out, ...extra];
+}
+
+/** RFC 6901, as `json-patch-generator.ts` spells the paths it emits. */
+function escapeJsonPointer(key: string): string {
+  return key.replace(/~/g, '~0').replace(/\//g, '~1');
 }

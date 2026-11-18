@@ -258,6 +258,8 @@ export async function updateInIdLogScope(
         cleanProperties,
         await this.readCcResourceModel(resourceType, physicalId, idLog)
       );
+      // Its only op set an empty collection the live model lacks: nothing to send.
+      if (patch.length === 0) return { physicalId, wasReplaced: false, ...sentNothing };
     }
 
     // go-to-k/cdkd#6294: a whole-object op drops the AWS-defaulted nested

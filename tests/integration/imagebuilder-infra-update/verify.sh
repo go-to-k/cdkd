@@ -232,12 +232,16 @@ PROFILE_NOW="$(infra_field instanceProfileName)"
 echo "    ${INFRA_NAME} created via cc-api (t3.micro, terminate True, described)"
 
 # The premise: without it the update below would pass on a tree without the fix.
-CC_MODEL="$(aws cloudcontrol get-resource --type-name AWS::ImageBuilder::InfrastructureConfiguration \
-  --identifier "${INFRA_ARN}" --region "${REGION}" --query 'ResourceDescription.Properties' --output text)"
-PREMISE="$(printf '%s' "${CC_MODEL}" | python3 -c "import json, sys; m = json.load(sys.stdin); print('ResourceTags' in m and m['ResourceTags'] in ({}, []))")"
-[ "${PREMISE}" = "True" ] ||
-  { echo "FAIL: premise gone: the Cloud Control read model no longer carries an empty ResourceTags, so this fixture no longer exercises go-to-k/cdkd#6569 (model: ${CC_MODEL})" >&2; exit 1; }
-echo "    premise: the Cloud Control read model carries an empty ResourceTags"
+assert_empty_resource_tags_premise() { # $1 = phase label
+  local model premise
+  model="$(aws cloudcontrol get-resource --type-name AWS::ImageBuilder::InfrastructureConfiguration \
+    --identifier "${INFRA_ARN}" --region "${REGION}" --query 'ResourceDescription.Properties' --output text)" || return 1
+  premise="$(printf '%s' "${model}" | python3 -c "import json, sys; m = json.load(sys.stdin); print('ResourceTags' in m and m['ResourceTags'] in ({}, []))")" || return 1
+  [ "${premise}" = "True" ] ||
+    { echo "FAIL: premise gone $1: the Cloud Control read model no longer carries an empty ResourceTags, so this fixture no longer exercises go-to-k/cdkd#6569 (model: ${model})" >&2; exit 1; }
+  echo "    premise $1: the Cloud Control read model carries an empty ResourceTags"
+}
+assert_empty_resource_tags_premise "after the create"
 
 # --- Phase 2: in-place UPDATE through Cloud Control -------------------------
 echo "==> Phase 2: update (t3.small + t3.medium, terminate false, description removed)"
@@ -275,6 +279,7 @@ aws imagebuilder update-infrastructure-configuration --region "${REGION}" \
 TYPES_OOB="$(infra_types)"
 [ "${TYPES_OOB}" = "t3.large" ] ||
   { echo "FAIL: the out-of-band update did not set instanceTypes to t3.large, got '${TYPES_OOB}'" >&2; exit 1; }
+assert_empty_resource_tags_premise "after the out-of-band update"
 
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${DRIFT_OUT}" 2>&1
