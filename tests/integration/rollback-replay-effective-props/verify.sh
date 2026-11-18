@@ -830,12 +830,16 @@ route_live() { # usage: route_live <destination> -- prints the route's destinati
     --query "RouteTables[0].Routes[?DestinationCidrBlock=='$1'].DestinationCidrBlock" --output text
 }
 # DescribeRouteTables can lag a delete-route or a rollback's route change, so a
-# route's presence is read on a short bounded schedule. Each read is captured
-# under errexit, so a failed describe stops the run instead of reading as "absent".
+# route's presence is read on a short bounded schedule. Every caller runs this
+# under `if !`, where bash suspends errexit, so a failed describe is checked by
+# hand and stops the run instead of reading as "absent".
 route_settles() { # usage: route_settles <destination> present|absent -- rc 0 once it does
   local want="$2" live attempt
   for attempt in $(seq 1 10); do
-    live="$(route_live "$1")"
+    if ! live="$(route_live "$1")"; then
+      echo "FAIL: describe-route-tables failed for ${ROUTE_TABLE_ID} (reading the route to $1)" >&2
+      exit 1
+    fi
     if [ "${want}" = "present" ] && [ "${live}" = "$1" ]; then return 0; fi
     if [ "${want}" = "absent" ] && [ -z "${live}" ]; then return 0; fi
     sleep 3
@@ -902,12 +906,19 @@ for t in ${OLD_TABLES}; do
     # AWS accepts it, without the cleanup helper's wait for the replica to leave
     # the table. This was meant to leave the replica-region copy DELETING for
     # issue #3569, but on 2026-11-18 it was already gone by the rollback
-    # (issue #6532). It does halve the arm's run time.
+    # (issue #6532).
+    XR_REPLICA_DELETE_REQUESTED=0
     for _ in $(seq 1 30); do
-      aws dynamodb update-table --table-name "${t}" \
-        --replica-updates "Delete={RegionName=${XR_REGION}}" >/dev/null 2>&1 && break
+      if aws dynamodb update-table --table-name "${t}" \
+        --replica-updates "Delete={RegionName=${XR_REGION}}" >/dev/null 2>&1; then
+        XR_REPLICA_DELETE_REQUESTED=1; break
+      fi
       sleep 20
     done
+    if [ "${XR_REPLICA_DELETE_REQUESTED}" != "1" ]; then
+      echo "FAIL: phase 3b: AWS never accepted the removal of ${t}'s ${XR_REGION} replica" >&2
+      exit 1
+    fi
     XR_HOME_DELETED=0
     for _ in $(seq 1 60); do
       if aws dynamodb delete-table --table-name "${t}" >/dev/null 2>&1; then XR_HOME_DELETED=1; break; fi
