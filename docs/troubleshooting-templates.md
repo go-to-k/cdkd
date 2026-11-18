@@ -284,9 +284,8 @@ Remove ElasticIpConfiguration from Configuration.VpcEgressConfiguration to deplo
 
 The CloudFormation schema declares `ElasticIpConfiguration` on a Lambda network
 connector's VPC egress configuration, but the version of the Lambda Core SDK
-that cdkd ships does not, so the setting cannot reach AWS yet (issue
-[#6567](https://github.com/go-to-k/cdkd/issues/6567) tracks sending it). cdkd
-refuses a create that declares it, and an
+that cdkd ships does not, so the setting cannot reach AWS yet. cdkd refuses a
+create that declares it, and an
 update that adds or changes it, rather than deploy a connector without the
 setting you asked for.
 
