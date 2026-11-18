@@ -401,8 +401,7 @@ In a Docker container, mind the port: it must be the same on both sides of
 Docker's `-p` and in the emulator's own `-p`, because the emulator writes its
 port into the run files. Do not use the emulator's `-p 0` in a container.
 
-AWS Emulator does not evaluate the `aws:SecureTransport` condition key
-([aws/aws-emulator#369](https://github.com/aws/aws-emulator/issues/369)), so
+AWS Emulator does not evaluate the `aws:SecureTransport` condition key, so
 the `Deny` statement CDK's `enforceSSL: true` adds to a queue, bucket or topic
 policy denies every request there, and an EventBridge rule's deliveries to such
 a queue are dropped without an error. On AWS that statement never matches an
