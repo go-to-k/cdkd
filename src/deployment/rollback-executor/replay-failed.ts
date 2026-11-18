@@ -684,10 +684,8 @@ export async function replayFailedOperationsUnbound(
           // properties when resolution never got that far.
           // Re-resolve redacted secret expressions on BOTH sides for the
           // provider call (GHSA fix); `secrets` redacts the rebuilt record.
-          // See {@link updateWithRollbackRetry} — same three concerns as the
-          // `revert` arm (retry / disableOuterRetry / interrupt). `secrets` is
-          // this iteration's bag, hoisted above the `try` so the shared catch
-          // can mask with it too.
+          // See {@link updateWithRollbackRetry} (retry / disableOuterRetry /
+          // interrupt); `secrets` is hoisted above the `try` for the catch's mask.
           // go-to-k/cdkd#4043 Phase C, the `revert` arm's twin: a marked
           // NoEcho leaf takes the value AWS holds, or the op refuses.
           const noEcho = await substituteMarkedNoEchoLeaves({
@@ -796,7 +794,8 @@ export async function replayFailedOperationsUnbound(
                 desiredProps ?? {},
                 attemptedProps ?? {},
                 // As on the `revert` arm (#2301, #3141, #4051, #6104, #6457): the DESIRED bag is
-                // `prev.properties`, a cdkd state record, so the replay licence is the same one.
+                // `prev.properties`, a cdkd state record, so the replay licence is the same one;
+                // no `desiredFromAwsReadback`, and `replayingState` describes the desired side.
                 {
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: ctx.region,
@@ -839,6 +838,7 @@ export async function replayFailedOperationsUnbound(
                     mask,
                     logger,
                     inScope: inOriginalPrefix,
+                    capture: ctx.captureObservedState,
                   }
                 ),
                 op.logicalId,

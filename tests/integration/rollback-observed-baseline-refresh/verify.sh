@@ -148,9 +148,15 @@ expect_eq "the failing queue left no state record" \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String("FailingQueue" in JSON.parse(s).resources)))')" "false"
 expect_eq "restored record is v1's template" \
   "$(state_field 'r.properties.LifecycleConfiguration.Rules[0].Prefix')" "tmp/"
-# go-to-k/cdkd#6526: the assertion only the fix passes.
-expect_eq "restored baseline holds the id S3 generated on the restore" \
-  "$(state_field 'r.observedProperties.LifecycleConfiguration.Rules[0].Id')" "${RESTORED_ID}"
+# go-to-k/cdkd#6526: the assertion only the fix passes. The recorded id is
+# named against BOTH live ids, so a run tells "never refreshed" (v1's id) from
+# a read that answered something else (any other value).
+RECORDED_ID="$(state_field 'r.observedProperties.LifecycleConfiguration.Rules[0].Id')"
+if [ "${RECORDED_ID}" = "${V1_ID}" ]; then
+  echo "FAIL: the restored baseline still holds v1's rule id ${V1_ID} (never refreshed; live is ${RESTORED_ID})" >&2
+  exit 1
+fi
+expect_eq "restored baseline holds the id S3 generated on the restore" "${RECORDED_ID}" "${RESTORED_ID}"
 if ! gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then
   echo "FAIL: failing queue ${QUEUE_NAME} exists -- the invalid CreateQueue should have been rejected" >&2
   exit 1

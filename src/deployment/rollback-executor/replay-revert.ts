@@ -692,6 +692,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
         mask,
         logger,
         inScope: inOriginalPrefix,
+        capture: ctx.captureObservedState,
       }),
       secrets,
       previousState.properties,

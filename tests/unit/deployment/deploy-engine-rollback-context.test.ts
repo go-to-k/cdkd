@@ -224,6 +224,25 @@ describe('DeployEngine rollback context: a nested child names itself for the rem
   });
 });
 
+describe('DeployEngine rollback context: --no-capture-observed-state reaches the rollback (go-to-k/cdkd#6526)', () => {
+  function contextOf(options: Record<string, unknown>): Record<string, unknown> {
+    const engine = new DeployEngine({} as never, {} as never, {} as never, {} as never, {} as never, options, 'us-east-1');
+    return rollbackExecutorContext(
+      engine.rollbackDeps(),
+      { version: 8, stackName: 'Top', region: 'us-east-1', resources: {}, outputs: {}, lastModified: 0 } as StackState,
+      'Top'
+    ) as unknown as Record<string, unknown>;
+  }
+
+  it('threads the opt-out, so the restore skips its baseline re-read', () => {
+    expect(contextOf({ captureObservedState: false })['captureObservedState']).toBe(false);
+  });
+
+  it('threads the default capture through as on', () => {
+    expect(contextOf({})['captureObservedState']).toBe(true);
+  });
+});
+
 describe("DeployEngine rollback context: a nested child inherits its parent's producer regions (go-to-k/cdkd#4174)", () => {
   const CHILD_INFO = { parentStack: 'Top', parentLogicalId: 'Child', parentRegion: 'us-east-1' };
   const withRead = {

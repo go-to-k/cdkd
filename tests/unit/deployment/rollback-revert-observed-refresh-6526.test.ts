@@ -36,6 +36,8 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { RESOURCE_NOT_FOUND, type ResourceProvider } from '../../../src/types/resource.js';
+import { getCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
+import { isSameGenerationBag } from '../../../src/deployment/secret-redaction.js';
 import { withRefreshedObservedBaseline } from '../../../src/deployment/rollback-executor/replay-observed-refresh.js';
 import type { ResourceState } from '../../../src/types/state.js';
 
@@ -89,8 +91,9 @@ interface Stub {
   readCurrentState?: ReturnType<typeof vi.fn>;
 }
 
-function ctxWith(stub: Stub): RollbackExecutorContext {
+function ctxWith(stub: Stub, extra: Partial<RollbackExecutorContext> = {}): RollbackExecutorContext {
   return {
+    ...extra,
     region: 'us-east-1',
     logger,
     providerRegistry: {
@@ -124,17 +127,19 @@ const failed = (previous: ResourceState): FailedOperation => ({
 async function restore(
   arm: 'completed' | 'failed',
   previous: ResourceState,
-  stub: Stub
+  stub: Stub,
+  extra: Partial<RollbackExecutorContext> = {}
 ): Promise<ResourceState | undefined> {
   const state: Record<string, ResourceState> = {
-    Bkt: res(V2, { BucketName: 'bkt-6526' }),
+    // The failed deploy's record, which the replay holds until it restores.
+    Bkt: res(V2, { BucketName: 'bkt-6526' }, { attributes: { Arn: 'arn-v2' } }),
     // A sibling, so the readback's state-built context has one to carry.
     Queue: { ...res({}, undefined), physicalId: 'q-url', resourceType: 'AWS::SQS::Queue' },
   };
   const result =
     arm === 'completed'
-      ? await replayRollback([completed(previous)], state, 'S', ctxWith(stub))
-      : await replayFailedOperations([failed(previous)], state, 'S', ctxWith(stub));
+      ? await replayRollback([completed(previous)], state, 'S', ctxWith(stub, extra))
+      : await replayFailedOperations([failed(previous)], state, 'S', ctxWith(stub, extra));
   expect(result.failures).toBe(0);
   expect(stub.update).toHaveBeenCalledTimes(1);
   return state['Bkt'];
@@ -171,16 +176,24 @@ describe.each(['completed', 'failed'] as const)(
 
     it('persists a resolved secret the readback echoes as its reference, never the plaintext', async () => {
       const withSecret = { ...V1, AnalyticsRole: SECRET_EXPR };
-      const readCurrentState = vi
-        .fn()
-        .mockResolvedValue({ ...RESTORED_LIVE, AnalyticsRole: SECRET });
+      let secretsBoundDuringRead = false;
+      const readCurrentState = vi.fn(async () => {
+        secretsBoundDuringRead = getCurrentResourceSecrets()?.has(SECRET) === true;
+        return { ...RESTORED_LIVE, AnalyticsRole: SECRET };
+      });
       const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526' });
       const record = await restore(arm, res(withSecret, { ...V1_OBSERVED, AnalyticsRole: SECRET_EXPR }), {
         update,
         readCurrentState,
       });
-      // The revert really sent the plaintext, so the readback is a real echo.
+      // The revert really sent the plaintext, so the readback is a real echo,
+      // and the read is handed that same resolved bag.
       expect(update.mock.calls[0]![3]).toMatchObject({ AnalyticsRole: SECRET });
+      expect(readCurrentState.mock.calls[0]![3]).toMatchObject({ AnalyticsRole: SECRET });
+      // The provider's own log lines are sink-masked with the op's bag.
+      expect(secretsBoundDuringRead).toBe(true);
+      // Installed UNMARKED, so a later scrub reads it as a prior generation.
+      expect(isSameGenerationBag(record?.observedProperties)).toBe(false);
       expect(record?.observedProperties).toEqual({ ...RESTORED_LIVE, AnalyticsRole: SECRET_EXPR });
       expect(JSON.stringify(record)).not.toContain(SECRET);
     });
@@ -202,15 +215,56 @@ describe.each(['completed', 'failed'] as const)(
       expect(record?.observedProperties).toEqual({ ...RESTORED_LIVE, Description: '{{resolve:ssm:/p6526}}' });
     });
 
-    it('keeps the previous baseline when the read fails, and the rollback still succeeds', async () => {
+    it("hands the read the RESTORED record's own attributes, never the failed deploy's", async () => {
+      const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
+      const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526' });
+      const previous = res(V1, V1_OBSERVED, { attributes: { Arn: 'arn-v1' } });
+      await restore(arm, previous, { update, readCurrentState });
+      const context = readCurrentState.mock.calls[0]![4];
+      // The #4447 ownership evidence is the restored generation's, never the
+      // failed deploy's record the replay held under the same id.
+      expect(context.attributes).toEqual({ Arn: 'arn-v1' });
+      expect(context.siblings['Queue']).toMatchObject({ physicalId: 'q-url' });
+    });
+
+    it('reads the id a revert that replaced the resource records', async () => {
+      const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
+      const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526-new', wasReplaced: true });
+      const record = await restore(arm, res(V1, V1_OBSERVED), { update, readCurrentState });
+      expect(readCurrentState.mock.calls[0]![0]).toBe('bkt-6526-new');
+      expect(record?.physicalId).toBe('bkt-6526-new');
+      expect(record?.observedProperties).toEqual(RESTORED_LIVE);
+    });
+
+    it('skips the read under --no-capture-observed-state', async () => {
+      const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
+      const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526' });
+      const record = await restore(
+        arm,
+        res(V1, V1_OBSERVED),
+        { update, readCurrentState },
+        { captureObservedState: false }
+      );
+      expect(readCurrentState).not.toHaveBeenCalled();
+      expect(record?.observedProperties).toEqual(V1_OBSERVED);
+    });
+
+    it('keeps the previous baseline when the read fails, masks the failure, and still succeeds', async () => {
+      const withSecret = { ...V1, AnalyticsRole: SECRET_EXPR };
+      const previousObserved = { ...V1_OBSERVED, AnalyticsRole: SECRET_EXPR };
       const readCurrentState = vi.fn().mockRejectedValue(new Error(`boom ${SECRET}`));
       const update = vi.fn().mockResolvedValue({ physicalId: 'bkt-6526' });
-      const record = await restore(arm, res(V1, V1_OBSERVED), { update, readCurrentState });
-      expect(record?.observedProperties).toEqual(V1_OBSERVED);
-      const debugLines = (logger.debug as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
-      expect(debugLines.some((l) => String(l).includes('observedProperties refresh for Bkt'))).toBe(
-        true
+      const record = await restore(arm, res(withSecret, previousObserved), {
+        update,
+        readCurrentState,
+      });
+      expect(record?.observedProperties).toEqual(previousObserved);
+      const debugLines = (logger.debug as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+        String(c[0])
       );
+      const line = debugLines.find((l) => l.includes('observedProperties refresh for Bkt'));
+      expect(line).toContain('boom');
+      expect(line).not.toContain(SECRET);
     });
 
     it('keeps the previous baseline when AWS answers nothing or reports the resource gone', async () => {
@@ -250,6 +304,55 @@ describe.each(['completed', 'failed'] as const)(
 
 
 describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
+  const args = (
+    restored: ResourceState,
+    readCurrentState: ReturnType<typeof vi.fn>,
+    inScope: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn()
+  ) => ({
+    provider: { readCurrentState } as unknown as ResourceProvider,
+    op: { logicalId: 'Bkt', resourceType: BUCKET },
+    desiredProps: V1,
+    restored,
+    stateResources: {},
+    secrets: new Map(),
+    noEcho: { substituted: [] },
+    mask: (text: string) => text,
+    logger: { debug: vi.fn() },
+    inScope,
+    capture: undefined,
+  });
+
+  it("reads inside the revert's own scope", async () => {
+    let inside = false;
+    let readInside: boolean | undefined;
+    const readCurrentState = vi.fn(async () => {
+      readInside = inside;
+      return RESTORED_LIVE;
+    });
+    const restored = res(V1, V1_OBSERVED);
+    const out = await withRefreshedObservedBaseline(
+      restored,
+      args(restored, readCurrentState, async (fn) => {
+        inside = true;
+        try {
+          return await fn();
+        } finally {
+          inside = false;
+        }
+      })
+    );
+    expect(readInside).toBe(true);
+    expect(out.observedProperties).toEqual(RESTORED_LIVE);
+  });
+
+  it('reads nothing for a record with no addressable physical id', async () => {
+    const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
+    const restored = { ...res(V1, V1_OBSERVED), physicalId: '' };
+    const out = await withRefreshedObservedBaseline(restored, args(restored, readCurrentState));
+    expect(readCurrentState).not.toHaveBeenCalled();
+    expect(out).toBe(restored);
+  });
+
   // Unreachable from the executor, which refuses a masked baseline before the
   // revert (`refuseMaskedReplayBaseline`): pinned on the helper, so the guard
   // still holds should that refusal ever move.
@@ -261,16 +364,8 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
   ])('reads nothing for a restored record %s', async (_label, restored, substituted) => {
     const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
     const out = await withRefreshedObservedBaseline(restored, {
-      provider: { readCurrentState } as unknown as ResourceProvider,
-      op: { logicalId: 'Bkt', resourceType: BUCKET },
-      desiredProps: V1,
-      restored,
-      stateResources: {},
-      secrets: new Map(),
+      ...args(restored, readCurrentState),
       noEcho: { substituted },
-      mask: (text) => text,
-      logger: { debug: vi.fn() },
-      inScope: (fn) => fn(),
     });
     expect(readCurrentState).not.toHaveBeenCalled();
     expect(out).toBe(restored);

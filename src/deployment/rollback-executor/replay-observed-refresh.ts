@@ -31,6 +31,8 @@ export interface ObservedBaselineRefresh {
   logger: { debug(message: string): void };
   /** The scope the revert's `update()` ran in (`replayPrefixScope`). */
   inScope: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** `RollbackExecutorContext.captureObservedState`; only `false` skips. */
+  capture: boolean | undefined;
 }
 
 /**
@@ -52,6 +54,9 @@ export interface ObservedBaselineRefresh {
  * capture (its `#1900` source when no template bag is given). The returned bag
  * is UNMARKED, so a later scrub (`redactRollbackRecord`, the engine's persist)
  * rewrites it as a prior generation and adds no fail-closed mask.
+ *
+ * `cdkd deploy --no-capture-observed-state` skips it, as it skips the deploy's
+ * own capture (`capture: false`).
  *
  * Every case it cannot answer SAFELY keeps the record's existing baseline,
  * which is exactly the pre-#6526 behavior: at worst the drift entry this
@@ -76,6 +81,7 @@ export async function withRefreshedObservedBaseline(
   refresh: ObservedBaselineRefresh
 ): Promise<ResourceState> {
   const { provider, restored } = refresh;
+  if (refresh.capture === false) return record;
   if (record.observedProperties === undefined || record.observedBaselineRefused === true) {
     return record;
   }
@@ -103,8 +109,10 @@ export async function withRefreshedObservedBaseline(
           refresh.op.resourceType,
           refresh.desiredProps ?? {},
           {
+            // The record being restored stands for its own id, never the
+            // failed deploy's record the replay still holds there.
             ...buildReadCurrentStateContext(
-              { resources: refresh.stateResources },
+              { resources: { ...refresh.stateResources, [refresh.op.logicalId]: record } },
               refresh.op.logicalId
             ),
             // The revert just wrote this bag, as the deploy's own update does.
