@@ -263,7 +263,7 @@ describe('JSON.parse failures quote no body (issue #5254)', () => {
   it('CcApiContextProvider: ListResources model', async () => {
     mockCcSend.mockResolvedValue({ ResourceDescriptions: [{ Properties: LEAK_BODY }] });
     const err = await new CcApiContextProvider({ region: 'us-east-1' })
-      .resolve({ typeName: 'AWS::IAM::Role' })
+      .resolve({ typeName: 'AWS::IAM::Role', propertyMatch: {} })
       .catch((e: unknown) => e);
     expect((err as Error).message).toBe(
       `Cloud Control returned a resource model for AWS::IAM::Role that is not valid JSON: ${SIZE_ONLY}`
