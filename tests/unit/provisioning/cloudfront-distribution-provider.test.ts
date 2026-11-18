@@ -1537,6 +1537,62 @@ describe('CloudFrontDistributionProvider', () => {
         });
       });
 
+      it('on a rollback replay, restores the snapshot value for an origin the failed deploy REMOVED', async () => {
+        // The failed deploy dropped origin `web`; the restored template brings
+        // it back without OriginSSLProtocols, and no live origin has that Id.
+        mockUpdateChain(liveWith('other', ['TLSv1']));
+        await provider.update(
+          'Dist',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          template(customOrigin()),
+          template({ ...customOrigin(), Id: 'other' }),
+          { replayingState: true, restoredObservedProperties: PRE_DEPLOY }
+        );
+        const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 1,
+          Items: ['TLSv1.2'],
+        });
+      });
+
+      it.each([
+        ['a masked value', observedWith(customWith(['***']))],
+        ['no origin of that Id', observedWith({ ...customWith(['TLSv1.2']), Id: 'other' })],
+      ])('on a rollback replay of a REMOVED origin whose snapshot holds %s, sends the create default', async (_label, observed) => {
+        mockUpdateChain(liveWith('other', ['TLSv1']));
+        await provider.update(
+          'Dist',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          template(customOrigin()),
+          template({ ...customOrigin(), Id: 'other' }),
+          { replayingState: true, restoredObservedProperties: observed }
+        );
+        const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 3,
+          Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
+        });
+      });
+
+      it('outside a replay, an origin new to the live config still gets the create default', async () => {
+        mockUpdateChain(liveWith('other', ['TLSv1']));
+        await provider.update(
+          'Dist',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          template(customOrigin()),
+          template({ ...customOrigin(), Id: 'other' }),
+          { restoredObservedProperties: PRE_DEPLOY }
+        );
+        const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 3,
+          Items: ['TLSv1', 'TLSv1.1', 'TLSv1.2'],
+        });
+      });
+
       it('a templated OriginSSLProtocols still wins on a replay with a snapshot', async () => {
         mockUpdateChain(liveWith('web', ['TLSv1']));
         await provider.update(
