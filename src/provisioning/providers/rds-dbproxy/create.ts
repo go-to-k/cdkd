@@ -21,7 +21,8 @@ import { definedAttributes } from '../../attribute-map.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
-import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, authRequired } from './shared.js';
+import { startInterruptWatch } from '../../interrupt-watch.js';
+import { POLL_TIMEOUT_MS, authRequired, pauseBeforeNextPoll } from './shared.js';
 
 export async function create(
   this: RDSDBProxyProvider,
@@ -110,13 +111,17 @@ export async function create(
   // Wait until DBProxyStatus = 'available'. Post-create wiring (Targets via
   // RDSDBProxyTargetGroupProvider.create()) requires the proxy to be
   // available, so blocking here keeps the deploy engine's DAG consistent.
+  // go-to-k/cdkd#6517: Ctrl-C ends the wait, and so does what the resource
+  // deadline leaves, so the timeout below is what fails the resource.
   let endpoint: string | undefined;
   let dbProxyArn: string | undefined;
   let vpcId: string | undefined;
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let status: string | undefined;
+  const watch = startInterruptWatch(mask(`DBProxy ${dbProxyName} wait for available`));
   try {
     while (Date.now() < deadline) {
+      if (watch.isInterrupted()) throw watch.onInterrupted();
       try {
         const describe = await client.send(
           new DescribeDBProxiesCommand({ DBProxyName: dbProxyName })
@@ -153,7 +158,7 @@ export async function create(
           );
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      if (!(await pauseBeforeNextPoll(deadline, watch))) break;
     }
     if (!endpoint || !dbProxyArn) {
       throw new ProvisioningError(
@@ -170,6 +175,8 @@ export async function create(
     // `dbProxyName` (the id delete() takes); name it for --revert-failed.
     markCreatedBeforeFailure(error, logicalId, resourceType, dbProxyName);
     throw error;
+  } finally {
+    watch.dispose();
   }
 
   return {

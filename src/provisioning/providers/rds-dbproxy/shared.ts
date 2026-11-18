@@ -1,5 +1,42 @@
+import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import type { InterruptWatch } from '../../interrupt-watch.js';
+
 export const POLL_INTERVAL_MS = 5000;
 export const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Budget kept back from the enclosing per-resource deadline, so a poll's own
+ * "Timed out" error is what fails the resource rather than the deadline's.
+ */
+export const DEADLINE_MARGIN_MS = 30_000;
+
+/**
+ * go-to-k/cdkd#6517: the pause between two reads of a DBProxy or
+ * DBProxyEndpoint status poll (the create and post-modify waits; the delete
+ * waits are go-to-k/cdkd#6522).
+ * Sleeps up to {@link POLL_INTERVAL_MS} in steps of at most a second,
+ * throwing the watch's error as soon as Ctrl-C is seen. Answers `false`,
+ * without sleeping, once the poll's own `deadline` or the enclosing resource
+ * deadline (less {@link DEADLINE_MARGIN_MS}) leaves no room, so the caller
+ * stops and throws its own timeout instead of polling on after the engine
+ * has failed the resource.
+ */
+export async function pauseBeforeNextPoll(
+  deadline: number,
+  watch: InterruptWatch
+): Promise<boolean> {
+  if (watch.isInterrupted()) throw watch.onInterrupted();
+  const left = Math.min(deadline - Date.now(), enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS);
+  if (left <= 0) return false;
+  let remaining = Math.min(POLL_INTERVAL_MS, left);
+  while (remaining > 0) {
+    const step = Math.min(1_000, remaining);
+    await new Promise((resolve) => setTimeout(resolve, step));
+    remaining -= step;
+    if (watch.isInterrupted()) throw watch.onInterrupted();
+  }
+  return true;
+}
 
 /**
  * Issue #1160: the optional, mutable properties whose REMOVAL from the

@@ -29,9 +29,10 @@ import {
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { injectiveKey } from '../../../state/record-keys.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { startInterruptWatch } from '../../interrupt-watch.js';
 import {
-  POLL_INTERVAL_MS,
   POLL_TIMEOUT_MS,
+  pauseBeforeNextPoll,
   RETAINED_ON_REMOVAL,
   CFN_KEEPS_ON_REMOVAL,
   authRemovalRefused,
@@ -214,8 +215,10 @@ export async function update(
 
 /**
  * Polls `DescribeDBProxies` until the proxy reports `available` after a
- * `ModifyDBProxy`, bounded by the same deadline as create(). A terminal
- * failure state or the deadline is a `ProvisioningError`.
+ * `ModifyDBProxy`, bounded by the same cap as create() and by what the
+ * resource deadline leaves (go-to-k/cdkd#6517), so the timeout below, not the
+ * deadline's, is what fails the resource. A terminal failure state or the cap
+ * is a `ProvisioningError`; Ctrl-C ends it with the interrupt watch's error.
  */
 export async function waitForAvailableAfterModify(
   this: RDSDBProxyProvider,
@@ -227,35 +230,50 @@ export async function waitForAvailableAfterModify(
   const client = this.getClient();
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   let status: string | undefined;
-  while (Date.now() < deadline) {
-    try {
-      const describe = await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
-      const proxy = describe.DBProxies?.[0];
-      // No proxy is the same answer DBProxyNotFoundFault gives below: fail
-      // now instead of waiting out the deadline.
-      if (!proxy) {
+  const watch = startInterruptWatch(mask(`DBProxy ${physicalId} wait after modify`));
+  try {
+    while (Date.now() < deadline) {
+      if (watch.isInterrupted()) throw watch.onInterrupted();
+      try {
+        const describe = await client.send(
+          new DescribeDBProxiesCommand({ DBProxyName: physicalId })
+        );
+        const proxy = describe.DBProxies?.[0];
+        // No proxy is the same answer DBProxyNotFoundFault gives below: fail
+        // now instead of waiting out the deadline.
+        if (!proxy) {
+          throw new ProvisioningError(
+            mask(`DBProxy ${physicalId} was not found while waiting for it after modify`),
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        status = proxy.Status;
+      } catch (error) {
+        if (error instanceof ProvisioningError) throw error;
+        throw this.wrapCaughtError(
+          error,
+          'UPDATE (poll)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
+      }
+      if (status === 'available') return;
+      if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
         throw new ProvisioningError(
-          mask(`DBProxy ${physicalId} was not found while waiting for it after modify`),
+          mask(`DBProxy ${physicalId} entered terminal failure state after modify: ${status}`),
           resourceType,
           logicalId,
           physicalId
         );
       }
-      status = proxy.Status;
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      throw this.wrapCaughtError(error, 'UPDATE (poll)', resourceType, logicalId, physicalId, mask);
+      if (!(await pauseBeforeNextPoll(deadline, watch))) break;
     }
-    if (status === 'available') return;
-    if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
-      throw new ProvisioningError(
-        mask(`DBProxy ${physicalId} entered terminal failure state after modify: ${status}`),
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  } finally {
+    watch.dispose();
   }
   throw new ProvisioningError(
     mask(
