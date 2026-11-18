@@ -332,6 +332,7 @@ log-pipeline	2026-11-05T02:51:36Z	PASS	100	standard	deploy+destroy ok (12 delete
 loggroup-class-guard	2026-11-08T04:01:35Z	PASS	113	verify.sh	#6039 deletion-protection-compensation split head; rc ok, orph clean
 loggroup-kms-associate	2026-11-06T20:47:47Z	PASS	52	verify.sh	#5916 logs-loggroup split head; rc ok, orph clean
 loggroup-never-expire-guard	2026-11-06T20:49:53Z	PASS	116	verify.sh	#5916 logs-loggroup split head; rc ok, orph clean
+logs-delivery	2026-11-18T23:15:26Z	PASS	95	verify.sh	rc ok, orph clean, us-east-1
 logs-loggroup-fix-forward-orphan	2026-11-07T16:00:00Z	PASS	85	verify.sh	#6021 journaled-orphans split head; own bucket; rc ok, orph clean
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-10T12:50:06Z	PASS	80	verify.sh	rc ok, orph clean (#6080 marker re-set on branch tree)
