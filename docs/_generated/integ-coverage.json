@@ -5868,14 +5868,10 @@
     {
       "resourceType": "AWS::Events::Archive",
       "integs": [
-        "eventbridge-archive",
-        "sdk-ccapi-crossref"
+        "eventbridge-archive"
       ],
       "signals": {
         "eventbridge-archive": [
-          "literal"
-        ],
-        "sdk-ccapi-crossref": [
           "literal"
         ]
       }

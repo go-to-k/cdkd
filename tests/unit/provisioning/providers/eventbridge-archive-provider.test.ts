@@ -15,6 +15,21 @@ vi.mock('../../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+const interrupt = vi.hoisted(() => ({ on: false }));
+vi.mock('../../../../src/provisioning/interrupt-watch.js', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('../../../../src/provisioning/interrupt-watch.js')
+  >();
+  return {
+    ...actual,
+    startInterruptWatch: (what: string) => ({
+      isInterrupted: () => interrupt.on,
+      onInterrupted: () => new actual.InterruptedWaitError(what),
+      dispose: () => undefined,
+    }),
+  };
+});
+
 const warn = vi.fn();
 vi.mock('../../../../src/utils/logger.js', () => {
   const childLogger = {
@@ -39,6 +54,8 @@ import { EventBridgeArchiveProvider } from '../../../../src/provisioning/provide
 import { withStackScope, stackInstanceNameSuffix } from '../../../../src/provisioning/resource-name.js';
 import { applyDefaultNameForFallback } from '../../../../src/provisioning/resource-name.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { isInterruptedWaitError } from '../../../../src/provisioning/interrupt-watch.js';
+import { prepareRemovalForUpdate, removalWarning } from '../../../../src/provisioning/update-removal.js';
 import { isMarkedNotGone as isNotGoneError } from '../../../../src/provisioning/not-gone.js';
 import { createdBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
 import {
@@ -70,6 +87,7 @@ describe('EventBridgeArchiveProvider', () => {
 
   afterEach(() => {
     delete process.env['CDKD_NO_WAIT'];
+    interrupt.on = false;
   });
 
   describe('create', () => {
@@ -185,20 +203,13 @@ describe('EventBridgeArchiveProvider', () => {
         .mockResolvedValueOnce({ ArchiveArn: ARN('arch'), State: 'CREATING' })
         .mockResolvedValueOnce({ State: 'CREATE_FAILED', StateReason: 'kms denied' })
         .mockResolvedValueOnce({});
-      await expect(
-        provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
-      ).rejects.toThrow(/entered CREATE_FAILED\./);
+      const err = await provider
+        .create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+        .catch((e: unknown) => e as Error);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/entered CREATE_FAILED\./);
       // AWS's StateReason never reaches the thrown message (go-to-k/cdkd#2319).
-      await expect(
-        (async () => {
-          mockSend.mockReset();
-          mockSend
-            .mockResolvedValueOnce({ State: 'CREATING' })
-            .mockResolvedValueOnce({ State: 'CREATE_FAILED', StateReason: 'kms denied' })
-            .mockResolvedValueOnce({});
-          await provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN });
-        })()
-      ).rejects.not.toThrow(/kms denied/);
+      expect(err.message).not.toMatch(/kms denied/);
       expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
     });
 
@@ -245,6 +256,71 @@ describe('EventBridgeArchiveProvider', () => {
         provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
       ).rejects.toThrow(/still CREATING/);
       expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
+    });
+
+    it('retires the archive once when a state read fails for good (AccessDenied)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ State: 'CREATING' })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('not authorized'), {
+            name: 'AccessDeniedException',
+            $fault: 'client',
+            $metadata: { httpStatusCode: 400 },
+          })
+        )
+        .mockResolvedValueOnce({});
+      await expect(
+        provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+      ).rejects.toThrow(/Failed to create EventBridge archive Arch/);
+      expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
+    });
+
+    it('rethrows a throttle that lasts past the deadline, and retires the archive', async () => {
+      provider.stateWait = { pollIntervalMs: 1, timeoutMs: 0, sleep: () => Promise.resolve() };
+      const throttle = (): Error =>
+        Object.assign(new Error('Rate exceeded'), {
+          name: 'ThrottlingException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 400 },
+        });
+      mockSend
+        .mockResolvedValueOnce({ State: 'CREATING' })
+        .mockRejectedValueOnce(throttle())
+        .mockResolvedValueOnce({});
+      await expect(
+        provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+      ).rejects.toThrow(/ThrottlingException/);
+      expect(sentOf(DescribeArchiveCommand)).toHaveLength(1);
+      expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
+    });
+
+    it('an interrupt during the state wait throws the interrupt and deletes nothing', async () => {
+      interrupt.on = true;
+      mockSend.mockResolvedValueOnce({ State: 'CREATING' }).mockResolvedValueOnce({ State: 'CREATING' });
+      const err = await provider
+        .create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+        .catch((e: unknown) => e);
+      expect(isInterruptedWaitError(err)).toBe(true);
+      expect(sentOf(DeleteArchiveCommand)).toHaveLength(0);
+    });
+
+    it('an interrupt during the transient-read backoff throws the interrupt and deletes nothing', async () => {
+      interrupt.on = true;
+      mockSend
+        .mockResolvedValueOnce({ State: 'CREATING' })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('Rate exceeded'), {
+            name: 'ThrottlingException',
+            $fault: 'client',
+            $metadata: { httpStatusCode: 400 },
+          })
+        );
+      const err = await provider
+        .create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+        .catch((e: unknown) => e);
+      expect(isInterruptedWaitError(err)).toBe(true);
+      expect(sentOf(DescribeArchiveCommand)).toHaveLength(1);
+      expect(sentOf(DeleteArchiveCommand)).toHaveLength(0);
     });
 
     it('keeps polling through a throttled state read instead of retiring the archive', async () => {
@@ -388,6 +464,16 @@ describe('EventBridgeArchiveProvider', () => {
         ArchiveName: 'arch',
         EventPattern: '{"source":["a"]}',
       });
+    });
+
+    it('the update caller names a removed Description and the type in its warning', () => {
+      const prev = { ...PREV };
+      const { Description: _removed, ...desired } = prev;
+      const prep = prepareRemovalForUpdate(provider, TYPE, desired, prev);
+      expect(prep.unhandled).toEqual(['Description']);
+      const line = removalWarning('Arch', TYPE, prep.unhandled);
+      expect(line).toContain('Description');
+      expect(line).toContain(TYPE);
     });
 
     it('declares only the create-only keys, so the caller names every other removed key', () => {
