@@ -1556,6 +1556,30 @@ describe('CloudFrontDistributionProvider', () => {
         });
       });
 
+      it('on a rollback replay, restores the snapshot value for an origin the failed deploy turned into an S3 origin', async () => {
+        mockUpdateChain({
+          CallerReference: 'ref',
+          Enabled: false,
+          Origins: {
+            Quantity: 1,
+            Items: [{ Id: 'web', DomainName: 'b.s3.amazonaws.com', S3OriginConfig: { OriginAccessIdentity: '' } }],
+          },
+        });
+        await provider.update(
+          'Dist',
+          'EDFDVBD6EXAMPLE',
+          'AWS::CloudFront::Distribution',
+          template(customOrigin()),
+          template({ Id: 'web', DomainName: 'b.s3.amazonaws.com', S3OriginConfig: { OriginAccessIdentity: '' } }),
+          { replayingState: true, restoredObservedProperties: PRE_DEPLOY }
+        );
+        const sent = mockSend.mock.calls[1][0].input.DistributionConfig;
+        expect(sent.Origins.Items[0].CustomOriginConfig.OriginSslProtocols).toEqual({
+          Quantity: 1,
+          Items: ['TLSv1.2'],
+        });
+      });
+
       it.each([
         ['a masked value', observedWith(customWith(['***']))],
         ['no origin of that Id', observedWith({ ...customWith(['TLSv1.2']), Id: 'other' })],

@@ -142,8 +142,9 @@ function snapshotOriginSslProtocols(
  * an origin with no live custom-origin value (new in this update) takes what
  * CloudFront's create would have recorded. `restored` (a rollback replay's
  * snapshot of the record it restores) answers first where the previous
- * template declared one, or where no live origin has that `Id` (the failed
- * deploy removed the origin, so there is no later out-of-band value to keep);
+ * template declared one, or where no live CUSTOM origin has that `Id` (the
+ * failed deploy removed the origin or made it an S3 one, so there is no later
+ * out-of-band value to keep);
  * keeping the live value instead of a declared one is announced through
  * `onRemovedKept`, as the top-level removal with no known default is.
  */
@@ -157,12 +158,9 @@ function fillOriginSslProtocols(
   const origins = config['Origins'] as Record<string, unknown> | undefined;
   if (!origins || !Array.isArray(origins['Items'])) return;
   const liveOrigins = (currentConfig['Origins'] as Record<string, unknown> | undefined)?.['Items'];
-  const liveOrigin = (id: unknown): Record<string, unknown> | undefined =>
-    Array.isArray(liveOrigins)
-      ? (liveOrigins as Record<string, unknown>[]).find((o) => o?.['Id'] === id)
-      : undefined;
   const liveProtocols = (id: unknown): unknown => {
-    const live = liveOrigin(id);
+    if (!Array.isArray(liveOrigins)) return undefined;
+    const live = (liveOrigins as Record<string, unknown>[]).find((o) => o?.['Id'] === id);
     const custom = live?.['CustomOriginConfig'] as Record<string, unknown> | undefined;
     return custom?.['OriginSslProtocols'];
   };
@@ -184,8 +182,7 @@ function fillOriginSslProtocols(
     if ((custom as Record<string, unknown>)['OriginSslProtocols'] !== undefined) return origin;
     const live = liveProtocols(origin['Id']);
     const declared = previouslyDeclared(origin['Id']);
-    const snapshot =
-      declared || liveOrigin(origin['Id']) === undefined ? restored(origin['Id']) : undefined;
+    const snapshot = declared || live === undefined ? restored(origin['Id']) : undefined;
     if (snapshot === undefined && live !== undefined && declared) onRemovedKept(origin['Id']);
     return {
       ...origin,
