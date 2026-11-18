@@ -36,10 +36,11 @@ import {
   sgProtocolKey,
   stackIngressRuleHolder,
 } from './sg-support.js';
+import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import { updateSgRuleDescription } from './sg-rule-description.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
-// ─── AWS::EC2::SecurityGroup──────────────────────────────────────
+// ─── AWS::EC2::SecurityGroup ──────────────────────────────────────
 
 export async function createSecurityGroup(
   this: EC2Provider,
@@ -814,34 +815,6 @@ export async function applySecurityGroupRuleDiff(
     }
   }
 
-  // go-to-k/cdkd#6514: a description-only change, in place.
-  for (const rule of toDescribe) {
-    // go-to-k/cdkd#4492: a standalone record of this stack holding the same
-    // rule shares its one description, so it is left as that record has it.
-    if (direction === 'ingress' && logicalId !== undefined) {
-      const holder = stackIngressRuleHolder(
-        getStackRecords()?.survivors(),
-        logicalId,
-        groupId,
-        rule
-      );
-      if (holder !== undefined) {
-        this.logger.info(
-          safeMsg`SecurityGroup ${logicalId}: an ingress rule whose description changed is also held by ${holder} of this stack, so its description was left as it is`
-        );
-        continue;
-      }
-    }
-    const outcome = await updateSgRuleDescription(
-      this.ec2Client,
-      groupId,
-      direction,
-      this.buildIpPermission(rule, direction, direction === 'ingress')
-    );
-    // Revoked out of band: authorized below, as the revoke + authorize did.
-    if (outcome === 'not-found') toAuthorize.push(rule);
-  }
-
   for (const rule of toRevoke) {
     // go-to-k/cdkd#4492: a standalone `SecurityGroupIngress` record of this
     // stack that outlives the update holds the same rule, so dropping it from
@@ -879,6 +852,39 @@ export async function applySecurityGroupRuleDiff(
     } catch (error) {
       if (!this.isNotFoundError(error)) throw error;
     }
+  }
+
+  // go-to-k/cdkd#6514: a description-only change, in place. AFTER the
+  // revokes, so a description call that fails cannot keep a rule this update
+  // removes; a rule revoked out of band joins the authorizes below.
+  for (const rule of toDescribe) {
+    // A redacted recorded description (a state-borne caller) is never sent
+    // as the live one, as the standalone path does.
+    if (isRedactedRecordedValue(rule['Description'])) continue;
+    // go-to-k/cdkd#4492: a standalone record of this stack holding the same
+    // rule shares its one description, so it is left as that record has it.
+    if (direction === 'ingress' && logicalId !== undefined) {
+      const holder = stackIngressRuleHolder(
+        getStackRecords()?.survivors(),
+        logicalId,
+        groupId,
+        rule
+      );
+      if (holder !== undefined) {
+        this.logger.info(
+          safeMsg`SecurityGroup ${logicalId}: an ingress rule whose description changed is also held by ${holder} of this stack, so its description was left as it is`
+        );
+        continue;
+      }
+    }
+    const outcome = await updateSgRuleDescription(
+      this.ec2Client,
+      groupId,
+      direction,
+      this.buildIpPermission(rule, direction, direction === 'ingress')
+    );
+    // Revoked out of band: authorized below, as the revoke + authorize did.
+    if (outcome === 'not-found') toAuthorize.push(rule);
   }
 
   for (const rule of toAuthorize) {

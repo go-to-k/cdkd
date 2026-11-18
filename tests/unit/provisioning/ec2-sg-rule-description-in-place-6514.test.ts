@@ -231,6 +231,38 @@ describe('inline SecurityGroup rules: a description-only change is in place (#65
     ).rejects.toThrow('denied');
   });
 
+  it('a rule the update removes is revoked BEFORE a description call that then fails', async () => {
+    const removed = { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '0.0.0.0/0' };
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof UpdateSecurityGroupRuleDescriptionsIngressCommand
+        ? Promise.reject(Object.assign(new Error('denied'), { name: 'UnauthorizedOperation' }))
+        : Promise.resolve({ Return: true })
+    );
+
+    await expect(
+      provider.applySecurityGroupRuleDiff(
+        GROUP_ID,
+        [INGRESS, removed],
+        [{ ...INGRESS, Description: 'v2' }],
+        'ingress',
+        'Sg'
+      )
+    ).rejects.toThrow('denied');
+
+    const order = sent().map((c) => (c as { constructor: { name: string } }).constructor.name);
+    expect(order).toEqual(['RevokeSecurityGroupIngressCommand', 'UpdateSecurityGroupRuleDescriptionsIngressCommand']);
+    expect(sentOf(RevokeSecurityGroupIngressCommand)[0]!.input).toEqual({
+      GroupId: GROUP_ID,
+      IpPermissions: [{ IpProtocol: 'tcp', FromPort: 22, ToPort: 22, IpRanges: [{ CidrIp: '0.0.0.0/0' }] }],
+    });
+  });
+
+  it('a redacted desired description (a state-borne caller) is never sent as the live one', async () => {
+    await provider.applySecurityGroupRuleDiff(GROUP_ID, [INGRESS], [{ ...INGRESS, Description: '***' }], 'ingress', 'Sg');
+
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('an ingress rule a standalone record of the stack also holds keeps its description (#4492)', async () => {
     const standalone = {
       physicalId: `${GROUP_ID}|tcp|443|443`,

@@ -155,9 +155,21 @@ deploy() { # usage: deploy <phase> <log file>
   }
 }
 DEPLOY_LOG="$(mktemp)"
-# The standalone rule reported as replaced (the pre-fix revoke + authorize).
-standalone_replaced() { # usage: standalone_replaced <log file>
-  sed 's/\x1b\[[0-9;]*m//g' "$1" | grep -E 'Standalone .*AWS::EC2::SecurityGroupIngress.*replaced'
+# The Standalone row of the deploy's progress output must say `updated` (an
+# in-place update). Its row is found by the logical id AND the resource type,
+# so a reworded verb fails loudly as "no row" instead of passing as "not
+# replaced"; `replaced` is the pre-fix revoke + authorize.
+expect_standalone_updated() { # usage: expect_standalone_updated <phase> <log file>
+  local rows
+  rows="$(sed 's/\x1b\[[0-9;]*m//g' "$2" | grep -E 'Standalone \(AWS::EC2::SecurityGroupIngress\)' || true)"
+  if grep -q 'replaced' <<<"${rows}"; then
+    echo "FAIL: $1: the standalone rule was replaced for a description edit (go-to-k/cdkd#6514): ${rows}" >&2
+    return 1
+  fi
+  grep -qE 'Standalone \(AWS::EC2::SecurityGroupIngress\) updated' <<<"${rows}" || {
+    echo "FAIL: $1: no 'Standalone (AWS::EC2::SecurityGroupIngress) updated' row in the deploy output (rows: '${rows}'); if cdkd reworded its row, update this check" >&2
+    return 1
+  }
 }
 
 echo "==> Phase 1: deploy v1"
@@ -187,10 +199,7 @@ echo "    OK: ingress ${IN_ID}, egress ${OUT_ID}, standalone ${ST_ID}"
 echo "==> Phase 2: deploy v2 (every description changes)"
 export CDKD_TEST_UPDATE=v2
 deploy "phase 2" "${DEPLOY_LOG}"
-if standalone_replaced "${DEPLOY_LOG}"; then
-  echo "FAIL: phase 2: the standalone rule was replaced for a description edit (go-to-k/cdkd#6514)" >&2
-  exit 1
-fi
+expect_standalone_updated "phase 2" "${DEPLOY_LOG}"
 expect_description "phase 2" "${SG}" "${IN_ID}" "cdkd 6514 ingress v2"
 expect_description "phase 2" "${SG}" "${OUT_ID}" "cdkd 6514 egress v2"
 expect_description "phase 2" "${SG}" "${ST_ID}" "cdkd 6514 standalone v2"
@@ -204,10 +213,7 @@ echo "    OK: the three rules kept their ids and carry the v2 descriptions"
 echo "==> Phase 3: deploy v3 (the standalone rule's description is dropped)"
 export CDKD_TEST_UPDATE=v3
 deploy "phase 3" "${DEPLOY_LOG}"
-if standalone_replaced "${DEPLOY_LOG}"; then
-  echo "FAIL: phase 3: the standalone rule was replaced for a description removal (go-to-k/cdkd#6514)" >&2
-  exit 1
-fi
+expect_standalone_updated "phase 3" "${DEPLOY_LOG}"
 expect_description "phase 3" "${SG}" "${ST_ID}" ""
 [ "$(rule_id "${SG}" false 8443)" = "${ST_ID}" ] || { echo "FAIL: phase 3: the standalone rule is no longer ${ST_ID}" >&2; exit 1; }
 expect_description "phase 3" "${SG}" "${IN_ID}" "cdkd 6514 ingress v2"
