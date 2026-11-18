@@ -4,7 +4,7 @@
  * queue's live policy is the attempted document. SetQueueAttributes replaces
  * a policy, so any other content is a later writer's: left, and named.
  */
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const mockSend = vi.fn();
 const mockRegion = vi.fn(() => Promise.resolve('us-east-1'));
@@ -44,6 +44,7 @@ import {
 } from '../../../src/provisioning/providers/sqs-queue-policy-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { setAwsEndpointOverrideSource } from '../../../src/utils/aws-client-defaults.js';
 
 const warn = getLogger().child('SQSQueuePolicyProvider').warn as ReturnType<typeof vi.fn>;
 const warnings = (): string => warn.mock.calls.map((c) => String(c[0])).join('\n');
@@ -326,5 +327,41 @@ describe('SQSQueuePolicyProvider: a failed create orphan is cleared by content (
       expectedRegion: 'us-east-1',
     });
     expect(cleared()).toEqual([Q1, Q2]);
+  });
+});
+
+describe('SQSQueuePolicyProvider: under --aws-emulator the queue holds the document as sent (go-to-k/cdkd#6574)', () => {
+  const SSL_DENY = {
+    Effect: 'Deny',
+    Principal: { AWS: '*' },
+    Action: 'sqs:*',
+    Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+  };
+  const WITH_DENY = { Version: '2012-10-17', Statement: [SSL_DENY, { Sid: 'Failed', Effect: 'Allow' }] };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockRegion.mockImplementation(() => Promise.resolve('us-east-1'));
+    setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9297' }));
+  });
+  afterEach(() => setAwsEndpointOverrideSource(undefined));
+
+  it('a failed create orphan is cleared when the queue holds the attempted document without its enforceSSL Deny', async () => {
+    routeAws({ [Q1]: DOC_LIVE });
+    await expect(orphanDelete(Q1, { Queues: [Q1], PolicyDocument: WITH_DENY })).resolves.toBeUndefined();
+    expect(cleared()).toEqual([Q1]);
+  });
+
+  it('an update clears a dropped queue holding the previous document without its enforceSSL Deny', async () => {
+    routeAws({ [Q2]: DOC_LIVE });
+    await new SQSQueuePolicyProvider().update(
+      'P',
+      Q1,
+      TYPE,
+      { Queues: [Q1], PolicyDocument: WITH_DENY },
+      { Queues: [Q1, Q2], PolicyDocument: WITH_DENY },
+      { expectedRegion: 'us-east-1' }
+    );
+    expect(cleared()).toContain(Q2);
   });
 });

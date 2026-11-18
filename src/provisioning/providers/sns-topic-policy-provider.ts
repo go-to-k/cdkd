@@ -1,6 +1,6 @@
 import { SetTopicAttributesCommand, GetTopicAttributesCommand } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
-import { serializeResourcePolicy } from '../emulator-secure-transport.js';
+import { sentPolicyDocument, serializeResourcePolicy } from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
@@ -405,7 +405,7 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     }
     const document = attempted.document;
     // IAM-equivalent spellings folded (a bare account id and its root ARN).
-    const reference = policyContentKey(document);
+    const reference = policyContentKey(sentPolicyDocument(document));
     // A topic a TopicPolicy of this very deploy wrote: a read may still
     // return the failed create's document, so it is never read back here.
     const fresh = new Set(
@@ -589,9 +589,11 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     mask: (text: string) => string
   ): Promise<string[]> {
     if (candidates.length === 0) return [];
+    // Under --aws-emulator the topics hold what was sent, not the record.
+    const sent = sentPolicyDocument(document);
     let reference: string | undefined;
-    if (typeof document === 'string' && document.length > 0) reference = canonicalPolicy(document);
-    else if (document !== null && typeof document === 'object') reference = canonicalJson(document);
+    if (typeof sent === 'string' && sent.length > 0) reference = canonicalPolicy(sent);
+    else if (sent !== null && typeof sent === 'object') reference = canonicalJson(sent);
     if (reference === undefined) {
       this.logger.warn(
         mask(

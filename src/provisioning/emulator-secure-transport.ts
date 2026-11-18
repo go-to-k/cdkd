@@ -46,12 +46,48 @@ export function isInsecureTransportDeny(statement: unknown): boolean {
 }
 
 /**
- * The policy document to SEND for a resource policy: under `--aws-emulator`,
- * `document` without its {@link isInsecureTransportDeny} statements, with one
- * warning per resource naming how many were left out; otherwise `document`
- * itself. A string document is parsed first; an unparseable one, one without a
- * `Statement` array, or one the drop would leave with no statement at all (a
- * policy of only that `Deny` grants nothing either way) is returned unchanged.
+ * `document` without its {@link isInsecureTransportDeny} statements, and how
+ * many were left out. A string document is parsed first; an unparseable one,
+ * one without a `Statement` array (a lone statement object cannot be dropped
+ * without emptying the policy), or one the drop would leave with no statement
+ * at all (a policy of only that `Deny` grants nothing either way) is returned
+ * unchanged, with `dropped: 0`.
+ */
+function withoutInsecureTransportDenies(document: unknown): { document: unknown; dropped: number } {
+  let parsed: unknown = document;
+  if (typeof document === 'string') {
+    try {
+      parsed = JSON.parse(document);
+    } catch {
+      return { document, dropped: 0 };
+    }
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { document, dropped: 0 };
+  }
+  const statements = (parsed as Record<string, unknown>)['Statement'];
+  if (!Array.isArray(statements)) return { document, dropped: 0 };
+  const kept = statements.filter((statement) => !isInsecureTransportDeny(statement));
+  const dropped = statements.length - kept.length;
+  if (dropped === 0 || kept.length === 0) return { document, dropped: 0 };
+  return { document: { ...(parsed as Record<string, unknown>), Statement: kept }, dropped };
+}
+
+/**
+ * The policy document cdkd SENDS for `document` in this run: under
+ * `--aws-emulator` without its {@link isInsecureTransportDeny} statements,
+ * otherwise `document` itself. Silent: for comparing a live policy with a
+ * templated or journaled one, which under the emulator holds what was sent.
+ */
+export function sentPolicyDocument(document: unknown): unknown {
+  if (!awsEndpointOverrideActive()) return document;
+  return withoutInsecureTransportDenies(document).document;
+}
+
+/**
+ * {@link sentPolicyDocument}, warning naming the resource and how many
+ * statements were left out. Called once per write call, so a retried create
+ * warns again.
  */
 export function policyDocumentForEmulator(
   document: unknown,
@@ -59,25 +95,13 @@ export function policyDocumentForEmulator(
   logicalId: string
 ): unknown {
   if (!awsEndpointOverrideActive()) return document;
-  let parsed: unknown = document;
-  if (typeof document === 'string') {
-    try {
-      parsed = JSON.parse(document);
-    } catch {
-      return document;
-    }
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return document;
-  const statements = (parsed as Record<string, unknown>)['Statement'];
-  if (!Array.isArray(statements)) return document;
-  const kept = statements.filter((statement) => !isInsecureTransportDeny(statement));
-  const dropped = statements.length - kept.length;
-  if (dropped === 0 || kept.length === 0) return document;
+  const { document: sent, dropped } = withoutInsecureTransportDenies(document);
+  if (dropped === 0) return document;
   const what = dropped === 1 ? 'a Deny statement' : `${dropped} Deny statements`;
   getLogger().warn(
     safeMsg`--aws-emulator: left ${what} on aws:SecureTransport out of ${logicalId} (${resourceType}): AWS Emulator does not evaluate that key, so the statement would deny every request; on AWS it never matches an HTTPS request. The state record keeps the templated policy.`
   );
-  return { ...(parsed as Record<string, unknown>), Statement: kept };
+  return sent;
 }
 
 /**

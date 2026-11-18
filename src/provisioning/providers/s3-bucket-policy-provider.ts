@@ -11,7 +11,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { getCurrentStackName } from '../resource-name/stack-scope.js';
 import { getStackRecords } from '../../deployment/stack-records-scope.js';
 import { getLogger } from '../../utils/logger.js';
-import { serializeResourcePolicy } from '../emulator-secure-transport.js';
+import { sentPolicyDocument, serializeResourcePolicy } from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import {
@@ -625,7 +625,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       return false;
     }
     for (const bag of attempts) {
-      const attempted = bag['PolicyDocument'];
+      const attempted = sentPolicyDocument(bag['PolicyDocument']);
       if (bag['Bucket'] !== bucketName || attempted == null) continue;
       if ((await this.livePolicyKey(livePolicy, attempted)) === policyContentKey(attempted)) {
         this.logger.info(
