@@ -60,7 +60,7 @@ const sdkName = (type: string, logicalId: string): string =>
 /** Types whose SDK provider sends `generateResourceNameWithFallback` (IAM, ELBv2). */
 const rewritten = reverseReplacementRewrittenNameTypes();
 /** No SDK provider: Cloud Control only. */
-const CC_ONLY = ['AWS::Lambda::CapacityProvider'];
+const CC_ONLY = ['AWS::Lambda::CapacityProvider', 'AWS::CloudWatch::MetricStream'];
 
 /**
  * The SDK providers' name expressions before go-to-k/cdkd#5064 / #5095,
@@ -386,6 +386,8 @@ describe("a legacy stack's names do not move (#5095)", () => {
       'AWS::KinesisFirehose::DeliveryStream',
       'AWS::S3Vectors::VectorBucket',
       'AWS::ServiceDiscovery::Service',
+      // go-to-k/cdkd#6555: Cloud Control only.
+      'AWS::CloudWatch::MetricStream',
     ]) {
       expect(fallbackNamePathFor(type), type).toBeDefined();
       expect(explicitNamePropertyFor(type), type).toBeUndefined();
