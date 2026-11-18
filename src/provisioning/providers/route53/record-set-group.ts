@@ -37,6 +37,9 @@ import {
   normalizeRecordName,
   isCnameConflictRefusal,
   CNAME_CONFLICT_COLLISION_NOTE,
+  bareHostedZoneId,
+  zoneReferenceChanged,
+  recordedZoneForSwitch,
 } from './shared.js';
 
 // ─── AWS::Route53::RecordSetGroup ──────────────────────────────────
@@ -403,12 +406,54 @@ async function applyRecordSetGroupUpdate(
   // A zone change is a replacement (`replacement-rules/rules.ts`), so reaching
   // here with a desired zone id other than the one the records live in would
   // write them to the old zone while state recorded the new one.
+  // A switch between `HostedZoneName` and `HostedZoneId` is not a replacement
+  // either (go-to-k/cdkd#6537), so a NAME is resolved too — only when the
+  // zone reference changed, so an ordinary update makes no extra call.
   const desiredZoneId = zone['HostedZoneId'];
-  const bareZoneId = (id: string) => id.replace(/^\/hostedzone\//, '');
-  if (typeof desiredZoneId === 'string' && bareZoneId(desiredZoneId) !== bareZoneId(hostedZoneId)) {
+  let desiredZone: string | undefined =
+    typeof desiredZoneId === 'string' ? desiredZoneId : undefined;
+  const previousZone = groupZoneProperties(
+    previousProperties,
+    'refusal' in previous ? [] : previous.records
+  );
+  if (
+    desiredZone === undefined &&
+    typeof zone['HostedZoneName'] === 'string' &&
+    !('refusal' in previousZone) &&
+    zoneReferenceChanged(previousZone.zone, zone)
+  ) {
+    desiredZone = await this.resolveHostedZoneId(zone, logicalId, resourceType, physicalId, {
+      requireUnambiguousZoneName: true,
+      subject: groupSubject,
+    });
+  }
+  // The zone the records are in: the cdkd id's, else (an id `cdkd import`
+  // adopted verbatim, where `hostedZoneId` above was resolved from the
+  // DESIRED side) the recorded reference's, which must resolve.
+  let recordedZone = hostedZoneId;
+  if (
+    !parseRecordSetGroupCompositeId(physicalId, logicalId) &&
+    !('refusal' in previousZone) &&
+    zoneReferenceChanged(previousZone.zone, zone)
+  ) {
+    recordedZone = await recordedZoneForSwitch(
+      this,
+      previousZone.zone,
+      logicalId,
+      resourceType,
+      physicalId,
+      'Record set group'
+    );
+  }
+  if (
+    desiredZone !== undefined &&
+    bareHostedZoneId(desiredZone) !== bareHostedZoneId(recordedZone)
+  ) {
     throw groupRefusalError(
       `Record set group ${logicalId}: the template's hosted zone differs from the one its ` +
-        `records are in (${hostedZoneId}); moving a group to another zone replaces it`,
+        `records are in (${recordedZone}). Moving a group to another zone replaces it: name ` +
+        `the new zone with the key the group already uses (HostedZoneId or HostedZoneName) so ` +
+        `cdkd plans the replacement`,
       logicalId,
       physicalId
     );

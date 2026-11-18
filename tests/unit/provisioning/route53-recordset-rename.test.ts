@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   ChangeResourceRecordSetsCommand,
+  ListHostedZonesByNameCommand,
   ListResourceRecordSetsCommand,
 } from '@aws-sdk/client-route-53';
 import {
@@ -559,5 +560,160 @@ describe('Route53Provider create classifies Route 53 name conflicts as collision
     const error = await createError(refusal);
     expect(error).toBeInstanceOf(ProvisioningError);
     expect(isNameCollisionErrorFrom(error, 'Rec')).toBe(false);
+  });
+});
+
+// go-to-k/cdkd#6537: a HostedZoneName <-> HostedZoneId switch is not a
+// replacement, so update() must refuse one that names ANOTHER zone.
+describe('Route53Provider RecordSet zone-key switch (go-to-k/cdkd#6537)', () => {
+  let provider: Route53Provider;
+  const ZONE_NAME = 'example.com.';
+  const OTHER = 'Z9999999999';
+
+  /** ListHostedZonesByName answers a single zone `zoneId` named example.com. */
+  function routeZones(zoneId: string): void {
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof ListHostedZonesByNameCommand) {
+        return {
+          HostedZones: [{ Id: `/hostedzone/${zoneId}`, Name: ZONE_NAME, Config: { PrivateZone: false } }],
+          IsTruncated: false,
+        };
+      }
+      if (command instanceof ListResourceRecordSetsCommand) return { ResourceRecordSets: [] };
+      if (command instanceof ChangeResourceRecordSetsCommand) return {};
+      throw new Error(`unexpected command ${String((command as object).constructor.name)}`);
+    });
+  }
+  const byName = (extra: Record<string, unknown> = {}) => {
+    const { HostedZoneId: _id, ...rest } = record(extra);
+    return { ...rest, HostedZoneName: ZONE_NAME };
+  };
+  const composite = `${ZONE}|old.example.com.|A`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new Route53Provider();
+  });
+
+  it('name -> id of the same zone UPSERTs in that zone', async () => {
+    routeZones(ZONE);
+    const result = await provider.update('Rec', composite, TYPE, record({ TTL: '60' }), byName());
+    const changes = calls(ChangeResourceRecordSetsCommand);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.input.HostedZoneId).toBe(ZONE);
+    expect(changes[0]?.input.ChangeBatch?.Changes?.[0]?.Action).toBe('UPSERT');
+    expect(result.physicalId).toBe(composite);
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+  });
+
+  it('name -> /hostedzone/-prefixed id of the same zone proceeds', async () => {
+    routeZones(ZONE);
+    await provider.update('Rec', composite, TYPE, record({ HostedZoneId: `/hostedzone/${ZONE}` }), byName());
+    expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(1);
+  });
+
+  it('id -> name resolving to the same zone UPSERTs in that zone', async () => {
+    routeZones(ZONE);
+    await provider.update('Rec', composite, TYPE, byName({ TTL: '60' }), record({}));
+    const changes = calls(ChangeResourceRecordSetsCommand);
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]?.input.HostedZoneId).toBe(ZONE);
+    expect(changes[0]?.input.ChangeBatch?.Changes?.[0]?.Action).toBe('UPSERT');
+  });
+
+  it('name -> id of ANOTHER zone throws before any change call', async () => {
+    routeZones(ZONE);
+    await expect(
+      provider.update('Rec', composite, TYPE, record({ HostedZoneId: OTHER }), byName())
+    ).rejects.toThrow(/Record set Rec: the template's hosted zone/);
+    expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(0);
+    expect(calls(ListResourceRecordSetsCommand)).toHaveLength(0);
+  });
+
+  it('id -> name resolving to ANOTHER zone throws before any change call', async () => {
+    routeZones(OTHER);
+    await expect(provider.update('Rec', composite, TYPE, byName(), record({}))).rejects.toThrow(
+      /Record set Rec: the template's hosted zone/
+    );
+    expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(0);
+  });
+
+  it('an unchanged HostedZoneName makes only the one resolution lookup and never refuses', async () => {
+    routeZones(ZONE);
+    await provider.update('Rec', composite, TYPE, byName({ TTL: '60' }), byName());
+    // resolveHostedZoneId's own lookup; the refusal check adds none.
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+    expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(1);
+  });
+
+  it('an unchanged HostedZoneId makes no lookup and never refuses', async () => {
+    routeZones(OTHER);
+    await provider.update('Rec', composite, TYPE, record({ TTL: '60' }), record({}));
+    expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+    expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(1);
+  });
+
+  describe('a non-composite (imported CloudFormation) physicalId resolves the RECORDED zone', () => {
+    const imported = 'www.example.com';
+    const prevByName = (name: unknown) => {
+      const { HostedZoneId: _id, ...rest } = record({});
+      return { ...rest, HostedZoneName: name };
+    };
+    const zonesNamed = (...ids: string[]) => {
+      mockSend.mockImplementation(async (command: unknown) => {
+        if (command instanceof ListHostedZonesByNameCommand) {
+          return {
+            HostedZones: ids.map((id) => ({
+              Id: `/hostedzone/${id}`,
+              Name: 'a.com.',
+              Config: { PrivateZone: false },
+            })),
+            IsTruncated: false,
+          };
+        }
+        if (command instanceof ListResourceRecordSetsCommand) return { ResourceRecordSets: [] };
+        if (command instanceof ChangeResourceRecordSetsCommand) return {};
+        throw new Error('unexpected command');
+      });
+    };
+
+    it('recorded name resolving to Z_A, desired id Z_B: throws, no change call', async () => {
+      zonesNamed('Z_A');
+      await expect(
+        provider.update('Rec', imported, TYPE, record({ HostedZoneId: 'Z_B' }), prevByName('a.com.'))
+      ).rejects.toThrow(/cannot confirm|is not the one/);
+      expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(0);
+    });
+
+    it('recorded name resolving to Z_A, desired id Z_A: UPSERTs in Z_A', async () => {
+      zonesNamed('Z_A');
+      await provider.update('Rec', imported, TYPE, record({ HostedZoneId: 'Z_A' }), prevByName('a.com.'));
+      const changes = calls(ChangeResourceRecordSetsCommand);
+      expect(changes).toHaveLength(1);
+      expect(changes[0]?.input.HostedZoneId).toBe('Z_A');
+      expect(changes[0]?.input.ChangeBatch?.Changes?.[0]?.Action).toBe('UPSERT');
+    });
+
+    it('recorded name matching two zones: throws, no change call', async () => {
+      zonesNamed('Z_A', 'Z_A2');
+      await expect(
+        provider.update('Rec', imported, TYPE, record({ HostedZoneId: 'Z_A' }), prevByName('a.com.'))
+      ).rejects.toThrow(/cannot confirm/);
+      expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(0);
+    });
+
+    it.each([['***'], ['{{resolve:ssm:/x}}']])(
+      'recorded HostedZoneName %s: throws "redacted", no lookup, no change call',
+      async (name) => {
+        zonesNamed('Z_A');
+        await expect(
+          provider.update('Rec', imported, TYPE, record({ HostedZoneId: 'Z_A' }), prevByName(name))
+        ).rejects.toThrow(/redacted/);
+        expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+        expect(calls(ChangeResourceRecordSetsCommand)).toHaveLength(0);
+      }
+    );
   });
 });

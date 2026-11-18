@@ -688,18 +688,53 @@ export function recordSetGroupRecordZoneChanged(
   const groupZone = (props: Readonly<Record<string, unknown>> | undefined): boolean =>
     props?.['HostedZoneId'] !== undefined || props?.['HostedZoneName'] !== undefined;
   if (groupZone(siblings?.oldProperties) || groupZone(siblings?.newProperties)) return false;
-  const recordZone = (value: unknown): string | undefined => {
+  const recordZone = (value: unknown): Record<string, unknown> | undefined => {
     if (!Array.isArray(value)) return undefined;
     for (const record of value) {
       if (record === null || typeof record !== 'object' || Array.isArray(record)) continue;
       const r = record as Record<string, unknown>;
-      if (r['HostedZoneId'] !== undefined || r['HostedZoneName'] !== undefined) {
-        return JSON.stringify([r['HostedZoneId'] ?? null, r['HostedZoneName'] ?? null]);
-      }
+      if (r['HostedZoneId'] !== undefined || r['HostedZoneName'] !== undefined) return r;
     }
     return undefined;
   };
   const before = recordZone(oldValue);
   const after = recordZone(newValue);
-  return before !== undefined && after !== undefined && before !== after;
+  if (before === undefined || after === undefined) return false;
+  // The same rule as the group-level keys: a switch between the two keys is
+  // checked by `update()`, not replaced (go-to-k/cdkd#6537).
+  return route53ZoneReferenceChanged(undefined, undefined, {
+    oldProperties: before,
+    newProperties: after,
+  });
+}
+
+/**
+ * Whether a Route 53 record's (or record set group's) `HostedZoneId` /
+ * `HostedZoneName` change moves it to another zone (go-to-k/cdkd#6537). Two
+ * ids, or two names, that differ do. A switch between the keys does not by
+ * itself: CloudFormation updates `HostedZoneName` -> the same zone's
+ * `HostedZoneId` in place (measured), and the provider's `update()` refuses a
+ * switch that names another zone. Anything unreadable replaces, as before.
+ */
+export function route53ZoneReferenceChanged(
+  _oldValue: unknown,
+  _newValue: unknown,
+  siblings?: ReplacementSiblings
+): boolean {
+  if (!siblings) return true;
+  const read = (props: Readonly<Record<string, unknown>>) => {
+    const id = props['HostedZoneId'];
+    const name = props['HostedZoneName'];
+    return {
+      id: typeof id === 'string' ? id.replace(/^\/hostedzone\//, '') : id,
+      name,
+    };
+  };
+  const before = read(siblings.oldProperties);
+  const after = read(siblings.newProperties);
+  const readable = (v: unknown) => v === undefined || typeof v === 'string';
+  if (![before.id, before.name, after.id, after.name].every(readable)) return true;
+  if (before.id !== undefined && after.id !== undefined) return before.id !== after.id;
+  if (before.id === undefined && after.id === undefined) return before.name !== after.name;
+  return false;
 }

@@ -446,6 +446,11 @@ if [ "${GRP_B_VALUE}" != '"v1"' ]; then
   exit 1
 fi
 echo "    OK: RecordSetGroup created its three records in zone ${GROUP_ZONE_ID}; Ref is '${GROUP_REF}'"
+ZONE_KEY_ID_BEFORE=$(echo "${STATE}" | jq -r '.resources.ZoneKeyRecord.physicalId // empty')
+if [ -z "${ZONE_KEY_ID_BEFORE}" ]; then
+  echo "FAIL: ZoneKeyRecord is missing from state after Phase 1 (#6537)" >&2
+  exit 1
+fi
 
 # --- Assertion: a record whose NAME contains `|` deploys (issue #3890) ----
 # Route 53 accepts `|` in a record name and stores it as `\174`; cdkd joins
@@ -1158,6 +1163,29 @@ if [ "${GRP_B_UPDATED}" != '"v2"' ]; then
   exit 1
 fi
 echo "    OK: the RecordSetGroup update added, changed and removed its records in one batch"
+# Issue #6537: both switched from HostedZoneName to the same zone's
+# HostedZoneId in 2.7a. The discriminator is the 2.7a deploy succeeding: a
+# replacement creates first in the same zone, which Route 53 refuses while
+# the live record holds the name. The checks below pin what that update
+# recorded (the physical ids alone would match after a same-zone replacement).
+ZONE_KEY_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+if [ -z "${ZONE_KEY_STATE}" ]; then
+  echo "FAIL: could not read state after the Phase 2.7a redeploy (#6537)" >&2
+  exit 1
+fi
+ZONE_KEY_ID_AFTER=$(echo "${ZONE_KEY_STATE}" | jq -r '.resources.ZoneKeyRecord.physicalId // empty')
+GROUP_ID_AFTER=$(echo "${ZONE_KEY_STATE}" | jq -r '.resources.RecordGroup.physicalId // empty')
+ZONE_KEY_RECORDED=$(echo "${ZONE_KEY_STATE}" | jq -r '.resources.ZoneKeyRecord.properties.HostedZoneId // empty')
+if [ "${ZONE_KEY_ID_AFTER}" != "${ZONE_KEY_ID_BEFORE}" ] || [ "${GROUP_ID_AFTER}" != "${GROUP_PHYSICAL_ID}" ]; then
+  echo "FAIL: the HostedZoneName -> HostedZoneId switch changed a physical id (#6537): ZoneKeyRecord '${ZONE_KEY_ID_BEFORE}' -> '${ZONE_KEY_ID_AFTER}', RecordGroup '${GROUP_PHYSICAL_ID}' -> '${GROUP_ID_AFTER}'" >&2
+  exit 1
+fi
+if [ "${ZONE_KEY_RECORDED}" != "${GROUP_ZONE_ID}" ]; then
+  echo "FAIL: ZoneKeyRecord's state records HostedZoneId '${ZONE_KEY_RECORDED}', not the stack zone '${GROUP_ZONE_ID}' (#6537)" >&2
+  exit 1
+fi
+expect_records "${NAME_RENAMED_RECORDS}" "zonekey.${ZONE_NAME}" A "" 1 "the zone-key switch left ZoneKeyRecord not live (#6537)"
+echo "    OK: HostedZoneName -> HostedZoneId updated ZoneKeyRecord and RecordGroup in place (#6537)"
 
 # Issue #3890: the same redeploy raises PipeRecord's TTL 300 -> 600, an
 # in-place UPDATE of a record whose name contains `|` -- one record, new TTL.

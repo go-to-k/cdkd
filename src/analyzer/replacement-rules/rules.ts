@@ -21,6 +21,7 @@ import {
   dbInstanceEngineChangeReplaces,
   elastiCachePreferredAvailabilityZonesReplaced,
   recordSetGroupRecordZoneChanged,
+  route53ZoneReferenceChanged,
 } from './predicates.js';
 
 /**
@@ -425,16 +426,28 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
     conditionalReplacements: new Map([['TableInput', glueTableNameChanged]]),
   });
 
-  // Route 53 RecordSetGroup — the type has no registry schema, so no
-  // create-only fallback exists: the zone is classified here. A group's
-  // records are written in one batch against ONE zone, so moving the group is
-  // a replacement (CFn "Update requires: Replacement"); its records and
-  // comment update in place, unless the records carry the zone.
+  // Route 53 RecordSet / RecordSetGroup — the zone is create-only, but a
+  // switch between `HostedZoneName` and `HostedZoneId` naming the same zone
+  // updates in place in CloudFormation (go-to-k/cdkd#6537); the provider's
+  // `update()` refuses one naming another zone. RecordSetGroup has no
+  // registry schema, so its rule is wholly hand-authored: its records and
+  // comment update in place, unless the records carry the zone (#6530).
+  this.rules.set('AWS::Route53::RecordSet', {
+    replacementProperties: new Set<string>(),
+    conditionalReplacements: new Map([
+      ['HostedZoneId', route53ZoneReferenceChanged],
+      ['HostedZoneName', route53ZoneReferenceChanged],
+    ]),
+  });
   this.rules.set('AWS::Route53::RecordSetGroup', {
-    replacementProperties: new Set(['HostedZoneId', 'HostedZoneName']),
+    replacementProperties: new Set<string>(),
     updateableProperties: new Set(['Comment']),
-    // A group without its own zone takes its records' zone.
-    conditionalReplacements: new Map([['RecordSets', recordSetGroupRecordZoneChanged]]),
+    conditionalReplacements: new Map([
+      ['HostedZoneId', route53ZoneReferenceChanged],
+      ['HostedZoneName', route53ZoneReferenceChanged],
+      // A group without its own zone takes its records' zone.
+      ['RecordSets', recordSetGroupRecordZoneChanged],
+    ]),
   });
 
   // CloudWatch Alarm — AlarmName is immutable (CFn "Update requires:

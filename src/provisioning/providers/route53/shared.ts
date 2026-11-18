@@ -3,6 +3,8 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { isTruthyCfnBoolean } from '../../data-delete-intent.js';
 import { isPlainImportValue, VALUE_NOT_SHOWN } from '../../import-helpers.js';
 import { COMPOSITE_ID_SEPARATOR } from '../../composite-id.js';
+import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
+import type { Route53Provider } from '../route53-provider.js';
 
 /**
  * True when Route 53 refused a zone mutation because the zone's
@@ -348,4 +350,72 @@ export function recordIdentityChanged(
  */
 export function zoneNameShown(name: string): string {
   return isPlainImportValue(name.replace(/\\[0-7]{3}/g, 'x')) ? `"${name}"` : VALUE_NOT_SHOWN;
+}
+
+/** A hosted zone id without the `/hostedzone/` prefix Route 53 sometimes returns. */
+export function bareHostedZoneId(id: string): string {
+  return id.replace(/^\/hostedzone\//, '');
+}
+
+/**
+ * Whether `desired` addresses its hosted zone differently from `previous`
+ * (`HostedZoneId` / `HostedZoneName`, compared as written). The replacement
+ * rules do not replace a switch between the two keys (go-to-k/cdkd#6537, as
+ * CloudFormation updates it in place), so an `update()` seeing this must check
+ * the new reference still names the zone the record lives in.
+ */
+export function zoneReferenceChanged(
+  previous: Record<string, unknown>,
+  desired: Record<string, unknown>
+): boolean {
+  return (
+    JSON.stringify([previous['HostedZoneId'] ?? null, previous['HostedZoneName'] ?? null]) !==
+    JSON.stringify([desired['HostedZoneId'] ?? null, desired['HostedZoneName'] ?? null])
+  );
+}
+
+/**
+ * The zone a record (or group) with a NON-cdkd physical id was recorded in,
+ * resolved from its recorded `HostedZoneId` / `HostedZoneName` for the
+ * key-switch check (go-to-k/cdkd#6537). A cdkd id names its zone; an id
+ * `cdkd import` adopted verbatim does not, and resolving the DESIRED side
+ * there would compare the new zone with itself. Refuses (throws) rather than
+ * skipping the check: a redacted value, a name matching two zones or an
+ * inconclusive listing cannot confirm the switch keeps the zone, and a wrong
+ * guess writes the records to another zone and orphans the old ones.
+ */
+export async function recordedZoneForSwitch(
+  provider: Route53Provider,
+  recordedZone: Record<string, unknown>,
+  logicalId: string,
+  resourceType: string,
+  physicalId: string,
+  noun: string
+): Promise<string> {
+  const zoneSwitchRefusalError = (why: string, cause?: Error) =>
+    new ProvisioningError(
+      `${noun} ${logicalId}: the template changes its hosted zone reference, and cdkd ` +
+        `cannot confirm the new reference names the zone the record was recorded in ` +
+        `(${why}). Keep the zone key the record already uses.`,
+      resourceType,
+      logicalId,
+      physicalId,
+      cause
+    );
+  if (
+    isRedactedRecordedValue(recordedZone['HostedZoneId']) ||
+    isRedactedRecordedValue(recordedZone['HostedZoneName'])
+  ) {
+    throw zoneSwitchRefusalError('the recorded zone is redacted');
+  }
+  try {
+    return await provider.resolveHostedZoneId(recordedZone, logicalId, resourceType, physicalId, {
+      requireUnambiguousZoneName: true,
+    });
+  } catch (error) {
+    throw zoneSwitchRefusalError(
+      'the recorded zone could not be resolved',
+      error instanceof Error ? error : undefined
+    );
+  }
 }

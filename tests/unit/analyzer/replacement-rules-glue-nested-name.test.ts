@@ -22,7 +22,10 @@ import {
   ReplacementRulesRegistry,
   glueTableNameChanged,
 } from '../../../src/analyzer/replacement-rules.js';
-import { recordSetGroupRecordZoneChanged } from '../../../src/analyzer/replacement-rules/predicates.js';
+import {
+  recordSetGroupRecordZoneChanged,
+  route53ZoneReferenceChanged,
+} from '../../../src/analyzer/replacement-rules/predicates.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -66,6 +69,10 @@ describe('recordSetGroupRecordZoneChanged (go-to-k/cdkd#6530)', () => {
     ['a record HostedZoneId changes', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), noGroupZone, true],
     ['a record HostedZoneName changes', rs({ HostedZoneName: 'a.com.' }), rs({ HostedZoneName: 'b.com.' }), noGroupZone, true],
     ['unchanged record zone', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
+    // go-to-k/cdkd#6537: a key switch on the records is checked by update(), not replaced.
+    ['a record name -> id switch', rs({ HostedZoneName: 'a.com.' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
+    ['a record id -> name switch', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneName: 'a.com.' }), noGroupZone, false],
+    ['a record id spelled with the prefix', rs({ HostedZoneId: '/hostedzone/Z1' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
     ['group zone on the old side', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), { oldProperties: { HostedZoneId: 'Z1' }, newProperties: {} }, false],
     ['group zone on the new side', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), { oldProperties: {}, newProperties: { HostedZoneName: 'x.' } }, false],
   ])('%s', (_label, oldValue, newValue, siblings, expected) => {
@@ -81,6 +88,122 @@ describe('recordSetGroupRecordZoneChanged (go-to-k/cdkd#6530)', () => {
     expect(
       rules.requiresReplacement('AWS::Route53::RecordSetGroup', 'RecordSets', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z1', TTL: 60 }), siblings)
     ).toBe(false);
+  });
+});
+
+describe('route53ZoneReferenceChanged (go-to-k/cdkd#6537)', () => {
+  const sib = (o: Record<string, unknown>, n: Record<string, unknown>) => ({
+    oldProperties: o,
+    newProperties: n,
+  });
+
+  it.each([
+    ['name -> id switch', { HostedZoneName: 'a.com.' }, { HostedZoneId: 'Z1' }, false],
+    ['id -> name switch', { HostedZoneId: 'Z1' }, { HostedZoneName: 'a.com.' }, false],
+    ['two different ids', { HostedZoneId: 'Z1' }, { HostedZoneId: 'Z2' }, true],
+    ['same id, /hostedzone/ spelling differs', { HostedZoneId: '/hostedzone/Z1' }, { HostedZoneId: 'Z1' }, false],
+    ['two different names', { HostedZoneName: 'a.com.' }, { HostedZoneName: 'b.com.' }, true],
+    ['same name', { HostedZoneName: 'a.com.' }, { HostedZoneName: 'a.com.' }, false],
+    ['a non-string (intrinsic object) id', { HostedZoneId: 'Z1' }, { HostedZoneId: { Ref: 'X' } }, true],
+    ['a non-string (intrinsic object) name on the other side', { HostedZoneName: { Ref: 'X' } }, { HostedZoneId: 'Z1' }, true],
+  ])('%s', (_label, o, n, expected) => {
+    expect(route53ZoneReferenceChanged(undefined, undefined, sib(o, n))).toBe(expected);
+  });
+
+  it('replaces when there are no siblings to read', () => {
+    expect(route53ZoneReferenceChanged('Z1', 'Z1')).toBe(true);
+  });
+
+  describe.each(['AWS::Route53::RecordSet', 'AWS::Route53::RecordSetGroup'])('registry: %s', (type) => {
+    const rules = new ReplacementRulesRegistry();
+    const check = (key: 'HostedZoneId' | 'HostedZoneName', o: Record<string, unknown>, n: Record<string, unknown>) =>
+      rules.requiresReplacement(type, key, o[key], n[key], sib(o, n));
+
+    it('a name -> id switch does not replace, on either key', () => {
+      const o = { HostedZoneName: 'a.com.' };
+      const n = { HostedZoneId: 'Z1' };
+      expect(check('HostedZoneName', o, n)).toBe(false);
+      expect(check('HostedZoneId', o, n)).toBe(false);
+    });
+
+    it('an id -> name switch does not replace, on either key', () => {
+      const o = { HostedZoneId: 'Z1' };
+      const n = { HostedZoneName: 'a.com.' };
+      expect(check('HostedZoneName', o, n)).toBe(false);
+      expect(check('HostedZoneId', o, n)).toBe(false);
+    });
+
+    it('a different id replaces', () => {
+      expect(check('HostedZoneId', { HostedZoneId: 'Z1' }, { HostedZoneId: 'Z2' })).toBe(true);
+    });
+
+    it('a different name replaces', () => {
+      expect(check('HostedZoneName', { HostedZoneName: 'a.com.' }, { HostedZoneName: 'b.com.' })).toBe(true);
+    });
+  });
+});
+
+describe('Route 53 zone switch through the diff (go-to-k/cdkd#6537)', () => {
+  beforeEach(() => {
+    mockGetCreateOnly.mockReset();
+    mockGetCreateOnly.mockImplementation(async (type: string) => CREATE_ONLY_PATHS_SNAPSHOT.get(type) ?? []);
+  });
+
+  const diffOf = async (
+    type: string,
+    recorded: Record<string, unknown>,
+    desired: Record<string, unknown>
+  ) => {
+    const state: StackState = {
+      version: 1,
+      stackName: 'S',
+      resources: { R: { physicalId: 'p', resourceType: type, properties: recorded, attributes: {} } },
+      outputs: {},
+      lastModified: 0,
+    };
+    const template: CloudFormationTemplate = { Resources: { R: { Type: type, Properties: desired } } };
+    return (await new DiffCalculator().calculateDiff(state, template)).get('R');
+  };
+  const replaces = (change: Awaited<ReturnType<typeof diffOf>>) =>
+    change?.propertyChanges?.some((c) => c.requiresReplacement) ?? false;
+
+  const record = (zone: Record<string, unknown>) => ({
+    ...zone,
+    Name: 'a.example.com.',
+    Type: 'A',
+    TTL: '300',
+    ResourceRecords: ['192.0.2.1'],
+  });
+  const group = (zone: Record<string, unknown>) => ({
+    ...zone,
+    RecordSets: [{ Name: 'a.example.com.', Type: 'A', TTL: '300', ResourceRecords: ['192.0.2.1'] }],
+  });
+
+  it('the RecordSet type carries a create-only schema path for the zone (the fallback is real)', () => {
+    const paths = CREATE_ONLY_PATHS_SNAPSHOT.get('AWS::Route53::RecordSet') ?? [];
+    expect(paths.some((p) => p[0] === 'HostedZoneId' || p[0] === 'HostedZoneName')).toBe(true);
+  });
+
+  it.each([
+    ['AWS::Route53::RecordSet', record],
+    ['AWS::Route53::RecordSetGroup', group],
+  ])('%s: name -> id and id -> name are in-place UPDATEs', async (type, mk) => {
+    const a = await diffOf(type, mk({ HostedZoneName: 'example.com.' }), mk({ HostedZoneId: 'Z1' }));
+    expect(a?.changeType).toBe('UPDATE');
+    expect(replaces(a)).toBe(false);
+    const b = await diffOf(type, mk({ HostedZoneId: 'Z1' }), mk({ HostedZoneName: 'example.com.' }));
+    expect(b?.changeType).toBe('UPDATE');
+    expect(replaces(b)).toBe(false);
+  });
+
+  it.each([
+    ['AWS::Route53::RecordSet', record],
+    ['AWS::Route53::RecordSetGroup', group],
+  ])('%s: a different id, or a different name, still replaces', async (type, mk) => {
+    expect(replaces(await diffOf(type, mk({ HostedZoneId: 'Z1' }), mk({ HostedZoneId: 'Z2' })))).toBe(true);
+    expect(
+      replaces(await diffOf(type, mk({ HostedZoneName: 'a.com.' }), mk({ HostedZoneName: 'b.com.' })))
+    ).toBe(true);
   });
 });
 

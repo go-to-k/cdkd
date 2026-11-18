@@ -24,6 +24,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * - A RecordSet whose name contains `|`, its `Ref`, and an in-place update (#3890)
  * - AWS::Route53::RecordSetGroup: create, add / change / remove / type-swap
  *   updates, `Ref` and drift (#6530)
+ * - HostedZoneName -> the same zone's HostedZoneId updates a RecordSet and a
+ *   RecordSetGroup in place (#6537)
  * - HostedZone `DelegationSetId` on a reusable delegation set verify.sh makes (#2762)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
@@ -246,8 +248,12 @@ export class Route53Stack extends cdk.Stack {
     // and grp-d arrives (CREATE); under `swap`, grp-a turns from an A into a
     // CNAME on the same name, valid only with the DELETE ahead of the CREATE.
     const groupZoneName = `cdkd-test-${this.account}.internal`;
+    // Under `name` the group switches to the same zone's HostedZoneId, which
+    // updates in place, as in CloudFormation (#6537).
     const recordGroup = new route53.CfnRecordSetGroup(this, 'RecordGroup', {
-      hostedZoneName: `${groupZoneName}.`,
+      ...(renameName
+        ? { hostedZoneId: zone.hostedZoneId }
+        : { hostedZoneName: `${groupZoneName}.` }),
       comment: 'cdkd integ record set group',
       recordSets: [
         renameSwap
@@ -290,6 +296,20 @@ export class Route53Stack extends cdk.Stack {
     });
     // The name lookup needs the zone to exist first.
     recordGroup.node.addDependency(zone);
+
+    // Issue #6537: a RecordSet switching from HostedZoneName to the same
+    // zone's HostedZoneId under `name` updates in place instead of replacing
+    // (a create-first replacement collides with the live record).
+    const zoneKeyRecord = new route53.CfnRecordSet(this, 'ZoneKeyRecord', {
+      ...(renameName
+        ? { hostedZoneId: zone.hostedZoneId }
+        : { hostedZoneName: `${groupZoneName}.` }),
+      name: `zonekey.${groupZoneName}`,
+      type: 'A',
+      ttl: '300',
+      resourceRecords: ['198.51.100.14'],
+    });
+    zoneKeyRecord.node.addDependency(zone);
     // Phase 2.7c fails the deploy only after the group's CNAME -> A update has
     // landed, so the rollback it asserts must really undo the group.
     if (renameModes.includes('inject-fail')) {
