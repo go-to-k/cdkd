@@ -444,6 +444,34 @@ describe('RecordSet state-borne update of a cdkd composite id (#6540)', () => {
     expect(changes()).toHaveLength(0);
   });
 
+  it('replayingState with a composite whose Name/Type disagree with the previous bag resolves the template zone, not the composite zone', async () => {
+    route();
+    const www = props({ Name: 'www.example.com.', TTL: '60' });
+    await provider.update('Rec', 'ZCOMP|other.example.com.|A', RECORD_TYPE, www, props({ Name: 'www.example.com.' }), {
+      replayingState: true,
+    });
+    expect(calls(ListHostedZonesByNameCommand).length).toBeGreaterThan(0);
+    const sent = changes();
+    expect(sent.length).toBeGreaterThan(0);
+    for (const c of sent) expect(c.HostedZoneId).toBe(ZONE);
+    expect(sent.map((c) => c.HostedZoneId)).not.toContain('ZCOMP');
+  });
+
+  it('replayingState with a CloudFormation-form id (the record name) runs the zone lookup', async () => {
+    route();
+    await provider.update(
+      'Rec',
+      'www.example.com.',
+      RECORD_TYPE,
+      props({ Name: 'www.example.com.', TTL: '60' }),
+      props({ Name: 'www.example.com.' }),
+      { replayingState: true }
+    );
+    expect(calls(ListHostedZonesByNameCommand).length).toBeGreaterThan(0);
+    expect(changes().length).toBeGreaterThan(0);
+    expect(changes()[0]!.HostedZoneId).toBe(ZONE);
+  });
+
   it('a state-borne update whose zone reference CHANGED still resolves the name', async () => {
     route();
     await provider.update(
