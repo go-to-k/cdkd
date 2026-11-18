@@ -110,8 +110,10 @@ bus_arn() {
 discoverer_ids() {
   local arn
   arn=$(bus_arn) || return 1
-  aws schemas list-discoverers --source-arn-prefix "${arn}" --region "${REGION}" \
-    --query 'Discoverers[].DiscovererId' --output text | tr '\t' '\n' | grep -v '^None$' | grep -v '^$' || true
+  local out
+  out=$(aws schemas list-discoverers --source-arn-prefix "${arn}" --region "${REGION}" \
+    --query 'Discoverers[].DiscovererId' --output text) || return 1
+  printf '%s\n' "${out}" | tr '\t' '\n' | grep -v '^None$' | grep -v '^$' || true
 }
 
 cleanup() {
