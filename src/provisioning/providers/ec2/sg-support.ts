@@ -260,14 +260,6 @@ export function flattenIpPermissions(perms: IpPermission[], direction: SgDirecti
 }
 
 /**
- * Identity-key for a CFn SG rule. Matches the diff key used by
- * `applySecurityGroupRuleDiff` so the read-side reverse-mapping and the
- * write-side rule diff agree on rule identity for `cdkd drift --revert`.
- *
- * Direction-sensitive: ingress uses `Source*` fields, egress uses
- * `Destination*`.
- */
-/**
  * The rule a standalone `AWS::EC2::SecurityGroupIngress` bag describes, as a
  * comparable key (go-to-k/cdkd#4355): the group, protocol, port range and
  * source — what AWS treats as the same rule. `Description` is left out, since
@@ -617,6 +609,16 @@ export function securityGroupRuleMatchesCfnIngress(
   return true;
 }
 
+/**
+ * Whole-rule key for a CFn SG rule, `Description` included. On identity it
+ * matches the diff key of `applySecurityGroupRuleDiff`, so the read-side
+ * reverse-mapping and the write-side rule diff agree on which rule is which for
+ * `cdkd drift --revert`; the diff leaves the description out and updates it
+ * in place (go-to-k/cdkd#6514), while drift pairs a read-back rule by it.
+ *
+ * Direction-sensitive: ingress uses `Source*` fields, egress uses
+ * `Destination*`.
+ */
 export function sgRuleKey(rule: CfnSgRule, direction: SgDirection): string {
   const peerKey =
     direction === 'egress' ? rule['DestinationSecurityGroupId'] : rule['SourceSecurityGroupId'];
