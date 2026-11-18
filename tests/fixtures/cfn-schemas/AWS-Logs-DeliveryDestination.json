@@ -1,0 +1,113 @@
+{
+  "resourceType": "AWS::Logs::DeliveryDestination",
+  "generatedAt": "2026-11-18",
+  "properties": [
+    "Arn",
+    "DeliveryDestinationPolicy",
+    "DeliveryDestinationType",
+    "DestinationResourceArn",
+    "Name",
+    "OutputFormat",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "DeliveryDestinationType",
+    "DestinationResourceArn",
+    "Name",
+    "OutputFormat"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "DeliveryDestinationType"
+    ],
+    [
+      "DestinationResourceArn"
+    ],
+    [
+      "Name"
+    ],
+    [
+      "OutputFormat"
+    ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "DeliveryDestinationPolicy": [
+      "DeliveryDestinationName",
+      "DeliveryDestinationPolicy"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ],
+    "DeliveryDestinationPolicy": [
+      "DeliveryDestinationName",
+      "DeliveryDestinationPolicy"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Name": "scalar",
+      "Arn": "scalar",
+      "DestinationResourceArn": "scalar",
+      "Tags": "array",
+      "DeliveryDestinationType": "scalar",
+      "DeliveryDestinationPolicy": "object",
+      "OutputFormat": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    },
+    "DestinationPolicy": {
+      "DeliveryDestinationName": "scalar",
+      "DeliveryDestinationPolicy": "object"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Name"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "DeliveryDestinationPolicy": "object",
+    "DeliveryDestinationPolicy.DeliveryDestinationPolicy": "object",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "DeliveryDestinationPolicy": "object",
+    "DeliveryDestinationPolicy.DeliveryDestinationName": "string",
+    "DeliveryDestinationPolicy.DeliveryDestinationPolicy": "object",
+    "DeliveryDestinationType": "string",
+    "DestinationResourceArn": "string",
+    "Name": "string",
+    "OutputFormat": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  }
+}

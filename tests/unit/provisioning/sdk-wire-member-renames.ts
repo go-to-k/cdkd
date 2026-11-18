@@ -646,6 +646,19 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       TargetFunctionArn: ['FunctionName'],
     },
   },
+  'AWS::Logs::Delivery': {
+    members: {
+      // The two flat CFn members are the request's `s3DeliveryConfiguration` block.
+      S3SuffixPath: ['s3DeliveryConfiguration.suffixPath'],
+      S3EnableHiveCompatiblePath: ['s3DeliveryConfiguration.enableHiveCompatiblePath'],
+    },
+  },
+  'AWS::Logs::DeliveryDestination': {
+    transformed: {
+      'DeliveryDestinationPolicy.DeliveryDestinationPolicy.Version':
+        'the policy document is sent as its JSON text in deliveryDestinationPolicy',
+    },
+  },
   'AWS::Logs::LogGroup': {
     containers: {
       DataProtectionPolicy: ['policyDocument'],

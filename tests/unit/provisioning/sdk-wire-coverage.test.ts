@@ -44,6 +44,7 @@ import { CASES_18 } from './sdk-wire-cases-18.js';
 import { CASES_18_GLOBAL_TABLE } from './sdk-wire-cases-18-globaltable.js';
 import { CASES_19 } from './sdk-wire-cases-19.js';
 import { CASES_CLOUDMAP } from './sdk-wire-cases-cloudmap.js';
+import { CASES_LOGS_DELIVERY } from './sdk-wire-cases-logs-delivery.js';
 import { CASES_NO_PROPERTIES } from './sdk-wire-cases-no-properties.js';
 
 // Every client class a covered provider reaches, wrapped so each instance
@@ -896,6 +897,11 @@ const CASE_LISTS: { cases: TypeCase[]; name: string; file: string }[] = [
     cases: CASES_CLOUDMAP,
     name: 'CASES_CLOUDMAP',
     file: 'sdk-wire-coverage-cloudmap.test.ts',
+  },
+  {
+    cases: CASES_LOGS_DELIVERY,
+    name: 'CASES_LOGS_DELIVERY',
+    file: 'sdk-wire-coverage-logs-delivery.test.ts',
   },
   {
     cases: CASES_NO_PROPERTIES,

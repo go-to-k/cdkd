@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 93,
-    "wrapped": 86,
+    "classifiedCount": 96,
+    "wrapped": 89,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
@@ -533,6 +533,30 @@
       "file": "lambda-web-function-revision-provider.ts",
       "className": "LambdaWebFunctionRevisionProvider",
       "bucket": "no-aws",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "logs-delivery-destination-provider.ts",
+      "className": "LogsDeliveryDestinationProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "logs-delivery-provider.ts",
+      "className": "LogsDeliveryProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "logs-delivery-source-provider.ts",
+      "className": "LogsDeliverySourceProvider",
+      "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
       "unresolvedCallees": []

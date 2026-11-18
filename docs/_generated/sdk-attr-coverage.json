@@ -10,8 +10,8 @@
     }
   ],
   "summary": {
-    "classifiedCount": 142,
-    "covered": 73,
+    "classifiedCount": 145,
+    "covered": 76,
     "noArnAttr": 69,
     "gap": 0,
     "knownGap": 0,
@@ -944,6 +944,39 @@
         },
         {
           "name": "RevisionArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Logs::Delivery",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Logs::DeliveryDestination",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Logs::DeliverySource",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
           "status": "cached"
         }
       ],

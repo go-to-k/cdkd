@@ -531,6 +531,29 @@ but never reaches the EventBridge API. A stack deployed into the emulator by an
 earlier release keeps such an archive on Cloud Control; destroy that stack and
 deploy it again once.
 
+### A log delivery fails with `attributes are not enriched`
+
+The deploy fails on an `AWS::Logs::Delivery` with:
+
+```text
+Cannot resolve Fn::GetAtt [<Destination>, Arn] for AWS::Logs::DeliveryDestination: attributes are not enriched for this resource type
+```
+
+followed by `cdkd re-read the resource's attributes from AWS and the read
+reports none by that name`.
+
+cdkd creates `AWS::Logs::DeliverySource`, `AWS::Logs::DeliveryDestination` and
+`AWS::Logs::Delivery` through its own SDK providers, which work on AWS
+Emulator. The emulator's Cloud Control reports these types created without
+making them. A source or destination whose record was created through Cloud
+Control in the emulator therefore does not exist, and the delivery that reads
+its `Arn` fails. Destroy that stack and deploy it again once.
+
+Changed in v0.357.0: cdkd creates these types through its SDK providers. An
+earlier release created them through Cloud Control and failed with the same
+message on every deploy; a record it kept (for example after
+`--no-rollback`) still fails until the stack is destroyed and deployed again.
+
 ### A large single upload fails
 
 AWS Emulator (as of 1.0.322) refuses a single `PutObject` of 16 MiB or more: the request fails
