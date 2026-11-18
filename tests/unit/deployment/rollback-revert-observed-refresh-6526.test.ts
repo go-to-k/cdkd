@@ -345,6 +345,31 @@ describe('withRefreshedObservedBaseline (go-to-k/cdkd#6526)', () => {
     expect(out.observedProperties).toEqual(RESTORED_LIVE);
   });
 
+  it("scrubs under the deploy capture's fail-closed rules: a reordered list masks what it cannot pair", async () => {
+    // A reference inside an UNKEYED list AWS returned in another order: the
+    // readback's position cannot be paired with the source, so the deploy's
+    // drained-capture rules mask it rather than persist a value that may be a
+    // resolved secret. A prior-generation rewrite would keep `val` in the clear.
+    const restored = res({ L: ['{{resolve:ssm:/p6526}}', 'b'] }, { L: ['{{resolve:ssm:/p6526}}', 'b'] });
+    const live = { L: ['b', 'val'] };
+    const out = await withRefreshedObservedBaseline(
+      restored,
+      args(restored, vi.fn().mockResolvedValue(live))
+    );
+    expect(out.observedProperties).toEqual({ L: ['b', '***'] });
+  });
+
+  it('never aliases the object the provider returned', async () => {
+    const live = { ...RESTORED_LIVE };
+    const restored = res(V1, V1_OBSERVED);
+    const out = await withRefreshedObservedBaseline(
+      restored,
+      args(restored, vi.fn().mockResolvedValue(live))
+    );
+    expect(out.observedProperties).toEqual(RESTORED_LIVE);
+    expect(out.observedProperties).not.toBe(live);
+  });
+
   it('reads nothing for a record with no addressable physical id', async () => {
     const readCurrentState = vi.fn().mockResolvedValue(RESTORED_LIVE);
     const restored = { ...res(V1, V1_OBSERVED), physicalId: '' };

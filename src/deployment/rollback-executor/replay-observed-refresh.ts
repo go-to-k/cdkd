@@ -131,8 +131,9 @@ export async function withRefreshedObservedBaseline(
   const scrubbed = scrubResourceRecord(
     {
       properties: restored.properties,
-      // A copy: the record must not alias the object the provider returned.
-      observedProperties: { ...observed },
+      // The scrub builds a new bag, so the record never aliases the object the
+      // provider returned (pinned by this module's suite).
+      observedProperties: observed,
     },
     refresh.secrets,
     undefined,
