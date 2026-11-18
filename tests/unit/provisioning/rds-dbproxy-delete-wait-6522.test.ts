@@ -190,6 +190,9 @@ describe('DBProxy / DBProxyEndpoint delete waits (#6522)', () => {
         expect(await settle(site)).toBe('resolved');
         expect(statusReads(site)).toBe(2);
         expect(warnLines()).toEqual([]);
+        // The gone line names the resource too, masked.
+        expect(allLogLines().some((l) => l.includes('*** is gone'))).toBe(true);
+        for (const line of allLogLines()) expect(line).not.toContain(SECRET_NAME);
         expect(watches).toHaveLength(1);
         expect(watches[0]!.disposed).toBe(1);
       });
@@ -270,6 +273,63 @@ describe('DBProxy / DBProxyEndpoint delete waits (#6522)', () => {
         expect(message).toContain('***');
         expect(message).not.toContain(SECRET_NAME);
         expect(statusReads(site)).toBe(2);
+      });
+
+      it('masks the already-gone line when the delete call finds nothing', async () => {
+        mockSend.mockImplementation(async () => {
+          throw site.gone();
+        });
+        await site.run();
+        expect(statusReads(site)).toBe(0);
+        const lines = allLogLines();
+        expect(lines.some((l) => l.includes('already gone') && l.includes('***'))).toBe(true);
+        for (const line of lines) expect(line).not.toContain(SECRET_NAME);
+      });
+
+      it('throws, keeping the state record, when the wait ends without ever reading deleting', async () => {
+        answer(site, [() => site.status('available')]);
+        const outcome = await withResourceDeadline(() => site.run(), {
+          warnAfterMs: 10_000,
+          timeoutMs: 20_000,
+          onTimeout: () => new Error('resource deadline fired'),
+        }).then(
+          () => 'resolved',
+          (e: unknown) => e
+        );
+        expect(outcome).toBeInstanceOf(ProvisioningError);
+        expect(isWaitAbandonedError(outcome)).toBe(true);
+        const message = (outcome as Error).message;
+        expect(message).toContain('still read available, never deleting');
+        expect(message).toContain('***');
+        expect(message).not.toContain(SECRET_NAME);
+        expect(statusReads(site)).toBe(1);
+      });
+
+      it('throws on a Ctrl-C too when no read has shown deleting yet', async () => {
+        vi.useFakeTimers();
+        answer(site, [() => site.status('available')], () => pressCtrlC(baseline));
+        const outcome = await settle(site);
+        expect(isWaitAbandonedError(outcome)).toBe(true);
+        expect((outcome as Error).message).toContain('still read available, never deleting');
+        expect(statusReads(site)).toBe(1);
+      });
+
+      it('stops at its own 30-minute cap outside any resource deadline', async () => {
+        vi.useFakeTimers();
+        answer(site, [() => site.status('deleting')]);
+        let outcome: unknown = 'pending';
+        const done = site.run().then(
+          () => (outcome = 'resolved'),
+          (e: unknown) => (outcome = e)
+        );
+        await vi.advanceTimersByTimeAsync(29 * 60_000);
+        expect(outcome).toBe('pending');
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        await done;
+        expect(outcome).toBe('resolved');
+        const warns = warnLines();
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toContain('stopped waiting for it to disappear after 1800s');
       });
 
       it('does not trust a status read before the first deleting one', async () => {

@@ -46,6 +46,7 @@ export async function deleteImpl(
     readStatus: async () => {
       try {
         const out = await client.send(new DescribeDBProxiesCommand({ DBProxyName: physicalId }));
+        // An answer with no status keeps the wait going (`unknown`).
         return out.DBProxies?.[0]?.Status ?? 'unknown';
       } catch (error) {
         if (error instanceof DBProxyNotFoundFault) return undefined;

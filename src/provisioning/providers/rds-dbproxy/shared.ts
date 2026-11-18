@@ -2,6 +2,7 @@ import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadl
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
 import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { markWaitAbandoned } from '../../wait-abandoned.js';
 import type { InterruptWatch } from '../../interrupt-watch.js';
 
 export const POLL_INTERVAL_MS = 5000;
@@ -51,11 +52,13 @@ export async function pauseBeforeNextPoll(
  * (less {@link DEADLINE_MARGIN_MS}), so the wait stops before the engine fails
  * the resource rather than polling on behind it.
  *
- * The one exit that throws, keeping the state record, is a resource that LEFT
- * `deleting` for another status: AWS is then not removing it, and returning
- * would drop the record of a resource that stays. A status before the first
- * `deleting` is not trusted (the read can lag the accepted delete), and an
- * unreadable one (`unknown`) keeps the wait going.
+ * The exits that throw, keeping the state record, are the two where AWS may
+ * not be removing the resource, so returning would drop the record of one
+ * that stays: it LEFT `deleting` for another status, or the wait ended (cap,
+ * Ctrl-C, unreadable status) without ever reading `deleting` while its last
+ * read named another status. A status before the first `deleting` does not
+ * end the wait early (the read can lag the accepted delete), and a read with
+ * no status (`unknown`) keeps it going.
  *
  * `readStatus` resolves `undefined` once the resource is gone, else its status
  * (`unknown` when the answer carries none). `what` names the resource in log
@@ -73,10 +76,26 @@ export async function waitForDBProxyDeleteGone(opts: {
 }): Promise<void> {
   const what = opts.mask(opts.what);
   let sawDeleting = false;
+  let gone = false;
+  let lastStatus: string | undefined;
+  const stays = (text: string): Error =>
+    markWaitAbandoned(
+      new ProvisioningError(
+        opts.mask(`${opts.what} ${text}. The state record is kept: check it, then re-run.`),
+        opts.resourceType,
+        opts.logicalId,
+        opts.physicalId
+      )
+    );
   await waitForGoneAfterDelete({
     what,
     resourceType: opts.resourceType,
-    describe: opts.readStatus,
+    describe: async () => {
+      const status = await opts.readStatus();
+      if (status === undefined) gone = true;
+      else if (status !== 'unknown') lastStatus = status;
+      return status;
+    },
     consequence:
       'AWS finishes the delete on its side; until it does, a create of the same name can be ' +
       'refused, and the subnets and security groups it uses stay in use.',
@@ -86,14 +105,8 @@ export async function waitForDBProxyDeleteGone(opts: {
         return undefined;
       }
       if (!sawDeleting || status === 'unknown') return undefined;
-      return new ProvisioningError(
-        opts.mask(
-          `${opts.what} left the deleting state for ${status} after its delete was accepted, ` +
-            'so AWS is not removing it. The state record is kept: check it, then re-run.'
-        ),
-        opts.resourceType,
-        opts.logicalId,
-        opts.physicalId
+      return stays(
+        `left the deleting state for ${status} after its delete was accepted, so AWS is not removing it`
       );
     },
     logger: createMaskedLogSinks(opts.logger, opts.mask),
@@ -103,6 +116,11 @@ export async function waitForDBProxyDeleteGone(opts: {
       Math.min(POLL_TIMEOUT_MS, enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS)
     ),
   });
+  if (!gone && !sawDeleting && lastStatus !== undefined) {
+    throw stays(
+      `still read ${lastStatus}, never deleting, when cdkd stopped waiting after its delete was accepted`
+    );
+  }
 }
 
 /**

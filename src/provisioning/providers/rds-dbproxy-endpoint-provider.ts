@@ -543,6 +543,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           const out = await client.send(
             new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
           );
+          // An answer with no status keeps the wait going (`unknown`).
           return out.DBProxyEndpoints?.[0]?.Status ?? 'unknown';
         } catch (error) {
           if (
