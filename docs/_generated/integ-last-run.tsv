@@ -82,6 +82,7 @@ cognito	2026-11-15T17:41:38Z	PASS	283	verify.sh	rc ok, orph clean; #6352 aws-sdk
 cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on main after #5861 split; rc ok, orph clean
 cognito-identity-pool	2026-11-04T18:06:18Z	PASS	45	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-lambda-triggers	2026-11-04T18:05:31Z	PASS	60	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
+cognito-remove-protection-temp-password	2026-11-18T11:13:31Z	PASS	122	verify.sh	rc ok, orph clean (PR #6551)
 cognito-resource-server	2026-11-06T16:30:27Z	PASS	105	verify.sh	#5878 cloud-control split head; rc ok, orph clean
 cognito-schema-rollback	2026-11-16T03:49:33Z	PASS	68	verify.sh	rc ok, orph clean; red on pre-fix build
 cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
@@ -394,7 +395,7 @@ refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors,
 refactor-lambda-version	2026-11-12T11:22:31Z	PASS	477	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 refactor-move	2026-11-05T10:31:22Z	PASS	151	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 remote-nested-stack-refusal	2026-11-16T07:40:23Z	PASS	20	verify.sh	rc ok, orph clean
-remove-protection	2026-11-18T05:18:35Z	PASS	822	verify.sh	rc ok, orph clean (PR #6531)
+remove-protection	2026-11-18T11:13:31Z	PASS	868	verify.sh	rc ok, orph clean (PR #6551)
 remove-protection-compensation	2026-11-17T03:39:15Z	PASS	315	verify.sh	rc ok, orph clean (#6437 PR #6469)
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean
 rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean

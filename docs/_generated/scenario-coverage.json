@@ -799,6 +799,11 @@
       "scenarios": []
     },
     {
+      "name": "cognito-remove-protection-temp-password",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cognito-resource-server",
       "annotated": true,
       "scenarios": []
@@ -4088,6 +4093,7 @@
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
     "cognito-lambda-triggers",
+    "cognito-remove-protection-temp-password",
     "cognito-schema-rollback",
     "cognito-userpool-user-ref",
     "created-before-failure-revert",

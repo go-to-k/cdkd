@@ -57,6 +57,9 @@ import { readEnabledMfas } from './mfa-request.js';
  * no `SmsConfiguration` included, and left the pool byte-identical apart from
  * `DeletionProtection`. A `LambdaConfig` naming a function that does not exist
  * is accepted too, so a deleted trigger function cannot make the echo refuse.
+ * None of those pools set `PasswordPolicy.TemporaryPasswordValidityDays`; one
+ * that does refuses the echoed `AdminCreateUserConfig` (see
+ * {@link isUnusedAccountValidityRefusal}, issue #6548).
  */
 export const USER_POOL_ECHO_MEMBERS = [
   'LambdaConfig',
@@ -114,11 +117,20 @@ export function userPoolDeletionProtectionUpdate(
   physicalId: string,
   pool: UserPoolType,
   value: DeletionProtectionType,
-  opts: { readonly withoutDeveloperEmail?: boolean } = {}
+  opts: {
+    readonly withoutDeveloperEmail?: boolean;
+    readonly withoutUnusedAccountValidityDays?: boolean;
+  } = {}
 ): UpdateUserPoolCommandInput {
   const input: UpdateUserPoolCommandInput = { UserPoolId: physicalId };
   for (const member of USER_POOL_ECHO_MEMBERS) {
     if (pool[member] !== undefined) Object.assign(input, { [member]: pool[member] });
+  }
+  // See `isUnusedAccountValidityRefusal`: sent only on the re-send after AWS
+  // refused the deprecated member, where `Policies` holds the value.
+  if (opts.withoutUnusedAccountValidityDays === true && input.AdminCreateUserConfig) {
+    const { UnusedAccountValidityDays: _dropped, ...rest } = input.AdminCreateUserConfig;
+    input.AdminCreateUserConfig = rest;
   }
   const acr = customAcrLevels(pool.AcrConfiguration);
   if (acr === undefined) delete input.AcrConfiguration;
@@ -215,6 +227,37 @@ export function reportKind(record: {
 /** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's (SES) `EmailConfiguration`. */
 export function echoesDeveloperEmail(pool: UserPoolType): boolean {
   return pool.EmailConfiguration?.EmailSendingAccount === 'DEVELOPER';
+}
+
+/**
+ * Whether the echo carries the deprecated
+ * `AdminCreateUserConfig.UnusedAccountValidityDays`, which `DescribeUserPool`
+ * returns on every pool as a mirror of
+ * `Policies.PasswordPolicy.TemporaryPasswordValidityDays` (issue #6548).
+ */
+export function echoesUnusedAccountValidityDays(pool: UserPoolType): boolean {
+  return pool.AdminCreateUserConfig?.UnusedAccountValidityDays !== undefined;
+}
+
+/**
+ * AWS's refusal of an echo carrying `UnusedAccountValidityDays` on a pool
+ * whose `PasswordPolicy` sets `TemporaryPasswordValidityDays` (issue #6548,
+ * measured us-east-1 2026-11-18): "Please use TemporaryPasswordValidityDays in
+ * PasswordPolicy instead of UnusedAccountValidityDays". On that pool the value
+ * lives in `Policies`, which a write omitting it KEEPS
+ * ({@link USER_POOL_KEPT_ON_OMISSION}; measured: 3 stayed 3), so the re-send
+ * without the member loses nothing. It is NOT left out up front: a pool
+ * configured through the deprecated member alone reads back the same, ACCEPTS
+ * the echo, and RESETS the value to 7 when a write omits it (measured).
+ * Keyed on the member name in AWS's message: the class alone is the generic
+ * `InvalidParameterException`.
+ */
+export function isUnusedAccountValidityRefusal(error: unknown): boolean {
+  return (
+    isRefusedEcho(error) &&
+    error instanceof Error &&
+    error.message.includes('UnusedAccountValidityDays')
+  );
 }
 
 /** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's `KeyConfiguration`. */

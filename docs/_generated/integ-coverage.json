@@ -1311,6 +1311,7 @@
         "cognito-custom-attribute-add",
         "cognito-identity-pool",
         "cognito-lambda-triggers",
+        "cognito-remove-protection-temp-password",
         "cognito-resource-server",
         "cognito-schema-rollback",
         "cognito-userpool-user-ref",
@@ -1353,6 +1354,10 @@
           "l2"
         ],
         "cognito-lambda-triggers": [
+          "l2",
+          "literal"
+        ],
+        "cognito-remove-protection-temp-password": [
           "l2",
           "literal"
         ],
