@@ -44,6 +44,11 @@
 # `Ref` to the whole name, reads back clean through `cdkd drift`, updates in
 # place in Phase 2.7a, and is deleted before the zone in Phase 3.
 #
+# Issue #6549: Phase 3a protects a record (CreateResourceRecordSetProtections,
+# through the SDK) and asserts destroy FAILS on it, naming the protection,
+# with the record still live and still in state; Phase 3b lifts it and
+# destroys the rest.
+#
 # Also asserts the destroy path cleans up (the hosted zone delete requires
 # every non-default record gone first; the cdkd destroy DAG handles order).
 #
@@ -106,6 +111,23 @@ DS_CALLER_PREFIX="cdkd-integ-route53-${ACCOUNT_ID}-"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Issue #6549: resource record set protections, through the SDK because the
+# aws CLI lacks the verbs (2.38.4). The SDK resolves from the repo root.
+# usage: record_protection create|delete <zoneId> <recordName> <recordType>
+record_protection() {
+  node --input-type=module -e '
+    import { createRequire } from "node:module";
+    const r53 = createRequire(process.argv[1])("@aws-sdk/client-route-53");
+    const [op, HostedZoneId, RecordName, RecordType] = process.argv.slice(2);
+    const client = new r53.Route53Client({ region: process.env.AWS_REGION || "us-east-1" });
+    const Protections = [{ RecordName, RecordType }];
+    const Command = op === "create"
+      ? r53.CreateResourceRecordSetProtectionsCommand
+      : r53.DeleteResourceRecordSetProtectionsCommand;
+    await client.send(new Command({ HostedZoneId, Protections }));
+  ' "${PWD}/../../../package.json" "$@"
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   # The NameServers probe's stderr scratch file is unlinked on every path
@@ -125,6 +147,11 @@ cleanup() {
   # cleanup should run as much as it can with the env it has.
   set +eu
   local destroy_rc=0
+  # Issue #6549: Phase 3's protection blocks the record and zone deletes, so
+  # lift it before the state destroy below. Already lifted reads as an error.
+  if [ -n "${PROTECTED_RECORD_NAME:-}" ]; then
+    record_protection delete "${ZONE_ID}" "${PROTECTED_RECORD_NAME}" A >/dev/null 2>&1 || true
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # `state destroy` rejects `--force` (unknown option); the global
     # `--yes` auto-confirms. Only `aws s3 rm` the state key when destroy
@@ -1264,7 +1291,16 @@ fi
 echo "    OK: state tracks the renamed records (${A_RECORD_ID}, ${SWAP_RECORD_ID})"
 
 # --- Phase 3: destroy -------------------------------------------------
-echo "==> Phase 3: destroy"
+# Issue #6549: protect the renamed A record first. Route 53 refuses its DELETE
+# with an `InvalidChangeBatch` that is NOT a not-found, which cdkd read as
+# "already deleted": destroy dropped the record from state and left it live.
+# The first destroy must fail on it, keep its state record and leave it live,
+# while still deleting everything that does not need it gone first (PipeRecord
+# included, checked below). The second destroy, protection lifted, completes.
+PROTECTED_RECORD_NAME="test-renamed.cdkd-test-${ACCOUNT_ID}.internal."
+echo "==> Phase 3a: protect ${PROTECTED_RECORD_NAME} (A), then destroy must fail on it (#6549)"
+record_protection create "${ZONE_ID}" "${PROTECTED_RECORD_NAME}" A
+echo "==> Phase 3a: destroy"
 # Issue #3890: PipeRecord's DELETE carries the name with a literal `|`, which
 # Route 53 must match against the record it stores as `\174`. A DELETE that
 # did not match would land in the provider's InvalidChangeBatch /
@@ -1272,8 +1308,8 @@ echo "==> Phase 3: destroy"
 # PHYSICAL id (`<zone>|sep|pipe...|A`), not the logical id. So the destroy runs
 # with --verbose, and two checks catch that mode:
 #   1. a DEBUG skip line naming PipeRecord's physical id (`sep|pipe`);
-#   2. the zone delete then failing as not empty: destroy exits non-zero with
-#      the `\174` record still listed, which names PipeRecord.
+#   2. PipeRecord still listed in the zone after this destroy, which deletes
+#      every record but the protected one.
 # The logicalId grep below additionally catches a WARN-level skip.
 DESTROY_LOG=$(mktemp)
 set +e
@@ -1283,25 +1319,52 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --force --verbose >"${DESTROY_LOG}" 2>&1
 DESTROY_RC=$?
 set -e
-if [ "${DESTROY_RC}" -ne 0 ]; then
-  cat "${DESTROY_LOG}" >&2
-  if PIPE_LEFT_JSON=$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
-    --region "${REGION}" --output json 2>&1); then
-    PIPE_LEFT=$(printf '%s' "${PIPE_LEFT_JSON}" | jq --arg n "${PIPE_AWS_NAME}" \
-      '[.ResourceRecordSets[] | select(.Name == $n)] | length')
-    if [ "${PIPE_LEFT}" != "0" ]; then
-      echo "FAIL: destroy exited ${DESTROY_RC} and PipeRecord ${PIPE_AWS_NAME} is still live -- its DELETE did not match the stored record (issue #3890)" >&2
-      rm -f "${DESTROY_LOG}"
-      exit 1
-    fi
-  fi
-  echo "FAIL: destroy exited ${DESTROY_RC}" >&2
-  rm -f "${DESTROY_LOG}"
-  exit 1
-fi
 # The non-verbose part of the run, for the record (DEBUG lines dropped). The
 # logger always colours its level tag, so strip ANSI codes before filtering.
 sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_LOG}" | grep -v ' DEBUG ' || true
+if [ "${DESTROY_RC}" -eq 0 ]; then
+  echo "FAIL: destroy exited 0 over the protected record ${PROTECTED_RECORD_NAME} (issue #6549)" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+# cdkd's note on Route 53's protection refusal (`route53/core.ts`). The
+# sentinel is the failure line's own prefix: a destroy that failed on this
+# record for another reason, or whose note was reworded, prints it alone.
+if ! grep -F 'Failed to delete record set' "${DESTROY_LOG}" | grep -qF 'has a Route 53 resource record set protection'; then
+  if grep -qF 'Failed to delete record set' "${DESTROY_LOG}"; then
+    echo "FAIL: destroy failed on a record set, but without the protection note (issue #6549):" >&2
+    grep -F 'Failed to delete record set' "${DESTROY_LOG}" >&2
+  else
+    echo "FAIL: destroy exited ${DESTROY_RC} without failing the protected record's delete (issue #6549)" >&2
+  fi
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+LIVE_AFTER_JSON=$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
+  --region "${REGION}" --output json)
+PROTECTED_LEFT=$(printf '%s' "${LIVE_AFTER_JSON}" | jq --arg n "${PROTECTED_RECORD_NAME}" \
+  '[.ResourceRecordSets[] | select(.Name == $n and .Type == "A")] | length')
+if [ "${PROTECTED_LEFT}" != "1" ]; then
+  echo "FAIL: the protected record ${PROTECTED_RECORD_NAME} is not live after the failed destroy (found ${PROTECTED_LEFT})" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+PIPE_LEFT=$(printf '%s' "${LIVE_AFTER_JSON}" | jq --arg n "${PIPE_AWS_NAME}" \
+  '[.ResourceRecordSets[] | select(.Name == $n)] | length')
+if [ "${PIPE_LEFT}" != "0" ]; then
+  echo "FAIL: PipeRecord ${PIPE_AWS_NAME} is still live -- its DELETE did not match the stored record (issue #3890)" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+PROTECTED_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+PROTECTED_IN_STATE=$(printf '%s' "${PROTECTED_STATE}" | jq --arg id "${EXPECTED_A_RECORD_ID}" \
+  '[.resources[] | select(.resourceType == "AWS::Route53::RecordSet" and .physicalId == $id)] | length')
+if [ "${PROTECTED_IN_STATE}" != "1" ]; then
+  echo "FAIL: state no longer holds the protected record ${EXPECTED_A_RECORD_ID} after the failed destroy (issue #6549)" >&2
+  rm -f "${DESTROY_LOG}"
+  exit 1
+fi
+echo "    OK: destroy failed on the protected record, which stays live and in state (#6549)"
 if grep -F 'sep|pipe' "${DESTROY_LOG}" | grep -qiE 'does not exist, skipping deletion'; then
   echo "FAIL: destroy skipped PipeRecord's DELETE as already gone (issue #3890):" >&2
   grep -F 'sep|pipe' "${DESTROY_LOG}" >&2
@@ -1316,6 +1379,14 @@ if grep -F 'PipeRecord' "${DESTROY_LOG}" | grep -qiE 'skip|warn|already deleted|
 fi
 rm -f "${DESTROY_LOG}"
 echo "    OK: destroy deleted PipeRecord with no skip or already-gone report"
+
+echo "==> Phase 3b: lift the protection, destroy again"
+record_protection delete "${ZONE_ID}" "${PROTECTED_RECORD_NAME}" A
+PROTECTED_RECORD_NAME=""
+node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force
 
 # The hosted zone delete only succeeds once every non-default (non-NS/SOA)
 # record is gone — cdkd's destroy DAG handles that order. Route53 record /
@@ -1350,4 +1421,4 @@ assert_gone "reusable delegation set ${CDKD_TEST_DELEGATION_SET_ID} still exists
 echo "    OK: reusable delegation set is gone"
 
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + #2762 DelegationSetId + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + #2762 DelegationSetId + #6549 protected record fails destroy + clean destroy)"

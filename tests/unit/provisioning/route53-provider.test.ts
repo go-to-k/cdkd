@@ -1160,6 +1160,28 @@ describe('Route53Provider', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
       });
 
+      it('surfaces a protected record set as a failed delete, not as already deleted (issue #6549)', async () => {
+        // Route 53's text for a record under a resource record set
+        // protection, measured 2026-11-18: same `InvalidChangeBatch` name as
+        // the not-found refusal, so a name-only check read it as gone.
+        const protectedText =
+          '[RRSet with DNS name www.example.com., type A is protected and cannot be changed. Call DeleteResourceRecordSetProtections for this record set before changing it.]';
+        const error = new Error(protectedText);
+        error.name = 'InvalidChangeBatch';
+        mockSend.mockRejectedValueOnce(error);
+
+        await expect(
+          provider.delete('MyRecord', 'Z1234567890|www.example.com.|A', 'AWS::Route53::RecordSet', {
+            HostedZoneId: 'Z1234567890',
+            Name: 'www.example.com.',
+            Type: 'A',
+            TTL: '300',
+            ResourceRecords: ['1.2.3.4'],
+          })
+        ).rejects.toThrow(`Failed to delete record set MyRecord: ${protectedText}`);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      });
+
       // ─── issue #1467: zone mid AcceleratedRecovery transition ─────────
       // While the zone's AcceleratedRecoveryStatus is ENABLING, Route 53
       // refuses ChangeResourceRecordSets with "HostedZone <id> is marked
@@ -1295,9 +1317,8 @@ describe('Route53Provider', () => {
       it('routes a not-found failure of the RETRY through the idempotency path (issue #1467)', async () =>
         withFastPoll(async () => {
           mockSend.mockReset();
-          // Deliberately message-only (default Error name): pins the
-          // message arm of the outer catch's OR-condition — the existing
-          // not-found test above pins the InvalidChangeBatch name arm.
+          // Deliberately message-only (default Error name): the outer catch
+          // keys "already deleted" on the not-found text alone (#6549).
           const notFound = new Error(
             'Tried to delete resource record set but it was not found'
           );

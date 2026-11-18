@@ -482,11 +482,12 @@ export async function deleteRecordSet(
 
     this.logger.debug(`Successfully deleted record set ${logicalId}`);
   } catch (error) {
-    // Treat "not found" errors as success for idempotency
-    if (
-      error instanceof Error &&
-      (error.name === 'InvalidChangeBatch' || error.message.includes('it was not found'))
-    ) {
+    // Treat "not found" errors as success for idempotency. Keyed on the
+    // message, not the bare `InvalidChangeBatch` name: Route 53 also answers
+    // that name for a record set under a resource record set protection
+    // ("... is protected and cannot be changed", measured 2026-11-18), and
+    // reading it as gone dropped the state record over a live record (#6549).
+    if (error instanceof Error && error.message.includes('it was not found')) {
       const clientRegion = await this.getClient().config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
       this.logger.debug(`Record set ${physicalId} does not exist, skipping deletion`);
