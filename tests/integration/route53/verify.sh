@@ -423,6 +423,10 @@ case "${GROUP_PHYSICAL_ID}" in
     ;;
 esac
 GROUP_ZONE_ID="${GROUP_PHYSICAL_ID%%|*}"
+if [ "${GROUP_ZONE_ID}" != "${ZONE_ID}" ]; then
+  echo "FAIL: RecordSetGroup resolved HostedZoneName to zone '${GROUP_ZONE_ID}', not the stack's zone '${ZONE_ID}' (#6530)" >&2
+  exit 1
+fi
 GROUP_RECORDS=$(aws route53 list-resource-record-sets --hosted-zone-id "${GROUP_ZONE_ID}" \
   --region "${REGION}" --output json)
 for grp_check in "grp-a A 1" "grp-b TXT 1" "grp-c A 1" "grp-d A 0"; do
@@ -1205,7 +1209,10 @@ ROLLED_BACK_RECORDS=$(list_zone_records)
 expect_records "${ROLLED_BACK_RECORDS}" "swap.${ZONE_NAME}" CNAME "" 1 "the rollback did not restore the CNAME (#3741)"
 expect_records "${ROLLED_BACK_RECORDS}" "swap.${ZONE_NAME}" A "" 0 "the rollback left the swapped-in A record live (#3741)"
 expect_records "${ROLLED_BACK_RECORDS}" "test-renamed.${ZONE_NAME}" A "" 1 "an untouched record changed during the rollback"
+expect_records "${ROLLED_BACK_RECORDS}" "grp-a.${ZONE_NAME}" CNAME "" 1 "the rollback did not restore the group's CNAME (#6530)"
+expect_records "${ROLLED_BACK_RECORDS}" "grp-a.${ZONE_NAME}" A "" 0 "the rollback left the group's swapped-in A record live (#6530)"
 echo "    OK: the rollback deleted the A and restored the CNAME"
+echo "    OK: the rollback restored the RecordSetGroup's CNAME in one batch (#6530)"
 
 # State must track the NEW records, or destroy aims at names that are gone.
 RENAME_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)

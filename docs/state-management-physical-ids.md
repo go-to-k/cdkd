@@ -123,7 +123,7 @@ receives the same value it would receive from `cdk deploy`.
 | `AWS::EC2::VPCGatewayAttachment` | `IGW\|<vpcId>` or `VGW\|<vpcId>` |
 | `AWS::Glue::Table` | The table name |
 | `AWS::Route53::RecordSet` | The record name |
-| `AWS::Route53::RecordSetGroup` | The logical id (CloudFormation returns a generated group name) |
+| `AWS::Route53::RecordSetGroup` | The logical id; for a group imported under CloudFormation's group name, that name |
 | `AWS::S3Tables::Namespace` | The stored ID, `<tableBucketARN>\|<namespaceName>` |
 | `AWS::S3Tables::Table` | The table ARN |
 

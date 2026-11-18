@@ -4,6 +4,15 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // composite physicalId `<zoneId>|<logicalId>`.
 
 const mockSend = vi.fn();
+const { childLogger } = vi.hoisted(() => ({
+  childLogger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
+  },
+}));
 
 vi.mock('@aws-sdk/client-route-53', async () => {
   const actual = await vi.importActual('@aws-sdk/client-route-53');
@@ -17,13 +26,7 @@ vi.mock('@aws-sdk/client-route-53', async () => {
 });
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
+  childLogger.child.mockReturnValue(childLogger);
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -39,7 +42,10 @@ import {
   ChangeResourceRecordSetsCommand,
   ListHostedZonesByNameCommand,
   ListResourceRecordSetsCommand,
+  GetHostedZoneCommand,
 } from '@aws-sdk/client-route-53';
+import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-errors.js';
+import { CNAME_CONFLICT_COLLISION_NOTE } from '../../../src/provisioning/providers/route53/shared.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
@@ -532,6 +538,386 @@ describe('Route53Provider RecordSetGroup', () => {
       route({ liveRecords: [] });
       const result = await provider.import(input('MyStack-Group-ABC'));
       expect(result).toEqual({ physicalId: 'MyStack-Group-ABC', attributes: {} });
+    });
+  });
+});
+
+describe('Route53Provider RecordSetGroup (review additions)', () => {
+  let provider: Route53Provider;
+  const props = (records: Record<string, unknown>[]) => ({ HostedZoneId: ZONE, RecordSets: records });
+  const TWO_ZONES = [
+    { Id: '/hostedzone/ZPUB', Name: 'example.com.', Config: { PrivateZone: false } },
+    { Id: '/hostedzone/ZPRIV', Name: 'example.com.', Config: { PrivateZone: true } },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    childLogger.child.mockReturnValue(childLogger);
+    provider = new Route53Provider();
+  });
+
+  describe('redacted identity (cdkd *** mask)', () => {
+    it.each([
+      ['SetIdentifier', { SetIdentifier: '***', Weight: 1 }],
+      ['Name', { Name: '***' }],
+    ])('delete with a recorded %s of *** is skipped without any change call', async (_n, o) => {
+      route();
+      const result = await provider.delete(LOGICAL, COMPOSITE, TYPE, props([rec(o)]));
+      expect(result).toMatchObject({ outcome: 'skipped' });
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it.each([
+      ['SetIdentifier', { SetIdentifier: '***', Weight: 1 }],
+      ['Name', { Name: '***' }],
+    ])('update with a recorded %s of *** throws before any change call', async (_n, o) => {
+      route();
+      await expect(
+        provider.update(LOGICAL, COMPOSITE, TYPE, props([rec()]), props([rec(o)]))
+      ).rejects.toThrow(/recorded RecordSets\[0\] has no readable Name/);
+      expect(changeInputs()).toHaveLength(0);
+    });
+  });
+
+  describe('composite id must carry the group own logical id', () => {
+    it('delete with Z1|OtherGroup resolves the zone from HostedZoneName', async () => {
+      route({ liveRecords: [live()] });
+      await provider.delete(LOGICAL, 'Z1|OtherGroup', TYPE, {
+        HostedZoneName: 'example.com.',
+        RecordSets: [rec()],
+      });
+      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(1);
+      const sent = changeInputs();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.HostedZoneId).toBe(ZONE);
+    });
+  });
+
+  describe('import', () => {
+    const input = (known: string, logicalId = 'Grp') => ({
+      logicalId,
+      resourceType: TYPE,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties: { HostedZoneName: 'example.com.', RecordSets: [rec()] },
+      knownPhysicalId: known,
+    });
+
+    it('declines (null, with a warning) a known composite whose records are not found', async () => {
+      route({ liveRecords: [] });
+      expect(await provider.import(input('Zwrong|Grp'))).toBeNull();
+      expect(childLogger.warn).toHaveBeenCalledTimes(1);
+      expect(String(childLogger.warn.mock.calls[0]![0])).toContain('Not importing it');
+    });
+
+    it('adopts a known composite that verifies', async () => {
+      route({ liveRecords: [live()] });
+      expect(await provider.import(input(`${ZONE}|Grp`))).toEqual({
+        physicalId: `${ZONE}|Grp`,
+        attributes: {},
+      });
+    });
+
+    it('adopts a non-composite id verbatim when verification throws', async () => {
+      route({ listError: awsError('AccessDenied', 'denied') });
+      expect(await provider.import(input('MyStack-Grp-ABC'))).toEqual({
+        physicalId: 'MyStack-Grp-ABC',
+        attributes: {},
+      });
+      expect(childLogger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('adopts a non-composite id verbatim when the zone name is ambiguous', async () => {
+      route({ zones: TWO_ZONES });
+      expect(await provider.import(input('MyStack-Grp-ABC'))).toEqual({
+        physicalId: 'MyStack-Grp-ABC',
+        attributes: {},
+      });
+      expect(calls(ListResourceRecordSetsCommand)).toHaveLength(0);
+    });
+  });
+
+  describe('update', () => {
+    const added = { Name: 'new.example.com', Type: 'A', TTL: 300, ResourceRecords: ['192.0.2.1'] };
+
+    it('does not CREATE an added record already live with exactly the desired values', async () => {
+      route({
+        liveRecords: [
+          { Name: 'new.example.com.', Type: 'A', TTL: 300, ResourceRecords: [{ Value: '192.0.2.1' }] },
+        ],
+      });
+      await provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]));
+      expect(calls(ListResourceRecordSetsCommand)).toHaveLength(1);
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it('CREATEs an added record that is live with DIFFERENT values', async () => {
+      route({
+        liveRecords: [
+          { Name: 'new.example.com.', Type: 'A', TTL: 900, ResourceRecords: [{ Value: '198.51.100.9' }] },
+        ],
+      });
+      await provider.update(LOGICAL, COMPOSITE, TYPE, props([rec(), added]), props([rec()]));
+      const sent = changeInputs();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.ChangeBatch.Changes).toEqual([
+        {
+          Action: 'CREATE',
+          ResourceRecordSet: {
+            Name: 'new.example.com',
+            Type: 'A',
+            TTL: 300,
+            ResourceRecords: [{ Value: '192.0.2.1' }],
+          },
+        },
+      ]);
+    });
+
+    it('warns and sends no DELETE for a removed record not found live', async () => {
+      route({ liveRecords: [] });
+      await provider.update(
+        LOGICAL,
+        COMPOSITE,
+        TYPE,
+        props([rec()]),
+        props([rec(), rec({ Name: 'gone.example.com.' })])
+      );
+      expect(childLogger.warn).toHaveBeenCalledTimes(1);
+      expect(String(childLogger.warn.mock.calls[0]![0])).toContain('was not found in');
+      expect(changeInputs()).toHaveLength(0);
+    });
+
+    it.each([['/hostedzone/Z2'], ['Z2']])(
+      'throws before any change call when the desired HostedZoneId is %s but the composite names Z1',
+      async (desiredZone) => {
+        route();
+        await expect(
+          provider.update(
+            LOGICAL,
+            COMPOSITE,
+            TYPE,
+            { HostedZoneId: desiredZone, RecordSets: [rec({ TTL: '60' })] },
+            props([rec()])
+          )
+        ).rejects.toThrow(
+          new RegExp(`the template's hosted zone differs from the one its records are in \\(${ZONE}\\)`)
+        );
+        expect(changeInputs()).toHaveLength(0);
+      }
+    );
+
+    it('proceeds when the desired HostedZoneId (/hostedzone/ spelling) equals the composite zone', async () => {
+      route();
+      await provider.update(
+        LOGICAL,
+        COMPOSITE,
+        TYPE,
+        { HostedZoneId: `/hostedzone/${ZONE}`, RecordSets: [rec({ TTL: '60' })] },
+        props([rec()])
+      );
+      const sent = changeInputs();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.HostedZoneId).toBe(ZONE);
+      expect(sent[0]!.ChangeBatch.Changes[0]!.Action).toBe('UPSERT');
+    });
+
+    it('wraps a failed ChangeResourceRecordSets and applies maskSecrets', async () => {
+      route({ change: () => { throw new Error('rejected value hunter2-secret'); } });
+      const err = await provider
+        .update(LOGICAL, COMPOSITE, TYPE, props([rec({ TTL: '60' })]), props([rec()]), {
+          maskSecrets: (t: string) => t.replace('hunter2-secret', '***'),
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toBe(
+        'Failed to update record set group Group: rejected value ***'
+      );
+      expect(changeInputs()).toHaveLength(1);
+    });
+
+    it('refuses a non-composite physicalId whose HostedZoneName matches 2 zones', async () => {
+      route({ zones: TWO_ZONES });
+      await expect(
+        provider.update(
+          LOGICAL,
+          'MyStack-Group-ABC',
+          TYPE,
+          { HostedZoneName: 'example.com.', RecordSets: [rec({ TTL: '60' })] },
+          { HostedZoneName: 'example.com.', RecordSets: [rec()] }
+        )
+      ).rejects.toThrow(/matches 2 hosted zones/);
+      expect(changeInputs()).toHaveLength(0);
+    });
+  });
+
+  describe('delete', () => {
+    const notFound = (name = 'a.example.com.') =>
+      awsError(
+        'InvalidChangeBatch',
+        `Tried to delete resource record set [name='${name}', type='A'] but it was not found`
+      );
+    const two = () => props([rec(), rec({ Name: 'b.example.com.' })]);
+
+    it('throws on a batch refusal that is not "not found", after exactly one change call', async () => {
+      route({
+        liveRecords: [live()],
+        change: () => {
+          throw awsError(
+            'InvalidChangeBatch',
+            'Tried to delete resource record set but the values provided do not match the current values'
+          );
+        },
+      });
+      await expect(provider.delete(LOGICAL, COMPOSITE, TYPE, two())).rejects.toThrow(
+        /^Failed to delete record set group Group: .*do not match the current values/
+      );
+      expect(changeInputs()).toHaveLength(1);
+    });
+
+    const fallbackRoute = () =>
+      route({
+        liveRecords: [live()],
+        change: (input) => {
+          const n = (input as { ChangeBatch: { Changes: unknown[] } }).ChangeBatch.Changes.length;
+          throw n > 1 ? notFound() : notFound('b.example.com.');
+        },
+      });
+
+    it('swallows a per-record "not found" when the region matches', async () => {
+      fallbackRoute();
+      await expect(
+        provider.delete(LOGICAL, COMPOSITE, TYPE, two(), { expectedRegion: 'us-east-1' })
+      ).resolves.toBeUndefined();
+      expect(changeInputs().map((c) => c.ChangeBatch.Changes.length)).toEqual([2, 1, 1]);
+    });
+
+    it('throws a region refusal for a per-record "not found" when expectedRegion mismatches', async () => {
+      fallbackRoute();
+      await expect(
+        provider.delete(LOGICAL, COMPOSITE, TYPE, two(), { expectedRegion: 'eu-west-1' })
+      ).rejects.toThrow(/eu-west-1/);
+      expect(changeInputs().map((c) => c.ChangeBatch.Changes.length)).toEqual([2, 1]);
+    });
+
+    it('throws a region refusal for NoSuchHostedZone when expectedRegion mismatches', async () => {
+      route({ change: () => { throw awsError('NoSuchHostedZone', 'no zone'); } });
+      await expect(
+        provider.delete(LOGICAL, COMPOSITE, TYPE, props([rec()]), { expectedRegion: 'eu-west-1' })
+      ).rejects.toThrow(/eu-west-1/);
+    });
+
+    it('waits out an AcceleratedRecovery mutation lock and retries the batch once', async () => {
+      process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'] = '1';
+      process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'] = '2000';
+      try {
+        let changes = 0;
+        mockSend.mockImplementation(async (command: unknown) => {
+          if (command instanceof ListResourceRecordSetsCommand) {
+            return { ResourceRecordSets: [live()], IsTruncated: false };
+          }
+          if (command instanceof ChangeResourceRecordSetsCommand) {
+            changes++;
+            if (changes === 1) {
+              throw new Error(`HostedZone ${ZONE} is marked disabled for mutation`);
+            }
+            return {};
+          }
+          if (command instanceof GetHostedZoneCommand) {
+            return { HostedZone: { Features: { AcceleratedRecoveryStatus: 'ENABLED' } } };
+          }
+          throw new Error('unexpected');
+        });
+        await provider.delete(LOGICAL, COMPOSITE, TYPE, props([rec()]));
+        expect(changeInputs()).toHaveLength(2);
+        expect(calls(GetHostedZoneCommand)).toHaveLength(1);
+        expect(changeInputs()[1]).toEqual(changeInputs()[0]);
+      } finally {
+        delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_INTERVAL_MS'];
+        delete process.env['CDKD_R53_ACCEL_RECOVERY_POLL_TIMEOUT_MS'];
+      }
+    });
+
+    it('skips (no change call) a record not found live whose value field is ***', async () => {
+      route({ liveRecords: [] });
+      const result = await provider.delete(
+        LOGICAL,
+        COMPOSITE,
+        TYPE,
+        props([rec({ ResourceRecords: ['***'] })])
+      );
+      expect(result).toMatchObject({ outcome: 'skipped' });
+      expect(changeInputs()).toHaveLength(0);
+    });
+  });
+
+  describe('create failures', () => {
+    it('marks a CNAME-conflict refusal as a name collision and adds the collision note', async () => {
+      const cname = awsError(
+        'InvalidChangeBatch',
+        '[RRSet of type CNAME with DNS name www.example.com. is not permitted as it conflicts with other records with the same DNS name in zone example.com.]'
+      );
+      (cname as unknown as { $fault: string }).$fault = 'client';
+      route({ change: () => { throw cname; } });
+      const err = (await provider
+        .create(LOGICAL, TYPE, props([rec({ Name: 'www.example.com.', Type: 'CNAME', ResourceRecords: ['t.example.com'] })]))
+        .catch((e: unknown) => e)) as Error;
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect(err.message).toContain(`Failed to create record set group Group${CNAME_CONFLICT_COLLISION_NOTE}`);
+      expect(isNameCollisionErrorFrom(err, LOGICAL)).toBe(true);
+    });
+
+    it('passes a generic failure message through the mask', async () => {
+      route({ change: () => { throw new Error('rejected value hunter2-secret'); } });
+      await expect(
+        provider.create(LOGICAL, TYPE, props([rec()]), {
+          maskSecrets: (t: string) => t.replace('hunter2-secret', '***'),
+        })
+      ).rejects.toThrow('Failed to create record set group Group: rejected value ***');
+    });
+  });
+
+  describe('zone from records only', () => {
+    it('writes to the zone the records declare', async () => {
+      route();
+      const result = await provider.create(LOGICAL, TYPE, {
+        RecordSets: [rec({ HostedZoneId: 'Z9' }), rec({ Name: 'b.example.com.', HostedZoneId: 'Z9' })],
+      });
+      expect(result.physicalId).toBe('Z9|Group');
+      const sent = changeInputs();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.HostedZoneId).toBe('Z9');
+      expect(calls(ListHostedZonesByNameCommand)).toHaveLength(0);
+    });
+
+    it('refuses records that disagree on the zone before any AWS call', async () => {
+      route();
+      await expect(
+        provider.create(LOGICAL, TYPE, {
+          RecordSets: [rec({ HostedZoneId: 'Z9' }), rec({ Name: 'b.example.com.', HostedZoneId: 'Z8' })],
+        })
+      ).rejects.toThrow(/RecordSets\[1\]\.HostedZoneId differs from the HostedZoneId/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('readCurrentState', () => {
+    it('answers RESOURCE_NOT_FOUND when the zone is gone', async () => {
+      route({ listError: awsError('NoSuchHostedZone', 'no zone') });
+      expect(
+        await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, props([rec()]))
+      ).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('answers undefined when the zone cannot be resolved', async () => {
+      route({ zones: TWO_ZONES });
+      expect(
+        await provider.readCurrentState('MyStack-Group-ABC', LOGICAL, TYPE, {
+          HostedZoneName: 'example.com.',
+          RecordSets: [rec()],
+        })
+      ).toBeUndefined();
+      expect(calls(ListResourceRecordSetsCommand)).toHaveLength(0);
     });
   });
 });

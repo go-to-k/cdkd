@@ -1291,6 +1291,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['RecordSets', ['Name', 'Type']],
       ['RecordSets.AliasTarget', ['DNSName', 'HostedZoneId']],
       ['RecordSets.CidrRoutingConfig', ['CollectionId', 'LocationName']],
+      ['RecordSets.GeoProximityLocation.Coordinates', ['Latitude', 'Longitude']],
     ]),
   ],
   [

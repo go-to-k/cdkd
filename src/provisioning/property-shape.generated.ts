@@ -350,7 +350,7 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
   ],
   [
     'AWS::Route53::RecordSetGroup',
-    '{"RecordSets":"array","RecordSets[]":"object","RecordSets[].AliasTarget":"object","RecordSets[].CidrRoutingConfig":"object","RecordSets[].GeoLocation":"object","RecordSets[].ResourceRecords":"array"}',
+    '{"RecordSets":"array","RecordSets[]":"object","RecordSets[].AliasTarget":"object","RecordSets[].CidrRoutingConfig":"object","RecordSets[].GeoLocation":"object","RecordSets[].GeoProximityLocation":"object","RecordSets[].ResourceRecords":"array"}',
   ],
   [
     'AWS::S3::Bucket',

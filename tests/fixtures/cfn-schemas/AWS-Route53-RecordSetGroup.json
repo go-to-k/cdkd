@@ -27,6 +27,7 @@
       "CidrRoutingConfig",
       "Failover",
       "GeoLocation",
+      "GeoProximityLocation",
       "HealthCheckId",
       "HostedZoneId",
       "HostedZoneName",
@@ -54,6 +55,13 @@
       "GeoLocation.ContinentCode",
       "GeoLocation.CountryCode",
       "GeoLocation.SubdivisionCode",
+      "GeoProximityLocation",
+      "GeoProximityLocation.AWSRegion",
+      "GeoProximityLocation.Bias",
+      "GeoProximityLocation.Coordinates",
+      "GeoProximityLocation.Coordinates.Latitude",
+      "GeoProximityLocation.Coordinates.Longitude",
+      "GeoProximityLocation.LocalZoneGroup",
       "HealthCheckId",
       "HostedZoneId",
       "HostedZoneName",
@@ -107,7 +115,8 @@
       "Failover": "scalar",
       "Region": "scalar",
       "GeoLocation": "object",
-      "MultiValueAnswer": "scalar"
+      "MultiValueAnswer": "scalar",
+      "GeoProximityLocation": "object"
     },
     "#top": {
       "Comment": "scalar",
@@ -146,6 +155,10 @@
     "RecordSets.CidrRoutingConfig": [
       "CollectionId",
       "LocationName"
+    ],
+    "RecordSets.GeoProximityLocation.Coordinates": [
+      "Latitude",
+      "Longitude"
     ]
   },
   "propertyShapes": {
@@ -154,7 +167,8 @@
     "RecordSets[].AliasTarget": "object",
     "RecordSets[].CidrRoutingConfig": "object",
     "RecordSets[].GeoLocation": "object",
-    "RecordSets[].ResourceRecords": "array"
+    "RecordSets[].ResourceRecords": "array",
+    "RecordSets[].GeoProximityLocation": "object"
   },
   "propertyTypes": {
     "Comment": "string",
@@ -174,6 +188,13 @@
     "RecordSets[].GeoLocation.ContinentCode": "string",
     "RecordSets[].GeoLocation.CountryCode": "string",
     "RecordSets[].GeoLocation.SubdivisionCode": "string",
+    "RecordSets[].GeoProximityLocation": "object",
+    "RecordSets[].GeoProximityLocation.AWSRegion": "string",
+    "RecordSets[].GeoProximityLocation.Bias": "integer",
+    "RecordSets[].GeoProximityLocation.Coordinates": "object",
+    "RecordSets[].GeoProximityLocation.Coordinates.Latitude": "string",
+    "RecordSets[].GeoProximityLocation.Coordinates.Longitude": "string",
+    "RecordSets[].GeoProximityLocation.LocalZoneGroup": "string",
     "RecordSets[].HealthCheckId": "string",
     "RecordSets[].HostedZoneId": "string",
     "RecordSets[].HostedZoneName": "string",

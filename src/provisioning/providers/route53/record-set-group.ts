@@ -19,6 +19,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
+  isRedactedRecordedValue,
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../../redacted-delete-address.js';
@@ -72,17 +73,20 @@ function recordSetGroupCompositeId(hostedZoneId: string, logicalId: string): str
 }
 
 /**
- * The zone a cdkd-minted group id names, or `undefined` for any other shape
- * (CloudFormation's generated group name, adopted by `cdkd import`).
+ * The zone a cdkd-minted id of THIS group names, or `undefined` for any other
+ * shape (CloudFormation's generated group name, adopted by `cdkd import`). The
+ * second segment must be the group's own logical id: two non-empty segments
+ * alone are not proof of a cdkd id (the #1711 class).
  */
 function parseRecordSetGroupCompositeId(
-  physicalId: string
-): { hostedZoneId: string; logicalId: string } | undefined {
+  physicalId: string,
+  logicalId: string
+): { hostedZoneId: string } | undefined {
   const parts = physicalId.split('|');
   if (parts.length !== 2) return undefined;
-  const [hostedZoneId, logicalId] = parts;
-  if (!hostedZoneId || !logicalId) return undefined;
-  return { hostedZoneId, logicalId };
+  const [hostedZoneId, idLogicalId] = parts;
+  if (!hostedZoneId || idLogicalId !== logicalId) return undefined;
+  return { hostedZoneId };
 }
 
 /**
@@ -109,17 +113,22 @@ function groupRecordSets(
 /**
  * A record's identity inside its zone — normalized name, type and
  * SetIdentifier — or `undefined` when it cannot be compared: a missing or
- * non-string field, or a redacted dynamic reference (`{{resolve:...}}`).
+ * non-string field, a redacted dynamic reference (`{{resolve:...}}`), or
+ * cdkd's `***` mask (go-to-k/cdkd#3952), either of which would address a
+ * record that is not the one recorded.
  */
 function recordSetKey(record: Record<string, unknown>): string | undefined {
   const comparable = (value: unknown): value is string =>
-    typeof value === 'string' && value !== '' && !value.includes('{{resolve:');
+    typeof value === 'string' &&
+    value !== '' &&
+    !value.includes('{{resolve:') &&
+    !isRedactedRecordedValue(value);
   const name = record['Name'];
   const type = record['Type'];
   const setIdentifier = record['SetIdentifier'];
   if (!comparable(name) || !comparable(type)) return undefined;
   if (setIdentifier !== undefined && !comparable(setIdentifier)) return undefined;
-  return `${normalizeRecordName(name)}\u0000${type}\u0000${setIdentifier ?? ''}`;
+  return JSON.stringify([normalizeRecordName(name), type, setIdentifier ?? '']);
 }
 
 /**
@@ -287,7 +296,7 @@ async function existingGroupZone(
   logicalId: string,
   resourceType: string
 ): Promise<string> {
-  const parsed = parseRecordSetGroupCompositeId(physicalId);
+  const parsed = parseRecordSetGroupCompositeId(physicalId, logicalId);
   if (parsed) return parsed.hostedZoneId;
   return this.resolveHostedZoneId(zone, logicalId, resourceType, physicalId, {
     requireUnambiguousZoneName: true,
@@ -343,6 +352,22 @@ export async function updateRecordSetGroup(
   );
   const compositeId = recordSetGroupCompositeId(hostedZoneId, logicalId);
 
+  // A zone change is a replacement (`replacement-rules/rules.ts`), so reaching
+  // here with a desired zone id other than the one the records live in would
+  // write them to the old zone while state recorded the new one.
+  const desiredZoneId = zone['HostedZoneId'];
+  if (
+    typeof desiredZoneId === 'string' &&
+    desiredZoneId.replace(/^\/hostedzone\//, '') !== hostedZoneId
+  ) {
+    throw groupRefusalError(
+      `Record set group ${logicalId}: the template's hosted zone differs from the one its ` +
+        `records are in (${hostedZoneId}); moving a group to another zone replaces it`,
+      logicalId,
+      physicalId
+    );
+  }
+
   try {
     const desiredKeys = new Set<string>();
     const changes: Change[] = [];
@@ -354,7 +379,17 @@ export async function updateRecordSetGroup(
       if (recorded === undefined) {
         // CREATE, not UPSERT: a record of this identity that cdkd did not
         // write (another resource's, or an out-of-band one) is refused by
-        // Route 53 instead of being taken over.
+        // Route 53 instead of being taken over. A live record already holding
+        // exactly the desired values is this update's own earlier batch,
+        // committed before its state was saved: skipping it keeps the retry
+        // from failing on "already exists" forever.
+        const live = await this.findLiveRecordSet(hostedZoneId, recordBag(record));
+        if (live && sameRecordSet(live, desired)) {
+          this.logger.debug(
+            safeMsg`Record set group ${logicalId}: an added record is already live with the desired values; not creating it again`
+          );
+          continue;
+        }
         changes.push({ Action: 'CREATE', ResourceRecordSet: desired });
         continue;
       }
@@ -372,8 +407,10 @@ export async function updateRecordSetGroup(
       if (live) {
         changes.push({ Action: 'DELETE', ResourceRecordSet: live });
       } else {
-        this.logger.debug(
-          safeMsg`Record set group ${logicalId}: a removed record is not live in ${hostedZoneId}; nothing to delete for it`
+        // WARN: the lookup is bounded, so a miss can also be a live record
+        // it did not reach, which this update then stops tracking.
+        this.logger.warn(
+          safeMsg`Record set group ${logicalId}: a record removed from the template was not found in ${hostedZoneId}; nothing was deleted for it`
         );
       }
     }
@@ -417,12 +454,28 @@ export async function updateRecordSetGroup(
   }
 }
 
+/** Key-order- and name-spelling-insensitive equality of two record sets. */
+function sameRecordSet(a: ResourceRecordSet, b: ResourceRecordSet): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value === null || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((k) => [k, canonical((value as Record<string, unknown>)[k])])
+    );
+  };
+  const spell = (r: ResourceRecordSet) =>
+    JSON.stringify(canonical({ ...r, Name: normalizeRecordName(r.Name ?? '') }));
+  return spell(a) === spell(b);
+}
+
 /** A Route 53 refusal that the record a DELETE names does not exist. */
 function isRecordNotFoundRefusal(error: unknown): boolean {
   return (
     error instanceof Error &&
     error.name === 'InvalidChangeBatch' &&
-    /not found/i.test(error.message)
+    /but it was not found/i.test(error.message)
   );
 }
 
@@ -489,9 +542,9 @@ export async function deleteRecordSetGroup(
   };
 
   let hostedZoneId: string;
-  if (parseRecordSetGroupCompositeId(physicalId)) {
-    hostedZoneId = (parseRecordSetGroupCompositeId(physicalId) as { hostedZoneId: string })
-      .hostedZoneId;
+  const composite = parseRecordSetGroupCompositeId(physicalId, logicalId);
+  if (composite) {
+    hostedZoneId = composite.hostedZoneId;
   } else {
     // The zone comes from the recorded properties only on this arm (#3952).
     const redactedZoneSkip = redactedDeleteAddressSkip(
@@ -591,6 +644,7 @@ export async function deleteRecordSetGroup(
           await sendSettled([set]);
         } catch (perRecordError) {
           if (!isRecordNotFoundRefusal(perRecordError)) throw perRecordError;
+          await alreadyGone();
         }
       }
     }
@@ -699,7 +753,16 @@ export async function importRecordSetGroup(
   if ('refusal' in zoneProps) return adoptVerbatim(zoneProps.refusal);
 
   let hostedZoneId: string;
-  const knownComposite = parseRecordSetGroupCompositeId(known);
+  // A cdkd id's zone segment is what delete addresses, so an unverified one is
+  // never adopted: a wrong zone answers `NoSuchHostedZone`, which delete reads
+  // as already gone while the real records stay live.
+  const knownComposite = parseRecordSetGroupCompositeId(known, input.logicalId);
+  const decline = (reason: string): null => {
+    this.logger.warn(
+      safeMsg`Record set group ${input.logicalId}: could not verify physical id '${known}' (${reason}). Not importing it.`
+    );
+    return null;
+  };
   if (knownComposite) {
     hostedZoneId = knownComposite.hostedZoneId;
   } else {
@@ -726,12 +789,12 @@ export async function importRecordSetGroup(
     );
   } catch (err) {
     const head = `Record set group ${input.logicalId}: verification of '${known}' failed: `;
-    return adoptVerbatim(
-      `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`
-    );
+    const reason = `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`;
+    return knownComposite ? decline(reason) : adoptVerbatim(reason);
   }
   if (!observed || observed === RESOURCE_NOT_FOUND) {
-    return adoptVerbatim('not every record was found under the resolved hosted zone');
+    const reason = 'not every record was found under the resolved hosted zone';
+    return knownComposite ? decline(reason) : adoptVerbatim(reason);
   }
   return { physicalId: recordSetGroupCompositeId(hostedZoneId, input.logicalId), attributes: {} };
 }

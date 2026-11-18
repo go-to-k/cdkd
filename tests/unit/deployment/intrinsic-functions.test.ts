@@ -4815,6 +4815,27 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
     expect(result).toBe('MyGroup');
   });
 
+  it('Ref to AWS::Route53::RecordSetGroup with a non-composite id resolves it raw', async () => {
+    const template: CloudFormationTemplate = {
+      Resources: { MyGroup: { Type: 'AWS::Route53::RecordSetGroup', Properties: {} } },
+    };
+    const context: ResolverContext = {
+      template,
+      resources: {
+        MyGroup: {
+          physicalId: 'MyStack-MyGroup-ABC123',
+          resourceType: 'AWS::Route53::RecordSetGroup',
+          properties: {},
+          attributes: {},
+          dependencies: [],
+        },
+      },
+    };
+
+    const result = await resolver.resolve({ Ref: 'MyGroup' }, context);
+    expect(result).toBe('MyStack-MyGroup-ABC123');
+  });
+
   // Negative polarity for the interior-segment entry: the extraction is
   // EXACT-arity, so anything that is not a 3-part id passes through raw rather
   // than confidently returning a wrong middle segment. Exercised through the

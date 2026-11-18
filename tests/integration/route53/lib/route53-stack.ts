@@ -56,7 +56,8 @@ export class Route53Stack extends cdk.Stack {
     const renameUnswap = renameModes.includes('unswap');
     const renameSwap = renameModes.includes('swap') && !renameUnswap;
     // The geo SetIdentifier keys on `swap` alone, so `unswap` changes only
-    // TypeSwapRecord: 2.7c then reverts exactly the one record it asserts.
+    // TypeSwapRecord and the RecordSetGroup's grp-a: 2.7c then reverts exactly
+    // the two records it asserts.
     const renameGeo = renameModes.includes('swap');
 
     // Query logging requires a log group in us-east-1 whose name starts with
