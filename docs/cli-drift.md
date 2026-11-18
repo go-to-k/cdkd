@@ -471,7 +471,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::Neptune` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
 | `AWS::Pipes` | `Pipe` |
 | `AWS::RDS` | `DBCluster`, `DBInstance`, `DBProxy`, `DBProxyEndpoint`, `DBProxyTargetGroup`, `DBSubnetGroup` |
-| `AWS::Route53` | `HostedZone`, `RecordSet` |
+| `AWS::Route53` | `HostedZone`, `RecordSet`, `RecordSetGroup` |
 | `AWS::S3` | `Bucket`, `BucketPolicy` |
 | `AWS::S3Express` | `DirectoryBucket` |
 | `AWS::S3Tables` | `Namespace`, `Table`, `TableBucket` |

@@ -732,6 +732,12 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       HostedZoneName: ['HostedZoneId'],
     },
   },
+  'AWS::Route53::RecordSetGroup': {
+    containers: {
+      // Every record is one Change of the group's single batch.
+      RecordSets: ['ChangeBatch.Changes.ResourceRecordSet'],
+    },
+  },
   'AWS::S3::Bucket': {
     members: {
       AbacStatus: ['AbacStatus.Status'],

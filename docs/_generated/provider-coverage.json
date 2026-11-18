@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "generatedAt": "2026-11-03T12:13:35.091Z",
   "summary": {
-    "tier1Count": 140,
+    "tier1Count": 141,
     "tier2Count": 1636,
-    "tier3Count": 330,
+    "tier3Count": 329,
     "totalCount": 2106
   },
   "tier1": [
@@ -127,6 +127,7 @@
     "AWS::RDS::DBSubnetGroup",
     "AWS::Route53::HostedZone",
     "AWS::Route53::RecordSet",
+    "AWS::Route53::RecordSetGroup",
     "AWS::S3::Bucket",
     "AWS::S3::BucketPolicy",
     "AWS::S3Express::DirectoryBucket",
@@ -2054,7 +2055,6 @@
     "AWS::ResilienceHub::AppAssessment",
     "AWS::ResilienceHub::RecommendationTemplate",
     "AWS::RolesAnywhere::Subject",
-    "AWS::Route53::RecordSetGroup",
     "AWS::S3::Job",
     "AWS::SSM::AutomationExecution",
     "AWS::SSM::ManagedInstance",

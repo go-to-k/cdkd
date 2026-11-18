@@ -59,6 +59,8 @@ export async function readCurrentState(
       return this.readHostedZone(physicalId, properties);
     case 'AWS::Route53::RecordSet':
       return this.readRecordSet(physicalId, properties);
+    case 'AWS::Route53::RecordSetGroup':
+      return this.readRecordSetGroup(physicalId, _logicalId, properties);
     default:
       return undefined;
   }

@@ -123,6 +123,8 @@ export async function create(
       );
     case 'AWS::Route53::RecordSet':
       return this.createRecordSet(logicalId, resourceType, properties, context?.maskSecrets);
+    case 'AWS::Route53::RecordSetGroup':
+      return this.createRecordSetGroup(logicalId, resourceType, properties, context?.maskSecrets);
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -161,6 +163,15 @@ export async function update(
         previousProperties,
         context
       );
+    case 'AWS::Route53::RecordSetGroup':
+      return this.updateRecordSetGroup(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,
@@ -184,6 +195,8 @@ export async function deleteImpl(
       return this.deleteHostedZone(logicalId, physicalId, resourceType, context);
     case 'AWS::Route53::RecordSet':
       return this.deleteRecordSet(logicalId, physicalId, resourceType, properties, context);
+    case 'AWS::Route53::RecordSetGroup':
+      return this.deleteRecordSetGroup(logicalId, physicalId, resourceType, properties, context);
     default:
       throw new ProvisioningError(
         `Unsupported resource type: ${resourceType}`,

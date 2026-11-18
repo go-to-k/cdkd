@@ -224,6 +224,9 @@ function backoffSleep(ms: number, signal: AbortSignal, urgency: TaskUrgency): Pr
  *   burning one API call and emitting a "Grant cloudformation:DescribeType"
  *   warning that named a pseudo-resource the user cannot act on.
  *
+ * - `AWS::Route53::RecordSetGroup` — a CloudFormation-native type with no
+ *   registry entry; its replacement rules are hand-authored.
+ *
  * Callers must short-circuit on this predicate rather than paying the round
  * trip plus the misleading warning. Kept next to
  * {@link describeTypeWithThrottleRetry} so every DescribeType-backed
@@ -233,6 +236,7 @@ export function hasNoRegistrySchema(resourceType: string): boolean {
   return (
     resourceType === 'AWS::CDK::Metadata' ||
     resourceType === 'AWS::CloudFormation::CustomResource' ||
+    resourceType === 'AWS::Route53::RecordSetGroup' ||
     resourceType.startsWith('Custom::')
   );
 }

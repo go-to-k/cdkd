@@ -542,7 +542,7 @@ of the same name.
 | IAM | `AWS::IAM::AccessKey`, `AWS::IAM::Policy`, `AWS::IAM::UserToGroupAddition` |
 | Lambda | `AWS::Lambda::EventInvokeConfig`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::MicrovmImage`, `AWS::Lambda::NetworkConnector`, `AWS::Lambda::Permission`, `AWS::Lambda::Url`, `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::WebFunctionRevision` |
 | RDS | `AWS::RDS::DBProxyTargetGroup` |
-| Route 53 | `AWS::Route53::RecordSet` |
+| Route 53 | `AWS::Route53::RecordSet`, `AWS::Route53::RecordSetGroup` |
 | S3 | `AWS::S3::BucketPolicy` |
 | S3 Tables | `AWS::S3Tables::Namespace`, `AWS::S3Tables::Table` |
 | SNS, SQS | `AWS::SNS::Subscription`, `AWS::SNS::TopicPolicy`, `AWS::SQS::QueuePolicy` |

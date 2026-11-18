@@ -20,6 +20,7 @@ import {
   dbClusterEngineChangeReplaces,
   dbInstanceEngineChangeReplaces,
   elastiCachePreferredAvailabilityZonesReplaced,
+  recordSetGroupRecordZoneChanged,
 } from './predicates.js';
 
 /**
@@ -422,6 +423,18 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
   this.rules.set('AWS::Glue::Table', {
     replacementProperties: new Set<string>(),
     conditionalReplacements: new Map([['TableInput', glueTableNameChanged]]),
+  });
+
+  // Route 53 RecordSetGroup — the type has no registry schema, so no
+  // create-only fallback exists: the zone is classified here. A group's
+  // records are written in one batch against ONE zone, so moving the group is
+  // a replacement (CFn "Update requires: Replacement"); its records and
+  // comment update in place, unless the records carry the zone.
+  this.rules.set('AWS::Route53::RecordSetGroup', {
+    replacementProperties: new Set(['HostedZoneId', 'HostedZoneName']),
+    updateableProperties: new Set(['Comment']),
+    // A group without its own zone takes its records' zone.
+    conditionalReplacements: new Map([['RecordSets', recordSetGroupRecordZoneChanged]]),
   });
 
   // CloudWatch Alarm — AlarmName is immutable (CFn "Update requires:

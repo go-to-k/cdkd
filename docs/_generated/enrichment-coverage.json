@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 140,
+    "classifiedCount": 141,
     "enriched": 49,
-    "noComputedAttr": 18,
+    "noComputedAttr": 19,
     "unenrichedGap": 0,
     "sdkFallbackGap": 73,
     "allowListedTypes": 87
@@ -2979,6 +2979,15 @@
     },
     {
       "resourceType": "AWS::Route53::RecordSet",
+      "bucket": "no-computed-attr",
+      "sdkBacked": true,
+      "readOnlyProperties": [],
+      "enrichedKeys": [],
+      "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetGroup",
       "bucket": "no-computed-attr",
       "sdkBacked": true,
       "readOnlyProperties": [],

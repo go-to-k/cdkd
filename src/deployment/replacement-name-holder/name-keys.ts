@@ -115,6 +115,8 @@ export const NOT_NAME_KEYED_TYPES: ReadonlySet<string> = new Set([
   // `FunctionName` names the parent; the revision id is AWS-assigned.
   'AWS::Lambda::WebFunctionRevision',
   'AWS::Route53::HostedZone',
+  // `HostedZoneName` names the parent zone; a group has no name of its own.
+  'AWS::Route53::RecordSetGroup',
 ]);
 
 /**

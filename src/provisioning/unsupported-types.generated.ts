@@ -278,7 +278,6 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::ResilienceHub::AppAssessment',
   'AWS::ResilienceHub::RecommendationTemplate',
   'AWS::RolesAnywhere::Subject',
-  'AWS::Route53::RecordSetGroup',
   'AWS::S3::Job',
   'AWS::SageMaker::AIBenchmarkJob',
   'AWS::SageMaker::AIRecommendationJob',

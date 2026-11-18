@@ -671,3 +671,35 @@ export function dbInstanceEngineChangeReplaces(oldValue: unknown, newValue: unkn
   if (enginePair(oldValue, newValue) === undefined) return false;
   return !dbInstanceEngineChangeIsInPlace(oldValue, newValue);
 }
+
+/**
+ * Whether an `AWS::Route53::RecordSetGroup`'s `RecordSets` change MOVES the
+ * group to another hosted zone (go-to-k/cdkd#6530). A group naming no zone of
+ * its own takes the zone its records declare, so a change to a record's
+ * `HostedZoneId` / `HostedZoneName` is a zone change, which replaces the group
+ * like a change to the group-level keys does. With a group-level zone the
+ * records' zone keys only repeat it, and the provider refuses one that differs.
+ */
+export function recordSetGroupRecordZoneChanged(
+  oldValue: unknown,
+  newValue: unknown,
+  siblings?: ReplacementSiblings
+): boolean {
+  const groupZone = (props: Readonly<Record<string, unknown>> | undefined): boolean =>
+    props?.['HostedZoneId'] !== undefined || props?.['HostedZoneName'] !== undefined;
+  if (groupZone(siblings?.oldProperties) || groupZone(siblings?.newProperties)) return false;
+  const recordZone = (value: unknown): string | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    for (const record of value) {
+      if (record === null || typeof record !== 'object' || Array.isArray(record)) continue;
+      const r = record as Record<string, unknown>;
+      if (r['HostedZoneId'] !== undefined || r['HostedZoneName'] !== undefined) {
+        return JSON.stringify([r['HostedZoneId'] ?? null, r['HostedZoneName'] ?? null]);
+      }
+    }
+    return undefined;
+  };
+  const before = recordZone(oldValue);
+  const after = recordZone(newValue);
+  return before !== undefined && after !== undefined && before !== after;
+}

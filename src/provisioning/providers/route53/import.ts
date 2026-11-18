@@ -35,7 +35,8 @@ import {
  * CANONICALIZED rather than trusted, using the template's
  * `HostedZoneId` / `HostedZoneName` + `Name` + `Type` and verified
  * against AWS, but an import with no override still declines because
- * a RecordSet has no standalone identity for auto mode to key on).
+ * a RecordSet has no standalone identity for auto mode to key on);
+ * `AWS::Route53::RecordSetGroup` (override-only for the same reason).
  */
 export async function importImpl(
   this: Route53Provider,
@@ -46,6 +47,8 @@ export async function importImpl(
       return this.importHostedZone(input);
     case 'AWS::Route53::RecordSet':
       return this.importRecordSet(input);
+    case 'AWS::Route53::RecordSetGroup':
+      return this.importRecordSetGroup(input);
     default:
       return null;
   }

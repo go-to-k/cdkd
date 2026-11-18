@@ -40,6 +40,9 @@ vi.mock('../../../src/provisioning/providers/route53/read-state.js', async (impo
 vi.mock('../../../src/provisioning/providers/route53/record-set.js', async (importOriginal) =>
   spyAll(await importOriginal<Record<string, unknown>>())
 );
+vi.mock('../../../src/provisioning/providers/route53/record-set-group.js', async (importOriginal) =>
+  spyAll(await importOriginal<Record<string, unknown>>())
+);
 vi.mock('../../../src/provisioning/providers/route53/resolve.js', async (importOriginal) =>
   spyAll(await importOriginal<Record<string, unknown>>())
 );
@@ -55,6 +58,7 @@ import * as hostedZoneDelete from '../../../src/provisioning/providers/route53/h
 import * as importModule from '../../../src/provisioning/providers/route53/import.js';
 import * as readState from '../../../src/provisioning/providers/route53/read-state.js';
 import * as recordSet from '../../../src/provisioning/providers/route53/record-set.js';
+import * as recordSetGroup from '../../../src/provisioning/providers/route53/record-set-group.js';
 import * as resolve from '../../../src/provisioning/providers/route53/resolve.js';
 import * as zoneConfig from '../../../src/provisioning/providers/route53/zone-config.js';
 
@@ -65,6 +69,7 @@ const MODULES: Record<string, Record<string, unknown>> = {
   import: importModule,
   'read-state': readState,
   'record-set': recordSet,
+  'record-set-group': recordSetGroup,
   resolve,
   'zone-config': zoneConfig,
 };
@@ -119,6 +124,11 @@ const CASES: ReadonlyArray<readonly [string, string, string, number]> = [
   ['record-set', 'deleteRecordSet', 'deleteRecordSet', 5],
   ['record-set', 'findLiveRecordSet', 'findLiveRecordSet', 2],
   ['record-set', 'updateRecordSet', 'updateRecordSet', 6],
+  ['record-set-group', 'createRecordSetGroup', 'createRecordSetGroup', 4],
+  ['record-set-group', 'deleteRecordSetGroup', 'deleteRecordSetGroup', 5],
+  ['record-set-group', 'importRecordSetGroup', 'importRecordSetGroup', 1],
+  ['record-set-group', 'readRecordSetGroup', 'readRecordSetGroup', 3],
+  ['record-set-group', 'updateRecordSetGroup', 'updateRecordSetGroup', 6],
   ['resolve', 'resolveHostedZoneId', 'resolveHostedZoneId', 5],
   ['resolve', 'resolveRecordSetIdentity', 'resolveRecordSetIdentity', 3],
   ['zone-config', 'applyHostedZoneTags', 'applyHostedZoneTags', 5],

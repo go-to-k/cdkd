@@ -62,6 +62,7 @@ export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set
   'AWS::IAM::AccessKey',
   'AWS::IAM::Policy',
   'AWS::IAM::UserToGroupAddition',
+  'AWS::Route53::RecordSetGroup',
   'AWS::SNS::TopicPolicy',
   'AWS::SQS::QueuePolicy',
 ]);

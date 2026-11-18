@@ -22,6 +22,7 @@ import {
   ReplacementRulesRegistry,
   glueTableNameChanged,
 } from '../../../src/analyzer/replacement-rules.js';
+import { recordSetGroupRecordZoneChanged } from '../../../src/analyzer/replacement-rules/predicates.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
@@ -54,6 +55,32 @@ describe('glueTableNameChanged (issue #3750)', () => {
     // No rule for the Connection (schema path) or the Database (no replacement).
     expect(rules.isClassified('AWS::Glue::Connection', 'ConnectionInput')).toBe(false);
     expect(rules.isClassified('AWS::Glue::Database', 'DatabaseInput')).toBe(false);
+  });
+});
+
+describe('recordSetGroupRecordZoneChanged (go-to-k/cdkd#6530)', () => {
+  const rs = (zone: Record<string, unknown>) => [{ Name: 'a.example.com.', Type: 'A', ...zone }];
+  const noGroupZone = { oldProperties: {}, newProperties: {} };
+
+  it.each([
+    ['a record HostedZoneId changes', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), noGroupZone, true],
+    ['a record HostedZoneName changes', rs({ HostedZoneName: 'a.com.' }), rs({ HostedZoneName: 'b.com.' }), noGroupZone, true],
+    ['unchanged record zone', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z1' }), noGroupZone, false],
+    ['group zone on the old side', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), { oldProperties: { HostedZoneId: 'Z1' }, newProperties: {} }, false],
+    ['group zone on the new side', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), { oldProperties: {}, newProperties: { HostedZoneName: 'x.' } }, false],
+  ])('%s', (_label, oldValue, newValue, siblings, expected) => {
+    expect(recordSetGroupRecordZoneChanged(oldValue, newValue, siblings)).toBe(expected);
+  });
+
+  it('is the registry rule for AWS::Route53::RecordSetGroup RecordSets', () => {
+    const rules = new ReplacementRulesRegistry();
+    const siblings = { oldProperties: {}, newProperties: {} };
+    expect(
+      rules.requiresReplacement('AWS::Route53::RecordSetGroup', 'RecordSets', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z2' }), siblings)
+    ).toBe(true);
+    expect(
+      rules.requiresReplacement('AWS::Route53::RecordSetGroup', 'RecordSets', rs({ HostedZoneId: 'Z1' }), rs({ HostedZoneId: 'Z1', TTL: 60 }), siblings)
+    ).toBe(false);
   });
 });
 

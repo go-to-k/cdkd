@@ -81,6 +81,7 @@ The joined value is what `cdkd state show` prints. It is also what
 | `AWS::Glue::Table` | `<databaseName>\|<tableName>` |
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>`; a bare function name means `$LATEST` |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
+| `AWS::Route53::RecordSetGroup` | `<hostedZoneId>\|<logicalId>` |
 | `AWS::S3Tables::Namespace` | `<tableBucketARN>\|<namespaceName>` |
 | `AWS::S3Tables::Table` | `<tableBucketARN>\|<namespace>\|<name>` |
 
@@ -122,6 +123,7 @@ receives the same value it would receive from `cdk deploy`.
 | `AWS::EC2::VPCGatewayAttachment` | `IGW\|<vpcId>` or `VGW\|<vpcId>` |
 | `AWS::Glue::Table` | The table name |
 | `AWS::Route53::RecordSet` | The record name |
+| `AWS::Route53::RecordSetGroup` | The logical id; for a group imported under CloudFormation's group name, that name |
 | `AWS::S3Tables::Namespace` | The stored ID, `<tableBucketARN>\|<namespaceName>` |
 | `AWS::S3Tables::Table` | The table ARN |
 
