@@ -6,7 +6,6 @@ import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { buildReadCurrentStateContext } from '../read-current-state-context.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
 import {
-  markSameGenerationBag,
   maskedLeafCoordinatesOf,
   scrubResourceRecord,
   type RecordedSecretValues,
@@ -47,13 +46,14 @@ export interface ObservedBaselineRefresh {
  * and `replay-failed.ts`), which both the automatic rollback and `cdkd rollback`
  * drive, never on a deploy: the ordinary deploy path issues no new call.
  *
- * REDACTION is the deploy's: the readback is claimed same-generation (it was
- * taken right after this replay wrote the restored bag, which `secrets`
- * resolved) and scrubbed by `scrubResourceRecord` against the restored record's
+ * REDACTION is the deploy's: `scrubResourceRecord` walks the readback under a
+ * same-generation claim (it was taken right after this replay wrote the
+ * restored bag, which `secrets` resolved), against the restored record's
  * REDACTED `properties`, which is how `redactStateForPersist` scrubs a drained
- * capture (its `#1900` source when no template bag is given). The returned bag
- * is UNMARKED, so a later scrub (`redactRollbackRecord`, the engine's persist)
- * rewrites it as a prior generation and adds no fail-closed mask.
+ * capture (its `#1900` source when no template bag is given). The claim is the
+ * call's argument and the bag carries no mark, so a later scrub
+ * (`redactRollbackRecord`, the engine's persist) rewrites it as a prior
+ * generation and adds no fail-closed mask.
  *
  * `cdkd deploy --no-capture-observed-state` skips it, as it skips the deploy's
  * own capture (`capture: false`).
@@ -131,7 +131,8 @@ export async function withRefreshedObservedBaseline(
   const scrubbed = scrubResourceRecord(
     {
       properties: restored.properties,
-      observedProperties: markSameGenerationBag({ ...observed }),
+      // A copy: the record must not alias the object the provider returned.
+      observedProperties: { ...observed },
     },
     refresh.secrets,
     undefined,
@@ -139,5 +140,5 @@ export async function withRefreshedObservedBaseline(
     { observed: 'same-generation' }
   ).observedProperties;
   if (scrubbed === undefined) return record;
-  return { ...record, observedProperties: { ...scrubbed } };
+  return { ...record, observedProperties: scrubbed };
 }

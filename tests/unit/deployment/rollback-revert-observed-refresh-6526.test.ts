@@ -177,7 +177,7 @@ describe.each(['completed', 'failed'] as const)(
     it('persists a resolved secret the readback echoes as its reference, never the plaintext', async () => {
       const withSecret = { ...V1, AnalyticsRole: SECRET_EXPR };
       let secretsBoundDuringRead = false;
-      const readCurrentState = vi.fn(async () => {
+      const readCurrentState = vi.fn(async (..._args: unknown[]) => {
         secretsBoundDuringRead = getCurrentResourceSecrets()?.has(SECRET) === true;
         return { ...RESTORED_LIVE, AnalyticsRole: SECRET };
       });
