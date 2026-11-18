@@ -10,7 +10,7 @@ import {
 } from '@aws-sdk/client-eventbridge';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, verbosePointerTail } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -245,7 +245,9 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
     const retentionDays = this.retentionDays(properties, logicalId);
     // CloudFormation generates a name when the template gives none
     // (`ArchiveName` is optional); both routes use the one rule.
-    const name = declaredName || generatedNameFor('AWS::Events::Archive', logicalId);
+    const name =
+      (properties['ArchiveName'] as string | undefined) ||
+      generatedNameFor('AWS::Events::Archive', logicalId);
 
     this.logger.debug(mask(`Creating EventBridge archive ${logicalId}: ${name}`));
 
@@ -388,7 +390,7 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
           }
           throw markNonRetryable(
             new ProvisioningError(
-              safeMsg`EventBridge archive ${logicalId} entered ${state}. Run with --verbose for the reason AWS gave.`,
+              safeMsg`EventBridge archive ${logicalId} entered ${state}.` + verbosePointerTail(),
               RESOURCE_TYPE,
               logicalId,
               name

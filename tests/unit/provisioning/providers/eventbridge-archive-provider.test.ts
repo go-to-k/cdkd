@@ -187,7 +187,7 @@ describe('EventBridgeArchiveProvider', () => {
         .mockResolvedValueOnce({});
       await expect(
         provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
-      ).rejects.toThrow(/entered CREATE_FAILED\. Run with --verbose/);
+      ).rejects.toThrow(/entered CREATE_FAILED\./);
       // AWS's StateReason never reaches the thrown message (go-to-k/cdkd#2319).
       await expect(
         (async () => {
