@@ -1,4 +1,8 @@
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
+import { ProvisioningError } from '../../../utils/error-handler.js';
+import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
+import { createMaskedLogSinks } from '../../masked-retry-logger.js';
+import { markWaitAbandoned } from '../../wait-abandoned.js';
 import type { InterruptWatch } from '../../interrupt-watch.js';
 
 export const POLL_INTERVAL_MS = 5000;
@@ -13,7 +17,7 @@ export const DEADLINE_MARGIN_MS = 30_000;
 /**
  * go-to-k/cdkd#6517: the pause between two reads of a DBProxy or
  * DBProxyEndpoint status poll (the create and post-modify waits; the delete
- * waits are go-to-k/cdkd#6522).
+ * waits are {@link waitForDBProxyDeleteGone}).
  * Sleeps up to {@link POLL_INTERVAL_MS} in steps of at most a second,
  * throwing the watch's error as soon as Ctrl-C is seen. Answers `false`,
  * without sleeping, once the poll's own `deadline` or the enclosing resource
@@ -36,6 +40,90 @@ export async function pauseBeforeNextPoll(
     if (watch.isInterrupted()) throw watch.onInterrupted();
   }
   return true;
+}
+
+/**
+ * go-to-k/cdkd#6522: the wait after an ACCEPTED `DeleteDBProxy` or
+ * `DeleteDBProxyEndpoint`, until the read reports the resource gone. It runs
+ * through the shared post-delete wait (`delete-gone-wait.ts`), so a Ctrl-C,
+ * the cap and an unreadable status behave as for every other accepted delete:
+ * they warn and RETURN, since AWS finishes the delete whatever cdkd does next.
+ * The cap is the poll's own, less what the enclosing resource deadline leaves
+ * (less {@link DEADLINE_MARGIN_MS}), so the wait stops before the engine fails
+ * the resource rather than polling on behind it.
+ *
+ * The exits that throw, keeping the state record, are the two where AWS may
+ * not be removing the resource, so returning would drop the record of one
+ * that stays: it LEFT `deleting` for another status, or the wait ended (cap,
+ * Ctrl-C, unreadable status) without ever reading `deleting` while its last
+ * read named another status. A status before the first `deleting` does not
+ * end the wait early (the read can lag the accepted delete), and a read with
+ * no status (`unknown`) keeps it going.
+ *
+ * `readStatus` resolves `undefined` once the resource is gone, else its status
+ * (`unknown` when the answer carries none). `what` names the resource in log
+ * lines; every line the wait logs goes through `mask`, the class of an
+ * unreadable status's error included.
+ */
+export async function waitForDBProxyDeleteGone(opts: {
+  what: string;
+  resourceType: string;
+  logicalId: string;
+  physicalId: string;
+  readStatus: () => Promise<string | undefined>;
+  logger: { debug(message: string): void; warn(message: string): void };
+  mask: (text: string) => string;
+}): Promise<void> {
+  const what = opts.mask(opts.what);
+  let sawDeleting = false;
+  let gone = false;
+  let lastStatus: string | undefined;
+  const wrapRecordKeptError = (text: string): Error =>
+    markWaitAbandoned(
+      new ProvisioningError(
+        opts.mask(
+          `${opts.what} ${text}. The state record is kept: check it, then re-run once it is gone or settled.`
+        ),
+        opts.resourceType,
+        opts.logicalId,
+        opts.physicalId
+      )
+    );
+  await waitForGoneAfterDelete({
+    what,
+    resourceType: opts.resourceType,
+    describe: async () => {
+      const status = await opts.readStatus();
+      if (status === undefined) gone = true;
+      else if (status !== 'unknown') lastStatus = status;
+      return status;
+    },
+    consequence:
+      'Until AWS finishes the delete, a create of the same name can be refused, and the ' +
+      'subnets and security groups it uses stay in use.',
+    failedStatus: (status) => {
+      if (status === 'deleting') {
+        sawDeleting = true;
+        return undefined;
+      }
+      if (!sawDeleting || status === 'unknown') return undefined;
+      return wrapRecordKeptError(
+        `left the deleting state for ${status} after its delete was accepted, so AWS is not removing it`
+      );
+    },
+    logger: createMaskedLogSinks(opts.logger, opts.mask),
+    pollIntervalMs: POLL_INTERVAL_MS,
+    maxWaitMs: Math.max(
+      0,
+      Math.min(POLL_TIMEOUT_MS, enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS)
+    ),
+  });
+  if (!gone && !sawDeleting && lastStatus !== undefined) {
+    throw wrapRecordKeptError(
+      `still read ${lastStatus}, never deleting, when cdkd stopped waiting after its delete was ` +
+        'accepted, so AWS may not be removing it'
+    );
+  }
 }
 
 /**

@@ -248,11 +248,6 @@ const proxySites: Site[] = [
     run: () => new RDSDBProxyProvider().delete('Px', 'px-1', PROXY, PROXY_PROPS, ctx),
   },
   {
-    wrap: 'DELETE (poll) failed for Px',
-    command: 'DescribeDBProxiesCommand',
-    run: () => new RDSDBProxyProvider().delete('Px', 'px-1', PROXY, PROXY_PROPS, ctx),
-  },
-  {
     wrap: 'CREATE failed for Ep',
     command: 'CreateDBProxyEndpointCommand',
     run: () => new RDSDBProxyEndpointProvider().create('Ep', EP, EP_PROPS, ctx),
@@ -308,11 +303,9 @@ const proxySites: Site[] = [
     command: 'DeleteDBProxyEndpointCommand',
     run: () => new RDSDBProxyEndpointProvider().delete('Ep', 'ep-1', EP, EP_PROPS, ctx),
   },
-  {
-    wrap: 'DELETE (poll) failed for Ep',
-    command: 'DescribeDBProxyEndpointsCommand',
-    run: () => new RDSDBProxyEndpointProvider().delete('Ep', 'ep-1', EP, EP_PROPS, ctx),
-  },
+  // The DBProxy / DBProxyEndpoint post-delete status reads no longer throw: an
+  // unreadable status warns and returns (go-to-k/cdkd#6522), pinned with its
+  // masking in rds-dbproxy-delete-wait-6522.test.ts.
 ];
 
 // ─── RDS DBProxyTargetGroup ───────────────────────────────────────────
@@ -853,8 +846,9 @@ describe('tail-d thrown wraps withhold AWS text (#2319)', () => {
   });
 
   it('covers every wrap of the slice', () => {
-    expect(sites).toHaveLength(74);
-    expect(deleteSites).toHaveLength(22);
+    // 74 / 22 before go-to-k/cdkd#6522 retired the two DBProxy post-delete poll wraps.
+    expect(sites).toHaveLength(72);
+    expect(deleteSites).toHaveLength(20);
   });
 
   it.each(sites)('$wrap: an AWS-authored failure is named by its class', async (site) => {

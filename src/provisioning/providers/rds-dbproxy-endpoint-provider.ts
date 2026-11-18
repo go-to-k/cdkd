@@ -58,7 +58,11 @@ import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
-import { POLL_INTERVAL_MS, POLL_TIMEOUT_MS, pauseBeforeNextPoll } from './rds-dbproxy/shared.js';
+import {
+  POLL_TIMEOUT_MS,
+  pauseBeforeNextPoll,
+  waitForDBProxyDeleteGone,
+} from './rds-dbproxy/shared.js';
 
 /**
  * AWS RDS DBProxyEndpoint Provider
@@ -505,7 +509,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     const client = this.getClient();
     const mask = maskerOrIdentity(context?.maskSecrets);
 
-    this.logger.debug(`Deleting DBProxyEndpoint ${physicalId}`);
+    this.logger.debug(mask(`Deleting DBProxyEndpoint ${physicalId}`));
 
     try {
       await client.send(new DeleteDBProxyEndpointCommand({ DBProxyEndpointName: physicalId }));
@@ -520,42 +524,40 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(
-          `DBProxyEndpoint ${physicalId} or parent already gone, treating as success`
+          mask(`DBProxyEndpoint ${physicalId} or parent already gone, treating as success`)
         );
         return;
       }
       throw this.wrapDeleteError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
     }
 
-    const deadline = Date.now() + POLL_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        await client.send(new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId }));
-      } catch (error) {
-        if (
-          error instanceof DBProxyEndpointNotFoundFault ||
-          error instanceof DBProxyNotFoundFault
-        ) {
-          this.logger.debug(`DBProxyEndpoint ${physicalId} fully deleted`);
-          return;
-        }
-        throw this.wrapDeleteError(
-          error,
-          'DELETE (poll)',
-          resourceType,
-          logicalId,
-          physicalId,
-          mask
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    }
-    throw new ProvisioningError(
-      `Timed out waiting for DBProxyEndpoint ${physicalId} to fully delete`,
+    // go-to-k/cdkd#6522: the shared post-delete wait, bounded by the resource
+    // deadline. Outside the try: its only throw is its own marked error.
+    await waitForDBProxyDeleteGone({
+      what: `DBProxyEndpoint ${physicalId}`,
       resourceType,
       logicalId,
-      physicalId
-    );
+      physicalId,
+      readStatus: async () => {
+        try {
+          const out = await client.send(
+            new DescribeDBProxyEndpointsCommand({ DBProxyEndpointName: physicalId })
+          );
+          // An answer with no status keeps the wait going (`unknown`).
+          return out.DBProxyEndpoints?.[0]?.Status ?? 'unknown';
+        } catch (error) {
+          if (
+            error instanceof DBProxyEndpointNotFoundFault ||
+            error instanceof DBProxyNotFoundFault
+          ) {
+            return undefined;
+          }
+          throw error;
+        }
+      },
+      logger: this.logger,
+      mask,
+    });
   }
 
   async getAttribute(
