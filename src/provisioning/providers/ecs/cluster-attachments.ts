@@ -160,22 +160,60 @@ export async function sendWhenAttachmentsSettle<T>(
   }
 }
 
+/** How many 1s re-reads a Put that never showed `UPDATE_IN_PROGRESS` gets before a FAILED counts as stale. */
+const OWN_PUT_GRACE_READS = 3;
+
+/** Attachment statuses that can mean the Put itself failed (a Put creates, updates and deletes attachments). */
+const FAILED_ATTACHMENT = /^(CREATE|UPDATE|DELETE)_FAILED$|^FAILED$/;
+
 /**
- * The wait after a `PutClusterCapacityProviders` THIS update sent: the
- * attachments settling `UPDATE_FAILED` means the providers were not attached,
- * so it throws rather than record success. A rollback replay reaching the
- * same state fails that resource the same way, naming AWS's reason.
+ * The wait after a `PutClusterCapacityProviders` THIS update sent, seeded
+ * with the Put response's own cluster (measured: it reports
+ * `UPDATE_IN_PROGRESS`, and so does a Describe sent right after it).
+ *
+ * `UPDATE_FAILED` fails the update only when it belongs to this Put: after
+ * `UPDATE_IN_PROGRESS` was seen in the response or by a read here. A cluster a
+ * PREVIOUS Put left `UPDATE_FAILED` that never shows in-progress within
+ * {@link OWN_PUT_GRACE_READS} re-reads is stale: warned, not thrown, so a
+ * corrected template is not refused over the broken one's attachments. A
+ * rollback replay meeting a failure of its own Put fails that resource,
+ * naming AWS's reason.
  */
 export async function waitForOwnCapacityProviderPut(
   client: ECSClient,
   logicalId: string,
   cluster: string,
-  log: MaskedLogSinks
+  log: MaskedLogSinks,
+  putCluster: Cluster | undefined
 ): Promise<void> {
+  let sawInProgress = putCluster?.attachmentsStatus === IN_PROGRESS;
+  if (!sawInProgress) {
+    for (let read = 0; ; read++) {
+      const status = await attachmentsStatus(client, cluster);
+      if (status === IN_PROGRESS) {
+        sawInProgress = true;
+        break;
+      }
+      if (status !== 'UPDATE_FAILED') return;
+      if (read >= OWN_PUT_GRACE_READS) {
+        log.warn(
+          `ECS cluster ${log.value(cluster)} still reports UPDATE_FAILED attachments from before this update's PutClusterCapacityProviders, which never showed UPDATE_IN_PROGRESS; continuing`
+        );
+        return;
+      }
+      await clusterAttachmentsWait.sleep(1_000);
+    }
+  }
   const settled = await waitForClusterAttachments(client, logicalId, cluster, log);
   if (settled?.attachmentsStatus !== 'UPDATE_FAILED') return;
+  // Only the attachments this Put touched (its response lists them), else
+  // any whose status says a create / update / delete failed.
+  const touched = new Set(
+    (putCluster?.attachments ?? []).map((a) => a.id).filter((id): id is string => Boolean(id))
+  );
   const failed = (settled.attachments ?? [])
-    .filter((a) => /FAILED/.test(a.status ?? ''))
+    .filter((a) => FAILED_ATTACHMENT.test(a.status ?? ''))
+    .filter((a) => touched.size === 0 || (a.id !== undefined && touched.has(a.id)))
     .map((a) => {
       const details = (a.details ?? []).map((d) => `${d.name ?? '?'}=${d.value ?? ''}`).join(', ');
       return `${a.type ?? 'attachment'} ${a.id ?? ''} ${a.status ?? ''}${details ? ` (${details})` : ''}`.trim();

@@ -157,7 +157,7 @@ export async function updateCluster(
       ? capacityProvidersChanged(properties, previousProperties)
       : heldCapacityProviders(previousProperties);
     if (sentCapacityProviders) {
-      await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
+      const putResponse = await sendWhenAttachmentsSettle(client, logicalId, physicalId, log, () =>
         client.send(
           new PutClusterCapacityProvidersCommand({
             cluster: physicalId,
@@ -175,7 +175,7 @@ export async function updateCluster(
       // After EVERY Put, not only before an UpdateCluster: a same-deploy
       // dependent (a Service on a just-added provider) must not meet a
       // cluster that is still attaching. A failed attachment throws.
-      await waitForOwnCapacityProviderPut(client, logicalId, physicalId, log);
+      await waitForOwnCapacityProviderPut(client, logicalId, physicalId, log, putResponse?.cluster);
     }
 
     // Apply ClusterSettings / Configuration / ServiceConnectDefaults via

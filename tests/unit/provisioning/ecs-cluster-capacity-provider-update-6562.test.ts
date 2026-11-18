@@ -93,6 +93,8 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
   let putFailures: Error[];
   let updateFailures: Error[];
   let attachmentList: Array<Record<string, unknown>>;
+  /** What PutClusterCapacityProviders answers (measured: UPDATE_IN_PROGRESS). */
+  let putCluster: Record<string, unknown>;
 
   beforeEach(() => {
     mockSend.mockReset();
@@ -103,6 +105,7 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
     putFailures = [];
     updateFailures = [];
     attachmentList = [];
+    putCluster = { clusterArn: ARN, attachmentsStatus: 'UPDATE_IN_PROGRESS' };
     clusterAttachmentsWait.sleep = async (ms: number) => {
       sleeps.push(ms);
       clock += ms;
@@ -112,7 +115,7 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
       if (command instanceof PutClusterCapacityProvidersCommand) {
         const failure = putFailures.shift();
         if (failure) throw failure;
-        return { cluster: { clusterArn: ARN, attachmentsStatus: 'UPDATE_IN_PROGRESS' } };
+        return { cluster: putCluster };
       }
       if (command instanceof UpdateClusterCommand) {
         const failure = updateFailures.shift();
@@ -291,6 +294,51 @@ describe('ECS Cluster update: capacity providers and settings (go-to-k/cdkd#6562
     expect((failure as Error).message).toMatch(/reason=scaling plan missing/);
     expect(isMarkedNonRetryable(failure)).toBe(true);
     expect(names()).not.toContain('UpdateClusterCommand');
+  });
+
+  const failureOf = (props: Record<string, unknown>): Promise<unknown> =>
+    provider
+      .update('Cluster', CLUSTER, TYPE, props, BEFORE)
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+
+  it('does not fail over an UPDATE_FAILED a previous Put left, when this Put never shows in progress', async () => {
+    putCluster = { clusterArn: ARN };
+    attachments = ['UPDATE_FAILED'];
+    attachmentList = [{ id: 'att-old', type: 'as_policy', status: 'UPDATE_FAILED' }];
+
+    await provider.update('Cluster', CLUSTER, TYPE, PROVIDERS_AND_SETTINGS, BEFORE);
+
+    expect(names()).toContain('UpdateClusterCommand');
+    expect(sleeps).toEqual([1_000, 1_000, 1_000]);
+  });
+
+  it('fails when a Put without a status in its response is then seen in progress and ends UPDATE_FAILED', async () => {
+    putCluster = { clusterArn: ARN };
+    attachments = ['UPDATE_FAILED', 'UPDATE_IN_PROGRESS', 'UPDATE_FAILED'];
+
+    const failure = await failureOf(PROVIDERS_AND_SETTINGS);
+
+    expect((failure as Error).message).toMatch(/attachments UPDATE_FAILED/);
+    expect(names()).not.toContain('UpdateClusterCommand');
+  });
+
+  it('names only the attachments this Put touched', async () => {
+    putCluster = {
+      clusterArn: ARN,
+      attachmentsStatus: 'UPDATE_IN_PROGRESS',
+      attachments: [{ id: 'att-new', status: 'UPDATE_IN_PROGRESS' }],
+    };
+    attachments = ['UPDATE_FAILED'];
+    attachmentList = [
+      { id: 'att-new', type: 'as_policy', status: 'UPDATE_FAILED' },
+      { id: 'att-stale', type: 'as_policy', status: 'DELETE_FAILED' },
+    ];
+
+    const failure = await failureOf(PROVIDERS_AND_SETTINGS);
+
+    expect((failure as Error).message).toMatch(/att-new UPDATE_FAILED/);
+    expect((failure as Error).message).not.toMatch(/att-stale/);
   });
 
   it('does not fail on UPDATE_FAILED reached by waiting out a Put it did not send', async () => {
