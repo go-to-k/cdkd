@@ -488,7 +488,7 @@ with no `--resource`, or with `--auto`.
 | Budgets | `AWS::Budgets::Budget` |
 | CloudFront | `AWS::CloudFront::Distribution` |
 | CloudTrail | `AWS::CloudTrail::Trail` |
-| CloudWatch, Logs | `AWS::CloudWatch::Alarm`, `AWS::Logs::LogGroup` |
+| CloudWatch, Logs | `AWS::CloudWatch::Alarm`, `AWS::Logs::Delivery`, `AWS::Logs::DeliveryDestination`, `AWS::Logs::DeliverySource`, `AWS::Logs::LogGroup` |
 | CodeBuild, CodeCommit | `AWS::CodeBuild::Project`, `AWS::CodeCommit::Repository` |
 | Cognito | `AWS::Cognito::UserPool` |
 | DLM | `AWS::DLM::LifecyclePolicy` |

@@ -403,6 +403,12 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     'AWS::Lambda::WebFunctionRevision',
     [['BuildConfig'], ['Description'], ['FunctionName'], ['KmsKeyArn'], ['ServiceConfig']],
   ],
+  ['AWS::Logs::Delivery', [['DeliveryDestinationArn'], ['DeliverySourceName']]],
+  [
+    'AWS::Logs::DeliveryDestination',
+    [['DeliveryDestinationType'], ['DestinationResourceArn'], ['Name'], ['OutputFormat']],
+  ],
+  ['AWS::Logs::DeliverySource', [['Name']]],
   ['AWS::Logs::LogGroup', [['LogGroupName']]],
   [
     'AWS::Neptune::DBCluster',

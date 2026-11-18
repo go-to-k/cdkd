@@ -1,0 +1,110 @@
+{
+  "resourceType": "AWS::Logs::DeliverySource",
+  "generatedAt": "2026-11-18",
+  "properties": [
+    "Arn",
+    "DeliverySourceConfiguration",
+    "LogType",
+    "Name",
+    "ResourceArn",
+    "ResourceArns",
+    "Service",
+    "Status",
+    "StatusReason",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "Arn",
+    "ResourceArns",
+    "Service",
+    "Status",
+    "StatusReason"
+  ],
+  "createOnlyProperties": [
+    "Name"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "Name"
+    ]
+  ],
+  "primaryIdentifier": [
+    "Name"
+  ],
+  "nestedProperties": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "Name": "scalar",
+      "Arn": "scalar",
+      "ResourceArns": "array",
+      "ResourceArn": "scalar",
+      "Service": "scalar",
+      "LogType": "scalar",
+      "Tags": "array",
+      "DeliverySourceConfiguration": "object",
+      "Status": "scalar",
+      "StatusReason": "scalar"
+    },
+    "Tag": {
+      "Key": "scalar",
+      "Value": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "Name"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "DeliverySourceConfiguration": "object",
+    "ResourceArns": "array",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "Arn": "string",
+    "DeliverySourceConfiguration": "object",
+    "LogType": "string",
+    "Name": "string",
+    "ResourceArn": "string",
+    "ResourceArns": "array",
+    "ResourceArns[]": "string",
+    "Service": "string",
+    "Status": "string",
+    "StatusReason": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "Status": [
+      "ACTIVE",
+      "INACTIVE"
+    ],
+    "StatusReason": [
+      "RESOURCE_DELETED"
+    ]
+  }
+}

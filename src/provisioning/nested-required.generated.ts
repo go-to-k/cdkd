@@ -1195,6 +1195,12 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
       ['ServiceConfig', ['ExecutionRoleArn']],
     ]),
   ],
+  ['AWS::Logs::Delivery', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
+  [
+    'AWS::Logs::DeliveryDestination',
+    new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]]),
+  ],
+  ['AWS::Logs::DeliverySource', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   ['AWS::Logs::LogGroup', new Map<string, readonly string[]>([['Tags', ['Key', 'Value']]])],
   [
     'AWS::Neptune::DBCluster',

@@ -467,7 +467,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::KinesisFirehose` | `DeliveryStream` |
 | `AWS::KMS` | `Alias`, `Key` |
 | `AWS::Lambda` | `EventInvokeConfig`, `EventSourceMapping`, `Function`, `LayerVersion`, `MicrovmImage`, `NetworkConnector`, `Permission`, `Url`, `WebFunctionEndpoint`, `WebFunctionRevision` |
-| `AWS::Logs` | `LogGroup` |
+| `AWS::Logs` | `Delivery`, `DeliveryDestination`, `DeliverySource`, `LogGroup` |
 | `AWS::Neptune` | `DBCluster`, `DBInstance`, `DBSubnetGroup` |
 | `AWS::Pipes` | `Pipe` |
 | `AWS::RDS` | `DBCluster`, `DBInstance`, `DBProxy`, `DBProxyEndpoint`, `DBProxyTargetGroup`, `DBSubnetGroup` |

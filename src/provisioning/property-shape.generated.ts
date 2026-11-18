@@ -306,6 +306,15 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     'AWS::Lambda::WebFunctionRevision',
     '{"BuildConfig":"object","BuildConfig.CodeConfig":"object","BuildConfig.CodeConfig.S3Object":"object","BuildConfig.RuntimeConfig":"object","ServiceConfig":"object","ServiceConfig.EnvironmentVariables":"object","ServiceConfig.TelemetryConfig":"object","ServiceConfig.TelemetryConfig.LoggingConfig":"object"}',
   ],
+  ['AWS::Logs::Delivery', '{"RecordFields":"array","Tags":"array","Tags[]":"object"}'],
+  [
+    'AWS::Logs::DeliveryDestination',
+    '{"DeliveryDestinationPolicy":"object","DeliveryDestinationPolicy.DeliveryDestinationPolicy":"object","Tags":"array","Tags[]":"object"}',
+  ],
+  [
+    'AWS::Logs::DeliverySource',
+    '{"DeliverySourceConfiguration":"object","ResourceArns":"array","Tags":"array","Tags[]":"object"}',
+  ],
   [
     'AWS::Logs::LogGroup',
     '{"DataProtectionPolicy":"object","FieldIndexPolicies":"array","FieldIndexPolicies[]":"object","ResourcePolicyDocument":"object","Tags":"array","Tags[]":"object"}',

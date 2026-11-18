@@ -107,6 +107,9 @@
     "AWS::Lambda::Url",
     "AWS::Lambda::WebFunctionEndpoint",
     "AWS::Lambda::WebFunctionRevision",
+    "AWS::Logs::Delivery",
+    "AWS::Logs::DeliveryDestination",
+    "AWS::Logs::DeliverySource",
     "AWS::Logs::LogGroup",
     "AWS::Neptune::DBCluster",
     "AWS::Neptune::DBInstance",
@@ -11004,7 +11007,11 @@
       }
     }
   ],
-  "orphans": [],
+  "orphans": [
+    "AWS::Logs::Delivery",
+    "AWS::Logs::DeliveryDestination",
+    "AWS::Logs::DeliverySource"
+  ],
   "allowListed": [
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",

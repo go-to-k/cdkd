@@ -32,6 +32,9 @@ export { LambdaNetworkConnectorProvider } from './providers/lambda-network-conne
 export { DynamoDBTableProvider } from './providers/dynamodb-table-provider.js';
 export { DynamoDBGlobalTableProvider } from './providers/dynamodb-globaltable-provider.js';
 export { LogsLogGroupProvider } from './providers/logs-loggroup-provider.js';
+export { LogsDeliverySourceProvider } from './providers/logs-delivery-source-provider.js';
+export { LogsDeliveryDestinationProvider } from './providers/logs-delivery-destination-provider.js';
+export { LogsDeliveryProvider } from './providers/logs-delivery-provider.js';
 export { CloudWatchAlarmProvider } from './providers/cloudwatch-alarm-provider.js';
 export { CloudWatchAnomalyDetectorProvider } from './providers/cloudwatch-anomaly-detector-provider.js';
 export { SecretsManagerSecretProvider } from './providers/secretsmanager-secret-provider.js';

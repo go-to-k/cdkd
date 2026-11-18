@@ -531,6 +531,16 @@ but never reaches the EventBridge API. A stack deployed into the emulator by an
 earlier release keeps such an archive on Cloud Control; destroy that stack and
 deploy it again once.
 
+### A log delivery fails with `attributes are not enriched`
+
+cdkd creates `AWS::Logs::DeliverySource`, `AWS::Logs::DeliveryDestination` and
+`AWS::Logs::Delivery` through its own SDK providers, which work on AWS
+Emulator. The emulator's Cloud Control reports these types created without
+making them, so a source or destination whose record was created through Cloud
+Control in the emulator does not exist, and the delivery that reads its `Arn`
+fails with `attributes are not enriched for this resource type`. Destroy that
+stack and deploy it again once.
+
 ### A large single upload fails
 
 AWS Emulator (as of 1.0.322) refuses a single `PutObject` of 16 MiB or more: the request fails
