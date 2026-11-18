@@ -265,15 +265,17 @@ export class CcApiContextProvider implements ContextProvider {
   }
 
   /**
-   * Check if resource matches property filter
+   * Check if resource matches property filter. Strict equality, as the CDK
+   * CLI's `propertyMatchesFilter`, so an object or array filter value never
+   * matches; a resource lacking the path is a non-match where the CDK CLI
+   * throws.
    */
   private matchesProperties(
     resource: ResourceModel,
     propertyMatch: Record<string, unknown>
   ): boolean {
     for (const [key, expectedValue] of Object.entries(propertyMatch)) {
-      const actualValue = this.getNestedProperty(resource, key);
-      if (JSON.stringify(actualValue) !== JSON.stringify(expectedValue)) {
+      if (this.getNestedProperty(resource, key) !== expectedValue) {
         return false;
       }
     }
@@ -281,13 +283,15 @@ export class CcApiContextProvider implements ContextProvider {
   }
 
   /**
-   * Get nested property value using dot notation
+   * Get nested property value using dot notation, stepping into primitives
+   * too (`Name.length`), as the CDK CLI's `findJsonValue` does. A missing
+   * path is `undefined` where the CDK CLI throws.
    */
   private getNestedProperty(obj: Record<string, unknown>, path: string): unknown {
     const parts = path.split('.');
     let current: unknown = obj;
     for (const part of parts) {
-      if (current === null || current === undefined || typeof current !== 'object') {
+      if (current === null || current === undefined) {
         return undefined;
       }
       current = (current as Record<string, unknown>)[part];

@@ -421,6 +421,37 @@ describe('CcApiContextProvider', () => {
     expect(mockSend.mock.calls[1]![0]).toMatchObject({ NextToken: 'token-1' });
   });
 
+  it('should match by strict equality, so an object filter value never matches (CDK CLI parity)', async () => {
+    mockSend.mockResolvedValue(
+      listed(
+        { Identifier: 'r1', Tags: [{ Key: 'env', Value: 'prod' }] },
+        { Identifier: 'r2', Tags: [{ Key: 'env', Value: 'prod' }] }
+      )
+    );
+
+    const provider = new CcApiContextProvider({ region: 'us-east-1' });
+    const result = await provider.resolve({
+      typeName: 'AWS::SomeType',
+      propertyMatch: { Tags: [{ Key: 'env', Value: 'prod' }] },
+      expectedMatchCount: 'at-most-one',
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it('should step into a primitive on a dotted path, as findJsonValue does', async () => {
+    mockSend.mockResolvedValue(listed({ Identifier: 'r1', Name: 'abcd' }));
+
+    const provider = new CcApiContextProvider({ region: 'us-east-1' });
+    const result = await provider.resolve({
+      typeName: 'AWS::SomeType',
+      propertyMatch: { 'Name.length': 4 },
+      propertiesToReturn: ['Name.length'],
+    });
+
+    expect(result).toEqual([{ 'Name.length': 4, Identifier: 'r1' }]);
+  });
+
   it('should filter by nested property match and return nested properties', async () => {
     mockSend.mockResolvedValue(
       listed(

@@ -213,4 +213,8 @@ assert_gone "parameter ${PREFIX_LIST_PARAM} still exists after destroy" aws ssm 
 assert_gone "parameter ${ROLE_ARN_PARAM} still exists after destroy" aws ssm get-parameter --name "${ROLE_ARN_PARAM}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
+echo "==> Delete the out-of-band IAM role"
+aws iam delete-role --role-name "${ROLE_NAME}"
+assert_gone "role ${ROLE_NAME} still exists after delete-role" aws iam get-role --role-name "${ROLE_NAME}"
+
 echo "[verify] PASS — cc-api-provider lookups (PrefixList.fromLookup, Role.fromLookup) are stored as one-element arrays with Identifier, a stale bare-object entry is re-looked-up by cdkd synth, upstream cdk synth --no-lookups accepts the same context file, and destroy leaves nothing behind (go-to-k/cdkd#6542)"
