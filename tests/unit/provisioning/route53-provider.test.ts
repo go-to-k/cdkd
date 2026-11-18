@@ -1184,13 +1184,9 @@ describe('Route53Provider', () => {
 
       describe('a DELETE refused because the recorded values lag the live record (issue #6549)', () => {
         // Route 53's text, measured 2026-11-18.
-        const mismatch = () =>
-          Object.assign(
-            new Error(
-              "[Tried to delete resource record set [name='www.example.com.', type='A'] but the values provided do not match the current values]"
-            ),
-            { name: 'InvalidChangeBatch' }
-          );
+        const mismatchText =
+          "[Tried to delete resource record set [name='www.example.com.', type='A'] but the values provided do not match the current values]";
+        const mismatch = () => Object.assign(new Error(mismatchText), { name: 'InvalidChangeBatch' });
         const recorded = {
           HostedZoneId: 'Z1234567890',
           Name: 'www.example.com.',
@@ -1220,7 +1216,7 @@ describe('Route53Provider', () => {
 
           await expect(
             provider.delete('MyRecord', 'Z1234567890|www.example.com.|A', 'AWS::Route53::RecordSet', recorded)
-          ).rejects.toThrow('Failed to delete record set MyRecord: ');
+          ).rejects.toThrow(`Failed to delete record set MyRecord: ${mismatchText}`);
           expect(mockSend).toHaveBeenCalledTimes(2);
         });
       });
