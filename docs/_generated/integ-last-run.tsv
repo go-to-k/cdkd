@@ -120,7 +120,7 @@ destroy-failed-delete-keeps-dependencies	2026-11-07T16:28:42Z	PASS	66	verify.sh	
 destroy-interrupt	2026-11-04T21:24:38Z	PASS	381	verify.sh	rc 0, re-run destroy clean resume; 2 auto-created /aws/lambda log groups deleted; orphans clean
 destroy-manifest-deps	2026-11-11T17:17:53Z	PASS	246	verify.sh	rc ok, orph clean, XR log-group sweep ok
 destroy-nested-cross-region	2026-11-12T11:22:31Z	PASS	296	verify.sh	rc ok, orph clean; #6140 (us-east-1)
-diff-fail-on-destructive	2026-11-10T15:30:20Z	PASS	90	verify.sh	rc ok, orph clean
+diff-fail-on-destructive	2026-11-17T17:54:15Z	PASS	95	verify.sh	rc ok, orph clean
 diff-intrinsic-target-change	2026-11-10T15:28:15Z	PASS	75	verify.sh	rc ok, orph clean
 dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
@@ -471,8 +471,8 @@ sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-sqs-event	2026-11-04T22:19:15Z	PASS	255	verify.sh	own state bucket, rc ok, orph clean
-sns-subscription-filter	2026-11-05T10:17:57Z	PASS	291	verify.sh	rc ok, orph clean
-sns-subscription-update	2026-11-07T12:39:00Z	PASS	120	verify.sh	#6007 deploy split head; rc ok, orph clean
+sns-subscription-filter	2026-11-17T17:54:15Z	PASS	330	verify.sh	rc ok, orph clean
+sns-subscription-update	2026-11-17T17:54:15Z	PASS	160	verify.sh	#6509 diff reports provider replacement (2c); rc ok, orph clean
 sns-topic-attr-removal	2026-11-13T15:36:43Z	PASS	80	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean

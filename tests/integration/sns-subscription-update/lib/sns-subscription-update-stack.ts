@@ -67,10 +67,17 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
     const rawDelivery = modes.includes('raw-delivery');
     // `filter-b` edits the policy in place; `body-scope` then moves it to the
     // message body (a scope-only edit, also in place); `drop-filter` removes
-    // both, which must leave the live subscription with no filter (#4853).
+    // both, which must leave the live subscription with no filter (#4853);
+    // `filter-c` (with `drop-filter` gone) adds a policy on the message body
+    // to the subscription 2b left with neither, which the provider carries out
+    // by re-creating the subscription and `cdkd diff` must say so (#6509).
     const dropFilter = modes.includes('drop-filter');
-    const filterPolicy = dropFilter ? undefined : { kind: [modes.includes('filter-b') ? 'b' : 'a'] };
-    const filterPolicyScope = !dropFilter && modes.includes('body-scope') ? 'MessageBody' : undefined;
+    const filterC = modes.includes('filter-c');
+    const filterPolicy = dropFilter
+      ? undefined
+      : { kind: [filterC ? 'c' : modes.includes('filter-b') ? 'b' : 'a'] };
+    const filterPolicyScope =
+      !dropFilter && (filterC || modes.includes('body-scope')) ? 'MessageBody' : undefined;
 
     // BOTH polarities are explicit. Leaving the false arm to the AWS default
     // would make the mode-off deploy indistinguishable from one where cdkd

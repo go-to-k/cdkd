@@ -1,5 +1,9 @@
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import { markUpdatePolicyReplacements } from './update-policy-replacement.js';
+import {
+  dropSupersededProviderReplacements,
+  providerReplacementReason,
+} from './provider-replacement.js';
 import type { StackState, ResourceChange, PropertyChange } from '../../types/state.js';
 import { acceptedCreateOnlyDropsOf } from '../../types/state.js';
 import {
@@ -532,6 +536,10 @@ export async function calculateDiff(
 
       if (propertyChanges.length > 0 || attributeChanges.length > 0) {
         // Property and/or attribute changed -> UPDATE
+        const providerReplacement =
+          propertyChanges.length > 0
+            ? providerReplacementReason(desiredResource.Type, currentResource, resolvedDesiredProps)
+            : undefined;
         changes.set(logicalId, {
           logicalId,
           changeType: 'UPDATE',
@@ -540,6 +548,7 @@ export async function calculateDiff(
           desiredProperties: rawDesiredProps,
           propertyChanges,
           ...(attributeChanges.length > 0 && { attributeChanges }),
+          ...(providerReplacement !== undefined && { providerReplacement }),
         });
         this.logger.debug(
           `UPDATE: ${logicalId} (${propertyChanges.length} property changes, ${attributeChanges.length} attribute changes)`
@@ -673,6 +682,9 @@ export async function calculateDiff(
       freshParameters
     )
   );
+  // After the replacement passes: a resource the engine replaces anyway is
+  // not marked (go-to-k/cdkd#6509).
+  dropSupersededProviderReplacements(changes);
 
   const summary = this.getSummary(changes);
   this.logger.debug(

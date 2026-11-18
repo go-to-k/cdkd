@@ -22,6 +22,7 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { planSubscriptionAttributes } from './sns-subscription/attribute-plan.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -54,84 +55,8 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 export const SNS_SUBSCRIPTION_DELETE_THREW_REASON =
   'the Unsubscribe call did not complete, so the old subscription is unproven';
 
-/**
- * The attributes `SetSubscriptionAttributes` changes in place (go-to-k/cdkd#4853),
- * in the order an update applies them: `FilterPolicy` before
- * `FilterPolicyScope`, so a cleared policy is gone before its scope returns to
- * the default. `TopicArn` / `Protocol` / `Endpoint` are create-only.
- */
-const MUTABLE_ATTRIBUTES = [
-  'RawMessageDelivery',
-  'FilterPolicy',
-  'FilterPolicyScope',
-  'RedrivePolicy',
-  'DeliveryPolicy',
-  'ReplayPolicy',
-  'SubscriptionRoleArn',
-] as const;
-
-/**
- * The value that clears an attribute dropped from the template, for the ones
- * where AWS documents one. An attribute missing here (`DeliveryPolicy`,
- * `ReplayPolicy`, `SubscriptionRoleArn`) is removed by re-creating the
- * subscription without it, as before go-to-k/cdkd#4853.
- */
-const RESET_VALUES: Readonly<Record<string, string>> = {
-  RawMessageDelivery: 'false',
-  FilterPolicy: '',
-  FilterPolicyScope: 'MessageAttributes',
-  RedrivePolicy: '',
-};
-
 /** The create-only identity of a subscription; a change to one is a replacement. */
 const CREATE_ONLY_FIELDS = ['TopicArn', 'Protocol', 'Endpoint'] as const;
-
-/**
- * A template value in the string form `Subscribe` / `SetSubscriptionAttributes`
- * take: policies as JSON, a boolean as `"true"` / `"false"`. `undefined` for an
- * absent value.
- */
-function toAttributeValue(key: string, value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (
-    key === 'FilterPolicy' ||
-    key === 'RedrivePolicy' ||
-    key === 'DeliveryPolicy' ||
-    key === 'ReplayPolicy'
-  ) {
-    return typeof value === 'string' ? value : JSON.stringify(value);
-  }
-  return stringifyValue(value);
-}
-
-/**
- * Does AWS already hold `desired` for attribute `name`? A JSON policy compares
- * parsed, and an absent value equals the attribute's default (AWS omits
- * `RawMessageDelivery` on an email subscription, where setting it is refused).
- */
-function sameAttributeValue(name: string, desired: string, current: string | undefined): boolean {
-  if (current === undefined) return desired === RESET_VALUES[name];
-  if (desired === current) return true;
-  try {
-    return JSON.stringify(JSON.parse(desired)) === JSON.stringify(JSON.parse(current));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Will the subscription hold no `FilterPolicy` once `plan` is applied? Either
- * the plan clears it, or the plan leaves it and AWS holds none (a desired
- * policy the plan does not set already equals what AWS holds).
- */
-function filterPolicyCleared(
-  plan: ReadonlyArray<readonly [string, string]>,
-  current: Record<string, string>
-): boolean {
-  const planned = plan.find(([name]) => name === 'FilterPolicy');
-  if (planned !== undefined) return planned[1] === '';
-  return current['FilterPolicy'] === undefined || current['FilterPolicy'] === '';
-}
 
 /**
  * AWS SNS Subscription Provider
@@ -424,7 +349,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
    *   template change itself, so this is a rollback revert, or a record whose
    *   physical id names a subscription of another topic or endpoint);
    * - an attribute dropped from the template with no reset in
-   *   {@link RESET_VALUES};
+   *   `RESET_VALUES` (`sns-subscription/attribute-plan.ts`);
    * - a new (non-empty) `FilterPolicy` and a `FilterPolicyScope` change in one
    *   plan, whether the template declares the scope or dropped it: `Subscribe`
    *   applies them together, two calls would apply one at a time against the
@@ -464,42 +389,10 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       const desired = properties[field];
       if (desired !== undefined && stringifyValue(desired) !== current[field]) return undefined;
     }
-    const plan: Array<[string, string]> = [];
-    for (const name of MUTABLE_ATTRIBUTES) {
-      const desired = toAttributeValue(name, properties[name]);
-      const now = current[name];
-      if (desired !== undefined) {
-        if (!sameAttributeValue(name, desired, now)) plan.push([name, desired]);
-        continue;
-      }
-      // Dropped from the template: clear what AWS still holds.
-      if (now === undefined || now === '') continue;
-      // A scope without a policy filters nothing, and SNS may refuse to set
-      // one on a subscription with no policy: leave it for the next policy.
-      if (name === 'FilterPolicyScope' && filterPolicyCleared(plan, current)) continue;
-      const reset = RESET_VALUES[name];
-      if (reset === undefined) return undefined;
-      if (now !== reset) plan.push([name, reset]);
-    }
-    // A new policy and a scope change in one plan, whatever the template
-    // declares (a dropped scope resets too): two calls would evaluate the new
-    // policy against the OLD scope between them, and a failed second call
-    // would leave a pair neither side asked for. Either order has that gap (a
-    // scope set first is refused against the old policy's shape), so
-    // `Subscribe` sets them together. An EMPTY policy is exempt: cleared
-    // first, the subscription filters nothing between the calls. A scope the
-    // template DECLARES is still sent onto a subscription left with no policy
-    // (only raw CloudFormation spells that; CDK pairs a scope with a policy),
-    // and if SNS refuses it the deploy fails with the error, masked.
-    const policy = plan.find(([name]) => name === 'FilterPolicy');
-    if (
-      policy !== undefined &&
-      policy[1] !== '' &&
-      plan.some(([name]) => name === 'FilterPolicyScope')
-    ) {
-      return undefined;
-    }
-    return plan;
+    // The attribute half is shared with `cdkd diff` (go-to-k/cdkd#6509), which
+    // plans the same change against the state record.
+    const planned = planSubscriptionAttributes(current, properties);
+    return planned.kind === 'replace' ? undefined : planned.calls;
   }
 
   /**
