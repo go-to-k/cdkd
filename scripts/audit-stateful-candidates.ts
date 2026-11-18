@@ -555,6 +555,18 @@ export const NOT_GUARDED: ReadonlyMap<string, string> = new Map([
       'against it are in-flight work, not stored content, and the state machines that ' +
       'schedule them are separate resources.',
   ],
+  [
+    'AWS::DAX::Cluster',
+    '(c) A write-through CACHE in front of DynamoDB: every item it serves is written ' +
+      'to the DynamoDB tables, which are separate resources. A recreate starts it cold ' +
+      'and loses nothing the tables cannot serve again.',
+  ],
+  [
+    'AWS::DMS::ReplicationInstance',
+    '(c) Replication COMPUTE: its storage holds task logs and changes in flight between ' +
+      'endpoints. The source and target databases hold the data, and the replication ' +
+      'tasks are separate resources.',
+  ],
 ]);
 
 /**

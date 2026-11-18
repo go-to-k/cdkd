@@ -244,6 +244,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'EMRInstanceFleetConfigProvider',
       'EMRInstanceGroupConfigProvider',
       'ElastiCacheProvider',
+      'EventBridgeArchiveProvider',
       'EventBridgeBusProvider',
       'EventBridgeRuleProvider',
       'FSxFileSystemProvider',

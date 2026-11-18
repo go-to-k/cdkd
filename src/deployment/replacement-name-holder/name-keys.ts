@@ -47,6 +47,9 @@ export const REVERSE_REPLACEMENT_NAME_KEYS: Readonly<Record<string, NameKey>> = 
     scope: [['Cluster']],
     scopeDefaults: ['default'],
   },
+  // Not in the adoption table (its generated-name rule is `notAdopted`); the
+  // name is account + region scoped, and the physical id is the name.
+  'AWS::Events::Archive': flat('ArchiveName'),
   'AWS::Events::Rule': {
     name: [['Name']],
     scope: [['EventBusName']],

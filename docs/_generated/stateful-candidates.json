@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-09T10:40:28.123Z",
+  "generatedAt": "2026-11-18T20:41:33.786Z",
   "summary": {
-    "tier2Count": 1636,
-    "schemasRead": 1636,
-    "withCreateOnly": 1431,
+    "tier2Count": 1662,
+    "schemasRead": 1662,
+    "withCreateOnly": 1455,
     "schemasWithNoProperties": 0,
-    "candidateCount": 117,
-    "guardedCount": 88,
-    "unguardedCount": 29,
+    "candidateCount": 120,
+    "guardedCount": 89,
+    "unguardedCount": 31,
     "signalCounts": {
-      "snapshot-or-backup": 16,
-      "retention-window": 10,
-      "storage-capacity": 21,
-      "deletion-protection": 12,
+      "snapshot-or-backup": 17,
+      "retention-window": 9,
+      "storage-capacity": 23,
+      "deletion-protection": 13,
       "encryption-at-rest": 18,
       "data-store-noun": 68
     }
@@ -73,8 +73,7 @@
       "typeName": "AWS::AppConfig::ConfigurationProfile",
       "createOnlyProperties": [
         "/properties/ApplicationId",
-        "/properties/LocationUri",
-        "/properties/Type"
+        "/properties/LocationUri"
       ],
       "signals": [
         "deletion-protection"
@@ -319,6 +318,37 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::DAX::Cluster",
+      "createOnlyProperties": [
+        "/properties/ClusterEndpointEncryptionType",
+        "/properties/ClusterName",
+        "/properties/IAMRoleARN",
+        "/properties/NetworkType",
+        "/properties/NodeType",
+        "/properties/SSESpecification",
+        "/properties/SubnetGroupName"
+      ],
+      "signals": [
+        "data-store-noun",
+        "storage-capacity"
+      ],
+      "guarded": false
+    },
+    {
+      "typeName": "AWS::DMS::ReplicationInstance",
+      "createOnlyProperties": [
+        "/properties/DnsNameServers",
+        "/properties/KmsKeyId",
+        "/properties/PubliclyAccessible",
+        "/properties/ReplicationSubnetGroupIdentifier",
+        "/properties/ResourceIdentifier"
+      ],
+      "signals": [
+        "storage-capacity"
+      ],
+      "guarded": false
+    },
+    {
       "typeName": "AWS::DocDB::GlobalCluster",
       "createOnlyProperties": [
         "/properties/Engine",
@@ -527,18 +557,6 @@
       "guarded": false
     },
     {
-      "typeName": "AWS::Events::Archive",
-      "createOnlyProperties": [
-        "/properties/ArchiveName",
-        "/properties/SourceArn"
-      ],
-      "signals": [
-        "data-store-noun",
-        "retention-window"
-      ],
-      "guarded": true
-    },
-    {
       "typeName": "AWS::EventsV2::EventBus",
       "createOnlyProperties": [
         "/properties/Name"
@@ -704,6 +722,21 @@
       ],
       "signals": [
         "encryption-at-rest"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::KinesisAnalyticsV2::Snapshot",
+      "createOnlyProperties": [
+        "/properties/ApplicationName",
+        "/properties/ImportSourceConfiguration",
+        "/properties/SnapshotDescription",
+        "/properties/SnapshotEncryptionConfigurationDescription",
+        "/properties/SnapshotFormat",
+        "/properties/SnapshotName"
+      ],
+      "signals": [
+        "snapshot-or-backup"
       ],
       "guarded": true
     },
@@ -1065,7 +1098,6 @@
         "/properties/EncryptionConfig",
         "/properties/Name",
         "/properties/StandbyReplicas",
-        "/properties/Tags",
         "/properties/Type"
       ],
       "signals": [
@@ -1548,6 +1580,16 @@
       ],
       "signals": [
         "storage-capacity"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::WellArchitected::AgentOrganizationalProfile",
+      "createOnlyProperties": [
+        "/properties/Name"
+      ],
+      "signals": [
+        "deletion-protection"
       ],
       "guarded": true
     },
