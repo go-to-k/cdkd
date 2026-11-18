@@ -86,7 +86,7 @@ export async function waitForClusterAttachments(
         if (status === 'UPDATE_FAILED') {
           log.warn(
             `ECS cluster ${log.value(cluster)} reports its capacity provider attachments UPDATE_FAILED; ` +
-              `check them with: aws ecs describe-clusters --clusters ${log.value(cluster)} --include ATTACHMENTS`
+              'check the attachments DescribeClusters reports for it (include ATTACHMENTS)'
           );
         }
         return status;
