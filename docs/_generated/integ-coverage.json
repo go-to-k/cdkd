@@ -5876,7 +5876,6 @@
           "literal"
         ],
         "sdk-ccapi-crossref": [
-          "l1",
           "literal"
         ]
       }
@@ -11077,6 +11076,7 @@
     "AWS::ElastiCache::ParameterGroup",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::EventSchemas::Discoverer",
     "AWS::Events::ApiDestination",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",

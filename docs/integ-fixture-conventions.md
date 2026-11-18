@@ -1210,8 +1210,8 @@ take away:
   Control whatever the property map says — over a template that DIFFERS from
   the base one, since a `NO_CHANGE` diff no-ops the flag
   (`recreate-via-sdk-provider`, `recreate-mixed-direction`); or
-- use a type with NO SDK provider at all, such as `AWS::Events::Archive`
-  (`sdk-ccapi-crossref`).
+- use a type with NO SDK provider at all, such as
+  `AWS::EventSchemas::Discoverer` (`sdk-ccapi-crossref`).
 
 Only a fixture whose SUBJECT is the auto-route itself may key on an SDK-unwired
 property, and it then owes `cc-api-fallback`'s step-0 guard: read the generated

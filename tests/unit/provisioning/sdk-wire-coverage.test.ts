@@ -200,6 +200,10 @@ const ARCHIVE_SOURCE_REQUIRED: Throw = {
   why: 'SourceArn is refused when absent, before CreateArchive',
   says: /SourceArn is required for EventBridge archive/,
 };
+// go-to-k/cdkd#6578, measured CFn A/B: a removed archive property stays live,
+// because CloudFormation's UpdateArchive sends only the declared fields.
+const ARCHIVE_CFN_KEEPS_ON_REMOVAL =
+  'CloudFormation keeps a removed archive property live (measured A/B); update() sends no clear';
 const BUS_POLICY_KEPT_ON_REMOVAL =
   'a removed Policy is left live and warned about, as CloudFormation leaves it (go-to-k/cdkd#5044)';
 // Not a gap: a partner bus's Name must equal its EventSourceName, and Name is
@@ -586,7 +590,7 @@ const CASES: TypeCase[] = [
           RetentionDays: 7,
           KmsKeyIdentifier: 'alias/k',
         },
-        expectedSilent: {},
+        expectedSilent: { 'update-remove:RetentionDays': ARCHIVE_CFN_KEEPS_ON_REMOVAL },
         expectedRemovalThrows: { 'create:SourceArn': ARCHIVE_SOURCE_REQUIRED },
       },
     ],

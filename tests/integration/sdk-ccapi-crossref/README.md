@@ -27,10 +27,12 @@ later wired into their providers, both resources silently landed on `sdk`, and
 the run failed at its baseline. The two mechanisms used now depend on no
 property-coverage table:
 
-1. **A type with no SDK Provider** — `AWS::Events::Archive` is pure Cloud
-   Control fallback on a plain fresh deploy. Only a newly registered
-   `AWS::Events::Archive` SDK Provider changes that, and the baseline FAIL line
-   says so and says what to swap.
+1. **A type with no SDK Provider** — `AWS::EventSchemas::Discoverer` is pure
+   Cloud Control fallback on a plain fresh deploy. Only a newly registered SDK
+   Provider for it changes that, and the baseline FAIL line says so and says
+   what to swap. (The fixture used `AWS::Events::Archive` until
+   [#6578](https://github.com/go-to-k/cdkd/issues/6578) gave it an SDK
+   Provider.)
 2. **The explicit `--recreate-via-cc-api` flag** — moves `CcLambda`, an
    SDK-registered type, onto Cloud Control in Phase 2.
 
@@ -39,29 +41,29 @@ property-coverage table:
 One stack (`CdkdSdkCcApiCrossrefExample`), no VPC / NAT, deterministic
 physical names. `CDKD_INTEG_PHASE` = `base` (default) | `seed`.
 
-| Logical id         | Type                    | AWS name                      | Routing                       |
-| ------------------ | ----------------------- | ----------------------------- | ----------------------------- |
-| `Archive`          | `AWS::Events::Archive`  | `cdkd-crossref-archive`       | `cc-api` (no SDK Provider)    |
-| `CcLambda`         | `AWS::Lambda::Function` | `cdkd-crossref-fn`            | `sdk` -> `cc-api` in `seed`   |
-| `ExecRole`         | `AWS::IAM::Role`        | `cdkd-crossref-exec-role`     | `sdk`                         |
-| `Bus`              | `AWS::Events::EventBus` | `cdkd-crossref-bus`           | `sdk`                         |
-| `ArchiveArnParam`  | `AWS::SSM::Parameter`   | `/cdkd/crossref/archive-arn`  | `sdk`                         |
-| `ArchiveNameParam` | `AWS::SSM::Parameter`   | `/cdkd/crossref/archive-name` | `sdk`                         |
-| `FnArnParam`       | `AWS::SSM::Parameter`   | `/cdkd/crossref/fn-arn`       | `sdk` (exists in `seed` only) |
+| Logical id           | Type                             | AWS name                        | Routing                       |
+| -------------------- | -------------------------------- | ------------------------------- | ----------------------------- |
+| `Discoverer`         | `AWS::EventSchemas::Discoverer`  | (none; found by its bus ARN)    | `cc-api` (no SDK Provider)    |
+| `CcLambda`           | `AWS::Lambda::Function`          | `cdkd-crossref-fn`              | `sdk` -> `cc-api` in `seed`   |
+| `ExecRole`           | `AWS::IAM::Role`                 | `cdkd-crossref-exec-role`       | `sdk`                         |
+| `Bus`                | `AWS::Events::EventBus`          | `cdkd-crossref-bus`             | `sdk`                         |
+| `DiscovererIdParam`  | `AWS::SSM::Parameter`            | `/cdkd/crossref/discoverer-id`  | `sdk`                         |
+| `DiscovererArnParam` | `AWS::SSM::Parameter`            | `/cdkd/crossref/discoverer-arn` | `sdk`                         |
+| `FnArnParam`         | `AWS::SSM::Parameter`            | `/cdkd/crossref/fn-arn`         | `sdk` (exists in `seed` only) |
 
 ### Cross-references (consumer -> producer)
 
 | Id  | Direction | Reference                                                  |
 | --- | --------- | ---------------------------------------------------------- |
-| A   | SDK -> CC | `ArchiveArnParam.Value = Fn::GetAtt(Archive, 'Arn')`       |
-| B   | SDK -> CC | `ArchiveNameParam.Value = Ref(Archive)`                    |
-| C   | CC -> SDK | `Archive.SourceArn = Fn::GetAtt(Bus, 'Arn')`               |
-| D   | CC -> SDK | `Archive.Description` embeds `Ref(Bus)`                    |
+| A   | SDK -> CC | `DiscovererIdParam.Value = Fn::GetAtt(Discoverer, 'DiscovererId')` |
+| B   | SDK -> CC | `DiscovererArnParam.Value = Ref(Discoverer)` (its ARN)     |
+| C   | CC -> SDK | `Discoverer.SourceArn = Fn::GetAtt(Bus, 'Arn')`            |
+| D   | CC -> SDK | `Discoverer.Description` embeds `Ref(Bus)`                 |
 | E   | CC -> SDK | `CcLambda.Role = Fn::GetAtt(ExecRole, 'Arn')` (`seed`)     |
 | F   | SDK -> CC | `FnArnParam.Value = Fn::GetAtt(CcLambda, 'Arn')` (`seed`)  |
 
-`Archive.Arn` is a read-only attribute, so (A) only holds if the Cloud Control
-read-back recorded it. `FnArnParam` is ADDED in `seed` so its create resolves
+`Discoverer.DiscovererId` is a read-only attribute, so (A) only holds if the
+Cloud Control read-back recorded it. `FnArnParam` is ADDED in `seed` so its create resolves
 (F) against the record the Cloud Control create just wrote.
 
 `RuntimeManagementConfig` toggles on `seed` as the AWS-side witness of the
@@ -75,19 +77,20 @@ property; it is not a routing trigger.
 Env: `AWS_REGION` (default `us-east-1`), `STATE_BUCKET` (required).
 
 1. **Phase 1** — plain `cdkd deploy` (`base`). Assert from state, keyed on the
-   AWS name, that `Archive` is `cc-api` and everything else (including
+   AWS name (the bus ARN for the discoverer), that `Discoverer` is `cc-api` and everything else (including
    `CcLambda`) is `sdk`; assert cross-refs A-D on AWS.
 2. **Phase 2** — `cdkd deploy --recreate-via-cc-api CcLambda` (`seed`). Assert
    `CcLambda` flipped to `cc-api` and was really recreated (`LastModified`
    changed, `UpdateRuntimeOn == FunctionUpdate` on AWS), the rest of the routing
    is unchanged, cross-refs E and F hold, and A-D still hold.
-3. **Phase 3** — `cdkd destroy --force` (the Lambda and the archive leave
+3. **Phase 3** — `cdkd destroy --force` (the Lambda and the discoverer leave
    through the Cloud Control delete path). Assert every named resource and the
    state file are gone, with not-found tri-state probes.
 
 Every routing FAIL line names its likely cause and where to look. Teardown
 sweeps every fixed physical name (consumers before producers) before dropping
-state, and also sweeps the two resources of the pre-repair fixture shape.
+state, and also sweeps the resources of the older fixture shapes (the Kinesis
+stream, and the archive used before #6578).
 
 The script is BSD/macOS-portable (no `grep -P`, no `date -d`) and prints
 `[verify] PASS` only on full success.
@@ -96,5 +99,5 @@ The script is BSD/macOS-portable (no `grep -P`, no `date -d`) and prints
 
 `cdkd synth` each phase and feed the synthesized resources to the real
 `ProviderRegistry.getProviderFor` with every provider registered. Expected:
-`base` -> `Archive` `cc-api`, the rest `sdk`; `seed` with `CcLambda` forced ->
-`Archive` + `CcLambda` `cc-api`, the rest `sdk`.
+`base` -> `Discoverer` `cc-api`, the rest `sdk`; `seed` with `CcLambda` forced
+-> `Discoverer` + `CcLambda` `cc-api`, the rest `sdk`.

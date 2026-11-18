@@ -223,6 +223,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--directory-id`
 - `--directory-ids`
 - `--disable-api-stop`
+- `--discoverer-id`
 - `--distribution-config`
 - `--dns-name`
 - `--domain`
@@ -279,6 +280,5 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--group-id`
 - `--group-ids`
 - `--group-name`
-- `--handler`
 
 _(380 more entries truncated — see `docs/_generated/cli-flag-coverage.json` for the full list.)_

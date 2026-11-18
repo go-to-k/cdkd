@@ -27,6 +27,7 @@ import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { markNotGone } from '../not-gone.js';
+import { isThrottlingError, isTransientServerError } from '../../deployment/retryable-errors.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { generatedNameFor } from '../resource-name.js';
 import { coerceCfnInteger } from '../config-shape.js';
@@ -43,7 +44,6 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
-import { withRemovalDefaults } from '../update-removal.js';
 
 const RESOURCE_TYPE = 'AWS::Events::Archive';
 
@@ -121,28 +121,16 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
   ]);
 
   /**
-   * Issue #1160: `UpdateArchive` keeps any field it is not given. A removed
-   * Description, retention or customer managed key is reset to the value an
-   * archive created without it holds: no description, `0` (keep events
-   * indefinitely) and the AWS owned key (`''`, as `UpdateEventBus` takes it).
-   * A removed `EventPattern` has no documented clear value, so it is left
-   * live; the update caller names it (`removalHandledInUpdate` below).
-   */
-  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
-    [
-      'AWS::Events::Archive',
-      new Map<string, unknown>([
-        ['Description', ''],
-        ['RetentionDays', 0],
-        ['KmsKeyIdentifier', ''],
-      ]),
-    ],
-  ]);
-
-  /**
-   * The create-only properties, whose removal is a replacement rather than an
-   * update. Listing them opts the type into the caller's warning for every
-   * other removed key without a `removalDefaults` entry (`EventPattern`).
+   * Issue #1160: no `removalDefaults`. A property removed from the template is
+   * left at its live value, as CloudFormation leaves it (measured on
+   * us-east-1, go-to-k/cdkd#6578: removing `Description` and `RetentionDays`
+   * completed UPDATE_COMPLETE with both still live, since the handler sends
+   * UpdateArchive only the fields the template declares; removing every
+   * mutable property failed with "At least one of EventPattern, RetentionDays
+   * or Description must be provided", as cdkd's UpdateArchive does).
+   *
+   * Only the create-only keys are listed, whose removal is a replacement: the
+   * update caller then names every other removed key as left at its AWS value.
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
     ['AWS::Events::Archive', new Set(['ArchiveName', 'SourceArn'])],
@@ -244,12 +232,20 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
         )
       );
     }
+    const declaredName = properties['ArchiveName'];
+    if (declaredName !== undefined && declaredName !== null && typeof declaredName !== 'string') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `ArchiveName of EventBridge archive ${logicalId} must be a string`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
     const retentionDays = this.retentionDays(properties, logicalId);
     // CloudFormation generates a name when the template gives none
     // (`ArchiveName` is optional); both routes use the one rule.
-    const name =
-      (properties['ArchiveName'] as string | undefined) ||
-      generatedNameFor('AWS::Events::Archive', logicalId);
+    const name = declaredName || generatedNameFor('AWS::Events::Archive', logicalId);
 
     this.logger.debug(mask(`Creating EventBridge archive ${logicalId}: ${name}`));
 
@@ -334,11 +330,16 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
   }
 
   /**
-   * Poll `DescribeArchive` until the archive is ENABLED (or DISABLED), as
-   * CloudFormation waits before it reports the archive complete: an archive
-   * still CREATING records no events yet, and a CREATE_FAILED / UPDATE_FAILED
-   * is an outcome the deploy must report. Skipped under `CDKD_NO_WAIT`
-   * (`--no-wait`). Returns the archive ARN from the last read.
+   * Poll `DescribeArchive` until the archive leaves CREATING / UPDATING: an
+   * archive still CREATING records no events yet, and a CREATE_FAILED /
+   * UPDATE_FAILED is an outcome the deploy must report. It ends on ENABLED or
+   * DISABLED, or on a read that reports no state. Skipped under
+   * `CDKD_NO_WAIT` (`--no-wait`). Returns the archive ARN from the last read.
+   *
+   * A throttled or transient-5xx read keeps polling. Any other read failure
+   * ends the wait as a failed create, which deletes the archive: a re-create on
+   * the next deploy is accepted over recording an archive whose state cdkd
+   * could not read.
    */
   private async waitForSettled(
     name: string,
@@ -364,18 +365,30 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
     const watch = startInterruptWatch(`EventBridge archive ${logicalId} ${operation} wait`);
     try {
       for (;;) {
-        const resp = await this.eventBridgeClient.send(
-          new DescribeArchiveCommand({ ArchiveName: name })
-        );
+        let resp: Awaited<ReturnType<typeof this.describeArchive>>;
+        try {
+          resp = await this.describeArchive(name);
+        } catch (error) {
+          if (!isThrottlingError(error) && !isTransientServerError(error)) throw error;
+          if (Date.now() >= deadline) throw error;
+          this.logger.debug(mask(`EventBridge archive ${name}: state read failed transiently`));
+          await sleep(pollIntervalMs);
+          continue;
+        }
         const state = resp.State;
         if (state === undefined || SETTLED_STATES.has(state)) return resp.ArchiveArn;
         if (FAILED_STATES.has(state)) {
+          // AWS's StateReason can quote the caller's identity (a KMS denial
+          // names the role), so it goes to debug, never into the thrown
+          // message (go-to-k/cdkd#2319).
+          if (resp.StateReason) {
+            this.logger.debug(
+              mask(`EventBridge archive ${logicalId} entered ${state}: ${resp.StateReason}`)
+            );
+          }
           throw markNonRetryable(
             new ProvisioningError(
-              mask(
-                `EventBridge archive ${logicalId} entered ${state}` +
-                  (resp.StateReason ? `: ${resp.StateReason}` : '')
-              ),
+              safeMsg`EventBridge archive ${logicalId} entered ${state}. Run with --verbose for the reason AWS gave.`,
               RESOURCE_TYPE,
               logicalId,
               name
@@ -401,6 +414,10 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
     }
   }
 
+  private describeArchive(name: string) {
+    return this.eventBridgeClient.send(new DescribeArchiveCommand({ ArchiveName: name }));
+  }
+
   async update(
     logicalId: string,
     physicalId: string,
@@ -421,13 +438,6 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
       'pre-update'
     );
     const mask = maskerOrIdentity(context?.maskSecrets);
-    properties = withRemovalDefaults(
-      this.removalDefaults,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
     // A malformed RetentionDays from the template is refused before any call;
     // one carried by a state record (a rollback replay or a drift revert) is
     // left at its live value instead, so the revert still goes through.
@@ -505,6 +515,17 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(safeMsg`Deleting EventBridge archive ${logicalId}: ${physicalId}`);
     const mask = maskerOrIdentity(context?.maskSecrets);
+    // The physical id is the archive NAME, the same in every region: a client
+    // in another region than the record would delete a same-named archive cdkd
+    // does not manage. Refused before the call.
+    assertRegionMatch(
+      context?.expectedRegion ? await this.eventBridgeClient.config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     try {
       await this.eventBridgeClient.send(new DeleteArchiveCommand({ ArchiveName: physicalId }));
     } catch (error) {

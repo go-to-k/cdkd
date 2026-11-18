@@ -38,10 +38,21 @@ vi.mock('../../../../src/utils/logger.js', () => {
 import { EventBridgeArchiveProvider } from '../../../../src/provisioning/providers/eventbridge-archive-provider.js';
 import { withStackScope, stackInstanceNameSuffix } from '../../../../src/provisioning/resource-name.js';
 import { applyDefaultNameForFallback } from '../../../../src/provisioning/resource-name.js';
+import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { isMarkedNotGone as isNotGoneError } from '../../../../src/provisioning/not-gone.js';
+import { createdBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::Events::Archive';
 const BUS_ARN = 'arn:aws:events:us-east-1:123456789012:event-bus/my-bus';
 const ARN = (name: string): string => `arn:aws:events:us-east-1:123456789012:archive/${name}`;
+/** A second ARN, so a test can tell which response an attribute came from. */
+const DESCRIBED_ARN = (name: string): string =>
+  `arn:aws:events:us-east-1:123456789012:archive/described-${name}`;
+const REGION_REFUSAL = /Refusing to .*eu-west-1/s;
 
 function sentOf<T>(ctor: new (...args: never[]) => T): T[] {
   return mockSend.mock.calls.map((c) => c[0] as unknown).filter((c): c is T => c instanceof ctor);
@@ -153,11 +164,12 @@ describe('EventBridgeArchiveProvider', () => {
     it('waits for ENABLED when the create returns CREATING', async () => {
       mockSend
         .mockResolvedValueOnce({ ArchiveArn: ARN('arch'), State: 'CREATING' })
-        .mockResolvedValueOnce({ ArchiveArn: ARN('arch'), State: 'CREATING' })
-        .mockResolvedValueOnce({ ArchiveArn: ARN('arch'), State: 'ENABLED' });
+        .mockResolvedValueOnce({ ArchiveArn: DESCRIBED_ARN('arch'), State: 'CREATING' })
+        .mockResolvedValueOnce({ ArchiveArn: DESCRIBED_ARN('arch'), State: 'ENABLED' });
       const result = await provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN });
       expect(sentOf(DescribeArchiveCommand)).toHaveLength(2);
-      expect(result.attributes).toEqual({ Arn: ARN('arch') });
+      // The ARN of the last read, not the create response's.
+      expect(result.attributes).toEqual({ Arn: DESCRIBED_ARN('arch') });
     });
 
     it('skips the wait under CDKD_NO_WAIT', async () => {
@@ -175,7 +187,18 @@ describe('EventBridgeArchiveProvider', () => {
         .mockResolvedValueOnce({});
       await expect(
         provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
-      ).rejects.toThrow(/entered CREATE_FAILED: kms denied/);
+      ).rejects.toThrow(/entered CREATE_FAILED\. Run with --verbose/);
+      // AWS's StateReason never reaches the thrown message (go-to-k/cdkd#2319).
+      await expect(
+        (async () => {
+          mockSend.mockReset();
+          mockSend
+            .mockResolvedValueOnce({ State: 'CREATING' })
+            .mockResolvedValueOnce({ State: 'CREATE_FAILED', StateReason: 'kms denied' })
+            .mockResolvedValueOnce({});
+          await provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN });
+        })()
+      ).rejects.not.toThrow(/kms denied/);
       expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
     });
 
@@ -203,6 +226,89 @@ describe('EventBridgeArchiveProvider', () => {
         provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
       ).rejects.toThrow(/Failed to create EventBridge archive Arch/);
       expect(sentOf(DeleteArchiveCommand)).toHaveLength(0);
+    });
+
+    it('refuses a non-string ArchiveName before any call', async () => {
+      await expect(
+        provider.create('Arch', TYPE, { ArchiveName: { 'Fn::Sub': 'x' }, SourceArn: BUS_ARN })
+      ).rejects.toThrow(/ArchiveName of EventBridge archive Arch must be a string/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('fails a wait that runs out, naming the state, and deletes the archive', async () => {
+      provider.stateWait = { pollIntervalMs: 1, timeoutMs: 0, sleep: () => Promise.resolve() };
+      mockSend
+        .mockResolvedValueOnce({ State: 'CREATING' })
+        .mockResolvedValueOnce({ State: 'CREATING' })
+        .mockResolvedValueOnce({});
+      await expect(
+        provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+      ).rejects.toThrow(/still CREATING/);
+      expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
+    });
+
+    it('keeps polling through a throttled state read instead of retiring the archive', async () => {
+      mockSend
+        .mockResolvedValueOnce({ State: 'CREATING' })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('Rate exceeded'), {
+            name: 'ThrottlingException',
+            $fault: 'client',
+            $metadata: { httpStatusCode: 400 },
+          })
+        )
+        .mockResolvedValueOnce({ State: 'ENABLED', ArchiveArn: DESCRIBED_ARN('arch') });
+      const result = await provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN });
+      expect(result.attributes).toEqual({ Arn: DESCRIBED_ARN('arch') });
+      expect(sentOf(DeleteArchiveCommand)).toHaveLength(0);
+    });
+
+    describe('the created-resource record (go-to-k/cdkd#5511 / #4583)', () => {
+      const failingCreate = (cleanup: () => Promise<unknown>) => {
+        mockSend
+          .mockResolvedValueOnce({ State: 'CREATING' })
+          .mockResolvedValueOnce({ State: 'CREATE_FAILED' })
+          .mockImplementationOnce(cleanup);
+      };
+      const run = async (sink: CreatedResourceSink): Promise<unknown> =>
+        collectCreatedResources(sink, () =>
+          provider.create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
+        ).catch((e: unknown) => e);
+
+      it('reports the archive once CreateArchive returns', async () => {
+        const sink = new CreatedResourceSink('Arch', TYPE);
+        mockSend.mockResolvedValueOnce({ State: 'ENABLED' });
+        await run(sink);
+        expect(sink.report).toEqual({ physicalId: 'arch' });
+      });
+
+      it('retracts the report when the cleanup deleted the archive', async () => {
+        const sink = new CreatedResourceSink('Arch', TYPE);
+        failingCreate(() => Promise.resolve({}));
+        const err = await run(sink);
+        expect(sink.report).toBeUndefined();
+        expect(createdBeforeFailure(err, 'Arch', TYPE)).toBeUndefined();
+      });
+
+      it('retracts the report when the cleanup found the archive already gone', async () => {
+        const sink = new CreatedResourceSink('Arch', TYPE);
+        failingCreate(() =>
+          Promise.reject(new ResourceNotFoundException({ message: 'gone', $metadata: {} }))
+        );
+        const err = await run(sink);
+        expect(sink.report).toBeUndefined();
+        expect(createdBeforeFailure(err, 'Arch', TYPE)).toBeUndefined();
+      });
+
+      it('names the survivor when the cleanup fails', async () => {
+        const sink = new CreatedResourceSink('Arch', TYPE);
+        failingCreate(() =>
+          Promise.reject(Object.assign(new Error('boom'), { name: 'InternalException' }))
+        );
+        const err = await run(sink);
+        expect(sink.report).toEqual({ physicalId: 'arch' });
+        expect(createdBeforeFailure(err, 'Arch', TYPE)).toBe('arch');
+      });
     });
   });
 
@@ -233,6 +339,29 @@ describe('EventBridgeArchiveProvider', () => {
       expect(result).toEqual({ physicalId: 'arch', wasReplaced: false, attributes: { Arn: ARN('arch') } });
     });
 
+    it.each([
+      ['KmsKeyIdentifier', { KmsKeyIdentifier: 'alias/k' }],
+      ['RetentionDays', { RetentionDays: 9 }],
+      ['EventPattern content', { EventPattern: { source: ['b'] } }],
+    ])('sends UpdateArchive when only %s changes', async (_label, change) => {
+      mockSend.mockResolvedValueOnce({ State: 'ENABLED' });
+      await provider.update('Arch', 'arch', TYPE, { ...PREV, ...change }, PREV);
+      expect(sentOf(UpdateArchiveCommand)).toHaveLength(1);
+    });
+
+    it.each([
+      ['RetentionDays spelled as a string', { RetentionDays: '1' }],
+      ['an EventPattern with its keys in another order', 'reordered'],
+    ])('sends nothing for %s', async (_label, change) => {
+      const prev = { ...PREV, EventPattern: { source: ['a'], account: ['1'] } };
+      const next =
+        change === 'reordered'
+          ? { ...prev, EventPattern: { account: ['1'], source: ['a'] } }
+          : { ...prev, ...(change as Record<string, unknown>) };
+      await provider.update('Arch', 'arch', TYPE, next, prev);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('sends nothing when only the EventPattern spelling differs', async () => {
       const result = await provider.update(
         'Arch',
@@ -245,7 +374,7 @@ describe('EventBridgeArchiveProvider', () => {
       expect(result.wasReplaced).toBe(false);
     });
 
-    it('resets a removed Description, RetentionDays and KmsKeyIdentifier', async () => {
+    it('leaves a removed Description, RetentionDays and KmsKeyIdentifier live, as CloudFormation does', async () => {
       mockSend.mockResolvedValueOnce({ State: 'ENABLED' });
       await provider.update(
         'Arch',
@@ -254,18 +383,16 @@ describe('EventBridgeArchiveProvider', () => {
         { ArchiveName: 'arch', SourceArn: BUS_ARN, EventPattern: { source: ['a'] } },
         { ...PREV, RetentionDays: 5, KmsKeyIdentifier: 'alias/k' }
       );
+      // Measured CFn A/B (go-to-k/cdkd#6578): the removed fields stay live.
       expect(sentOf(UpdateArchiveCommand)[0]!.input).toEqual({
         ArchiveName: 'arch',
-        Description: '',
         EventPattern: '{"source":["a"]}',
-        RetentionDays: 0,
-        KmsKeyIdentifier: '',
       });
     });
 
-    it('declares the create-only keys as handled, so a removed EventPattern is named by the caller', () => {
+    it('declares only the create-only keys, so the caller names every other removed key', () => {
       expect([...provider.removalHandledInUpdate.get(TYPE)!]).toEqual(['ArchiveName', 'SourceArn']);
-      expect(provider.removalDefaults.get(TYPE)!.has('EventPattern')).toBe(false);
+      expect((provider as { removalDefaults?: unknown }).removalDefaults).toBeUndefined();
     });
 
     it('waits for UPDATING to settle and fails on UPDATE_FAILED', async () => {
@@ -298,12 +425,25 @@ describe('EventBridgeArchiveProvider', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('keeps its current retention'));
     });
 
+    it('keeps the live retention for a malformed RetentionDays on a drift revert', async () => {
+      mockSend.mockResolvedValueOnce({ State: 'ENABLED' });
+      await provider.update(
+        'Arch',
+        'arch',
+        TYPE,
+        { ...PREV, Description: 'new', RetentionDays: 'x' },
+        PREV,
+        { desiredFromAwsReadback: true }
+      );
+      expect(sentOf(UpdateArchiveCommand)[0]!.input.RetentionDays).toBeUndefined();
+    });
+
     it('refuses an update in another region than the record before any call', async () => {
       await expect(
         provider.update('Arch', 'arch', TYPE, { ...PREV, Description: 'new' }, PREV, {
           expectedRegion: 'eu-west-1',
         })
-      ).rejects.toThrow();
+      ).rejects.toThrow(REGION_REFUSAL);
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
@@ -324,13 +464,19 @@ describe('EventBridgeArchiveProvider', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('refuses the not-found shortcut when the client region differs from the record', async () => {
-      mockSend.mockRejectedValueOnce(
-        new ResourceNotFoundException({ message: 'not found', $metadata: {} })
-      );
+    it('refuses a delete in another region than the record without sending DeleteArchive', async () => {
       await expect(
         provider.delete('Arch', 'arch', TYPE, undefined, { expectedRegion: 'eu-west-1' })
-      ).rejects.toThrow();
+      ).rejects.toThrow(REGION_REFUSAL);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('marks an untyped NotFound as not gone', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('no such archive'), { name: 'ArchiveNotFound', $fault: 'client' })
+      );
+      const err = await provider.delete('Arch', 'arch', TYPE).catch((e: unknown) => e);
+      expect(isNotGoneError(err)).toBe(true);
     });
 
     it('wraps any other failure', async () => {
@@ -371,7 +517,21 @@ describe('EventBridgeArchiveProvider', () => {
         new ResourceNotFoundException({ message: 'not found', $metadata: {} })
       );
       const result = await provider.readCurrentState('arch', 'Arch', TYPE);
-      expect(typeof result).toBe('symbol');
+      expect(result).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('keeps an EventPattern that is not JSON as the string AWS returned', async () => {
+      mockSend.mockResolvedValueOnce({ ArchiveName: 'arch', EventPattern: 'not-json' });
+      const result = (await provider.readCurrentState('arch', 'Arch', TYPE)) as Record<
+        string,
+        unknown
+      >;
+      expect(result['EventPattern']).toBe('not-json');
+    });
+
+    it('answers no attribute but Arn, without a call', async () => {
+      await expect(provider.getAttribute('arch', TYPE, 'Name')).resolves.toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 
@@ -391,6 +551,26 @@ describe('EventBridgeArchiveProvider', () => {
         physicalId: 'arch',
         attributes: { Arn: ARN('arch') },
       });
+      expect(sentOf(DescribeArchiveCommand)[0]!.input).toEqual({ ArchiveName: 'arch' });
+    });
+
+    it('prefers the --resource override over the template ArchiveName', async () => {
+      mockSend.mockResolvedValueOnce({ ArchiveArn: ARN('override') });
+      const result = await provider.import(
+        input({
+          knownPhysicalId: 'override',
+          properties: { ArchiveName: 'named', SourceArn: BUS_ARN },
+        })
+      );
+      expect(result?.physicalId).toBe('override');
+      expect(sentOf(DescribeArchiveCommand)[0]!.input).toEqual({ ArchiveName: 'override' });
+    });
+
+    it('rethrows any failure but a missing archive', async () => {
+      mockSend.mockRejectedValueOnce(
+        Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
+      );
+      await expect(provider.import(input({ knownPhysicalId: 'arch' }))).rejects.toThrow(/denied/);
     });
 
     it('reads ArchiveName from the template', async () => {
@@ -399,6 +579,7 @@ describe('EventBridgeArchiveProvider', () => {
         input({ properties: { ArchiveName: 'named', SourceArn: BUS_ARN } })
       );
       expect(result?.physicalId).toBe('named');
+      expect(sentOf(DescribeArchiveCommand)[0]!.input).toEqual({ ArchiveName: 'named' });
     });
 
     it('returns null for a missing archive', async () => {
