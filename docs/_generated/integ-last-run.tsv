@@ -285,7 +285,7 @@ legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow 
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 legacy-synthesizer-assets	2026-11-16T14:29:32Z	PASS	99	verify.sh	rc ok, orph clean; us-east-2 legacy-mode (CDKToolkit assets/) 105s PASS too
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
-local-aws-emulator	2026-11-16T05:30:35Z	PASS	50	verify.sh	rc ok, phase 2b misplaced-flag refusal (#6382), emulator container + run dir removed, docker sweep clean
+local-aws-emulator	2026-11-18T20:18:35Z	PASS	60	verify.sh	rc ok, on origin/main 743bb56d2 (#6575), emulator container removed, docker sweep clean
 local-ecs-service-connect	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
 local-engine-role-identity	2026-11-13T05:08:51Z	PASS	85	verify.sh	rc ok, orph clean, #6160
 local-invoke	2026-11-13T05:08:51Z	PASS	30	verify.sh	rc ok, #6160
