@@ -78,5 +78,27 @@ export class SyntheticsCanaryStack extends cdk.Stack {
       runConfig: { timeoutInSeconds: 60 },
       startCanaryAfterCreation: false,
     });
+
+    // go-to-k/cdkd#6553: a puppeteer runtime up to 10.0 publishes the code as
+    // a layer, read back as the read-only `Code.SourceLocationArn`. The UPDATE
+    // changes the script, a whole-object op on `Code` that must carry it, or
+    // Cloud Control refuses the update. Later runtimes have no layer.
+    const layerScript = process.env.CDKD_TEST_UPDATE === 'true' ? 'ok-v2' : 'ok';
+    new synthetics.CfnCanary(this, 'LayerCanary', {
+      name: 'cdkd-integ-canary-l10',
+      artifactS3Location: `s3://${artifacts.bucketName}/canary-l10`,
+      executionRoleArn: role.roleArn,
+      runtimeVersion: 'syn-nodejs-puppeteer-10.0',
+      code: {
+        handler: 'index.handler',
+        script:
+          "const synthetics = require('Synthetics');\n" +
+          `exports.handler = async () => { return '${layerScript}'; };\n`,
+      },
+      schedule: { expression: 'rate(1 hour)' },
+      runConfig: { timeoutInSeconds: 60 },
+      startCanaryAfterCreation: false,
+      provisionedResourceCleanup: 'AUTOMATIC',
+    });
   }
 }
