@@ -288,6 +288,60 @@ describe('resource-name', () => {
     });
   });
 
+  // go-to-k/cdkd#6555: a Cloud Control create of `AWS::CloudWatch::MetricStream`
+  // without `Name` fails with `Cannot invoke "java.lang.CharSequence.length()"
+  // because "this.text" is null`, although the schema does not require it.
+  describe('applyDefaultNameForFallback — AWS::CloudWatch::MetricStream (#6555)', () => {
+    const TYPE = 'AWS::CloudWatch::MetricStream';
+    // PutMetricStream's `Name`: 1-255 characters of these.
+    const API_NAME = /^[A-Za-z0-9_-]{1,255}$/;
+    const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+
+    it('fills Name from the stack name and logical id when absent', () => {
+      const props = { OutputFormat: 'json', IncludeFilters: [{ Namespace: 'AWS/Lambda' }] };
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
+        applyDefaultNameForFallback('MetricStream', TYPE, props)
+      );
+      expect(result).toEqual({ ...props, Name: 'MyStack-MetricStream' });
+      // Not mutated: the caller's resolved bag is reused by the diff.
+      expect(props).not.toHaveProperty('Name');
+    });
+
+    it('suffixes the name on a stack with an instance id, within the API pattern', () => {
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() }, () =>
+        applyDefaultNameForFallback('MetricStream', TYPE, {})
+      );
+      expect(result['Name']).toMatch(/^MyStack-MetricStream-[0-9a-f]{12}$/);
+      expect(result['Name']).toMatch(API_NAME);
+    });
+
+    it('keeps a user-supplied name untouched', () => {
+      // Premise: identity return is also what the NO-RULE path does.
+      expect(fallbackNamePropertyFor(TYPE)).toBe('Name');
+      const props = { Name: 'my-stream' };
+      const result = withStackScope({ stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() }, () =>
+        applyDefaultNameForFallback('MetricStream', TYPE, props)
+      );
+      expect(result).toBe(props);
+    });
+
+    it('cuts a long nested-stack name to 255 characters of the API pattern', () => {
+      const stack = `Parent~${'S'.repeat(120)}`;
+      const logicalId = `MetricStream${'L'.repeat(200)}`;
+      const result = withStackScope({ stackName: stack, stackInstanceId: ID, nameGenerations: new Map() }, () =>
+        applyDefaultNameForFallback(logicalId, TYPE, {})
+      );
+      const name = result['Name'] as string;
+      expect(name).toHaveLength(255);
+      expect(name).toMatch(API_NAME);
+      expect(name.startsWith('Parent-')).toBe(true);
+    });
+
+    it('is not admitted to orphan adoption', () => {
+      expect(explicitNamePropertyFor(TYPE)).toBeUndefined();
+    });
+  });
+
   describe('fallbackNamePropertyFor (#3174)', () => {
     it.each([
       ['AWS::Lambda::CapacityProvider', 'CapacityProviderName'],
