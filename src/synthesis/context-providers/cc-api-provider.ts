@@ -2,6 +2,7 @@ import {
   CloudControlClient,
   GetResourceCommand,
   ListResourcesCommand,
+  type ResourceDescription,
 } from '@aws-sdk/client-cloudcontrol';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
@@ -253,7 +254,7 @@ export class CcApiContextProvider implements ContextProvider {
   }
 
   private foundResource(
-    desc: { Identifier?: string; Properties?: string },
+    desc: ResourceDescription,
     fallbackIdentifier: string,
     typeName: string
   ): FoundResource {
