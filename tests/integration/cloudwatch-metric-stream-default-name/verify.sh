@@ -190,7 +190,8 @@ stream_filters() { # the include filters' namespaces, sorted
 }
 assert_clean_diff() { # $1 = phase label; runs under the caller's CDKD_TEST_UPDATE
   node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${DIFF_LOG}" 2>&1
-  if ! grep -q "No changes detected" "${DIFF_LOG}"; then
+  # cdkd's own line (src/cli/commands/diff.ts), naming this stack.
+  if ! grep -qF "No changes detected for stack ${STACK}" "${DIFF_LOG}"; then
     echo "FAIL: diff $1 is not clean. Tail:" >&2
     tail -20 "${DIFF_LOG}" >&2
     exit 1
