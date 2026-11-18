@@ -36,7 +36,11 @@
 #   3. Deploy v2 flips the create-only `DestinationCidrBlock` (forcing a
 #      REPLACEMENT) with the failure injected AFTER the route, so the route's
 #      replacement COMPLETES and rollback classifies it reverse-replacement.
-#      The deploy exits NON-ZERO.
+#      The deploy exits NON-ZERO under `--no-rollback`; 3b deletes the
+#      replaced old copies out of band (their delete waits for a cleanup phase
+#      the failed deploy never reached, #6374), and 3c's `cdkd rollback` then
+#      reads each one as gone and RE-CREATES it — the arm #1682 changed. The
+#      re-adopt route keeps its old copy and is re-adopted (go-to-k/cdkd#6524).
 #   4. THE POINT: the post-rollback state record holds the SUBSTITUTED bag —
 #      `DestinationCidrBlock` restored to the v1 value and
 #      `DestinationIpv6CidrBlock` GONE. Pre-fix it is still present, because
@@ -60,10 +64,11 @@
 # omitted was still sent AND recorded, although the table has no such index
 # and the re-created replica holds no override. Phases 1-6 each
 # grow an assertion for it. Replica provisioning costs minutes per create and
-# per delete: the arm takes the run from ~3 min to ~12-20 min.
-# The arm also depends on issue #3569: the rollback re-creates v1 straight
-# after the replacement deleted it, while v1's copy in the replica region is
-# still DELETING, and the replica-add must wait that copy out.
+# per delete: the arm takes the run from ~5 min to ~14 min.
+# Issue #3569 (re-adding the replica while v1's copy in the replica region is
+# still DELETING) is NOT reached here any more: measured 2026-11-18, that copy
+# was already gone when the rollback ran. Its live coverage is issue #6532; the
+# provider's wait is unit-tested.
 #
 # BSD/macOS-portable: no grep -P, no date -d. Integ-exit-code-capture pattern
 # (bash ...; rc=$?) so a piped/teed harness can't mask a failure; the script
@@ -136,6 +141,9 @@ DEST_V2="10.100.0.0/16"
 # (DestinationCidrBlock) and drops this one, which is precisely the
 # substitution whose recording this fixture verifies.
 BAD_IPV6_DEST="::/0"
+# The re-adopt subject's destinations (lib/*.ts derives them from ROUTE_DEST).
+READOPT_DEST_V1="10.201.0.0/16"
+READOPT_DEST_V2="10.202.0.0/16"
 
 # The AWS::DynamoDB::GlobalTable arms (issues #1724 / #1726). `TableName` is
 # create-only, so flipping it classifies the table as a REPLACEMENT -- the same
@@ -191,10 +199,11 @@ GTX_NAME_V2="cdkd-rbreplay-gtx-${GT_RUN_ID}-v2"
 # an override that never existed.
 XR_INDEX_MAX_READ=13
 # `cdkd drift` counts every resource; the arm adds one. The #4434 revert-arm
-# subject is two of them (the security group and its ingress rule).
-EXPECTED_DRIFT_RESOURCES=11
+# subject is two of them (the security group and its ingress rule), and the
+# #6524 re-adopt route one more.
+EXPECTED_DRIFT_RESOURCES=12
 if [ "${MULTI_REGION}" = "1" ]; then
-  EXPECTED_DRIFT_RESOURCES=12
+  EXPECTED_DRIFT_RESOURCES=13
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -223,14 +232,15 @@ cd "${TEST_DIR}"
 # Cleanup: destroy the stack, then sweep by the fixture tag. This fixture
 # INTENTIONALLY creates a failed deploy, so the trap must not leak.
 # --------------------------------------------------------------------------
-# Best-effort, cleanup-only: every non-local replica of <table> is deleted and
-# waited out, then the table itself. Runs under `set +eu` (subshell), so a
+# Best-effort: every non-local replica of <table> is deleted and waited out,
+# then the table itself. Used by the cleanup trap and by phase 3b, whose own
+# waiter and gone-probe then assert the outcome. Runs under `set +eu` (subshell), so a
 # half-gone table never re-arms strict mode mid-sweep.
 delete_global_table_with_replicas() { (
   set +eu
   local t="$1" regions r i left
   aws dynamodb describe-table --table-name "${t}" >/dev/null 2>&1 || exit 0
-  echo "[verify] cleanup: deleting leftover global table ${t} (replicas first)"
+  echo "[verify] deleting global table ${t} (replicas first)"
   regions="$(aws dynamodb describe-table --table-name "${t}" \
     --query "Table.Replicas[?RegionName!='${REGION}'].RegionName" --output text 2>/dev/null)"
   for r in ${regions}; do
@@ -258,6 +268,10 @@ cleanup() {
   set +e
   echo ""
   echo "[verify] cleanup (rc=${rc})..."
+
+  # A failure between phase 3's `--no-rollback` deploy and phase 3c leaves the
+  # journal; settle it first, so the destroy below sees one generation.
+  ${CDKD} rollback "${STACK}" --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
 
   ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1:-}" GT_OMIT_TABLE_NAME="${GTO_NAME_V1:-}" GT_XR_TABLE_NAME="${GTX_NAME_V1:-}" GT_STREAM_TABLE_NAME="${GTS_NAME_V1:-}" BUCKET_NAME="${BUCKET_V1:-}" \
     ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
@@ -384,13 +398,21 @@ ROUTE_DEST="${DEST_V1}" GT_TABLE_NAME="${GT_NAME_V1}" GT_OMIT_TABLE_NAME="${GTO_
 
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state-v1.json" >/dev/null
 
-ROUTE_LOGICAL_ID="$(jq -r '.resources | to_entries[]
-  | select(.value.resourceType == "AWS::EC2::Route") | .key' "${WORK_DIR}/state-v1.json" | head -1)"
-if [ -z "${ROUTE_LOGICAL_ID}" ]; then
-  echo "FAIL: phase 1: no AWS::EC2::Route in state" >&2
+# Two routes share the table; each is told apart by its v1 destination.
+route_logical_id() { # usage: route_logical_id <state-file> <v1 destination>
+  jq -r --arg d "$2" '.resources | to_entries[]
+    | select(.value.resourceType == "AWS::EC2::Route"
+        and .value.properties.DestinationCidrBlock == $d) | .key' "$1" | head -1
+}
+ROUTE_LOGICAL_ID="$(route_logical_id "${WORK_DIR}/state-v1.json" "${DEST_V1}")"
+READOPT_LOGICAL_ID="$(route_logical_id "${WORK_DIR}/state-v1.json" "${READOPT_DEST_V1}")"
+if [ -z "${ROUTE_LOGICAL_ID}" ] || [ -z "${READOPT_LOGICAL_ID}" ]; then
+  echo "FAIL: phase 1: state lacks a route to ${DEST_V1} or to ${READOPT_DEST_V1}" >&2
   exit 1
 fi
-echo "[verify] phase 1: route logical id = ${ROUTE_LOGICAL_ID}"
+ROUTE_TABLE_ID="$(jq -r --arg id "${ROUTE_LOGICAL_ID}" \
+  '.resources[$id].properties.RouteTableId' "${WORK_DIR}/state-v1.json")"
+echo "[verify] phase 1: route logical id = ${ROUTE_LOGICAL_ID}, re-adopt route = ${READOPT_LOGICAL_ID} (${ROUTE_TABLE_ID})"
 
 V1_DEST="$(jq -r --arg id "${ROUTE_LOGICAL_ID}" \
   '.resources[$id].properties.DestinationCidrBlock' "${WORK_DIR}/state-v1.json")"
@@ -761,8 +783,19 @@ set +e
 # rollback had only the ROUTE to reverse, and phase 3 correctly reported that
 # the GlobalTable replay substitution never fired. The route needs no such
 # consent, so the flag changes nothing about the arm this fixture already had.
+#
+# `--no-rollback`, and the rollback as a separate `cdkd rollback` below
+# (go-to-k/cdkd#6524). Since go-to-k/cdkd#6374 a replaced resource's old copy
+# is deleted in the deploy's CLEANUP phase, which a failed deploy never
+# reaches, so every old copy is still alive when the failure fires and an
+# automatic rollback RE-ADOPTS each one: correct, but not the arm #1682 is
+# about. The re-CREATE arm runs only for an old copy that is really gone.
+# Stopping between the failure and the rollback is the one deterministic way
+# to make it so: phase 3b deletes the old copies out of band, and the rollback
+# then reads each one as gone and re-creates it. The re-adopt route keeps its
+# old copy, so the re-adopt arm stays covered in the same rollback.
 ROUTE_DEST="${DEST_V2}" GT_TABLE_NAME="${GT_NAME_V2}" GT_OMIT_TABLE_NAME="${GTO_NAME_V2}" GT_XR_TABLE_NAME="${GTX_NAME_V2}" GT_STREAM_TABLE_NAME="${GTS_NAME_V2}" BUCKET_NAME="${BUCKET_V2}" ROLLBACK_INTEG_FAIL=true ${CDKD} deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --force-stateful-recreation --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
+  --state-bucket "${STATE_BUCKET}" --force-stateful-recreation --no-rollback --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
 DEPLOY_RC=$?
 set -e
 if [ "${DEPLOY_RC}" -eq 0 ]; then
@@ -771,18 +804,190 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   exit 1
 fi
 echo "[verify] phase 3: deploy failed as expected (rc=${DEPLOY_RC})"
+# `--no-rollback` must have left the journal for `cdkd rollback`, and replayed
+# nothing itself: a rollback inside the deploy would re-adopt every old copy
+# before phase 3b could delete it.
+if grep -qE 'Rollback: (Reversing|the old resource)' "${WORK_DIR}/deploy-v2.log"; then
+  echo "FAIL: phase 3: the --no-rollback deploy rolled back by itself. Lines:" >&2
+  grep -aE 'Rollback:' "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+  exit 1
+fi
+JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
+if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
+  echo "FAIL: phase 3: the --no-rollback deploy left no rollback journal (${JOURNAL_KEY})" >&2
+  tail -40 "${WORK_DIR}/deploy-v2.log" >&2
+  exit 1
+fi
+
+# --------------------------------------------------------------------------
+# Phase 3b — every replaced old copy is still alive (the go-to-k/cdkd#6374
+# deferral), and all but the re-adopt route's are now deleted out of band.
+# --------------------------------------------------------------------------
+echo ""
+echo "[verify] phase 3b: the replaced old copies are alive; deleting all but ${READOPT_LOGICAL_ID}'s"
+route_live() { # usage: route_live <destination> -- prints the route's destination when present
+  aws ec2 describe-route-tables --route-table-ids "${ROUTE_TABLE_ID}" \
+    --query "RouteTables[0].Routes[?DestinationCidrBlock=='$1'].DestinationCidrBlock" --output text
+}
+# DescribeRouteTables can lag a delete-route or a rollback's route change, so a
+# route's presence is read on a short bounded schedule. Every caller runs this
+# under `if !`, where bash suspends errexit, so a failed describe is checked by
+# hand and stops the run instead of reading as "absent".
+route_settles() { # usage: route_settles <destination> present|absent -- rc 0 once it does
+  local want="$2" live attempt
+  for attempt in $(seq 1 10); do
+    if ! live="$(route_live "$1")"; then
+      echo "FAIL: describe-route-tables failed for ${ROUTE_TABLE_ID} (reading the route to $1)" >&2
+      exit 1
+    fi
+    if [ "${want}" = "present" ] && [ "${live}" = "$1" ]; then return 0; fi
+    if [ "${want}" = "absent" ] && [ -z "${live}" ]; then return 0; fi
+    sleep 3
+  done
+  return 1
+}
+# Both copies of each route must be live: the new one proves the replacement
+# COMPLETED (else the rollback would see a failed or absent CREATE), the old one
+# that its delete was deferred.
+for d in "${DEST_V1}" "${DEST_V2}" "${READOPT_DEST_V1}" "${READOPT_DEST_V2}"; do
+  if ! route_settles "${d}" present; then
+    echo "FAIL: phase 3b: the route to ${d} is not live in ${ROUTE_TABLE_ID} after the failed deploy." >&2
+    echo "      Both copies of each replaced route must be: a missing OLD copy means the" >&2
+    echo "      replacement's delete no longer waits for the cleanup phase (#6374), and this" >&2
+    echo "      phase's premise is gone." >&2
+    exit 1
+  fi
+done
+OLD_TABLES="${GT_NAME_V1} ${GTO_NAME_V1} ${GTS_NAME_V1}"
+NEW_TABLES="${GT_NAME_V2} ${GTO_NAME_V2} ${GTS_NAME_V2}"
+if [ "${MULTI_REGION}" = "1" ]; then
+  OLD_TABLES="${OLD_TABLES} ${GTX_NAME_V1}"
+  NEW_TABLES="${NEW_TABLES} ${GTX_NAME_V2}"
+fi
+for t in ${OLD_TABLES} ${NEW_TABLES}; do
+  if gone_probe aws dynamodb describe-table --table-name "${t}"; then
+    echo "FAIL: phase 3b: table ${t} is gone after the failed deploy; both the replaced" >&2
+    echo "      v1 copy and its v2 replacement must be live here (#6374 deferral)." >&2
+    exit 1
+  fi
+done
+for b in "${BUCKET_V1}" "${BUCKET_V2}"; do
+  if gone_probe aws s3api head-bucket --bucket "${b}"; then
+    echo "FAIL: phase 3b: bucket ${b} is gone after the failed deploy; both copies must be live." >&2
+    exit 1
+  fi
+done
+
+# The revert-arm rule (go-to-k/cdkd#4434). Since go-to-k/cdkd#6514 the deploy
+# edits its Description IN PLACE, so the rule keeps its phase-1 id, and so
+# would the rollback's revert: the record's id would match the live one
+# whatever the revert recorded. Revoking it out of band sends the revert down
+# its re-create route (revoke + authorize), which mints a NEW id the record
+# must then hold.
+INGRESS_V2_LIVE="$(live_ingress_rule_ids)"
+if [ "${INGRESS_V2_LIVE}" != "${INGRESS_V1_ID}" ]; then
+  echo "FAIL: phase 3b: after the failed deploy ${INGRESS_SG_ID} holds ingress rule(s)" >&2
+  echo "      '${INGRESS_V2_LIVE}', expected the phase-1 rule ${INGRESS_V1_ID} edited in place (#6514)." >&2
+  exit 1
+fi
+aws ec2 revoke-security-group-ingress --group-id "${INGRESS_SG_ID}" \
+  --security-group-rule-ids "${INGRESS_V1_ID}" >/dev/null
+INGRESS_REVOKED_LIVE="$(live_ingress_rule_ids)"
+if [ -n "${INGRESS_REVOKED_LIVE}" ]; then
+  echo "FAIL: phase 3b: ${INGRESS_V1_ID} survived its out-of-band revoke (live: ${INGRESS_REVOKED_LIVE})" >&2
+  exit 1
+fi
+
+aws ec2 delete-route --route-table-id "${ROUTE_TABLE_ID}" --destination-cidr-block "${DEST_V1}" ||
+  { echo "FAIL: phase 3b: could not delete the old route to ${DEST_V1} out of band" >&2; exit 1; }
+for t in ${OLD_TABLES}; do
+  if [ "${MULTI_REGION}" = "1" ] && [ "${t}" = "${GTX_NAME_V1}" ]; then
+    # The replica's removal is requested and the home table deleted as soon as
+    # AWS accepts it, without the cleanup helper's wait for the replica to leave
+    # the table. This was meant to leave the replica-region copy DELETING for
+    # issue #3569, but on 2026-11-18 it was already gone by the rollback
+    # (issue #6532).
+    XR_REPLICA_DELETE_REQUESTED=0
+    for _ in $(seq 1 30); do
+      if aws dynamodb update-table --table-name "${t}" \
+        --replica-updates "Delete={RegionName=${XR_REGION}}" >/dev/null 2>&1; then
+        XR_REPLICA_DELETE_REQUESTED=1; break
+      fi
+      sleep 20
+    done
+    if [ "${XR_REPLICA_DELETE_REQUESTED}" != "1" ]; then
+      echo "FAIL: phase 3b: AWS never accepted the removal of ${t}'s ${XR_REGION} replica" >&2
+      exit 1
+    fi
+    XR_HOME_DELETED=0
+    for _ in $(seq 1 60); do
+      if aws dynamodb delete-table --table-name "${t}" >/dev/null 2>&1; then XR_HOME_DELETED=1; break; fi
+      sleep 10
+    done
+    if [ "${XR_HOME_DELETED}" != "1" ]; then
+      echo "FAIL: phase 3b: could not delete the old cross-region table ${t} out of band" >&2
+      exit 1
+    fi
+  else
+    aws dynamodb delete-table --table-name "${t}" >/dev/null ||
+      { echo "FAIL: phase 3b: could not delete the old table ${t} out of band" >&2; exit 1; }
+  fi
+done
+aws s3api delete-bucket --bucket "${BUCKET_V1}" ||
+  { echo "FAIL: phase 3b: could not delete the old bucket ${BUCKET_V1} out of band" >&2; exit 1; }
+# Wait until AWS reports each one GONE, not merely deleting: a survivor read
+# that still sees a DELETING table or a lingering bucket would re-adopt it.
+for t in ${OLD_TABLES}; do
+  aws dynamodb wait table-not-exists --table-name "${t}" ||
+    { echo "FAIL: phase 3b: table ${t} never reached not-exists after its out-of-band delete" >&2; exit 1; }
+  assert_gone "phase 3b: table ${t} survived its out-of-band delete" \
+    aws dynamodb describe-table --table-name "${t}"
+done
+assert_gone_eventually "phase 3b: bucket ${BUCKET_V1} survived its out-of-band delete" \
+  aws s3api head-bucket --bucket "${BUCKET_V1}"
+if ! route_settles "${DEST_V1}" absent; then
+  echo "FAIL: phase 3b: the route to ${DEST_V1} survived its out-of-band delete" >&2
+  exit 1
+fi
+if [ "${MULTI_REGION}" = "1" ]; then
+  # Issue #6532: what the rollback's replica-add meets in the replica region.
+  # A DELETING copy here would exercise #3569. Printed, not asserted.
+  if XR_V1_REMOTE="$(aws dynamodb describe-table --table-name "${GTX_NAME_V1}" --region "${XR_REGION}" \
+    --query 'Table.TableStatus' --output text 2>&1)"; then :; else
+    XR_V1_REMOTE="absent or unreadable: $(printf '%s' "${XR_V1_REMOTE}" | tail -c 160)"
+  fi
+  echo "[verify] phase 3b: NOTE ${XR_REGION} copy of ${GTX_NAME_V1} before the rollback: ${XR_V1_REMOTE}"
+fi
+echo "[verify] phase 3b: OK (old copies were live; route ${DEST_V1}, ${OLD_TABLES} and ${BUCKET_V1} now gone)"
+
+# --------------------------------------------------------------------------
+# Phase 3c — `cdkd rollback`: re-create what is gone, re-adopt what is not.
+# --------------------------------------------------------------------------
+echo ""
+echo "[verify] phase 3c: cdkd rollback"
+RB_LOG="${WORK_DIR}/rollback.log"
+set +e
+${CDKD} rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --force > "${RB_LOG}" 2>&1
+ROLLBACK_RC=$?
+set -e
+if [ "${ROLLBACK_RC}" -ne 0 ]; then
+  echo "FAIL: phase 3c: cdkd rollback exited ${ROLLBACK_RC}. Log tail:" >&2
+  tail -40 "${RB_LOG}" >&2
+  exit 1
+fi
+echo "[verify] phase 3c: rollback exited 0"
 
 # The cross-region table must have been RE-CREATED -- checked first, because
 # it is the arm this run was opted into for and the generic check below would
-# report its failure under a less specific message. Its known cause is issue
-# #3569: the replay re-adds the replica while v1's copy in the replica region
-# is still DELETING from the replacement's delete.
+# report its failure under a less specific message. Its historical cause is
+# issue #3569 (the replica re-add meeting v1's still-DELETING copy); 3b's NOTE
+# line prints what the replica region reported just before the rollback.
 if [ "${MULTI_REGION}" = "1" ]; then
-  if ! grep -qF "${GTX_LOGICAL_ID} replacement reversed" "${WORK_DIR}/deploy-v2.log"; then
+  if ! grep -qF "${GTX_LOGICAL_ID} replacement reversed" "${RB_LOG}"; then
     echo "FAIL: phase 3: the cross-region table ${GTX_LOGICAL_ID} was NOT re-created" >&2
     echo "      by the rollback, so phase 4 has nothing to assert on. Lines:" >&2
     grep -aE "${GTX_LOGICAL_ID}|ValidationException|already existed|still being deleted" \
-      "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+      "${RB_LOG}" | tail -20 >&2
     exit 1
   fi
 fi
@@ -799,37 +1004,58 @@ fi
 # arm's OWN line, which only the reverse-replacement path emits.
 # Per-RESOURCE, not the generic line: the ROUTE alone satisfies a bare grep, so
 # a run where neither table took the reverse-replacement arm would pass it.
-if ! grep -qF "${GT_LOGICAL_ID} replacement reversed" "${WORK_DIR}/deploy-v2.log" ||
-   ! grep -qF "${GTO_LOGICAL_ID} replacement reversed" "${WORK_DIR}/deploy-v2.log" ||
-   ! grep -qF 'replacement reversed (old resource re-created as' "${WORK_DIR}/deploy-v2.log"; then
-  echo "FAIL: phase 3: the rollback did not take the REVERSE-REPLACEMENT arm," >&2
-  echo "      so this run does not exercise #1682 (a 'revert' UPDATE would pass" >&2
-  echo "      phase 4 through the #1644 update-side wiring instead). Log tail:" >&2
-  tail -40 "${WORK_DIR}/deploy-v2.log" >&2
+#
+# And the RE-CREATE line, not the arm's opening one: the re-adopt arm opens with
+# "Reversing replacement of" too, and ends "restored to the ... old resource"
+# with the record rebuilt from the journal, never reaching the replay-CREATE
+# whose recording #1682 is about (go-to-k/cdkd#6524: every subject re-adopted
+# after #6374, and this check is what said so). The survivor read's "is gone"
+# line pins WHY the arm re-created: phase 3b's out-of-band delete.
+RECREATE_SUBJECTS="${ROUTE_LOGICAL_ID} ${GT_LOGICAL_ID} ${GTO_LOGICAL_ID} ${GTS_LOGICAL_ID} ${BUCKET_LOGICAL_ID}"
+if [ "${MULTI_REGION}" = "1" ]; then
+  RECREATE_SUBJECTS="${RECREATE_SUBJECTS} ${GTX_LOGICAL_ID}"
+fi
+for id in ${RECREATE_SUBJECTS}; do
+  if ! grep -qF "Rollback: ${id} replacement reversed (old resource re-created as" "${RB_LOG}" ||
+     ! grep -qE "Rollback: the old resource of ${id} \(.*\) is gone — re-creating it" "${RB_LOG}"; then
+    echo "FAIL: phase 3: ${id} did not take the reverse-replacement RE-CREATE arm, so" >&2
+    echo "      this run does not exercise #1682 for it (a re-adopt rebuilds the record" >&2
+    echo "      from the journal; a 'revert' UPDATE would pass phase 4 through the #1644" >&2
+    echo "      update-side wiring). Lines:" >&2
+    grep -aF "${id}" "${RB_LOG}" | tail -20 >&2
+    exit 1
+  fi
+done
+# The other arm, in the same rollback: the old copy phase 3b left alone is
+# taken back, and the new one deleted (go-to-k/cdkd#6374's 'deferred' read).
+if ! grep -qE "Rollback: the old resource of ${READOPT_LOGICAL_ID} \(.*\) was not deleted yet — re-adopting it" "${RB_LOG}" ||
+   ! grep -qF "Rollback: ${READOPT_LOGICAL_ID} restored to the" "${RB_LOG}"; then
+  echo "FAIL: phase 3: ${READOPT_LOGICAL_ID}, whose old copy was left live, was not re-adopted. Lines:" >&2
+  grep -aF "${READOPT_LOGICAL_ID}" "${RB_LOG}" | tail -20 >&2
   exit 1
 fi
 # ...and that the replay-CREATE actually substituted, which is the input phase 4
 # asserts the recording of.
-if ! grep -qiE 'more than one destination' "${WORK_DIR}/deploy-v2.log"; then
+if ! grep -qiE 'more than one destination' "${RB_LOG}"; then
   echo "FAIL: phase 3: the replay-CREATE multi-destination substitution never" >&2
   echo "      fired, so the doctored state bag never reached the provider." >&2
-  tail -40 "${WORK_DIR}/deploy-v2.log" >&2
+  tail -40 "${RB_LOG}" >&2
   exit 1
 fi
 # The GlobalTable's two arms, each asserted by its OWN guard message. Without
 # these, phase 4's absence assertions pass whenever the replay never reached the
 # provider at all -- the same vacuity the route's substitution check above
 # guards against, one resource over.
-if ! grep -qF 'AWS::DynamoDB::GlobalTable BillingMode must be a non-empty string' "${WORK_DIR}/deploy-v2.log"; then
+if ! grep -qF 'AWS::DynamoDB::GlobalTable BillingMode must be a non-empty string' "${RB_LOG}"; then
   echo "FAIL: phase 3: the GlobalTable BillingMode replay substitution never fired," >&2
   echo "      so the doctored bag never reached the provider (#1726)." >&2
-  tail -40 "${WORK_DIR}/deploy-v2.log" >&2
+  tail -40 "${RB_LOG}" >&2
   exit 1
 fi
-if ! grep -qF 'AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array' "${WORK_DIR}/deploy-v2.log"; then
+if ! grep -qF 'AWS::DynamoDB::GlobalTable GlobalSecondaryIndexes must be an array' "${RB_LOG}"; then
   echo "FAIL: phase 3: the GlobalTable GSI replay downgrade never fired, so the" >&2
   echo "      create did not take the omit arm (#1724)." >&2
-  tail -40 "${WORK_DIR}/deploy-v2.log" >&2
+  tail -40 "${RB_LOG}" >&2
   exit 1
 fi
 # Issue #1706: both subjects took the reverse-replacement arm, each downgrade
@@ -845,21 +1071,21 @@ for needle in \
   'AWS::S3::Bucket VersioningConfiguration must be an object' \
   'No PutBucketVersioning is issued'
 do
-  if ! grep -qF "${needle}" "${WORK_DIR}/deploy-v2.log"; then
+  if ! grep -qF "${needle}" "${RB_LOG}"; then
     echo "FAIL: phase 3: issue #1706 -- the rollback log lacks '${needle}'," >&2
     echo "      so the arm phase 4 asserts the recording of never ran. Lines:" >&2
     grep -aE "${GTS_LOGICAL_ID}|${BUCKET_LOGICAL_ID}|StreamSpecification|VersioningConfiguration" \
-      "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+      "${RB_LOG}" | tail -20 >&2
     exit 1
   fi
 done
 echo "[verify] phase 3: OK (reverse-replacement arm + all five replay-CREATE downgrades observed)"
 # go-to-k/cdkd#4434: the ingress took the plain REVERT arm (an in-place UPDATE),
 # not a reverse-replacement, or phase 4's ingress half asserts on nothing.
-if ! grep -qF "Rollback: ${INGRESS_LOGICAL_ID} restored successfully" "${WORK_DIR}/deploy-v2.log"; then
+if ! grep -qF "Rollback: ${INGRESS_LOGICAL_ID} restored successfully" "${RB_LOG}"; then
   echo "FAIL: phase 3: ${INGRESS_LOGICAL_ID} was not reverted by the rollback's UPDATE arm," >&2
   echo "      so phase 4 cannot test the revert's recorded rule id (#4434). Lines:" >&2
-  grep -aF "${INGRESS_LOGICAL_ID}" "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+  grep -aF "${INGRESS_LOGICAL_ID}" "${RB_LOG}" | tail -20 >&2
   exit 1
 fi
 
@@ -890,9 +1116,33 @@ if [ "${POST_IPV6}" != "ABSENT" ]; then
 fi
 echo "[verify] phase 4: OK (DestinationCidrBlock=${POST_DEST}, DestinationIpv6CidrBlock absent)"
 
+# --- go-to-k/cdkd#6524: both routes are back on their v1 destination LIVE ---
+# The re-created route is live again, and each replacement's v2 copy is gone:
+# the re-adopt arm deleted the new copy instead of re-creating the old one.
+POST_READOPT_ID="$(jq -r --arg id "${READOPT_LOGICAL_ID}" \
+  '.resources[$id].physicalId // "MISSING"' "${WORK_DIR}/state-rolled-back.json")"
+if [ "${POST_READOPT_ID}" != "${ROUTE_TABLE_ID}|${READOPT_DEST_V1}" ]; then
+  echo "FAIL: phase 4: ${READOPT_LOGICAL_ID} records '${POST_READOPT_ID}', expected the" >&2
+  echo "      re-adopted '${ROUTE_TABLE_ID}|${READOPT_DEST_V1}'" >&2
+  exit 1
+fi
+for d in "${DEST_V1}" "${READOPT_DEST_V1}"; do
+  if ! route_settles "${d}" present; then
+    echo "FAIL: phase 4: the route to ${d} is not live after the rollback" >&2
+    exit 1
+  fi
+done
+for d in "${DEST_V2}" "${READOPT_DEST_V2}"; do
+  if ! route_settles "${d}" absent; then
+    echo "FAIL: phase 4: the replacement route to ${d} survived the rollback" >&2
+    exit 1
+  fi
+done
+echo "[verify] phase 4: OK (routes to ${DEST_V1} and ${READOPT_DEST_V1} live, both v2 copies gone)"
+
 # --- go-to-k/cdkd#4434: the revert arm records the rule id that is LIVE -----
-# Phase 3 re-authorized the rule twice (the update, then the revert), so the
-# phase-1 id is revoked. Before the fix the record kept it.
+# Phase 3b revoked the phase-1 rule out of band, so the revert re-authorized
+# it under a new id. Before the fix the record kept the phase-1 one.
 INGRESS_POST_ID="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
   '.resources[$id].attributes.Id // "MISSING"' "${WORK_DIR}/state-rolled-back.json")"
 INGRESS_POST_DESC="$(jq -r --arg id "${INGRESS_LOGICAL_ID}" \
@@ -905,7 +1155,7 @@ if [ "${INGRESS_POST_DESC}" != "cdkd revert-arm subject for ${DEST_V1}" ]; then
 fi
 if [ "${INGRESS_POST_LIVE}" = "${INGRESS_V1_ID}" ]; then
   echo "FAIL: phase 4: ${INGRESS_SG_ID} still holds the phase-1 rule ${INGRESS_V1_ID}, so the" >&2
-  echo "      update and its revert never re-authorized it and the #4434 check is vacuous." >&2
+  echo "      revert never re-authorized it and the #4434 check is vacuous." >&2
   exit 1
 fi
 case "${INGRESS_POST_LIVE}" in
@@ -991,9 +1241,9 @@ if [ "${GTO_HAS_GSI}" != "false" ]; then
   echo "      --- recorded keys for ${GTO_LOGICAL_ID} ---" >&2
   jq -r --arg gto "${GTO_LOGICAL_ID}" \
     '.resources[$gto].properties | keys | join(", ")' "${WORK_DIR}/state-rolled-back.json" >&2
-  echo "      --- rollback / replay lines from the failed deploy ---" >&2
+  echo "      --- rollback / replay lines from cdkd rollback ---" >&2
   grep -aE "Rollback|reversed|must be an array|ValidationException|Failed to" \
-    "${WORK_DIR}/deploy-v2.log" | tail -15 >&2
+    "${RB_LOG}" | tail -15 >&2
   exit 1
 fi
 # ...along with the LOCAL replica's index block, which is only a capacity SOURCE
@@ -1076,10 +1326,10 @@ if [ "${MULTI_REGION}" = "1" ]; then
   # for the arm: the record check above is independent of it, so a reworded
   # warning fails HERE rather than silently.
   if ! grep -qF "${GTX_LOGICAL_ID}: omitting the GlobalSecondaryIndexes overrides of replica(s) ${XR_REGION}" \
-    "${WORK_DIR}/deploy-v2.log"; then
+    "${RB_LOG}"; then
     echo "FAIL: phase 4: the cross-region record is right, but the withdrawal of" >&2
     echo "      its ${XR_REGION} index override was never announced." >&2
-    grep -aE "${GTX_LOGICAL_ID}" "${WORK_DIR}/deploy-v2.log" | tail -20 >&2
+    grep -aE "${GTX_LOGICAL_ID}" "${RB_LOG}" | tail -20 >&2
     exit 1
   fi
   echo "[verify] phase 4: OK (cross-region table re-created with its ${XR_REGION} replica, no index override sent or recorded)"

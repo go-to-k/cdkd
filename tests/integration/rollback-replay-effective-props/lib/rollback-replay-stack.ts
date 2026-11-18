@@ -24,6 +24,8 @@ import type { Construct } from 'constructs';
  *   `MessageRetentionPeriod` that AWS rejects. It DependsOn the route, so the
  *   route's replacement has already COMPLETED when the failure fires and the
  *   rollback classifies it `reverse-replacement` rather than a plain CREATE.
+ *   verify.sh deploys it under `--no-rollback`, deletes the replaced old
+ *   copies out of band, and only then runs `cdkd rollback` (go-to-k/cdkd#6524).
  */
 export class RollbackReplayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -67,15 +69,32 @@ export class RollbackReplayStack extends cdk.Stack {
     // attached to the VPC.
     route.addDependency(attachment);
 
+    // ── The rollback RE-ADOPT subject (go-to-k/cdkd#6524) ─────────────────
+    //
+    // Replaced alongside the route above, but verify.sh leaves ITS old copy
+    // alone. Since go-to-k/cdkd#6374 a replaced resource's old copy is deleted
+    // only in the deploy's cleanup phase, which a failed deploy never reaches,
+    // so the rollback finds this one whole and re-adopts it. Every other
+    // replaced subject has its old copy deleted out of band before
+    // `cdkd rollback`, which is what sends those through the re-CREATE arm
+    // #1682 is about. Its destination follows `ROUTE_DEST`, so it flips in the
+    // same deploy and needs no env knob of its own.
+    const readoptRoute = new ec2.CfnRoute(this, 'ReadoptRoute', {
+      routeTableId: routeTable.ref,
+      destinationCidrBlock: destination === '0.0.0.0/0' ? '10.201.0.0/16' : '10.202.0.0/16',
+      gatewayId: igw.ref,
+    });
+    readoptRoute.addDependency(attachment);
+
     // ── The rollback REVERT-arm subject (go-to-k/cdkd#4434) ───────────────
     //
     // Every subject above takes the reverse-REPLACEMENT arm; this one takes the
     // plain `revert` UPDATE arm. Its `Description` follows `ROUTE_DEST`, and
-    // `Description` is not create-only, so phase 3 UPDATES the rule in place —
-    // which `EC2Provider` does by revoking and re-authorizing it, minting a new
-    // `sgr-` id — and the rollback's revert does the same again. The
-    // post-rollback record must hold the id of the rule that is live THEN, not
-    // the phase-1 one the revert revoked.
+    // `Description` is not create-only, so phase 3 UPDATES the rule in place
+    // (go-to-k/cdkd#6514: the rule keeps its `sgr-` id). verify.sh then
+    // revokes it out of band, so the rollback's revert re-authorizes it under
+    // a NEW id. The post-rollback record must hold the id of the rule that is
+    // live THEN, not the phase-1 one.
     const ingressSg = new ec2.CfnSecurityGroup(this, 'RevertSg', {
       vpcId: vpc.ref,
       groupDescription: 'cdkd rollback-replay revert-arm subject',
@@ -308,6 +327,7 @@ export class RollbackReplayStack extends cdk.Stack {
         messageRetentionPeriod: 999999999,
       });
       failing.addDependency(route);
+      failing.addDependency(readoptRoute);
       failing.addDependency(capacityTable);
       failing.addDependency(gsiOmitTable);
       failing.addDependency(streamTable);

@@ -19,6 +19,20 @@ and rebuilt the record from `prev.properties`, so the substitution was
 announced into a void and the phantom drift it exists to close survived the
 rollback.
 
+## Why the rollback is a separate `cdkd rollback`
+
+Since [#6374](https://github.com/go-to-k/cdkd/issues/6374) a replaced
+resource's old copy is deleted in the deploy's cleanup phase, which a failed
+deploy never reaches. An automatic rollback therefore finds every old copy
+alive and re-adopts it, which never reaches the re-create arm above (issue
+[#6524](https://github.com/go-to-k/cdkd/issues/6524)). So phase 3 deploys
+under `--no-rollback`, phase 3b deletes the old copies out of band, and phase
+3c's `cdkd rollback` reads each one as gone and re-creates it.
+`ReadoptRoute`, a second route replaced in the same deploy, keeps its old copy,
+so the same rollback also covers the re-adopt arm. The re-create arm inside
+the deploy's own automatic rollback is no longer reached by this fixture: that
+rollback runs before anything could delete the old copies.
+
 ## The engine subject and the per-provider subjects
 
 `AWS::EC2::Route` is the ENGINE subject: its identity is
@@ -51,7 +65,9 @@ Issue [#1706](https://github.com/go-to-k/cdkd/issues/1706) adds two of them:
 |---|------|-----------|
 | 1 | Deploy v1 (`DestinationCidrBlock: 0.0.0.0/0`) | state records the one destination key |
 | 2 | Doctor state: add `DestinationIpv6CidrBlock: ::/0` to the route; malformed values into each table's record; `StreamSpecification: ""` + `BillingMode: ""` into `StreamTable`'s and `VersioningConfiguration: "Enabled"` into `ReplayBucket`'s | every injection took (else every later assertion is vacuous) |
-| 3 | Deploy v2 — create-only flips (route destination, table names, bucket name) **plus** an injected SQS failure that `DependsOn` every subject | deploy exits non-zero, each subject logs its own `replacement reversed` line, and every replay-CREATE downgrade warning fired (proving the arms ran) |
+| 3 | Deploy v2 under `--no-rollback` — create-only flips (both route destinations, table names, bucket name) **plus** an injected SQS failure that `DependsOn` every subject | deploy exits non-zero and leaves the rollback journal without replaying it |
+| 3b | Delete the replaced old copies out of band, except `ReadoptRoute`'s, and revoke `RevertIngress`'s rule | every old and new copy was live first (the old ones' deletes wait for the cleanup phase, issue #6374), and the rule kept its phase-1 id (issue #6514); each deleted one reads gone |
+| 3c | `cdkd rollback` | each deleted subject logs `is gone — re-creating it` and its own `replacement reversed (old resource re-created as` line; `ReadoptRoute` logs `was not deleted yet — re-adopting it`; every replay-CREATE downgrade warning fired (proving the arms ran) |
 | 4 | **The point** | post-rollback record has `DestinationCidrBlock` restored and `DestinationIpv6CidrBlock` **gone**; the stream table records the substituted view type (composed with the substituted `BillingMode`) and streams with it; the bucket records no versioning and is unversioned |
 | 5 | `cdkd drift` twice | both converge — the user-visible consequence |
 | 5b | `cdkd diff --json` twice | the v1 template lists the stream table and the bucket; a template describing the live resources lists neither |
@@ -65,9 +81,10 @@ the key the provider warned it was dropping and never sent to AWS.
 `RevertIngress` (`AWS::EC2::SecurityGroupIngress`) is the one subject that
 takes the plain `revert` UPDATE arm instead of the reverse-replacement one: its
 `Description` follows `ROUTE_DEST` and is not create-only, so phase 3 updates
-it in place, which `EC2Provider` does by revoking and re-authorizing the rule,
-and the rollback's revert does it again. Phase 1 records the rule's `sgr-` id
-and proves it is the group's one live ingress rule; phase 3 asserts the
+it in place, and the rule keeps its `sgr-` id (issue #6514). Phase 3b revokes
+the rule out of band, so the rollback's revert re-authorizes it under a new id.
+Phase 1 records the rule's `sgr-` id and proves it is the group's one live
+ingress rule; phase 3b proves the deploy kept that id; phase 3c asserts the
 `restored successfully` line; phase 4 asserts the record's `attributes.Id`
 equals the rule live AFTER the rollback and differs from phase 1's. Before
 the fix the revert kept the restored record's attributes, so the record still
@@ -81,9 +98,13 @@ per-index read ceiling for `gsi1`. Its record gets the same malformed index
 blob as the omit table, so the replay creates a table with no indexes and then
 adds the cross-region replica. Before the fix, the override for the index the
 create had just omitted was still sent and recorded, although the table has no
-such index and the re-created replica holds no override. The arm also depends
-on issue #3569: the rollback re-adds the replica while v1's copy in the replica
-region can still be deleting.
+such index and the re-created replica holds no override.
+
+Issue #3569 (the rollback re-adding the replica while v1's copy in the replica
+region is still deleting) is no longer reached live: phase 3b requests the
+replica's removal and deletes v1 without waiting, but on 2026-11-18 the copy was
+already gone by the rollback. Phase 3b prints that status; issue #6532 tracks
+live coverage.
 
 | # | What the arm adds |
 |---|-------------------|
@@ -95,7 +116,8 @@ region can still be deleting.
 | 6 | both table names gone, in the deploy region and in the replica region |
 
 Replicas take minutes to create and delete, so the arm takes the run from
-~3 min to ~12-20 min; `/run-integ`'s default watchdog is enough.
+~5 min to ~14 min (841 s on 2026-11-18); `/run-integ`'s default watchdog is
+enough.
 
 ## Running
 
@@ -107,4 +129,5 @@ CDKD_INTEG_MULTI_REGION=1 /run-integ rollback-replay-effective-props
 
 The fixture intentionally creates a failed deploy, so the `EXIT`/`INT`/`TERM`
 trap sweeps by the `cdkd:integ-fixture` tag in addition to the state-based
-destroy.
+destroy. The trap runs `cdkd rollback` before that destroy, so a failure
+between the `--no-rollback` deploy and phase 3c still settles the journal.
