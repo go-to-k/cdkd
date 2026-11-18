@@ -3001,6 +3001,11 @@
       ]
     },
     {
+      "name": "sg-rule-description-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "shared-stackname-multi-region",
       "annotated": false,
       "scenarios": []
@@ -4265,6 +4270,7 @@
     "select-out-of-bounds",
     "servicediscovery",
     "servicediscovery-http-namespace-update",
+    "sg-rule-description-update",
     "shared-stackname-multi-region",
     "sns-event-source",
     "sns-inline-subscription",

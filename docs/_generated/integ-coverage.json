@@ -1860,6 +1860,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "tags-propagation",
         "vpc-lambda",
@@ -2118,6 +2119,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-rule-description-update": [
+          "l2"
+        ],
         "stack-copy-create-tokens": [
           "l2"
         ],
@@ -2216,6 +2220,7 @@
         "replace-snapshot-failed-rollback",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -2456,6 +2461,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-rule-description-update": [
+          "l2"
+        ],
         "stack-copy-create-tokens": [
           "l2"
         ],
@@ -2596,6 +2604,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -2848,6 +2857,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-rule-description-update": [
+          "l2"
+        ],
         "stack-copy-create-tokens": [
           "l2"
         ],
@@ -2947,6 +2959,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "tags-propagation",
         "vpc-lambda",
@@ -3202,6 +3215,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-rule-description-update": [
+          "l2"
+        ],
         "stack-copy-create-tokens": [
           "l2"
         ],
@@ -3274,6 +3290,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "tags-propagation",
         "update-replace",
@@ -3451,6 +3468,10 @@
           "l2",
           "literal"
         ],
+        "sg-rule-description-update": [
+          "l2",
+          "literal"
+        ],
         "stack-copy-create-tokens": [
           "l2",
           "literal"
@@ -3479,7 +3500,8 @@
         "drift-sg-sibling-rules",
         "export",
         "rollback-replay-effective-props",
-        "sg-circular-dependency"
+        "sg-circular-dependency",
+        "sg-rule-description-update"
       ],
       "signals": {
         "alb": [
@@ -3501,6 +3523,10 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l1",
+          "literal"
+        ],
+        "sg-rule-description-update": [
           "l1",
           "literal"
         ]
@@ -3601,6 +3627,7 @@
         "replacement-rename-onto-holder",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
         "tags-propagation",
@@ -3894,6 +3921,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-rule-description-update": [
+          "l2"
+        ],
         "stack-copy-create-tokens": [
           "l2"
         ],
@@ -4007,6 +4037,7 @@
         "replace-snapshot-failed-rollback",
         "rollback-failure-injection",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -4248,6 +4279,9 @@
         "sg-circular-dependency": [
           "l2"
         ],
+        "sg-rule-description-update": [
+          "l2"
+        ],
         "stack-copy-create-tokens": [
           "l2"
         ],
@@ -4365,6 +4399,7 @@
         "rollback-replay-effective-props",
         "servicediscovery",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "subnet-mappublicip-removal",
         "tags-propagation",
@@ -4695,6 +4730,10 @@
           "l2",
           "literal"
         ],
+        "sg-rule-description-update": [
+          "l2",
+          "literal"
+        ],
         "stack-copy-create-tokens": [
           "l2",
           "literal"
@@ -4801,6 +4840,7 @@
         "rollback-failure-injection",
         "rollback-replay-effective-props",
         "sg-circular-dependency",
+        "sg-rule-description-update",
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
@@ -5055,6 +5095,9 @@
           "l1"
         ],
         "sg-circular-dependency": [
+          "l2"
+        ],
+        "sg-rule-description-update": [
           "l2"
         ],
         "stack-copy-create-tokens": [
