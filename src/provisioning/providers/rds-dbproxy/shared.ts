@@ -81,7 +81,9 @@ export async function waitForDBProxyDeleteGone(opts: {
   const wrapRecordKeptError = (text: string): Error =>
     markWaitAbandoned(
       new ProvisioningError(
-        opts.mask(`${opts.what} ${text}. The state record is kept: check it, then re-run.`),
+        opts.mask(
+          `${opts.what} ${text}. The state record is kept: check it, then re-run once it is gone or settled.`
+        ),
         opts.resourceType,
         opts.logicalId,
         opts.physicalId
@@ -97,8 +99,8 @@ export async function waitForDBProxyDeleteGone(opts: {
       return status;
     },
     consequence:
-      'AWS finishes the delete on its side; until it does, a create of the same name can be ' +
-      'refused, and the subnets and security groups it uses stay in use.',
+      'Until AWS finishes the delete, a create of the same name can be refused, and the ' +
+      'subnets and security groups it uses stay in use.',
     failedStatus: (status) => {
       if (status === 'deleting') {
         sawDeleting = true;
@@ -118,7 +120,8 @@ export async function waitForDBProxyDeleteGone(opts: {
   });
   if (!gone && !sawDeleting && lastStatus !== undefined) {
     throw wrapRecordKeptError(
-      `still read ${lastStatus}, never deleting, when cdkd stopped waiting after its delete was accepted`
+      `still read ${lastStatus}, never deleting, when cdkd stopped waiting after its delete was ` +
+        'accepted, so AWS may not be removing it'
     );
   }
 }
