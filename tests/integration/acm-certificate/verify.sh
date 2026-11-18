@@ -116,8 +116,8 @@ cleanup() {
   # Both hand-retirements above are best-effort (`|| true`), which is right --
   # a cleanup failure must not mask the assertion result -- but silent. Sweep
   # for survivors so a failed retirement is VISIBLE rather than discovered
-  # later on the bill. Reported,
-  # not fatal: the run's own verdict is already decided by `rc`.
+  # later on the bill. Reported, not fatal: the run's own verdict is already
+  # decided by `rc`.
   #
   # TRI-STATE, not two: `|| true` here would let a throttle / AccessDenied
   # answer read as "no certificates found" and print the clean line over a real

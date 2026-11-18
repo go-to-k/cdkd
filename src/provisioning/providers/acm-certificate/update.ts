@@ -56,8 +56,8 @@ export async function update(
   // go-to-k/cdkd#6513 is every one of them (ValidationMethod through
   // `ReplacementRulesRegistry`). A template edit to any of these keys is
   // therefore an engine replacement and never reaches this arm; only a
-  // state-borne caller (a rollback revert) does. The writes below address
-  // the certificate by its ARN and never send these keys.
+  // state-borne caller (a rollback revert or `drift --revert`) does. The
+  // writes below address the certificate by its ARN and never send these keys.
   let changedImmutable: (typeof immutableFields)[number] | undefined;
   for (const k of immutableFields) {
     if (JSON.stringify(properties[k]) === JSON.stringify(previousProperties[k])) continue;
