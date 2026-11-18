@@ -249,6 +249,10 @@ export async function updateInIdLogScope(
     // `Code.SourceLocationArn`) is refused the same way, so it is carried
     // too. Its lookup shares the cache `attributeNamesLookup` fills (a
     // failed one is not cached, so only then does this send its own).
+    // Performance gave way here: a template never declares a read-only
+    // member, so such an op always reads the live model, even where AWS
+    // holds no such member (a puppeteer 11.0+ canary's `Code`); one
+    // `GetResource` on a Cloud Control update, against a refused deploy.
     if (writesTopLevelObject(patch)) {
       const [createOnlyPaths, readOnlyPaths] = await Promise.all([
         getCreateOnlyPropertyPaths(resourceType),
