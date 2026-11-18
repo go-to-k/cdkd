@@ -480,7 +480,7 @@ describe('integ fixture aws invocations (#1402)', () => {
     // Raised 8040 -> 9150 with the ceiling below at a re-measured 9844
     // (2026-11-13 measurement, go-to-k/cdkd#5640's rds-dbinstance-snapshot-restore).
     // Raised 9150 -> 10400 with the ceiling below at a re-measured 11186
-    // (go-to-k/cdkd#6584's logs-delivery fixture crossed the old ceiling).
+    // (re-measured at go-to-k/cdkd#6577, whose logs-delivery fixture crossed the old ceiling).
     expect(stats.total).toBeGreaterThan(10400);
     // Re-tracked with the total (issue #2057): 55 / 290 sat 21% and 28% below
     // the measured 70 / 404, so either could have lost a fifth of its coverage
@@ -539,7 +539,7 @@ describe('integ fixture aws invocations (#1402)', () => {
     // Raised 9820 -> 11170 with the floor above, at a re-measured 9844
     // (2026-11-13 measurement, go-to-k/cdkd#5640). Same ~1.135x headroom.
     // Raised 11170 -> 12700 with the floor above, at a re-measured 11186
-    // (go-to-k/cdkd#6584). Same ~1.135x headroom.
+    // (go-to-k/cdkd#6577). Same ~1.135x headroom.
     expect(stats.total).toBeLessThan(12700);
     // The highest-traffic services must always be represented.
     for (const svc of ['s3api', 'lambda', 'ec2', 'iam', 'logs']) {

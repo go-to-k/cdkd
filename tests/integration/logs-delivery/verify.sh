@@ -180,14 +180,16 @@ DRIFT_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" drift "${STACK}" --state
 }
 echo "${DRIFT_OUT}"
 # Exit 0 also covers a resource drift could not compare: require all five.
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}" | grep -qF '(5 resources checked, 0 unsupported)'; then
+DRIFT_CLEAN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DRIFT_OUT}")"
+if ! grep -qF '(5 resources checked, 0 unsupported)' <<<"${DRIFT_CLEAN}"; then
   echo "FAIL: drift did not compare all five resources -- expected '(5 resources checked, 0 unsupported)'" >&2
   exit 1
 fi
 DIFF_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
   echo "${DIFF_OUT}"; echo "FAIL: cdkd diff failed" >&2; exit 1
 }
-if ! sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DIFF_OUT}" | grep -qF "No changes detected for stack ${STACK}"; then
+DIFF_CLEAN="$(sed $'s/\x1b\\[[0-9;]*m//g' <<<"${DIFF_OUT}")"
+if ! grep -qF "No changes detected for stack ${STACK}" <<<"${DIFF_CLEAN}"; then
   echo "${DIFF_OUT}"; echo "FAIL: cdkd diff reported changes right after a deploy" >&2; exit 1
 fi
 echo "    OK: no drift (5 resources compared), no diff"
