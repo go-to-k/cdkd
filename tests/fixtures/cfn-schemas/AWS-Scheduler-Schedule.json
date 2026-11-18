@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Scheduler::Schedule",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-18",
   "properties": [
     "Arn",
     "Description",
@@ -47,6 +47,8 @@
       "EnableECSManagedTags",
       "EnableExecuteCommand",
       "EventBridgeParameters",
+      "EventBridgePutEventsV2Parameters",
+      "EventBridgePutRawEventsParameters",
       "Expression",
       "Field",
       "Group",
@@ -56,6 +58,7 @@
       "MaximumEventAgeInSeconds",
       "MaximumRetryAttempts",
       "MessageGroupId",
+      "Metadata",
       "Name",
       "NetworkConfiguration",
       "PartitionKey",
@@ -118,6 +121,11 @@
       "EventBridgeParameters",
       "EventBridgeParameters.DetailType",
       "EventBridgeParameters.Source",
+      "EventBridgePutEventsV2Parameters",
+      "EventBridgePutEventsV2Parameters.DetailType",
+      "EventBridgePutEventsV2Parameters.Source",
+      "EventBridgePutRawEventsParameters",
+      "EventBridgePutRawEventsParameters.Metadata",
       "Input",
       "KinesisParameters",
       "KinesisParameters.PartitionKey",
@@ -181,6 +189,13 @@
       "DetailType": "scalar",
       "Source": "scalar"
     },
+    "EventBridgePutEventsV2Parameters": {
+      "DetailType": "scalar",
+      "Source": "scalar"
+    },
+    "EventBridgePutRawEventsParameters": {
+      "Metadata": "object"
+    },
     "FlexibleTimeWindow": {
       "Mode": "scalar",
       "MaximumWindowInMinutes": "scalar"
@@ -221,6 +236,8 @@
       "Input": "scalar",
       "EcsParameters": "object",
       "EventBridgeParameters": "object",
+      "EventBridgePutEventsV2Parameters": "object",
+      "EventBridgePutRawEventsParameters": "object",
       "KinesisParameters": "object",
       "SageMakerPipelineParameters": "object",
       "SqsParameters": "object"
@@ -242,6 +259,10 @@
       "TaskDefinitionArn"
     ],
     "EventBridgeParameters": [
+      "DetailType",
+      "Source"
+    ],
+    "EventBridgePutEventsV2Parameters": [
       "DetailType",
       "Source"
     ],
@@ -281,6 +302,10 @@
       "DetailType",
       "Source"
     ],
+    "Target.EventBridgePutEventsV2Parameters": [
+      "DetailType",
+      "Source"
+    ],
     "Target.KinesisParameters": [
       "PartitionKey"
     ],
@@ -307,6 +332,9 @@
     "Target.EcsParameters.Tags": "array",
     "Target.EcsParameters.Tags[]": "object",
     "Target.EventBridgeParameters": "object",
+    "Target.EventBridgePutEventsV2Parameters": "object",
+    "Target.EventBridgePutRawEventsParameters": "object",
+    "Target.EventBridgePutRawEventsParameters.Metadata": "object",
     "Target.KinesisParameters": "object",
     "Target.RetryPolicy": "object",
     "Target.SageMakerPipelineParameters": "object",
@@ -367,6 +395,11 @@
     "Target.EventBridgeParameters": "object",
     "Target.EventBridgeParameters.DetailType": "string",
     "Target.EventBridgeParameters.Source": "string",
+    "Target.EventBridgePutEventsV2Parameters": "object",
+    "Target.EventBridgePutEventsV2Parameters.DetailType": "string",
+    "Target.EventBridgePutEventsV2Parameters.Source": "string",
+    "Target.EventBridgePutRawEventsParameters": "object",
+    "Target.EventBridgePutRawEventsParameters.Metadata": "object",
     "Target.Input": "string",
     "Target.KinesisParameters": "object",
     "Target.KinesisParameters.PartitionKey": "string",

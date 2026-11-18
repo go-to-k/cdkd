@@ -603,6 +603,8 @@ export const CASES_3: TypeCase[] = [
             SqsParameters: { MessageGroupId: 'm' },
             KinesisParameters: { PartitionKey: 'pk' },
             EventBridgeParameters: { DetailType: 'dt', Source: 'src' },
+            EventBridgePutEventsV2Parameters: { DetailType: 'dt2', Source: 'src2' },
+            EventBridgePutRawEventsParameters: { Metadata: { mk: 'mv' } },
             SageMakerPipelineParameters: {
               PipelineParameterList: [{ Name: 'pn', Value: 'pv' }],
             },
