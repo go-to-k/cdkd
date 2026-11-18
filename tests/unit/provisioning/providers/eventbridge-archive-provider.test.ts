@@ -205,11 +205,14 @@ describe('EventBridgeArchiveProvider', () => {
         .mockResolvedValueOnce({});
       const err = await provider
         .create('Arch', TYPE, { ArchiveName: 'arch', SourceArn: BUS_ARN })
-        .catch((e: unknown) => e as Error);
+        .then(
+          () => undefined,
+          (e: unknown) => e as Error
+        );
       expect(err).toBeInstanceOf(Error);
-      expect(err.message).toMatch(/entered CREATE_FAILED\./);
+      expect(err!.message).toMatch(/entered CREATE_FAILED\./);
       // AWS's StateReason never reaches the thrown message (go-to-k/cdkd#2319).
-      expect(err.message).not.toMatch(/kms denied/);
+      expect(err!.message).not.toMatch(/kms denied/);
       expect(sentOf(DeleteArchiveCommand).map((c) => c.input)).toEqual([{ ArchiveName: 'arch' }]);
     });
 
