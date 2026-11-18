@@ -39,6 +39,13 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // on the service name, like Firehose's; a probe against a fresh role cleared
   // after 7s (us-east-1, 2026-11-19), inside the dense grid.
   'AWS IoT (iot.amazonaws.com) is unable to assume role',
+  // DataSync's wording of the same race (issue #6573): an
+  // `AWS::DataSync::LocationS3` created through Cloud Control seconds after its
+  // bucket access role is refused with "Invalid request provided: Invalid IAM
+  // role, <arn>. DataSync service was unable to perform sts:AssumeRole." None of
+  // the existing entries match it. Anchored on the service name, like
+  // Firehose's and IoT's.
+  'DataSync service was unable to perform sts:AssumeRole',
   // Glue Crawler / Job / Trigger create validates that the Glue service can
   // assume the same-stack IAM role at create time. cdkd's fast SDK path issues
   // the Crawler create only ~1s after the role's CREATE, before IAM finishes

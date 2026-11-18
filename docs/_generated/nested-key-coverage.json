@@ -1157,6 +1157,7 @@
       "shapeCleanCount": 3,
       "unmatchedDefinitions": [
         "Config",
+        "ElasticIpConfiguration",
         "Tag",
         "VpcEgressConfiguration"
       ],
