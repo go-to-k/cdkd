@@ -15,6 +15,8 @@ import type { Construct } from 'constructs';
  *   - base (no env):                  [FARGATE], containerInsights disabled
  *   - CDKD_TEST_UPDATE=true:          [FARGATE, FARGATE_SPOT], enabled
  *   - ... plus CDKD_TEST_SETTINGS_ONLY=true: the same providers, enhanced
+ *   - CDKD_TEST_NO_PROVIDERS=true:    neither property declared, disabled;
+ *     CloudFormation clears both lists then, and so must cdkd
  *
  * covers: AWS::ECS::Cluster
  */
@@ -24,16 +26,25 @@ export class EcsClusterCapacitySettingsStack extends cdk.Stack {
     const updating = process.env.CDKD_TEST_UPDATE === 'true';
     const settingsOnly = updating && process.env.CDKD_TEST_SETTINGS_ONLY === 'true';
 
-    const insights = settingsOnly ? 'enhanced' : updating ? 'enabled' : 'disabled';
+    const noProviders = process.env.CDKD_TEST_NO_PROVIDERS === 'true';
+    const insights = noProviders
+      ? 'disabled'
+      : settingsOnly
+        ? 'enhanced'
+        : updating
+          ? 'enabled'
+          : 'disabled';
 
     const cluster = new ecs.CfnCluster(this, 'Cluster', {
-      capacityProviders: updating ? ['FARGATE', 'FARGATE_SPOT'] : ['FARGATE'],
-      defaultCapacityProviderStrategy: updating
-        ? [
-            { capacityProvider: 'FARGATE', weight: 1, base: 1 },
-            { capacityProvider: 'FARGATE_SPOT', weight: 2 },
-          ]
-        : [{ capacityProvider: 'FARGATE', weight: 1 }],
+      ...(!noProviders && {
+        capacityProviders: updating ? ['FARGATE', 'FARGATE_SPOT'] : ['FARGATE'],
+        defaultCapacityProviderStrategy: updating
+          ? [
+              { capacityProvider: 'FARGATE', weight: 1, base: 1 },
+              { capacityProvider: 'FARGATE_SPOT', weight: 2 },
+            ]
+          : [{ capacityProvider: 'FARGATE', weight: 1 }],
+      }),
       clusterSettings: [{ name: 'containerInsights', value: insights }],
     });
     cluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);

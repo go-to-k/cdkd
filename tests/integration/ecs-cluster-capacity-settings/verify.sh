@@ -23,7 +23,10 @@
 #   4. Back to the base shape: providers AND the setting change together again.
 #   5. UPDATE A again: a third providers + settings change. Phases 2, 4 and 5
 #      are the race the issue hit; pre-fix each failed about half the time.
-#   6. Destroy. Assert the cluster is INACTIVE and the state file is gone.
+#   6. Remove BOTH properties (and set containerInsights disabled). Assert
+#      cdkd sent the Put and both lists are empty, as CloudFormation leaves
+#      them (measured: a raw CFn stack read back [] and []).
+#   7. Destroy. Assert the cluster is INACTIVE and the state file is gone.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
 
@@ -182,9 +185,9 @@ cluster_field() { # usage: cluster_field <jq filter over describe_cluster>
 assert_cluster() {
   local json providers strategy insights arn status
   json="$(describe_cluster)"
-  providers="$(jq -r '[.capacityProviders[]] | sort | join(" ")' <<<"${json}")"
-  strategy="$(jq -r '[.defaultCapacityProviderStrategy[] | "\(.capacityProvider):\(.weight):\(.base // 0)"] | sort | join(" ")' <<<"${json}")"
-  insights="$(jq -r '[.settings[] | select(.name == "containerInsights") | .value] | join(" ")' <<<"${json}")"
+  providers="$(jq -r '[(.capacityProviders // [])[]] | sort | join(" ")' <<<"${json}")"
+  strategy="$(jq -r '[(.defaultCapacityProviderStrategy // [])[] | "\(.capacityProvider):\(.weight):\(.base // 0)"] | sort | join(" ")' <<<"${json}")"
+  insights="$(jq -r '[(.settings // [])[] | select(.name == "containerInsights") | .value] | join(" ")' <<<"${json}")"
   arn="$(jq -r '.clusterArn' <<<"${json}")"
   status="$(jq -r '.status' <<<"${json}")"
   [ "${status}" = "ACTIVE" ] ||
@@ -233,7 +236,7 @@ A_STRATEGY="FARGATE:1:1 FARGATE_SPOT:2:0"
 
 # --- Phase 1: deploy the base shape -----------------------------------------
 echo "==> Phase 1: deploy ([FARGATE], containerInsights disabled)"
-deploy_logged env -u CDKD_TEST_UPDATE -u CDKD_TEST_SETTINGS_ONLY
+deploy_logged env -u CDKD_TEST_NO_PROVIDERS -u CDKD_TEST_UPDATE -u CDKD_TEST_SETTINGS_ONLY
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
 CLUSTER_NAME="$(jq -r ".resources.${CLUSTER_LOGICAL}.physicalId" <<<"${STATE_JSON}")"
@@ -249,12 +252,12 @@ assert_cluster "after the create" "${BASE_PROVIDERS}" "${BASE_STRATEGY}" "disabl
 
 # --- Phase 2: providers + settings in one update ----------------------------
 echo "==> Phase 2: update ([FARGATE, FARGATE_SPOT] + containerInsights enabled, one deploy)"
-deploy_logged env -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_UPDATE=true
+deploy_logged env -u CDKD_TEST_NO_PROVIDERS -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_UPDATE=true
 assert_put_sent "update A" yes
 assert_cluster "after update A" "${A_PROVIDERS}" "${A_STRATEGY}" "enabled"
 assert_attachments_settled "after update A"
 
-DIFF_OUT="$(env -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
+DIFF_OUT="$(env -u CDKD_TEST_NO_PROVIDERS -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || true
 # cdkd's own line (src/cli/commands/diff.ts), naming this stack.
 grep -qF "No changes detected for stack ${STACK}" <<<"${DIFF_OUT}" ||
@@ -263,27 +266,33 @@ echo "    diff after update A reports no changes"
 
 # --- Phase 3: settings only -------------------------------------------------
 echo "==> Phase 3: settings-only update (containerInsights enhanced, providers unchanged)"
-deploy_logged env CDKD_TEST_UPDATE=true CDKD_TEST_SETTINGS_ONLY=true
+deploy_logged env -u CDKD_TEST_NO_PROVIDERS CDKD_TEST_UPDATE=true CDKD_TEST_SETTINGS_ONLY=true
 assert_put_sent "settings-only update" no
 assert_cluster "after the settings-only update" "${A_PROVIDERS}" "${A_STRATEGY}" "enhanced"
 
 # --- Phase 4: back to the base shape (providers + settings again) -----------
 echo "==> Phase 4: update back to [FARGATE] + containerInsights disabled"
-deploy_logged env -u CDKD_TEST_UPDATE -u CDKD_TEST_SETTINGS_ONLY
+deploy_logged env -u CDKD_TEST_NO_PROVIDERS -u CDKD_TEST_UPDATE -u CDKD_TEST_SETTINGS_ONLY
 assert_put_sent "update back to base" yes
 assert_cluster "after the update back to base" "${BASE_PROVIDERS}" "${BASE_STRATEGY}" "disabled"
 assert_attachments_settled "after the update back to base"
 
 # --- Phase 5: update A again ------------------------------------------------
 echo "==> Phase 5: update A again"
-deploy_logged env -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_UPDATE=true
+deploy_logged env -u CDKD_TEST_NO_PROVIDERS -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_UPDATE=true
 assert_put_sent "update A again" yes
 assert_cluster "after update A again" "${A_PROVIDERS}" "${A_STRATEGY}" "enabled"
 assert_attachments_settled "after update A again"
 
-# --- Phase 6: destroy -------------------------------------------------------
-echo "==> Phase 6: destroy"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+# --- Phase 6: remove both properties ---------------------------------------
+echo "==> Phase 6: update declaring no capacity providers (containerInsights disabled)"
+deploy_logged env -u CDKD_TEST_UPDATE -u CDKD_TEST_SETTINGS_ONLY CDKD_TEST_NO_PROVIDERS=true
+assert_put_sent "removing both properties" yes
+assert_cluster "after removing both properties" "" "" "disabled"
+
+# --- Phase 7: destroy -------------------------------------------------------
+echo "==> Phase 7: destroy"
+CDKD_TEST_NO_PROVIDERS=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 if ! ecs_cluster_gone_probe "${CLUSTER_NAME}"; then
   echo "FAIL: cluster ${CLUSTER_NAME} still exists after destroy" >&2
@@ -294,4 +303,4 @@ assert_gone "state file ${STATE_KEY} still exists after destroy" \
 
 cleanup
 trap - EXIT INT TERM
-echo "[verify] PASS — capacity providers and settings changed together three times, a settings-only update sent no Put, destroy left nothing"
+echo "[verify] PASS — capacity providers and settings changed together three times, a settings-only update sent no Put, removing both cleared them, destroy left nothing"
