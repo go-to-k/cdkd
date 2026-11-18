@@ -394,8 +394,8 @@ export async function recordedZoneForSwitch(
 ): Promise<string> {
   const zoneSwitchRefusalError = (why: string, cause?: Error) =>
     new ProvisioningError(
-      `${noun} ${logicalId}: the template switches between HostedZoneName and HostedZoneId, ` +
-        `and cdkd cannot confirm the new reference names the zone the record was recorded in ` +
+      `${noun} ${logicalId}: the template changes its hosted zone reference, and cdkd ` +
+        `cannot confirm the new reference names the zone the record was recorded in ` +
         `(${why}). Keep the zone key the record already uses.`,
       resourceType,
       logicalId,
