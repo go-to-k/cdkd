@@ -46,6 +46,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.js';
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
+import { withRefreshedObservedBaseline } from './replay-observed-refresh.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { unsettledContextOf } from '../../state/unsettled-properties.js';
 import { withUnprovenUnsettled } from '../unsettled-convergence.js';
@@ -679,7 +680,19 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     : previousState;
   stateResources[op.logicalId] = maskRestoredNoEchoRecord(
     redactRollbackRecord(
-      recordAfterRollbackUpdate(restoreBase, revertResult),
+      // go-to-k/cdkd#6526: the baseline re-read, as a deploy's update takes it.
+      await withRefreshedObservedBaseline(recordAfterRollbackUpdate(restoreBase, revertResult), {
+        provider,
+        op,
+        desiredProps,
+        restored: restoreBase,
+        stateResources,
+        secrets,
+        noEcho,
+        mask,
+        logger,
+        inScope: inOriginalPrefix,
+      }),
       secrets,
       previousState.properties,
       previousState.attributes
