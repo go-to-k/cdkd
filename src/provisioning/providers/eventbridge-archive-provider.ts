@@ -503,7 +503,7 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting EventBridge archive ${logicalId}: ${physicalId}`);
+    this.logger.debug(safeMsg`Deleting EventBridge archive ${logicalId}: ${physicalId}`);
     const mask = maskerOrIdentity(context?.maskSecrets);
     try {
       await this.eventBridgeClient.send(new DeleteArchiveCommand({ ArchiveName: physicalId }));
@@ -517,7 +517,7 @@ export class EventBridgeArchiveProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`EventBridge archive ${physicalId} does not exist, skipping`);
+        this.logger.debug(safeMsg`EventBridge archive ${physicalId} does not exist, skipping`);
         return;
       }
       const cause = error instanceof Error ? error : undefined;
