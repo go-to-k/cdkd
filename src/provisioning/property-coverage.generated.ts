@@ -1938,6 +1938,24 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Events::Archive',
+    {
+      handled: new Set<string>([
+        'ArchiveName',
+        'Description',
+        'EventPattern',
+        'KmsKeyIdentifier',
+        'RetentionDays',
+        'SourceArn',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Arn']),
+      primaryIdentifier: new Set<string>(['ArchiveName']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::Events::EventBus',
     {
       handled: new Set<string>([

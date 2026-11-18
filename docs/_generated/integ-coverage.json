@@ -72,6 +72,7 @@
     "AWS::ElasticLoadBalancingV2::Listener",
     "AWS::ElasticLoadBalancingV2::LoadBalancer",
     "AWS::ElasticLoadBalancingV2::TargetGroup",
+    "AWS::Events::Archive",
     "AWS::Events::EventBus",
     "AWS::Events::Rule",
     "AWS::FSx::FileSystem",
@@ -5865,6 +5866,17 @@
       }
     },
     {
+      "resourceType": "AWS::Events::Archive",
+      "integs": [
+        "eventbridge-archive"
+      ],
+      "signals": {
+        "eventbridge-archive": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Events::EventBus",
       "integs": [
         "appsync",
@@ -11060,8 +11072,8 @@
     "AWS::ElastiCache::ParameterGroup",
     "AWS::ElastiCache::ReplicationGroup",
     "AWS::ElasticLoadBalancingV2::ListenerRule",
+    "AWS::EventSchemas::Discoverer",
     "AWS::Events::ApiDestination",
-    "AWS::Events::Archive",
     "AWS::Events::Connection",
     "AWS::Events::EventBusPolicy",
     "AWS::GuardDuty::Detector",

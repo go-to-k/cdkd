@@ -78,6 +78,7 @@ import { SNSTopicPolicyProvider } from '../../../src/provisioning/providers/sns-
 import { SQSQueuePolicyProvider } from '../../../src/provisioning/providers/sqs-queue-policy-provider.js';
 import { SSMParameterProvider } from '../../../src/provisioning/providers/ssm-parameter-provider.js';
 import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
+import { EventBridgeArchiveProvider } from '../../../src/provisioning/providers/eventbridge-archive-provider.js';
 import { CloudWatchAlarmProvider } from '../../../src/provisioning/providers/cloudwatch-alarm-provider.js';
 
 /**
@@ -195,6 +196,14 @@ const BUS_NAME_REQUIRED: Throw = {
   why: 'Name is refused when absent, before CreateEventBus',
   says: /Name is required for EventBus/,
 };
+const ARCHIVE_SOURCE_REQUIRED: Throw = {
+  why: 'SourceArn is refused when absent, before CreateArchive',
+  says: /SourceArn is required for EventBridge archive/,
+};
+// go-to-k/cdkd#6578, measured CFn A/B: a removed archive property stays live,
+// because CloudFormation's UpdateArchive sends only the declared fields.
+const ARCHIVE_CFN_KEEPS_ON_REMOVAL =
+  'CloudFormation keeps a removed archive property live (measured A/B); update() sends no clear';
 const BUS_POLICY_KEPT_ON_REMOVAL =
   'a removed Policy is left live and warned about, as CloudFormation leaves it (go-to-k/cdkd#5044)';
 // Not a gap: a partner bus's Name must equal its EventSourceName, and Name is
@@ -554,6 +563,35 @@ const CASES: TypeCase[] = [
         expectedRemovalThrows: Object.fromEntries(
           ['create', 'update-add', 'update-remove'].map((d) => [`${d}:Value`, SSM_VALUE_REQUIRED])
         ),
+      },
+    ],
+  },
+  {
+    resourceType: 'AWS::Events::Archive',
+    provider: () => new EventBridgeArchiveProvider(),
+    physicalId: 'a',
+    createOnly: createOnlyOf('AWS::Events::Archive'),
+    // The create / update answer ENABLED, so the settle wait reads nothing.
+    arm: () =>
+      setOutputOverrides({
+        CreateArchiveCommand: () => ({ State: 'ENABLED' }),
+        UpdateArchiveCommand: () => ({ State: 'ENABLED' }),
+      }),
+    exempt: {},
+    targets: [],
+    bags: [
+      {
+        name: 'every declared property',
+        bag: {
+          ArchiveName: 'a',
+          SourceArn: `arn:aws:events:us-east-1:${ACCOUNT}:event-bus/b`,
+          Description: 'd',
+          EventPattern: { source: ['x'] },
+          RetentionDays: 7,
+          KmsKeyIdentifier: 'alias/k',
+        },
+        expectedSilent: { 'update-remove:RetentionDays': ARCHIVE_CFN_KEEPS_ON_REMOVAL },
+        expectedRemovalThrows: { 'create:SourceArn': ARCHIVE_SOURCE_REQUIRED },
       },
     ],
   },

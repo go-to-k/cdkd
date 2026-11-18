@@ -10,8 +10,8 @@
     }
   ],
   "summary": {
-    "classifiedCount": 141,
-    "covered": 72,
+    "classifiedCount": 142,
+    "covered": 73,
     "noArnAttr": 69,
     "gap": 0,
     "knownGap": 0,
@@ -616,6 +616,17 @@
       "resourceType": "AWS::EMR::InstanceGroupConfig",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Events::Archive",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "Arn",
+          "status": "cached"
+        }
+      ],
       "gaps": []
     },
     {

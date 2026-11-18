@@ -16,11 +16,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **141**
+- Classified types (cached schema): **142**
 - Fully enriched: **50**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **73**
+- SDK-fallback gaps (informational, #614 path only): **74**
 - Types with allow-listed (not-a-gap) attributes: **88**
 
 ## Pure-CC latent gaps
@@ -66,6 +66,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | `CanonicalHostedZoneID`, `DNSName`, `LoadBalancerFullName`, `LoadBalancerName` |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `LoadBalancerArns`, `TargetGroupFullName`, `TargetGroupName` |
 | `AWS::EMR::Cluster` | `MasterPublicDNS` |
+| `AWS::Events::Archive` | `Arn` |
 | `AWS::Events::EventBus` | `Arn` |
 | `AWS::Events::Rule` | `RuleName` |
 | `AWS::FSx::FileSystem` | `DNSName`, `LustreMountName`, `ResourceARN`, `RootVolumeId` |
@@ -183,6 +184,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::EMR::Cluster` | yes | sdk-fallback-gap | `Id` (allow), `MasterPublicDNS` (GAP) |
 | `AWS::EMR::InstanceFleetConfig` | yes | enriched | `InstanceFleetId` (allow) |
 | `AWS::EMR::InstanceGroupConfig` | yes | enriched | `InstanceGroupId` (allow) |
+| `AWS::Events::Archive` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Events::EventBus` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Events::Rule` | yes | sdk-fallback-gap | `Arn` (allow), `RuleName` (GAP) |
 | `AWS::FSx::FileSystem` | yes | sdk-fallback-gap | `DNSName` (GAP), `Id` (allow), `LustreMountName` (GAP), `ResourceARN` (GAP), `RootVolumeId` (GAP) |

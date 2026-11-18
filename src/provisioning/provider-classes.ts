@@ -38,6 +38,7 @@ export { SecretsManagerSecretProvider } from './providers/secretsmanager-secret-
 export { SSMParameterProvider } from './providers/ssm-parameter-provider.js';
 export { EventBridgeRuleProvider } from './providers/eventbridge-rule-provider.js';
 export { EventBridgeBusProvider } from './providers/eventbridge-bus-provider.js';
+export { EventBridgeArchiveProvider } from './providers/eventbridge-archive-provider.js';
 export { EC2Provider } from './providers/ec2-provider.js';
 export { ApiGatewayProvider } from './providers/apigateway-provider.js';
 export { ApiGatewayV2Provider } from './providers/apigatewayv2-provider.js';

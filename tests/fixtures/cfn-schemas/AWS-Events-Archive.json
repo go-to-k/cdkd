@@ -1,0 +1,59 @@
+{
+  "resourceType": "AWS::Events::Archive",
+  "generatedAt": "2026-11-18",
+  "properties": [
+    "ArchiveName",
+    "Arn",
+    "Description",
+    "EventPattern",
+    "KmsKeyIdentifier",
+    "RetentionDays",
+    "SourceArn"
+  ],
+  "readOnlyProperties": [
+    "Arn"
+  ],
+  "createOnlyProperties": [
+    "ArchiveName",
+    "SourceArn"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "ArchiveName"
+    ],
+    [
+      "SourceArn"
+    ]
+  ],
+  "primaryIdentifier": [
+    "ArchiveName"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "ArchiveName": "scalar",
+      "SourceArn": "scalar",
+      "Description": "scalar",
+      "EventPattern": "object",
+      "Arn": "scalar",
+      "RetentionDays": "scalar",
+      "KmsKeyIdentifier": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "SourceArn"
+    ]
+  },
+  "propertyShapes": {
+    "EventPattern": "object"
+  },
+  "propertyTypes": {
+    "ArchiveName": "string",
+    "Arn": "string",
+    "Description": "string",
+    "EventPattern": "object",
+    "KmsKeyIdentifier": "string",
+    "RetentionDays": "integer",
+    "SourceArn": "string"
+  }
+}

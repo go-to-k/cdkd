@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 141,
+    "classifiedCount": 142,
     "enriched": 50,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 73,
+    "sdkFallbackGap": 74,
     "allowListedTypes": 88
   },
   "types": [
@@ -1759,6 +1759,24 @@
         }
       ],
       "gaps": []
+    },
+    {
+      "resourceType": "AWS::Events::Archive",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Arn"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Arn",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "Arn"
+      ]
     },
     {
       "resourceType": "AWS::Events::EventBus",

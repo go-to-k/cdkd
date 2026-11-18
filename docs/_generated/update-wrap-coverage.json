@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 92,
-    "wrapped": 85,
+    "classifiedCount": 93,
+    "wrapped": 86,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
@@ -284,6 +284,14 @@
     {
       "file": "emr-instance-group-config-provider.ts",
       "className": "EMRInstanceGroupConfigProvider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "eventbridge-archive-provider.ts",
+      "className": "EventBridgeArchiveProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

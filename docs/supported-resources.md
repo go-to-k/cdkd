@@ -71,7 +71,7 @@ part of the type name.
 | ElastiCache | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::SubnetGroup` |
 | ElasticLoadBalancingV2 | `AWS::ElasticLoadBalancingV2::Listener`, `AWS::ElasticLoadBalancingV2::LoadBalancer`, `AWS::ElasticLoadBalancingV2::TargetGroup` |
 | EMR | `AWS::EMR::Cluster`, `AWS::EMR::InstanceFleetConfig`, `AWS::EMR::InstanceGroupConfig` |
-| Events | `AWS::Events::EventBus`, `AWS::Events::Rule` |
+| Events | `AWS::Events::Archive`, `AWS::Events::EventBus`, `AWS::Events::Rule` |
 | FSx | `AWS::FSx::FileSystem` |
 | Glue | `AWS::Glue::Connection`, `AWS::Glue::Crawler`, `AWS::Glue::Database`, `AWS::Glue::Job`, `AWS::Glue::SecurityConfiguration`, `AWS::Glue::Table`, `AWS::Glue::Trigger`, `AWS::Glue::Workflow` |
 | IAM | `AWS::IAM::AccessKey`, `AWS::IAM::Group`, `AWS::IAM::InstanceProfile`, `AWS::IAM::ManagedPolicy`, `AWS::IAM::Policy`, `AWS::IAM::Role`, `AWS::IAM::User`, `AWS::IAM::UserToGroupAddition` |

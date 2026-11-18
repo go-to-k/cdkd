@@ -360,6 +360,9 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // (possibly different) volume as it is NOW, so the point in time the old
   // one held is gone.
   'AWS::EC2::Snapshot',
+  // Same argument (go-to-k/cdkd#6578's coverage refresh): an application
+  // snapshot IS the saved state of a Managed Flink application.
+  'AWS::KinesisAnalyticsV2::Snapshot',
   // Storage that holds the user's blocks or files: a Storage Gateway volume is
   // the volume's data; an FSx file cache holds writes not yet exported to its
   // data repository.
@@ -387,6 +390,8 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::HealthAgent::Domain',
   'AWS::SMSVOICE::NotifyConfiguration',
   'AWS::WellArchitected::AgentProfile',
+  // go-to-k/cdkd#6578's coverage refresh, on the same fail-safe.
+  'AWS::WellArchitected::AgentOrganizationalProfile',
 
   // In-memory / streaming stores that persist their dataset.
   'AWS::MemoryDB::Cluster',

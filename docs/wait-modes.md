@@ -125,6 +125,8 @@ the background. Until then, you may see these:
 - An ACM certificate is still in `PENDING_VALIDATION`.
 - A Bedrock AgentCore runtime can still be `CREATING` or `UPDATING`, and a
   runtime that fails to reach `READY` does not fail the deploy.
+- An EventBridge archive can still be `CREATING` or `UPDATING`: it does not
+  archive events yet, and an archive that fails does not fail the deploy.
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 - An ECS service's rollout is unchecked: a service whose tasks never start
   still deploys with exit `0`.

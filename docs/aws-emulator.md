@@ -522,6 +522,15 @@ Changed in v0.343.0: cdkd creates REST APIs through the SDK provider. A REST
 API deployed into the emulator by an earlier release went through Cloud
 Control.
 
+### An EventBridge archive is missing, or a replay finds nothing
+
+cdkd creates `AWS::Events::Archive` through its own SDK provider, so
+`aws events list-archives` lists the archive and `start-replay` can read it.
+An archive created through Cloud Control in the emulator is reported created
+but never reaches the EventBridge API. A stack deployed into the emulator by an
+earlier release keeps such an archive on Cloud Control; destroy that stack and
+deploy it again once.
+
 ### A large single upload fails
 
 AWS Emulator (as of 1.0.322) refuses a single `PutObject` of 16 MiB or more: the request fails
