@@ -31,6 +31,7 @@ import {
 import { getCreateOnlyPropertyPaths } from '../create-only-properties.js';
 import {
   nestedCreateOnlyGaps,
+  nestedReadOnlyGaps,
   withCarriedCreateOnlyMembers,
   writesTopLevelObject,
 } from '../cc-nested-create-only-patch.js';
@@ -246,16 +247,20 @@ export async function updateInIdLogScope(
     // writes an object; the read only when a gap exists.
     // go-to-k/cdkd#6553: a nested READ-ONLY member (a canary's
     // `Code.SourceLocationArn`) is refused the same way, so it is carried
-    // too. Its lookup is the one `attributeNamesLookup` already started.
+    // too. Its lookup shares the cache `attributeNamesLookup` fills (a
+    // failed one is not cached, so only then does this send its own).
     if (writesTopLevelObject(patch)) {
       const [createOnlyPaths, readOnlyPaths] = await Promise.all([
         getCreateOnlyPropertyPaths(resourceType),
         getReadOnlyPropertyPaths(resourceType),
       ]);
-      const gaps = nestedCreateOnlyGaps(patch, [
-        ...createOnlyPaths,
-        ...(readOnlyPaths ?? []).map((path) => path.split('.')),
-      ]);
+      const gaps = [
+        ...nestedCreateOnlyGaps(patch, createOnlyPaths),
+        ...nestedReadOnlyGaps(
+          patch,
+          (readOnlyPaths ?? []).map((path) => path.split('.'))
+        ),
+      ];
       if (gaps.length > 0) {
         const liveModel = await this.readCcResourceModel(resourceType, physicalId, idLog);
         if (liveModel !== undefined) {

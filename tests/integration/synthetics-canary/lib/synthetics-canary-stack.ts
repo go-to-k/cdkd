@@ -61,9 +61,6 @@ export class SyntheticsCanaryStack extends cdk.Stack {
 
     const scheduleExpr =
       process.env.CDKD_TEST_UPDATE === 'true' ? 'rate(1 hour)' : 'rate(30 minutes)';
-    // go-to-k/cdkd#6553: the UPDATE also changes the script, a whole-object op
-    // on `Code`, which must carry the live read-only `Code.SourceLocationArn`.
-    const scriptResult = process.env.CDKD_TEST_UPDATE === 'true' ? 'ok-v2' : 'ok';
 
     new synthetics.CfnCanary(this, 'Canary', {
       // Canary names are lowercase, max 21 chars — the stack name won't fit.
@@ -75,12 +72,33 @@ export class SyntheticsCanaryStack extends cdk.Stack {
       code: {
         handler: 'index.handler',
         script:
-          "const synthetics = require('Synthetics');\n" +
-          `exports.handler = async () => { return '${scriptResult}'; };\n`,
+          "const synthetics = require('Synthetics');\nexports.handler = async () => { return 'ok'; };\n",
       },
       schedule: { expression: scheduleExpr },
       runConfig: { timeoutInSeconds: 60 },
       startCanaryAfterCreation: false,
+    });
+
+    // go-to-k/cdkd#6553: a puppeteer runtime up to 10.0 publishes the code as
+    // a layer, read back as the read-only `Code.SourceLocationArn`. The UPDATE
+    // changes the script, a whole-object op on `Code` that must carry it, or
+    // Cloud Control refuses the update. Later runtimes have no layer.
+    const layerScript = process.env.CDKD_TEST_UPDATE === 'true' ? 'ok-v2' : 'ok';
+    new synthetics.CfnCanary(this, 'LayerCanary', {
+      name: 'cdkd-integ-canary-l10',
+      artifactS3Location: `s3://${artifacts.bucketName}/canary-l10`,
+      executionRoleArn: role.roleArn,
+      runtimeVersion: 'syn-nodejs-puppeteer-10.0',
+      code: {
+        handler: 'index.handler',
+        script:
+          "const synthetics = require('Synthetics');\n" +
+          `exports.handler = async () => { return '${layerScript}'; };\n`,
+      },
+      schedule: { expression: 'rate(1 hour)' },
+      runConfig: { timeoutInSeconds: 60 },
+      startCanaryAfterCreation: false,
+      provisionedResourceCleanup: 'AUTOMATIC',
     });
   }
 }

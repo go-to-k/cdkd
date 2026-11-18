@@ -3657,6 +3657,47 @@ describe('CloudControlProvider update: a nested read-only member (go-to-k/cdkd#6
     expect(codeOps.map((op) => op.value)).toEqual([{ Handler: 'index.handler', Script: 'two' }]);
   });
 
+  it('never re-creates an object the template removed to carry a read-only leaf under it', async () => {
+    // AWS::MWAA::Environment: `LoggingConfiguration.TaskLogs.CloudWatchLogGroupArn`
+    // is read-only. Removing `TaskLogs` must not send it back holding only that leaf.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        readOnlyProperties: ['/properties/LoggingConfiguration/TaskLogs/CloudWatchLogGroupArn'],
+      }),
+    });
+    liveModel = {
+      Name: 'env',
+      LoggingConfiguration: {
+        TaskLogs: { Enabled: true, LogLevel: 'INFO', CloudWatchLogGroupArn: 'arn:aws:logs:task' },
+        WorkerLogs: { Enabled: true, LogLevel: 'INFO' },
+      },
+    };
+
+    await provider.update(
+      'Env',
+      'env',
+      'AWS::MWAA::Environment',
+      { Name: 'env', LoggingConfiguration: { WorkerLogs: { Enabled: true, LogLevel: 'WARNING' } } },
+      {
+        Name: 'env',
+        LoggingConfiguration: {
+          TaskLogs: { Enabled: true, LogLevel: 'INFO' },
+          WorkerLogs: { Enabled: true, LogLevel: 'INFO' },
+        },
+      }
+    );
+
+    expect(updatePatches()).toEqual([
+      [
+        {
+          op: 'replace',
+          path: '/LoggingConfiguration',
+          value: { WorkerLogs: { Enabled: true, LogLevel: 'WARNING' } },
+        },
+      ],
+    ]);
+  });
+
   it('carries nothing when the read-only schema cannot be resolved', async () => {
     mockCloudFormationSend.mockRejectedValue(
       Object.assign(new Error('AccessDenied'), { $metadata: { httpStatusCode: 403 } })
