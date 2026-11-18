@@ -47,30 +47,28 @@ async function lambdaCoreRequestBody(command: CreateNetworkConnectorCommand): Pr
   return body;
 }
 
-const PENDING_MEMBERS: readonly PendingMember[] = [
-  {
-    cfnPath:
-      'AWS::Lambda::NetworkConnector Configuration.VpcEgressConfiguration.ElasticIpConfiguration',
-    refusedBy:
-      'src/provisioning/providers/lambda-network-connector-provider.ts (#5123; withdrawn from the CFn schema on 2026-11-07 and declared again on 2026-11-18: forward it on create AND update, read it back, and drop the refusal — #6567)',
-    member: 'ElasticIpConfiguration',
-    sentinel: 'subnet-sentinel',
-    serialize: () =>
-      lambdaCoreRequestBody(
-        new CreateNetworkConnectorCommand({
-          Name: 'nc',
-          Configuration: {
-            VpcEgressConfiguration: {
-              SubnetIds: ['subnet-sentinel'],
-              ElasticIpConfiguration: 'AUTO',
-            },
-          } as never,
-        })
-      ),
-  },
-];
+const PENDING_MEMBERS: readonly PendingMember[] = [];
 
 describe('CFn members the installed SDK does not send yet', () => {
+  // The capture's own positive control, and the last lifted row (#6567): the
+  // NetworkConnector provider forwards ElasticIpConfiguration on the premise
+  // that the installed client serializes it.
+  it('the capture sees a member the installed SDK sends (NetworkConnector ElasticIpConfiguration)', async () => {
+    const body = await lambdaCoreRequestBody(
+      new CreateNetworkConnectorCommand({
+        Name: 'nc',
+        Configuration: {
+          VpcEgressConfiguration: {
+            SubnetIds: ['subnet-sentinel'],
+            ElasticIpConfiguration: { Type: 'ServiceManaged' },
+          },
+        },
+      })
+    );
+    expect(body).toContain('subnet-sentinel');
+    expect(body).toContain('"ElasticIpConfiguration":{"Type":"ServiceManaged"}');
+  });
+
   it.each(PENDING_MEMBERS.map((row) => [row.cfnPath, row] as const))(
     '%s is still dropped by the serializer',
     async (_path, row) => {

@@ -9,6 +9,8 @@ import {
   type GetNetworkConnectorResponse,
   type NetworkProtocol,
   type ComputeResourceType,
+  type ElasticIpConfiguration,
+  type ElasticIpType,
 } from '@aws-sdk/client-lambda-core';
 import {
   LambdaClient,
@@ -18,7 +20,6 @@ import {
   ResourceNotFoundException as LambdaResourceNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -91,6 +92,15 @@ const MAX_POLL_ATTEMPTS = 1200;
  * **Tags go through Lambda's tagging API** (`TagResource` / `UntagResource` /
  * `ListTags` on the connector ARN), which is where the Cloud Control handler
  * sends them; Lambda Core has no tagging calls.
+ *
+ * **`ElasticIpConfiguration` is sent on create and update (#6567).** Measured:
+ * `ServiceManaged` can be set in place, and the update takes about 4 minutes;
+ * the operator role needs the EC2 Elastic IP permissions, or AWS refuses the
+ * call. An update that OMITS the member keeps the live value, so a template
+ * that removes it sends `{ Type: 'None' }` instead (see
+ * {@link elasticIpForUpdate}). A connector that never had one reads back
+ * without the member. One that was reset reads back `{ Type: 'None' }`, so
+ * drift treats that the same as absent.
  */
 export class LambdaNetworkConnectorProvider implements ResourceProvider {
   private client: LambdaCoreClient;
@@ -146,17 +156,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
         ? properties['Name']
         : generatedNameFor('AWS::Lambda::NetworkConnector', logicalId);
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, undefined);
-    // Refused before any call. A state replay only warns: the record's value
-    // was dropped the same way when it was first deployed.
-    if (declaredElasticIp(properties) !== undefined) {
-      const message = elasticIpRefusalMessage(logicalId, 'create');
-      if (context?.replayingState !== true) {
-        throw new ProvisioningError(message, resourceType, logicalId);
-      }
-      this.logger.warn(
-        safeMsg`${message} Proceeding without it: this create replays a cdkd state record.`
-      );
-    }
+    const elasticIp = this.readElasticIp(properties, logicalId, resourceType, undefined, context);
     // Memoised per logical id for the deploy, so the engine's own retry of a
     // create whose response was lost resends the SAME token and gets the same
     // connector back, instead of a new token that collides on the Name.
@@ -169,6 +169,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
           SecurityGroupIds: vpc.SecurityGroupIds,
           NetworkProtocol: vpc.NetworkProtocol,
           AssociatedComputeResourceTypes: vpc.AssociatedComputeResourceTypes,
+          ...(elasticIp !== undefined ? { ElasticIpConfiguration: elasticIp } : {}),
         },
       },
       ClientToken: createToken.value,
@@ -246,23 +247,11 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     );
     // Refused before any write: the block is the whole connector.
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, physicalId);
-    // Only a CHANGED value is lost: an unchanged one (a record an older cdkd
-    // wrote) was never sent either, so the live connector already lacks it.
-    // Refused before the first write on the template path, warned on a state
-    // replay or a drift revert.
-    const desiredElasticIp = declaredElasticIp(properties);
-    if (
-      desiredElasticIp !== undefined &&
-      !isDeepStrictEqual(desiredElasticIp, declaredElasticIp(previousProperties))
-    ) {
-      const message = elasticIpRefusalMessage(logicalId, 'update');
-      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
-        throw new ProvisioningError(message, resourceType, logicalId, physicalId);
-      }
-      this.logger.warn(
-        safeMsg`${message} Proceeding without it: this update restores a recorded or read-back configuration.`
-      );
-    }
+    const elasticIp = elasticIpForUpdate(
+      this.readElasticIp(properties, logicalId, resourceType, physicalId, context),
+      properties,
+      previousProperties
+    );
     const updateRole = this.readOperatorRole(
       properties,
       logicalId,
@@ -313,6 +302,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
                 SecurityGroupIds: vpc.SecurityGroupIds,
                 NetworkProtocol: vpc.NetworkProtocol,
                 AssociatedComputeResourceTypes: vpc.AssociatedComputeResourceTypes,
+                ...(elasticIp !== undefined ? { ElasticIpConfiguration: elasticIp } : {}),
               },
             },
             ...(updateRole !== undefined ? { OperatorRole: updateRole } : {}),
@@ -428,6 +418,11 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
           ...vpc.AssociatedComputeResourceTypes,
         ];
       }
+      if (vpc.ElasticIpConfiguration?.Type !== undefined) {
+        VpcEgressConfiguration['ElasticIpConfiguration'] = {
+          Type: vpc.ElasticIpConfiguration.Type,
+        };
+      }
       result['Configuration'] = { VpcEgressConfiguration };
     }
     let tags;
@@ -449,6 +444,26 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
       'Configuration.VpcEgressConfiguration.SecurityGroupIds',
       'Configuration.VpcEgressConfiguration.AssociatedComputeResourceTypes',
     ];
+  }
+
+  /**
+   * A connector reset to `{ Type: 'None' }` reads back with it, while one that
+   * never had the member reads back without it (measured): the two are the
+   * same live state. A `None` is dropped only when the OTHER side lacks the
+   * member, so a declared `None` against a live `ServiceManaged` still drifts
+   * (a dropped baseline `None` would leave nothing for a baseline-key walk to
+   * compare).
+   */
+  async canonicalizeDriftPair(
+    _resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const b = declaredElasticIp(baseline);
+    const a = declaredElasticIp(aws);
+    if (isNoneElasticIp(b) && a === undefined) return { baseline: withoutElasticIp(baseline), aws };
+    if (isNoneElasticIp(a) && b === undefined) return { baseline, aws: withoutElasticIp(aws) };
+    return { baseline, aws };
   }
 
   // -- helpers -------------------------------------------------------------
@@ -496,6 +511,45 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
       NetworkProtocol: typeof protocol === 'string' ? (protocol as NetworkProtocol) : undefined,
       AssociatedComputeResourceTypes: types as ComputeResourceType[] | undefined,
     };
+  }
+
+  /**
+   * `Configuration.VpcEgressConfiguration.ElasticIpConfiguration`, or
+   * `undefined` when absent. A declared value that is not an object whose
+   * `Type` is `None` or `ServiceManaged` is refused on a template path, and
+   * omitted with a warning on a state-borne bag, like {@link readOperatorRole}.
+   */
+  private readElasticIp(
+    properties: Record<string, unknown>,
+    logicalId: string,
+    resourceType: string,
+    physicalId: string | undefined,
+    context?: CreateContext | UpdateContext
+  ): ElasticIpConfiguration | undefined {
+    const eip = declaredElasticIp(properties);
+    if (eip === undefined) return undefined;
+    // An unknown Type is refused here too: on an update the tags are written
+    // before the configuration call, so AWS's own refusal would land after them.
+    if (
+      isPlainRecord(eip) &&
+      typeof eip['Type'] === 'string' &&
+      ELASTIC_IP_TYPES.has(eip['Type'])
+    ) {
+      return { Type: eip['Type'] as ElasticIpType };
+    }
+    const message =
+      `Configuration.VpcEgressConfiguration.${ELASTIC_IP_KEY} must be an object whose Type is ` +
+      `${[...ELASTIC_IP_TYPES].join(' or ')} for Lambda network connector ${logicalIdShown(logicalId)}`;
+    const stateBorne =
+      context?.replayingState === true ||
+      (context !== undefined &&
+        'desiredFromAwsReadback' in context &&
+        context.desiredFromAwsReadback === true);
+    if (stateBorne) {
+      this.logger.warn(safeMsg`${message}; omitting it while applying a state-borne bag`);
+      return undefined;
+    }
+    throw new ProvisioningError(message, resourceType, logicalId, physicalId);
   }
 
   /**
@@ -668,19 +722,10 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
   }
 }
 
-/**
- * `Configuration.VpcEgressConfiguration.ElasticIpConfiguration` appeared in the
- * CFn registry schema in the 2026-10-23 refresh (#5123), was withdrawn from it
- * in the 2026-11-07 one, and was declared again in the 2026-11-18 one. The
- * installed `@aws-sdk/client-lambda-core` (3.1169.0) does not model it; 3.1171.0
- * does. The request below is built from explicit fields, so a declared value
- * would never reach Lambda Core and the deploy would report success without it.
- * It stays refused on the template path until the client is bumped (#6567).
- * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
- * installed client sends the member: forward it on create AND update, read it
- * back, and drop this refusal.
- */
 const ELASTIC_IP_KEY = 'ElasticIpConfiguration';
+
+/** The `Type` values `ElasticIpType` admits; anything else AWS refuses. */
+const ELASTIC_IP_TYPES: ReadonlySet<string> = new Set<ElasticIpType>(['None', 'ServiceManaged']);
 
 /** The declared `ElasticIpConfiguration`, or `undefined` when the template omits it. */
 function declaredElasticIp(properties: Record<string, unknown>): unknown {
@@ -689,15 +734,41 @@ function declaredElasticIp(properties: Record<string, unknown>): unknown {
   return isPlainRecord(vpc) ? vpc[ELASTIC_IP_KEY] : undefined;
 }
 
-function elasticIpRefusalMessage(logicalId: string, mode: 'create' | 'update'): string {
-  return (
-    `AWS::Lambda::NetworkConnector ${logicalIdShown(logicalId)}: ` +
-    `Configuration.VpcEgressConfiguration.${ELASTIC_IP_KEY} cannot be sent by cdkd yet — ` +
-    'the AWS SDK for JavaScript (@aws-sdk/client-lambda-core) does not model the member, so it ' +
-    `would be dropped from the ${mode === 'create' ? 'CreateNetworkConnector' : 'UpdateNetworkConnector'} ` +
-    `request without an error. Remove ${ELASTIC_IP_KEY} from ` +
-    'Configuration.VpcEgressConfiguration to deploy the connector without it.'
-  );
+function isNoneElasticIp(value: unknown): boolean {
+  return isPlainRecord(value) && value['Type'] === 'None';
+}
+
+/** `properties` without `ElasticIpConfiguration`, copied, the input untouched. */
+function withoutElasticIp(properties: Record<string, unknown>): Record<string, unknown> {
+  const config = properties['Configuration'] as Record<string, unknown>;
+  const vpc = config['VpcEgressConfiguration'] as Record<string, unknown>;
+  const { [ELASTIC_IP_KEY]: _dropped, ...rest } = vpc;
+  // Computed keys: a named member in a spread-and-patch literal reads to
+  // gen-nested-key-coverage as a whole-blob hand-off of that path.
+  const [configKey, vpcKey] = ['Configuration', 'VpcEgressConfiguration'];
+  return { ...properties, [configKey]: { ...config, [vpcKey]: rest } };
+}
+
+/**
+ * The `ElasticIpConfiguration` an update sends. `fromDesired` is the validated
+ * desired value. When the template omits the member but the previous record
+ * declared a value other than `None`, the update sends `{ Type: 'None' }`:
+ * measured, an `UpdateNetworkConnector` that omits the member keeps the live
+ * `ServiceManaged` value ("No configuration changes detected"), so a template
+ * removal would otherwise do nothing. A desired value that was declared but
+ * omitted as unusable (a state-borne bag) sends nothing, which leaves the live
+ * value as it is.
+ */
+function elasticIpForUpdate(
+  fromDesired: ElasticIpConfiguration | undefined,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): ElasticIpConfiguration | undefined {
+  if (fromDesired !== undefined || declaredElasticIp(properties) !== undefined) return fromDesired;
+  const previous = declaredElasticIp(previousProperties);
+  if (previous === undefined) return undefined;
+  if (isPlainRecord(previous) && previous['Type'] === 'None') return undefined;
+  return { Type: 'None' };
 }
 
 /** A wait ended in a state the connector cannot leave for ACTIVE. */
