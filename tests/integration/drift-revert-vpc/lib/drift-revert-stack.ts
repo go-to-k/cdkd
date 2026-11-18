@@ -100,10 +100,10 @@ export class DriftRevertVpcStack extends cdk.Stack {
     });
 
     // go-to-k/cdkd#4476: a STANDALONE ingress rule. verify.sh edits its
-    // description out of band; `cdkd drift --revert` then revokes and
-    // re-authorizes it under a new `sgr-` id, which the state record's
-    // `attributes.Id` must follow. The port is one no other rule on Sg2 uses,
-    // so verify.sh can find the live rule by it.
+    // description out of band; `cdkd drift --revert` then restores it in
+    // place under the same `sgr-` id (go-to-k/cdkd#6514), which the state
+    // record's `attributes.Id` must keep naming. The port is one no other
+    // rule on Sg2 uses, so verify.sh can find the live rule by it.
     new ec2.CfnSecurityGroupIngress(this, 'DriftSgIngress', {
       groupId: sg2.securityGroupId,
       ipProtocol: 'tcp',

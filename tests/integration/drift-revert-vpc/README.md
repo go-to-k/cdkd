@@ -40,9 +40,10 @@ against live AWS.
    (drift detected on every mutated resource).
 4. `cdkd drift CdkdDriftRevertVpcExample --revert -y` — assert exit
    code **0** (revert succeeds for every drifted resource). Reverting the
-   ingress rule's description revokes and re-authorizes it under a new
-   `sgr-` id, and the record's `attributes.Id` must name that live rule, not
-   the revoked one (issue #4476).
+   ingress rule's description updates it in place, as CloudFormation does:
+   the rule keeps its `sgr-` id (issue #6514), its `Description` is restored
+   in AWS (state keeps the templated value), and the record's `attributes.Id` still names that
+   live rule (issue #4476).
 5. `cdkd drift CdkdDriftRevertVpcExample` again — assert exit code
    **0** (state and AWS are back in sync).
 6. Attach `tg2` to the ASG out-of-band, rewrite the recorded ASG

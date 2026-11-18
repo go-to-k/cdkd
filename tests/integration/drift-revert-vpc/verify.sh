@@ -11,8 +11,9 @@
 #      ingress rule's description out of band
 #   4. cdkd drift  -> assert exit 1 (drift detected)
 #   5. cdkd drift --revert -y  -> assert exit 0
-#   5b. the revert re-created the ingress rule under a new id, and the record's
-#       attributes.Id names the live rule, not the revoked one (#4476)
+#   5b. the revert restored the ingress rule's description in place: same
+#       sgr- id (#6514), Description restored in AWS (state keeps the templated one), and the
+#       record's attributes.Id still names the live rule (#4476)
 #   6. cdkd drift  -> assert exit 0 (clean)
 #   6b. attach tg2 out-of-band, rewrite the recorded TargetGroupARNs to an
 #       import-style [{Ref}], cdkd deploy -> tg1 and tg2 stay attached, the
@@ -165,47 +166,59 @@ echo "[verify] step 4 ok: exit ${rc}"
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
 
-# go-to-k/cdkd#4476: reverting the description revokes and re-authorizes the
-# rule, so AWS holds a NEW id; the record must name it. Before the fix the
-# record kept the revoked one.
-echo "[verify] step 5b: the record's ingress Id follows the re-created rule"
+# go-to-k/cdkd#6514: reverting the description updates the rule in place
+# (`UpdateSecurityGroupRuleDescriptionsIngress`, as CloudFormation does), so
+# the live rule keeps its `sgr-` id and the record must still name it
+# (go-to-k/cdkd#4476: the record follows the live rule). Before #6514 the
+# revert revoked and re-authorized the rule under a new id.
+echo "[verify] step 5b: the ingress rule's description is restored in place, under the same id"
 INGRESS_REC="$(ingress_record)"
 read -r _ RECORDED_INGRESS_ID <<<"${INGRESS_REC}"
-# EC2 reads lag a revoke + re-authorize: right after the revert the rule list
-# can be empty, or still carry the old rule beside the new one. Poll until it
-# holds exactly one rule that is not the old one.
-wait_new_ingress_id() { # $1 = group id, $2 = old rule id -> the one new rule id
-  local ids="" n i
+live_ingress_desc() { # $1 = rule id -> its live description
+  aws ec2 describe-security-group-rules --security-group-rule-ids "$1" \
+    --region "${REGION}" --query 'SecurityGroupRules[0].Description' --output text
+}
+# EC2 reads can lag the description update: poll until the one live rule is
+# the old one and carries the templated description again.
+wait_restored_ingress() { # $1 = group id, $2 = old rule id, $3 = wanted description
+  local ids="" n=0 desc="" i
   for i in $(seq 1 12); do
     ids="$(live_ingress_ids "$1")" || return 1
     n=$(printf '%s\n' ${ids} | grep -c . || true)
-    if [ "${n}" = 1 ] && [ "${ids}" != "$2" ]; then
-      printf '%s\n' "${ids}"
-      return 0
+    if [ "${n}" = 1 ] && [ "${ids}" = "$2" ]; then
+      desc="$(live_ingress_desc "$2")" \
+        || { echo "[verify] FAIL: step 5b: could not read rule '$2' after the revert" >&2; return 1; }
+      [ "${desc}" = "$3" ] && return 0
     fi
     sleep 5
   done
   if [ -z "${ids}" ]; then
     echo "[verify] FAIL: step 5b: no live port-8443 ingress rule on $1 after the revert" >&2
   elif [ "${n}" -gt 1 ]; then
-    echo "[verify] FAIL: step 5b: ${n} live port-8443 ingress rules on $1 after the revert (${ids}); expected the old one revoked" >&2
+    echo "[verify] FAIL: step 5b: ${n} live port-8443 ingress rules on $1 after the revert (${ids}); expected the one rule '$2' (#6514)" >&2
+  elif [ "${ids}" != "$2" ]; then
+    echo "[verify] FAIL: step 5b: the revert re-created the rule as '${ids}'; expected an in-place description update keeping '$2' (#6514)" >&2
   else
-    echo "[verify] FAIL: step 5b: expected the revert to re-create the rule under a new id; the live rule is still '$2'" >&2
+    echo "[verify] FAIL: step 5b: rule '$2' still describes itself as '${desc}' after the revert" >&2
   fi
   return 1
 }
-LIVE_INGRESS_ID="$(wait_new_ingress_id "${INGRESS_SG}" "${OLD_INGRESS_ID}")"
-if [ "${RECORDED_INGRESS_ID}" != "${LIVE_INGRESS_ID}" ]; then
-  echo "[verify] FAIL: step 5b: the record names '${RECORDED_INGRESS_ID}', the live rule is '${LIVE_INGRESS_ID}' (#4476)"
+wait_restored_ingress "${INGRESS_SG}" "${OLD_INGRESS_ID}" "drift-revert-vpc standalone ingress (templated)"
+if [ "${RECORDED_INGRESS_ID}" != "${OLD_INGRESS_ID}" ]; then
+  echo "[verify] FAIL: step 5b: the record names '${RECORDED_INGRESS_ID}', the live rule is '${OLD_INGRESS_ID}' (#4476)"
   exit 1
 fi
-LIVE_INGRESS_DESC="$(aws ec2 describe-security-group-rules --security-group-rule-ids "${LIVE_INGRESS_ID}" \
-  --region "${REGION}" --query 'SecurityGroupRules[0].Description' --output text)"
-if [ "${LIVE_INGRESS_DESC}" != "drift-revert-vpc standalone ingress (templated)" ]; then
-  echo "[verify] FAIL: step 5b: the re-created rule's description is '${LIVE_INGRESS_DESC}'"
+# Guard: the out-of-band edit changed AWS only, so the record held the
+# templated Description all along; the revert must not write the drifted
+# value it read back into state.
+RECORDED_INGRESS_DESC="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['resources']['DriftSgIngress']['properties'].get('Description', ''))")"
+if [ "${RECORDED_INGRESS_DESC}" != "drift-revert-vpc standalone ingress (templated)" ]; then
+  echo "[verify] FAIL: step 5b: the record's Description is '${RECORDED_INGRESS_DESC}' after the revert"
   exit 1
 fi
-echo "[verify] step 5b ok: the record names the live rule ${LIVE_INGRESS_ID} (was ${OLD_INGRESS_ID})"
+echo "[verify] step 5b ok: rule ${OLD_INGRESS_ID} kept its id, its description is restored in AWS, and the record still names it with the templated description"
 
 # Known intermittent failure (go-to-k/cdkd#4147): AWS returns the ALB's
 # undeclared `ddos_protection.syn_cookie.mode` attribute only some of the time.
