@@ -41,12 +41,8 @@ import {
 } from '../../sg-sibling-rules.js';
 import type { EC2Provider } from '../ec2-provider.js';
 import { OWN_WRITE_REREAD_DELAYS_MS, warnUnsettledMember } from '../../settle-after-own-write.js';
-import {
-  emptyWhileDeclared,
-  type OwnWriteMember,
-  settleOwnWriteMembers,
-} from '../../settle-own-write-members.js';
-import { declaredSgRulesRead } from '../../sg-own-write-rules.js';
+import { type OwnWriteMember, settleOwnWriteMembers } from '../../settle-own-write-members.js';
+import { declaredSgRulesRead, mergeDeclaredSgRules } from '../../sg-own-write-rules.js';
 
 export async function readVpcCurrentState(
   this: EC2Provider,
@@ -376,9 +372,7 @@ export async function readSecurityGroupCurrentState(
         key,
         declared,
         matches: (value) => declaredSgRulesRead(value, declared, direction),
-        // The whole member still absent keeps the declared rules (A2's arm);
-        // any other unsettled list is recorded as read.
-        isAbsent: (value) => emptyWhileDeclared(value, declared),
+        whenUnsettled: (newest) => mergeDeclaredSgRules(newest, declared, direction),
         read: async () => {
           const reread = await this.ec2Client.send(
             new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })

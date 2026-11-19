@@ -210,7 +210,8 @@ const specs: Spec[] = [
     extra: attached(ARN_OLD, ARN_B, ARN_A),
     goodValue: [ARN_B, ARN_A],
     declaredValue: [ARN_A, ARN_B],
-    otherValue: [ARN_A, ARN_OLD],
+    // The declared ARN still unread is added at its declared position.
+    otherValue: [ARN_A, ARN_B, ARN_OLD],
     absentValue: [],
   },
   {
@@ -226,7 +227,10 @@ const specs: Spec[] = [
     extra: names('old', 'p'),
     goodValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
     declaredValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
-    otherValue: [{ PolicyName: 'old', PolicyDocument: DOC }],
+    otherValue: [
+      { PolicyName: 'p', PolicyDocument: DOC },
+      { PolicyName: 'old', PolicyDocument: DOC },
+    ],
     absentValue: [],
   },
   {
@@ -256,7 +260,7 @@ const specs: Spec[] = [
     extra: attached(ARN_OLD, ARN_A),
     goodValue: [ARN_A],
     declaredValue: [ARN_A],
-    otherValue: [ARN_OLD],
+    otherValue: [ARN_A, ARN_OLD],
     absentValue: [],
   },
   {
@@ -272,7 +276,7 @@ const specs: Spec[] = [
     extra: () => ({ Groups: [{ GroupName: 'g2' }, { GroupName: 'other' }, { GroupName: 'g1' }] }),
     goodValue: ['g2', 'g1'],
     declaredValue: ['g1', 'g2'],
-    otherValue: ['g1', 'gone'],
+    otherValue: ['g1', 'g2', 'gone'],
     absentValue: [],
   },
   {
@@ -292,7 +296,10 @@ const specs: Spec[] = [
     goodValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
     // A declared JSON-string document is kept in the read's parsed shape.
     declaredValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
-    otherValue: [{ PolicyName: 'old', PolicyDocument: DOC }],
+    otherValue: [
+      { PolicyName: 'p', PolicyDocument: DOC },
+      { PolicyName: 'old', PolicyDocument: DOC },
+    ],
     absentValue: [],
   },
   {
@@ -308,7 +315,7 @@ const specs: Spec[] = [
     extra: attached(ARN_OLD, ARN_A),
     goodValue: [ARN_A],
     declaredValue: [ARN_A],
-    otherValue: [ARN_OLD],
+    otherValue: [ARN_A, ARN_OLD],
     absentValue: [],
   },
   {
@@ -327,7 +334,10 @@ const specs: Spec[] = [
     extra: names('old', 'p'),
     goodValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
     declaredValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
-    otherValue: [{ PolicyName: 'old', PolicyDocument: DOC }],
+    otherValue: [
+      { PolicyName: 'p', PolicyDocument: DOC },
+      { PolicyName: 'old', PolicyDocument: DOC },
+    ],
     absentValue: [],
   },
   {
@@ -373,7 +383,7 @@ const specs: Spec[] = [
     extra: () => ({ PolicyRoles: [{ RoleName: 'attacher' }, { RoleName: 'r1' }] }),
     goodValue: ['r1'],
     declaredValue: ['r1'],
-    otherValue: ['old'],
+    otherValue: ['r1', 'old'],
     absentValue: [],
   },
   {
@@ -394,7 +404,7 @@ const specs: Spec[] = [
     other: () => ({ InstanceProfile: { InstanceProfileName: 'ip', Roles: [{ RoleName: 'old' }] } }),
     goodValue: ['r1'],
     declaredValue: ['r1'],
-    otherValue: ['old'],
+    otherValue: ['r1', 'old'],
     absentValue: [],
   },
   {
@@ -497,7 +507,7 @@ specs.push(
     extra: sgAnswer([oldPermission, ingressPermission], []),
     goodValue: [INGRESS],
     declaredValue: [INGRESS],
-    otherValue: [{ IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '10.0.0.0/8' }],
+    otherValue: [INGRESS, { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '10.0.0.0/8' }],
     absentValue: [],
   },
   {
@@ -512,7 +522,7 @@ specs.push(
     other: sgAnswer([], [{ IpProtocol: '-1', IpRanges: [{ CidrIp: '0.0.0.0/0' }] }]),
     goodValue: [EGRESS],
     declaredValue: [EGRESS],
-    otherValue: [{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }],
+    otherValue: [EGRESS, { IpProtocol: '-1', CidrIp: '0.0.0.0/0' }],
     absentValue: [],
   }
 );
@@ -913,11 +923,88 @@ describe('review round 1 (#6629)', () => {
     expect(bag(read)['SecurityGroupIngress']).toHaveLength(1);
   });
 
-  it('a security group rule still unread after the schedule is recorded as read, never appended', async () => {
+  it('a swapped security group rule past the schedule: the read one kept, the declared one added at its position, one warning', async () => {
     answer('DescribeSecurityGroupsCommand', sgAnswer([oldPermission], []));
     const read = await readSg({ GroupDescription: 'd', SecurityGroupIngress: [INGRESS] }, AFTER);
     expect(bag(read)['SecurityGroupIngress']).toEqual([
+      INGRESS,
       { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '10.0.0.0/8' },
     ]);
+    expect(unsettledWarnings()).toHaveLength(1);
+  });
+
+  it('a declared list [A, B] read as [B] every round records [A, B] (declared order, never at the tail)', async () => {
+    answer('GetUserCommand', () => ({ User: { UserName: 'u' } }));
+    answer('ListGroupsForUserCommand', () => ({ Groups: [{ GroupName: 'g2' }] }));
+    const read = await userGroup().readCurrentState(
+      'u',
+      'User',
+      'AWS::IAM::User',
+      { Groups: ['g1', 'g2'] },
+      AFTER
+    );
+    expect(bag(read)['Groups']).toEqual(['g1', 'g2']);
+    expect(callsOf('ListGroupsForUserCommand')).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
+  });
+
+  it('a swapped list entry past the schedule: the read one kept, the declared one added, one warning', async () => {
+    answer('GetInstanceProfileCommand', () => ({
+      InstanceProfile: { InstanceProfileName: 'ip', Roles: [{ RoleName: 'y' }] },
+    }));
+    const read = await zeroDelays(new IAMInstanceProfileProvider()).readCurrentState(
+      'ip',
+      'Profile',
+      'AWS::IAM::InstanceProfile',
+      { Roles: ['x'] },
+      AFTER
+    );
+    expect(bag(read)['Roles']).toEqual(['x', 'y']);
+    expect(unsettledWarnings()).toHaveLength(1);
+  });
+
+  it('a kept declared rule is recorded in the readback shape (-1 without ports, no empty Description, numeric ports)', async () => {
+    answer('DescribeSecurityGroupsCommand', sgAnswer([], []));
+    const read = await readSg(
+      {
+        GroupDescription: 'd',
+        SecurityGroupIngress: [
+          { CidrIp: '10.0.0.0/8', IpProtocol: '-1', FromPort: -1, ToPort: -1, Description: '' },
+          { CidrIp: '10.1.0.0/16', IpProtocol: '6', FromPort: '443', ToPort: '443' },
+          { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupName: 'peer' },
+        ],
+      },
+      AFTER
+    );
+    // The name-declared rule cannot be matched, so it is never added.
+    expect(bag(read)['SecurityGroupIngress']).toEqual([
+      { CidrIp: '10.0.0.0/8', IpProtocol: '-1' },
+      { CidrIp: '10.1.0.0/16', IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+    ]);
+  });
+
+  it("a rule declared with IpProtocol '6' reading back as tcp settles on read 1", async () => {
+    answer(
+      'DescribeSecurityGroupsCommand',
+      sgAnswer(
+        [{ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: '10.0.0.0/8' }] }],
+        []
+      )
+    );
+    await readSg(
+      {
+        GroupDescription: 'd',
+        SecurityGroupIngress: [{ CidrIp: '10.0.0.0/8', IpProtocol: '6', FromPort: 443, ToPort: 443 }],
+      },
+      AFTER
+    );
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(1);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('two identical declared rules against one read rule are not settled (multiset)', async () => {
+    answer('DescribeSecurityGroupsCommand', sgAnswer([ingressPermission], []));
+    await readSg({ GroupDescription: 'd', SecurityGroupIngress: [INGRESS, INGRESS] }, AFTER);
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(4);
   });
 });

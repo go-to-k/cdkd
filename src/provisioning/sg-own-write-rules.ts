@@ -4,6 +4,7 @@
  * declared rule reads back, compared on a key both spellings share.
  */
 import { cfnIngressPortValue, sgProtocolKey } from './sg-rule-identity.js';
+import { mergeDeclaredEntries } from './settle-own-write-members.js';
 
 type SgDirection = 'ingress' | 'egress';
 
@@ -77,4 +78,60 @@ export function declaredSgRulesRead(
     have.splice(index, 1);
   }
   return true;
+}
+
+/**
+ * A declared rule in the shape `DescribeSecurityGroups` reads it back: no
+ * ports for all-traffic (`-1`), numeric ports otherwise, and no empty value
+ * (a `Description: ''`). `undefined` for a rule the settle key cannot match.
+ */
+export function sgRuleReadbackShape(
+  rule: Record<string, unknown>,
+  direction: SgDirection
+): Record<string, unknown> | undefined {
+  if (sgSettleRuleKey(rule, direction) === undefined) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rule)) {
+    if (value === undefined || value === null || value === '') continue;
+    out[key] = value;
+  }
+  const protocol = sgProtocolKey(rule['IpProtocol']);
+  out['IpProtocol'] = protocol;
+  if (protocol === '-1') {
+    delete out['FromPort'];
+    delete out['ToPort'];
+  } else {
+    for (const key of ['FromPort', 'ToPort']) {
+      if (out[key] !== undefined) out[key] = cfnIngressPortValue(out[key]);
+    }
+  }
+  return out;
+}
+
+/**
+ * The read rules plus each declared rule still unread, at its declared
+ * position (`mergeDeclaredEntries`, matched on `sgSettleRuleKey`), in the
+ * readback shape. A rule the settle key cannot match is never added.
+ */
+export function mergeDeclaredSgRules(
+  read: unknown,
+  declared: readonly unknown[],
+  direction: SgDirection
+): unknown[] {
+  const keyOf = (rule: unknown): string | undefined =>
+    typeof rule === 'object' && rule !== null
+      ? sgSettleRuleKey(rule as Record<string, unknown>, direction)
+      : undefined;
+  return mergeDeclaredEntries(
+    read,
+    declared,
+    (entry, want) => {
+      const key = keyOf(want);
+      return key !== undefined && keyOf(entry) === key;
+    },
+    (want) =>
+      typeof want === 'object' && want !== null
+        ? sgRuleReadbackShape(want as Record<string, unknown>, direction)
+        : undefined
+  );
 }

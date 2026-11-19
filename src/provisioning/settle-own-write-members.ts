@@ -13,11 +13,14 @@
  * `UserToGroupAddition`, a standalone rule), which the capture does not always
  * strip and the drift compare does (go-to-k/cdkd#6614); or an out-of-band add;
  * or a removal not yet visible, the undeclared-member residual of the earlier
- * slices. A list still unsettled after the schedule is recorded as read, never
- * merged with the declaration: an entry the read spells differently would be
- * recorded twice, and an appended entry would break the read's order. Only a
- * list read EMPTY while the template declares entries keeps the declared list
- * (the whole member is not visible yet, A2's none-set arm).
+ * slices. A list still unsettled after the schedule keeps every read entry and
+ * gains each declared entry still unmatched, at its declared position
+ * ({@link mergeDeclaredEntries}; the read reconciles to declared order, then
+ * its own extras): the write just succeeded, and recording the list without
+ * it would let `drift --revert` remove it. Entries match on a key both
+ * spellings share (names, ARNs, policy names, `sgSettleRuleKey`), so an entry
+ * is never recorded twice; a declared entry that key cannot match is never
+ * added.
  */
 import {
   type MemberRead,
@@ -35,6 +38,8 @@ export interface OwnWriteMember<T> {
   matches: (value: T) => boolean;
   /** Whether a read value means "none set yet" (the declared value is kept after the schedule). */
   isAbsent?: (value: T) => boolean;
+  /** For a list: what to record when the schedule ends on `newest` without the declared value. */
+  whenUnsettled?: (newest: T) => T;
   /** One read of the member alone; throws what the call throws. */
   read: () => Promise<MemberRead<T>>;
 }
@@ -62,15 +67,23 @@ export async function settleOwnWriteMembers(
         member.isAbsent?.(answer.value) === true
           ? 'absent'
           : answer;
+      let spent = false;
       const settled = await settleDeclaredMember(
         classify({ value: result[member.key] }),
         async () => classify(await member.read()),
         member.matches,
         member.declared,
         delaysMs,
-        () => unsettled(member.key)
+        () => {
+          spent = true;
+          unsettled(member.key);
+        }
       );
-      if (typeof settled === 'object') result[member.key] = settled.value;
+      if (typeof settled !== 'object') return;
+      result[member.key] =
+        spent && member.whenUnsettled !== undefined
+          ? member.whenUnsettled(settled.value)
+          : settled.value;
     })
   );
 }
@@ -82,9 +95,32 @@ export function declaredStringList(value: unknown): string[] | undefined {
     : undefined;
 }
 
-/** Whether a read list is empty while the template declares entries (the whole member absent). */
-export function emptyWhileDeclared(value: unknown, declared: readonly unknown[]): boolean {
-  return Array.isArray(value) && value.length === 0 && declared.length > 0;
+/**
+ * `read` with each declared entry no read entry matches inserted: declared
+ * order first (a matched entry as READ, an unmatched one as `readbackOf`
+ * gives it, or left out when that is `undefined`), then the read entries the
+ * template does not declare, in read order.
+ */
+export function mergeDeclaredEntries<D>(
+  read: unknown,
+  declared: readonly D[],
+  sameEntry: (readEntry: unknown, declaredEntry: D) => boolean,
+  readbackOf: (declaredEntry: D) => unknown
+): unknown[] {
+  const entries = Array.isArray(read) ? [...(read as unknown[])] : [];
+  const used = new Set<number>();
+  const out: unknown[] = [];
+  for (const entry of declared) {
+    const index = entries.findIndex((value, i) => !used.has(i) && sameEntry(value, entry));
+    if (index >= 0) {
+      used.add(index);
+      out.push(entries[index]);
+      continue;
+    }
+    const added = readbackOf(entry);
+    if (added !== undefined) out.push(added);
+  }
+  return [...out, ...entries.filter((_, i) => !used.has(i))];
 }
 
 /**
@@ -104,7 +140,13 @@ export function stringListMember(
     key,
     declared,
     matches: (value) => Array.isArray(value) && missing(value).length === 0,
-    isAbsent: (value) => emptyWhileDeclared(value, declared),
+    whenUnsettled: (newest) =>
+      mergeDeclaredEntries(
+        newest,
+        declared,
+        (entry, want) => entry === want,
+        (want) => want
+      ),
     read,
   };
 }
@@ -168,7 +210,17 @@ export function inlinePoliciesMember(
           policyDocumentMatchesDeclared(entry['PolicyDocument'], policy.PolicyDocument)
         );
       }),
-    isAbsent: (value) => emptyWhileDeclared(value, declared),
+    // A declared name read with another document stays as read.
+    whenUnsettled: (newest) =>
+      mergeDeclaredEntries(
+        newest,
+        declared,
+        (entry, want) =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as Record<string, unknown>)['PolicyName'] === want.PolicyName,
+        (want) => ({ PolicyName: want.PolicyName, PolicyDocument: want.PolicyDocument })
+      ),
     read,
   };
 }
