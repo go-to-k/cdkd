@@ -13,6 +13,7 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { ProvisioningError } from '../../../utils/error-handler.js';
 import { readPolicyTargetLists } from './shared.js';
 
 type PolicyTarget = { kind: 'role' | 'group' | 'user'; name: string };
@@ -37,7 +38,7 @@ const TARGET_READ_CONCURRENCY = 5;
  *     (`context.observedProperties`, else the recorded document), so the
  *     comparator reports the edit whichever target holds it. When no copy
  *     equals that baseline (a secret leaf, say), the clean copy is unknown
- *     and the read is drift unknown (`undefined`).
+ *     and the read fails, which drift reports as not fully compared.
  *   - A target lacks the policy (removed, or the principal deleted): it drops
  *     out of the echoed `Roles` / `Groups` / `Users`, which reports as drift
  *     on that list. Every target lacking it is `RESOURCE_NOT_FOUND`.
@@ -52,8 +53,8 @@ const TARGET_READ_CONCURRENCY = 5;
 export async function readCurrentState(
   this: IAMPolicyProvider,
   physicalId: string,
-  _logicalId: string,
-  _resourceType: string,
+  logicalId: string,
+  resourceType: string,
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
@@ -118,10 +119,20 @@ export async function readCurrentState(
         : parseRecordedDocument(policyDocument);
     // A baseline holding a `{{resolve:...}}` or `***` leaf equals no live
     // copy (each holds the value resolved), so the clean copy is unknown and
-    // a pick could be the unedited one, reading clean: drift UNKNOWN instead.
+    // a pick could be the unedited one, reading clean. A THROW, not
+    // `undefined`: drift reports a failed read as NOT fully compared (exit 2),
+    // while `undefined` reads as unsupported on a green stack line. The
+    // message names the policy only, never a document.
     // Without such a leaf, no copy equalling it means every copy is edited.
     if (!documents.some((d) => isDeepStrictEqual(d, baseline)) && holdsSecretLeaf(baseline)) {
-      return undefined;
+      throw new ProvisioningError(
+        `the copies of inline policy ${policyName} differ across its principals and its ` +
+          `recorded document holds a secret reference, so cdkd cannot tell which copy was ` +
+          `edited — inspect each principal's copy by hand`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
     }
     // By index: an empty copy (`undefined`) is a valid pick, which `??` would drop.
     const edited = documents.findIndex((d) => !isDeepStrictEqual(d, baseline));

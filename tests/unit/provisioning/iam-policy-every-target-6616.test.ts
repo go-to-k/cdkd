@@ -296,18 +296,20 @@ describe('IAMPolicyProvider.readCurrentState reads every recorded target (#6616)
     ['a dynamic reference', '{{resolve:ssm:/bucket-arn}}'],
     ['the *** mask', '***'],
   ])(
-    'copies differing under a baseline holding %s read as drift unknown, never clean',
+    'copies differing under a baseline holding %s fail the read (not fully compared), never clean',
     async (_label, leaf) => {
       const withSecret = {
         Version: '2012-10-17',
         Statement: [{ Effect: 'Allow', Action: 's3:GetObject', Resource: leaf }],
       };
       liveCopies({ 'role:R1': RECORDED, 'role:R2': WIDENED });
-      const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      const read = provider.readCurrentState('pol', 'P', TYPE, {
         PolicyDocument: withSecret,
         Roles: ['R1', 'R2'],
       });
-      expect(result).toBeUndefined();
+      await expect(read).rejects.toThrow(/differ across its principals/);
+      // The message names the policy only, never a document's content.
+      await expect(read).rejects.not.toThrow(/s3:GetObject|resolve:|\*\*\*/);
     }
   );
 
