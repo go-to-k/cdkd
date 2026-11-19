@@ -199,7 +199,10 @@ export function warnOnKeptRemovedMembers(
  *   property therefore NEEDS the reset in the same call: `UserPoolTier: LITE`
  *   alone on a pool with registration on is refused
  *   (`TierChangeNotAllowedException`), while with the `Disabled` block it
- *   lands, as the same template edit does through CloudFormation.
+ *   lands, as the same template edit does through CloudFormation. A LITE
+ *   pool also accepts the read-back shape `drift --revert` / rollback send
+ *   back verbatim: `Disabled` with `OpenDcrEnabled` false or true, and with
+ *   the grant-type and scope lists set.
  */
 export function dcrConfigurationUpdate(
   properties: Record<string, unknown>,

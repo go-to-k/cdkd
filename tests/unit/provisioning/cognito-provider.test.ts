@@ -955,6 +955,22 @@ describe('CognitoUserPoolProvider', () => {
         expect(input.DcrConfiguration).toEqual({ EnableStatus: 'Disabled' });
       });
 
+      // A revert / rollback sends the read-back block back; a LITE pool was
+      // measured to accept it as is (PR #6630).
+      it('sends a read-back Disabled block on a LITE pool verbatim', async () => {
+        const readBack = {
+          EnableStatus: 'Disabled',
+          OpenDcrEnabled: false,
+          AllowedScopes: ['openid'],
+          AuthenticatedGrantTypes: ['client_credentials'],
+        };
+        const input = await updateInput(
+          { UserPoolTier: 'LITE', DcrConfiguration: readBack },
+          { UserPoolTier: 'LITE', DcrConfiguration: { EnableStatus: 'Enabled' } }
+        );
+        expect(input.DcrConfiguration).toEqual(readBack);
+      });
+
       it('sends nothing when neither side declares it', async () => {
         const input = await updateInput({ UserPoolName: 'p' }, { UserPoolName: 'q' });
         expect(input).not.toHaveProperty('DcrConfiguration');

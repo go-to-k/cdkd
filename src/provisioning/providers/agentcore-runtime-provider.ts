@@ -151,8 +151,8 @@ function isNonEmptyObject(value: unknown): value is Record<string, unknown> {
 /**
  * Write the members `CreateAgentRuntime` and `UpdateAgentRuntime` take in the
  * same shape: `RequestHeaderConfiguration` (a union, `{}` names no member),
- * `FilesystemConfigurations`, `CapacityProviderConfiguration` and
- * `PlatformVersion`. An EMPTY value — the `{}` / `[]` / `''` placeholder
+ * `FilesystemConfigurations`, `CapacityProviderConfiguration`,
+ * `PlatformVersion`, `HooksConfiguration` and `ResourceConfigurations`. An EMPTY value — the `{}` / `[]` / `''` placeholder
  * `readCurrentState` emits for an unset field, which `drift --revert` hands
  * back — is left out, as an absent one is: `UpdateAgentRuntime` is a full
  * replace, so omitting a field is how it is cleared, and AWS refuses an empty
@@ -575,7 +575,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       // it omits them; so no `removalDefaults` apply. Never fill an absent
       // field from `previousProperties`. RequestHeaderConfiguration /
       // FilesystemConfigurations / CapacityProviderConfiguration /
-      // PlatformVersion ride the same call (`writeSharedRuntimeMembers`), so
+      // PlatformVersion / HooksConfiguration / ResourceConfigurations ride the same call (`writeSharedRuntimeMembers`), so
       // a removed one is cleared by its omission too. `Tags` is not an
       // `UpdateAgentRuntime` member: it is diffed below.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
