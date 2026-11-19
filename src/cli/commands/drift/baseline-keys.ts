@@ -10,7 +10,9 @@ import {
   streamPolicyMatchesDeclared,
 } from '../../../provisioning/dynamodb-stream-members.js';
 import {
+  declaredMemberDocument,
   declaredPolicyDocument,
+  efsPolicyMatchesDeclared,
   LAMBDA_PERMISSION_STATEMENT_KEYS,
   lambdaPermissionMatchesDeclared,
   policyDocumentMatchesDeclared,
@@ -154,6 +156,20 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * that is later undone outside cdkd, putting the resource back to the
  * template, is not reported. CloudFormation, which compares with the
  * template, would not report it either.
+ *
+ * Fourth rule (go-to-k/cdkd#6609, second slice): a member a separate call
+ * writes onto a bigger resource — `AWS::KMS::Key` `KeyPolicy`,
+ * `AWS::Logs::DeliveryDestination` `DeliveryDestinationPolicy`,
+ * `AWS::Logs::LogGroup` `DataProtectionPolicy`, `AWS::ApiGateway::RestApi`
+ * `Policy`, `AWS::EFS::FileSystem` `FileSystemPolicy`,
+ * `AWS::CodeBuild::Project` `Visibility` — is not compared while the live
+ * member is the declared one (IAM-equivalent spellings folded), whatever the
+ * baseline holds: a value captured before the write showed, or a kept
+ * declared value AWS spells differently. Where removing the member deletes
+ * it, a template declaring none and a resource holding none agree too. The
+ * `--accept` blind spot is the third rule's: an accepted out-of-band change
+ * later undone outside cdkd, putting the member back to the template, is not
+ * reported, which CloudFormation would not report either.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -185,6 +201,10 @@ export function preFixBaselineUncomparedDriftKeys(
       ? [...LAMBDA_PERMISSION_STATEMENT_KEYS]
       : [];
   }
+  const member = OWN_WRITE_MEMBERS.get(resourceType);
+  if (member !== undefined) {
+    return member.liveIsDeclared(properties as Record<string, unknown>, aws) ? [member.key] : [];
+  }
   if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];
   const declared = hasOwnKey(properties as Record<string, unknown>, 'Enabled')
     ? coerceCfnBoolean((properties as Record<string, unknown>)['Enabled'])
@@ -195,6 +215,93 @@ export function preFixBaselineUncomparedDriftKeys(
   const live = hasOwnKey(aws, 'Enabled') ? aws['Enabled'] : undefined;
   return recorded === false && declared !== false && live === true ? ['Enabled'] : [];
 }
+
+/**
+ * The fourth rule of {@link preFixBaselineUncomparedDriftKeys}: per type, the
+ * member key and whether the live member is the declared one. Where removing
+ * the member deletes it, "none declared and none live" agrees too.
+ */
+const OWN_WRITE_MEMBERS: ReadonlyMap<
+  string,
+  {
+    key: string;
+    liveIsDeclared: (properties: Record<string, unknown>, aws: Record<string, unknown>) => boolean;
+  }
+> = new Map(
+  Object.entries({
+    'AWS::KMS::Key': {
+      key: 'KeyPolicy',
+      liveIsDeclared: (properties, aws) => {
+        const declared = declaredMemberDocument(properties['KeyPolicy']);
+        return declared !== undefined && policyDocumentMatchesDeclared(aws['KeyPolicy'], declared);
+      },
+    },
+    'AWS::Logs::DeliveryDestination': {
+      key: 'DeliveryDestinationPolicy',
+      liveIsDeclared: (properties, aws) => {
+        // An object only, as the provider settles it (CloudFormation refuses a string).
+        const inner = (block: unknown): unknown => {
+          const document =
+            typeof block === 'object' && block !== null && !Array.isArray(block)
+              ? (block as Record<string, unknown>)['DeliveryDestinationPolicy']
+              : undefined;
+          return typeof document === 'object' && document !== null && !Array.isArray(document)
+            ? document
+            : undefined;
+        };
+        const declared = inner(properties['DeliveryDestinationPolicy']);
+        if (declared === undefined) {
+          return (
+            properties['DeliveryDestinationPolicy'] === undefined &&
+            aws['DeliveryDestinationPolicy'] === undefined
+          );
+        }
+        return policyDocumentMatchesDeclared(inner(aws['DeliveryDestinationPolicy']), declared);
+      },
+    },
+    'AWS::Logs::LogGroup': {
+      key: 'DataProtectionPolicy',
+      liveIsDeclared: (properties, aws) => {
+        const declared = declaredMemberDocument(properties['DataProtectionPolicy']);
+        if (declared === undefined) {
+          return (
+            (properties['DataProtectionPolicy'] === undefined ||
+              properties['DataProtectionPolicy'] === '') &&
+            aws['DataProtectionPolicy'] === ''
+          );
+        }
+        return policyDocumentMatchesDeclared(aws['DataProtectionPolicy'], declared);
+      },
+    },
+    'AWS::ApiGateway::RestApi': {
+      // A removed RestApi `Policy` is left at its live value, so only a declared one settles.
+      key: 'Policy',
+      liveIsDeclared: (properties, aws) => {
+        const declared = declaredMemberDocument(properties['Policy']);
+        return declared !== undefined && policyDocumentMatchesDeclared(aws['Policy'], declared);
+      },
+    },
+    'AWS::EFS::FileSystem': {
+      key: 'FileSystemPolicy',
+      liveIsDeclared: (properties, aws) => {
+        const declared = declaredMemberDocument(properties['FileSystemPolicy']);
+        if (declared === undefined) {
+          return (
+            properties['FileSystemPolicy'] === undefined && aws['FileSystemPolicy'] === undefined
+          );
+        }
+        return efsPolicyMatchesDeclared(aws['FileSystemPolicy'], declared);
+      },
+    },
+    'AWS::CodeBuild::Project': {
+      key: 'Visibility',
+      liveIsDeclared: (properties, aws) =>
+        typeof properties['Visibility'] === 'string' &&
+        properties['Visibility'] !== '' &&
+        aws['Visibility'] === properties['Visibility'],
+    },
+  })
+);
 
 /** The #6604 half of {@link preFixBaselineUncomparedDriftKeys}. */
 function staleTablePolicyBaseline(
@@ -271,7 +378,11 @@ const DERIVED_ECHO_MEMBERS: Readonly<
   Record<string, readonly { parent: string; source: string; echo: string }[]>
 > = {
   'AWS::SecretsManager::RotationSchedule': [
-    { parent: 'RotationRules', source: 'ScheduleExpression', echo: 'AutomaticallyAfterDays' },
+    {
+      parent: 'RotationRules',
+      source: 'ScheduleExpression',
+      echo: 'AutomaticallyAfterDays',
+    },
   ],
 };
 

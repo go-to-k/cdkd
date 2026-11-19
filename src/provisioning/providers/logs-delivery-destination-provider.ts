@@ -31,8 +31,16 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import {
+  type MemberRead,
+  OWN_WRITE_REREAD_DELAYS_MS,
+  policyDocumentMatchesDeclared,
+  settleDeclaredMember,
+  warnUnsettledMember,
+} from '../settle-after-own-write.js';
 import {
   PropertyReader,
   isLogsNotFound,
@@ -67,6 +75,8 @@ const WHAT = 'CloudWatch Logs delivery destination';
 export class LogsDeliveryDestinationProvider implements ResourceProvider {
   private client: CloudWatchLogsClient;
   private logger = getLogger().child('LogsDeliveryDestinationProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   constructor() {
     this.client = getAwsClients().cloudWatchLogs;
@@ -112,12 +122,16 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
         new PutDeliveryDestinationCommand({
           name,
           ...(destinationArn !== undefined && {
-            deliveryDestinationConfiguration: { destinationResourceArn: destinationArn },
+            deliveryDestinationConfiguration: {
+              destinationResourceArn: destinationArn,
+            },
           }),
           ...(destinationType !== undefined && {
             deliveryDestinationType: destinationType as DeliveryDestinationType,
           }),
-          ...(outputFormat !== undefined && { outputFormat: outputFormat as OutputFormat }),
+          ...(outputFormat !== undefined && {
+            outputFormat: outputFormat as OutputFormat,
+          }),
           ...(tags && { tags }),
         })
       );
@@ -134,7 +148,10 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
           })
         );
       }
-      return { physicalId: name, attributes: destinationAttributes(resp.deliveryDestination) };
+      return {
+        physicalId: name,
+        attributes: destinationAttributes(resp.deliveryDestination),
+      };
     } catch (error) {
       // A failure after the Put is the policy call's, not the destination's:
       // its "already exists" must not read as a name collision on this resource.
@@ -208,7 +225,9 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
       ) {
         try {
           await this.client.send(
-            new DeleteDeliveryDestinationPolicyCommand({ deliveryDestinationName: physicalId })
+            new DeleteDeliveryDestinationPolicyCommand({
+              deliveryDestinationName: physicalId,
+            })
           );
         } catch (error) {
           if (!isLogsNotFound(error)) throw error;
@@ -282,12 +301,22 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
     }
   }
 
-  /** Read the live destination for `cdkd drift`, in the CFn shape. */
+  /**
+   * Read the live destination for `cdkd drift`, in the CFn shape.
+   *
+   * The capture right after cdkd's own write (`afterOwnWrite`,
+   * go-to-k/cdkd#6609): `PutDeliveryDestinationPolicy` may not be visible
+   * yet, so a declared policy the read does not show is re-read alone until
+   * it does. Still none after the schedule, the declared policy is recorded;
+   * another policy is recorded as read. Every other read takes the first
+   * answer.
+   */
   async readCurrentState(
     physicalId: string,
-    _logicalId: string,
+    logicalId: string,
     _resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let destination: DeliveryDestination | undefined;
     try {
@@ -307,27 +336,36 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
       result['DeliveryDestinationType'] = destination.deliveryDestinationType;
     }
     if (destination.outputFormat !== undefined) result['OutputFormat'] = destination.outputFormat;
-    let policy: string | undefined;
-    try {
-      policy = (
-        await this.client.send(
-          new GetDeliveryDestinationPolicyCommand({ deliveryDestinationName: physicalId })
-        )
-      ).policy?.deliveryDestinationPolicy;
-    } catch (error) {
-      // No policy, not a missing destination: GetDeliveryDestination above
-      // already proved the destination exists.
-      if (!isLogsNotFound(error)) throw error;
+    let policy = await this.readDestinationPolicy(physicalId);
+    const declared = properties?.['DeliveryDestinationPolicy'];
+    const declaredDocument =
+      context?.afterOwnWrite === true && isPlainRecord(declared)
+        ? declared['DeliveryDestinationPolicy']
+        : undefined;
+    if (isPlainRecord(declaredDocument)) {
+      policy = await settleDeclaredMember(
+        policy,
+        () => this.readDestinationPolicy(physicalId),
+        (document) => policyDocumentMatchesDeclared(document, declaredDocument),
+        declaredDocument,
+        this.ownWriteRereadDelaysMs,
+        () =>
+          warnUnsettledMember(
+            this.logger,
+            logicalId,
+            'AWS::Logs::DeliveryDestination',
+            'DeliveryDestinationPolicy'
+          )
+      );
     }
-    if (policy !== undefined && policy !== '') {
-      const declared = properties?.['DeliveryDestinationPolicy'];
+    if (typeof policy === 'object') {
       result['DeliveryDestinationPolicy'] = {
         // Echo the name member only where the record declares it.
         ...(isPlainRecord(declared) &&
           declared['DeliveryDestinationName'] !== undefined && {
             DeliveryDestinationName: physicalId,
           }),
-        DeliveryDestinationPolicy: parsePolicy(policy),
+        DeliveryDestinationPolicy: policy.value,
       };
     }
     try {
@@ -341,6 +379,27 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
   }
 
   // -- helpers -------------------------------------------------------------
+
+  /** One `GetDeliveryDestinationPolicy`, the document parsed; `'absent'` when none is set. */
+  private async readDestinationPolicy(physicalId: string): Promise<MemberRead<unknown>> {
+    let policy: string | undefined;
+    try {
+      policy = (
+        await this.client.send(
+          new GetDeliveryDestinationPolicyCommand({
+            deliveryDestinationName: physicalId,
+          })
+        )
+      ).policy?.deliveryDestinationPolicy;
+    } catch (error) {
+      // No policy, not a missing destination: GetDeliveryDestination above
+      // already proved the destination exists.
+      if (!isLogsNotFound(error)) throw error;
+    }
+    // A destination with no policy answers `{ policy: {} }` (measured,
+    // us-east-1, 2026-11-19).
+    return policy !== undefined && policy !== '' ? { value: parsePolicy(policy) } : 'absent';
+  }
 
   /** A failed operation as the `ProvisioningError` it throws ({@link wrapLogsError}). */
   private wrapError(

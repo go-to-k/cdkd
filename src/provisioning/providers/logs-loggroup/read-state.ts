@@ -7,7 +7,19 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-cloudwatch-logs';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
-import { type ResourceNotFound, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import {
+  type ReadCurrentStateContext,
+  type ResourceNotFound,
+  RESOURCE_NOT_FOUND,
+} from '../../../types/resource.js';
+import {
+  declaredMemberDocument,
+  type MemberRead,
+  policyDocumentMatchesDeclared,
+  memberReadFailure,
+  settleDeclaredMember,
+  warnUnsettledMember,
+} from '../../settle-after-own-write.js';
 
 /**
  * Resolve a single `Fn::GetAtt` attribute for an existing log group.
@@ -30,6 +42,33 @@ export async function getAttribute(
     return undefined;
   }
   return this.buildArn(physicalId);
+}
+
+/**
+ * One `GetDataProtectionPolicy`: the document JSON-parsed, `'absent'` when
+ * none is set (the answer carries no document), `'failed'` when the call
+ * threw.
+ */
+async function readDataProtectionPolicy(
+  this: LogsLogGroupProvider,
+  physicalId: string
+): Promise<MemberRead<unknown>> {
+  let document: string | undefined;
+  try {
+    document = (
+      await this.logsClient.send(
+        new GetDataProtectionPolicyCommand({ logGroupIdentifier: physicalId })
+      )
+    ).policyDocument;
+  } catch (err) {
+    return memberReadFailure(err);
+  }
+  if (!document) return 'absent';
+  try {
+    return { value: JSON.parse(document) as unknown };
+  } catch {
+    return { value: document };
+  }
 }
 
 /**
@@ -70,13 +109,21 @@ export async function getAttribute(
  * filtered out so they don't fire false-positive drift; the result key is
  * omitted entirely when AWS reports no user tags.
  *
+ * The capture right after cdkd's own write (`afterOwnWrite`,
+ * go-to-k/cdkd#6609): a declared `DataProtectionPolicy` the read does not
+ * show yet is re-read alone until it does. Still none after the schedule, the
+ * declared policy is recorded; another policy is recorded as read. Every
+ * other read takes the first answer.
+ *
  * Returns `RESOURCE_NOT_FOUND` when the log group is gone.
  */
 export async function readCurrentState(
   this: LogsLogGroupProvider,
   physicalId: string,
-  _logicalId: string,
-  _resourceType: string
+  logicalId: string,
+  _resourceType: string,
+  properties?: Record<string, unknown>,
+  context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   try {
     const resp = await this.logsClient.send(
@@ -129,22 +176,24 @@ export async function readCurrentState(
     // no policy is configured so a console-side ADD is detectable on
     // the v3 observedProperties baseline. (The empty string round-trips
     // through update()'s truthy gate as DeleteDataProtectionPolicy.)
-    let dpp: unknown = '';
-    try {
-      const dppResp = await this.logsClient.send(
-        new GetDataProtectionPolicyCommand({ logGroupIdentifier: physicalId })
+    let dpp = await readDataProtectionPolicy.call(this, physicalId);
+    const declared =
+      context?.afterOwnWrite === true
+        ? declaredMemberDocument(properties?.['DataProtectionPolicy'])
+        : undefined;
+    if (declared !== undefined) {
+      dpp = await settleDeclaredMember(
+        dpp,
+        () => readDataProtectionPolicy.call(this, physicalId),
+        (document) => policyDocumentMatchesDeclared(document, declared),
+        declared,
+        this.ownWriteRereadDelaysMs,
+        () =>
+          warnUnsettledMember(this.logger, logicalId, 'AWS::Logs::LogGroup', 'DataProtectionPolicy')
       );
-      if (dppResp.policyDocument) {
-        try {
-          dpp = JSON.parse(dppResp.policyDocument);
-        } catch {
-          dpp = dppResp.policyDocument;
-        }
-      }
-    } catch {
-      // Best-effort — leave the empty placeholder.
     }
-    result['DataProtectionPolicy'] = dpp;
+    // Best-effort: a failed read leaves the empty placeholder.
+    result['DataProtectionPolicy'] = typeof dpp === 'object' ? dpp.value : '';
 
     // FieldIndexPolicies via DescribeIndexPolicies. AWS returns
     // IndexPolicy[] where each entry has policyDocument (JSON string)

@@ -250,6 +250,72 @@ done
 # drift compares every one of them and finds nothing. Drift elsewhere in the
 # stack (exit 1) or an incomplete comparison of another type (exit 2) is not
 # this check's subject; only these three types are read off the report.
+# go-to-k/cdkd#6609: drift alone cannot see a stale baseline while the live
+# member is the declared one (the drift heal rule skips the key then), so this
+# reads the baseline itself. The state record's observed member must be
+# exactly what AWS holds now, key order aside ('<absent>' when neither holds
+# one); a baseline captured before the write showed fails here.
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+state_lids() { # usage: state_lids <resourceType> -- every logical id of that type
+  state_json | jq -r --arg t "$1" '.resources | to_entries[] | select(.value.resourceType == $t) | .key'
+}
+state_field() { # usage: state_field <logical-id> <jq path into the record>
+  state_json | jq -r --arg l "$1" ".resources[\$l] | $2"
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON, '' for none> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  if [ -z "$3" ]; then live='"<absent>"'; else live=$(jq -cS . <<<"$3"); fi
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+
+# The live policy statement of a Lambda permission, in the keys its read
+# records (lambda-permission-provider.ts `readPermission`).
+lambda_permission_live() { # usage: lambda_permission_live <function> <statement id>
+  aws lambda get-policy --function-name "$1" --region "${REGION}" --query Policy --output text \
+    | jq -c --arg s "$2" '[.Statement[] | select(.Sid == $s)] | first | if . == null then empty else {
+        Action: (.Action | if type == "array" then .[0] else . end),
+        Principal: (.Principal | if type == "string" then .
+          elif type == "object" then ((.Service // .AWS // .Federated) | if type == "array" then .[0] else . end)
+          else null end),
+        SourceArn: ((.Condition.ArnLike["AWS:SourceArn"] // .Condition.StringEquals["AWS:SourceArn"])
+          | if type == "array" then .[0] else . end),
+        SourceAccount: (.Condition.StringEquals["AWS:SourceAccount"] | if type == "array" then .[0] else . end)
+      } | with_entries(select(.value != null)) end'
+}
+# Each queue policy / topic policy / Lambda permission record's baseline is
+# what AWS holds now (the first queue / topic, as the read records it).
+check_policy_records() { # usage: check_policy_records <phase label>
+  local lid pid n=0
+  for lid in $(state_lids AWS::SQS::QueuePolicy); do
+    assert_observed_member "${lid}" .PolicyDocument "$(aws sqs get-queue-attributes --region "${REGION}" \
+      --queue-url "$(state_field "${lid}" '.properties.Queues[0]')" --attribute-names Policy \
+      --query Attributes.Policy --output text)" "$1"
+    n=$((n + 1))
+  done
+  for lid in $(state_lids AWS::SNS::TopicPolicy); do
+    assert_observed_member "${lid}" .PolicyDocument "$(aws sns get-topic-attributes --region "${REGION}" \
+      --topic-arn "$(state_field "${lid}" '.properties.Topics[0]')" \
+      --query Attributes.Policy --output text)" "$1"
+    n=$((n + 1))
+  done
+  for lid in $(state_lids AWS::Lambda::Permission); do
+    pid=$(state_field "${lid}" .physicalId)
+    assert_observed_member "${lid}" '{Action, Principal, SourceArn, SourceAccount} | with_entries(select(.value != null))' \
+      "$(lambda_permission_live "$(state_field "${lid}" .properties.FunctionName)" "${pid##*|}")" "$1"
+    n=$((n + 1))
+  done
+  [ "${n}" -ge 3 ] || { echo "FAIL: expected policy records in state after $1, found ${n}" >&2; exit 1; }
+}
+
 check_policy_baselines() { # phase label
   local report rc=0
   report=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
@@ -272,6 +338,7 @@ check_policy_baselines() { # phase label
     exit 1
   fi
   echo "    OK: every queue policy, topic policy and Lambda permission is drift-clean after $1"
+  check_policy_records "$1"
 }
 
 # --- Phase 1: deploy --------------------------------------------------

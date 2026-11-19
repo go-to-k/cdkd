@@ -13,7 +13,10 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
+import { settleRestApiPolicy } from './apigateway/rest-api-own-write.js';
 import type { MaskedLogSinks, MaskerFn } from '../masked-retry-logger.js';
 import { pasteableAwsCommand, type PasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
@@ -103,6 +106,8 @@ export { resetApiGatewayCreateRetryStateForTests, methodChildCalls } from './api
 export class ApiGatewayProvider implements ResourceProvider {
   apiGatewayClient: APIGatewayClient;
   logger: ConsoleLogger = getLogger().child('ApiGatewayProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::ApiGateway::Account', new Set(['CloudWatchRoleArn'])],
@@ -599,11 +604,20 @@ export class ApiGatewayProvider implements ResourceProvider {
     return getRestApiAttribute.call(this, physicalId, attributeName);
   }
 
-  readCurrentStateRestApi(
+  /**
+   * On the capture right after cdkd's own write (`afterOwnWrite`), the
+   * declared `Policy` is settled by `settleRestApiPolicy` (go-to-k/cdkd#6609).
+   */
+  async readCurrentStateRestApi(
     physicalId: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext,
+    logicalId = physicalId
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentStateRestApi.call(this, physicalId, properties);
+    const read = await readCurrentStateRestApi.call(this, physicalId, properties);
+    return context?.afterOwnWrite === true
+      ? settleRestApiPolicy.call(this, physicalId, logicalId, read, properties)
+      : read;
   }
 
   importRestApi(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -658,8 +672,13 @@ export class ApiGatewayProvider implements ResourceProvider {
     physicalId: string,
     _logicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    // The RestApi read alone takes the context (go-to-k/cdkd#6609).
+    if (resourceType === 'AWS::ApiGateway::RestApi') {
+      return this.readCurrentStateRestApi(physicalId, properties, context, _logicalId);
+    }
     return readCurrentState.call(this, physicalId, _logicalId, resourceType, properties);
   }
 

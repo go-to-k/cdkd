@@ -59,7 +59,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['applyVisibility', update, 'applyVisibility', 2],
   ['update', update, 'update', 6],
   ['delete', del, 'deleteImpl', 5],
-  ['readCurrentState', readState, 'readCurrentState', 3],
+  ['readCurrentState', readState, 'readCurrentState', 5],
   ['import', readState, 'importImpl', 1],
 ];
 

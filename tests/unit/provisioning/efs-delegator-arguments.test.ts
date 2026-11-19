@@ -110,7 +110,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['createOrAdoptAccessPoint', 'access-point', 'createOrAdoptAccessPoint', 4],
   ['deleteAccessPoint', 'access-point', 'deleteAccessPoint', 4],
   ['readCurrentState', 'core', 'readCurrentState', 3],
-  ['readFileSystem', 'read-state', 'readFileSystem', 1],
+  ['readFileSystem', 'read-state', 'readFileSystem', 4],
   ['readAccessPoint', 'read-state', 'readAccessPoint', 1],
   ['readMountTarget', 'read-state', 'readMountTarget', 1],
   ['import', 'core', 'importImpl', 1],

@@ -19,7 +19,9 @@ import type {
   UpdateContext,
   ResourceNotFound,
   ResourceIdentityVerdict,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import {
   wrapCaughtError,
   generatedCreateName,
@@ -49,6 +51,8 @@ export class LogsLogGroupProvider implements ResourceProvider {
   logsClient: CloudWatchLogsClient;
   stsClient: STSClient;
   logger: ConsoleLogger = getLogger().child('LogsLogGroupProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
   /** `--remove-protection` flips, keyed so a re-entered delete keeps them (#2204). */
   readonly protectionFlips = new ProtectionFlipRegistry();
 
@@ -252,9 +256,11 @@ export class LogsLogGroupProvider implements ResourceProvider {
   readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    return readCurrentState.call(this, physicalId, _logicalId, _resourceType, properties, context);
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

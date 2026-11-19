@@ -13,12 +13,60 @@ import {
 } from '@aws-sdk/client-efs';
 import { definedAttributes } from '../../attribute-map.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
-import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../types/resource.js';
+import {
+  RESOURCE_NOT_FOUND,
+  type ReadCurrentStateContext,
+  type ResourceNotFound,
+} from '../../../types/resource.js';
+import {
+  declaredMemberDocument,
+  efsPolicyMatchesDeclared,
+  type MemberRead,
+  memberReadFailure,
+  settleDeclaredMember,
+  warnUnsettledMember,
+} from '../../settle-after-own-write.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
 
-export async function readFileSystem(
+/**
+ * One `DescribeFileSystemPolicy`: the policy JSON-parsed, `'absent'` on
+ * `PolicyNotFound` (no policy attached). Throws anything else.
+ */
+async function readFileSystemPolicy(
   this: EFSProvider,
   physicalId: string
+): Promise<MemberRead<unknown>> {
+  let policy: string | undefined;
+  try {
+    policy = (
+      await this.getClient().send(new DescribeFileSystemPolicyCommand({ FileSystemId: physicalId }))
+    ).Policy;
+  } catch (err) {
+    if ((err as { name?: string }).name === 'PolicyNotFound') return 'absent';
+    throw err;
+  }
+  if (policy === undefined) return 'failed';
+  try {
+    return { value: JSON.parse(policy) as unknown };
+  } catch {
+    // Non-JSON policy string (should not happen) — surface verbatim.
+    return { value: policy };
+  }
+}
+
+/**
+ * The live file system in CFn shape. On the capture right after cdkd's own
+ * write (`context.afterOwnWrite`, go-to-k/cdkd#6609), a declared
+ * `FileSystemPolicy` the read does not show yet is re-read alone until it
+ * does. Still none after the schedule, the declared policy is recorded;
+ * another policy is recorded as read. Every other read takes the first answer.
+ */
+export async function readFileSystem(
+  this: EFSProvider,
+  physicalId: string,
+  properties?: Record<string, unknown>,
+  context?: ReadCurrentStateContext,
+  logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let fs;
   let listed: readonly unknown[] | undefined;
@@ -109,22 +157,29 @@ export async function readFileSystem(
   // the policy as a JSON string; the CFn property is a policy object, so
   // parse it back so the drift comparator compares object-to-object.
   // "PolicyNotFound" (no policy attached) omits the key.
+  let policy: MemberRead<unknown>;
   try {
-    const resp = await this.getClient().send(
-      new DescribeFileSystemPolicyCommand({ FileSystemId: physicalId })
-    );
-    if (resp.Policy !== undefined) {
-      try {
-        result['FileSystemPolicy'] = JSON.parse(resp.Policy);
-      } catch {
-        // Non-JSON policy string (should not happen) — surface verbatim.
-        result['FileSystemPolicy'] = resp.Policy;
-      }
-    }
+    policy = await readFileSystemPolicy.call(this, physicalId);
   } catch (err) {
     if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
-    // PolicyNotFound or similar — omit the key.
+    // AccessDenied or similar — omit the key. Only a transient one is re-read.
+    policy = memberReadFailure(err);
   }
+  const declared =
+    context?.afterOwnWrite === true
+      ? declaredMemberDocument(properties?.['FileSystemPolicy'])
+      : undefined;
+  if (declared !== undefined) {
+    policy = await settleDeclaredMember(
+      policy,
+      () => readFileSystemPolicy.call(this, physicalId),
+      (document) => efsPolicyMatchesDeclared(document, declared, physicalId),
+      declared,
+      this.ownWriteRereadDelaysMs,
+      () => warnUnsettledMember(this.logger, logicalId, 'AWS::EFS::FileSystem', 'FileSystemPolicy')
+    );
+  }
+  if (typeof policy === 'object') result['FileSystemPolicy'] = policy.value;
 
   // FileSystemTags from the same DescribeFileSystems response.
   const tags = normalizeAwsTagsToCfn(fs.Tags);
@@ -236,7 +291,9 @@ export async function readMountTarget(
   let securityGroups: string[] = [];
   try {
     const sgResp = await this.getClient().send(
-      new DescribeMountTargetSecurityGroupsCommand({ MountTargetId: physicalId })
+      new DescribeMountTargetSecurityGroupsCommand({
+        MountTargetId: physicalId,
+      })
     );
     securityGroups = (sgResp.SecurityGroups ?? []).filter(
       (s): s is string => typeof s === 'string'
@@ -310,7 +367,9 @@ export async function importAccessPoint(
   if (input.knownPhysicalId) {
     try {
       const resp = await this.getClient().send(
-        new DescribeAccessPointsCommand({ AccessPointId: input.knownPhysicalId })
+        new DescribeAccessPointsCommand({
+          AccessPointId: input.knownPhysicalId,
+        })
       );
       const ap = resp.AccessPoints?.[0];
       // Issue #3627: the same map `create()` records; the physical id is
