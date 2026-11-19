@@ -95,7 +95,7 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::CloudWatch::OmniDashboard` | 2 | SpaceId, DashboardId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::CodeDeploy::DeploymentGroup` | 2 | ApplicationName, DeploymentGroupName | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::CodePipeline::CustomActionType` | 2 | Category, Provider, Version | not-a-segment | docs Return values: Ref returns a generated name such as `custo-MyCus-A1BCDEFGHIJ2` |
-| `AWS::CodeStarConnections::SyncConfiguration` | 2 | ResourceName, SyncType | unverified | docs Return values: Ref returns the ARN (no segment holds it; not measured); not measured (needs an AVAILABLE connection, an OAuth handshake) |
+| `AWS::CodeStarConnections::SyncConfiguration` | 2 | ResourceName, SyncType | unverified | docs Return values: Ref returns the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake) |
 | `AWS::Cognito::IdentityPoolPrincipalTag` | 2 | IdentityPoolId, IdentityProviderName | compound | docs Return values: Ref returns `<identityPoolId>\|graph.facebook.com` |
 | `AWS::Cognito::ManagedLoginBranding` | 2 | UserPoolId, ManagedLoginBrandingId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<UserPoolId>\|<ManagedLoginBrandingId>` (the docs say the style id) |
 | `AWS::Cognito::Terms` | 2 | UserPoolId, TermsId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |

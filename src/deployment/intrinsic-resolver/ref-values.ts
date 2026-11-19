@@ -132,7 +132,8 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * added here; it has since moved to {@link glueTableRefFromPhysicalId} (issue
  * #1672), because its table name may contain `|`. The types deliberately NOT in either Set, with the reason:
  *   - correct to exclude: ApiGateway::Method, EC2::NetworkAclEntry (its
- *     measured `Ref` is a generated id no segment holds, issue #6628), EC2::Route, Lambda::EventInvokeConfig — for
+ *     measured `Ref` is a generated id no segment holds, issue #6628),
+ *     EC2::Route, Lambda::EventInvokeConfig — for
  *     Method / Route / EventInvokeConfig the measured `Ref` IS cdkd's
  *     composite (issue #6243). EC2::VPCGatewayAttachment was listed here
  *     too; its measured `Ref` is `<IGW|VGW>|<vpcId>`, built by

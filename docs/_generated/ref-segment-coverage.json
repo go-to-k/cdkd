@@ -762,7 +762,7 @@
         "SyncType"
       ],
       "status": "unverified",
-      "detail": "docs Return values: Ref returns the ARN (no segment holds it; not measured); not measured (needs an AVAILABLE connection, an OAuth handshake)"
+      "detail": "docs Return values: Ref returns the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake)"
     },
     {
       "resourceType": "AWS::Cognito::IdentityPoolPrincipalTag",

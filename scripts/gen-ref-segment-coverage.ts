@@ -387,7 +387,7 @@ export const REF_SEGMENT_DISPOSITIONS: ReadonlyMap<string, Disposition> = new Ma
   ['AWS::CleanRooms::IdMappingTable', unverified(docs('"the resource name"'))],
   ['AWS::CleanRooms::IntermediateTable', unverified(EMPTY_REF)],
   ['AWS::CloudWatch::Alert', unverified(docs('"a unique identifier for this resource"; the #6628 probe was refused (the access-profile trust grant)'))],
-  ['AWS::CodeStarConnections::SyncConfiguration', unverified(docs('the ARN (no segment holds it; not measured); not measured (needs an AVAILABLE connection, an OAuth handshake)'))],
+  ['AWS::CodeStarConnections::SyncConfiguration', unverified(docs('the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake)'))],
   ['AWS::CustomerProfiles::DomainObjectType', unverified(`${EMPTY_REF}; the #6628 probe was refused: every field Target tried was invalid`)],
   ['AWS::CustomerProfiles::Recommender', unverified(`${EMPTY_REF}; not measured (needs ingested interaction and catalog data)`)],
   ['AWS::DataZone::EnvironmentActions', unverified(docs('a two-part `DomainId|EnvironmentActionId` for a three-part identifier'))],
