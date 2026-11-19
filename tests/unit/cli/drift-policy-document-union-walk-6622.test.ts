@@ -305,14 +305,14 @@ describe('the baselines and types the change leaves alone (go-to-k/cdkd#6622)', 
   });
 
   it('an unlisted type keeps the state-keys-only walk and the untemplated-key merge', async () => {
-    // S3 bucket policies are not declared verbatim-echo (unmeasured), so a
-    // key only the live side holds is still not compared there...
+    // OpenSearch access policies are not declared verbatim-echo (unmeasured),
+    // so a key only the live side holds is still not compared there...
     const c: Case = {
-      type: 'AWS::S3::BucketPolicy',
-      physicalId: 'my-bucket',
-      docKey: 'PolicyDocument',
-      properties: (d) => ({ Bucket: 'my-bucket', PolicyDocument: d }),
-      readback: (d) => ({ Bucket: 'my-bucket', PolicyDocument: d }),
+      type: 'AWS::OpenSearchService::Domain',
+      physicalId: 'my-domain',
+      docKey: 'AccessPolicies',
+      properties: (d) => ({ DomainName: 'my-domain', AccessPolicies: d }),
+      readback: (d) => ({ DomainName: 'my-domain', AccessPolicies: d }),
     };
     setUp(c);
     arm();
@@ -322,7 +322,7 @@ describe('the baselines and types the change leaves alone (go-to-k/cdkd#6622)', 
     liveDoc = doc({ ...DENY, Action: 's3:PutObject', Condition: CONDITION });
     expect(await runDrift(['--revert', '--yes'])).toBe(0);
     expect(sentBags).toHaveLength(1);
-    expect(sentBags[0]!['PolicyDocument']).toEqual(doc({ ...DENY, Condition: CONDITION }));
+    expect(sentBags[0]!['AccessPolicies']).toEqual(doc({ ...DENY, Condition: CONDITION }));
     expect(stdout).toContain('AWS-authored');
   });
 });
