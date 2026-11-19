@@ -1848,6 +1848,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2052,6 +2053,9 @@
         "lambda-esm-documentdb": [
           "l2"
         ],
+        "lambda-vpc-update-while-pending": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -2210,6 +2214,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2399,6 +2404,9 @@
           "l2"
         ],
         "lambda-esm-documentdb": [
+          "l2"
+        ],
+        "lambda-vpc-update-while-pending": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -2593,6 +2601,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2791,6 +2800,9 @@
           "l2"
         ],
         "lambda-esm-documentdb": [
+          "l2"
+        ],
+        "lambda-vpc-update-while-pending": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -2948,6 +2960,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -3151,6 +3164,9 @@
         "lambda-esm-documentdb": [
           "l2"
         ],
+        "lambda-vpc-update-while-pending": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -3287,6 +3303,7 @@
         "generated-name-security-group",
         "getatt-cache-kinesis-lambda-ec2",
         "lambda-capacity-provider-default-name",
+        "lambda-vpc-update-while-pending",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "nlb-source-nat",
@@ -3424,6 +3441,10 @@
         ],
         "lambda-capacity-provider-default-name": [
           "l2"
+        ],
+        "lambda-vpc-update-while-pending": [
+          "l2",
+          "literal"
         ],
         "local-start-alb-from-state": [
           "l2",
@@ -3612,6 +3633,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
@@ -3840,6 +3862,10 @@
         "lambda-esm-documentdb": [
           "l2"
         ],
+        "lambda-vpc-update-while-pending": [
+          "l2",
+          "literal"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -4027,6 +4053,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -4218,6 +4245,9 @@
         "lambda-esm-documentdb": [
           "l2"
         ],
+        "lambda-vpc-update-while-pending": [
+          "l2"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -4381,6 +4411,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
@@ -4638,6 +4669,10 @@
         "lambda-esm-documentdb": [
           "l2"
         ],
+        "lambda-vpc-update-while-pending": [
+          "l2",
+          "literal"
+        ],
         "launchtemplate-asg-inplace": [
           "l2"
         ],
@@ -4828,6 +4863,7 @@
         "infra-security",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
+        "lambda-vpc-update-while-pending",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -5027,6 +5063,9 @@
           "l2"
         ],
         "lambda-esm-documentdb": [
+          "l2"
+        ],
+        "lambda-vpc-update-while-pending": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -6528,6 +6567,7 @@
         "lambda-microvm-image",
         "lambda-network-connector",
         "lambda-snapstart",
+        "lambda-vpc-update-while-pending",
         "lambda-web-function-revision-replace",
         "local-engine-role-identity",
         "local-invoke-dotnet",
@@ -6835,6 +6875,10 @@
           "l2"
         ],
         "lambda-snapstart": [
+          "literal"
+        ],
+        "lambda-vpc-update-while-pending": [
+          "l2",
           "literal"
         ],
         "lambda-web-function-revision-replace": [
@@ -7510,6 +7554,7 @@
         "lambda-snapstart",
         "lambda-url-authtype-replay",
         "lambda-versioning",
+        "lambda-vpc-update-while-pending",
         "legacy-synthesizer-assets",
         "local-aws-emulator",
         "local-engine-role-identity",
@@ -7831,6 +7876,10 @@
           "l2"
         ],
         "lambda-versioning": [
+          "l2",
+          "literal"
+        ],
+        "lambda-vpc-update-while-pending": [
           "l2",
           "literal"
         ],
