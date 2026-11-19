@@ -81,10 +81,11 @@ These are `PolicyDocument` on `AWS::IAM::Policy`, `AWS::IAM::ManagedPolicy`,
 and `ResourcePolicy` on `AWS::SecretsManager::ResourcePolicy`. A key only AWS
 holds there, such as a `Condition` added to a single-object `Statement`, is
 reported as drift. Some of these services return a single-object `Statement`
-as a one-element list, and drift treats the two forms as the same value. KMS fills in
-`Version: 2012-10-17` when a key policy omits it, and drift does not report
-that either. You
-can record a snapshot without redeploying:
+as a one-element list, and drift treats the two forms as the same value. They
+also write `Version: 2008-10-17` into a document that omits `Version`, which is
+what the omission means, so drift does not report that either. A live
+`2012-10-17` against a template without `Version` is reported. You can record a
+snapshot without redeploying:
 
 ```bash
 cdkd state refresh-observed MyStack

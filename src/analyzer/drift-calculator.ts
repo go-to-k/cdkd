@@ -33,7 +33,7 @@ import {
   matchesPathPrefix,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
-import { isServiceFilledVersion, isVerbatimStatementPath } from './drift-verbatim-paths.js';
+import { isOmittedVersionDefault, isVerbatimStatementPath } from './drift-verbatim-paths.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -279,13 +279,14 @@ function diffAt(
     for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
-      // go-to-k/cdkd#6624: on the template-only baseline, the `Version` a
-      // service fills in on a document the template submitted without one.
-      // An observed baseline captured that fill, so it compares as usual.
+      // go-to-k/cdkd#6624: on the template-only baseline, the `2008-10-17`
+      // a service writes into a document the template submitted without a
+      // `Version` -- what the omission means. An observed baseline captured
+      // that write, so it compares as usual.
       if (
         !unionWalkObjects &&
         stateForm[key] === undefined &&
-        isServiceFilledVersion(childPath, awsForm[key], unionWalkPaths)
+        isOmittedVersionDefault(childPath, awsForm[key], unionWalkPaths)
       ) {
         continue;
       }

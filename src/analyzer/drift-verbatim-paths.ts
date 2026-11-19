@@ -19,15 +19,16 @@
  * per top-level key.
  *
  * A type is listed only with a readback measured to add no key under the
- * property other than an omitted `Version` (go-to-k/cdkd#6624, the
+ * property other than the default of an omitted `Version` (go-to-k/cdkd#6624, the
  * `drift-verbatim-readback` integ fixture).
  * IAM and the Cloud Control-routed IAM inline policy types return the document
  * as submitted, key order aside. S3, SQS, SNS, KMS, Secrets Manager — and IAM's
  * role trust policy — add no key either, but return a single-OBJECT `Statement`
  * as a one-element array; the comparator reads the two spellings as one
- * ({@link isVerbatimStatementPath}), as IAM's policy grammar does. KMS also
- * fills in a `Version` the document omits, which is not drift on the
- * template-only baseline either ({@link isServiceFilledVersion}).
+ * ({@link isVerbatimStatementPath}), as IAM's policy grammar does. Those
+ * services also write `Version: 2008-10-17` into a document submitted
+ * without one, which is what an omitted `Version` means, so that is not
+ * drift on the template-only baseline either ({@link isOmittedVersionDefault}).
  *
  * Not listed: `AWS::ECR::Repository` `RepositoryPolicyText`, which the ECR
  * readback does not carry at all (go-to-k/cdkd#6631), and every resource policy
@@ -69,19 +70,20 @@ export function isVerbatimStatementPath(path: string, verbatimKeys: readonly str
 }
 
 /**
- * True when `value` at `path` is the `Version` a service fills in on a
- * document at one of `verbatimKeys` submitted without one: KMS adds
- * `2012-10-17` to such a key policy (go-to-k/cdkd#6624). The comparator does
- * not report it on the template-only baseline. Any other live-only `Version`
- * (`2008-10-17` turns policy variables off) is still drift, as is a declared
- * one. The residual: a template that omits `Version` and relies on
- * `2008-10-17` reading `${aws:...}` literally cannot tell AWS's fill from an
- * out-of-band `2012-10-17`.
+ * True when `value` at `path` is `2008-10-17` at the `Version` of a document
+ * at one of `verbatimKeys`: the policy language version an omitted `Version`
+ * means. S3, SQS, SNS, KMS, Secrets Manager and IAM's role trust policy write
+ * it into a document submitted without one (go-to-k/cdkd#6624, measured); the
+ * Cloud Control IAM inline policies and `AWS::IAM::Policy` do not, and there
+ * an out-of-band `2008-10-17` changes nothing either. So against a template
+ * that omits `Version`, the comparator does not report it on the
+ * template-only baseline. A live `2012-10-17` there turns policy variables on
+ * and is still drift, as is any change to a declared `Version`.
  */
-export function isServiceFilledVersion(
+export function isOmittedVersionDefault(
   path: string,
   value: unknown,
   verbatimKeys: readonly string[]
 ): boolean {
-  return value === '2012-10-17' && verbatimKeys.some((key) => path === `${key}.Version`);
+  return value === '2008-10-17' && verbatimKeys.some((key) => path === `${key}.Version`);
 }

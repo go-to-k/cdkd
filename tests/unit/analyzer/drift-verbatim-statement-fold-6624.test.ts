@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import {
   isVerbatimStatementPath,
-  isServiceFilledVersion,
+  isOmittedVersionDefault,
   verbatimEchoDriftKeys,
 } from '../../../src/analyzer/drift-verbatim-paths.js';
 
@@ -168,50 +168,70 @@ describe('calculateResourceDrift: a Statement object against its one-element lis
   });
 });
 
-describe('calculateResourceDrift: a Version the service fills in', () => {
-  const paths = ['KeyPolicy'];
+describe('calculateResourceDrift: the default an omitted Version means', () => {
+  const kms = verbatimEchoDriftKeys('AWS::KMS::Key');
+  const s3 = verbatimEchoDriftKeys('AWS::S3::BucketPolicy');
   const allow = { Effect: 'Allow', Principal: ROOT, Action: 'kms:*', Resource: '*' };
 
-  it('matches only the 2012-10-17 fill at `<key>.Version` of a listed key', () => {
-    expect(isServiceFilledVersion('KeyPolicy.Version', '2012-10-17', paths)).toBe(true);
-    expect(isServiceFilledVersion('KeyPolicy.Version', '2008-10-17', paths)).toBe(false);
-    expect(isServiceFilledVersion('KeyPolicy.Statement.Version', '2012-10-17', paths)).toBe(false);
-    expect(isServiceFilledVersion('KeyPolicy.Version', '2012-10-17', [])).toBe(false);
+  it('matches only 2008-10-17 at `<key>.Version` of a listed key', () => {
+    expect(isOmittedVersionDefault('KeyPolicy.Version', '2008-10-17', kms)).toBe(true);
+    expect(isOmittedVersionDefault('KeyPolicy.Version', '2012-10-17', kms)).toBe(false);
+    expect(isOmittedVersionDefault('KeyPolicy.Statement.Version', '2008-10-17', kms)).toBe(false);
+    expect(isOmittedVersionDefault('KeyPolicy.Version', '2008-10-17', [])).toBe(false);
   });
 
-  it('reports a live-only 2008-10-17 (policy variables turned off)', () => {
+  // The measured readbacks: each of these services wrote 2008-10-17 into a
+  // document submitted without a Version.
+  it.each([
+    ['AWS::S3::BucketPolicy', 'PolicyDocument'],
+    ['AWS::SQS::QueuePolicy', 'PolicyDocument'],
+    ['AWS::SNS::TopicPolicy', 'PolicyDocument'],
+    ['AWS::KMS::Key', 'KeyPolicy'],
+    ['AWS::SecretsManager::ResourcePolicy', 'ResourcePolicy'],
+    ['AWS::IAM::Role', 'AssumeRolePolicyDocument'],
+  ])('%s: a Version-less template against the measured 2008-10-17 fill is clean', (type, key) => {
+    expect(
+      calculateResourceDrift(
+        { [key]: { Statement: S3_DENY } },
+        { [key]: { Version: '2008-10-17', Statement: [S3_DENY] } },
+        { unionWalkPaths: verbatimEchoDriftKeys(type) }
+      )
+    ).toEqual([]);
+  });
+
+  it('S3: a Version-less template against a live 2012-10-17 is drift (policy variables on)', () => {
     const drift = calculateResourceDrift(
-      { KeyPolicy: { Statement: allow } },
-      { KeyPolicy: { Version: '2008-10-17', Statement: [allow] } },
-      { unionWalkPaths: paths }
+      { PolicyDocument: { Statement: S3_DENY } },
+      { PolicyDocument: { Version: '2012-10-17', Statement: [S3_DENY] } },
+      { unionWalkPaths: s3 }
     );
-    expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Version']);
+    expect(drift.map((d) => d.path)).toEqual(['PolicyDocument.Version']);
+  });
+
+  it('IAM RolePolicy: a Version-less template against a live 2012-10-17 is drift', () => {
+    const deny = { Effect: 'Deny', Action: 's3:PutObjectLegalHold', Resource: '*' };
+    const drift = calculateResourceDrift(
+      { PolicyDocument: { Statement: deny } },
+      { PolicyDocument: { Version: '2012-10-17', Statement: deny } },
+      { unionWalkPaths: verbatimEchoDriftKeys('AWS::IAM::RolePolicy') }
+    );
+    expect(drift.map((d) => d.path)).toEqual(['PolicyDocument.Version']);
   });
 
   it('on the observed baseline, still reports a live-only Version the capture lacked', () => {
     const drift = calculateResourceDrift(
       { KeyPolicy: { Statement: [allow] } },
-      { KeyPolicy: { Version: '2012-10-17', Statement: [allow] } },
-      { unionWalkPaths: paths, unionWalkObjects: true }
+      { KeyPolicy: { Version: '2008-10-17', Statement: [allow] } },
+      { unionWalkPaths: kms, unionWalkObjects: true }
     );
     expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Version']);
-  });
-
-  it('is clean when the template omits Version and the live document carries one', () => {
-    expect(
-      calculateResourceDrift(
-        { KeyPolicy: { Statement: allow } },
-        { KeyPolicy: { Version: '2012-10-17', Statement: [allow] } },
-        { unionWalkPaths: paths }
-      )
-    ).toEqual([]);
   });
 
   it('still reports a declared Version that changed', () => {
     const drift = calculateResourceDrift(
       { KeyPolicy: { Version: '2012-10-17', Statement: allow } },
       { KeyPolicy: { Version: '2008-10-17', Statement: [allow] } },
-      { unionWalkPaths: paths }
+      { unionWalkPaths: kms }
     );
     expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Version']);
   });
@@ -219,8 +239,8 @@ describe('calculateResourceDrift: a Version the service fills in', () => {
   it('still reports any other key only the live document holds', () => {
     const drift = calculateResourceDrift(
       { KeyPolicy: { Statement: allow } },
-      { KeyPolicy: { Version: '2012-10-17', Id: 'added', Statement: [allow] } },
-      { unionWalkPaths: paths }
+      { KeyPolicy: { Version: '2008-10-17', Id: 'added', Statement: [allow] } },
+      { unionWalkPaths: kms }
     );
     expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Id']);
   });

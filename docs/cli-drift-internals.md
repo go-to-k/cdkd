@@ -764,16 +764,18 @@ means the policy documents of `AWS::IAM::Policy`, `ManagedPolicy`,
 resource policies of `AWS::S3::BucketPolicy`, `AWS::SQS::QueuePolicy`,
 `AWS::SNS::TopicPolicy`, `AWS::KMS::Key` and
 `AWS::SecretsManager::ResourcePolicy`, each measured on a real readback. The
-service adds no key of its own there (beyond an omitted `Version`), so a key
-only AWS holds was added out of band. Detection walks the union of keys under
-it on this baseline too, and the revert sends the template's document whole and
-does not list it as preserved. S3, SQS, SNS, KMS, Secrets Manager and the IAM
-trust policy return a single-object `Statement` as a one-element list, so
-detection reads the two forms at `<key>.Statement` as one value. That list is
-then compared whole, so a key added inside it is still drift. KMS also fills in
-`Version: 2012-10-17` for a key policy that omits it. On this baseline that one
-live-only value is not compared. A declared `Version`, and any other live-only
-value, still is. `AWS::ECR::Repository` is not exempt, because its readback
+service adds no key of its own there (beyond the default of an omitted
+`Version`), so a key only AWS holds was added out of band. Detection walks the
+union of keys under it on this baseline too, and the revert sends the
+template's document whole and does not list it as preserved. S3, SQS, SNS, KMS,
+Secrets Manager and the IAM trust policy return a single-object `Statement` as
+a one-element list, so detection reads the two forms at `<key>.Statement` as
+one value. That list is then compared whole, so a key added inside it is still
+drift. The same services (and the IAM trust policy) write `Version: 2008-10-17`
+into a document that omits it, which is what an omitted `Version` means. On
+this baseline that live value is not compared against a template without one. A
+live `2012-10-17` there (policy variables on) and any change to a declared
+`Version` still are. `AWS::ECR::Repository` is not exempt, because its readback
 carries no `RepositoryPolicyText`.
 
 Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them
