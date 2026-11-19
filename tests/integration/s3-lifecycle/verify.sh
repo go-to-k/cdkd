@@ -1446,7 +1446,17 @@ else
     echo "FAIL: could not put the identity marker object into ${BUCKET_NAME} (VersionId '${IDENTITY_MARKER_VERSION}')" >&2
     exit 1
   fi
-  IDENTITY_RECORD_P1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Bucket.physicalId // "MISSING"')"
+  # The logical id holding this bucket (an L2 Bucket's is hashed), read by
+  # physical id; a baseline naming none, or several, never compares.
+  identity_record_of() {
+    aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg n "${BUCKET_NAME}" \
+      '[.resources | to_entries[] | select(.value.physicalId == $n and .value.resourceType == "AWS::S3::Bucket") | .key] | join(",")'
+  }
+  IDENTITY_RECORD_P1="$(identity_record_of)"
+  if [ -z "${IDENTITY_RECORD_P1}" ] || [[ "${IDENTITY_RECORD_P1}" == *,* ]]; then
+    echo "FAIL: expected exactly one AWS::S3::Bucket state record holding ${BUCKET_NAME}, got '${IDENTITY_RECORD_P1}'" >&2
+    exit 1
+  fi
   echo "    baseline identity marker ${IDENTITY_MARKER_KEY} (version ${IDENTITY_MARKER_VERSION}), record ${IDENTITY_RECORD_P1}"
 fi
 
@@ -1715,9 +1725,9 @@ else
     echo "FAIL: bucket was REPLACED (identity marker ${IDENTITY_MARKER_KEY} version ${IDENTITY_MARKER_VERSION} is gone from ${BUCKET_NAME})" >&2
     exit 1
   }
-  IDENTITY_RECORD_P2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Bucket.physicalId // "MISSING"')"
-  if [ "${IDENTITY_RECORD_P2}" != "${IDENTITY_RECORD_P1}" ] || [ "${IDENTITY_RECORD_P2}" != "${BUCKET_NAME}" ]; then
-    echo "FAIL: state records Bucket as ${IDENTITY_RECORD_P2} after the update (was ${IDENTITY_RECORD_P1}, expected ${BUCKET_NAME})" >&2
+  IDENTITY_RECORD_P2="$(identity_record_of)"
+  if [ "${IDENTITY_RECORD_P2}" != "${IDENTITY_RECORD_P1}" ]; then
+    echo "FAIL: the state record holding ${BUCKET_NAME} is '${IDENTITY_RECORD_P2}' after the update, was '${IDENTITY_RECORD_P1}'" >&2
     exit 1
   fi
   # Removed by version, so no delete marker is left: the bucket must be empty
