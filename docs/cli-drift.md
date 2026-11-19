@@ -137,6 +137,12 @@ An event bus's `Policy` is handled the same way. Unless your template sets
 another tool writes those statements. So `--revert` and `--accept` leave the
 live policy alone, and a console edit to it is not reported.
 
+An ECR repository's `RepositoryPolicyText` is compared only when your template
+sets it on the `AWS::ECR::Repository`. Lambda can write a repository policy
+itself when a function pulls its image from the repository, so drift does not
+read a policy your template does not declare, and `--revert` and `--accept`
+leave it alone.
+
 IAM attachment lists follow the same rule. Drift does not compare these lists
 unless your template sets them on the resource itself: a user's `Groups`, the
 `ManagedPolicyArns` of a role, user or group, and a managed policy's `Roles`,
