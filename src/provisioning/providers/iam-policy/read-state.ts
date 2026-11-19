@@ -14,6 +14,7 @@ import type {
 import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { readPolicyTargetLists } from './shared.js';
+import { isStoredExpression } from '../../iam-sibling-managed-policies.js';
 
 type PolicyTarget = { kind: 'role' | 'group' | 'user'; name: string };
 
@@ -205,7 +206,7 @@ async function getTargetPolicyDocument(
 /** Does the value hold a dynamic reference or cdkd's `***` mask in a string leaf? */
 function holdsSecretLeaf(value: unknown, depth = 0): boolean {
   if (depth > 64) return true;
-  if (typeof value === 'string') return value.includes('{{resolve:') || value.includes('***');
+  if (typeof value === 'string') return isStoredExpression(value);
   if (Array.isArray(value)) return value.some((v) => holdsSecretLeaf(v, depth + 1));
   if (typeof value === 'object' && value !== null) {
     return Object.entries(value).some(

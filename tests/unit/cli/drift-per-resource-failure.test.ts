@@ -1856,6 +1856,17 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     expect(exitSpy).toHaveBeenCalledWith(2);
   });
 
+  it('a refusal between failures resets the run: 4 failures, a refusal, 1 failure does not trip', async () => {
+    mockGetState.mockResolvedValue(stackOf('BBBBFBG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04', 'R05', 'R06']);
+    expect(Object.values(causes(report!))).toEqual(Array(6).fill('readFailed'));
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R06']);
+  });
+
   it('says once why it stopped, and names the unread resources in the human report', async () => {
     mockGetState.mockResolvedValue(stackOf('BBBBBBB'));
     installProviders();

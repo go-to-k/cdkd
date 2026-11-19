@@ -686,9 +686,12 @@ export async function runDriftForStack(
           });
           // go-to-k/cdkd#2207: only a READ that threw counts toward the breaker;
           // a comparison that threw after a good read was reset above. A
-          // provider's own refusal (go-to-k/cdkd#6616) is no AWS failure.
+          // provider's own refusal (go-to-k/cdkd#6616) is no AWS failure: its
+          // AWS calls all answered, so it resets the run like a good read.
           let breakerTripped = false;
-          if (!readReturned && !(err instanceof DriftReadRefusedError)) {
+          if (err instanceof DriftReadRefusedError) {
+            noteReadReturned();
+          } else if (!readReturned) {
             consecutiveReadFailures[readPath]++;
             if (consecutiveReadFailures[readPath] === DRIFT_READ_FAILURE_BREAKER_THRESHOLD) {
               trippedReadPaths.add(readPath);
