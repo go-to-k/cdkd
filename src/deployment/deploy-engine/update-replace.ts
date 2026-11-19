@@ -32,8 +32,6 @@ import {
   customResourcePayloadLeavesField,
 } from './custom-resource-payload-leaves.js';
 
-const dependentParser = new TemplateParser();
-
 /** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
 export async function updateByReplacement(
   engine: DeployEngine,
@@ -349,7 +347,8 @@ export async function updateByReplacement(
           }
           const declared = template?.Resources?.[id];
           return (
-            declared !== undefined && dependentParser.extractDependencies(declared).has(logicalId)
+            declared !== undefined &&
+            new TemplateParser().extractDependencies(declared).has(logicalId)
           );
         })
         .map(([id]) => id)
