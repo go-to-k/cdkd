@@ -41,6 +41,10 @@ import {
   withoutStoppedSiblingSgRules,
 } from '../../provisioning/sg-sibling-rules.js';
 import {
+  tableMembersSiblingsStoppedWriting,
+  withoutStoppedTableMembers,
+} from '../../provisioning/sibling-owned-members.js';
+import {
   createUnionSecretMasker,
   carryRedactionMarks,
   markSameGenerationBag,
@@ -678,6 +682,26 @@ export function pruneMembersSiblingsStoppedWriting(
     };
     changed++;
   }
+  // go-to-k/cdkd#6610: and every `sibling-owned-members.ts` row (a topic's
+  // standalone subscription, a cluster's capacity provider association, a
+  // principal's standalone inline policy).
+  for (const [logicalId, stopped] of tableMembersSiblingsStoppedWriting(
+    previous,
+    next,
+    oldMaySurvive,
+    templatePolicies
+  )) {
+    const record = next[logicalId];
+    const observed = record?.observedProperties;
+    if (record === undefined || observed === undefined) continue;
+    const pruned = withoutStoppedTableMembers(observed, stopped, record.properties);
+    if (pruned === observed) continue;
+    next[logicalId] = {
+      ...record,
+      observedProperties: carryRedactionMarks(observed, pruned),
+    };
+    changed++;
+  }
   return changed;
 }
 
@@ -695,7 +719,7 @@ export function pruneStoppedSiblingMembersBestEffort(
   } catch (err) {
     const cause = err instanceof Error ? err.name : typeof err;
     logger.debug(
-      safeMsg`Sibling-written IAM members and security-group rules were not pruned from the observed baselines (${cause}); they stay until 'cdkd state refresh-observed'.`
+      safeMsg`Sibling-written members (IAM lists, security-group rules and the other sibling-owned lists) were not pruned from the observed baselines (${cause}); they stay until 'cdkd state refresh-observed'.`
     );
   }
 }

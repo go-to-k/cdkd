@@ -170,6 +170,22 @@ such a resource, or replaces it with a different rule, its delete revokes the
 rule and the same deploy removes it from the group's recorded snapshot, so
 drift does not report it as lost and `--revert` does not re-authorize it.
 
+The same rule covers the other resources that write into another resource's
+property:
+
+| Resource in the stack | Writes into | Drift leaves out |
+| --- | --- | --- |
+| `AWS::SNS::Subscription` | `AWS::SNS::Topic` `Subscription` | that subscription (matched by protocol and endpoint) |
+| `AWS::ECS::ClusterCapacityProviderAssociations` | `AWS::ECS::Cluster` `CapacityProviders`, `DefaultCapacityProviderStrategy` | both lists, unless the cluster's template sets them |
+| `AWS::IAM::Policy`, `RolePolicy`, `UserPolicy`, `GroupPolicy` | a role's, user's or group's inline `Policies` | that policy (matched by name) |
+| `AWS::EC2::EIPAssociation` | `AWS::EC2::EIP` `InstanceId` | the instance, unless the address's template sets it |
+
+A member nothing in the stack writes is still reported, and `--revert` removes
+only that member: it sends the members such a resource wrote as they are live,
+so they are neither removed nor added again. When a deploy removes such a
+resource, or changes what it writes, the same deploy removes what it stopped
+writing from the other resource's recorded snapshot.
+
 An `AWS::Lambda::EventSourceMapping` deployed by an older cdkd can hold
 `Enabled: false` in its recorded snapshot even though the mapping is enabled.
 Drift does not report that difference while your template leaves `Enabled`

@@ -1110,6 +1110,11 @@
       "scenarios": []
     },
     {
+      "name": "drift-ecs-capacity-association",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "drift-revert",
       "annotated": true,
       "scenarios": [
@@ -1143,6 +1148,11 @@
     },
     {
       "name": "drift-sg-sibling-rules",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "drift-sns-sibling-subscription",
       "annotated": false,
       "scenarios": []
     },
@@ -4182,9 +4192,11 @@
     "docdb-global-cluster",
     "docdb-restore",
     "drift-cc-read-only-props",
+    "drift-ecs-capacity-association",
     "drift-revert-nested-write-only",
     "drift-rotation-schedule-revert",
     "drift-sg-sibling-rules",
+    "drift-sns-sibling-subscription",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",

@@ -5240,6 +5240,7 @@
       "resourceType": "AWS::ECS::Cluster",
       "integs": [
         "cc-to-sdk-reroute-ecs-service",
+        "drift-ecs-capacity-association",
         "drift-revert",
         "ecs-bluegreen",
         "ecs-cluster-capacity-settings",
@@ -5261,6 +5262,10 @@
       "signals": {
         "cc-to-sdk-reroute-ecs-service": [
           "l1"
+        ],
+        "drift-ecs-capacity-association": [
+          "l1",
+          "literal"
         ],
         "drift-revert": [
           "l1"
@@ -9440,6 +9445,7 @@
       "resourceType": "AWS::SNS::Subscription",
       "integs": [
         "composite-stack",
+        "drift-sns-sibling-subscription",
         "noecho-named-producer",
         "secret-derived-immutable-names",
         "sns-event-source",
@@ -9450,6 +9456,10 @@
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "drift-sns-sibling-subscription": [
+          "l1",
           "literal"
         ],
         "noecho-named-producer": [
@@ -9495,6 +9505,7 @@
         "deployment-events",
         "drift-revert",
         "drift-revert-arrays",
+        "drift-sns-sibling-subscription",
         "event-driven",
         "eventbridge-pipes",
         "export",
@@ -9589,6 +9600,10 @@
         ],
         "drift-revert-arrays": [
           "l2"
+        ],
+        "drift-sns-sibling-subscription": [
+          "l1",
+          "literal"
         ],
         "event-driven": [
           "l2"
@@ -9819,6 +9834,7 @@
         "data-pipeline",
         "depends-on-flip",
         "drift-revert-arrays",
+        "drift-sns-sibling-subscription",
         "dynamodb-globaltable",
         "event-driven",
         "eventbridge",
@@ -9969,6 +9985,9 @@
         ],
         "drift-revert-arrays": [
           "l2"
+        ],
+        "drift-sns-sibling-subscription": [
+          "l1"
         ],
         "dynamodb-globaltable": [
           "l1"
@@ -11239,6 +11258,7 @@
     "AWS::EC2::VPNGateway",
     "AWS::EC2::Volume",
     "AWS::EC2::VolumeAttachment",
+    "AWS::ECS::ClusterCapacityProviderAssociations",
     "AWS::ECS::Gateway",
     "AWS::ECS::GatewayClusterAssociations",
     "AWS::EKS::Cluster",
