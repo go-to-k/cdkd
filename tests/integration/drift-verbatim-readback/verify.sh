@@ -95,7 +95,7 @@ delete_principal() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
-  [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null 2>&1
+  [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   if [ -n "${ACCOUNT:-}" ]; then
     aws s3 rb "s3://${BUCKET_PREFIX}${ACCOUNT}-${REGION}" --force >/dev/null 2>&1 || true
     aws sns delete-topic --topic-arn "arn:${PARTITION}:sns:${REGION}:${ACCOUNT}:${TOPIC}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -136,20 +136,20 @@ echo "==> Pre-run cleanup"; cleanup
 # Deploy WITH the observed capture (the default), so state records each
 # resource's deploy-time `readCurrentState` output to read back below.
 echo "==> Deploy"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
 
 # `drift` exits 0 clean, 1 drifted, 2 refused; any of the three is a result
 # to record here, anything else is a failure of the run.
 run_drift() { # $1 = output file
   local rc=0
-  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"$1" || rc=$?
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --json >"$1" || rc=$?
   case "${rc}" in
     0 | 1 | 2) echo "    drift rc=${rc} -> $1" ;;
     *) echo "FAIL: cdkd drift exited ${rc}" >&2; exit 1 ;;
   esac
 }
 show_state() { # $1 = output file
-  node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"$1"
+  node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --json >"$1"
 }
 
 echo "==> Record the deploy-time readback"
@@ -175,12 +175,12 @@ STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" AWS_REGION="${REGION}" node stri
 run_drift "${ARTIFACT_DIR}/drift-template-only.json"
 
 echo "==> Second readback via state refresh-observed"
-node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
 show_state "${ARTIFACT_DIR}/state-show-refresh.json"
 node summarize-readback.ts "${ARTIFACT_DIR}/state-show-refresh.json" >"${ARTIFACT_DIR}/summary-refresh.json"
 
 echo "==> Destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force
 
 assert_gone "bucket ${BUCKET_PREFIX}${ACCOUNT}-${REGION} still exists after destroy" \
   aws s3api head-bucket --bucket "${BUCKET_PREFIX}${ACCOUNT}-${REGION}" --region "${REGION}"
