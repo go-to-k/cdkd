@@ -284,8 +284,9 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
     identity: emrFleetIdentity,
     emptyMeansAbsent: true,
   },
-  // An instance's SDK read emits neither list (`VolumeAttachment`'s devices
-  // are `BlockDeviceMappings`, #6384); a Cloud Control read returns the
+  // An instance's SDK read emits no attachment's volume or interface (its
+  // `Volumes` carries only the template's own ids; `VolumeAttachment`'s
+  // devices are `BlockDeviceMappings`, #6384); a Cloud Control read returns the
   // attached volumes and interfaces in `Volumes` / `NetworkInterfaces`.
   {
     child: 'AWS::EC2::VolumeAttachment',
