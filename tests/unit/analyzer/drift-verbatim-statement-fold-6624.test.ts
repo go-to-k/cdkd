@@ -111,6 +111,15 @@ describe('calculateResourceDrift: a Statement object against its one-element lis
     expect(drift.map((d) => d.path)).toEqual(['PolicyDocument.Statement']);
   });
 
+  it('reports a live empty list against the object (the statement removed)', () => {
+    const drift = calculateResourceDrift(
+      { PolicyDocument: doc(S3_DENY) },
+      { PolicyDocument: doc([]) },
+      { unionWalkPaths: paths }
+    );
+    expect(drift).toEqual([{ path: 'PolicyDocument.Statement', stateValue: S3_DENY, awsValue: [] }]);
+  });
+
   it('does not fold a Statement nested below the document', () => {
     const drift = calculateResourceDrift(
       { PolicyDocument: { Nested: { Statement: S3_DENY } } },

@@ -65,6 +65,7 @@ BARE_ROLE="cdkd-dvr-bare-role"
 BARE_USER="cdkd-dvr-bare-user"
 BARE_GROUP="cdkd-dvr-bare-group"
 MP_NAME="cdkd-dvr-managed-policy"
+KEY_ALIAS="alias/cdkd-dvr-key"
 KEY_ID=""
 
 # Strip every inline and attached policy from a principal, then delete it.
@@ -101,6 +102,9 @@ cleanup() {
   q_url=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null) &&
     aws sqs delete-queue --queue-url "${q_url}" --region "${REGION}" >/dev/null 2>&1
   aws secretsmanager delete-secret --secret-id "${SECRET}" --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
+  # A run that died with no state record leaves the key: find it by alias.
+  [ -n "${KEY_ID}" ] || KEY_ID=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text 2>/dev/null)
+  aws kms delete-alias --alias-name "${KEY_ALIAS}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${KEY_ID}" ]; then
     aws kms schedule-key-deletion --key-id "${KEY_ID}" --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1 || true
   fi
@@ -200,7 +204,7 @@ stmt() { # $1 = Effect, $2 = Principal JSON or "", $3 = Action, $4 = Resource or
   local p="" r=""
   [ -n "$2" ] && p=",\"Principal\":$2"
   [ -n "$4" ] && r=",\"Resource\":\"$4\""
-  printf '{"Version":"2012-10-17","Statement":{"Effect":"%s"%s,"Action":"%s"%s,"Condition":%s}}' \
+  printf '{"Statement":{"Effect":"%s"%s,"Action":"%s"%s,"Condition":%s}}' \
     "$1" "${p}" "$3" "${r}" "${COND}"
 }
 BUCKET="${BUCKET_PREFIX}${ACCOUNT}-${REGION}"
@@ -262,17 +266,17 @@ sleep 15
 
 echo "==> The live documents hold no Condition after the revert"
 live_docs() {
-  aws s3api get-bucket-policy --bucket "${BUCKET}" --region "${REGION}" --query Policy --output text
-  aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names Policy --query Attributes.Policy --output text
-  aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.Policy --output text
-  aws kms get-key-policy --key-id "${KEY_ID}" --region "${REGION}" --policy-name default --query Policy --output text
-  aws secretsmanager get-resource-policy --secret-id "${SECRET}" --region "${REGION}" --query ResourcePolicy --output text
-  aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name cdkd-dvr-role-policy --output json
-  aws iam get-user-policy --user-name "${SIB_USER}" --policy-name cdkd-dvr-user-policy --output json
-  aws iam get-group-policy --group-name "${SIB_GROUP}" --policy-name cdkd-dvr-group-policy --output json
-  aws iam get-role --role-name "${BARE_ROLE}" --output json
+  aws s3api get-bucket-policy --bucket "${BUCKET}" --region "${REGION}" --query Policy --output text || return 1
+  aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names Policy --query Attributes.Policy --output text || return 1
+  aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.Policy --output text || return 1
+  aws kms get-key-policy --key-id "${KEY_ID}" --region "${REGION}" --policy-name default --query Policy --output text || return 1
+  aws secretsmanager get-resource-policy --secret-id "${SECRET}" --region "${REGION}" --query ResourcePolicy --output text || return 1
+  aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name cdkd-dvr-role-policy --output json || return 1
+  aws iam get-user-policy --user-name "${SIB_USER}" --policy-name cdkd-dvr-user-policy --output json || return 1
+  aws iam get-group-policy --group-name "${SIB_GROUP}" --policy-name cdkd-dvr-group-policy --output json || return 1
+  aws iam get-role --role-name "${BARE_ROLE}" --output json || return 1
 }
-LIVE=$(live_docs)
+LIVE=$(live_docs) || { echo "FAIL: could not read a live document back after the revert" >&2; exit 1; }
 if grep -q 'PrincipalAccount' <<<"${LIVE}"; then
   echo "FAIL: a Condition survived drift --revert:" >&2
   echo "${LIVE}" >&2
@@ -317,6 +321,8 @@ for probe in queue secret; do
   done
   [ -n "${GONE}" ] || { echo "FAIL: ${probe} still exists after destroy" >&2; exit 1; }
 done
+assert_gone "alias ${KEY_ALIAS} still exists after destroy" \
+  aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}"
 # A deleted KMS key stays readable through its pending window; 7 days is the
 # AWS minimum, so PendingDeletion is the terminal state of a deleted key.
 key_state=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" --query 'KeyMetadata.KeyState' --output text)

@@ -7206,6 +7206,7 @@
       "integs": [
         "cc-to-sdk-reroute-common-types-2",
         "composite-stack",
+        "drift-verbatim-readback",
         "dynamodb-globaltable-replica-settings",
         "infra-security",
         "kms-encryption"
@@ -7216,6 +7217,10 @@
           "literal"
         ],
         "composite-stack": [
+          "literal"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
           "literal"
         ],
         "dynamodb-globaltable-replica-settings": [

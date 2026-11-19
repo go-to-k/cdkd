@@ -11,7 +11,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * Template-only drift baseline probe for go-to-k/cdkd#6624 and #6627.
  *
  * Every resource policy here is written with an OBJECT-form `Statement` and no
- * `Id` / `Sid`, so a key the service adds on its own shows in the readback as
+ * `Version` / `Id` / `Sid`, so a key the service adds on its own shows in the readback as
  * a key the template never submitted. verify.sh records each resource's
  * deploy-time readback (`observedProperties`) beside its template properties.
  *
@@ -32,6 +32,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * covers: AWS::SQS::QueuePolicy
  * covers: AWS::SNS::TopicPolicy
  * covers: AWS::KMS::Key
+ * covers: AWS::KMS::Alias
  * covers: AWS::SecretsManager::ResourcePolicy
  * covers: AWS::IAM::RolePolicy
  * covers: AWS::IAM::UserPolicy
@@ -47,10 +48,10 @@ export class DriftVerbatimReadbackStack extends cdk.Stack {
     super(scope, id, props);
 
     const root = { AWS: `arn:${cdk.Aws.PARTITION}:iam::${cdk.Aws.ACCOUNT_ID}:root` };
-    const doc = (statement: Record<string, unknown>) => ({
-      Version: '2012-10-17',
-      Statement: statement,
-    });
+    // No `Version`: the documents CDK's L2s emit carry one, and earlier runs
+    // of this fixture measured those. Without it, a `Version` the service
+    // filled in on its own would show here as phantom drift.
+    const doc = (statement: Record<string, unknown>) => ({ Statement: statement });
 
     // --- #6624: service resource policies -------------------------------
     const bucket = new s3.CfnBucket(this, 'ProbeBucket', {
@@ -102,6 +103,12 @@ export class DriftVerbatimReadbackStack extends cdk.Stack {
       }),
     });
     key.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // A deterministic name, so verify.sh's cleanup can find the key after a
+    // run that died with no state record.
+    new kms.CfnAlias(this, 'ProbeKeyAlias', {
+      aliasName: 'alias/cdkd-dvr-key',
+      targetKeyId: key.ref,
+    });
 
     const secret = new secretsmanager.CfnSecret(this, 'ProbeSecret', {
       name: 'cdkd-dvr-secret',

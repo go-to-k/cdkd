@@ -91,7 +91,6 @@ vi.mock('../../../src/provisioning/read-only-properties.js', () => ({
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 
-
 const ACCOUNT = '123456789012';
 const ROOT = { AWS: `arn:aws:iam::${ACCOUNT}:root` };
 const doc = (statement: unknown): Record<string, unknown> => ({

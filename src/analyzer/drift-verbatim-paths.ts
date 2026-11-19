@@ -27,7 +27,9 @@
  * ({@link isVerbatimStatementPath}), as IAM's policy grammar does.
  *
  * Not listed: `AWS::ECR::Repository` `RepositoryPolicyText`, which the ECR
- * readback does not carry at all. Adding a type is a row.
+ * readback does not carry at all (go-to-k/cdkd#6631), and every resource policy
+ * not yet measured (OpenSearch `AccessPolicies`, Lambda layer and EventBridge
+ * bus policies, ...). Adding a type is a row, after a measured readback.
  */
 const VERBATIM_ECHO_DRIFT_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::IAM::Role': ['AssumeRolePolicyDocument'],

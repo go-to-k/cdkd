@@ -93,7 +93,8 @@ export interface PropertyDrift {
  * verbatim (`verbatimEchoDriftKeys`, go-to-k/cdkd#6622), where a key only AWS
  * holds can only have been added out of band. Same prefix rule. At
  * `<entry>.Statement` a statement object equals a one-element list holding it
- * (go-to-k/cdkd#6624), so entries are the verbatim TOP-LEVEL keys.
+ * (go-to-k/cdkd#6624), so entries must be `verbatimEchoDriftKeys` values: a
+ * non-verbatim entry would take the fold too.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
@@ -527,15 +528,13 @@ function definedKeys(obj: Record<string, unknown>): string[] {
 
 /**
  * `statement` as a one-element list when it is a single statement object and
- * `other` is a one-element list; otherwise `statement` itself. Only the
- * one-element case folds: a list of two against one object is a statement
- * added or removed, which stays drift.
+ * `other` is a list; otherwise `statement` itself. The wrapped object then
+ * equals only a ONE-element list holding an equal statement, so a list of two
+ * (or none) against one object is a statement added or removed, which stays
+ * drift.
  */
 function asStatementList(statement: unknown, other: unknown): unknown {
-  return isPlainObject(statement) &&
-    !Array.isArray(statement) &&
-    Array.isArray(other) &&
-    other.length === 1
+  return isPlainObject(statement) && !Array.isArray(statement) && Array.isArray(other)
     ? [statement]
     : statement;
 }
