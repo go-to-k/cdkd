@@ -16,6 +16,7 @@ import {
   UntagResourceCommand,
   ResourceNotFoundException,
   waitUntilFunctionUpdatedV2,
+  waitUntilFunctionActiveV2,
   type UpdateFunctionConfigurationCommandInput,
   type UpdateFunctionCodeCommandInput,
   type Runtime,
@@ -34,6 +35,10 @@ import {
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import {
+  enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
+} from '../../../deployment/resource-deadline.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { functionAttributes } from './attributes.js';
 import { maskDeep, type MaskedLogSinks, type MaskerFn } from '../../masked-retry-logger.js';
@@ -161,6 +166,42 @@ export async function update(
     // AWS and gets that refusal, as on CloudFormation.
     const capacityNeverApplied =
       !liveManaged && desiredCapacity !== undefined && recordedCapacity !== undefined;
+
+    // go-to-k/cdkd#6605: a create returns while the function is still
+    // `Pending` (minutes for a VPC function), and AWS refuses a change to it
+    // until it is `Active`. Each change below goes through this: a refusal for
+    // that reason waits for `Active` once, then resends the call once, so an
+    // ordinary update makes no extra call. A Managed Instances function has
+    // settled on create, and its `$LATEST` never reads `Active`.
+    let waitedForActive = false;
+    const sendOnceActive = async <T>(send: () => Promise<T>): Promise<T> => {
+      try {
+        return await send();
+      } catch (error) {
+        if (waitedForActive || liveManaged || !isLambdaPendingRefusal(error)) throw error;
+        waitedForActive = true;
+        // The resource deadline does not stop this update, so the wait ends
+        // before it and nothing is resent past it: a change landing after the
+        // engine gave up would disagree with state.
+        const budgetMs = Math.min(
+          this.functionUpdateMaxWaitSeconds * 1000,
+          enclosingDeadlineRemainingMs() - this.latestPublishedDeadlineMarginMs
+        );
+        if (budgetMs < 1000) throw error;
+        log.debug(
+          `Lambda function ${log.value(physicalId)} is still Pending; waiting for it to be Active`
+        );
+        await this.waitForFunctionActive(
+          logicalId,
+          resourceType,
+          physicalId,
+          log,
+          Math.floor(budgetMs / 1000)
+        );
+        if (enclosingDeadlineExpired()) throw error;
+        return await send();
+      }
+    };
     if (capacityNeverApplied) {
       log.warn(
         `Lambda function ${logicalId} is not a Managed Instances function on AWS, so its ` +
@@ -282,14 +323,17 @@ export async function update(
       };
 
       for (const field of changedConfigFields) markUnsettled(field);
-      await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
+      await sendOnceActive(() =>
+        this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams))
+      );
       log.debug(`Updated configuration for Lambda function ${log.value(physicalId)}`);
       // Wait for the configuration update to fully apply before any
       // follow-up call. UpdateFunctionConfiguration is async; an
       // immediate UpdateFunctionCode (or any downstream Invoke) against
       // the in-flight update fails with "The operation cannot be
-      // performed at this time. The function is currently in the
-      // following state: Pending" / "...InProgress".
+      // performed at this time. An update is in progress for resource: ..."
+      // (a LastUpdateStatus conflict, not the `State: Pending` refusal
+      // `sendOnceActive` waits out).
       await this.waitForFunctionUpdated(logicalId, resourceType, physicalId, log);
     }
 
@@ -308,8 +352,10 @@ export async function update(
     const codeSigningChanged = newCodeSigningConfigArn !== prevCodeSigningConfigArn;
     if (codeSigningChanged && newCodeSigningConfigArn === undefined) {
       markUnsettled('CodeSigningConfigArn');
-      await this.lambdaClient.send(
-        new DeleteFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+      await sendOnceActive(() =>
+        this.lambdaClient.send(
+          new DeleteFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+        )
       );
       log.debug(
         `Detached CodeSigningConfigArn from Lambda function ${log.value(physicalId)} (template removed the property)`
@@ -356,7 +402,7 @@ export async function update(
 
       markUnsettled('Code');
       if (architecturesChanged) markUnsettled('Architectures');
-      await this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams));
+      await sendOnceActive(() => this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams)));
       log.debug(`Updated code for Lambda function ${log.value(physicalId)}`);
       // Same reason as above: UpdateFunctionCode is async too, and
       // downstream resources / a subsequent deploy must not race the
@@ -373,11 +419,13 @@ export async function update(
     const prevRecursiveLoop = previousProperties['RecursiveLoop'] as RecursiveLoop | undefined;
     if (newRecursiveLoop !== undefined && newRecursiveLoop !== prevRecursiveLoop) {
       markUnsettled('RecursiveLoop');
-      await this.lambdaClient.send(
-        new PutFunctionRecursionConfigCommand({
-          FunctionName: physicalId,
-          RecursiveLoop: newRecursiveLoop,
-        })
+      await sendOnceActive(() =>
+        this.lambdaClient.send(
+          new PutFunctionRecursionConfigCommand({
+            FunctionName: physicalId,
+            RecursiveLoop: newRecursiveLoop,
+          })
+        )
       );
       log.debug(
         `Updated RecursiveLoop for Lambda function ${log.value(physicalId)} to '${log.value(newRecursiveLoop)}'`
@@ -403,18 +451,20 @@ export async function update(
     if (newReservedConcurrentExecutions !== prevReservedConcurrentExecutions) {
       markUnsettled('ReservedConcurrentExecutions');
       if (newReservedConcurrentExecutions === undefined) {
-        await this.lambdaClient.send(
-          new DeleteFunctionConcurrencyCommand({ FunctionName: physicalId })
+        await sendOnceActive(() =>
+          this.lambdaClient.send(new DeleteFunctionConcurrencyCommand({ FunctionName: physicalId }))
         );
         log.debug(
           `Cleared ReservedConcurrentExecutions for Lambda function ${log.value(physicalId)} (template removed the property)`
         );
       } else {
-        await this.lambdaClient.send(
-          new PutFunctionConcurrencyCommand({
-            FunctionName: physicalId,
-            ReservedConcurrentExecutions: newReservedConcurrentExecutions,
-          })
+        await sendOnceActive(() =>
+          this.lambdaClient.send(
+            new PutFunctionConcurrencyCommand({
+              FunctionName: physicalId,
+              ReservedConcurrentExecutions: newReservedConcurrentExecutions,
+            })
+          )
         );
         log.debug(
           `Updated ReservedConcurrentExecutions for Lambda function ${log.value(physicalId)} to ${log.value(newReservedConcurrentExecutions)}`
@@ -430,11 +480,13 @@ export async function update(
     // which for a SECURITY control is the direction that matters.
     if (codeSigningChanged && newCodeSigningConfigArn !== undefined) {
       markUnsettled('CodeSigningConfigArn');
-      await this.lambdaClient.send(
-        new PutFunctionCodeSigningConfigCommand({
-          FunctionName: physicalId,
-          CodeSigningConfigArn: newCodeSigningConfigArn,
-        })
+      await sendOnceActive(() =>
+        this.lambdaClient.send(
+          new PutFunctionCodeSigningConfigCommand({
+            FunctionName: physicalId,
+            CodeSigningConfigArn: newCodeSigningConfigArn,
+          })
+        )
       );
       log.debug(
         `Updated CodeSigningConfigArn for Lambda function ${log.value(physicalId)} to ${log.value(newCodeSigningConfigArn)}`
@@ -464,9 +516,11 @@ export async function update(
         prevRuntimeManagementConfig?.['RuntimeVersionArn'];
     if (runtimeManagementChanged) {
       markUnsettled('RuntimeManagementConfig');
-      await this.putRuntimeManagementConfig(
-        physicalId,
-        newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
+      await sendOnceActive(() =>
+        this.putRuntimeManagementConfig(
+          physicalId,
+          newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
+        )
       );
       log.debug(
         `Updated RuntimeManagementConfig for Lambda function ${log.value(physicalId)} to ${JSON.stringify(
@@ -533,6 +587,7 @@ export async function update(
       {
         forceUpsert: context?.unsettledProperties?.has('Tags') === true,
         beforeWrite: () => markUnsettled('Tags'),
+        send: sendOnceActive,
       }
     );
 
@@ -625,12 +680,18 @@ export async function applyTagDiff(
   oldTagsRaw: unknown,
   newTagsRaw: unknown,
   log: MaskedLogSinks,
-  unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+  unsettled: {
+    forceUpsert: boolean;
+    beforeWrite: () => void;
+    /** Wraps each Untag / Tag call (update()'s Pending wait, go-to-k/cdkd#6605). */
+    send?: <T>(call: () => Promise<T>) => Promise<T>;
+  } = {
     forceUpsert: false,
     beforeWrite: () => undefined,
   }
 ): Promise<void> {
   if (!functionArn) return;
+  const send = unsettled.send ?? (<T>(call: () => Promise<T>): Promise<T> => call());
 
   const plan = planTagDiff(oldTagsRaw, newTagsRaw);
   const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
@@ -647,8 +708,10 @@ export async function applyTagDiff(
   if (tagsToRemove.length > 0 || Object.keys(tagsToAdd).length > 0) unsettled.beforeWrite();
 
   if (tagsToRemove.length > 0) {
-    await this.lambdaClient.send(
-      new UntagResourceCommand({ Resource: functionArn, TagKeys: tagsToRemove })
+    await send(() =>
+      this.lambdaClient.send(
+        new UntagResourceCommand({ Resource: functionArn, TagKeys: tagsToRemove })
+      )
     );
     // The function NAME through `value`, not the ARN: the ARN embeds the
     // name, and a secret name below the substring needle floor would print
@@ -658,8 +721,8 @@ export async function applyTagDiff(
     );
   }
   if (Object.keys(tagsToAdd).length > 0) {
-    await this.lambdaClient.send(
-      new TagResourceCommand({ Resource: functionArn, Tags: tagsToAdd })
+    await send(() =>
+      this.lambdaClient.send(new TagResourceCommand({ Resource: functionArn, Tags: tagsToAdd }))
     );
     log.debug(
       `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Lambda function ${log.value(functionName)}`
@@ -696,6 +759,59 @@ export async function waitForFunctionUpdated(
       (text) =>
         new ProvisioningError(
           `Lambda function ${logicalId} update did not complete: ${text}`,
+          resourceType,
+          logicalId,
+          functionName,
+          cause ?? new Error(safeStringify(error))
+        )
+    );
+  }
+}
+
+/**
+ * AWS's refusal of a change to a function that is still `Pending` after its
+ * create. AWS quotes the state (`...is currently in the following state:
+ * 'Pending'. StateReasonCode: 'Creating'`, go-to-k/cdkd#6605); the bare
+ * spelling is the older wording.
+ */
+const LAMBDA_PENDING_REFUSAL = /currently in the following state: '?Pending\b/;
+
+export function isLambdaPendingRefusal(error: unknown): boolean {
+  return LAMBDA_PENDING_REFUSAL.test(describeAwsFailure(error).detail);
+}
+
+/**
+ * Block until the function's `State` is `Active`, for an update whose call AWS
+ * refused because the function is still `Pending` (go-to-k/cdkd#6605). The same
+ * cadence and failure wrap as {@link waitForFunctionUpdated}; the caller caps
+ * `maxWaitSeconds` by the enclosing resource deadline.
+ */
+export async function waitForFunctionActive(
+  this: LambdaFunctionProvider,
+  logicalId: string,
+  resourceType: string,
+  functionName: string,
+  log: MaskedLogSinks,
+  maxWaitSeconds: number
+): Promise<void> {
+  try {
+    await waitUntilFunctionActiveV2(
+      {
+        client: this.lambdaClient,
+        maxWaitTime: maxWaitSeconds,
+        minDelay: 1,
+        maxDelay: 5,
+      },
+      { FunctionName: functionName }
+    );
+  } catch (error) {
+    const cause = error instanceof Error ? error : undefined;
+    throw this.wrapMaskedError(
+      log,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Lambda function ${logicalId} did not become Active: ${text}`,
           resourceType,
           logicalId,
           functionName,

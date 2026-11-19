@@ -1934,6 +1934,11 @@
       "scenarios": []
     },
     {
+      "name": "lambda-vpc-update-while-pending",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-web-function-revision-replace",
       "annotated": false,
       "scenarios": []
@@ -4265,6 +4270,7 @@
     "lambda-network-connector",
     "lambda-reserved-concurrency",
     "lambda-runtime-config",
+    "lambda-vpc-update-while-pending",
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "legacy-synthesizer-assets",

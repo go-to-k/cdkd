@@ -35,6 +35,7 @@ import {
   update,
   applyTagDiff,
   waitForFunctionUpdated,
+  waitForFunctionActive,
   waitForLambdaUpdateCompleted,
 } from './lambda-function/update.js';
 import {
@@ -379,7 +380,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
     log: MaskedLogSinks,
-    unsettled?: { forceUpsert: boolean; beforeWrite: () => void }
+    unsettled?: {
+      forceUpsert: boolean;
+      beforeWrite: () => void;
+      send?: <T>(call: () => Promise<T>) => Promise<T>;
+    }
   ): Promise<void> {
     return applyTagDiff.call(
       this,
@@ -401,6 +406,23 @@ export class LambdaFunctionProvider implements ResourceProvider {
     log: MaskedLogSinks
   ): Promise<void> {
     return waitForFunctionUpdated.call(this, logicalId, resourceType, functionName, log);
+  }
+
+  waitForFunctionActive(
+    logicalId: string,
+    resourceType: string,
+    functionName: string,
+    log: MaskedLogSinks,
+    maxWaitSeconds: number
+  ): Promise<void> {
+    return waitForFunctionActive.call(
+      this,
+      logicalId,
+      resourceType,
+      functionName,
+      log,
+      maxWaitSeconds
+    );
   }
 
   waitForLambdaUpdateCompleted(functionName: string): Promise<void> {

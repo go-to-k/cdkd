@@ -608,8 +608,10 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
  * apart (issue [#2116](https://github.com/go-to-k/cdkd/issues/2116)).
  */
 const OTHER_TRANSIENT_ERROR_MESSAGE_PATTERNS: readonly string[] = [
-  // Freshly-created resource still leaving its Pending/Creating state
+  // Freshly-created resource still leaving its Pending/Creating state. Lambda
+  // now quotes the state (go-to-k/cdkd#6605); the bare spelling is older.
   'currently in the following state: Pending',
+  "currently in the following state: 'Pending'",
   // DELETE dependency ordering (parallel deletion race conditions)
   'has dependencies and cannot be deleted',
   "can't be deleted since it has",

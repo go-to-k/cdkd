@@ -562,7 +562,7 @@ if state_exists; then
   echo "    OK: re-run finished in ${RERUN_ELAPSED}s (< 180s) — no 10m CR stall"
 
   # The re-run must not have left a CR timeout / 10m-waiter signature.
-  if grep -E -q "currently in the following state: Pending|has been deleting for 1[0-9]m|waitUntilFunctionActive" "${RERUN_LOG}"; then
+  if grep -E -q "currently in the following state: .?Pending|has been deleting for 1[0-9]m|waitUntilFunctionActive" "${RERUN_LOG}"; then
     echo "FAIL: re-run log shows a long Lambda-waiter / CR stall signature (#804 regression)" >&2
     exit 1
   fi

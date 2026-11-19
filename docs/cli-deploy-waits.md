@@ -179,7 +179,10 @@ cdkd invokes the Lambda function behind an
 fails with `The function is currently in the following state: Pending`.
 
 The wait belongs to that invoke only. An ordinary Lambda create or update
-returns as soon as the API call returns. A Lambda Managed Instances function is
+returns as soon as the API call returns. When a deploy updates a function that
+is still `Pending` from its create, AWS refuses the change, so cdkd then waits
+for the function to be `Active` and sends the change again. The wait takes at
+most 10 minutes and happens only after that refusal. A Lambda Managed Instances function is
 the other wait every mode keeps, on create, update and delete: the version it
 publishes launches its capacity, and AWS refuses the next call until that
 settles. A Lambda function in a VPC that

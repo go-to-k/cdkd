@@ -81,6 +81,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['hasVpcConfig', vpc, 'hasVpcConfig', 1],
   ['applyTagDiff', update, 'applyTagDiff', 8],
   ['waitForFunctionUpdated', update, 'waitForFunctionUpdated', 4],
+  ['waitForFunctionActive', update, 'waitForFunctionActive', 5],
   ['waitForLambdaUpdateCompleted', update, 'waitForLambdaUpdateCompleted', 1],
   ['cleanupLambdaEnis', del, 'cleanupLambdaEnis', 2],
   ['deleteEniWithRetry', del, 'deleteEniWithRetry', 3],
