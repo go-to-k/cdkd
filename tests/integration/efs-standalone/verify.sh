@@ -109,6 +109,36 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# go-to-k/cdkd#6609: the baseline captured right after a member write (a
+# policy or setting a separate call puts on the resource) matches the settled
+# resource, so drift compares that member and finds nothing. Drift elsewhere
+# (exit 1) or an incomplete comparison of another type (exit 2) is not this
+# check's subject; only the member's path on the named type is read off the
+# report. The phase's env goes after the label, as `env` arguments.
+check_member_baseline() { # usage: check_member_baseline <type> <key> <phase label> [env args...]
+  local type="$1" key="$2" label="$3" report rc=0
+  shift 3
+  report=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${report}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report after ${label}" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  if ! jq -e --arg stack "${STACK}" --arg type "${type}" --arg key "${key}" '
+    def member: .path == $key or (.path | startswith($key + ".")) or (.path | startswith($key + "["));
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[], ($reports[0].drifted // [])[] | select(.type == $type)] | length) >= 1 and
+    ([($reports[0].drifted // [])[] | select(.type == $type) | .changes[] | select(member)] | length) == 0 and
+    ([($reports[0].notCompared // [])[] | select(.type == $type)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL: ${type} ${key} is drifted, or a ${type} is not compared, after ${label} (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    OK: every ${type} ${key} is drift-clean after ${label} (#6609)"
+}
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -251,6 +281,7 @@ if [ -z "${MT_LOGICAL_ID}" ] || [ "${MT_DRIFT_BUCKET}" != "clean" ]; then
   exit 1
 fi
 echo "    OK: cdkd drift reported mount target ${MT_LOGICAL_ID} clean (#2762)"
+check_member_baseline AWS::EFS::FileSystem FileSystemPolicy "Phase 1 (the policy put)"
 
 # --- Assertion 7: baseline tags (issue #5464) ---------------------------
 # fs_tag / ap_tag print a key's live value, or <absent>.
@@ -399,6 +430,7 @@ if [ "${PROTECTION_P2}" != "ENABLED" ]; then
   exit 1
 fi
 echo "    OK: removed FileSystemProtection reset to ENABLED (#1160)"
+check_member_baseline AWS::EFS::FileSystem FileSystemPolicy "Phase 1b (the policy delete)" CDKD_TEST_REMOVAL=true
 
 # --- Phase 1c: access point retag redeploy (issue #5464) -------------
 # Only AccessPointTags changes (cdkd-ap-retag v1 -> v2, cdkd-ap-drop removed).

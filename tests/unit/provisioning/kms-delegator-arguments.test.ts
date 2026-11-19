@@ -64,7 +64,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['deleteAlias', del, 'deleteAlias', 4],
   ['createAlias', alias, 'createAlias', 4],
   ['updateAlias', alias, 'updateAlias', 5],
-  ['readCurrentStateKey', readState, 'readCurrentStateKey', 1],
+  ['readCurrentStateKey', readState, 'readCurrentStateKey', 3],
   ['readCurrentStateAlias', readState, 'readCurrentStateAlias', 1],
   ['import', readState, 'importImpl', 1],
 ];

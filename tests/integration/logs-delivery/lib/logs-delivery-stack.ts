@@ -14,7 +14,9 @@ export const DESTINATION_NAME = 'cdkd-integ-logs-delivery-dst';
  * With `CDKD_TEST_UPDATE=true` every one of them changes in place: all three
  * gain a tag, the destination policy's statement id changes, and the delivery
  * narrows its `RecordFields`. (`FieldDelimiter` is not used: AWS refuses one
- * for a CloudWatch Logs destination, measured.)
+ * for a CloudWatch Logs destination, measured.) The log group's data
+ * protection policy gains a second data identifier (go-to-k/cdkd#6609: the
+ * baseline captured right after its `PutDataProtectionPolicy` is drift-clean).
  *
  * covers: AWS::Logs::DeliverySource
  * covers: AWS::Logs::DeliveryDestination
@@ -34,6 +36,11 @@ export class LogsDeliveryStack extends cdk.Stack {
       logGroupName: '/aws/vendedlogs/cdkd-integ-logs-delivery',
       retention: logs.RetentionDays.ONE_DAY,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+      dataProtectionPolicy: new logs.DataProtectionPolicy({
+        identifiers: update
+          ? [logs.DataIdentifier.EMAILADDRESS, logs.DataIdentifier.IPADDRESS]
+          : [logs.DataIdentifier.EMAILADDRESS],
+      }),
     });
 
     const source = new logs.CfnDeliverySource(this, 'Source', {

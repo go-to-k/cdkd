@@ -15,7 +15,9 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
@@ -51,6 +53,8 @@ export class CodeBuildProvider implements ResourceProvider {
   private createClient: CodeBuildClient | undefined;
   private readonly providerRegion = ambientRegion();
   logger: ConsoleLogger = getLogger().child('CodeBuildProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   /**
    * `AWS::CodeBuild::Project` is `ProvisioningType: NON_PROVISIONABLE` — Cloud
@@ -269,9 +273,11 @@ export class CodeBuildProvider implements ResourceProvider {
   readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, _logicalId, _resourceType);
+    return readCurrentState.call(this, physicalId, _logicalId, _resourceType, properties, context);
   }
 
   getDriftUnknownPaths(): string[] {

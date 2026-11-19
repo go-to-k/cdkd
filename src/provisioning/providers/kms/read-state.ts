@@ -12,12 +12,77 @@ import {
   type ResourceImportInput,
   type ResourceImportResult,
   type ResourceNotFound,
+  type ReadCurrentStateContext,
   RESOURCE_NOT_FOUND,
 } from '../../../types/resource.js';
+import {
+  declaredMemberDocument,
+  KMS_DEFAULT_KEY_POLICY_ID,
+  type MemberRead,
+  policyDocumentMatchesDeclared,
+  settleDeclaredMember,
+} from '../../settle-after-own-write.js';
 
+/** One `GetKeyPolicy`, the policy JSON-parsed when it parses; throws what the call throws. */
+async function readKeyPolicy(this: KMSProvider, keyId: string): Promise<MemberRead<unknown>> {
+  const policyResp = await this.getClient().send(
+    new GetKeyPolicyCommand({ KeyId: keyId, PolicyName: 'default' })
+  );
+  if (!policyResp.Policy) return 'failed';
+  try {
+    return { value: JSON.parse(policyResp.Policy) as unknown };
+  } catch {
+    return { value: policyResp.Policy };
+  }
+}
+
+/**
+ * The key policy to record on the capture right after cdkd's own write
+ * (go-to-k/cdkd#6609): `PutKeyPolicy` is eventually consistent, so the read
+ * can still answer with the policy the write replaced. Re-read until it is the
+ * declared `KeyPolicy`. A key always holds a policy, so "none set yet" is
+ * KMS's default policy (`Id: key-default-1`): still that after the schedule,
+ * the declared policy is recorded; another policy is recorded as read.
+ */
+async function settleKeyPolicy(
+  this: KMSProvider,
+  keyId: string,
+  first: MemberRead<unknown>,
+  declared: unknown
+): Promise<MemberRead<unknown>> {
+  const asMember = (answer: MemberRead<unknown>): MemberRead<unknown> =>
+    typeof answer === 'object' &&
+    !policyDocumentMatchesDeclared(answer.value, declared) &&
+    isKmsDefaultKeyPolicy(answer.value)
+      ? 'absent'
+      : answer;
+  return settleDeclaredMember(
+    asMember(first),
+    async () => asMember(await readKeyPolicy.call(this, keyId)),
+    (value) => policyDocumentMatchesDeclared(value, declared),
+    declared,
+    this.ownWriteRereadDelaysMs
+  );
+}
+
+function isKmsDefaultKeyPolicy(policy: unknown): boolean {
+  return (
+    typeof policy === 'object' &&
+    policy !== null &&
+    (policy as Record<string, unknown>)['Id'] === KMS_DEFAULT_KEY_POLICY_ID
+  );
+}
+
+/**
+ * The live key in CFn shape. On the capture right after cdkd's own write
+ * (`context.afterOwnWrite`) a `KeyPolicy` the template declares is settled by
+ * {@link settleKeyPolicy}; every other read takes the first answer.
+ */
 export async function readCurrentStateKey(
   this: KMSProvider,
-  physicalId: string
+  physicalId: string,
+  properties?: Record<string, unknown>,
+  context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let resp: {
     KeyMetadata?: {
@@ -60,22 +125,23 @@ export async function readCurrentStateKey(
     // and KMS would reject ("KMS key policy must include the JSON
     // statement..."), turning a transient permission blip into a
     // drift-detection false-positive cycle.
+    let keyPolicy: MemberRead<unknown>;
     try {
-      const policyResp = await this.getClient().send(
-        new GetKeyPolicyCommand({ KeyId: md.KeyId, PolicyName: 'default' })
-      );
-      if (policyResp.Policy) {
-        try {
-          result['KeyPolicy'] = JSON.parse(policyResp.Policy) as unknown;
-        } catch {
-          result['KeyPolicy'] = policyResp.Policy;
-        }
-      }
+      keyPolicy = await readKeyPolicy.call(this, md.KeyId);
     } catch (err) {
       if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       // Permission errors etc — leave key absent rather than firing
       // false drift on every run.
+      keyPolicy = 'failed';
     }
+    const declared =
+      context?.afterOwnWrite === true
+        ? declaredMemberDocument(properties?.['KeyPolicy'])
+        : undefined;
+    if (declared !== undefined) {
+      keyPolicy = await settleKeyPolicy.call(this, md.KeyId, keyPolicy, declared);
+    }
+    if (typeof keyPolicy === 'object') result['KeyPolicy'] = keyPolicy.value;
 
     // EnableKeyRotation / RotationPeriodInDays via GetKeyRotationStatus.
     // Class 1 discriminator: only valid for SYMMETRIC_DEFAULT keys —

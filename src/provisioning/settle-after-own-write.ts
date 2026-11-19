@@ -18,7 +18,10 @@
  * store an equivalent spelling no comparison here folds, and leaving that
  * resource without a baseline would report it against the template on every
  * drift run. A replaced document still visible after the whole schedule is
- * the residual.
+ * the residual. For a MEMBER of a bigger resource (a key's policy, a log
+ * group's data protection policy), "nothing written" keeps the declared value
+ * instead ({@link settleDeclaredMember}): the rest of the resource still needs
+ * its baseline.
  *
  * Only a first answer that disagrees costs more calls, and the capture runs
  * beside the rest of the deploy, so a deploy whose reads agree pays nothing.
@@ -49,6 +52,126 @@ export async function reReadUntilSettled<T>(
     answer = await read();
   }
   return { answer, settled: settled(answer) };
+}
+
+/**
+ * One read of a MEMBER of a bigger resource (a key policy on a key, a data
+ * protection policy on a log group): its value as the resource read records
+ * it, `'absent'` when AWS answered that none is set, or `'failed'` when the
+ * read threw or answered something that is not the member (go-to-k/cdkd#6609).
+ */
+export type MemberRead<T> = { value: T } | 'absent' | 'failed';
+
+/**
+ * The member to record on the post-write capture, given the member as the
+ * resource read found it (`first`): while the newest answer is not the
+ * declared value, re-read the member alone after each delay. A first answer
+ * that agrees makes no extra call.
+ *
+ * Returns the newest answer AWS gave (a failed re-read keeps the one before
+ * it), except that a member still ABSENT after the schedule records `declared`
+ * (already in the read's shape): the write just succeeded, and recording
+ * "none" would let `drift --revert` delete it. Another value is recorded as
+ * read (the module comment says why). `'failed'` only when no read answered,
+ * so the caller records what its single read always did.
+ */
+export async function settleDeclaredMember<T>(
+  first: MemberRead<T>,
+  read: () => Promise<MemberRead<T>>,
+  matches: (value: T) => boolean,
+  declared: T,
+  delaysMs: readonly number[]
+): Promise<MemberRead<T>> {
+  const settled = (answer: MemberRead<T>): boolean =>
+    typeof answer === 'object' && matches(answer.value);
+  let newest = first;
+  for (const delayMs of delaysMs) {
+    if (settled(newest)) return newest;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    let answer: MemberRead<T>;
+    try {
+      answer = await read();
+    } catch {
+      answer = 'failed';
+    }
+    if (answer !== 'failed') newest = answer;
+  }
+  return newest === 'absent' ? { value: declared } : newest;
+}
+
+/**
+ * The policy document a member declares: a non-null object, or a non-empty
+ * string parsed as JSON when it parses (the read's shape). `undefined` when it
+ * declares nothing to settle on.
+ */
+export function declaredMemberDocument(value: unknown): unknown {
+  if (typeof value === 'string') {
+    if (value === '') return undefined;
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+/** The `Id` of the default key policy KMS attaches when none is set. */
+export const KMS_DEFAULT_KEY_POLICY_ID = 'key-default-1';
+
+/** A statement `Resource` EFS adds to a stored file system policy: the file system's own ARN. */
+const EFS_FILE_SYSTEM_ARN =
+  /^arn:[a-z-]+:elasticfilesystem:[a-z0-9-]+:\d{12}:file-system\/fs-[0-9a-f]+$/;
+
+/**
+ * Whether a read EFS file system policy is the declared one
+ * ({@link policyDocumentMatchesDeclared}). EFS stores a statement that
+ * declares no `Resource` with the file system's ARN added (measured,
+ * us-east-1, 2026-11-19), so that `Resource` is dropped from the read
+ * statement where the declared statement at the same position has none.
+ */
+export function efsPolicyMatchesDeclared(answer: unknown, declared: unknown): boolean {
+  return policyDocumentMatchesDeclared(withoutAddedResource(answer, declared), declared);
+}
+
+function withoutAddedResource(answer: unknown, declared: unknown): unknown {
+  const parse = (doc: unknown): unknown => {
+    if (typeof doc !== 'string') return doc;
+    try {
+      return JSON.parse(doc) as unknown;
+    } catch {
+      return doc;
+    }
+  };
+  const read = parse(answer);
+  const want = parse(declared);
+  const statements = (doc: unknown): unknown[] | undefined => {
+    if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) return undefined;
+    const s = (doc as Record<string, unknown>)['Statement'];
+    return s === undefined ? undefined : Array.isArray(s) ? s : [s];
+  };
+  const readStatements = statements(read);
+  const wantStatements = statements(want);
+  if (readStatements === undefined || wantStatements === undefined) return answer;
+  return {
+    ...(read as Record<string, unknown>),
+    Statement: readStatements.map((entry, index) => {
+      const wanted = wantStatements[index];
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof wanted !== 'object' ||
+        wanted === null ||
+        Object.prototype.hasOwnProperty.call(wanted, 'Resource')
+      ) {
+        return entry;
+      }
+      const resource = (entry as Record<string, unknown>)['Resource'];
+      if (typeof resource !== 'string' || !EFS_FILE_SYSTEM_ARN.test(resource)) return entry;
+      const { Resource: _added, ...rest } = entry as Record<string, unknown>;
+      return rest;
+    }),
+  };
 }
 
 /**

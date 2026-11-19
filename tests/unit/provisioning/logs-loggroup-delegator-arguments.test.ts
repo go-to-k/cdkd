@@ -79,7 +79,7 @@ const CASES: ReadonlyArray<readonly [string, string, string, number]> = [
   ['identity', 'resourceIdentity', 'resourceIdentity', 3],
   ['import', 'import', 'importImpl', 1],
   ['read-state', 'getAttribute', 'getAttribute', 3],
-  ['read-state', 'readCurrentState', 'readCurrentState', 3],
+  ['read-state', 'readCurrentState', 'readCurrentState', 5],
   ['update', 'applyUpdate', 'applyUpdate', 6],
   ['update', 'update', 'update', 6],
 ];

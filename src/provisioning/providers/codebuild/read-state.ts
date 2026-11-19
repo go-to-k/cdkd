@@ -4,9 +4,11 @@ import {
   type ResourceImportInput,
   type ResourceImportResult,
   type ResourceNotFound,
+  type ReadCurrentStateContext,
   RESOURCE_NOT_FOUND,
 } from '../../../types/resource.js';
 import type { CodeBuildProvider } from '../codebuild-provider.js';
+import { type MemberRead, settleDeclaredMember } from '../../settle-after-own-write.js';
 
 /**
  * Adopt an existing CodeBuild project into cdkd state.
@@ -47,8 +49,38 @@ export async function readCurrentState(
   this: CodeBuildProvider,
   physicalId: string,
   _logicalId: string,
-  _resourceType: string
+  _resourceType: string,
+  properties?: Record<string, unknown>,
+  context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  const read = await readProject.call(this, physicalId);
+  const declared = context?.afterOwnWrite === true ? properties?.['Visibility'] : undefined;
+  if (typeof declared !== 'string' || declared === '' || read === RESOURCE_NOT_FOUND) return read;
+  // go-to-k/cdkd#6609: the capture right after cdkd's own write. The
+  // visibility is a separate `UpdateProjectVisibility`, so the read can still
+  // show the visibility it replaced (a PUBLIC_READ project read as PRIVATE, or
+  // the reverse): re-read the project until it shows the declared one. AWS
+  // reports a visibility on every project, so another value after the
+  // schedule is recorded as read.
+  const asMember = (
+    answer: Record<string, unknown> | ResourceNotFound
+  ): MemberRead<Record<string, unknown>> =>
+    answer === RESOURCE_NOT_FOUND ? 'failed' : { value: answer };
+  const settled = await settleDeclaredMember(
+    asMember(read),
+    async () => asMember(await readProject.call(this, physicalId)),
+    (project) => project['Visibility'] === declared,
+    read,
+    this.ownWriteRereadDelaysMs
+  );
+  return typeof settled === 'object' ? settled.value : read;
+}
+
+/** One `BatchGetProjects`, the project in CFn shape. */
+async function readProject(
+  this: CodeBuildProvider,
+  physicalId: string
+): Promise<Record<string, unknown> | ResourceNotFound> {
   let project;
   try {
     const resp = await this.getClient().send(new BatchGetProjectsCommand({ names: [physicalId] }));
@@ -279,7 +311,9 @@ export async function readCurrentState(
     // Same #1386 sub-blocks as the primary Source above (SecondarySources
     // share the `mapSource` write path, so they must share the read shape).
     if (s.gitSubmodulesConfig !== undefined) {
-      out['GitSubmodulesConfig'] = { FetchSubmodules: s.gitSubmodulesConfig.fetchSubmodules };
+      out['GitSubmodulesConfig'] = {
+        FetchSubmodules: s.gitSubmodulesConfig.fetchSubmodules,
+      };
     }
     if (s.buildStatusConfig !== undefined) {
       const bsc: Record<string, unknown> = {};

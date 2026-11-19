@@ -9,7 +9,8 @@ import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { type DeleteContext } from '../region-check.js';
 import { type StackCreateToken } from './create-token-ledger.js';
-import { type ResourceNotFound } from '../../types/resource.js';
+import { type ReadCurrentStateContext, type ResourceNotFound } from '../../types/resource.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -89,6 +90,8 @@ export class EFSProvider implements ResourceProvider {
   mountTargetCreateClient: EFSClient | undefined;
   readonly providerRegion = ambientRegion();
   logger: ConsoleLogger = getLogger().child('EFSProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
   /**
    * File-system creation tokens under which THIS process may hold a file
    * system that no `createFileSystem` call has yet returned or deleted: the
@@ -464,15 +467,23 @@ export class EFSProvider implements ResourceProvider {
   readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    // The FileSystem read alone takes the context (go-to-k/cdkd#6609).
+    if (resourceType === 'AWS::EFS::FileSystem') {
+      return this.readFileSystem(physicalId, properties, context);
+    }
     return readCurrentState.call(this, physicalId, _logicalId, resourceType);
   }
 
   readFileSystem(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readFileSystem.call(this, physicalId);
+    return readFileSystem.call(this, physicalId, properties, context);
   }
 
   readAccessPoint(

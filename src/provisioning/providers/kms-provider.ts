@@ -11,6 +11,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -34,6 +35,7 @@ import {
 import { deleteKey, deleteAlias } from './kms/delete.js';
 import { createAlias, updateAlias } from './kms/alias.js';
 import { readCurrentStateKey, readCurrentStateAlias, importImpl } from './kms/read-state.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 
 export { resetKmsCreateRetryStateForTests } from './kms/shared.js';
 
@@ -52,6 +54,8 @@ export class KMSProvider implements ResourceProvider {
   createClient: KMSClient | undefined;
   readonly providerRegion = ambientRegion();
   logger: ConsoleLogger = getLogger().child('KMSProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   /**
    * The failure wrap every create / update / delete catch builds.
@@ -389,11 +393,13 @@ export class KMSProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::KMS::Key':
-        return this.readCurrentStateKey(physicalId);
+        return this.readCurrentStateKey(physicalId, properties, context);
       case 'AWS::KMS::Alias':
         return this.readCurrentStateAlias(physicalId);
       default:
@@ -402,9 +408,11 @@ export class KMSProvider implements ResourceProvider {
   }
 
   readCurrentStateKey(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentStateKey.call(this, physicalId);
+    return readCurrentStateKey.call(this, physicalId, properties, context);
   }
 
   /**

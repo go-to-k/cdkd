@@ -147,6 +147,36 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 PARTITION=$(aws sts get-caller-identity --query Arn --output text | cut -d: -f2)
 DEFAULT_POLICY="key-default-1|Enable IAM User Permissions|arn:${PARTITION}:iam::${ACCOUNT}:root"
 
+# go-to-k/cdkd#6609: the baseline captured right after a member write (a
+# policy or setting a separate call puts on the resource) matches the settled
+# resource, so drift compares that member and finds nothing. Drift elsewhere
+# (exit 1) or an incomplete comparison of another type (exit 2) is not this
+# check's subject; only the member's path on the named type is read off the
+# report. The phase's env goes after the label, as `env` arguments.
+check_member_baseline() { # usage: check_member_baseline <type> <key> <phase label> [env args...]
+  local type="$1" key="$2" label="$3" report rc=0
+  shift 3
+  report=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${report}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report after ${label}" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  if ! jq -e --arg stack "${STACK}" --arg type "${type}" --arg key "${key}" '
+    def member: .path == $key or (.path | startswith($key + ".")) or (.path | startswith($key + "["));
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[], ($reports[0].drifted // [])[] | select(.type == $type)] | length) >= 1 and
+    ([($reports[0].drifted // [])[] | select(.type == $type) | .changes[] | select(member)] | length) == 0 and
+    ([($reports[0].notCompared // [])[] | select(.type == $type)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL: ${type} ${key} is drifted, or a ${type} is not compared, after ${label} (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    OK: every ${type} ${key} is drift-clean after ${label} (#6609)"
+}
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -179,6 +209,7 @@ case "${P1_POLICY}" in
     ;;
 esac
 echo "    OK: baseline EncKey True|True|90 with the declared policy, DisabledKey False|True|90"
+check_member_baseline AWS::KMS::Key KeyPolicy "Phase 1" -u CDKD_TEST_REMOVAL
 
 # --- Phase 2: REMOVAL (issue #1160) -----------------------------------
 echo "==> Phase 2: removal (EncKey drops RotationPeriodInDays + KeyPolicy; DisabledKey drops Enabled + RotationPeriodInDays)"
@@ -291,6 +322,7 @@ if [ "${P2C_SIDS}" != "Cdkd5299NoPutKeyPolicy" ]; then
   exit 1
 fi
 echo "    OK: LockKey's lockout policy put with the bypass (issue #5299)"
+check_member_baseline AWS::KMS::Key KeyPolicy "the LockKey policy put (Phase 2c)" CDKD_TEST_REMOVAL=true CDKD_TEST_BYPASS=true
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
