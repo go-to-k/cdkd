@@ -68,6 +68,10 @@
 #      bucket (state names it, its marker tag kept) and delete the new one.
 #   3. Destroy; assert every bucket is gone and the state file is removed.
 #
+# Region-portable (go-to-k/cdkd#6621): every check runs in any region. A
+# CreationDate comparison runs only in us-east-1, where only a re-create moves
+# it; elsewhere a marker object proves the bucket's identity.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -209,6 +213,12 @@ cleanup() {
   set +eu
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+  fi
+  # go-to-k/cdkd#6621: phase 1's identity marker outside us-east-1, if a run
+  # stopped before phase 2 removed it (the bucket delete below needs it empty).
+  if [ -n "${IDENTITY_MARKER_VERSION:-}" ]; then
+    aws s3api delete-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+      --key "${IDENTITY_MARKER_KEY:-}" --version-id "${IDENTITY_MARKER_VERSION}" >/dev/null 2>&1 || true
   fi
   aws s3api delete-bucket --bucket "${BUCKET_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${LEGACY_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -1417,9 +1427,28 @@ if ! printf '%s' "${REDEPLOY_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | grep -q 'No cha
 fi
 echo "    identical re-deploy is a no-op — the fold and its twin agree"
 
+# "Not replaced" across phase 2 (go-to-k/cdkd#6621: region-portable). In
+# us-east-1 a bucket's ListBuckets CreationDate changes only on a re-create,
+# so it is compared as-is. Elsewhere every versioning, tagging, encryption or
+# policy write moves it (measured for #6621), so the proof is an object put
+# once here: a replacement must empty and delete the bucket, so the object
+# under the same name after the update is this bucket. An object, not a tag:
+# the template declares no tags, and an out-of-band tag would read as drift.
+if [ "${REGION}" = "us-east-1" ]; then
 CREATION_P1="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
 echo "    baseline bucket CreationDate=${CREATION_P1}"
+else
+  IDENTITY_MARKER_KEY="cdkd-integ-identity-marker"
+  IDENTITY_MARKER_VERSION="$(aws s3api put-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${IDENTITY_MARKER_KEY}" --query VersionId --output text)"
+  if [ -z "${IDENTITY_MARKER_VERSION}" ] || [ "${IDENTITY_MARKER_VERSION}" = "None" ]; then
+    echo "FAIL: could not put the identity marker object into ${BUCKET_NAME} (VersionId '${IDENTITY_MARKER_VERSION}')" >&2
+    exit 1
+  fi
+  IDENTITY_RECORD_P1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Bucket.physicalId // "MISSING"')"
+  echo "    baseline identity marker ${IDENTITY_MARKER_KEY} (version ${IDENTITY_MARKER_VERSION}), record ${IDENTITY_RECORD_P1}"
+fi
 
 # --- Phase 1c: a suppressed guard on the DEPLOY path is persisted (issue #2422)
 # Phase 0c-ID pins the destroy verb. This arm drives the same Cloud Control
@@ -1670,6 +1699,7 @@ if [ "${RULE_COUNT_P2}" != "4" ] || [ "${EXP_P2}" != "365" ] || [ "${BIG_SIZE_P2
 fi
 echo "    4 rules, archive expiration=365, big-objects ObjectSizeGreaterThan=1048576"
 
+if [ "${REGION}" = "us-east-1" ]; then
 CREATION_P2="$(aws s3api list-buckets \
   --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
 if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
@@ -1677,6 +1707,26 @@ if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
   exit 1
 fi
 echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
+else
+  # The exact version put above, so a re-created bucket holding a re-put
+  # object of that key does not pass.
+  aws s3api head-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${IDENTITY_MARKER_KEY}" --version-id "${IDENTITY_MARKER_VERSION}" >/dev/null || {
+    echo "FAIL: bucket was REPLACED (identity marker ${IDENTITY_MARKER_KEY} version ${IDENTITY_MARKER_VERSION} is gone from ${BUCKET_NAME})" >&2
+    exit 1
+  }
+  IDENTITY_RECORD_P2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.Bucket.physicalId // "MISSING"')"
+  if [ "${IDENTITY_RECORD_P2}" != "${IDENTITY_RECORD_P1}" ] || [ "${IDENTITY_RECORD_P2}" != "${BUCKET_NAME}" ]; then
+    echo "FAIL: state records Bucket as ${IDENTITY_RECORD_P2} after the update (was ${IDENTITY_RECORD_P1}, expected ${BUCKET_NAME})" >&2
+    exit 1
+  fi
+  # Removed by version, so no delete marker is left: the bucket must be empty
+  # for every later phase and for destroy.
+  aws s3api delete-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${IDENTITY_MARKER_KEY}" --version-id "${IDENTITY_MARKER_VERSION}" >/dev/null
+  IDENTITY_MARKER_VERSION=""
+  echo "    bucket identity preserved (marker object kept, record unchanged) — no replacement"
+fi
 
 # Phase 2 SWAPS the expectation: the fixture inverts both booleans under
 # CDKD_TEST_UPDATE, so this really drives diffSubConfig ->
