@@ -30,6 +30,7 @@ import { type RollbackExecutorContext } from './types.js';
 import { shownLogicalId } from './messages.js';
 import { masksOnlyAt } from './replay-noecho.js';
 import { leafReadsSecret, secretsManagerTokenSecretId } from './regenerated-secrets.js';
+import { canonicalizeRegion } from '../../utils/aws-partition.js';
 
 /**
  * `provider.update()` for a rollback arm, retried unless the provider opts out.
@@ -247,7 +248,7 @@ class ReplayPins {
         leafReadsSecret(token, this.resolvers.regeneratedSecrets) &&
         (secretsManagerTokenSecretId(token)?.startsWith('arn:') === true ||
           foreign === undefined ||
-          foreign === this.execCtx.region)
+          canonicalizeRegion(foreign) === canonicalizeRegion(this.execCtx.region))
       ) {
         continue;
       }

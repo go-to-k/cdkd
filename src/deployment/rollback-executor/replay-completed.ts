@@ -32,6 +32,7 @@ import {
 } from './types.js';
 import { ReplayResolvers } from './replay-secrets.js';
 import {
+  leafReadsSecret,
   orderAfterRegeneratedSecrets,
   regeneratedSecretAddresses,
   revertRegeneratesSecret,
@@ -228,8 +229,10 @@ export async function replayRollbackUnbound(
   // regenerated its value in this replay.
   const regenerated = new Map<string, Set<string>>();
   // The regenerating secret reverts not yet run.
-  const pendingRegenerating = new Set(
-    stepOne.filter((op) => revertRegeneratesSecret(op, stateResources)).map((op) => op.logicalId)
+  const pendingRegenerating = new Map(
+    stepOne
+      .filter((op) => revertRegeneratesSecret(op, stateResources))
+      .map((op) => [op.logicalId, regeneratedSecretAddresses(op)] as const)
   );
   const stepOneIds = new Map<string, CompletedOperation>();
   const stepOneIndex = new Map<CompletedOperation, number>();
@@ -264,9 +267,14 @@ export async function replayRollbackUnbound(
     // one this compares against.
     const regenerates = revertRegeneratesSecret(op, stateResources);
     pendingRegenerating.delete(op.logicalId);
+    // Only an op whose old record reads the secret's value through a token.
+    const oldText = JSON.stringify(op.previousState?.properties ?? {});
     const blockedBehind = (
       Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []
-    ).find((id) => typeof id === 'string' && pendingRegenerating.has(id));
+    ).find((id) => {
+      const addresses = typeof id === 'string' ? pendingRegenerating.get(id) : undefined;
+      return addresses !== undefined && leafReadsSecret(oldText, addresses);
+    });
     if (op.changeType !== 'CREATE' && typeof blockedBehind === 'string') {
       // The order could not put this op after the secret (an op depending on
       // it sits between them): it is restored at its record's version, which

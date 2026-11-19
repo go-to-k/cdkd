@@ -266,6 +266,27 @@ describe('rollback of a regenerated secret (#6591)', () => {
     expect(warned.some((m) => m.includes('before secret Sec') && m.includes("cdkd drift S --revert"))).toBe(true);
   });
 
+  it('does not warn for a blocked op that names the secret without reading its value', async () => {
+    const s = state();
+    const mk = (id: string, props: Record<string, unknown>, deps: string[]): CompletedOperation => ({
+      logicalId: id,
+      changeType: 'UPDATE',
+      resourceType: 'AWS::IAM::Policy',
+      provisionedBy: 'sdk',
+      physicalId: id,
+      previousState: rec(id, 'AWS::IAM::Policy', props, deps),
+      oldResourceRetained: false,
+    });
+    const policy = mk('Pol', { Resource: ARN, V: 1 }, ['Sec']);
+    const dependent = mk('Dep', { V: 1 }, ['Pol']);
+    s['Pol'] = rec('Pol', 'AWS::IAM::Policy', { Resource: ARN, V: 2 }, ['Sec']);
+    s['Dep'] = rec('Dep', 'AWS::IAM::Policy', { V: 2 }, ['Pol']);
+    await replayRollback([secretOp(), dependent, policy], s, 'S', ctx);
+    expect(calls).toEqual(['update Pol', 'update Dep', 'update Sec']);
+    const warned = (ctx.logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => m.includes('before secret'))).toBe(false);
+  });
+
   it('does not warn when the reader is moved after the secret', async () => {
     await replayRollback([secretOp(), fnOp()], state(), 'S', ctx);
     const warned = (ctx.logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
