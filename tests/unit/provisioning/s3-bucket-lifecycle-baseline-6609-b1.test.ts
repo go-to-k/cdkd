@@ -7,9 +7,22 @@
  * declared configuration and keeps the declared one otherwise.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { GetBucketLifecycleConfigurationCommand } from '@aws-sdk/client-s3';
+import {
+  GetBucketLifecycleConfigurationCommand,
+  GetBucketLocationCommand,
+  NoSuchBucket,
+  PutBucketCorsCommand,
+  PutBucketLoggingCommand,
+  PutBucketLifecycleConfigurationCommand,
+} from '@aws-sdk/client-s3';
 
 const mockSend = vi.fn();
+
+// `CreateBucket` goes through the provider's own client; forward it to the double.
+vi.mock('@aws-sdk/client-s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@aws-sdk/client-s3')>()),
+  ...(await import('./s3-create-client-forward.js')).forwardedS3Client(),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -121,7 +134,7 @@ async function capture(
   context?: { afterOwnWrite?: boolean; write?: LifecycleWrite }
 ): Promise<Record<string, unknown>> {
   // What the create / update before this capture sent, as the appliers note it.
-  if (context?.write !== undefined) recordLifecycleWrite(provider.s3Client, BUCKET, context.write);
+  if (context?.write !== undefined) recordLifecycleWrite(provider, BUCKET, context.write);
   const out = await provider.readCurrentState(
     BUCKET,
     'Bucket',
@@ -249,6 +262,14 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
       const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' });
       expect(out).not.toHaveProperty('LifecycleConfiguration');
       expect(lifecycleCalls).toBe(2);
+    });
+
+    it('after a Delete, a TRANSIENT first-read failure still fails the read', async () => {
+      scriptLifecycle(throttled);
+      await expect(
+        capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' })
+      ).rejects.toThrow('Slow Down');
+      expect(lifecycleCalls).toBe(1);
     });
 
     it('an undeclared lifecycle whose FIRST read fails still fails the read, as before', async () => {
@@ -382,6 +403,101 @@ describe('the capture re-reads only a lifecycle THIS write touched (#6609 B1)', 
     scriptLifecycle(OLD, NONE);
     const out = await capture(provider, emptied, { afterOwnWrite: true });
     expect(out['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect(lifecycleCalls).toBe(2);
+  });
+
+  it('an update that THROWS after its lifecycle Put drops the note, so a later capture takes the first answer', async () => {
+    const provider = makeProvider();
+    const corsFails = vi.fn();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof PutBucketCorsCommand) {
+        corsFails();
+        return Promise.reject(new Error('cors refused'));
+      }
+      if (command instanceof GetBucketLifecycleConfigurationCommand) {
+        lifecycleCalls++;
+        const answer = script.length > 1 ? script.shift()! : script[0];
+        return typeof answer === 'function' ? Promise.reject(answer()) : Promise.resolve(answer);
+      }
+      return Promise.resolve({});
+    });
+    const desired = {
+      ...DECLARED,
+      CorsConfiguration: { CorsRules: [{ AllowedMethods: ['GET'], AllowedOrigins: ['*'] }] },
+    };
+    const previous = {
+      BucketName: BUCKET,
+      LifecycleConfiguration: { Rules: [{ Id: 'r1', Status: 'Enabled', ExpirationInDays: 30 }] },
+    };
+    await expect(
+      provider.update('Bucket', BUCKET, 'AWS::S3::Bucket', desired, previous)
+    ).rejects.toThrow();
+    expect(
+      mockSend.mock.calls.filter(([c]) => c instanceof PutBucketLifecycleConfigurationCommand)
+    ).toHaveLength(1);
+    expect(corsFails).toHaveBeenCalled();
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(provider, DECLARED, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it('a create that THROWS after its lifecycle Put drops the note too', async () => {
+    const provider = makeProvider();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof PutBucketLoggingCommand) {
+        return Promise.reject(new Error('logging refused'));
+      }
+      if (command instanceof GetBucketLifecycleConfigurationCommand) {
+        lifecycleCalls++;
+        const answer = script.length > 1 ? script.shift()! : script[0];
+        return typeof answer === 'function' ? Promise.reject(answer()) : Promise.resolve(answer);
+      }
+      // No bucket holds the name yet, so the create goes ahead.
+      if (command instanceof GetBucketLocationCommand) {
+        return Promise.reject(
+          new NoSuchBucket({ message: 'no such bucket', $metadata: { httpStatusCode: 404 } })
+        );
+      }
+      return Promise.resolve({});
+    });
+    const desired = {
+      ...DECLARED,
+      // Applied after the lifecycle on create, so its failure follows the Put.
+      LoggingConfiguration: { DestinationBucketName: 'logs-bucket' },
+    };
+    await expect(provider.create('Bucket', 'AWS::S3::Bucket', desired)).rejects.toThrow();
+    expect(
+      mockSend.mock.calls.filter(([c]) => c instanceof PutBucketLifecycleConfigurationCommand)
+    ).toHaveLength(1);
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof GetBucketLifecycleConfigurationCommand) {
+        lifecycleCalls++;
+        const answer = script.length > 1 ? script.shift()! : script[0];
+        return typeof answer === 'function' ? Promise.reject(answer()) : Promise.resolve(answer);
+      }
+      return Promise.resolve({});
+    });
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(provider, DECLARED, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it('a read WITHOUT the post-write context neither re-reads nor consumes the note', async () => {
+    const provider = makeProvider();
+    recordLifecycleWrite(provider, BUCKET, 'put');
+    scriptLifecycle(OLD, NEW);
+    const drift = await capture(provider, DECLARED);
+    expect(drift['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+    // The capture that follows still finds the note and settles.
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(provider, DECLARED, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(2);
   });
 

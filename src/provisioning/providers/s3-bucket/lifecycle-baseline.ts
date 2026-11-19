@@ -55,24 +55,45 @@ export type LifecycleWrite = 'put' | 'delete';
  * prototype is the provider, the client inherited) shares it, while the
  * `noWriteProbe` stub client never reaches a real capture.
  */
-const lifecycleWrites = new WeakMap<object, Map<string, LifecycleWrite>>();
+const lifecycleWrites = new WeakMap<object, Map<string, { write: LifecycleWrite; op: object }>>();
 
-/** Note that a lifecycle Put / Delete for `bucket` just succeeded. */
-export function recordLifecycleWrite(client: object, bucket: string, write: LifecycleWrite): void {
-  let writes = lifecycleWrites.get(client);
+/**
+ * Note that a lifecycle Put / Delete for `bucket` just succeeded. `provider`
+ * is the per-call view the create / update runs on, so a call that throws can
+ * drop the notes it made ({@link clearLifecycleWritesOf}).
+ */
+export function recordLifecycleWrite(
+  provider: { s3Client: object },
+  bucket: string,
+  write: LifecycleWrite
+): void {
+  let writes = lifecycleWrites.get(provider.s3Client);
   if (writes === undefined) {
     writes = new Map();
-    lifecycleWrites.set(client, writes);
+    lifecycleWrites.set(provider.s3Client, writes);
   }
-  writes.set(bucket, write);
+  writes.set(bucket, { write, op: provider });
 }
 
 /** The lifecycle write noted for `bucket`, consumed by the capture that reads it. */
 export function takeLifecycleWrite(client: object, bucket: string): LifecycleWrite | undefined {
   const writes = lifecycleWrites.get(client);
-  const write = writes?.get(bucket);
+  const noted = writes?.get(bucket);
   writes?.delete(bucket);
-  return write;
+  return noted?.write;
+}
+
+/**
+ * Drop the notes a create / update made on `provider` (its per-call view):
+ * a call that throws is followed by no capture, and a note left behind would
+ * make a later, unrelated capture of that bucket re-read on it.
+ */
+export function clearLifecycleWritesOf(provider: { s3Client: object }): void {
+  const writes = lifecycleWrites.get(provider.s3Client);
+  if (writes === undefined) return;
+  for (const [bucket, noted] of writes) {
+    if (noted.op === provider) writes.delete(bucket);
+  }
 }
 
 /**

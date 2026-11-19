@@ -336,7 +336,7 @@ export async function applyLifecycleConfiguration(
     })
   );
   // The post-write capture re-reads only a lifecycle this call wrote (#6609).
-  recordLifecycleWrite(this.s3Client, bucketName, 'put');
+  recordLifecycleWrite(this, bucketName, 'put');
   this.logger.debug(`Applied lifecycle configuration to bucket ${this.shown(bucketName)}`);
   return true;
 }
