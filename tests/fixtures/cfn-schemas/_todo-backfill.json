@@ -23,10 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::BedrockAgentCore::Runtime": [
-      "HooksConfiguration",
-      "ResourceConfigurations"
-    ],
     "AWS::Lambda::Function": [
       "AcceleratorConfig"
     ],

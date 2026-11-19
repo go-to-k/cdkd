@@ -121,6 +121,16 @@ export async function readCurrentState(
       ? camelToPascalCaseKeys(resp.capacityProviderConfiguration, SDK_MAP_KEYS)
       : {};
   result['PlatformVersion'] = resp.platformVersion ?? '';
+  // PR #6630: absent when unset (an update sending `{}` / `[]` was measured to
+  // leave both absent too, so the placeholders mean what AWS means).
+  result['HooksConfiguration'] =
+    resp.hooksConfiguration !== undefined
+      ? camelToPascalCaseKeys(resp.hooksConfiguration, SDK_MAP_KEYS)
+      : {};
+  result['ResourceConfigurations'] =
+    resp.resourceConfigurations !== undefined
+      ? camelToPascalCaseKeys(resp.resourceConfigurations, SDK_MAP_KEYS)
+      : [];
 
   // Tags: the template's key -> value MAP shape, so drift never compares a
   // list against a map (issue #5390). Best-effort: a tagging read failure

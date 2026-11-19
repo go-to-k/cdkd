@@ -178,6 +178,22 @@ function writeSharedRuntimeMembers(
   if (platformVersion !== undefined && platformVersion !== null && platformVersion !== '') {
     input['platformVersion'] = platformVersion;
   }
+  // `HooksConfiguration` / `ResourceConfigurations` (PR #6630). MEASURED
+  // us-east-1 2026-11-20: an update omitting them clears both, and
+  // CloudFormation clears both when a template drops them, so omission is the
+  // removal here too; an empty `{}` / `[]` leaves both absent as well. AWS
+  // fills a warmup hook's `Port` (8080) on read, and refuses a create
+  // carrying `ResourceConfigurations` without `PlatformVersion: V2`
+  // ("resourceConfigurations can only be used when platformVersion is V2"),
+  // a refusal surfaced as AWS words it.
+  const hooks = properties['HooksConfiguration'];
+  if (isNonEmptyObject(hooks)) {
+    input['hooksConfiguration'] = pascalToCamelCaseKeys(hooks, CFN_MAP_KEYS);
+  }
+  const resources = properties['ResourceConfigurations'];
+  if (Array.isArray(resources) && resources.length > 0) {
+    input['resourceConfigurations'] = pascalToCamelCaseKeys(resources, CFN_MAP_KEYS);
+  }
 }
 
 /**
@@ -305,6 +321,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         'FilesystemConfigurations',
         'CapacityProviderConfiguration',
         'PlatformVersion',
+        'HooksConfiguration',
+        'ResourceConfigurations',
         // Sent on create; diffed by TagResource / UntagResource on update,
         // removal included (`UpdateAgentRuntime` takes no tags).
         'Tags',

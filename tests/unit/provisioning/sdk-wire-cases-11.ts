@@ -287,6 +287,10 @@ const RUNTIME_TOP = {
     CapacityProviderArn: `arn:aws:bedrock-agentcore:us-east-1:${ACCOUNT}:capacity-provider/cp-1`,
   },
   PlatformVersion: '1.0',
+  HooksConfiguration: {
+    Build: { Warmup: { Action: { HttpPost: { Path: '/warmup', Port: 8080 } } } },
+  },
+  ResourceConfigurations: [{ MinimumMemoryInMiB: 2048 }, { MinimumMemoryInMiB: 4096 }],
   // A key -> value MAP in the CFn schema, as CDK synthesizes it.
   Tags: { k1: 'v1', k2: 'v2' },
 };

@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **145**
-- Handled properties classified: **1542**
-- Read on the update path: **1127**
+- Handled properties classified: **1544**
+- Read on the update path: **1129**
 - Replacement: **397**
 - Allow-listed (does NOT block CI): **18**
 - Handled names outside the schema's writable properties (not classified): **13**
@@ -69,7 +69,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::BedrockAgentCore::Browser` | `AgentCoreBrowserProvider` |  |  |
 | `AWS::BedrockAgentCore::CodeInterpreter` | `AgentCoreCodeInterpreterProvider` |  |  |
 | `AWS::BedrockAgentCore::Evaluator` | `AgentCoreEvaluatorProvider` | Description, EvaluatorConfig, KmsKeyArn, Level, Tags | EvaluatorName |
-| `AWS::BedrockAgentCore::Runtime` | `AgentCoreRuntimeProvider` | AgentRuntimeArtifact, AuthorizerConfiguration, CapacityProviderConfiguration, Description, EnvironmentVariables, FilesystemConfigurations, LifecycleConfiguration, NetworkConfiguration, PlatformVersion, ProtocolConfiguration, RequestHeaderConfiguration, RoleArn, Tags | AgentRuntimeName |
+| `AWS::BedrockAgentCore::Runtime` | `AgentCoreRuntimeProvider` | AgentRuntimeArtifact, AuthorizerConfiguration, CapacityProviderConfiguration, Description, EnvironmentVariables, FilesystemConfigurations, HooksConfiguration, LifecycleConfiguration, NetworkConfiguration, PlatformVersion, ProtocolConfiguration, RequestHeaderConfiguration, ResourceConfigurations, RoleArn, Tags | AgentRuntimeName |
 | `AWS::Budgets::Budget` | `BudgetsBudgetProvider` | Budget, NotificationsWithSubscribers, ResourceTags |  |
 | `AWS::CertificateManager::Certificate` | `ACMCertificateProvider` | CertificateTransparencyLoggingPreference, Tags | CertificateAuthorityArn, CertificateExport, DomainName, DomainValidationOptions, KeyAlgorithm, SubjectAlternativeNames, ValidationMethod |
 | `AWS::CloudFormation::Stack` | `NestedStackProvider` | Parameters |  |
