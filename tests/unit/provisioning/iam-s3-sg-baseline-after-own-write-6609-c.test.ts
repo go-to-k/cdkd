@@ -881,6 +881,11 @@ describe('review round 1 (#6629)', () => {
       { IpProtocol: '-1', IpRanges: [{ CidrIp: '10.0.0.0/8' }] },
     ],
     [
+      'all-traffic with a port range (AWS drops the ports)',
+      { CidrIp: '10.0.0.0/8', IpProtocol: '-1', FromPort: 0, ToPort: 65535 },
+      { IpProtocol: '-1', IpRanges: [{ CidrIp: '10.0.0.0/8' }] },
+    ],
+    [
       'string ports',
       { CidrIp: '10.0.0.0/8', IpProtocol: 'tcp', FromPort: '443', ToPort: '443' },
       { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: '10.0.0.0/8' }] },
