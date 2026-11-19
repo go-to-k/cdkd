@@ -261,6 +261,13 @@ describe('IAM principal <- AWS::IAM::Policy / RolePolicy / UserPolicy / GroupPol
     ).toEqual({ Policies: [policy('Own')] });
   });
 
+  it('a policy the principal template declares itself is not dropped by name', () => {
+    const own = { PolicyName: 'P', PolicyDocument: { Version: '2008-10-17' } };
+    const baseline = { Policies: [own] };
+    const out = stripSiblingOwnedParentMembers('AWS::IAM::Role', ROLE, baseline, { Policies: [] }, { Policies: [own] }, ctx({ Pol: { resourceType: 'AWS::IAM::Policy', properties: { ...policy('P'), Roles: [ROLE] } } }));
+    expect(out.baseline).toBe(baseline);
+  });
+
   it('a readback that still holds the name decides by document: a stale baseline copy stays compared', () => {
     const stale = { PolicyName: 'P', PolicyDocument: { Version: '2008-10-17' } };
     const baseline = { Policies: [stale] };
@@ -410,6 +417,35 @@ describe('EMR cluster <- InstanceGroupConfig / InstanceFleetConfig (nested Insta
       ctx({ Group: groupSibling() })
     );
     expect(desired).toEqual({ Instances: { TaskInstanceGroups: [taskGroup('Sib')] } });
+  });
+
+  it('two sibling groups of one identity own two copies, less one the cluster declares', () => {
+    const two = ctx({ G1: groupSibling(), G2: { ...groupSibling(), physicalId: 'ig-2' } });
+    const live = { Instances: { TaskInstanceGroups: [taskGroup('Sib'), taskGroup('Sib')] } };
+    expect(stripSiblingOwnedParentMembers('AWS::EMR::Cluster', JOB, {}, live, {}, two).aws).toEqual({ Instances: {} });
+    expect(
+      stripSiblingOwnedParentMembers('AWS::EMR::Cluster', JOB, {}, live, { Instances: { TaskInstanceGroups: [taskGroup('Sib')] } }, two).aws
+    ).toEqual({ Instances: { TaskInstanceGroups: [taskGroup('Sib')] } });
+  });
+
+  it('--revert re-adds no copy the desired bag already holds', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::EMR::Cluster',
+      JOB,
+      { Instances: { TaskInstanceGroups: [taskGroup('Sib'), taskGroup('Sib')] } },
+      { Instances: { TaskInstanceGroups: [taskGroup('Sib'), taskGroup('Sib')] } },
+      {},
+      ctx({ Group: groupSibling() })
+    );
+    expect(desired).toEqual({ Instances: { TaskInstanceGroups: [taskGroup('Sib'), taskGroup('Sib')] } });
+  });
+
+  it('removing one of two same-identity sibling groups prunes one copy, not both', () => {
+    const cluster = { resourceType: 'AWS::EMR::Cluster', physicalId: JOB, properties: {}, observedProperties: { Instances: { TaskInstanceGroups: [taskGroup('Sib'), taskGroup('Sib')] } } } as ResourceState;
+    const g2 = { ...groupSibling(), physicalId: 'ig-2' } as ResourceState;
+    const next: Record<string, ResourceState> = { Cluster: cluster, G2: g2 };
+    expect(pruneMembersSiblingsStoppedWriting({ Cluster: cluster, G1: groupSibling() as ResourceState, G2: g2 }, next)).toBe(1);
+    expect(next['Cluster']!.observedProperties).toEqual({ Instances: { TaskInstanceGroups: [taskGroup('Sib')] } });
   });
 
   it('drops a sibling TASK fleet, and keeps a stranger task group', () => {

@@ -35,6 +35,8 @@ export interface SiblingOwnedRow {
    * of that name: the parent's own readback already dropped it by name.
    */
   nameOf?: (element: unknown) => string | undefined;
+  /** The NAME inside a member identity this row's `identity` built (the inverse half of `nameOf`). */
+  memberName?: (member: string) => string | undefined;
 }
 
 /** How many times each member identity is written (a multiset). */
@@ -110,6 +112,16 @@ function canonicalJson(value: unknown): string | undefined {
  */
 function inlinePolicyName(element: unknown): string | undefined {
   return isPlainRecord(element) ? plainString(element['PolicyName']) : undefined;
+}
+
+/** The policy name inside an {@link inlinePolicyIdentity}, which encodes `[name, document]`. */
+function inlinePolicyMemberName(member: string): string | undefined {
+  try {
+    const name = (JSON.parse(member) as unknown[])[0];
+    return typeof name === 'string' ? name : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function inlinePolicyIdentity(element: unknown): string | undefined {
@@ -276,6 +288,7 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
       writes: iamPolicyWrites(field),
       identity: inlinePolicyIdentity,
       nameOf: inlinePolicyName,
+      memberName: inlinePolicyMemberName,
     },
     {
       child: standalone,
@@ -284,6 +297,7 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
       writes: standalonePolicyWrites(nameField),
       identity: inlinePolicyIdentity,
       nameOf: inlinePolicyName,
+      memberName: inlinePolicyMemberName,
     },
   ]),
 ];

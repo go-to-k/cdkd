@@ -174,21 +174,16 @@ function namesDroppedFromBaseline(
   properties: Record<string, unknown> | undefined,
   readback: Record<string, unknown> | undefined
 ): Set<string> {
-  const nameOf = row.nameOf;
-  if (nameOf === undefined || readback === undefined) return new Set();
+  const { nameOf, memberName } = row;
+  if (nameOf === undefined || memberName === undefined || readback === undefined) return new Set();
   const liveList = getAt(readback, pathOf(row));
   const live = new Set(Array.isArray(liveList) ? liveList.map((m) => nameOf(m)) : []);
   const own = getAt(properties, pathOf(row));
   const declared = new Set(Array.isArray(own) ? own.map((m) => nameOf(m)) : []);
   const names = new Set<string>();
   for (const id of drop.keys()) {
-    let name: unknown;
-    try {
-      name = (JSON.parse(id) as unknown[])[0];
-    } catch {
-      continue;
-    }
-    if (typeof name === 'string' && !live.has(name) && !declared.has(name)) names.add(name);
+    const name = memberName(id);
+    if (name !== undefined && !live.has(name) && !declared.has(name)) names.add(name);
   }
   return names;
 }
@@ -332,13 +327,10 @@ export function siblingOwnedRevertDesired(
     // Each live sibling-owned member goes back at its live position, so a
     // provider that pairs list items by position sees them where they are.
     const result = [...kept];
-    // Up to the written count of each identity, less the copies already there.
+    // Up to the written count of each identity: the strip took exactly that
+    // many copies out, so a copy still in `result` is NOT a sibling's (a
+    // second same-identity member) and does not count against the re-add.
     const room = new Map(drop);
-    for (const m of result) {
-      const id = identity(m);
-      const n = id === undefined ? undefined : room.get(id);
-      if (n !== undefined) room.set(id!, n - 1);
-    }
     live.forEach((m, index) => {
       const id = identity(m);
       const n = id === undefined ? undefined : room.get(id);
@@ -389,60 +381,69 @@ export function tableMembersSiblingsStoppedWriting(
     });
     return out;
   };
-  const stillWritten = new Set<string>();
+  const count = (into: Map<string, number>, key: string): void => {
+    into.set(key, (into.get(key) ?? 0) + 1);
+  };
+  // How many records write each (row, parent id, member) after the deploy.
+  const nextCount = new Map<string, number>();
   for (const record of Object.values(next)) {
-    for (const [i, w] of writesOf(record)) stillWritten.add(encode(i, w.parent, w.member));
+    for (const [i, w] of writesOf(record)) count(nextCount, encode(i, w.parent, w.member));
   }
-  // injectiveKey(row index, parent id) -> members (undefined: whole key)
-  const stopped = new Map<string, { row: number; members: Map<string, number> | undefined }>();
+  // ...and how many wrote it before, among the records whose previous AWS
+  // resource is gone (a survivor still writes what it wrote).
+  const prevCount = new Map<string, number>();
+  // injectiveKey(row index, parent id) -> the members written there (whole key: none)
+  const touched = new Map<string, { row: number; members: Set<string> | undefined }>();
   for (const [logicalId, record] of Object.entries(previous)) {
     const writes = writesOf(record);
     if (writes.length === 0) continue;
     if (previousMaySurvive(logicalId, record, next, oldMaySurvive, templatePolicies)) continue;
     for (const [i, w] of writes) {
-      if (stillWritten.has(encode(i, w.parent, w.member))) continue;
+      count(prevCount, encode(i, w.parent, w.member));
       const target = injectiveKey(i, w.parent);
-      let entry = stopped.get(target);
+      let entry = touched.get(target);
       if (entry === undefined) {
-        entry = { row: i, members: w.member === undefined ? undefined : new Map() };
-        stopped.set(target, entry);
+        entry = { row: i, members: w.member === undefined ? undefined : new Set() };
+        touched.set(target, entry);
       }
-      if (w.member !== undefined) {
-        entry.members?.set(w.member, (entry.members.get(w.member) ?? 0) + 1);
-      }
+      if (w.member !== undefined) entry.members?.add(w.member);
     }
   }
   const result = new Map<string, StoppedTableMembers[]>();
-  if (stopped.size === 0) return result;
+  if (touched.size === 0) return result;
   for (const [logicalId, record] of Object.entries(next)) {
     const id = record.physicalId;
     if (typeof id !== 'string' || id === '') continue;
     const entries: StoppedTableMembers[] = [];
     SIBLING_OWNED_ROWS.forEach((row, index) => {
       if (row.parent !== record.resourceType) return;
-      // Every id the parent answers to: a sibling still writing under ANY of
-      // them (an association replaced by one naming the address the other
-      // way) stopped nothing.
+      // Every id the parent answers to: a sibling writing under ANY of them
+      // (an association replaced by one naming the address the other way)
+      // counts as still writing.
       const ids = [...new Set(parentIdsOf(row, id))];
-      const written = (member: string | undefined): boolean =>
-        ids.some((pid) => stillWritten.has(encode(index, pid, member)));
-      let merged: StoppedTableMembers | undefined;
-      for (const parentId of ids) {
-        const entry = stopped.get(injectiveKey(index, parentId));
+      const sum = (counts: Map<string, number>, member: string | undefined): number =>
+        ids.reduce((n, pid) => n + (counts.get(encode(index, pid, member)) ?? 0), 0);
+      const members = new Set<string>();
+      let wholeKey = false;
+      for (const pid of ids) {
+        const entry = touched.get(injectiveKey(index, pid));
         if (entry === undefined) continue;
-        if (entry.members === undefined) {
-          if (!written(undefined)) merged = { row, members: undefined };
-          continue;
-        }
-        if (merged !== undefined && merged.members === undefined) continue;
-        for (const [m, n] of entry.members) {
-          if (written(m)) continue;
-          const members = new Map(merged?.members ?? []);
-          members.set(m, (members.get(m) ?? 0) + n);
-          merged = { row, members };
-        }
+        if (entry.members === undefined) wholeKey = true;
+        else for (const m of entry.members) members.add(m);
       }
-      if (merged !== undefined) entries.push(merged);
+      if (wholeKey) {
+        // The whole key is a writer's until the LAST writer stops.
+        if (sum(nextCount, undefined) === 0) entries.push({ row, members: undefined });
+        return;
+      }
+      // A member stops as many times as its writers dropped: two same-named
+      // EMR groups of which one is removed stop one copy, not both.
+      const stopped = new Map<string, number>();
+      for (const m of members) {
+        const n = sum(prevCount, m) - sum(nextCount, m);
+        if (n > 0) stopped.set(m, n);
+      }
+      if (stopped.size > 0) entries.push({ row, members: stopped });
     });
     if (entries.length > 0) result.set(logicalId, entries);
   }
