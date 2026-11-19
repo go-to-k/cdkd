@@ -123,7 +123,7 @@ depends-on-flip	2026-11-14T18:31:46Z	PASS	95	verify.sh	rc ok, orph clean; nested
 deployment-events	2026-11-04T18:01:46Z	PASS	36	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 destroy-data-guard	2026-11-04T09:11:36Z	PASS	75	verify.sh	rc 0, guard fired + clean second destroy, orph clean; own state bucket
 destroy-failed-delete-keeps-dependencies	2026-11-07T16:28:42Z	PASS	66	verify.sh	#6026 destroy-runner split head; rc ok, orph clean
-destroy-interrupt	2026-11-04T21:24:38Z	PASS	381	verify.sh	rc 0, re-run destroy clean resume; 2 auto-created /aws/lambda log groups deleted; orphans clean
+destroy-interrupt	2026-11-19T08:29:09Z	PASS	370	verify.sh	rc 0; 1 auto-created /aws/lambda log group deleted; orphans clean
 destroy-manifest-deps	2026-11-11T17:17:53Z	PASS	246	verify.sh	rc ok, orph clean, XR log-group sweep ok
 destroy-nested-cross-region	2026-11-12T11:22:31Z	PASS	296	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 diff-fail-on-destructive	2026-11-17T17:54:15Z	PASS	95	verify.sh	rc ok, orph clean
@@ -284,6 +284,7 @@ lambda-runtime-config	2026-11-15T17:41:38Z	PASS	115	verify.sh	rc ok, orph clean;
 lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
 lambda-url-authtype-replay	2026-11-05T03:01:10Z	PASS	130	verify.sh	rc 0, live URL stayed IAM-guarded in all phases; orph clean
 lambda-versioning	2026-11-17T09:08:06Z	PASS	60	standard	rc ok, orph clean (#6437 PR #6483)
+lambda-vpc-update-while-pending	2026-11-19T08:29:09Z	PASS	405	verify.sh	rc ok, Pending wait line seen, orph clean
 lambda-web-function-revision-replace	2026-11-11T19:34:00Z	PASS	497	verify.sh	rc ok, destroy 7 deleted 0 err, orph clean (#6117 set)
 launchtemplate-asg-inplace	2026-11-17T03:39:15Z	PASS	245	verify.sh	rc ok, orph clean (#6437 PR #6469)
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
