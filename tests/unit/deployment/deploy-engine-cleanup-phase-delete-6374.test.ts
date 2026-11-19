@@ -349,6 +349,14 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       expect(identityReads).toEqual(['rev-old']);
     });
 
+    it('drops the generation with the verdict once the cleanup phase deleted the old bucket', async () => {
+      const result = await deploy({ engine: bucketEngine(), revisionType: BUCKET });
+      const op = revisionOp(result.completedOperations);
+      expect(oldDeletes()).toBe(1);
+      expect('oldResourceMaySurvive' in op).toBe(false);
+      expect('oldResourceIdentity' in op).toBe(false);
+    });
+
     it('stamps nothing when the read cannot name a generation', async () => {
       endpointFails = true;
       generation = undefined;
@@ -390,7 +398,7 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       }) as unknown as ResourceProvider['update'];
       const read = provider.readCurrentState!;
       provider.readCurrentState = vi.fn(async (...args: Parameters<NonNullable<ResourceProvider['readCurrentState']>>) => {
-        if (failed && identityReads.length >= 2) generation = 'us-east-1|2026-11-02T00:00:00.000Z';
+        if (failed) generation = 'us-east-1|2026-11-02T00:00:00.000Z';
         return read(...args);
       }) as unknown as ResourceProvider['readCurrentState'];
       await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
