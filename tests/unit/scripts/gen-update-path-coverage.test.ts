@@ -385,6 +385,25 @@ describe('gen-update-path-coverage: guards, dispatch and helper effects', () => 
     expect(statusOf(rows, 'Rotation')).toBe('update');
   });
 
+  it('an early-return arm guarded by a change test is no dispatch (the parent-review E shape)', () => {
+    const rows = classify({
+      handled: ['Monitoring', 'Tags'],
+      classBody: `
+        async update(id, pid, type, properties, previousProperties) {
+          const newMonitoring = properties.Monitoring;
+          const oldMonitoring = previousProperties.Monitoring;
+          if (newMonitoring !== undefined && newMonitoring !== oldMonitoring) {
+            await this.c.send(new ModifyMetadataCommand({ id }));
+            return;
+          }
+          await this.c.send(new TagCommand({ tags: properties.Tags }));
+        }`,
+    });
+    // The arm sends, returns, and the tail sends Tags; Monitoring reaches neither.
+    expect(statusOf(rows, 'Monitoring')).toBe('gap');
+    expect(statusOf(rows, 'Tags')).toBe('update');
+  });
+
   it("a helper's effect is narrowed by type, and a call cycle does not cache a partial answer", () => {
     const rows = classify({
       types: ['AWS::Fake::One', 'AWS::Fake::Two'],

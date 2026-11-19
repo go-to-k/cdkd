@@ -86,9 +86,13 @@
  * per path inside it. A dispatch is an `if` / `else`, an early-return arm
  * before a sending tail, or a switch with two sending cases; two SIBLING ifs
  * toggling on one property (`if (on && !was) Enable; if (!on && was) Disable`)
- * are not one, so that shape reads as a gap; the other way, a dispatch counts
- * its condition even when one arm's send carries other properties. A change
- * refused with any error but
+ * are not one, so that shape reads as a gap. An early-return arm whose
+ * condition reads the previous side is change detection, not a dispatch. The
+ * other way, a dispatch still counts its condition when it is an if / else
+ * change test whose arms both send, when one arm's send carries other
+ * properties, when one arm sends the wrong command, or when a switch case
+ * that should send was emptied to a `break` while two others still send. A
+ * change refused with any error but
  * `ResourceUpdateNotSupportedError` is not a refusal here (a `ProvisioningError`
  * is also what a validation throws), so it would read as a gap. Only
  * TOP-LEVEL properties are classified: a nested
@@ -785,6 +789,23 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     // about the change (a warning on an early-exit skip path does not). A
     // branch that only SENDS does not: the guard is change detection, and the
     // property counts only if the send (or a local it consumes) carries it.
+    // An early-return dispatch must test the VALUE: its "other arm" is the
+    // rest of the update, which nearly always sends something, so a condition
+    // reading the previous side there (a `previousProperties` read, a local or
+    // closure derived from one) is change detection. An if / else keeps both
+    // arms in one statement, so its toggle (`if (on && !wasOn) Put else if
+    // (!on && wasOn) Delete`) still dispatches.
+    const previousNames = previousDerived(root);
+    const testsValue = (condition: ts.Expression): boolean => {
+      let tainted = false;
+      const scan = (x: ts.Node): void => {
+        if (tainted) return;
+        if (ts.isIdentifier(x) && previousNames.has(x.text)) tainted = true;
+        ts.forEachChild(x, scan);
+      };
+      scan(condition);
+      return !tainted;
+    };
     const dispatches = (a: ts.Node, b: ts.Node | undefined): boolean =>
       b !== undefined && subtreeEffect(a).hard && subtreeEffect(b).hard;
     const guards = (n: ts.Node | undefined): boolean => {
@@ -1125,6 +1146,7 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
           if (
             ts.isIfStatement(st) &&
             !st.elseStatement &&
+            testsValue(st.expression) &&
             exitsEarly(st.thenStatement) &&
             subtreeEffect(st.thenStatement).hard &&
             subtreeEffect(ts.factory.createBlock(statements.slice(i + 1))).hard
@@ -1246,6 +1268,48 @@ function requestDeclarations(root: ts.Node): Set<string> {
   };
   visit(root);
   return out;
+}
+
+/**
+ * Names in a unit derived from the PREVIOUS side: a parameter named
+ * `previous*` / `prev*` / `old*`, and, to a fixpoint, a local whose value or a
+ * closure whose body reads one (`const oldX = coerce(previousProperties.X)`,
+ * `const changed = (k) => props[k] !== previousProperties[k]`).
+ */
+function previousDerived(root: ts.Node): Set<string> {
+  const names = new Set<string>();
+  const isPrevName = (n: string): boolean => /^(previous|prev|old)([A-Z_]|$)/.test(n);
+  const decls: Array<{ names: string[]; value: ts.Node }> = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isParameter(n)) for (const b of boundNames(n.name)) if (isPrevName(b)) names.add(b);
+    if (ts.isVariableDeclaration(n) && n.initializer) {
+      const bound = boundNames(n.name);
+      for (const b of bound) if (isPrevName(b)) names.add(b);
+      decls.push({ names: bound, value: n.initializer });
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  const fn = signatureOf(root);
+  for (const p of fn?.parameters ?? []) for (const b of boundNames(p.name)) if (isPrevName(b)) names.add(b);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const d of decls) {
+      if (d.names.every((v) => names.has(v))) continue;
+      let reads = false;
+      const scan = (x: ts.Node): void => {
+        if (reads) return;
+        if (ts.isIdentifier(x) && names.has(x.text)) reads = true;
+        ts.forEachChild(x, scan);
+      };
+      scan(d.value);
+      if (reads) {
+        for (const v of d.names) names.add(v);
+        changed = true;
+      }
+    }
+  }
+  return names;
 }
 
 /** A seed entry naming a returned object key the caller consumes. */
