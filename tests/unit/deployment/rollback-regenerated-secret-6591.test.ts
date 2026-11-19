@@ -63,6 +63,7 @@ import { planRollback } from '../../../src/deployment/rollback-executor/plan.js'
 import { resolveReplayProps } from '../../../src/deployment/rollback-executor/replay-props.js';
 import { ReplayResolvers } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import {
+  attemptUsesCompletedCreate,
   orderAfterRegeneratedSecrets,
   regeneratedSecretAddresses,
   revertRegeneratesSecret,
@@ -293,6 +294,23 @@ describe('rollback of a regenerated secret (#6591)', () => {
     expect(warned.some((m) => m.includes('before secret'))).toBe(false);
   });
 
+  it('a resumed rollback restores the reader at the current value after the secret already reverted (#6597)', async () => {
+    const s = state();
+    // An earlier replay already restored the secret (AWS regenerated it), then
+    // stopped before the reader: the secret's record is its old one again.
+    s['Sec'] = rec(ARN, SECRET, { Name: 'hunt-sec', GenerateSecretString: gen(20) });
+    secret.history[RB] = pw('rollback-pw');
+    secret.value = pw('rollback-pw');
+    secret.version = RB;
+    const op = secretOp();
+    op.properties = { Name: 'hunt-sec', GenerateSecretString: gen(24) };
+    const result = await replayRollback([op, fnOp()], s, 'S', ctx);
+    expect(result.failures).toBe(0);
+    // The secret's revert is a no-op now; the reader still follows it.
+    expect(calls).not.toContain('update Sec');
+    expect(fnPw()).toBe('rollback-pw');
+  });
+
   it('the dry-run plan lists the same order', () => {
     const plan = planRollback([secretOp(), fnOp()], state());
     expect(plan.map((item) => item.op.logicalId)).toEqual(['Sec', 'Fn']);
@@ -385,5 +403,27 @@ describe('the pin skip by recorded Name (#6591)', () => {
 
   it('keeps the pin for a name token recorded in another region', async () => {
     expect(await replayNamed('eu-west-1')).toBe('pre-deploy-pw');
+  });
+});
+
+describe('attemptUsesCompletedCreate (#6597)', () => {
+  const created: CompletedOperation = {
+    logicalId: 'Sg',
+    changeType: 'CREATE',
+    resourceType: 'AWS::EC2::SecurityGroup',
+    provisionedBy: 'sdk',
+    physicalId: 'sg-0123456789abcdef0',
+  };
+  it('is true when the attempted bag names a resource a completed CREATE made', () => {
+    expect(
+      attemptUsesCompletedCreate({ VpcConfig: { SecurityGroupIds: ['sg-0123456789abcdef0'] } }, [created])
+    ).toBe(true);
+  });
+  it('is false otherwise, and for an UPDATE id or no bag', () => {
+    expect(attemptUsesCompletedCreate({ VpcConfig: {} }, [created])).toBe(false);
+    expect(attemptUsesCompletedCreate(undefined, [created])).toBe(false);
+    expect(
+      attemptUsesCompletedCreate({ Role: 'fn' }, [{ ...fnOp(), physicalId: 'fn' }])
+    ).toBe(false);
   });
 });

@@ -93,10 +93,13 @@ export class ReplayResolvers {
    */
   readonly regeneratedSecrets: ReadonlySet<string>;
 
-  constructor(stackRegion: string, regeneratedSecrets: ReadonlySet<string> = new Set()) {
+  constructor(
+    stackRegion: string,
+    regeneratedSecrets: ReadonlySet<string> | undefined = new Set()
+  ) {
     this.stackRegion = stackRegion;
     this.primary = new IntrinsicFunctionResolver(stackRegion);
-    this.regeneratedSecrets = regeneratedSecrets;
+    this.regeneratedSecrets = regeneratedSecrets ?? new Set();
   }
 
   /** The resolver that must answer for `region` — `primary` when it is the stack's own. */

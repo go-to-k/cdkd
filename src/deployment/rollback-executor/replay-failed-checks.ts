@@ -192,4 +192,10 @@ export interface ReplayFailedOperationsOptions {
    * as it is, for the next deploy or `--revert-failed`.
    */
   previousFromRecord?: ReadonlyMap<string, OwnUnsettled>;
+  /**
+   * go-to-k/cdkd#6597: addresses of secrets the completed-op replay
+   * regenerated; a token addressing one resolves at the current value, never
+   * its recorded pin.
+   */
+  regeneratedSecrets?: ReadonlySet<string> | undefined;
 }

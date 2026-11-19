@@ -27,7 +27,13 @@ Env: `AWS_REGION` (default `us-east-1`), `STATE_BUCKET` (required).
    new 20-character password; the premise), the function's `PW` equals that new
    password, `PLAIN` is back to `one`, neither the log nor state carries the
    plaintext, no queue is left, and `cdkd drift` is clean.
-3. Destroy and assert the function, the secret and the state record are gone,
+3. Deploy v3 (`ROLLBACK_SECRET_FAIL=reader`, issue
+   [#6597](https://github.com/go-to-k/cdkd/issues/6597)): the same secret and
+   `PLAIN` changes, and the function's own update fails (`MemorySize: 20000`).
+   Assert the rollback regenerated the secret again, the failed function's `PW`
+   equals the new password, `PLAIN` is back to `one`, no plaintext in the log or
+   state, and `cdkd drift` is clean.
+4. Destroy and assert the function, the secret and the state record are gone,
    then sweep the state prefix's object versions.
 
 Secret values are compared inside the script and never printed.

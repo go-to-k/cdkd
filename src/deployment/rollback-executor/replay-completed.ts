@@ -431,6 +431,7 @@ export async function replayRollbackUnbound(
 
   ctx.logger.info('Rollback completed. Some resources may remain if deletion failed.');
   ctx.recordEvent?.({ eventType: 'ROLLBACK_FINISHED', stackName });
+  if (regenerated.size > 0) result.regeneratedSecrets = regenerated;
   return result;
 }
 

@@ -3,6 +3,11 @@
  * Split out of `deploy-engine/rollback.ts` (go-to-k/cdkd#5835), which
  * re-exports what it exported.
  */
+import {
+  attemptUsesCompletedCreate,
+  readsRegeneratingSecret,
+} from '../../rollback-executor/regenerated-secrets.js';
+import { seedsDeleteFirstGuard } from '../../rollback-executor/plan.js';
 import type { RolledBackCreate } from '../../../state/name-generation.js';
 import type {
   ResourceState,
@@ -196,13 +201,31 @@ export async function performRollback(
     // failed UPDATE that left keys unsettled is reverted here, after its keys
     // stop moving, through the `--revert-failed` arm. Before the completed ops,
     // as above: the failed resource may still use what a completed CREATE made.
-    const unsettled = await revertUnsettledFailedUpdates(
+    // go-to-k/cdkd#6597: except a failed op whose record reads a secret a
+    // completed op's revert regenerates. It reverts after the completed ops,
+    // at the secret's new value, as CloudFormation restores a reader after
+    // the secret it reads; its settle wait moves with it. One whose attempt
+    // names a resource a completed CREATE made keeps its place: the replay
+    // deletes those CREATEs.
+    const deferred = new Set<number>();
+    failedOperations.forEach((op, i) => {
+      if (
+        op.changeType === 'UPDATE' &&
+        !orphanIndexes.includes(i) &&
+        !seedsDeleteFirstGuard(op) &&
+        readsRegeneratingSecret(op.logicalId, stateResources, completedOperations) &&
+        !attemptUsesCompletedCreate(op.attemptedProperties, completedOperations)
+      ) {
+        deferred.add(i);
+      }
+    });
+    const unsettledFirst = await revertUnsettledFailedUpdates(
       deps,
       ctx,
       stackName,
       stateResources,
       failedOperations,
-      new Set(orphanIndexes),
+      new Set([...orphanIndexes, ...deferred]),
       {
         emitEnvelope: completedOperations.length === 0 && orphanOps.length === 0,
         inlinePolicyWriters,
@@ -210,25 +233,53 @@ export async function performRollback(
         cleanup,
       }
     );
+    // go-to-k/cdkd#3869: the completed ops revert under the same kind of
+    // bag, judged from each op's record and the one it replaced, so a
+    // provider's delete of a CREATE this deploy made masks its name.
+    const completedResult = await withPrintingSecrets(
+      replayPrintingBag(deps, completedReplayEntries(completedOperations), stateResources),
+      () =>
+        replayRollback(completedOperations, stateResources, stackName, ctx, {
+          inlinePolicyWriters,
+          failedOperations,
+          // Only the user's Ctrl-C (go-to-k/cdkd#5118): the sibling failure
+          // that started this rollback holds the engine's other flag. It
+          // also ends a name-release wait or a re-create retry here.
+          isInterrupted: () => deps.userInterrupted(),
+          ...cleanup,
+        })
+    );
+    const unsettledDeferred =
+      deferred.size === 0
+        ? undefined
+        : await revertUnsettledFailedUpdates(
+            deps,
+            ctx,
+            stackName,
+            stateResources,
+            failedOperations,
+            new Set(failedOperations.map((_, i) => i).filter((i) => !deferred.has(i))),
+            {
+              emitEnvelope: false,
+              inlinePolicyWriters,
+              hooks: unsettledRevert,
+              cleanup,
+              regeneratedSecrets: new Set(
+                [...(completedResult.regeneratedSecrets?.values() ?? [])].flatMap((a) => [...a])
+              ),
+            }
+          );
     return {
       failed: failedResult,
-      unsettled,
-      // go-to-k/cdkd#3869: the completed ops revert under the same kind of
-      // bag, judged from each op's record and the one it replaced, so a
-      // provider's delete of a CREATE this deploy made masks its name.
-      result: await withPrintingSecrets(
-        replayPrintingBag(deps, completedReplayEntries(completedOperations), stateResources),
-        () =>
-          replayRollback(completedOperations, stateResources, stackName, ctx, {
-            inlinePolicyWriters,
-            failedOperations,
-            // Only the user's Ctrl-C (go-to-k/cdkd#5118): the sibling failure
-            // that started this rollback holds the engine's other flag. It
-            // also ends a name-release wait or a re-create retry here.
-            isInterrupted: () => deps.userInterrupted(),
-            ...cleanup,
-          })
-      ),
+      unsettled:
+        unsettledDeferred === undefined
+          ? unsettledFirst
+          : {
+              handled: [...unsettledFirst.handled, ...unsettledDeferred.handled],
+              warnings: unsettledFirst.warnings + unsettledDeferred.warnings,
+              interrupted: unsettledFirst.interrupted || unsettledDeferred.interrupted,
+            },
+      result: completedResult,
       run: scope,
     };
   });

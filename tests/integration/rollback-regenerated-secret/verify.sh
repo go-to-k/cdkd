@@ -10,6 +10,9 @@
 # CloudFormation does. The fix reverts the secret first and resolves the
 # function's reference at the current value: PW must equal the secret's
 # password. Before the fix PW held the password from before the deploy.
+# Phase 3 (go-to-k/cdkd#6597) makes the function's OWN update fail after the
+# secret's update: the rollback must revert the failed function after the
+# secret, at its regenerated value.
 #
 # Secret values are compared inside node and never printed.
 
@@ -181,6 +184,59 @@ if [ "${DRIFT_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: no drift after the rollback"
+
+echo "==> Phase 3: deploy v3 (GenerateSecretString changed, the function's own update fails) -- expect FAILURE"
+set +e
+ROLLBACK_SECRET_FAIL=reader node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${LOG_DIR}/deploy-v3.log" 2>&1
+DEPLOY_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/deploy-v3.log" || true
+if [ "${DEPLOY_RC}" -eq 0 ]; then
+  echo "FAIL: the v3 deploy unexpectedly SUCCEEDED (the function update did not fail)" >&2
+  exit 1
+fi
+echo "    OK: v3 deploy failed (rc=${DEPLOY_RC})"
+if grep -qF -- "${RB_PW}" "${LOG_DIR}/deploy-v3.log"; then
+  echo "FAIL: the deploy log carries the secret's plaintext" >&2
+  exit 1
+fi
+# The premise: the rollback regenerated the secret again.
+RB3_PW="$(secret_password)"
+expect_eq "v3 rolled-back password length" "${#RB3_PW}" "20"
+if [ "${RB3_PW}" = "${RB_PW}" ]; then
+  echo "FAIL: premise not reproduced: the v3 rollback did not regenerate the secret" >&2
+  exit 1
+fi
+echo "    OK: the v3 rollback regenerated the secret"
+LIVE3_PW="$(function_pw)"
+if [ "${LIVE3_PW}" = "${RB_PW}" ]; then
+  echo "FAIL: the failed function holds the password from before the v3 deploy, which the secret no longer serves (go-to-k/cdkd#6597)" >&2
+  exit 1
+fi
+expect_eq "rolled-back failed function PW equals the secret's current password" \
+  "$([ "${LIVE3_PW}" = "${RB3_PW}" ] && echo yes || echo no)" "yes"
+expect_eq "rolled-back failed function PLAIN" \
+  "$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
+    --query 'Environment.Variables.PLAIN' --output text)" "one"
+if aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | grep -qF -- "${RB3_PW}"; then
+  echo "FAIL: the state record carries the secret's plaintext" >&2
+  exit 1
+fi
+echo "    OK: state carries no plaintext"
+
+echo "==> Phase 3: drift after the rollback (expect none)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  >"${LOG_DIR}/drift3.log" 2>&1
+DRIFT_RC=$?
+set -e
+sed 's/^/  /' "${LOG_DIR}/drift3.log" || true
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift after the v3 rollback exited ${DRIFT_RC}" >&2
+  exit 1
+fi
+echo "    OK: no drift after the v3 rollback"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

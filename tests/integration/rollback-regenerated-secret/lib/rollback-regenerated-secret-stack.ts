@@ -20,12 +20,18 @@ import type { Construct } from 'constructs';
  * queue's create fails. The rollback restores the secret, which generates yet
  * another password, as CloudFormation's rollback does. Before the fix the
  * function was restored first, with the password from before the deploy.
+ *
+ * v3 (`ROLLBACK_SECRET_FAIL=reader`, go-to-k/cdkd#6597): the same secret and
+ * `PLAIN` changes, with no failing queue; the function's own update fails
+ * (`MemorySize: 20000`). The rollback must revert the failed function after
+ * the secret, at the secret's regenerated value.
  */
 export class RollbackRegeneratedSecretStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const fail = process.env.ROLLBACK_SECRET_FAIL === 'true';
+    const mode = process.env.ROLLBACK_SECRET_FAIL;
+    const fail = mode === 'true' || mode === 'reader';
 
     const secret = new secretsmanager.Secret(this, 'Sec', {
       generateSecretString: {
@@ -47,10 +53,16 @@ export class RollbackRegeneratedSecretStack extends cdk.Stack {
       },
     });
 
+    if (mode === 'reader') {
+      // go-to-k/cdkd#6597: the reader's own update fails (Lambda's MemorySize
+      // range is [128, 10240]) after the secret's update regenerated it.
+      (fn.node.defaultChild as lambda.CfnFunction).addPropertyOverride('MemorySize', 20000);
+    }
+
     new cdk.CfnOutput(this, 'SecretArn', { value: secret.secretArn });
     new cdk.CfnOutput(this, 'FunctionName', { value: fn.functionName });
 
-    if (fail) {
+    if (mode === 'true') {
       // L1, so CDK does not reject the out-of-range value at synth.
       const failing = new sqs.CfnQueue(this, 'FailingQueue', {
         queueName: 'CdkdRollbackRegeneratedSecret-failing',

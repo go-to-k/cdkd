@@ -21,10 +21,10 @@ import { dynamicReferenceTokens } from '../secret-redaction.js';
 const SECRET_TYPE = 'AWS::SecretsManager::Secret';
 
 /**
- * Does reverting `op` make AWS generate a new value for the secret? An
- * in-place UPDATE of a secret whose old record declares `GenerateSecretString`
- * and whose deployed record declares a different one: the provider regenerates
- * only when that block changed (#2472).
+ * Did the failed deploy's update of the secret, and so its revert, make AWS
+ * generate a new value? An in-place UPDATE of a secret whose old record
+ * declares `GenerateSecretString` and whose forward bag declares a different
+ * one: the provider regenerates only when that block changed (#2472).
  */
 export function revertRegeneratesSecret(
   op: CompletedOperation,
@@ -37,7 +37,11 @@ export function revertRegeneratesSecret(
     : undefined;
   const previousGenerate = op.previousState?.properties?.['GenerateSecretString'];
   if (previousGenerate === undefined || previousGenerate === null) return false;
-  return !deepEqual(previousGenerate, current?.properties?.['GenerateSecretString']);
+  // go-to-k/cdkd#6597: the forward's own bag when journaled, so a `cdkd
+  // rollback` resuming after this secret was already reverted (its record
+  // back to the old one) still knows the value was regenerated.
+  const forward = op.properties ?? current?.properties;
+  return !deepEqual(previousGenerate, forward?.['GenerateSecretString']);
 }
 
 /**
@@ -139,4 +143,46 @@ export function orderAfterRegeneratedSecrets(
     if (!moved) break;
   }
   return out;
+}
+
+/**
+ * go-to-k/cdkd#6597: does the record `logicalId` holds now (a failed UPDATE
+ * keeps the pre-deploy record) read, through a token, a secret whose revert
+ * among `completedOps` regenerates its value? The automatic rollback then
+ * reverts that failed op after the completed-op replay, as CloudFormation
+ * restores a reader after the secret it reads.
+ */
+export function readsRegeneratingSecret(
+  logicalId: string,
+  stateResources: Record<string, ResourceState>,
+  completedOps: readonly CompletedOperation[]
+): boolean {
+  const record = Object.hasOwn(stateResources, logicalId) ? stateResources[logicalId] : undefined;
+  if (record === undefined) return false;
+  const text = JSON.stringify(record.properties ?? {});
+  return completedOps.some(
+    (op) =>
+      revertRegeneratesSecret(op, stateResources) &&
+      leafReadsSecret(text, regeneratedSecretAddresses(op))
+  );
+}
+
+/**
+ * go-to-k/cdkd#6597: may the failed op's attempted bag still use a resource
+ * a completed CREATE made (its physical id appears in that bag)? Such a
+ * failed op keeps its place before the completed-op replay, whose CREATE
+ * deletions it must precede (#5505), even when it reads a regenerating secret.
+ */
+export function attemptUsesCompletedCreate(
+  attemptedProperties: Record<string, unknown> | undefined,
+  completedOps: readonly CompletedOperation[]
+): boolean {
+  const text = JSON.stringify(attemptedProperties ?? {});
+  return completedOps.some(
+    (op) =>
+      op.changeType === 'CREATE' &&
+      typeof op.physicalId === 'string' &&
+      op.physicalId !== '' &&
+      text.includes(op.physicalId)
+  );
 }
