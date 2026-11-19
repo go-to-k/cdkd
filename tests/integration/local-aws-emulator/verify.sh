@@ -13,6 +13,9 @@
 #      and asset storage are bootstrapped on the way, and the
 #      autoDeleteObjects / BucketDeployment custom resources run in the Lambda
 #      runtime image locally. Assert the BucketDeployment's file landed.
+#      Assert the enforceSSL-only queue, topic and bucket hold no
+#      aws:SecureTransport Deny (go-to-k/cdkd#6636): the queue and bucket no
+#      policy, the topic its default, and the queue's event source mapping exists.
 #   2. `cdkd local invoke --from-state --aws-emulator` on a top-level function
 #      and on one inside a NestedStack: each writes an item to the table whose
 #      name --from-state handed in and reads it back. Then the flag BEFORE the
@@ -263,6 +266,33 @@ done
 aws s3api head-object --bucket "${STATE_BUCKET_EMU}" --key "${STATE_KEY}" >/dev/null
 echo "    OK: deployed; both custom resources ran locally; BucketDeployment file and state record present"
 
+# go-to-k/cdkd#6636: a policy of only the enforceSSL Deny denies every request
+# on the emulator, so cdkd sets none (the topic keeps its default).
+SSL_QUEUE_URL="$(output_value "${DEPLOY_LOG}" SslQueueUrl)"
+SSL_QUEUE_ARN="$(output_value "${DEPLOY_LOG}" SslQueueArn)"
+SSL_TOPIC_ARN="$(output_value "${DEPLOY_LOG}" SslTopicArn)"
+SSL_BUCKET="$(output_value "${DEPLOY_LOG}" SslBucketName)"
+for V in "SSL_QUEUE_URL=${SSL_QUEUE_URL}" "SSL_QUEUE_ARN=${SSL_QUEUE_ARN}" "SSL_TOPIC_ARN=${SSL_TOPIC_ARN}" "SSL_BUCKET=${SSL_BUCKET}"; do
+  [ -n "${V#*=}" ] || { echo "FAIL: ${V%%=*} output missing from the deploy log" >&2; exit 1; }
+done
+SSL_QUEUE_POLICY="$(aws sqs get-queue-attributes --queue-url "${SSL_QUEUE_URL}" --attribute-names Policy --query 'Attributes.Policy' --output text)"
+case "${SSL_QUEUE_POLICY}" in
+  '' | None) ;;
+  *) echo "FAIL: enforceSSL-only queue still holds a policy: ${SSL_QUEUE_POLICY}" >&2; exit 1 ;;
+esac
+SSL_TOPIC_POLICY="$(aws sns get-topic-attributes --topic-arn "${SSL_TOPIC_ARN}" --query 'Attributes.Policy' --output text)"
+if grep -qi 'SecureTransport' <<<"${SSL_TOPIC_POLICY}"; then
+  echo "FAIL: enforceSSL-only topic still holds the SecureTransport Deny: ${SSL_TOPIC_POLICY}" >&2
+  exit 1
+fi
+if ! gone_probe aws s3api get-bucket-policy --bucket "${SSL_BUCKET}"; then
+  echo "FAIL: enforceSSL-only bucket ${SSL_BUCKET} still holds a policy" >&2
+  exit 1
+fi
+ESM_COUNT="$(aws lambda list-event-source-mappings --event-source-arn "${SSL_QUEUE_ARN}" --query 'length(EventSourceMappings)' --output text)"
+[ "${ESM_COUNT}" = "1" ] || { echo "FAIL: expected 1 event source mapping on ${SSL_QUEUE_ARN}, got ${ESM_COUNT}" >&2; exit 1; }
+echo "    OK: enforceSSL-only queue / bucket hold no policy, the topic no SecureTransport Deny; the queue's event source mapping exists"
+
 # --- Phase 2: local invoke --from-state ---------------------------------------
 echo '{}' >"${EVENT_FILE}"
 # cdkd local synthesizes the app itself, so the UPDATE phase's invoke needs
@@ -437,6 +467,9 @@ assert_gone "function ${FN} still exists after destroy" aws lambda get-function 
 assert_gone "nested table ${INNER_TABLE} still exists after destroy" aws dynamodb describe-table --table-name "${INNER_TABLE}"
 assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}"
 assert_gone "HTTP API ${API_ID} still exists after destroy" aws apigatewayv2 get-api --api-id "${API_ID}"
+assert_gone "enforceSSL-only queue ${SSL_QUEUE_URL} still exists after destroy" aws sqs get-queue-attributes --queue-url "${SSL_QUEUE_URL}" --attribute-names QueueArn
+assert_gone "enforceSSL-only topic ${SSL_TOPIC_ARN} still exists after destroy" aws sns get-topic-attributes --topic-arn "${SSL_TOPIC_ARN}"
+assert_gone "enforceSSL-only bucket ${SSL_BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${SSL_BUCKET}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET_EMU}" --key "${STATE_KEY}"
 LEFT="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET_EMU}" --prefix "cdkd/${STACK}" --query 'Contents[].Key' --output text)"
 if grep -qE '(^|[[:space:]])[^[:space:]]*/state\.json' <<<"${LEFT}"; then
