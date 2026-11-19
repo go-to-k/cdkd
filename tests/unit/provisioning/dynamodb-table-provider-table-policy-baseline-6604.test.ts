@@ -4,6 +4,7 @@ import {
   DescribeTableCommand,
   GetResourcePolicyCommand,
   PolicyNotFoundException,
+  ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 
 const { mockSend, childLogger } = vi.hoisted(() => ({
@@ -98,6 +99,12 @@ function primeAws(answers: Array<Record<string, unknown> | 'none' | Error>): voi
   });
 }
 
+const throttle = (): Error =>
+  Object.assign(new Error('Rate exceeded'), {
+    name: 'ThrottlingException',
+    $metadata: { httpStatusCode: 400 },
+  });
+
 const policyReads = (): number =>
   mockSend.mock.calls.filter(([cmd]) => cmd instanceof GetResourcePolicyCommand).length;
 
@@ -157,18 +164,42 @@ describe('DynamoDB Table ResourcePolicy baseline after its own write (go-to-k/cd
     expect(policyReads()).toBe(4);
   });
 
-  it('records a policy still served once the schedule is spent: only absence is replaced by the declaration', async () => {
+  it('keeps the DECLARED policy when the replaced document is still served once the schedule is spent', async () => {
+    // Recording OTHER_DOC would let --revert re-grant the replaced policy.
     primeAws([OTHER_DOC]);
     const baseline = await capture(tableProps(DOC));
-    expect(baseline['ResourcePolicy']).toEqual({ PolicyDocument: OTHER_DOC });
+    expect(baseline['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+    expect(policyReads()).toBe(4);
+  });
+
+  it('keeps the declared policy when the read throws after a stale answer', async () => {
+    primeAws([OTHER_DOC, throttle()]);
+    expect((await capture(tableProps(DOC)))['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+  });
+
+  it('records NO policy when a removal capture throws after the deleted policy was still served', async () => {
+    primeAws([DOC, throttle()]);
+    expect((await capture(tableProps()))['ResourcePolicy']).toBeUndefined();
+  });
+
+  it('a plain drift read that throws after a present answer records that answer', async () => {
+    // An out-of-band change to another document, then a throttle on the re-ask.
+    primeAws([OTHER_DOC, throttle()]);
+    const live = bagOf(
+      await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(DOC))
+    );
+    expect(live['ResourcePolicy']).toEqual({ PolicyDocument: OTHER_DOC });
+  });
+
+  it('keeps the declared policy over a not-found arn right after a create', async () => {
+    primeAws([
+      new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} }),
+    ]);
+    expect((await capture(tableProps(DOC)))['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
   });
 
   it('keeps the declared policy over a TRANSIENT read failure, never over a deterministic one', async () => {
-    const throttle = Object.assign(new Error('Rate exceeded'), {
-      name: 'ThrottlingException',
-      $metadata: { httpStatusCode: 400 },
-    });
-    primeAws([throttle]);
+    primeAws([throttle()]);
     expect((await capture(tableProps(DOC)))['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
 
     mockSend.mockReset();
@@ -221,13 +252,18 @@ describe('drift heal of a pre-#6604 Table ResourcePolicy baseline', () => {
     expect(heal({}, tableProps(DOC), withPolicy(reordered))).toEqual(['ResourcePolicy']);
   });
 
+  it('skips a REPLACED recorded policy while the table holds exactly the declared one', () => {
+    expect(heal(withPolicy(OTHER_DOC), tableProps(DOC), withPolicy(DOC))).toEqual(['ResourcePolicy']);
+  });
+
   it('compares every other combination', () => {
     // A declared policy removed outside cdkd.
     expect(heal(withPolicy(DOC), tableProps(DOC), {})).toEqual([]);
     // An undeclared policy added outside cdkd.
     expect(heal({}, tableProps(), withPolicy(DOC))).toEqual([]);
-    // The live policy differs from the declaration.
+    // The live policy differs from the declaration, whatever is recorded.
     expect(heal({}, tableProps(DOC), withPolicy(OTHER_DOC))).toEqual([]);
+    expect(heal(withPolicy(DOC), tableProps(DOC), withPolicy(OTHER_DOC))).toEqual([]);
     // A recorded undeclared policy the table still holds.
     expect(heal(withPolicy(DOC), tableProps(), withPolicy(DOC))).toEqual([]);
     // Another type is never touched.

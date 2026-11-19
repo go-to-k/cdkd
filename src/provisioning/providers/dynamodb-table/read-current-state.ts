@@ -418,10 +418,14 @@ export async function readTimeToLive(
  * is believed — on that capture, a policy when none is declared too — as
  * {@link readStreamMembers} does for the stream-level policy. Without it a
  * removal froze the OLD policy into the baseline, and `drift --revert`
- * re-granted it. On an `afterOwnWrite` capture a declared policy still absent
- * when the schedule is spent, or a read that failed transiently, keeps the
- * DECLARED member; a present answer is recorded as read. The rollback's
- * strict read passes no `settle`.
+ * re-granted it. On an `afterOwnWrite` capture of a DECLARED policy, an
+ * answer the schedule never settled on the declaration — absent, still the
+ * PREVIOUS document, or a read that failed transiently or after a stale
+ * answer — keeps the DECLARED member: the put just succeeded, and recording a
+ * replaced document would let `--revert` re-grant it. An UNDECLARED policy
+ * whose read fails records nothing, never the stale answer before the
+ * failure. Elsewhere a read that fails after a present answer records that
+ * answer. The rollback's strict read passes no `settle`.
  */
 export async function readTableResourcePolicy(
   this: DynamoDBTableProvider,
@@ -458,10 +462,15 @@ export async function readTableResourcePolicy(
               ? streamPolicyMatchesDeclared(answer, settle.desired)
               : answer === undefined || answer === ''
           );
+    const keepDeclared = afterOwnWrite && declared;
     if (!livePolicy) {
-      return afterOwnWrite && declared ? declaredStreamPolicyMember(settle?.desired) : undefined;
+      return keepDeclared ? declaredStreamPolicyMember(settle?.desired) : undefined;
     }
-    if (settle !== undefined) return reverseMapStreamPolicy(livePolicy, settle.desired);
+    if (settle !== undefined) {
+      return keepDeclared && !streamPolicyMatchesDeclared(livePolicy, settle.desired)
+        ? declaredStreamPolicyMember(settle.desired)
+        : reverseMapStreamPolicy(livePolicy, settle.desired);
+    }
     let doc: unknown = livePolicy;
     try {
       doc = JSON.parse(livePolicy);
@@ -470,17 +479,14 @@ export async function readTableResourcePolicy(
     }
     return { PolicyDocument: doc };
   } catch (err) {
-    if (afterOwnWrite && !(err instanceof ResourceNotFoundException)) {
-      if (lastPolicy !== undefined && lastPolicy !== '') {
-        return reverseMapStreamPolicy(lastPolicy, settle?.desired);
-      }
-      if (declared && isTransientStreamReadFailure(err)) {
-        this.logger.debug(
-          safeMsg`Kept the declared ResourcePolicy of ${physicalId} in the baseline captured after its write: the read failed transiently`
-        );
-        return declaredStreamPolicyMember(settle?.desired);
-      }
+    const answered = lastPolicy !== undefined && lastPolicy !== '';
+    if (declared && afterOwnWrite && (answered || isTransientStreamReadFailure(err))) {
+      this.logger.debug(
+        safeMsg`Kept the declared ResourcePolicy of ${physicalId} in the baseline captured after its write: the read failed before it settled`
+      );
+      return declaredStreamPolicyMember(settle?.desired);
     }
+    if (declared && answered) return reverseMapStreamPolicy(lastPolicy, settle?.desired);
     // A table with no policy answers PolicyNotFoundException: "not set",
     // strict or not, or an unsettled ResourcePolicy would refuse forever.
     if (
