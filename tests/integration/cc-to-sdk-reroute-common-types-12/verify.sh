@@ -7,7 +7,7 @@
 # layers record the same id for each (the archive, source and destination
 # names; the AWS-minted delivery id). Phases: deploy on the SDK route -> force
 # each resource onto Cloud Control (--recreate-via-cc-api) under its
-# generation-2 name, the delivery last -> the plan announces each return -> --pin-cc-api declines
+# generation-2 name, in one deploy -> the plan announces each return -> --pin-cc-api declines
 # them -> an out-of-band tag on the source and the destination -> redeploy with
 # a real change: each id unchanged, each record flipped to 'sdk', each update
 # reached AWS on the same resource -> drift clean -> destroy on the flipped
@@ -174,8 +174,8 @@ value_of() { # usage: value_of <logicalId> <phase>
   case "$1:$2" in
     RerouteDelivery:pinned) printf 'b' ;;
     RerouteDelivery:flip) printf 'a' ;;
-    *:base | *:unhook | *:announce | *:pinned) printf 'a' ;;
-    *:seed | *:hook | *:seed-delivery | *:flip) printf 'b' ;;
+    *:base | *:announce | *:pinned) printf 'a' ;;
+    *:seed | *:flip) printf 'b' ;;
     *) echo "FAIL: value_of has no arm for $1:$2" >&2; return 1 ;;
   esac
 }
@@ -286,7 +286,6 @@ done
 
 # Per-phase witnesses and ids, indexed like SUBJECTS (bash 3.2 has no
 # associative arrays).
-HOOK_DELIVERY=""
 W0=()
 W1=()
 P1=()
@@ -371,33 +370,16 @@ assert_refs "phase 1"
 echo "    OK: all four created on the SDK route"
 
 echo "==> Phase 2: force each resource onto Cloud Control (--recreate-via-cc-api)"
-# --recreate-via-cc-api deletes the old resource first, and CloudWatch Logs
-# refuses to delete a source or a destination a delivery still uses, so the
-# delivery leaves the stack (2a), the other three are recreated (2b), and the
-# delivery comes back on the SDK route (2c) to be recreated alone (2d).
-echo "  -- 2a: remove the delivery"
-env CDKD_TEST_PHASE=unhook \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone_as "generation-1 delivery ${W0[3]} survived its removal" ResourceNotFoundException \
-  aws logs get-delivery --id "${W0[3]}" --region "${REGION}"
-echo "  -- 2b: recreate the archive, the source and the destination"
-# The archive is a stateful type, so its recreate needs the data-loss
-# acknowledgement; it holds no events this run cares about.
+# The source and the destination take new names in the same deploy, so their
+# recreates create first and delete the generation-1 resources once the
+# delivery has moved (issue 6589). The archive is a stateful type, so its
+# recreate needs the data-loss acknowledgement; it holds no events this run
+# cares about.
 env CDKD_TEST_PHASE=seed \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
     --recreate-via-cc-api RerouteArchive --recreate-via-cc-api RerouteDeliverySource \
-    --recreate-via-cc-api RerouteDeliveryDestination --force-stateful-recreation --yes
-echo "  -- 2c: add the delivery back"
-env CDKD_TEST_PHASE=hook \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-load_state
-[ "$(record RerouteDelivery '.provisionedBy')" = sdk ] ||
-  { echo "FAIL: phase 2c: the re-added delivery is not on the SDK route" >&2; exit 1; }
-HOOK_DELIVERY=$(record RerouteDelivery '.physicalId')
-echo "  -- 2d: recreate the delivery"
-env CDKD_TEST_PHASE=seed-delivery \
-  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-    --recreate-via-cc-api RerouteDelivery --yes
+    --recreate-via-cc-api RerouteDeliveryDestination --recreate-via-cc-api RerouteDelivery \
+    --force-stateful-recreation --yes
 load_state
 # Without this every assertion below would be vacuous.
 assert_layers "phase 2 (after --recreate-via-cc-api)" cc-api
@@ -414,18 +396,16 @@ for i in "${!SUBJECTS[@]}"; do
     exit 1
   }
 done
-[ "${P1[3]}" != "${HOOK_DELIVERY}" ] ||
-  { echo "FAIL: the recreate kept the delivery id ${HOOK_DELIVERY}; it was not recreated" >&2; exit 1; }
-# The generation-1 resources, and the delivery of 2c, were deleted.
-assert_gone_as "phase-2c delivery ${HOOK_DELIVERY} survived its recreate" ResourceNotFoundException \
-  aws logs get-delivery --id "${HOOK_DELIVERY}" --region "${REGION}"
+# The generation-1 resources were deleted.
+assert_gone_as "generation-1 delivery ${W0[3]} survived its recreate" ResourceNotFoundException \
+  aws logs get-delivery --id "${W0[3]}" --region "${REGION}"
 assert_gone_as "generation-1 source $(name_of RerouteDeliverySource 1) survived its recreate" ResourceNotFoundException \
   aws logs get-delivery-source --name "$(name_of RerouteDeliverySource 1)" --region "${REGION}"
 assert_gone_as "generation-1 destination $(name_of RerouteDeliveryDestination 1) survived its recreate" ResourceNotFoundException \
   aws logs get-delivery-destination --name "$(name_of RerouteDeliveryDestination 1)" --region "${REGION}"
 assert_gone_as "generation-1 archive $(name_of RerouteArchive 1) survived its recreate" ResourceNotFoundException \
   aws events describe-archive --archive-name "$(name_of RerouteArchive 1)" --region "${REGION}"
-assert_live_values "phase 2 (CC recreate)" seed-delivery
+assert_live_values "phase 2 (CC recreate)" seed
 assert_refs "phase 2"
 echo "    OK: all four pinned to Cloud Control under the SDK-form id, with fresh witnesses"
 

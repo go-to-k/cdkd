@@ -12,10 +12,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  */
 const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
   base: 'a',
-  unhook: 'a',
   seed: 'b',
-  hook: 'b',
-  'seed-delivery': 'b',
   announce: 'a',
   pinned: 'a',
   flip: 'b',
@@ -32,22 +29,11 @@ const VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
  */
 const DELIVERY_VALUE_BY_PHASE: Record<string, 'a' | 'b'> = {
   base: 'a',
-  hook: 'b',
-  'seed-delivery': 'b',
+  seed: 'b',
   announce: 'a',
   pinned: 'b',
   flip: 'a',
 };
-
-/**
- * The phases that declare no delivery. `--recreate-via-cc-api` deletes the old
- * resource before it creates the new one, and CloudWatch Logs refuses to
- * delete a source or a destination a delivery still uses (ConflictException,
- * measured us-east-1, 2026-11-19). So verify.sh removes the delivery
- * (`unhook`), recreates the other three on Cloud Control (`seed`), adds the
- * delivery back (`hook`) and only then recreates it (`seed-delivery`).
- */
-const WITHOUT_DELIVERY = new Set(['unhook', 'seed']);
 
 /**
  * physicalId-parity arm for issue 6588: an `AWS::Events::Archive` and the three
@@ -79,7 +65,7 @@ export class CcToSdkRerouteCommonTypes12Stack extends cdk.Stack {
     const value = VALUE_BY_PHASE[phaseName];
     if (value === undefined) throw new Error(`unknown CDKD_TEST_PHASE '${phaseName}'`);
     // 1 for the SDK create, 2 from the Cloud Control recreate onwards.
-    const generation = phaseName === 'base' || phaseName === 'unhook' ? '1' : '2';
+    const generation = phaseName === 'base' ? '1' : '2';
     const tags = [{ key: 'cdkd-reroute', value }];
 
     // NOT under test: one bus and one log group per generation.
@@ -131,7 +117,6 @@ export class CcToSdkRerouteCommonTypes12Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DestinationRef', { value: destination.ref });
     new cdk.CfnOutput(this, 'DestinationArn', { value: destination.attrArn });
 
-    if (WITHOUT_DELIVERY.has(phaseName)) return;
     const deliveryValue = DELIVERY_VALUE_BY_PHASE[phaseName];
     if (deliveryValue === undefined) throw new Error(`no delivery value for phase '${phaseName}'`);
     const delivery = new logs.CfnDelivery(this, 'RerouteDelivery', {
