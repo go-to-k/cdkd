@@ -29,7 +29,7 @@ import {
 import { type RollbackExecutorContext } from './types.js';
 import { shownLogicalId } from './messages.js';
 import { masksOnlyAt } from './replay-noecho.js';
-import { leafReadsSecret } from './regenerated-secrets.js';
+import { leafReadsSecret, secretsManagerTokenSecretId } from './regenerated-secrets.js';
 
 /**
  * `provider.update()` for a rollback arm, retried unless the provider opts out.
@@ -239,8 +239,18 @@ class ReplayPins {
       const pin = this.recorded.get(token);
       if (pin === undefined) continue;
       // go-to-k/cdkd#6591: this replay regenerated the secret, so the pinned
-      // version is a value AWS no longer serves as current.
-      if (leafReadsSecret(token, this.resolvers.regeneratedSecrets)) continue;
+      // version is a value AWS no longer serves as current. A region-less
+      // token whose record names another region is another secret that only
+      // shares the name, and keeps its pin.
+      const foreign = recordedRegions?.get(token);
+      if (
+        leafReadsSecret(token, this.resolvers.regeneratedSecrets) &&
+        (secretsManagerTokenSecretId(token)?.startsWith('arn:') === true ||
+          foreign === undefined ||
+          foreign === this.execCtx.region)
+      ) {
+        continue;
+      }
       if (!(await this.usable(token, pin, recordedRegions))) continue;
       (out ??= new Map()).set(token, pin);
     }

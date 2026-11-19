@@ -105,6 +105,8 @@ export function orderAfterRegeneratedSecrets(
     let moved = false;
     for (const op of [...out].reverse()) {
       if (op.changeType === 'CREATE') continue;
+      // The OLD record's dependencies only: a dependency only the deployed
+      // record has carries no token the restore resolves.
       const deps = new Set(
         (Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []).filter(
           (id): id is string => typeof id === 'string' && id !== op.logicalId && secrets.has(id)

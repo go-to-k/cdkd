@@ -186,9 +186,27 @@ echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "function ${FN_NAME} still exists after destroy" \
   aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
-assert_gone "secret still exists after destroy" \
-  aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}"
-echo "    OK: function and secret gone"
+echo "    OK: function gone"
+# A deleted secret can still answer describe-secret with DeletedDate set (a
+# scheduled deletion, or a force delete not yet applied): that is deleted. Only
+# a secret still ACTIVE, with no DeletedDate, is a leak.
+if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}"; then
+  SECRET_DELETED_DATE="GONE"
+elif ! SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" \
+    --region "${REGION}" --query 'DeletedDate' --output text 2>&1); then
+  # TOCTOU: the secret can vanish between gone_probe and this requery.
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<< "${SECRET_DELETED_DATE}" \
+    && SECRET_DELETED_DATE="GONE" \
+    || { echo "FAIL: describe-secret requery undetermined: ${SECRET_DELETED_DATE}" >&2; exit 1; }
+fi
+if [ "${SECRET_DELETED_DATE}" = "GONE" ]; then
+  echo "    OK: secret is gone"
+elif [ -n "${SECRET_DELETED_DATE}" ] && [ "${SECRET_DELETED_DATE}" != "None" ]; then
+  echo "    OK: secret is deleted (DeletedDate=${SECRET_DELETED_DATE})"
+else
+  echo "FAIL: the secret is still ACTIVE after destroy (no DeletedDate set)" >&2
+  exit 1
+fi
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
 echo "==> Final teardown + state-version sweep"

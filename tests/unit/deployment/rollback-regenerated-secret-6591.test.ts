@@ -60,6 +60,8 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import { planRollback } from '../../../src/deployment/rollback-executor/plan.js';
+import { resolveReplayProps } from '../../../src/deployment/rollback-executor/replay-props.js';
+import { ReplayResolvers } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import {
   orderAfterRegeneratedSecrets,
   regeneratedSecretAddresses,
@@ -243,6 +245,33 @@ describe('rollback of a regenerated secret (#6591)', () => {
     expect(fnPw()).toBe('pre-deploy-pw');
   });
 
+  it('warns when an op depending on the reader keeps it before the secret', async () => {
+    const s = state();
+    const aliasOp: CompletedOperation = {
+      logicalId: 'Alias',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::Lambda::Alias',
+      provisionedBy: 'sdk',
+      physicalId: 'alias',
+      previousState: rec('alias', 'AWS::Lambda::Alias', { Description: 'one' }, ['Fn']),
+      oldResourceRetained: false,
+    };
+    s['Alias'] = rec('alias', 'AWS::Lambda::Alias', { Description: 'two' }, ['Fn']);
+    // Completion order Sec, Alias, Fn: reversed, the alias sits between them.
+    const result = await replayRollback([secretOp(), aliasOp, fnOp()], s, 'S', ctx);
+    expect(result.failures).toBe(0);
+    expect(calls).toEqual(['update Fn', 'update Alias', 'update Sec']);
+    expect(fnPw()).toBe('pre-deploy-pw');
+    const warned = (ctx.logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => m.includes('before secret Sec') && m.includes("cdkd drift S --revert"))).toBe(true);
+  });
+
+  it('does not warn when the reader is moved after the secret', async () => {
+    await replayRollback([secretOp(), fnOp()], state(), 'S', ctx);
+    const warned = (ctx.logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => m.includes('before secret'))).toBe(false);
+  });
+
   it('the dry-run plan lists the same order', () => {
     const plan = planRollback([secretOp(), fnOp()], state());
     expect(plan.map((item) => item.op.logicalId)).toEqual(['Sec', 'Fn']);
@@ -304,5 +333,36 @@ describe('secretsManagerTokenSecretId (#6591)', () => {
     ['{{resolve:ssm:/p}}', undefined],
   ])('%s -> %s', (token, id) => {
     expect(secretsManagerTokenSecretId(token)).toBe(id);
+  });
+});
+
+describe('the pin skip by recorded Name (#6591)', () => {
+  const NAMED = '{{resolve:secretsmanager:hunt-sec:SecretString:password::}}';
+  beforeEach(() => {
+    secret.history = { [PRE]: pw('pre-deploy-pw') };
+    secret.value = pw('current-pw');
+    secret.version = RB;
+  });
+  const replayNamed = async (region: string): Promise<unknown> => {
+    const record = rec('fn', FN, { PW: NAMED }, [], {
+      referenceProvenance: { [NAMED]: { region, versions: [PRE] } },
+    });
+    const resolved = await resolveReplayProps(
+      record.properties,
+      new ReplayResolvers('us-east-1', new Set(['hunt-sec'])),
+      new Map(),
+      { region: 'us-east-1' } as never,
+      'Fn',
+      record
+    );
+    return resolved?.['PW'];
+  };
+
+  it('resolves the current value for a name token recorded in the stack region', async () => {
+    expect(await replayNamed('us-east-1')).toBe('current-pw');
+  });
+
+  it('keeps the pin for a name token recorded in another region', async () => {
+    expect(await replayNamed('eu-west-1')).toBe('pre-deploy-pw');
   });
 });

@@ -5,6 +5,7 @@
 
 import { ownRecord } from './replay-failed-checks.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { type RolledBackCreate } from '../../state/name-generation.js';
 import { type ReplayDeferral } from './replay-scope.js';
 import {
@@ -226,6 +227,10 @@ export async function replayRollbackUnbound(
   // go-to-k/cdkd#6591: logical id -> addresses of each secret whose revert
   // regenerated its value in this replay.
   const regenerated = new Map<string, Set<string>>();
+  // The regenerating secret reverts not yet run.
+  const pendingRegenerating = new Set(
+    stepOne.filter((op) => revertRegeneratesSecret(op, stateResources)).map((op) => op.logicalId)
+  );
   const stepOneIds = new Map<string, CompletedOperation>();
   const stepOneIndex = new Map<CompletedOperation, number>();
   stepOne.forEach((op, at) => {
@@ -258,6 +263,18 @@ export async function replayRollbackUnbound(
     // Decided before the revert, which writes the old record back over the
     // one this compares against.
     const regenerates = revertRegeneratesSecret(op, stateResources);
+    pendingRegenerating.delete(op.logicalId);
+    const blockedBehind = (
+      Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []
+    ).find((id) => typeof id === 'string' && pendingRegenerating.has(id));
+    if (op.changeType !== 'CREATE' && typeof blockedBehind === 'string') {
+      // The order could not put this op after the secret (an op depending on
+      // it sits between them): it is restored at its record's version, which
+      // the secret's restore is about to replace.
+      ctx.logger.warn(
+        safeMsg`Rollback restores ${shownLogicalId(op.logicalId)} before secret ${shownLogicalId(blockedBehind)}, whose restore generates a new value, so it may keep the value from before the deploy. Run ${proseQuoted(cdkdRemedy('cdkd drift', stackName, '--revert'))} after the rollback to restore it from the secret's current value.`
+      );
+    }
     const readsRegenerated = new Set<string>();
     for (const id of revertReferences(op, stateResources)) {
       for (const address of regenerated.get(id) ?? []) readsRegenerated.add(address);
