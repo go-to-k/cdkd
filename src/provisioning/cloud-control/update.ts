@@ -252,12 +252,17 @@ export async function updateInIdLogScope(
     // read ONLY for a listed type, so no other type pays a GetResource. It is
     // read rather than taken from `cleanPreviousProperties`, which is the
     // template's view on a deploy and so never holds the read-back value.
+    // go-to-k/cdkd#6581: this and the gap carry below share ONE GetResource;
+    // nothing is written to AWS between the two reads.
+    let liveModelRead: ReturnType<typeof this.readCcResourceModel> | undefined;
+    const readLiveModel = (): ReturnType<typeof this.readCcResourceModel> =>
+      (liveModelRead ??= this.readCcResourceModel(resourceType, physicalId, idLog));
     if (hasCcReadBackEmptyKeys(resourceType)) {
       patch = withCcReadBackEmptyKeyRemovals(
         resourceType,
         patch,
         cleanProperties,
-        await this.readCcResourceModel(resourceType, physicalId, idLog)
+        await readLiveModel()
       );
       // Its only op set an empty collection the live model lacks: nothing to send.
       if (patch.length === 0) return { physicalId, wasReplaced: false, ...sentNothing };
@@ -296,7 +301,7 @@ export async function updateInIdLogScope(
       ];
       if (gaps.length > 0) {
         patch = withRemovedBlockDefaults(patch, cleanPreviousProperties, resourceType);
-        const liveModel = await this.readCcResourceModel(resourceType, physicalId, idLog);
+        const liveModel = await readLiveModel();
         if (liveModel !== undefined) {
           patch = withCarriedCreateOnlyMembers(patch, gaps, liveModel);
         }

@@ -23,6 +23,14 @@ vi.mock('../../../src/utils/logger.js', () => ({
   },
 }));
 
+// go-to-k/cdkd#6581: the shared-read case needs a nested create-only gap; every
+// other case runs with none.
+let createOnlyPaths: string[][] = [];
+vi.mock('../../../src/provisioning/create-only-properties.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/provisioning/create-only-properties.js')>()),
+  getCreateOnlyPropertyPaths: () => Promise.resolve(createOnlyPaths),
+}));
+
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 import { withCcReadBackEmptyKeyRemovals } from '../../../src/provisioning/cc-read-back-empty-keys.js';
 import type { JsonPatchOp } from '../../../src/provisioning/json-patch-generator.js';
@@ -207,6 +215,49 @@ describe('CloudControlProvider.update wiring (go-to-k/cdkd#6569)', () => {
     expect(
       mockCcSend.mock.calls.some(([c]) => c instanceof UpdateResourceCommand)
     ).toBe(false);
+  });
+
+  it('shares one GetResource with the nested gap carry (go-to-k/cdkd#6581)', async () => {
+    createOnlyPaths = [['InstanceMetadataOptions', 'HttpEndpoint']];
+    mockCcSend.mockImplementation((command: unknown) => {
+      if (command instanceof GetResourceCommand) {
+        return Promise.resolve({
+          ResourceDescription: {
+            Properties: JSON.stringify({
+              Name: 'infra',
+              ResourceTags: {},
+              InstanceMetadataOptions: { HttpEndpoint: 'enabled', HttpTokens: 'optional' },
+            }),
+          },
+        });
+      }
+      if (command instanceof UpdateResourceCommand) {
+        sentPatch = JSON.parse(command.input.PatchDocument as string) as JsonPatchOp[];
+        return Promise.reject(new Error('stop after UpdateResource'));
+      }
+      return Promise.reject(new Error(`unexpected command ${String(command)}`));
+    });
+    try {
+      await new CloudControlProvider()
+        .update(
+          'Infra',
+          'arn:aws:imagebuilder:us-east-1:123456789012:infrastructure-configuration/infra',
+          TYPE,
+          { Name: 'infra', InstanceMetadataOptions: { HttpTokens: 'required' } },
+          { Name: 'infra', InstanceMetadataOptions: { HttpTokens: 'optional' } }
+        )
+        .catch(() => undefined);
+    } finally {
+      createOnlyPaths = [];
+    }
+
+    expect(getResourceCalls()).toBe(1);
+    expect(sentPatch).toContainEqual(REMOVE_TAGS);
+    expect(sentPatch).toContainEqual({
+      op: 'replace',
+      path: '/InstanceMetadataOptions',
+      value: { HttpTokens: 'required', HttpEndpoint: 'enabled' },
+    });
   });
 
   it('sends no GetResource for an unlisted type', async () => {
