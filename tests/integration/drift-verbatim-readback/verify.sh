@@ -13,6 +13,12 @@
 #      path; `drift --revert` removes it from AWS, replacing nothing (every
 #      resource's physical id and AWS-side identity unchanged); drift is
 #      clean again.
+# go-to-k/cdkd#6627, on the observed baseline (before step 2) and on the
+# template-only one (after step 3): a managed policy, an inline policy, a
+# permissions boundary and a group membership granted out of band to IAM
+# principals whose template declares none are drift, each by its key;
+# `drift --revert` removes exactly those members, keeps every member a
+# sibling record of the stack writes, and replaces nothing.
 
 set -euo pipefail
 
@@ -88,6 +94,18 @@ delete_principal() {
   done
   if [ "${kind}" = "role" ]; then
     aws iam delete-role-permissions-boundary --role-name "${name}" >/dev/null 2>&1 || true
+  fi
+  # go-to-k/cdkd#6627's phases add memberships and a user boundary out of band.
+  if [ "${kind}" = "user" ]; then
+    aws iam delete-user-permissions-boundary --user-name "${name}" >/dev/null 2>&1 || true
+    for p in $(aws iam list-groups-for-user --user-name "${name}" --query 'Groups[].GroupName' --output text 2>/dev/null); do
+      aws iam remove-user-from-group --user-name "${name}" --group-name "${p}" >/dev/null 2>&1 || true
+    done
+  fi
+  if [ "${kind}" = "group" ]; then
+    for p in $(aws iam get-group --group-name "${name}" --query 'Users[].UserName' --output text 2>/dev/null); do
+      aws iam remove-user-from-group --user-name "${p}" --group-name "${name}" >/dev/null 2>&1 || true
+    done
   fi
   aws iam "delete-${kind}" "${flag}" "${name}" >/dev/null 2>&1 || true
 }
@@ -208,11 +226,192 @@ drift_paths() { # $1 = drift --json file
   ' "$1"
 }
 
+BUCKET="${BUCKET_PREFIX}${ACCOUNT}-${REGION}"
+TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT}:${TOPIC}"
+QUEUE_URL=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text)
+QUEUE_ARN="arn:${PARTITION}:sqs:${REGION}:${ACCOUNT}:${QUEUE}"
+
+# --- The revert must update in place: no resource replaced ------------------
+# One line per state resource: its logical id, the physical id state records,
+# and an AWS-side identity that a delete + create would change (a creation
+# timestamp or IAM's unique id; for a policy resource, the target it is
+# attached to). The count is checked against state so the comparison below
+# cannot pass over an empty or partial snapshot.
+identities() { # $1 = output file
+  local st="${ARTIFACT_DIR}/state-identity.json" n
+  show_state "${st}"
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).state.resources;
+    for (const id of Object.keys(s).sort()) {
+      console.log(`${id}\t${s[id].resourceType}\t${s[id].physicalId}`);
+    }
+  ' "${st}" >"${ARTIFACT_DIR}/state-ids.tsv"
+  n=$(wc -l <"${ARTIFACT_DIR}/state-ids.tsv" | tr -d ' ')
+  [ "${n}" = 22 ] || { echo "FAIL: identity snapshot holds ${n} resources, expected the stack's 22" >&2; return 1; }
+  : >"$1"
+  local id type pid aws
+  while IFS=$'\t' read -r id type pid; do
+    [ -n "${pid}" ] && [ "${pid}" != "undefined" ] || { echo "FAIL: ${id} has no physical id in state" >&2; return 1; }
+    case "${type}" in
+      AWS::S3::Bucket) aws=$(aws s3api list-buckets --query "Buckets[?Name=='${pid}'].CreationDate" --output text) || return 1 ;;
+      AWS::S3::BucketPolicy) aws=$(aws s3api get-bucket-policy --bucket "${pid}" --region "${REGION}" >/dev/null && echo "attached:${pid}") || return 1 ;;
+      AWS::SQS::Queue) aws=$(aws sqs get-queue-attributes --queue-url "${pid}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
+      AWS::SQS::QueuePolicy) aws=$(aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
+      AWS::SNS::Topic | AWS::SNS::TopicPolicy) aws=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.TopicArn --output text) || return 1 ;;
+      AWS::KMS::Key) aws=$(aws kms describe-key --key-id "${pid}" --region "${REGION}" --query KeyMetadata.CreationDate --output text) || return 1 ;;
+      AWS::KMS::Alias) aws=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text) || return 1 ;;
+      AWS::SecretsManager::Secret | AWS::SecretsManager::ResourcePolicy) aws=$(aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}" --query CreatedDate --output text) || return 1 ;;
+      AWS::IAM::Role) aws=$(aws iam get-role --role-name "${pid}" --query Role.RoleId --output text) || return 1 ;;
+      AWS::IAM::User) aws=$(aws iam get-user --user-name "${pid}" --query User.UserId --output text) || return 1 ;;
+      AWS::IAM::Group) aws=$(aws iam get-group --group-name "${pid}" --query Group.GroupId --output text) || return 1 ;;
+      AWS::IAM::ManagedPolicy) aws=$(aws iam get-policy --policy-arn "${pid}" --query Policy.PolicyId --output text) || return 1 ;;
+      # Cloud Control physical id `<policy name>|<principal name>`.
+      AWS::IAM::RolePolicy) aws=$(aws iam get-role-policy --role-name "${pid#*|}" --policy-name "${pid%%|*}" --query RoleName --output text) || return 1 ;;
+      AWS::IAM::UserPolicy) aws=$(aws iam get-user-policy --user-name "${pid#*|}" --policy-name "${pid%%|*}" --query UserName --output text) || return 1 ;;
+      AWS::IAM::GroupPolicy) aws=$(aws iam get-group-policy --group-name "${pid#*|}" --policy-name "${pid%%|*}" --query GroupName --output text) || return 1 ;;
+      AWS::IAM::Policy) aws=$(aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name "${pid}" --query PolicyName --output text) || return 1 ;;
+      AWS::IAM::UserToGroupAddition) aws=$(aws iam get-group --group-name "${SIB_GROUP}" --query "Users[?UserName=='${SIB_USER}'].UserName" --output text) || return 1 ;;
+      *) echo "FAIL: identity snapshot has no AWS-side probe for ${type} (${id})" >&2; return 1 ;;
+    esac
+    [ -n "${aws}" ] && [ "${aws}" != "None" ] || { echo "FAIL: no AWS-side identity for ${id} (${type})" >&2; return 1; }
+    printf '%s\t%s\t%s\n' "${id}" "${pid}" "${aws}" >>"$1"
+  done <"${ARTIFACT_DIR}/state-ids.tsv"
+  [ "$(wc -l <"$1" | tr -d ' ')" = "${n}" ] || { echo "FAIL: identity snapshot lost rows" >&2; return 1; }
+}
+
+# --- go-to-k/cdkd#6627: grants out of band on principals declaring none ------
+# AWSDenyAll is the out-of-band managed policy and boundary: an AWS-managed
+# policy, so nothing to create or delete, and granting it widens nothing.
+OOB_POLICY_ARN="arn:${PARTITION}:iam::aws:policy/AWSDenyAll"
+OOB_INLINE="cdkd-dvr-oob-inline"
+MP_ARN="arn:${PARTITION}:iam::${ACCOUNT}:policy/${MP_NAME}"
+# The template of every Bare* and Sibling* principal declares none of
+# ManagedPolicyArns / Policies / PermissionsBoundary / Groups.
+GRANT_DRIFT=$(printf '%s\n' \
+  "BareGroup ManagedPolicyArns" "BareGroup Policies" \
+  "BareRole ManagedPolicyArns" "BareRole PermissionsBoundary" "BareRole Policies" \
+  "BareUser Groups" "BareUser ManagedPolicyArns" "BareUser PermissionsBoundary" "BareUser Policies" \
+  "SiblingGroup ManagedPolicyArns" "SiblingRole ManagedPolicyArns" \
+  "SiblingUser Groups" "SiblingUser ManagedPolicyArns" | LC_ALL=C sort)
+
+# One line per principal: its attached policies, inline policies, boundary
+# and (a user) groups, each sorted.
+live_principal() { # $1 = role | user | group, $2 = name
+  local kind="$1" name="$2" flag m i b="" g=""
+  case "${kind}" in
+    role) flag="--role-name" ;;
+    user) flag="--user-name" ;;
+    group) flag="--group-name" ;;
+  esac
+  m=$(aws iam "list-attached-${kind}-policies" "${flag}" "${name}" --query 'AttachedPolicies[].PolicyArn' --output text | tr '\t' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
+  i=$(aws iam "list-${kind}-policies" "${flag}" "${name}" --query 'PolicyNames' --output text | tr '\t' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
+  if [ "${kind}" != group ]; then
+    b=$(aws iam "get-${kind}" "${flag}" "${name}" --query "*.PermissionsBoundary.PermissionsBoundaryArn | [0]" --output text) || return 1
+  fi
+  if [ "${kind}" = user ]; then
+    g=$(aws iam list-groups-for-user --user-name "${name}" --query 'Groups[].GroupName' --output text | tr '\t' '\n' | LC_ALL=C sort | tr '\n' ' ') || return 1
+  fi
+  printf '%s %s managed=[%s] inline=[%s] boundary=%s groups=[%s]\n' "${kind}" "${name}" "${m% }" "${i% }" "${b:-None}" "${g% }"
+}
+live_principals() {
+  live_principal role "${BARE_ROLE}" && live_principal user "${BARE_USER}" && live_principal group "${BARE_GROUP}" &&
+    live_principal role "${SIB_ROLE}" && live_principal user "${SIB_USER}" && live_principal group "${SIB_GROUP}"
+}
+
+grant_phase() { # $1 = baseline label (observed | template-only)
+  local label="$1" before after got
+  echo "==> #6627 (${label} baseline): the principals before any grant"
+  before=$(live_principals) || { echo "FAIL: could not read the principals" >&2; exit 1; }
+  echo "${before}" >"${ARTIFACT_DIR}/principals-${label}-before.txt"
+  # Vacuity guard: the siblings' members are live, so the revert below has
+  # something it must keep.
+  for want in "role ${SIB_ROLE} managed=[${MP_ARN}] inline=[cdkd-dvr-policy cdkd-dvr-role-policy]" \
+    "user ${SIB_USER} managed=[${MP_ARN}] inline=[cdkd-dvr-policy cdkd-dvr-user-policy] boundary=None groups=[${SIB_GROUP}]" \
+    "group ${SIB_GROUP} managed=[${MP_ARN}] inline=[cdkd-dvr-group-policy cdkd-dvr-policy]" \
+    "role ${BARE_ROLE} managed=[] inline=[] boundary=None"; do
+    grep -qF "${want}" <<<"${before}" || { echo "FAIL: precondition: no principal line holds '${want}':" >&2; echo "${before}" >&2; exit 1; }
+  done
+
+  echo "==> #6627 (${label}): grant out of band"
+  local deny='{"Version":"2012-10-17","Statement":{"Effect":"Deny","Action":"s3:PutObjectLegalHold","Resource":"*"}}'
+  aws iam attach-role-policy --role-name "${BARE_ROLE}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam attach-user-policy --user-name "${BARE_USER}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam attach-group-policy --group-name "${BARE_GROUP}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam attach-role-policy --role-name "${SIB_ROLE}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam attach-user-policy --user-name "${SIB_USER}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam attach-group-policy --group-name "${SIB_GROUP}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam put-role-policy --role-name "${BARE_ROLE}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
+  aws iam put-user-policy --user-name "${BARE_USER}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
+  aws iam put-group-policy --group-name "${BARE_GROUP}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
+  aws iam put-role-permissions-boundary --role-name "${BARE_ROLE}" --permissions-boundary "${OOB_POLICY_ARN}"
+  aws iam put-user-permissions-boundary --user-name "${BARE_USER}" --permissions-boundary "${OOB_POLICY_ARN}"
+  aws iam add-user-to-group --user-name "${BARE_USER}" --group-name "${SIB_GROUP}"
+  aws iam add-user-to-group --user-name "${SIB_USER}" --group-name "${BARE_GROUP}"
+  sleep 15
+
+  echo "==> #6627 (${label}): drift names every grant by its key"
+  run_drift "${ARTIFACT_DIR}/drift-grants-${label}.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-grants-${label}.json" | LC_ALL=C sort)
+  if [ "${got}" != "${GRANT_DRIFT}" ] || [ "${DRIFT_RC}" != 1 ]; then
+    echo "FAIL: #6627 (${label}): drift after the out-of-band grants differs from the expected set (rc=${DRIFT_RC})" >&2
+    diff <(echo "${GRANT_DRIFT}") <(echo "${got}") >&2 || true
+    exit 1
+  fi
+  echo "    OK: all 13 grants reported"
+
+  identities "${ARTIFACT_DIR}/identity-grants-${label}-before.tsv" || exit 1
+  echo "==> #6627 (${label}): drift --revert"
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
+    2>&1 | tee "${ARTIFACT_DIR}/revert-grants-${label}.log"
+  sleep 15
+  # The plan names each member it removes, and only those.
+  local count line
+  for line in "6|- detaches managed policy ${OOB_POLICY_ARN}" "3|- deletes inline policy ${OOB_INLINE}" \
+    "2|- deletes permissions boundary ${OOB_POLICY_ARN}" "1|- removes the user from group ${SIB_GROUP}" \
+    "1|- removes the user from group ${BARE_GROUP}"; do
+    count=$(grep -cF -- "${line#*|}" "${ARTIFACT_DIR}/revert-grants-${label}.log" || true)
+    [ "${count}" = "${line%%|*}" ] || { echo "FAIL: #6627 (${label}): the revert plan names '${line#*|}' ${count} time(s), expected ${line%%|*}" >&2; exit 1; }
+  done
+  if grep -E '^ +- ' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -qE "${MP_NAME}|cdkd-dvr-(role|user|group)-policy|cdkd-dvr-policy"; then
+    echo "FAIL: #6627 (${label}): the revert plan names a sibling's member for removal" >&2
+    exit 1
+  fi
+  if grep -qiE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log"; then
+    echo "FAIL: #6627 (${label}): drift --revert output names a replacement:" >&2
+    grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" >&2
+    exit 1
+  fi
+  identities "${ARTIFACT_DIR}/identity-grants-${label}-after.tsv" || exit 1
+  if ! diff "${ARTIFACT_DIR}/identity-grants-${label}-before.tsv" "${ARTIFACT_DIR}/identity-grants-${label}-after.tsv" >&2; then
+    echo "FAIL: #6627 (${label}): drift --revert replaced a resource (physical id or RoleId / UserId / GroupId changed, diff above)" >&2
+    exit 1
+  fi
+  echo "    OK: the revert replaced nothing"
+
+  echo "==> #6627 (${label}): AWS holds exactly the pre-grant members again"
+  after=$(live_principals) || { echo "FAIL: could not read the principals after the revert" >&2; exit 1; }
+  echo "${after}" >"${ARTIFACT_DIR}/principals-${label}-after.txt"
+  if [ "${after}" != "${before}" ]; then
+    echo "FAIL: #6627 (${label}): the principals' members after the revert differ from before the grants" >&2
+    diff <(echo "${before}") <(echo "${after}") >&2 || true
+    exit 1
+  fi
+  echo "    OK: every out-of-band member removed, every sibling's member kept"
+
+  echo "==> #6627 (${label}): drift after the revert is clean"
+  run_drift "${ARTIFACT_DIR}/drift-grants-${label}-after.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-grants-${label}-after.json")
+  [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 (${label}): drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
+  echo "    OK: clean"
+}
+
 echo "==> Drift on the observed baseline: clean"
 run_drift "${ARTIFACT_DIR}/drift-observed.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-observed.json")
 [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: observed-baseline drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
 echo "    OK: observed baseline clean"
+
+grant_phase observed
 
 # The template-only baseline: a deploy with capture off, or a failed capture.
 echo "==> Strip every observed baseline"
@@ -237,10 +436,6 @@ stmt() { # $1 = Effect, $2 = Principal JSON or "", $3 = Action, $4 = Resource or
   printf '{"Statement":{"Effect":"%s"%s,"Action":"%s"%s,"Condition":%s}}' \
     "$1" "${p}" "$3" "${r}" "${COND}"
 }
-BUCKET="${BUCKET_PREFIX}${ACCOUNT}-${REGION}"
-TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT}:${TOPIC}"
-QUEUE_URL=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text)
-QUEUE_ARN="arn:${PARTITION}:sqs:${REGION}:${ACCOUNT}:${QUEUE}"
 
 echo "==> Add a Condition to every probed document out of band"
 aws s3api put-bucket-policy --bucket "${BUCKET}" --region "${REGION}" \
@@ -290,53 +485,6 @@ if [ "${got}" != "${EXPECTED_DRIFT}" ] || [ "${DRIFT_RC}" != 1 ]; then
 fi
 echo "    OK: all 9 documents report the added Condition"
 
-# --- The revert must update in place: no resource replaced ------------------
-# One line per state resource: its logical id, the physical id state records,
-# and an AWS-side identity that a delete + create would change (a creation
-# timestamp or IAM's unique id; for a policy resource, the target it is
-# attached to). The count is checked against state so the comparison below
-# cannot pass over an empty or partial snapshot.
-identities() { # $1 = output file
-  local st="${ARTIFACT_DIR}/state-identity.json" n
-  show_state "${st}"
-  node -e '
-    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).state.resources;
-    for (const id of Object.keys(s).sort()) {
-      console.log(`${id}\t${s[id].resourceType}\t${s[id].physicalId}`);
-    }
-  ' "${st}" >"${ARTIFACT_DIR}/state-ids.tsv"
-  n=$(wc -l <"${ARTIFACT_DIR}/state-ids.tsv" | tr -d ' ')
-  [ "${n}" = 21 ] || { echo "FAIL: identity snapshot holds ${n} resources, expected the stack's 21" >&2; return 1; }
-  : >"$1"
-  local id type pid aws
-  while IFS=$'\t' read -r id type pid; do
-    [ -n "${pid}" ] && [ "${pid}" != "undefined" ] || { echo "FAIL: ${id} has no physical id in state" >&2; return 1; }
-    case "${type}" in
-      AWS::S3::Bucket) aws=$(aws s3api list-buckets --query "Buckets[?Name=='${pid}'].CreationDate" --output text) || return 1 ;;
-      AWS::S3::BucketPolicy) aws=$(aws s3api get-bucket-policy --bucket "${pid}" --region "${REGION}" >/dev/null && echo "attached:${pid}") || return 1 ;;
-      AWS::SQS::Queue) aws=$(aws sqs get-queue-attributes --queue-url "${pid}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
-      AWS::SQS::QueuePolicy) aws=$(aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
-      AWS::SNS::Topic | AWS::SNS::TopicPolicy) aws=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.TopicArn --output text) || return 1 ;;
-      AWS::KMS::Key) aws=$(aws kms describe-key --key-id "${pid}" --region "${REGION}" --query KeyMetadata.CreationDate --output text) || return 1 ;;
-      AWS::KMS::Alias) aws=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text) || return 1 ;;
-      AWS::SecretsManager::Secret | AWS::SecretsManager::ResourcePolicy) aws=$(aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}" --query CreatedDate --output text) || return 1 ;;
-      AWS::IAM::Role) aws=$(aws iam get-role --role-name "${pid}" --query Role.RoleId --output text) || return 1 ;;
-      AWS::IAM::User) aws=$(aws iam get-user --user-name "${pid}" --query User.UserId --output text) || return 1 ;;
-      AWS::IAM::Group) aws=$(aws iam get-group --group-name "${pid}" --query Group.GroupId --output text) || return 1 ;;
-      AWS::IAM::ManagedPolicy) aws=$(aws iam get-policy --policy-arn "${pid}" --query Policy.PolicyId --output text) || return 1 ;;
-      # Cloud Control physical id `<policy name>|<principal name>`.
-      AWS::IAM::RolePolicy) aws=$(aws iam get-role-policy --role-name "${pid#*|}" --policy-name "${pid%%|*}" --query RoleName --output text) || return 1 ;;
-      AWS::IAM::UserPolicy) aws=$(aws iam get-user-policy --user-name "${pid#*|}" --policy-name "${pid%%|*}" --query UserName --output text) || return 1 ;;
-      AWS::IAM::GroupPolicy) aws=$(aws iam get-group-policy --group-name "${pid#*|}" --policy-name "${pid%%|*}" --query GroupName --output text) || return 1 ;;
-      AWS::IAM::Policy) aws=$(aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name "${pid}" --query PolicyName --output text) || return 1 ;;
-      *) echo "FAIL: identity snapshot has no AWS-side probe for ${type} (${id})" >&2; return 1 ;;
-    esac
-    [ -n "${aws}" ] && [ "${aws}" != "None" ] || { echo "FAIL: no AWS-side identity for ${id} (${type})" >&2; return 1; }
-    printf '%s\t%s\t%s\n' "${id}" "${pid}" "${aws}" >>"$1"
-  done <"${ARTIFACT_DIR}/state-ids.tsv"
-  [ "$(wc -l <"$1" | tr -d ' ')" = "${n}" ] || { echo "FAIL: identity snapshot lost rows" >&2; return 1; }
-}
-
 identities "${ARTIFACT_DIR}/identity-before.tsv" || exit 1
 echo "    identity snapshot: $(wc -l <"${ARTIFACT_DIR}/identity-before.tsv" | tr -d ' ') resources"
 
@@ -383,6 +531,8 @@ run_drift "${ARTIFACT_DIR}/drift-after-revert.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-after-revert.json")
 [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
 echo "    OK: clean after the revert"
+
+grant_phase template-only
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force

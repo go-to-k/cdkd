@@ -38,6 +38,11 @@ import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
 import { siblingOwnedRevertDesired } from '../../../provisioning/sibling-owned-members.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
+import {
+  undeclaredGrantDriftKeys,
+  withUndeclaredGrantBaseline,
+  withoutUndeclaredNoBoundary,
+} from '../../../analyzer/drift-undeclared-grants.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -396,6 +401,17 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // the desired bag the same way, then takes its LIVE members back from the
     // readback (the previous side), which a Cloud Control read never filtered.
     const siblingContext = buildReadCurrentStateContext(report.state, outcome.logicalId);
+    // go-to-k/cdkd#6627: an IAM principal's undeclared grant key goes back as
+    // "none" plus the recorded members AWS still holds, the baseline detection
+    // compared, so the provider removes each other live member one by one and
+    // adds none. Before the sibling pass, which then keeps a live sibling's
+    // member in each list.
+    const grantKeys = undeclaredGrantDriftKeys(outcome.resourceType, stateResource.properties);
+    const noBoundary = withoutUndeclaredNoBoundary(
+      withUndeclaredGrantBaseline(desiredProperties, outcome.awsProperties, grantKeys),
+      grantKeys
+    );
+    desiredProperties = noBoundary.desired;
     desiredProperties = siblingOwnedRevertDesired(
       outcome.resourceType,
       stateResource.physicalId,
@@ -425,16 +441,22 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       stateResource.observedProperties === undefined
         ? {
             preserveUntemplated: true,
-            verbatimKeys: verbatimEchoDriftKeys(outcome.resourceType),
+            // go-to-k/cdkd#6627: a grant key's list goes whole too, the
+            // untemplated live members being the out-of-band ones.
+            verbatimKeys: [...verbatimEchoDriftKeys(outcome.resourceType), ...grantKeys],
+            absentMeansDefault: noBoundary.absent,
           }
         : {
             // go-to-k/cdkd#5399: the keys detection compared while
             // the observed baseline lacked them.
-            absentMeansDefault: driftAbsentMeansDefaultKeys(
-              provider,
-              outcome.resourceType,
-              stateResource.properties
-            ),
+            absentMeansDefault: [
+              ...driftAbsentMeansDefaultKeys(
+                provider,
+                outcome.resourceType,
+                stateResource.properties
+              ),
+              ...noBoundary.absent,
+            ],
           }
     );
     // Issue #3595: nothing is reverted at an uncertified-baseline

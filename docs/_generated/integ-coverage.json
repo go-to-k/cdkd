@@ -7173,6 +7173,7 @@
     {
       "resourceType": "AWS::IAM::UserToGroupAddition",
       "integs": [
+        "drift-verbatim-readback",
         "iam-managed-policy",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
@@ -7180,6 +7181,10 @@
         "infra-security"
       ],
       "signals": {
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
+        ],
         "iam-managed-policy": [
           "l1",
           "literal"

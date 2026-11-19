@@ -235,7 +235,10 @@ fills such keys in after the deploy. Examples are a cluster's
 separate resources.
 
 A key your template did not declare is still compared when cdkd recorded a
-real value for it, such as a default AWS applied.
+real value for it, such as a default AWS applied. An IAM role's, user's or
+group's `ManagedPolicyArns`, `Policies`, `PermissionsBoundary` and `Groups`
+are compared even when recorded empty, since AWS fills none of them on its
+own; [cdkd drift](cli-drift.md) describes how.
 
 ### Tags
 

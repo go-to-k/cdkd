@@ -3286,6 +3286,7 @@
     "--payload",
     "--pending-window-in-days",
     "--permanent",
+    "--permissions-boundary",
     "--permissions-config",
     "--plaintext",
     "--platform",

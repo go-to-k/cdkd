@@ -16,6 +16,11 @@ import {
 } from '../../../analyzer/drift-principal-normalize.js';
 import { canonicalizeIpProtocols } from '../../../analyzer/drift-protocol-normalize.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
+import {
+  undeclaredGrantDriftKeys,
+  undeclaredGrantIgnorePaths,
+  withUndeclaredGrantBaseline,
+} from '../../../analyzer/drift-undeclared-grants.js';
 import { hasOwnKey, ownValue, nullPrototypeRecord } from '../../../utils/own-keys.js';
 import {
   PATTERN_B_NAME_PROPERTIES,
@@ -341,8 +346,13 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // RE-captured once the sibling has written (a later update of the parent)
   // is not empty; the sibling-owned strip below covers that case for every
   // pair in `provisioning/sibling-owned-members.ts` (go-to-k/cdkd#6610).
+  // go-to-k/cdkd#6627: an IAM principal's undeclared grant keys are compared
+  // on both baselines, so neither skip below applies to them.
+  const grantKeys = undeclaredGrantDriftKeys(resource.resourceType, resource.properties);
   const observedIgnorePaths = useObserved
-    ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {})
+    ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {}).filter(
+        (key) => !grantKeys.includes(key)
+      )
     : [];
   // Issue #1515: AWS renders an IAM principal inside a resource policy as
   // either its ARN or its `AROA…` / `AIDA…` unique id, choosing on its own
@@ -450,20 +460,32 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // go-to-k/cdkd#5399: a key the provider says the readback omits at
   // its default is compared even when the observed baseline lacks it,
   // which the comparator's baseline-keys-only top-level walk skips.
-  const comparedBaseline = useObserved
+  const absentDefaultBaseline = useObserved
     ? withAbsentDefaultKeys(
         nameBaseline,
         paired.aws,
         driftAbsentMeansDefaultKeys(provider, resource.resourceType, resource.properties)
       )
     : nameBaseline;
+  // go-to-k/cdkd#6627: an undeclared grant key's baseline is "none" plus
+  // whatever an earlier capture or `--accept` recorded that AWS still holds,
+  // so only a live member nothing recorded is drift (`drift-undeclared-grants.ts`).
+  // After the sibling strip, so a same-stack sibling's member is on neither side.
+  const comparedBaseline = withUndeclaredGrantBaseline(
+    absentDefaultBaseline,
+    paired.aws,
+    grantKeys
+  );
   // go-to-k/cdkd#5736 / #5741: an undeclared key another writer owns
   // (a bucket's NotificationConfiguration) is not compared, whichever
-  // baseline is in use.
-  const ownedIgnorePaths = undeclaredUncomparedDriftKeys(
-    resource.resourceType,
-    resource.properties
-  );
+  // baseline is in use. The #6328 IAM attachment-list entries give way to
+  // go-to-k/cdkd#6627's grant keys.
+  const ownedIgnorePaths = [
+    ...undeclaredUncomparedDriftKeys(resource.resourceType, resource.properties).filter(
+      (key) => !grantKeys.includes(key)
+    ),
+    ...undeclaredGrantIgnorePaths(comparedBaseline, paired.aws, grantKeys),
+  ];
   // go-to-k/cdkd#5749: a baseline value a pre-#5737 cdkd recorded by
   // mistake (an event source mapping's `Enabled: false`) is not
   // compared while the template and the live mapping agree on enabled.
