@@ -105,7 +105,8 @@ Some types report `update-not-supported` every time.
 AWS treats these as immutable:
 
 - `AWS::Lambda::LayerVersion`
-- `AWS::Lambda::Permission`
+- `AWS::Lambda::Permission` (see
+  [A revert never replaces a resource](#a-revert-never-replaces-a-resource))
 
 cdkd has no in-place update for these:
 
@@ -159,12 +160,37 @@ the whole resource when it cannot tell which live value belongs at the masked
 position. The cases are in
 [cdkd drift: secrets and redacted values](cli-drift-secrets.md#redacted-noecho-baselines).
 
-### A revert that re-creates the resource
+### A revert never replaces a resource
 
-Reverting some resources means removing the resource and creating it again.
-An `AWS::EC2::SecurityGroupIngress` rule, for example, is revoked and
-authorized again, and AWS gives it a new `sgr-` id. cdkd then records the new
-physical id and attributes in state.
+When a provider could reach the recorded values only by deleting the resource
+and creating it again, the revert refuses that resource before any AWS call and
+reports it `update-not-supported` (`could not revert`); the run exits 2. Re-deploy
+with `cdkd deploy --replace` to replace it. The refusals are:
+
+- `AWS::SNS::Subscription`: `FilterPolicy` and `FilterPolicyScope` drifted
+  together, an attribute SNS cannot reset, a `PendingConfirmation`
+  subscription, a `TopicArn` / `Protocol` / `Endpoint` that differs from the
+  live one, or a subscription AWS no longer has or returns no attributes for.
+  A mutable attribute is still reverted in place.
+- `AWS::CertificateManager::Certificate`: a `DomainName`,
+  `SubjectAlternativeNames`, `ValidationMethod`, `DomainValidationOptions`,
+  `CertificateAuthorityArn`, `CertificateExport` or `KeyAlgorithm` difference.
+  The DomainName that ACM lists among the SubjectAlternativeNames it reports is
+  not a difference.
+- `AWS::EC2::SecurityGroupIngress`: a rule whose protocol, ports or source
+  differ from the record, a description update that finds no rule, or a
+  recorded description that is redacted. A description is still reverted in
+  place. (A rule moved to other ports out of band reads as deleted, so it is
+  not reverted at all.)
+- `AWS::Lambda::Permission`: always, since it has no update API.
+- `AWS::ApiGateway::Resource`: a changed `PathPart`.
+- `AWS::EC2::Route`: a bag that names another route than the physical id.
+- `AWS::IAM::Policy`: a PolicyName other than the one the policy is recorded
+  under (a rename would put the policy under the new name and remove the old).
+
+If a provider still reports a replacement or a different physical id, the
+revert counts the resource as failed and names both ids; state records what
+AWS then holds, so the new resource is not orphaned.
 
 How cdkd builds the update, and when a revert writes a value back to state,
 is in

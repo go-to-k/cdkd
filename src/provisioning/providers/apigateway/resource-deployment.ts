@@ -17,6 +17,7 @@ import { markNotGone } from '../../not-gone.js';
 import type { ResourceCreateResult, ResourceUpdateResult } from '../../../types/resource.js';
 import type { MaskedLogSinks } from '../../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
+import { revertReplacementRefusal } from '../../revert-no-replace.js';
 import { redactedDeleteAddressFields } from '../../redacted-delete-address.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { injectiveKey } from '../../../state/record-keys.js';
@@ -107,7 +108,8 @@ export async function updateResource(
   resourceType: string,
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
-  log: MaskedLogSinks
+  log: MaskedLogSinks,
+  driftRevert = false
 ): Promise<ResourceUpdateResult> {
   log.debug(`Updating API Gateway Resource ${logicalId}: ${physicalId}`);
 
@@ -116,6 +118,15 @@ export async function updateResource(
 
   // PathPart is immutable - if it changed, resource must be replaced
   if (newPathPart !== oldPathPart) {
+    // go-to-k/cdkd#6638: a revert never creates a new resource and deletes the
+    // recorded one (a new resource id, and every Method under it goes too).
+    if (driftRevert) {
+      throw revertReplacementRefusal(
+        resourceType,
+        logicalId,
+        "its PathPart differs from the live resource's, and cdkd would re-create the resource to revert it"
+      );
+    }
     // Both path parts are bag values, masked RAW (issue #2177).
     log.debug(
       `PathPart changed from "${log.value(oldPathPart)}" to "${log.value(newPathPart)}", replacing resource`

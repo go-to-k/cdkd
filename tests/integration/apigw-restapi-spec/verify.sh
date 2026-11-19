@@ -5,7 +5,9 @@
 # (REGIONAL), and a plain RestApi. Phase 2 checks the CloudFormation update
 # semantics measured by a CFn A/B: an overwrite put deletes a dropped path, a
 # rename keeps the id, a removed BinaryMediaTypes is cleared, a removed
-# Description is kept, and the endpoint type switches in place.
+# Description is kept, and the endpoint type switches in place. Phase 3
+# (go-to-k/cdkd#6638) renames the plain API's /items OUT OF BAND and asserts
+# `cdkd drift --revert -y` exits 2 refusing to replace the Resource.
 
 set -euo pipefail
 
@@ -163,6 +165,43 @@ expect_eq "removed Policy kept (CloudFormation keeps it)" "$(api_field "${POLICY
 
 echo "==> Phase 2: drift (expect none)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+
+echo "==> Phase 3: drift --revert refuses to replace a Resource (go-to-k/cdkd#6638)"
+# UpdateResource renames /items OUT OF BAND under the same resource id. The SDK
+# update() reaches a changed PathPart only by creating a new resource and
+# deleting the recorded one (with every Method under it); a revert must refuse.
+ITEMS_ID="$(aws apigateway get-resources --rest-api-id "${PLAIN_ID}" --region "${REGION}" \
+  --query "items[?path=='/items'].id | [0]" --output text)"
+case "${ITEMS_ID}" in ''|None) echo "FAIL: phase 3 premise: ${PLAIN_ID} has no /items resource" >&2; exit 1 ;; esac
+ITEMS_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" | jq -r --arg id "${ITEMS_ID}" \
+  '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGateway::Resource" and .value.physicalId == $id) | .key] | if length == 1 then .[0] else empty end')"
+[ -n "${ITEMS_LID}" ] || { echo "FAIL: phase 3 premise: no single AWS::ApiGateway::Resource record holds ${ITEMS_ID}" >&2; exit 1; }
+aws apigateway update-resource --rest-api-id "${PLAIN_ID}" --resource-id "${ITEMS_ID}" --region "${REGION}" \
+  --patch-operations op=replace,path=/pathPart,value=items6638 >/dev/null
+expect_eq "phase 3 premise: /items renamed out of band" "$(paths_of "${PLAIN_ID}")" "/ /items6638 "
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+printf '%s\n' "${DRIFT_OUT}" | sed 's/^/    | /'
+expect_eq "phase 3 premise: cdkd drift exit code" "${DRIFT_RC}" "1"
+grep -q "${ITEMS_LID}" <<<"${DRIFT_OUT}" || { echo "FAIL: phase 3 premise: the drift report does not name ${ITEMS_LID}" >&2; exit 1; }
+set +e
+REVERT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y 2>&1)"
+REVERT_RC=$?
+set -e
+printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
+expect_eq "phase 3: cdkd drift --revert exit code (the Resource refused)" "${REVERT_RC}" "2"
+REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}" | grep -F "${ITEMS_LID} (AWS::ApiGateway::Resource): could not revert" || true)"
+[ -n "${REFUSAL}" ] || { echo "FAIL: phase 3: no 'could not revert' line for ${ITEMS_LID}" >&2; exit 1; }
+grep -q 'a drift revert never replaces a resource' <<<"${REFUSAL}" || {
+  echo "FAIL: phase 3: the refusal does not say a revert never replaces: ${REFUSAL}" >&2; exit 1; }
+# THE ARM: no new /items, the renamed resource kept its id, and the record too.
+expect_eq "phase 3: paths after the refused revert" "$(paths_of "${PLAIN_ID}")" "/ /items6638 "
+expect_eq "phase 3: the resource kept its id" "$(aws apigateway get-resources --rest-api-id "${PLAIN_ID}" --region "${REGION}" \
+  --query "items[?path=='/items6638'].id | [0]" --output text)" "${ITEMS_ID}"
+expect_eq "phase 3: the record kept its physical id" "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+  | jq -r --arg l "${ITEMS_LID}" '.resources[$l].physicalId')" "${ITEMS_ID}"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

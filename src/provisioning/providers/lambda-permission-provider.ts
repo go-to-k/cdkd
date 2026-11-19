@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
 import { lambdaFunctionNameForMask } from '../../utils/lambda-function-name.js';
+import { isDriftRevert, revertReplacementRefusal } from '../revert-no-replace.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { LambdaCreateClientCache } from './lambda-create-client.js';
@@ -330,6 +331,20 @@ export class LambdaPermissionProvider implements ResourceProvider {
       ...functionNamePairs(properties['FunctionName']),
     ]);
     log.debug(`Updating Lambda permission ${logicalId}: ${physicalId}`);
+
+    // go-to-k/cdkd#6638: a permission has no update API, so this remove + add
+    // re-creates the statement: it is absent from the function's policy
+    // between the calls (an invoke is refused), and a Cloud Control-shaped id
+    // (`<function>|<statementId>`) becomes the bare statement id. Every
+    // property is create-only, so a deploy replaces through the engine and
+    // never routes a template change here; a revert never re-creates it.
+    if (isDriftRevert(context)) {
+      throw revertReplacementRefusal(
+        resourceType,
+        logicalId,
+        'a Lambda permission has no update API and is changed only by removing and re-adding its statement'
+      );
+    }
 
     try {
       // Remove old permission
