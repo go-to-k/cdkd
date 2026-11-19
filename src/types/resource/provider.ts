@@ -10,6 +10,7 @@ import type {
   ReadCurrentStateContext,
   ResourceIdentityVerdict,
   ResourceNotFound,
+  SurvivorIdentityRead,
 } from './read-state.js';
 
 /**
@@ -440,6 +441,18 @@ export interface ResourceProvider {
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<string | ResourceNotFound | undefined>;
+
+  /**
+   * go-to-k/cdkd#6621: who holds a replaced resource's old physical id, for
+   * a type whose names are global and AWS-unminted (an S3 bucket). Read when
+   * a deploy defers the old resource's delete (its `identity` is journaled)
+   * and when a rollback is about to re-adopt it. Never throws.
+   */
+  replacedSurvivorIdentity?(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<SurvivorIdentityRead>;
 
   /**
    * State property paths this provider deliberately cannot (or chooses

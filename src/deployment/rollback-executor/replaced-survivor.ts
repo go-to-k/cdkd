@@ -13,8 +13,11 @@
  * read that did not answer in time — a re-run reads again).
  */
 import { isDeleteStarted, isRefusedByName } from '../../provisioning/delete-started.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND, type SurvivorIdentityRead } from '../../types/resource.js';
+import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { withReplayDeletePrinting, type ReplayOpScope } from './replay-scope.js';
+import { resolveReplacementOldType } from './plan/classify.js';
+import type { CompletedOperation, RollbackExecutorContext } from './types.js';
 
 /**
  * go-to-k/cdkd#2631: whether a replaced resource's failed delete was refused
@@ -43,7 +46,162 @@ export type ReplacedSurvivorVerdict =
    * an AWS-minted identity the old record carries differs from it: another
    * resource took the name after the stack's was deleted. Never re-adopted.
    */
-  | 'foreign';
+  | 'foreign'
+  /**
+   * go-to-k/cdkd#6621, {@link SURVIVOR_LIVE_READ_TYPES}: what else proves a
+   * holder not the stack's: not this account's, in another region than the
+   * stack's, a generation other than the journaled one where only a
+   * re-create changes it, or absent when the rollback started.
+   */
+  | 'foreign-account'
+  | 'foreign-region'
+  | 'foreign-recreated'
+  | 'foreign-appeared'
+  /**
+   * go-to-k/cdkd#6621: this account's resource under the old id, but its
+   * generation differs from the journaled one where a configuration write
+   * moves it too (an S3 bucket outside us-east-1): modified or re-created,
+   * undecidable. Never re-adopted.
+   */
+  | 'modified'
+  /**
+   * go-to-k/cdkd#6621: who holds the id could not be read (no
+   * `s3:ListAllMyBuckets`, a throttle). `exists-unverified`: AWS reports it,
+   * so it re-adopts as `'exists'` with a warning; `owner-unverified`: the
+   * existence read did not answer either, so it is refused.
+   */
+  | 'exists-unverified'
+  | 'owner-unverified'
+  /**
+   * go-to-k/cdkd#6621: refused, never re-adopted. `free-unreadable`: nothing
+   * held the id when the rollback started and its state now cannot be read;
+   * `vacated`: the probe's confirmation read found the id free after the
+   * existence read reported it.
+   */
+  | 'free-unreadable'
+  | 'vacated';
+
+/** Every verdict naming a holder that is not the stack's resource. */
+export function isForeignSurvivor(
+  verdict: ReplacedSurvivorVerdict
+): verdict is ForeignSurvivorVerdict {
+  return verdict.startsWith('foreign');
+}
+export type ForeignSurvivorVerdict = Extract<ReplacedSurvivorVerdict, `foreign${string}`>;
+
+/**
+ * go-to-k/cdkd#6621: types whose old id is a global, AWS-unminted name, so
+ * the rollback asks the provider's `replacedSurvivorIdentity` who holds it
+ * rather than trusting existence, and the deploy journals the generation it
+ * read when it deferred the delete (`oldResourceIdentity`). The value is the
+ * region whose generation token only a re-create changes (measured for
+ * #6621: an S3 bucket's CreationDate moves on configuration writes
+ * elsewhere).
+ */
+export const SURVIVOR_LIVE_READ_TYPES: Readonly<Record<string, string>> = {
+  'AWS::S3::Bucket': 'us-east-1',
+};
+
+/** The bound on the deploy's one generation read at a deferral. */
+export const DEFERRAL_IDENTITY_TIMEOUT_MS = 10_000;
+
+/**
+ * go-to-k/cdkd#6621: the generation to journal beside a `'deferred'` old
+ * resource, or `undefined` (a type outside {@link SURVIVOR_LIVE_READ_TYPES},
+ * an unanswered or slow read). Never throws.
+ */
+export async function readDeferralIdentity(
+  registry: Pick<ProviderRegistry, 'getProvider'>,
+  oldType: string,
+  physicalId: string,
+  region: string
+): Promise<string | undefined> {
+  if (SURVIVOR_LIVE_READ_TYPES[oldType] === undefined) return undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const provider = registry.getProvider(oldType);
+    if (typeof provider.replacedSurvivorIdentity !== 'function') return undefined;
+    const read = await Promise.race([
+      provider.replacedSurvivorIdentity(physicalId, oldType, { expectedRegion: region }),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), DEFERRAL_IDENTITY_TIMEOUT_MS);
+      }),
+    ]);
+    return read?.kind === 'owned' ? read.identity : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Key of a survivor in `RollbackExecutorContext.survivorIdentities`. */
+export function survivorKey(oldType: string, physicalId: string): string {
+  return JSON.stringify([oldType, physicalId]);
+}
+
+/**
+ * go-to-k/cdkd#6621: read who holds each {@link SURVIVOR_LIVE_READ_TYPES}
+ * survivor among `ops` BEFORE the replay applies any op, into
+ * `ctx.survivorIdentities`: a revert running earlier (a bucket policy put
+ * back) would move an S3 bucket's CreationDate outside us-east-1 first. A
+ * later snapshot of the same id replaces an earlier one (each segment's
+ * before its own replay). Never throws; a probe without a snapshot reads
+ * live.
+ */
+export async function snapshotSurvivorIdentities(
+  ctx: RollbackExecutorContext,
+  ops: readonly CompletedOperation[]
+): Promise<void> {
+  const reads: Array<Promise<void>> = [];
+  for (const op of ops) {
+    if (op.oldResourceMaySurvive === undefined) continue;
+    const oldType = resolveReplacementOldType(op);
+    const physicalId = op.previousState?.physicalId;
+    if (!oldType.ok || SURVIVOR_LIVE_READ_TYPES[oldType.oldType] === undefined) continue;
+    if (typeof physicalId !== 'string' || physicalId === '') continue;
+    const type = oldType.oldType;
+    reads.push(
+      liveSurvivorRead(ctx, type, physicalId).then((read) => {
+        (ctx.survivorIdentities ??= new Map()).set(survivorKey(type, physicalId), read);
+      })
+    );
+  }
+  await Promise.all(reads);
+}
+
+/** {@link snapshotSurvivorIdentities} over every segment of a journal. */
+export function snapshotSegmentSurvivors(
+  ctx: RollbackExecutorContext,
+  segments: ReadonlyArray<{ operations: readonly CompletedOperation[] }>
+): Promise<void> {
+  return snapshotSurvivorIdentities(
+    ctx,
+    segments.flatMap((segment) => segment.operations)
+  );
+}
+
+async function liveSurvivorRead(
+  ctx: Pick<RollbackExecutorContext, 'providerRegistry' | 'region'>,
+  oldType: string,
+  physicalId: string
+): Promise<SurvivorIdentityRead> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const provider = ctx.providerRegistry.getProvider(oldType);
+    if (typeof provider.replacedSurvivorIdentity !== 'function') return { kind: 'unknown' };
+    return await Promise.race([
+      provider.replacedSurvivorIdentity(physicalId, oldType, { expectedRegion: ctx.region }),
+      new Promise<SurvivorIdentityRead>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: 'unknown' }), REPLACED_SURVIVOR_PROBE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    return { kind: 'unknown' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * go-to-k/cdkd#6393: per type, the recorded attribute holding the identity
@@ -100,6 +258,20 @@ async function readSurvivor(
   const prev = s.op.previousState;
   const physicalId = prev?.physicalId;
   if (typeof physicalId !== 'string' || physicalId === '') return 'unknown';
+  const existence = await readExistence(s, physicalId, oldType);
+  if (existence === 'gone') return 'gone';
+  if (SURVIVOR_LIVE_READ_TYPES[oldType] !== undefined) {
+    return holderVerdict(s, physicalId, oldType, existence);
+  }
+  return existence === 'exists' ? identityVerdict(s, physicalId, oldType) : existence;
+}
+
+async function readExistence(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
+  physicalId: string,
+  oldType: string
+): Promise<'exists' | 'gone' | 'unreadable' | 'unknown'> {
+  const prev = s.op.previousState;
   try {
     const { provider } = s.ctx.providerRegistry.getProviderFor({
       resourceType: oldType,
@@ -114,10 +286,98 @@ async function readSurvivor(
     if (read === undefined) return 'unreadable';
     if (typeof read !== 'object' || read === null || Array.isArray(read)) return 'unknown';
     if (Object.keys(read).length === 0) return 'unreadable';
-    return await identityVerdict(s, physicalId, oldType);
+    return 'exists';
   } catch {
     return 'unknown';
   }
+}
+
+/**
+ * go-to-k/cdkd#6621: a {@link SURVIVOR_LIVE_READ_TYPES} survivor, judged by
+ * who holds its id: the read `snapshotSurvivorIdentities` took before the
+ * replay applied any op, else a live one. What the holder read PROVES comes
+ * before the existence read, which a transient failure (or another
+ * account's 403) leaves unanswered: a holder not the stack's, one absent
+ * when the rollback started, or this account's bucket under another
+ * generation than the journaled one is refused whatever existence says.
+ * Then the existence read decides. A holder that could not be read (no
+ * `s3:ListAllMyBuckets`, a throttle) refuses unless existence answers, and
+ * then re-adopts with a warning (`'exists-unverified'`). None journaled (an
+ * older binary's journal, an unanswered read at the deferral) keeps the
+ * re-adopt, as the IAM arm does for a record without its RoleId. In the
+ * region whose generation only a re-create moves, an equal snapshot is
+ * confirmed by a second read at the probe (a re-create in between);
+ * elsewhere the rollback's own writes move it, so the snapshot decides.
+ */
+async function holderVerdict(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
+  physicalId: string,
+  oldType: string,
+  existence: 'exists' | 'unreadable' | 'unknown'
+): Promise<ReplacedSurvivorVerdict> {
+  const live = () =>
+    withReplayDeletePrinting(s, () => liveSurvivorRead(s.ctx, oldType, physicalId));
+  const snapshot = s.ctx.survivorIdentities?.get(survivorKey(oldType, physicalId));
+  const verdict = judgeHolder(s, oldType, existence, snapshot ?? (await live()), snapshot);
+  // A confirmation read at the probe, in every region, before any verdict the
+  // deferred arm may re-adopt on (`'unknown'` / `'unreadable'` too, while
+  // state lists the old bucket): the holder may have changed since the
+  // snapshot, and another account's 403 leaves existence unanswered. Who
+  // holds it (account, region) and whether anything does are compared
+  // everywhere; the generation only where the stack's own writes leave it
+  // alone, and only for a verdict that read existence.
+  if (
+    snapshot === undefined ||
+    (verdict !== 'exists' && verdict !== 'unknown' && verdict !== 'unreadable')
+  ) {
+    return verdict;
+  }
+  const now = await live();
+  if (now.kind === 'foreign') return foreignHolder(now);
+  // The name went free since the snapshot: re-adopting would delete the new
+  // bucket for nothing.
+  if (now.kind === 'gone') return 'vacated';
+  if (verdict !== 'exists') return verdict;
+  const journaled = s.op.oldResourceIdentity;
+  const stable = journaled?.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType];
+  if (stable && now.kind === 'owned' && now.identity !== undefined && now.identity !== journaled) {
+    return 'foreign-recreated';
+  }
+  return 'exists';
+}
+
+function foreignHolder(read: { seen: 'other-account' | 'other-region' }): ReplacedSurvivorVerdict {
+  return read.seen === 'other-account' ? 'foreign-account' : 'foreign-region';
+}
+
+function judgeHolder(
+  s: Pick<ReplayOpScope, 'op'>,
+  oldType: string,
+  existence: 'exists' | 'unreadable' | 'unknown',
+  read: SurvivorIdentityRead,
+  snapshot: SurvivorIdentityRead | undefined
+): ReplacedSurvivorVerdict {
+  if (read.kind === 'foreign') return foreignHolder(read);
+  // A live read finding it gone saw it go between the two reads.
+  if (read.kind === 'gone') {
+    // Absent at the snapshot and reported now: someone created it since.
+    // Absent at the snapshot and unreadable now: nothing proves either, and
+    // re-adopting what may be another owner's deletes the new bucket.
+    if (snapshot !== undefined)
+      return existence === 'exists' ? 'foreign-appeared' : 'free-unreadable';
+    return existence === 'exists' ? 'gone' : existence;
+  }
+  if (read.kind === 'unknown')
+    return existence === 'exists' ? 'exists-unverified' : 'owner-unverified';
+  const journaled = s.op.oldResourceIdentity;
+  if (journaled !== undefined && read.identity !== undefined && read.identity !== journaled) {
+    return journaled.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType]
+      ? 'foreign-recreated'
+      : 'modified';
+  }
+  if (existence !== 'exists') return existence;
+  if (journaled === undefined) return 'exists';
+  return read.identity === undefined ? 'unknown' : 'exists';
 }
 
 /**

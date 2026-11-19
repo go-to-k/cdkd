@@ -36,6 +36,21 @@ export class DriftReadRefusedError extends Error {
 export type ResourceIdentityVerdict = 'same' | 'different' | 'unknown';
 
 /**
+ * `ResourceProvider.replacedSurvivorIdentity`'s answer (go-to-k/cdkd#6621).
+ * `foreign`: something holds the id that cannot be the stack's resource (not
+ * this account's, or in another region than the stack's). `owned`: this
+ * account's resource in the stack's region; `identity` is the type's
+ * generation token WITHOUT the physical id (an S3 bucket's
+ * `<region>|<CreationDate ISO>`), `undefined` when it could not be read.
+ * `unknown`: the read could not answer.
+ */
+export type SurvivorIdentityRead =
+  | { kind: 'gone' }
+  | { kind: 'foreign'; seen: 'other-account' | 'other-region' }
+  | { kind: 'owned'; identity: string | undefined }
+  | { kind: 'unknown' };
+
+/**
  * Cross-resource context passed to `ResourceProvider.readCurrentState`
  * for providers that need to inspect sibling resources in the same
  * stack to decide what counts as drift.

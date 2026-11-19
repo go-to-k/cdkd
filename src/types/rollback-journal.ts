@@ -486,6 +486,14 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
       'kept, unconfirmed or deferred when present'
     );
   }
+  // go-to-k/cdkd#6621: COMPUTED by the engine; the rollback compares it to a
+  // live read, so a non-string would refuse every re-adopt.
+  if (
+    o['oldResourceIdentity'] !== undefined &&
+    !(typeof o['oldResourceIdentity'] === 'string' && o['oldResourceIdentity'] !== '')
+  ) {
+    fail('oldResourceIdentity', o['oldResourceIdentity'], 'a non-empty string when present');
+  }
   // go-to-k/cdkd#1710: both COMPUTED by the deploy engine and both select a
   // `--revert-failed` delete arm for a resource no state record holds, so a
   // value outside their shape is planted. A misspelled policy would otherwise

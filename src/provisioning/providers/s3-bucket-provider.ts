@@ -20,6 +20,7 @@ import type {
   ResourceNotFound,
   ResourceProvider,
   ResourceUpdateResult,
+  SurvivorIdentityRead,
   UpdateContext,
 } from '../../types/resource.js';
 import type { CredentialConfig } from '../../utils/ambient-client-defaults.js';
@@ -141,6 +142,7 @@ import {
   wrapOperationError,
 } from './s3-bucket/update-delete.js';
 import { create } from './s3-bucket/create.js';
+import { replacedSurvivorIdentity } from './s3-bucket/survivor-identity.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   readCors,
@@ -943,6 +945,13 @@ export class S3BucketProvider implements ResourceProvider {
     context: { expectedRegion: string }
   ): Promise<string | ResourceNotFound | undefined> {
     return resourceIdentity.call(this, physicalId, resourceType, context);
+  }
+  replacedSurvivorIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<SurvivorIdentityRead> {
+    return replacedSurvivorIdentity.call(this, physicalId, resourceType, context);
   }
   generatedCreateName(
     _resourceType: string,

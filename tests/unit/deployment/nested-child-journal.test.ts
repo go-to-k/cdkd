@@ -813,6 +813,51 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     expect(seen).toEqual([entry]);
   });
 
+  // go-to-k/cdkd#6621: every deferred bucket's holder, in EVERY segment, is
+  // read before the first segment replays: a newer segment's revert may
+  // write an older segment's old bucket.
+  it('hands the first replay the holder of each deferred bucket in every segment', async () => {
+    const BUCKET = 'AWS::S3::Bucket';
+    const replacedSurvivorIdentity = vi.fn(async (physicalId: string) => ({
+      kind: 'owned',
+      identity: `us-west-2|${physicalId}`,
+    }));
+    const seenAtEachReplay: unknown[][] = [];
+    replay.duringReplay = (_run, ctx) => {
+      const map = (ctx as { survivorIdentities?: Map<string, unknown> }).survivorIdentities;
+      seenAtEachReplay.push([...(map ?? new Map()).values()]);
+    };
+    const bucketOp = (logicalId: string, oldId: string) => ({
+      logicalId,
+      resourceType: BUCKET,
+      changeType: 'UPDATE',
+      physicalId: `${oldId}-new`,
+      previousState: { physicalId: oldId, resourceType: BUCKET, properties: {} },
+      oldResourceMaySurvive: 'deferred',
+    });
+    const h = harness({
+      segments: [
+        seg('r', [], { operations: [bucketOp('A', 'a-old')] as never }),
+        seg('r', [], { operations: [bucketOp('B', 'b-old')] as never }),
+      ],
+      state: childState({
+        A: { physicalId: 'a-old-new', resourceType: BUCKET, properties: {} },
+        B: { physicalId: 'b-old-new', resourceType: BUCKET, properties: {} },
+      }),
+      ctxExtra: { providerRegistry: { getProvider: () => ({ replacedSurvivorIdentity }) } },
+    });
+    await h.run('r');
+    expect(replacedSurvivorIdentity.mock.calls.map((c) => c[0]).sort()).toEqual(['a-old', 'b-old']);
+    expect(replacedSurvivorIdentity).toHaveBeenCalledWith('a-old', BUCKET, { expectedRegion: REGION });
+    expect(seenAtEachReplay[0]).toHaveLength(2);
+    expect(seenAtEachReplay[0]).toEqual(
+      expect.arrayContaining([
+        { kind: 'owned', identity: 'us-west-2|a-old' },
+        { kind: 'owned', identity: 'us-west-2|b-old' },
+      ])
+    );
+  });
+
   it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {
     const h = harness({ segments: [seg('r', ['Q'])], divergentBodyRegion: 'eu-west-1' });
 
