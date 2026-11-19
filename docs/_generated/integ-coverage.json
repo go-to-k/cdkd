@@ -7450,7 +7450,8 @@
         "fifo-sqs-event-source",
         "import-attribute-readback",
         "lambda-esm-documentdb",
-        "lambda-esm-self-managed-kafka"
+        "lambda-esm-self-managed-kafka",
+        "local-aws-emulator"
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types": [
@@ -7479,6 +7480,9 @@
         ],
         "lambda-esm-self-managed-kafka": [
           "l1",
+          "literal"
+        ],
+        "local-aws-emulator": [
           "literal"
         ]
       }
@@ -9303,6 +9307,7 @@
       "resourceType": "AWS::S3::BucketPolicy",
       "integs": [
         "asset-migration",
+        "local-aws-emulator",
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
         "propagation-races-2",
@@ -9312,6 +9317,9 @@
       ],
       "signals": {
         "asset-migration": [
+          "literal"
+        ],
+        "local-aws-emulator": [
           "literal"
         ],
         "lost-child-after-failed-deploy": [
@@ -9522,6 +9530,7 @@
         "intrinsics-torture",
         "intrinsics-torture-2",
         "launchtemplate-asg-inplace",
+        "local-aws-emulator",
         "microservices",
         "migrate-from-cfn",
         "monitoring",
@@ -9647,6 +9656,10 @@
         ],
         "launchtemplate-asg-inplace": [
           "l2"
+        ],
+        "local-aws-emulator": [
+          "l2",
+          "literal"
         ],
         "microservices": [
           "l2"
@@ -9780,6 +9793,7 @@
         "codecommit",
         "cross-region-concurrent-stacks",
         "iam-propagation-stress",
+        "local-aws-emulator",
         "migrate-from-cfn",
         "replacement-fanout",
         "s3-lifecycle",
@@ -9794,6 +9808,9 @@
           "literal"
         ],
         "iam-propagation-stress": [
+          "literal"
+        ],
+        "local-aws-emulator": [
           "literal"
         ],
         "migrate-from-cfn": [
@@ -10248,6 +10265,7 @@
       "integs": [
         "cross-stack-secret-import",
         "iam-propagation-stress",
+        "local-aws-emulator",
         "migrate-from-cfn",
         "secret-derived-immutable-names",
         "sns-subscription-filter"
@@ -10257,6 +10275,9 @@
           "l1"
         ],
         "iam-propagation-stress": [
+          "literal"
+        ],
+        "local-aws-emulator": [
           "literal"
         ],
         "migrate-from-cfn": [
