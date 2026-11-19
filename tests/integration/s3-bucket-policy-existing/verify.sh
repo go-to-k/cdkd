@@ -71,6 +71,7 @@ cleanup() {
   set +eu
   [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   aws s3api delete-bucket-policy --bucket "${BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws s3api delete-object --bucket "${BUCKET}" --key cdkd-6609-marker >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -223,6 +224,67 @@ P3B="$(bucket_policy)" || exit 1
 grep -q "CdkdIntegTemplateStatement2" <<<"${P3B}" || { echo "FAIL: the replaced BucketPolicy lacks its second statement: ${P3B:-<no policy>}" >&2; exit 1; }
 assert_observed_member "${POLICY_LID}" .PolicyDocument "${P3B}" "phase 3b (replace)"
 check_member_baseline AWS::S3::BucketPolicy PolicyDocument "phase 3b (replace)" CDKD_TEST_UPDATE=policy,policy2
+
+# go-to-k/cdkd#6609: `cdkd drift --revert` acts on what the capture recorded,
+# so an out-of-band change of a member must report, revert to the template in
+# place (same physical id, no delete / create), and leave drift clean.
+revert_drift_json() { # usage: revert_drift_json [env args...] -- prints `cdkd drift --json`; exit 0..2 is a report
+  local out rc=0
+  out=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${out}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report (#6609 revert arm)" >&2
+    printf '%s\n' "${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}"
+}
+assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <member key> <label>
+  jq -e --arg t "$2" --arg k "$3" '
+    def member: .path == $k or (.path | startswith($k + ".")) or (.path | startswith($k + "["));
+    [.[] | (.drifted // [])[] | select(.type == $t) | .changes[] | select(member)] | length > 0
+  ' <<<"$1" >/dev/null || {
+    echo "FAIL: cdkd drift does not report the out-of-band $2 $3 after $4 (#6609)" >&2
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
+}
+assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
+  local rc=0 label="$1"
+  shift
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || rc=$?
+  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0 (#6609)" >&2; exit 1; }
+  echo "    OK: cdkd drift is clean after ${label} (#6609)"
+}
+run_revert() { # usage: run_revert [env args...]
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+}
+assert_same() { # usage: assert_same <label> <before> <after>
+  [ -n "$2" ] && [ "$2" = "$3" ] || { echo "FAIL: $1 changed across the revert: '$2' -> '$3' (#6609: a delete / create)" >&2; exit 1; }
+  echo "    OK: $1 unchanged across the revert ($2)"
+}
+
+echo "==> Phase 3c: an out-of-band bucket policy is reverted in place (#6609)"
+# A marker object proves the bucket is the same one after the revert (a
+# re-created bucket would not hold it); removed before destroy, which needs an
+# empty bucket.
+aws s3api put-object --bucket "${BUCKET}" --key cdkd-6609-marker --body /dev/null >/dev/null
+POLICY_PID_BEFORE="$(state_json | jq -r --arg l "${POLICY_LID}" '.resources[$l].physicalId')"
+aws s3api put-bucket-policy --bucket "${BUCKET}" --region "${REGION}" --policy "${FOREIGN_POLICY}"
+DRIFT_3C="$(revert_drift_json CDKD_TEST_UPDATE=policy,policy2)" || exit 1
+assert_member_drifted "${DRIFT_3C}" AWS::S3::BucketPolicy PolicyDocument "an out-of-band put-bucket-policy"
+run_revert CDKD_TEST_UPDATE=policy,policy2
+P3C="$(bucket_policy)" || exit 1
+[ "$(jq -cS . <<<"${P3C}")" = "$(jq -cS . <<<"${P3B}")" ] \
+  || { echo "FAIL: the reverted bucket policy is not the template's: ${P3C:-<no policy>}" >&2; exit 1; }
+echo "    OK: the revert put the template's bucket policy back"
+assert_same "the BucketPolicy's state physical id" "${POLICY_PID_BEFORE}" \
+  "$(state_json | jq -r --arg l "${POLICY_LID}" '.resources[$l].physicalId')"
+aws s3api head-object --bucket "${BUCKET}" --key cdkd-6609-marker >/dev/null \
+  || { echo "FAIL: the marker object is gone: the bucket was re-created by the revert (#6609)" >&2; exit 1; }
+echo "    OK: the bucket still holds its marker object (not re-created)"
+aws s3api delete-object --bucket "${BUCKET}" --key cdkd-6609-marker >/dev/null
+assert_drift_clean "the phase 3c revert" CDKD_TEST_UPDATE=policy,policy2
 
 echo "==> Phase 4: destroy"
 CDKD_TEST_UPDATE=policy,policy2 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

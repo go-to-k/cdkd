@@ -258,6 +258,65 @@ echo "==> Phase 6: cdkd drift is clean again"
 run_drift
 expect_drift_rc 0 "Phase 6"
 
+# go-to-k/cdkd#6609: `cdkd drift --revert` acts on what the capture recorded,
+# so an out-of-band change of a member must report, revert to the template in
+# place (same physical id, no delete / create), and leave drift clean.
+revert_drift_json() { # usage: revert_drift_json [env args...] -- prints `cdkd drift --json`; exit 0..2 is a report
+  local out rc=0
+  out=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${out}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report (#6609 revert arm)" >&2
+    printf '%s\n' "${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}"
+}
+assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <member key> <label>
+  jq -e --arg t "$2" --arg k "$3" '
+    def member: .path == $k or (.path | startswith($k + ".")) or (.path | startswith($k + "["));
+    [.[] | (.drifted // [])[] | select(.type == $t) | .changes[] | select(member)] | length > 0
+  ' <<<"$1" >/dev/null || {
+    echo "FAIL: cdkd drift does not report the out-of-band $2 $3 after $4 (#6609)" >&2
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
+}
+assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
+  local rc=0 label="$1"
+  shift
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || rc=$?
+  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0 (#6609)" >&2; exit 1; }
+  echo "    OK: cdkd drift is clean after ${label} (#6609)"
+}
+run_revert() { # usage: run_revert [env args...]
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+}
+assert_same() { # usage: assert_same <label> <before> <after>
+  [ -n "$2" ] && [ "$2" = "$3" ] || { echo "FAIL: $1 changed across the revert: '$2' -> '$3' (#6609: a delete / create)" >&2; exit 1; }
+  echo "    OK: $1 unchanged across the revert ($2)"
+}
+
+echo "==> Phase 6a: a revoked DECLARED SgA rule is reverted in place (#6609)"
+SG_A_PID_BEFORE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "${SG_A_LID}" '.resources[$l].physicalId')"
+aws ec2 revoke-security-group-ingress --group-id "${GROUP_A}" --region "${REGION}" \
+  --ip-permissions 'IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=10.0.0.0/16}]' >/dev/null
+read_ports
+expect_ports "SgA ingress (443 revoked out of band)" "${A_IN}" "5432 8443"
+DRIFT_6A="$(revert_drift_json)" || exit 1
+assert_member_drifted "${DRIFT_6A}" AWS::EC2::SecurityGroup SecurityGroupIngress "an out-of-band revoke"
+run_revert
+read_ports
+expect_ports "SgA ingress (after the revert)" "${A_IN}" "443 5432 8443"
+expect_ports "SgA egress (after the revert)" "${A_OUT}" "443 8080"
+expect_ports "SgB ingress (after the revert)" "${B_IN}" "22 8080"
+assert_same "SgA's state physical id" "${SG_A_PID_BEFORE}" \
+  "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "${SG_A_LID}" '.resources[$l].physicalId')"
+assert_same "SgA's group id" "${GROUP_A}" "${SG_A_PID_BEFORE}"
+aws ec2 describe-security-groups --group-ids "${GROUP_A}" --region "${REGION}" >/dev/null \
+  || { echo "FAIL: ${GROUP_A} is gone after the revert (#6609)" >&2; exit 1; }
+assert_drift_clean "the phase 6a revert"
+
 echo "==> Phase 6b: plant the sibling's 5432 rule in SgA's recorded baseline (go-to-k/cdkd#6420)"
 # The capture leaves sibling rules out since #6418, so a baseline holding one
 # is what an older binary recorded on a group UPDATE. Planted so the arm does
