@@ -434,3 +434,61 @@ describe('AgentCoreRuntimeProvider go-to-k/cdkd#2762 backfill', () => {
     });
   });
 });
+
+// PR #6630: HooksConfiguration / ResourceConfigurations. An update omitting
+// them clears both, and CloudFormation clears both on removal (measured).
+describe('AgentCoreRuntimeProvider HooksConfiguration / ResourceConfigurations', () => {
+  const HOOKS = {
+    HooksConfiguration: { Build: { Warmup: { Action: { HttpPost: { Path: '/warmup' } } } } },
+    ResourceConfigurations: [{ MinimumMemoryInMiB: 2048 }],
+    PlatformVersion: 'V2',
+  };
+  const SDK_HOOKS = {
+    hooksConfiguration: { build: { warmup: { action: { httpPost: { path: '/warmup' } } } } },
+    resourceConfigurations: [{ minimumMemoryInMiB: 2048 }],
+  };
+  let provider: AgentCoreRuntimeProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    provider = new AgentCoreRuntimeProvider();
+  });
+
+  it('declares both handled', () => {
+    const handled = provider.handledProperties.get(TYPE)!;
+    expect(handled.has('HooksConfiguration')).toBe(true);
+    expect(handled.has('ResourceConfigurations')).toBe(true);
+  });
+
+  it('sends both camelCased on create', async () => {
+    mockSend.mockResolvedValueOnce({ agentRuntimeId: ID, agentRuntimeArn: ARN });
+    await provider.create('L', TYPE, { ...BASE, ...HOOKS });
+    expect(inputOf(CreateAgentRuntimeCommand)).toMatchObject(SDK_HOOKS);
+  });
+
+  it('sends both on update and omits both once removed', async () => {
+    mockSend.mockResolvedValue({ agentRuntimeId: ID, agentRuntimeArn: ARN });
+    await provider.update('L', ID, TYPE, { ...BASE, ...HOOKS }, { ...BASE });
+    expect(inputOf(UpdateAgentRuntimeCommand)).toMatchObject(SDK_HOOKS);
+
+    mockSend.mockClear();
+    await provider.update('L', ID, TYPE, { ...BASE }, { ...BASE, ...HOOKS });
+    const input = inputOf(UpdateAgentRuntimeCommand);
+    expect('hooksConfiguration' in input).toBe(false);
+    expect('resourceConfigurations' in input).toBe(false);
+  });
+
+  it('leaves the {} / [] read-back placeholders off the wire', async () => {
+    mockSend.mockResolvedValueOnce({ agentRuntimeId: ID, agentRuntimeArn: ARN });
+    await provider.update(
+      'L',
+      ID,
+      TYPE,
+      { ...BASE, HooksConfiguration: {}, ResourceConfigurations: [] },
+      { ...BASE }
+    );
+    const input = inputOf(UpdateAgentRuntimeCommand);
+    expect('hooksConfiguration' in input).toBe(false);
+    expect('resourceConfigurations' in input).toBe(false);
+  });
+});

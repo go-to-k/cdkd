@@ -130,6 +130,11 @@ export async function readCurrentState(
   // `drift --revert` could not send one back.
   if (pool.KeyConfiguration) result['KeyConfiguration'] = pool.KeyConfiguration;
   if (pool.IssuerConfiguration) result['IssuerConfiguration'] = pool.IssuerConfiguration;
+  // Absent on a pool that never set it; once set, always reported (`Disabled`
+  // after a removal, `OpenDcrEnabled: false` filled in). No `{}` placeholder:
+  // AWS reads an empty block as registration turned ON, so a revert sending
+  // one back would enable it (`dcrConfigurationUpdate` in update.ts).
+  if (pool.DcrConfiguration) result['DcrConfiguration'] = pool.DcrConfiguration;
 
   // EnabledMfas / email-OTP message+subject / WebAuthn config live on the
   // separate GetUserPoolMfaConfig API, not DescribeUserPool. Fetch them and

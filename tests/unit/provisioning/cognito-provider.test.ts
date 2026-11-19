@@ -909,6 +909,74 @@ describe('CognitoUserPoolProvider', () => {
       });
     });
 
+    // PR #6630: dynamic client registration. UpdateUserPool keeps an omitted
+    // block, CloudFormation turns it off on removal, `{}` turns it ON.
+    describe('DcrConfiguration', () => {
+      const DCR = {
+        EnableStatus: 'Enabled',
+        OpenDcrEnabled: true,
+        AuthenticatedGrantTypes: ['client_credentials'],
+        AllowedScopes: ['openid'],
+      };
+      const updateInput = async (
+        properties: Record<string, unknown>,
+        previous: Record<string, unknown>
+      ): Promise<Record<string, unknown>> => {
+        mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({ UserPool: { Arn: 'arn' } });
+        await provider.update('Pool', 'us-east-1_dcr', 'AWS::Cognito::UserPool', properties, previous);
+        return mockSend.mock.calls[0]![0].input;
+      };
+
+      it('forwards the block to CreateUserPool', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_dcr', Arn: 'arn' } });
+        await provider.create('Pool', 'AWS::Cognito::UserPool', { DcrConfiguration: DCR });
+        expect(mockSend.mock.calls[0]![0].input.DcrConfiguration).toEqual(DCR);
+      });
+
+      it('forwards a declared block to UpdateUserPool, empty included', async () => {
+        expect((await updateInput({ DcrConfiguration: DCR }, {})).DcrConfiguration).toEqual(DCR);
+        mockSend.mockClear();
+        expect((await updateInput({ DcrConfiguration: {} }, { DcrConfiguration: DCR })).DcrConfiguration).toEqual({});
+      });
+
+      it('turns registration off when the template drops a declared block', async () => {
+        const input = await updateInput({ UserPoolName: 'p' }, { UserPoolName: 'p', DcrConfiguration: DCR });
+        expect(input.DcrConfiguration).toEqual({ EnableStatus: 'Disabled' });
+      });
+
+      // AWS refuses `UserPoolTier: LITE` alone on a pool with registration on
+      // and accepts it beside a `Disabled` block (measured, PR #6630).
+      it('a downgrade to LITE that drops the block sends the reset in the same call', async () => {
+        const input = await updateInput(
+          { UserPoolTier: 'LITE' },
+          { UserPoolTier: 'ESSENTIALS', DcrConfiguration: DCR }
+        );
+        expect(input.UserPoolTier).toBe('LITE');
+        expect(input.DcrConfiguration).toEqual({ EnableStatus: 'Disabled' });
+      });
+
+      // A revert / rollback sends the read-back block back; a LITE pool was
+      // measured to accept it as is (PR #6630).
+      it('sends a read-back Disabled block on a LITE pool verbatim', async () => {
+        const readBack = {
+          EnableStatus: 'Disabled',
+          OpenDcrEnabled: false,
+          AllowedScopes: ['openid'],
+          AuthenticatedGrantTypes: ['client_credentials'],
+        };
+        const input = await updateInput(
+          { UserPoolTier: 'LITE', DcrConfiguration: readBack },
+          { UserPoolTier: 'LITE', DcrConfiguration: { EnableStatus: 'Enabled' } }
+        );
+        expect(input.DcrConfiguration).toEqual(readBack);
+      });
+
+      it('sends nothing when neither side declares it', async () => {
+        const input = await updateInput({ UserPoolName: 'p' }, { UserPoolName: 'q' });
+        expect(input).not.toHaveProperty('DcrConfiguration');
+      });
+    });
+
     describe('UserPoolTier', () => {
       it('rides on CreateUserPool', async () => {
         mockSend.mockResolvedValueOnce({

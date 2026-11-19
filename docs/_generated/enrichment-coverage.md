@@ -21,7 +21,7 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
 - SDK-fallback gaps (informational, #614 path only): **77**
-- Types with allow-listed (not-a-gap) attributes: **89**
+- Types with allow-listed (not-a-gap) attributes: **88**
 
 ## Pure-CC latent gaps
 
@@ -153,7 +153,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (allow) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `PolicyId` (allow) |
 | `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (allow), `ReadEndpoint` (GAP), `ServerlessV2PlatformVersion` (GAP) |
-| `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Id` (allow), `Port` (GAP) |
+| `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Port` (GAP) |
 | `AWS::DocDB::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::DynamoDB::GlobalTable` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (GAP), `TableId` (GAP) |
 | `AWS::DynamoDB::Table` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (OK) |

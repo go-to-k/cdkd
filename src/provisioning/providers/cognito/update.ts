@@ -46,6 +46,7 @@ import {
   type UserPoolTierType,
   type KeyConfigurationType,
   type IssuerConfigurationType,
+  type DcrConfigurationType,
   UpdateUserPoolCommand,
   type SchemaAttributeType,
   DescribeUserPoolCommand,
@@ -174,6 +175,44 @@ export function warnOnKeptRemovedMembers(
         safeMsg`no reset. To change it, declare ${member} with the value you want.`
     );
   }
+}
+
+/**
+ * The `DcrConfiguration` an `UpdateUserPool` carries, or `undefined` to send
+ * none.
+ *
+ * MEASURED us-east-1 2026-11-20 (PR #6630), on `ESSENTIALS` pools:
+ * - A sent block REPLACES the live one: members it leaves out go back to
+ *   their defaults (`OpenDcrEnabled: false`, the grant-type and scope lists
+ *   absent).
+ * - Omitting the member KEEPS the live block (also
+ *   {@link USER_POOL_KEPT_ON_OMISSION}).
+ * - CloudFormation, on a template edit that drops the property, turns
+ *   registration OFF: the pool read back `{ EnableStatus: Disabled,
+ *   OpenDcrEnabled: false }`, the same as an `UpdateUserPool` sending
+ *   `{ EnableStatus: Disabled }`.
+ * - `{}` is NOT a reset: AWS reads it as `EnableStatus: Enabled`. So the
+ *   removal sends `Disabled` explicitly, and `readCurrentState` emits no `{}`
+ *   placeholder a revert could send back.
+ * - `LITE` refuses only an `Enabled` block (`FeatureUnavailableInTierException`);
+ *   it accepts a `Disabled` one. A downgrade to `LITE` that drops the
+ *   property therefore NEEDS the reset in the same call: `UserPoolTier: LITE`
+ *   alone on a pool with registration on is refused
+ *   (`TierChangeNotAllowedException`), while with the `Disabled` block it
+ *   lands, as the same template edit does through CloudFormation. A LITE
+ *   pool also accepts the read-back shape `drift --revert` / rollback send
+ *   back verbatim: `Disabled` with `OpenDcrEnabled` false or true, and with
+ *   the grant-type and scope lists set.
+ */
+export function dcrConfigurationUpdate(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): DcrConfigurationType | undefined {
+  if (properties['DcrConfiguration']) {
+    return properties['DcrConfiguration'] as DcrConfigurationType;
+  }
+  if (previousProperties['DcrConfiguration']) return { EnableStatus: 'Disabled' };
+  return undefined;
 }
 
 /**
@@ -541,6 +580,10 @@ export async function update(
         'IssuerConfiguration'
       ] as IssuerConfigurationType;
     }
+    // Omitting `DcrConfiguration` KEEPS it, but CloudFormation turns it off
+    // on removal, so a removal sends the reset (`dcrConfigurationUpdate`).
+    const dcr = dcrConfigurationUpdate(properties, previousProperties);
+    if (dcr) updateParams.DcrConfiguration = dcr;
 
     const mfaOptions = {
       ...(liveMfa?.value !== undefined ? { liveMfaConfiguration: liveMfa.value } : {}),

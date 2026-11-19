@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 describe('AgentCoreRuntimeProvider.readCurrentState', () => {
   let provider: AgentCoreRuntimeProvider;
@@ -88,8 +89,46 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
       FilesystemConfigurations: [],
       CapacityProviderConfiguration: {},
       PlatformVersion: '',
+      HooksConfiguration: {},
+      ResourceConfigurations: [],
     });
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads back HooksConfiguration and ResourceConfigurations PascalCased (PR #6630)', async () => {
+    mockSend.mockResolvedValueOnce({
+      agentRuntimeId: 'runtime-1',
+      agentRuntimeName: 'my-runtime',
+      hooksConfiguration: {
+        build: { warmup: { action: { httpPost: { path: '/warmup', port: 8080 } } } },
+      },
+      resourceConfigurations: [{ minimumMemoryInMiB: 2048 }],
+    });
+    const result = (await provider.readCurrentState(
+      'runtime-1',
+      'Logical',
+      'AWS::BedrockAgentCore::Runtime'
+    )) as Record<string, unknown>;
+    expect(result['HooksConfiguration']).toEqual({
+      Build: { Warmup: { Action: { HttpPost: { Path: '/warmup', Port: 8080 } } } },
+    });
+    expect(result['ResourceConfigurations']).toEqual([{ MinimumMemoryInMiB: 2048 }]);
+    // The Port AWS fills in is no drift against a template that left it out.
+    expect(
+      calculateResourceDrift(
+        { HooksConfiguration: { Build: { Warmup: { Action: { HttpPost: { Path: '/warmup' } } } } } },
+        { HooksConfiguration: result['HooksConfiguration'] }
+      )
+    ).toEqual([]);
+  });
+
+  it('an observed baseline written before cdkd read the two fields reports nothing', () => {
+    expect(
+      calculateResourceDrift(
+        { AgentRuntimeName: 'r' },
+        { AgentRuntimeName: 'r', HooksConfiguration: {}, ResourceConfigurations: [] }
+      )
+    ).toEqual([]);
   });
 
   it('reads back the go-to-k/cdkd#2762 fields and Tags (a map, aws: keys left out)', async () => {

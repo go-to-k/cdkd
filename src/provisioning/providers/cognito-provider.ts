@@ -203,6 +203,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         'UserPoolTier',
         'KeyConfiguration',
         'IssuerConfiguration',
+        'DcrConfiguration',
         // Routed through the SetUserPoolMfaConfig control-plane API
         // (NOT CreateUserPool/UpdateUserPool) — see buildMfaConfigRequest.
         'EnabledMfas',

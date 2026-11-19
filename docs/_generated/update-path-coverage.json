@@ -1,8 +1,8 @@
 {
   "summary": {
     "types": 145,
-    "properties": 1541,
-    "update": 1126,
+    "properties": 1544,
+    "update": 1129,
     "replacement": 397,
     "allowListed": 18,
     "gap": 0,
@@ -1167,6 +1167,10 @@
           "status": "update"
         },
         {
+          "property": "HooksConfiguration",
+          "status": "update"
+        },
+        {
           "property": "LifecycleConfiguration",
           "status": "update"
         },
@@ -1184,6 +1188,10 @@
         },
         {
           "property": "RequestHeaderConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ResourceConfigurations",
           "status": "update"
         },
         {
@@ -1753,6 +1761,10 @@
         },
         {
           "property": "AutoVerifiedAttributes",
+          "status": "update"
+        },
+        {
+          "property": "DcrConfiguration",
           "status": "update"
         },
         {

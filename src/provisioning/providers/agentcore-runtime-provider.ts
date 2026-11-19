@@ -151,8 +151,8 @@ function isNonEmptyObject(value: unknown): value is Record<string, unknown> {
 /**
  * Write the members `CreateAgentRuntime` and `UpdateAgentRuntime` take in the
  * same shape: `RequestHeaderConfiguration` (a union, `{}` names no member),
- * `FilesystemConfigurations`, `CapacityProviderConfiguration` and
- * `PlatformVersion`. An EMPTY value — the `{}` / `[]` / `''` placeholder
+ * `FilesystemConfigurations`, `CapacityProviderConfiguration`,
+ * `PlatformVersion`, `HooksConfiguration` and `ResourceConfigurations`. An EMPTY value — the `{}` / `[]` / `''` placeholder
  * `readCurrentState` emits for an unset field, which `drift --revert` hands
  * back — is left out, as an absent one is: `UpdateAgentRuntime` is a full
  * replace, so omitting a field is how it is cleared, and AWS refuses an empty
@@ -177,6 +177,22 @@ function writeSharedRuntimeMembers(
   const platformVersion = properties['PlatformVersion'];
   if (platformVersion !== undefined && platformVersion !== null && platformVersion !== '') {
     input['platformVersion'] = platformVersion;
+  }
+  // `HooksConfiguration` / `ResourceConfigurations` (PR #6630). MEASURED
+  // us-east-1 2026-11-20: an update omitting them clears both, and
+  // CloudFormation clears both when a template drops them, so omission is the
+  // removal here too; an empty `{}` / `[]` leaves both absent as well. AWS
+  // fills a warmup hook's `Port` (8080) on read, and refuses a create
+  // carrying `ResourceConfigurations` without `PlatformVersion: V2`
+  // ("resourceConfigurations can only be used when platformVersion is V2"),
+  // a refusal surfaced as AWS words it.
+  const hooks = properties['HooksConfiguration'];
+  if (isNonEmptyObject(hooks)) {
+    input['hooksConfiguration'] = pascalToCamelCaseKeys(hooks, CFN_MAP_KEYS);
+  }
+  const resources = properties['ResourceConfigurations'];
+  if (Array.isArray(resources) && resources.length > 0) {
+    input['resourceConfigurations'] = pascalToCamelCaseKeys(resources, CFN_MAP_KEYS);
   }
 }
 
@@ -305,6 +321,8 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
         'FilesystemConfigurations',
         'CapacityProviderConfiguration',
         'PlatformVersion',
+        'HooksConfiguration',
+        'ResourceConfigurations',
         // Sent on create; diffed by TagResource / UntagResource on update,
         // removal included (`UpdateAgentRuntime` takes no tags).
         'Tags',
@@ -557,7 +575,7 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
       // it omits them; so no `removalDefaults` apply. Never fill an absent
       // field from `previousProperties`. RequestHeaderConfiguration /
       // FilesystemConfigurations / CapacityProviderConfiguration /
-      // PlatformVersion ride the same call (`writeSharedRuntimeMembers`), so
+      // PlatformVersion / HooksConfiguration / ResourceConfigurations ride the same call (`writeSharedRuntimeMembers`), so
       // a removed one is cleared by its omission too. `Tags` is not an
       // `UpdateAgentRuntime` member: it is diffed below.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
