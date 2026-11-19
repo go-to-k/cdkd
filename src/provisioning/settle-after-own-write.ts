@@ -27,6 +27,12 @@
  * beside the rest of the deploy, so a deploy whose reads agree pays nothing.
  */
 import { coerceCfnBoolean } from './config-shape.js';
+import {
+  isAmbiguousOutcomeError,
+  isThrottlingError,
+  isTransientServerError,
+} from '../deployment/retryable-errors.js';
+import { safeMsg } from '../utils/display-safe.js';
 import { accountKey, policyContentKey } from './policy-document-content.js';
 
 /**
@@ -57,46 +63,85 @@ export async function reReadUntilSettled<T>(
 /**
  * One read of a MEMBER of a bigger resource (a key policy on a key, a data
  * protection policy on a log group): its value as the resource read records
- * it, `'absent'` when AWS answered that none is set, or `'failed'` when the
- * read threw or answered something that is not the member (go-to-k/cdkd#6609).
+ * it, `'absent'` when AWS answered that none is set, `'failed'` when the read
+ * threw a transient error ({@link memberReadFailure}) or answered something
+ * that is not the member, or `'refused'` when it threw a deterministic one
+ * (go-to-k/cdkd#6609).
  */
-export type MemberRead<T> = { value: T } | 'absent' | 'failed';
+export type MemberRead<T> = { value: T } | 'absent' | 'failed' | 'refused';
+
+/**
+ * A member read's failure: `'failed'` for a throttle, a 5xx or a socket
+ * failure the SDK's retries did not absorb, which a re-read can outlast;
+ * `'refused'` for anything else (`AccessDenied` and the like), which a re-read
+ * would only repeat. Deliberately not `isRetryableTransientError`, whose
+ * message patterns count `not authorized to perform` as IAM propagation (the
+ * #4112 reasoning in `dynamodb-table/read-current-state.ts`).
+ */
+export function memberReadFailure(err: unknown): 'failed' | 'refused' {
+  return isThrottlingError(err) || isTransientServerError(err) || isAmbiguousOutcomeError(err)
+    ? 'failed'
+    : 'refused';
+}
 
 /**
  * The member to record on the post-write capture, given the member as the
  * resource read found it (`first`): while the newest answer is not the
  * declared value, re-read the member alone after each delay. A first answer
- * that agrees makes no extra call.
+ * that agrees, or one REFUSED (a deterministic failure), makes no extra call;
+ * a refused re-read ends the schedule.
  *
  * Returns the newest answer AWS gave (a failed re-read keeps the one before
  * it), except that a member still ABSENT after the schedule records `declared`
  * (already in the read's shape): the write just succeeded, and recording
  * "none" would let `drift --revert` delete it. Another value is recorded as
- * read (the module comment says why). `'failed'` only when no read answered,
- * so the caller records what its single read always did.
+ * read (the module comment says why). `'failed'` / `'refused'` only when no
+ * read answered, so the caller records what its single read always did.
+ * `unsettled` runs once when the schedule ends without the declared value, so
+ * the caller can say so (value-free: {@link warnUnsettledMember}).
  */
 export async function settleDeclaredMember<T>(
   first: MemberRead<T>,
   read: () => Promise<MemberRead<T>>,
   matches: (value: T) => boolean,
   declared: T,
-  delaysMs: readonly number[]
+  delaysMs: readonly number[],
+  unsettled: () => void
 ): Promise<MemberRead<T>> {
   const settled = (answer: MemberRead<T>): boolean =>
     typeof answer === 'object' && matches(answer.value);
+  if (first === 'refused' || settled(first)) return first;
   let newest = first;
   for (const delayMs of delaysMs) {
-    if (settled(newest)) return newest;
     await new Promise((resolve) => setTimeout(resolve, delayMs));
     let answer: MemberRead<T>;
     try {
       answer = await read();
-    } catch {
-      answer = 'failed';
+    } catch (err) {
+      answer = memberReadFailure(err);
     }
+    if (answer === 'refused') break;
     if (answer !== 'failed') newest = answer;
+    if (settled(newest)) return newest;
   }
+  unsettled();
   return newest === 'absent' ? { value: declared } : newest;
+}
+
+/**
+ * Warn that a member's post-write read never matched the template, naming
+ * only the resource and the member key (no value: the document can carry
+ * account ids and principals), and how to re-capture the baseline.
+ */
+export function warnUnsettledMember(
+  logger: { warn: (message: string) => void },
+  logicalId: string,
+  resourceType: string,
+  memberKey: string
+): void {
+  logger.warn(
+    safeMsg`${resourceType} ${logicalId}: the read right after the write never showed the declared ${memberKey}, so its drift baseline may not match the live resource; run \`cdkd state refresh-observed\` on the stack to re-capture it`
+  );
 }
 
 /**
@@ -129,12 +174,28 @@ const EFS_FILE_SYSTEM_ARN =
  * declares no `Resource` with the file system's ARN added (measured,
  * us-east-1, 2026-11-19), so that `Resource` is dropped from the read
  * statement where the declared statement at the same position has none.
+ * With `fileSystemId`, only that file system's own ARN is dropped. Without it
+ * (the drift-side heal, which has no physical id), any file system ARN is:
+ * EFS refuses a policy naming another file system's ARN (`InvalidPolicyException
+ * ... Must be the filesystem's ARN`, measured the same day), so a stored one
+ * is always the policy's own. `Resource: "*"` is stored as sent, never folded.
  */
-export function efsPolicyMatchesDeclared(answer: unknown, declared: unknown): boolean {
-  return policyDocumentMatchesDeclared(withoutAddedResource(answer, declared), declared);
+export function efsPolicyMatchesDeclared(
+  answer: unknown,
+  declared: unknown,
+  fileSystemId?: string
+): boolean {
+  return policyDocumentMatchesDeclared(
+    withoutAddedResource(answer, declared, fileSystemId),
+    declared
+  );
 }
 
-function withoutAddedResource(answer: unknown, declared: unknown): unknown {
+function withoutAddedResource(
+  answer: unknown,
+  declared: unknown,
+  fileSystemId: string | undefined
+): unknown {
   const parse = (doc: unknown): unknown => {
     if (typeof doc !== 'string') return doc;
     try {
@@ -167,7 +228,13 @@ function withoutAddedResource(answer: unknown, declared: unknown): unknown {
         return entry;
       }
       const resource = (entry as Record<string, unknown>)['Resource'];
-      if (typeof resource !== 'string' || !EFS_FILE_SYSTEM_ARN.test(resource)) return entry;
+      if (
+        typeof resource !== 'string' ||
+        !EFS_FILE_SYSTEM_ARN.test(resource) ||
+        (fileSystemId !== undefined && !resource.endsWith(`:file-system/${fileSystemId}`))
+      ) {
+        return entry;
+      }
       const { Resource: _added, ...rest } = entry as Record<string, unknown>;
       return rest;
     }),

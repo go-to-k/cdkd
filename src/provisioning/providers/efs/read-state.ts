@@ -22,7 +22,9 @@ import {
   declaredMemberDocument,
   efsPolicyMatchesDeclared,
   type MemberRead,
+  memberReadFailure,
   settleDeclaredMember,
+  warnUnsettledMember,
 } from '../../settle-after-own-write.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
 
@@ -63,7 +65,8 @@ export async function readFileSystem(
   this: EFSProvider,
   physicalId: string,
   properties?: Record<string, unknown>,
-  context?: ReadCurrentStateContext
+  context?: ReadCurrentStateContext,
+  logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let fs;
   let listed: readonly unknown[] | undefined;
@@ -159,8 +162,8 @@ export async function readFileSystem(
     policy = await readFileSystemPolicy.call(this, physicalId);
   } catch (err) {
     if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
-    // AccessDenied or similar — omit the key.
-    policy = 'failed';
+    // AccessDenied or similar — omit the key. Only a transient one is re-read.
+    policy = memberReadFailure(err);
   }
   const declared =
     context?.afterOwnWrite === true
@@ -170,9 +173,10 @@ export async function readFileSystem(
     policy = await settleDeclaredMember(
       policy,
       () => readFileSystemPolicy.call(this, physicalId),
-      (document) => efsPolicyMatchesDeclared(document, declared),
+      (document) => efsPolicyMatchesDeclared(document, declared, physicalId),
       declared,
-      this.ownWriteRereadDelaysMs
+      this.ownWriteRereadDelaysMs,
+      () => warnUnsettledMember(this.logger, logicalId, 'AWS::EFS::FileSystem', 'FileSystemPolicy')
     );
   }
   if (typeof policy === 'object') result['FileSystemPolicy'] = policy.value;

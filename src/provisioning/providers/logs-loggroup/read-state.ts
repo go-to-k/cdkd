@@ -16,7 +16,9 @@ import {
   declaredMemberDocument,
   type MemberRead,
   policyDocumentMatchesDeclared,
+  memberReadFailure,
   settleDeclaredMember,
+  warnUnsettledMember,
 } from '../../settle-after-own-write.js';
 
 /**
@@ -58,8 +60,8 @@ async function readDataProtectionPolicy(
         new GetDataProtectionPolicyCommand({ logGroupIdentifier: physicalId })
       )
     ).policyDocument;
-  } catch {
-    return 'failed';
+  } catch (err) {
+    return memberReadFailure(err);
   }
   if (!document) return 'absent';
   try {
@@ -118,7 +120,7 @@ async function readDataProtectionPolicy(
 export async function readCurrentState(
   this: LogsLogGroupProvider,
   physicalId: string,
-  _logicalId: string,
+  logicalId: string,
   _resourceType: string,
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
@@ -185,7 +187,9 @@ export async function readCurrentState(
         () => readDataProtectionPolicy.call(this, physicalId),
         (document) => policyDocumentMatchesDeclared(document, declared),
         declared,
-        this.ownWriteRereadDelaysMs
+        this.ownWriteRereadDelaysMs,
+        () =>
+          warnUnsettledMember(this.logger, logicalId, 'AWS::Logs::LogGroup', 'DataProtectionPolicy')
       );
     }
     // Best-effort: a failed read leaves the empty placeholder.

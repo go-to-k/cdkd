@@ -239,12 +239,16 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<
     'AWS::Logs::DeliveryDestination': {
       key: 'DeliveryDestinationPolicy',
       liveIsDeclared: (properties, aws) => {
-        const inner = (block: unknown): unknown =>
-          typeof block === 'object' && block !== null && !Array.isArray(block)
-            ? declaredMemberDocument(
-                (block as Record<string, unknown>)['DeliveryDestinationPolicy']
-              )
+        // An object only, as the provider settles it (CloudFormation refuses a string).
+        const inner = (block: unknown): unknown => {
+          const document =
+            typeof block === 'object' && block !== null && !Array.isArray(block)
+              ? (block as Record<string, unknown>)['DeliveryDestinationPolicy']
+              : undefined;
+          return typeof document === 'object' && document !== null && !Array.isArray(document)
+            ? document
             : undefined;
+        };
         const declared = inner(properties['DeliveryDestinationPolicy']);
         if (declared === undefined) {
           return (

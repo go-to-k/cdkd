@@ -39,6 +39,7 @@ import {
   OWN_WRITE_REREAD_DELAYS_MS,
   policyDocumentMatchesDeclared,
   settleDeclaredMember,
+  warnUnsettledMember,
 } from '../settle-after-own-write.js';
 import {
   PropertyReader,
@@ -75,7 +76,7 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
   private client: CloudWatchLogsClient;
   private logger = getLogger().child('LogsDeliveryDestinationProvider');
   /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
-  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   constructor() {
     this.client = getAwsClients().cloudWatchLogs;
@@ -312,7 +313,7 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
    */
   async readCurrentState(
     physicalId: string,
-    _logicalId: string,
+    logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
@@ -347,7 +348,14 @@ export class LogsDeliveryDestinationProvider implements ResourceProvider {
         () => this.readDestinationPolicy(physicalId),
         (document) => policyDocumentMatchesDeclared(document, declaredDocument),
         declaredDocument,
-        this.ownWriteRereadDelaysMs
+        this.ownWriteRereadDelaysMs,
+        () =>
+          warnUnsettledMember(
+            this.logger,
+            logicalId,
+            'AWS::Logs::DeliveryDestination',
+            'DeliveryDestinationPolicy'
+          )
       );
     }
     if (typeof policy === 'object') {

@@ -473,7 +473,7 @@ export class EFSProvider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // The FileSystem read alone takes the context (go-to-k/cdkd#6609).
     if (resourceType === 'AWS::EFS::FileSystem') {
-      return this.readFileSystem(physicalId, properties, context);
+      return this.readFileSystem(physicalId, properties, context, _logicalId);
     }
     return readCurrentState.call(this, physicalId, _logicalId, resourceType);
   }
@@ -481,9 +481,10 @@ export class EFSProvider implements ResourceProvider {
   readFileSystem(
     physicalId: string,
     properties?: Record<string, unknown>,
-    context?: ReadCurrentStateContext
+    context?: ReadCurrentStateContext,
+    logicalId?: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readFileSystem.call(this, physicalId, properties, context);
+    return readFileSystem.call(this, physicalId, properties, context, logicalId);
   }
 
   readAccessPoint(

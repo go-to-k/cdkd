@@ -11,6 +11,7 @@ import {
   type MemberRead,
   policyDocumentMatchesDeclared,
   settleDeclaredMember,
+  warnUnsettledMember,
 } from '../../settle-after-own-write.js';
 import { restApiAsCfn } from './rest-api.js';
 
@@ -25,6 +26,7 @@ import { restApiAsCfn } from './rest-api.js';
 export async function settleRestApiPolicy(
   this: ApiGatewayProvider,
   physicalId: string,
+  logicalId: string,
   read: Record<string, unknown> | ResourceNotFound | undefined,
   properties: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
@@ -42,7 +44,8 @@ export async function settleRestApiPolicy(
     },
     (value) => policyDocumentMatchesDeclared(value, declared),
     declared,
-    this.ownWriteRereadDelaysMs
+    this.ownWriteRereadDelaysMs,
+    () => warnUnsettledMember(this.logger, logicalId, 'AWS::ApiGateway::RestApi', 'Policy')
   );
   return typeof policy === 'object' ? { ...read, Policy: policy.value } : read;
 }

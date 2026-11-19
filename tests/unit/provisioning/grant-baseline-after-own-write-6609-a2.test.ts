@@ -19,14 +19,20 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+const childLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  child: vi.fn().mockReturnThis(),
+}));
+/** The `refresh-observed` warnings, for the unsettled outcome (value-free). */
+const unsettledWarnings = (): string[] =>
+  childLogger.warn.mock.calls
+    .map((c) => String(c[0]))
+    .filter((m) => m.includes('refresh-observed'));
+
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -62,6 +68,7 @@ const fail = (name: string) => () => {
 
 beforeEach(() => {
   mockSend.mockReset();
+  childLogger.warn.mockClear();
   script = {};
   const served: Record<string, number> = {};
   mockSend.mockImplementation((command: object) => {
@@ -155,10 +162,11 @@ describe('AWS::KMS::Key KeyPolicy', () => {
     );
   };
 
-  it('settles on the first read in KMS storage spelling: 1 GetKeyPolicy', async () => {
+  it('settles on the first read in KMS storage spelling: 1 GetKeyPolicy, no warning', async () => {
     answer('GetKeyPolicyCommand', policy(stored));
     expect(bag(await read(AFTER))['KeyPolicy']).toEqual(JSON.parse(stored));
     expect(callsOf('GetKeyPolicyCommand')).toBe(1);
+    expect(unsettledWarnings()).toEqual([]);
   });
 
   it('re-reads a replaced policy until the declared one shows, and records it as read', async () => {
@@ -174,10 +182,16 @@ describe('AWS::KMS::Key KeyPolicy', () => {
     expect(callsOf('GetKeyPolicyCommand')).toBe(2);
   });
 
-  it('keeps the declared policy when the default policy outlives the schedule', async () => {
+  it('keeps the declared policy when the default policy outlives the schedule, and warns value-free', async () => {
     answer('GetKeyPolicyCommand', policy(defaultPolicy));
     expect(bag(await read(AFTER))['KeyPolicy']).toEqual(declared);
     expect(callsOf('GetKeyPolicyCommand')).toBe(4);
+    const warnings = unsettledWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('AWS::KMS::Key Key');
+    expect(warnings[0]).toContain('KeyPolicy');
+    expect(warnings[0]).not.toContain(ACCT);
+    expect(warnings[0]).not.toContain('kms:');
   });
 
   it('records another policy as read when it outlives the schedule', async () => {
@@ -186,10 +200,41 @@ describe('AWS::KMS::Key KeyPolicy', () => {
     expect(callsOf('GetKeyPolicyCommand')).toBe(4);
   });
 
-  it('omits the policy when every read fails, as the single read did', async () => {
-    answer('GetKeyPolicyCommand', fail('AccessDeniedException'));
+  it('a deterministic first failure (AccessDenied) is not re-read: the single-read outcome, 1 call', async () => {
+    answer('GetKeyPolicyCommand', fail('AccessDeniedException'), policy(stored));
+    expect(bag(await read(AFTER))).not.toHaveProperty('KeyPolicy');
+    expect(callsOf('GetKeyPolicyCommand')).toBe(1);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('a transient first failure is re-read until the declared policy shows', async () => {
+    answer('GetKeyPolicyCommand', fail('ThrottlingException'), policy(stored));
+    expect(bag(await read(AFTER))['KeyPolicy']).toEqual(JSON.parse(stored));
+    expect(callsOf('GetKeyPolicyCommand')).toBe(2);
+  });
+
+  it('omits the policy when every read fails transiently, as the single read did', async () => {
+    answer('GetKeyPolicyCommand', fail('ThrottlingException'));
     expect(bag(await read(AFTER))).not.toHaveProperty('KeyPolicy');
     expect(callsOf('GetKeyPolicyCommand')).toBe(4);
+  });
+
+  it('an answer with no Policy text is re-read, and omitted when it never carries one', async () => {
+    answer('GetKeyPolicyCommand', () => ({}));
+    expect(bag(await read(AFTER))).not.toHaveProperty('KeyPolicy');
+    expect(callsOf('GetKeyPolicyCommand')).toBe(4);
+  });
+
+  it('a failing re-read keeps the newest answer (another policy), not the failure', async () => {
+    answer('GetKeyPolicyCommand', policy(other), fail('ThrottlingException'));
+    expect(bag(await read(AFTER))['KeyPolicy']).toEqual(JSON.parse(other));
+    expect(callsOf('GetKeyPolicyCommand')).toBe(4);
+  });
+
+  it('a deterministic re-read failure ends the schedule and keeps the newest answer', async () => {
+    answer('GetKeyPolicyCommand', policy(other), fail('AccessDeniedException'));
+    expect(bag(await read(AFTER))['KeyPolicy']).toEqual(JSON.parse(other));
+    expect(callsOf('GetKeyPolicyCommand')).toBe(2);
   });
 
   it('a read without the post-write context takes the first answer: 1 call', async () => {
@@ -217,6 +262,17 @@ describe('AWS::KMS::Key KeyPolicy', () => {
         KeyPolicy: JSON.parse(other),
       })
     ).toEqual([]);
+  });
+
+  it('heal: a kept-declared baseline in TEMPLATE spelling (bare account id) beside the live :root spelling is skipped', () => {
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        'AWS::KMS::Key',
+        { KeyPolicy: declared },
+        { KeyPolicy: declared },
+        { KeyPolicy: JSON.parse(stored) }
+      )
+    ).toEqual(['KeyPolicy']);
   });
 });
 
@@ -291,12 +347,43 @@ describe('AWS::Logs::DeliveryDestination DeliveryDestinationPolicy', () => {
     answer(GET, policy(other));
     expect(member(await read(AFTER))).toEqual(JSON.parse(other));
     expect(callsOf(GET)).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
+  });
+
+  it('a failing re-read keeps the newest answer (another policy)', async () => {
+    answer(GET, policy(other), fail('ThrottlingException'));
+    expect(member(await read(AFTER))).toEqual(JSON.parse(other));
+    expect(callsOf(GET)).toBe(4);
   });
 
   it('a read without the post-write context takes the first answer: 1 call', async () => {
     answer(GET, none, policy(stored));
     expect(bag(await read())).not.toHaveProperty('DeliveryDestinationPolicy');
     expect(callsOf(GET)).toBe(1);
+  });
+
+  it('a policy declared as a JSON string is not settled (CloudFormation refuses it), and the heal agrees', async () => {
+    const asString = {
+      DeliveryDestinationPolicy: { DeliveryDestinationPolicy: JSON.stringify(declared) },
+    };
+    answer('GetDeliveryDestinationCommand', () => ({ deliveryDestination: { name: NAME } }));
+    answer(GET, none, policy(stored));
+    await zeroDelays(new LogsDeliveryDestinationProvider()).readCurrentState(
+      NAME,
+      'Dest',
+      'AWS::Logs::DeliveryDestination',
+      asString,
+      AFTER
+    );
+    expect(callsOf(GET)).toBe(1);
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        'AWS::Logs::DeliveryDestination',
+        { DeliveryDestinationPolicy: { DeliveryDestinationPolicy: JSON.parse(other) } },
+        asString,
+        { DeliveryDestinationPolicy: { DeliveryDestinationPolicy: JSON.parse(stored) } }
+      )
+    ).toEqual([]);
   });
 
   it('heal: skips the policy while the live one is the declared one, or both are none', () => {
@@ -379,8 +466,14 @@ describe('AWS::Logs::LogGroup DataProtectionPolicy', () => {
     expect(callsOf(GET)).toBe(4);
   });
 
-  it('records the empty placeholder when every read fails, as the single read did', async () => {
-    answer(GET, fail('AccessDeniedException'));
+  it('a deterministic first failure is not re-read: the empty placeholder, 1 call', async () => {
+    answer(GET, fail('AccessDeniedException'), policy(declared));
+    expect(bag(await read(AFTER))['DataProtectionPolicy']).toBe('');
+    expect(callsOf(GET)).toBe(1);
+  });
+
+  it('records the empty placeholder when every read fails transiently, as the single read did', async () => {
+    answer(GET, fail('ThrottlingException'));
     expect(bag(await read(AFTER))['DataProtectionPolicy']).toBe('');
     expect(callsOf(GET)).toBe(4);
   });
@@ -404,6 +497,14 @@ describe('AWS::Logs::LogGroup DataProtectionPolicy', () => {
     expect(preFixBaselineUncomparedDriftKeys(T, observed, {}, { DataProtectionPolicy: '' })).toEqual(
       ['DataProtectionPolicy']
     );
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        T,
+        observed,
+        { DataProtectionPolicy: '' },
+        { DataProtectionPolicy: '' }
+      )
+    ).toEqual(['DataProtectionPolicy']);
     expect(
       preFixBaselineUncomparedDriftKeys(T, observed, {}, { DataProtectionPolicy: other })
     ).toEqual([]);
@@ -480,6 +581,12 @@ describe('AWS::ApiGateway::RestApi Policy', () => {
     expect(callsOf(GET)).toBe(4);
   });
 
+  it('keeps the declared policy when none shows and the re-reads fail', async () => {
+    answer(GET, api(undefined), fail('ThrottlingException'));
+    expect(bag(await read(AFTER))['Policy']).toEqual(declared);
+    expect(callsOf(GET)).toBe(4);
+  });
+
   it('a read without the post-write context takes the first answer: 1 call', async () => {
     answer(GET, api(undefined), api(stored('A')));
     expect(bag(await read())).not.toHaveProperty('Policy');
@@ -497,6 +604,19 @@ describe('AWS::ApiGateway::RestApi Policy', () => {
     expect(
       preFixBaselineUncomparedDriftKeys(T, observed, { Policy: declared }, { Policy: observed.Policy })
     ).toEqual([]);
+  });
+
+  it('heal: a kept-declared baseline in TEMPLATE spelling beside the live AWS spelling is skipped', async () => {
+    answer(GET, api(stored('A')));
+    const live = bag(await read(undefined));
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        'AWS::ApiGateway::RestApi',
+        { Policy: declared },
+        { Policy: declared },
+        live
+      )
+    ).toEqual(['Policy']);
   });
 });
 
@@ -529,6 +649,12 @@ describe('AWS::EFS::FileSystem FileSystemPolicy', () => {
     });
   const policy = (p: string) => () => ({ Policy: p });
   const none = fail('PolicyNotFound');
+  const withResource = (resource: string) =>
+    JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [{ ...mk('A').Statement[0], Resource: resource }],
+    });
+  const otherFsArn = `arn:aws:elasticfilesystem:us-east-1:${ACCT}:file-system/fs-0aaaaaaaaaaaaaaaa`;
   const read = (context?: object) => {
     answer('DescribeFileSystemsCommand', () => ({ FileSystems: [{ FileSystemId: FS }] }));
     return withClient(new EFSProvider()).readCurrentState(
@@ -577,6 +703,65 @@ describe('AWS::EFS::FileSystem FileSystemPolicy', () => {
     expect(callsOf(GET)).toBe(1);
   });
 
+  it('a deterministic first failure is not re-read: no FileSystemPolicy, 1 call', async () => {
+    answer(GET, fail('AccessDeniedException'), policy(stored('A')));
+    expect(bag(await read(AFTER))).not.toHaveProperty('FileSystemPolicy');
+    expect(callsOf(GET)).toBe(1);
+  });
+
+  it('every transient failure: no FileSystemPolicy, 4 calls', async () => {
+    answer(GET, fail('ThrottlingException'));
+    expect(bag(await read(AFTER))).not.toHaveProperty('FileSystemPolicy');
+    expect(callsOf(GET)).toBe(4);
+  });
+
+  it.each([
+    ['Resource "*"', '*'],
+    ["another file system's ARN", otherFsArn],
+  ])('the fold does not settle a read with %s for a declaration without Resource', async (_, r) => {
+    answer(GET, policy(withResource(r)));
+    expect(bag(await read(AFTER))['FileSystemPolicy']).toEqual(JSON.parse(withResource(r)));
+    expect(callsOf(GET)).toBe(4);
+  });
+
+  it("a declaration naming the file system's own ARN settles on the first read (the fold keeps it)", async () => {
+    const ownArn = `arn:aws:elasticfilesystem:us-east-1:${ACCT}:file-system/${FS}`;
+    const declaredOwn = { ...declared, Statement: [{ ...declared.Statement[0], Resource: ownArn }] };
+    answer('DescribeFileSystemsCommand', () => ({ FileSystems: [{ FileSystemId: FS }] }));
+    answer(GET, policy(stored('A')));
+    await withClient(new EFSProvider()).readCurrentState(
+      FS,
+      'Fs',
+      'AWS::EFS::FileSystem',
+      { FileSystemPolicy: declaredOwn },
+      AFTER
+    );
+    expect(callsOf(GET)).toBe(1);
+  });
+
+  it('the fold drops nothing where the declared statement has its own Resource', async () => {
+    const declaredStar = { ...declared, Statement: [{ ...declared.Statement[0], Resource: '*' }] };
+    answer('DescribeFileSystemsCommand', () => ({ FileSystems: [{ FileSystemId: FS }] }));
+    answer(GET, policy(stored('A')));
+    const result = await withClient(new EFSProvider()).readCurrentState(
+      FS,
+      'Fs',
+      'AWS::EFS::FileSystem',
+      { FileSystemPolicy: declaredStar },
+      AFTER
+    );
+    expect(callsOf(GET)).toBe(4);
+    expect(bag(result)['FileSystemPolicy']).toEqual(JSON.parse(stored('A')));
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        'AWS::EFS::FileSystem',
+        { FileSystemPolicy: JSON.parse(stored('B')) },
+        { FileSystemPolicy: declaredStar },
+        { FileSystemPolicy: JSON.parse(stored('A')) }
+      )
+    ).toEqual([]);
+  });
+
   it('an access point read is not settled and keeps its own dispatch', async () => {
     await withClient(new EFSProvider()).readCurrentState(
       'fsap-1',
@@ -601,6 +786,11 @@ describe('AWS::EFS::FileSystem FileSystemPolicy', () => {
     expect(
       preFixBaselineUncomparedDriftKeys(T, observed, props, {
         FileSystemPolicy: JSON.parse(stored('B')),
+      })
+    ).toEqual([]);
+    expect(
+      preFixBaselineUncomparedDriftKeys(T, observed, props, {
+        FileSystemPolicy: JSON.parse(withResource('*')),
       })
     ).toEqual([]);
     expect(preFixBaselineUncomparedDriftKeys(T, observed, {}, {})).toEqual(['FileSystemPolicy']);

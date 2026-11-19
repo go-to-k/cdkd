@@ -399,7 +399,7 @@ export class KMSProvider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::KMS::Key':
-        return this.readCurrentStateKey(physicalId, properties, context);
+        return this.readCurrentStateKey(physicalId, properties, context, _logicalId);
       case 'AWS::KMS::Alias':
         return this.readCurrentStateAlias(physicalId);
       default:
@@ -410,9 +410,10 @@ export class KMSProvider implements ResourceProvider {
   readCurrentStateKey(
     physicalId: string,
     properties?: Record<string, unknown>,
-    context?: ReadCurrentStateContext
+    context?: ReadCurrentStateContext,
+    logicalId?: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentStateKey.call(this, physicalId, properties, context);
+    return readCurrentStateKey.call(this, physicalId, properties, context, logicalId);
   }
 
   /**

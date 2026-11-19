@@ -611,11 +611,12 @@ export class ApiGatewayProvider implements ResourceProvider {
   async readCurrentStateRestApi(
     physicalId: string,
     properties?: Record<string, unknown>,
-    context?: ReadCurrentStateContext
+    context?: ReadCurrentStateContext,
+    logicalId = physicalId
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const read = await readCurrentStateRestApi.call(this, physicalId, properties);
     return context?.afterOwnWrite === true
-      ? settleRestApiPolicy.call(this, physicalId, read, properties)
+      ? settleRestApiPolicy.call(this, physicalId, logicalId, read, properties)
       : read;
   }
 
@@ -676,7 +677,7 @@ export class ApiGatewayProvider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // The RestApi read alone takes the context (go-to-k/cdkd#6609).
     if (resourceType === 'AWS::ApiGateway::RestApi') {
-      return this.readCurrentStateRestApi(physicalId, properties, context);
+      return this.readCurrentStateRestApi(physicalId, properties, context, _logicalId);
     }
     return readCurrentState.call(this, physicalId, _logicalId, resourceType, properties);
   }

@@ -8,7 +8,11 @@ import {
   RESOURCE_NOT_FOUND,
 } from '../../../types/resource.js';
 import type { CodeBuildProvider } from '../codebuild-provider.js';
-import { type MemberRead, settleDeclaredMember } from '../../settle-after-own-write.js';
+import {
+  type MemberRead,
+  settleDeclaredMember,
+  warnUnsettledMember,
+} from '../../settle-after-own-write.js';
 
 /**
  * Adopt an existing CodeBuild project into cdkd state.
@@ -48,7 +52,7 @@ import { type MemberRead, settleDeclaredMember } from '../../settle-after-own-wr
 export async function readCurrentState(
   this: CodeBuildProvider,
   physicalId: string,
-  _logicalId: string,
+  logicalId: string,
   _resourceType: string,
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
@@ -71,7 +75,8 @@ export async function readCurrentState(
     async () => asMember(await readProject.call(this, physicalId)),
     (project) => project['Visibility'] === declared,
     read,
-    this.ownWriteRereadDelaysMs
+    this.ownWriteRereadDelaysMs,
+    () => warnUnsettledMember(this.logger, logicalId, 'AWS::CodeBuild::Project', 'Visibility')
   );
   return typeof settled === 'object' ? settled.value : read;
 }

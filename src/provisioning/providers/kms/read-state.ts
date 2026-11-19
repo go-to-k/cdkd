@@ -20,7 +20,9 @@ import {
   KMS_DEFAULT_KEY_POLICY_ID,
   type MemberRead,
   policyDocumentMatchesDeclared,
+  memberReadFailure,
   settleDeclaredMember,
+  warnUnsettledMember,
 } from '../../settle-after-own-write.js';
 
 /** One `GetKeyPolicy`, the policy JSON-parsed when it parses; throws what the call throws. */
@@ -47,6 +49,7 @@ async function readKeyPolicy(this: KMSProvider, keyId: string): Promise<MemberRe
 async function settleKeyPolicy(
   this: KMSProvider,
   keyId: string,
+  logicalId: string,
   first: MemberRead<unknown>,
   declared: unknown
 ): Promise<MemberRead<unknown>> {
@@ -61,7 +64,8 @@ async function settleKeyPolicy(
     async () => asMember(await readKeyPolicy.call(this, keyId)),
     (value) => policyDocumentMatchesDeclared(value, declared),
     declared,
-    this.ownWriteRereadDelaysMs
+    this.ownWriteRereadDelaysMs,
+    () => warnUnsettledMember(this.logger, logicalId, 'AWS::KMS::Key', 'KeyPolicy')
   );
 }
 
@@ -82,7 +86,8 @@ export async function readCurrentStateKey(
   this: KMSProvider,
   physicalId: string,
   properties?: Record<string, unknown>,
-  context?: ReadCurrentStateContext
+  context?: ReadCurrentStateContext,
+  logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let resp: {
     KeyMetadata?: {
@@ -131,15 +136,15 @@ export async function readCurrentStateKey(
     } catch (err) {
       if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
       // Permission errors etc — leave key absent rather than firing
-      // false drift on every run.
-      keyPolicy = 'failed';
+      // false drift on every run. Only a transient one is re-read.
+      keyPolicy = memberReadFailure(err);
     }
     const declared =
       context?.afterOwnWrite === true
         ? declaredMemberDocument(properties?.['KeyPolicy'])
         : undefined;
     if (declared !== undefined) {
-      keyPolicy = await settleKeyPolicy.call(this, md.KeyId, keyPolicy, declared);
+      keyPolicy = await settleKeyPolicy.call(this, md.KeyId, logicalId, keyPolicy, declared);
     }
     if (typeof keyPolicy === 'object') result['KeyPolicy'] = keyPolicy.value;
 

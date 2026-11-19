@@ -177,6 +177,44 @@ check_member_baseline() { # usage: check_member_baseline <type> <key> <phase lab
   echo "    OK: every ${type} ${key} is drift-clean after ${label} (#6609)"
 }
 
+# go-to-k/cdkd#6609: drift alone cannot see a stale baseline while the live
+# member is the declared one (the drift heal rule skips the key then), so this
+# reads the baseline itself. The state record's observed member must be
+# exactly what AWS holds now, key order aside ('<absent>' when neither holds
+# one); a baseline captured before the write showed fails here.
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+state_lids() { # usage: state_lids <resourceType> -- every logical id of that type
+  state_json | jq -r --arg t "$1" '.resources | to_entries[] | select(.value.resourceType == $t) | .key'
+}
+state_field() { # usage: state_field <logical-id> <jq path into the record>
+  state_json | jq -r --arg l "$1" ".resources[\$l] | $2"
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON, '' for none> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  if [ -z "$3" ]; then live='"<absent>"'; else live=$(jq -cS . <<<"$3"); fi
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+
+check_key_policy_records() { # usage: check_key_policy_records <phase label>
+  local lid pid n=0
+  for lid in $(state_lids AWS::KMS::Key); do
+    pid=$(state_field "${lid}" .physicalId)
+    assert_observed_member "${lid}" .KeyPolicy "$(aws kms get-key-policy --region "${REGION}" \
+      --key-id "${pid}" --policy-name default --query Policy --output text)" "$1"
+    n=$((n + 1))
+  done
+  [ "${n}" -ge 2 ] || { echo "FAIL: expected the fixture's KMS keys in state after $1, found ${n}" >&2; exit 1; }
+}
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -210,6 +248,7 @@ case "${P1_POLICY}" in
 esac
 echo "    OK: baseline EncKey True|True|90 with the declared policy, DisabledKey False|True|90"
 check_member_baseline AWS::KMS::Key KeyPolicy "Phase 1" -u CDKD_TEST_REMOVAL
+check_key_policy_records "Phase 1"
 
 # --- Phase 2: REMOVAL (issue #1160) -----------------------------------
 echo "==> Phase 2: removal (EncKey drops RotationPeriodInDays + KeyPolicy; DisabledKey drops Enabled + RotationPeriodInDays)"
@@ -323,6 +362,7 @@ if [ "${P2C_SIDS}" != "Cdkd5299NoPutKeyPolicy" ]; then
 fi
 echo "    OK: LockKey's lockout policy put with the bypass (issue #5299)"
 check_member_baseline AWS::KMS::Key KeyPolicy "the LockKey policy put (Phase 2c)" CDKD_TEST_REMOVAL=true CDKD_TEST_BYPASS=true
+check_key_policy_records "the LockKey policy put (Phase 2c)"
 
 # --- Phase 3: destroy -------------------------------------------------
 echo "==> Phase 3: destroy"
