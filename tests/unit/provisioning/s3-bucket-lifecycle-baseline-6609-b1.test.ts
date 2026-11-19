@@ -361,6 +361,30 @@ describe('the capture re-reads only a lifecycle THIS write touched (#6609 B1)', 
     expect(lifecycleCalls).toBe(2);
   });
 
+  it('an update to `Rules: []` (the update path SKIPS it) sends no Delete, so the capture takes the first answer', async () => {
+    const provider = makeProvider();
+    const emptied = { BucketName: BUCKET, LifecycleConfiguration: { Rules: [] } };
+    await provider.update('Bucket', BUCKET, 'AWS::S3::Bucket', emptied, DECLARED);
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NONE);
+    const out = await capture(provider, emptied, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it('a revert to `Rules: []` from a readback notes its Delete, so the capture re-reads', async () => {
+    const provider = makeProvider();
+    const emptied = { BucketName: BUCKET, LifecycleConfiguration: { Rules: [] } };
+    await provider.update('Bucket', BUCKET, 'AWS::S3::Bucket', emptied, DECLARED, {
+      desiredFromAwsReadback: true,
+    });
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NONE);
+    const out = await capture(provider, emptied, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect(lifecycleCalls).toBe(2);
+  });
+
   it('the note is consumed: a second capture takes the first answer', async () => {
     const provider = makeProvider();
     scriptLifecycle(OLD, NEW);
