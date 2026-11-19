@@ -194,6 +194,14 @@ export default defineConfig({
       sourcemapExcludeSources: true,
       comments: { legal: true, annotation: true, jsdoc: false },
     },
+    // No entry chunk gains exports. The default lets the bundler move a module
+    // shared by `cli.js` and a lazy chunk INTO `cli.js` (it has no exports of
+    // its own), so that chunk then imports `cli.js`, and anything loading it
+    // outside the CLI runs the CLI's top-level main() on its own argv (#6601).
+    // Fenced by tests/unit/cli/dist-entry-chunks.test.ts.
+    inputOptions: {
+      preserveEntrySignatures: 'strict',
+    },
     define: {
       __CDKD_VERSION__: JSON.stringify(pkg.version),
     },
