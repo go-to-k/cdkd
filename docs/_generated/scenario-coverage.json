@@ -1213,6 +1213,11 @@
       "scenarios": []
     },
     {
+      "name": "dynamodb-table-policy-baseline",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-tableclass-switch",
       "annotated": false,
       "scenarios": []
@@ -4183,6 +4188,7 @@
     "dynamodb-ondemand",
     "dynamodb-sse",
     "dynamodb-stream-filter",
+    "dynamodb-table-policy-baseline",
     "dynamodb-tableclass-switch",
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",

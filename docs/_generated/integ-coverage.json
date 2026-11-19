@@ -1563,6 +1563,7 @@
         "dynamodb-sse",
         "dynamodb-stream-filter",
         "dynamodb-streams",
+        "dynamodb-table-policy-baseline",
         "dynamodb-tableclass-switch",
         "dynamodb-ttl-attr-change",
         "fifo-sqs-event-source",
@@ -1632,6 +1633,10 @@
         ],
         "dynamodb-streams": [
           "l2"
+        ],
+        "dynamodb-table-policy-baseline": [
+          "l2",
+          "literal"
         ],
         "dynamodb-tableclass-switch": [
           "l2"

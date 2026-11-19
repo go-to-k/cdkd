@@ -414,8 +414,8 @@ export async function readTimeToLive(
  * — measured us-east-1, it answered with a just-DELETED policy for ~2 s, and
  * "not found" for a just-PUT one — and the deploy captures the baseline right
  * after its own write. So with the desired bag in hand an answer that differs
- * from the declaration (a policy when none is declared, or another document)
- * is re-asked on the stream members' schedule before it is believed, as
+ * from a DECLARED policy is re-asked on the stream members' schedule before it
+ * is believed — on that capture, a policy when none is declared too — as
  * {@link readStreamMembers} does for the stream-level policy. Without it a
  * removal froze the OLD policy into the baseline, and `drift --revert`
  * re-granted it. On an `afterOwnWrite` capture a declared policy still absent
@@ -447,8 +447,11 @@ export async function readTableResourcePolicy(
       }
       return lastPolicy;
     };
+    // An undeclared policy is re-asked only on the capture after cdkd's own
+    // write (a just-deleted one): elsewhere it is an out-of-band addition,
+    // and a drift run would wait out the schedule for nothing.
     const livePolicy =
-      settle === undefined
+      settle === undefined || (!declared && !afterOwnWrite)
         ? await readOnce()
         : await this.reAskUntilSettled(readOnce, (answer) =>
             declared

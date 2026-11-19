@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-dynamodb-table-policy-baseline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DynamoDB Table ResourcePolicy add and removal leave a settled drift baseline (#6604)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

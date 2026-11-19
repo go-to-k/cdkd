@@ -180,11 +180,12 @@ describe('DynamoDB Table ResourcePolicy baseline after its own write (go-to-k/cd
     expect((await capture(tableProps(DOC)))['ResourcePolicy']).toBeUndefined();
   });
 
-  it('a plain drift read believes a settled out-of-band answer after the same schedule', async () => {
+  it('a plain drift read takes an undeclared policy at its first answer, and keeps no declaration', async () => {
     // The template declares no policy; one was added outside cdkd.
-    primeAws([DOC]);
+    primeAws([DOC, 'none']);
     const live = bagOf(await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps()));
     expect(live['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+    expect(policyReads()).toBe(1);
     // And a declared policy removed outside cdkd stays absent: no declaration is kept.
     mockSend.mockReset();
     primeAws(['none']);
