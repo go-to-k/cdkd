@@ -4,8 +4,10 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
@@ -130,5 +132,48 @@ export class LocalAwsEmulatorStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
+  }
+}
+
+/**
+ * A queue, topic and bucket with only `enforceSSL`, so each policy holds
+ * nothing but the `aws:SecureTransport` Deny AWS Emulator cannot evaluate, and
+ * an SQS event source mapping on that queue (go-to-k/cdkd#6636). A stack of its
+ * own: CloudFormation cannot IMPORT a QueuePolicy or TopicPolicy, so the main
+ * stack's `cdkd export --dry-run` phase would refuse them.
+ *
+ * covers: AWS::SQS::QueuePolicy
+ * covers: AWS::SNS::Topic
+ * covers: AWS::SNS::TopicPolicy
+ * covers: AWS::S3::BucketPolicy
+ * covers: AWS::Lambda::EventSourceMapping
+ */
+export class SslOnlyPoliciesStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // On the emulator such a queue policy refused the mapping's read of it.
+    const sslQueue = new sqs.Queue(this, 'SslQueue', {
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const consumerFn = new lambda.Function(this, 'ConsumerFn', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: HOST_ARCHITECTURE,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => {};'),
+    });
+    consumerFn.addEventSource(new SqsEventSource(sslQueue));
+    const sslTopic = new sns.Topic(this, 'SslTopic', { enforceSSL: true });
+    const sslBucket = new s3.Bucket(this, 'SslBucket', {
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+
+    new cdk.CfnOutput(this, 'SslQueueUrl', { value: sslQueue.queueUrl });
+    new cdk.CfnOutput(this, 'SslQueueArn', { value: sslQueue.queueArn });
+    new cdk.CfnOutput(this, 'SslTopicArn', { value: sslTopic.topicArn });
+    new cdk.CfnOutput(this, 'SslBucketName', { value: sslBucket.bucketName });
   }
 }

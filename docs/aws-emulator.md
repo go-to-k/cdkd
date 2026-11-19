@@ -408,8 +408,11 @@ a queue are dropped without an error. On AWS that statement never matches an
 HTTPS request, so under `--aws-emulator` cdkd sends `AWS::SQS::QueuePolicy`,
 `AWS::S3::BucketPolicy` and `AWS::SNS::TopicPolicy` documents without a `Deny`
 statement conditioned on `Bool` or `BoolIfExists` `aws:SecureTransport` =
-`false`, and warns naming the resource. Other statements, and deploys to AWS,
-are unchanged.
+`false`, and warns naming the resource. A policy holding nothing but that
+statement (a queue, bucket or topic with only `enforceSSL`) is not set at all:
+the queue's policy is cleared, the topic keeps its default policy, and the
+bucket gets none, so an SQS event source mapping can still read the queue.
+Other statements, and deploys to AWS, are unchanged.
 
 ### Calling a deployed API Gateway API
 

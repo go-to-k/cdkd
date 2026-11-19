@@ -4,7 +4,11 @@ import {
   GetQueueAttributesCommand,
 } from '@aws-sdk/client-sqs';
 import { getLogger } from '../../utils/logger.js';
-import { sentPolicyDocument, serializeResourcePolicy } from '../emulator-secure-transport.js';
+import {
+  sendsNoPolicy,
+  sentPolicyDocument,
+  serializeResourcePolicy,
+} from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
@@ -127,7 +131,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
           new SetQueueAttributesCommand({
             QueueUrl: queueUrl,
             Attributes: {
-              Policy: policyDoc,
+              // No policy left to send (--aws-emulator): '' clears it.
+              Policy: policyDoc ?? '',
             },
           })
         );
@@ -223,7 +228,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
           new SetQueueAttributesCommand({
             QueueUrl: queueUrl,
             Attributes: {
-              Policy: policyDoc,
+              // No policy left to send (--aws-emulator): '' clears it.
+              Policy: policyDoc ?? '',
             },
           })
         );
@@ -578,6 +584,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   ): Promise<string[]> {
     const carrying: string[] = [];
     if (candidates.length === 0) return carrying;
+    // --aws-emulator sent no policy for this document: no queue carries it.
+    if (sendsNoPolicy(document)) return carrying;
     const reference = policyReference(sentPolicyDocument(document));
     if (reference === undefined) {
       this.logger.warn(
@@ -659,6 +667,12 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    if (properties !== undefined && sendsNoPolicy(properties['PolicyDocument'])) {
+      // --aws-emulator set no policy (go-to-k/cdkd#6636): queues holding none
+      // are the declared state, not a deleted record.
+      const read = await this.readQueuePolicy(physicalId);
+      return read === RESOURCE_NOT_FOUND ? { ...properties } : read;
+    }
     const declared =
       context?.afterOwnWrite === true ? declaredPolicyDocument(properties) : undefined;
     if (declared === undefined) return this.readQueuePolicy(physicalId);

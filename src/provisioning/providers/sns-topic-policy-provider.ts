@@ -1,6 +1,10 @@
 import { SetTopicAttributesCommand, GetTopicAttributesCommand } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
-import { sentPolicyDocument, serializeResourcePolicy } from '../emulator-secure-transport.js';
+import {
+  sendsNoPolicy,
+  sentPolicyDocument,
+  serializeResourcePolicy,
+} from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
@@ -34,21 +38,17 @@ import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
 import {
+  defaultTopicPolicy,
+  defaultTopicPolicyOrThrow,
+  isSnsDefaultPolicy,
+  isSnsTopicArn,
+} from '../sns-default-topic-policy.js';
+import {
   declaredPolicyDocument,
   OWN_WRITE_REREAD_DELAYS_MS,
   policyDocumentMatchesDeclared,
   reReadUntilSettled,
-  SNS_DEFAULT_POLICY_ID,
 } from '../settle-after-own-write.js';
-
-/** Whether a read topic policy is the default SNS gives a topic with none set. */
-function isSnsDefaultPolicy(document: unknown): boolean {
-  return (
-    typeof document === 'object' &&
-    document !== null &&
-    (document as Record<string, unknown>)['Id'] === SNS_DEFAULT_POLICY_ID
-  );
-}
 
 /**
  * The skip reasons of a failed create's delete (go-to-k/cdkd#4612): a failure
@@ -126,7 +126,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     const applied: string[] = [];
     try {
       for (const topicArn of topics) {
-        await this.setTopicPolicy(topicArn, policyDoc);
+        await this.setTopicPolicy(
+          topicArn,
+          policyDoc ?? defaultTopicPolicyOrThrow(topicArn, resourceType, logicalId)
+        );
         applied.push(topicArn);
       }
 
@@ -230,7 +233,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
 
     try {
       for (const topicArn of topics) {
-        await this.setTopicPolicy(topicArn, policyDoc);
+        await this.setTopicPolicy(
+          topicArn,
+          policyDoc ?? defaultTopicPolicyOrThrow(topicArn, resourceType, logicalId)
+        );
       }
 
       // Then reset the dropped ones, after the new set holds the policy.
@@ -423,6 +429,12 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       return { outcome: 'deleted', leftInPlace: TOPIC_POLICY_NOT_COMPARED_LEFT_REASON };
     }
     const document = attempted.document;
+    if (sendsNoPolicy(document)) {
+      // --aws-emulator wrote each topic's default policy (go-to-k/cdkd#6636):
+      // nothing of this create is left to reset.
+      this.logger.debug(safeMsg`${logicalId} set no policy of its own; nothing to reset`);
+      return;
+    }
     // IAM-equivalent spellings folded (a bare account id and its root ARN).
     const reference = policyContentKey(sentPolicyDocument(document));
     // A topic a TopicPolicy of this very deploy wrote: a read may still
@@ -609,6 +621,8 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
   ): Promise<string[]> {
     if (candidates.length === 0) return [];
     // Under --aws-emulator the topics hold what was sent, not the record.
+    // No policy sent for it (only the TLS Deny): no topic carries it.
+    if (sendsNoPolicy(document)) return [];
     const sent = sentPolicyDocument(document);
     let reference: string | undefined;
     if (typeof sent === 'string' && sent.length > 0) reference = canonicalPolicy(sent);
@@ -701,6 +715,16 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    if (properties !== undefined && sendsNoPolicy(properties['PolicyDocument'])) {
+      // --aws-emulator set the default policy in its place (go-to-k/cdkd#6636):
+      // a topic holding it is the declared state.
+      const read = await this.readTopicPolicy(physicalId);
+      return read !== undefined &&
+        read !== RESOURCE_NOT_FOUND &&
+        isSnsDefaultPolicy(read['PolicyDocument'])
+        ? { ...properties }
+        : read;
+    }
     const declared =
       context?.afterOwnWrite === true ? declaredPolicyDocument(properties) : undefined;
     if (declared === undefined) return this.readTopicPolicy(physicalId);
@@ -863,16 +887,6 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
 }
 
 /**
- * Recognize a single SNS topic ARN. AWS standard form is
- * `arn:<partition>:sns:<region>:<account>:<name>`; FIFO topics end in
- * `.fifo`. Accepts every partition (`aws` / `aws-cn` / `aws-us-gov` /
- * `aws-iso` / etc.) via the broader `arn:<partition>:sns:` prefix shape.
- */
-function isSnsTopicArn(value: string): boolean {
-  return /^arn:[a-z0-9-]+:sns:[a-z0-9-]+:\d{12}:[\w.-]+$/.test(value);
-}
-
-/**
  * Recognize a comma-joined list of SNS topic ARNs. cdkd's `create()`
  * records `topics.join(',')` as the `physicalId`, so a single ARN
  * (`arn:aws:sns:us-east-1:123456789012:my-topic`) is also accepted.
@@ -905,41 +919,6 @@ function listedTopics(bag: Record<string, unknown>): string[] {
     }
   }
   return out;
-}
-
-/**
- * The policy SNS gives a new topic, which CloudFormation's TopicPolicy
- * delete and update handlers write to remove a policy (SNS rejects an empty
- * one): the topic owner's account may manage, subscribe to and publish to it.
- * The account and the `Resource` come from the topic ARN; `undefined` when
- * `topicArn` is not one.
- */
-export function defaultTopicPolicy(topicArn: string): string | undefined {
-  if (!isSnsTopicArn(topicArn)) return undefined;
-  const account = topicArn.split(':')[4]!;
-  return JSON.stringify({
-    Version: '2008-10-17',
-    Id: '__default_policy_ID',
-    Statement: [
-      {
-        Sid: '__default_statement_ID',
-        Effect: 'Allow',
-        Principal: { AWS: '*' },
-        Action: [
-          'SNS:GetTopicAttributes',
-          'SNS:SetTopicAttributes',
-          'SNS:AddPermission',
-          'SNS:RemovePermission',
-          'SNS:DeleteTopic',
-          'SNS:Subscribe',
-          'SNS:ListSubscriptionsByTopic',
-          'SNS:Publish',
-        ],
-        Resource: topicArn,
-        Condition: { StringEquals: { 'AWS:SourceOwner': account } },
-      },
-    ],
-  });
 }
 
 /** A JSON value with object keys sorted at every depth, serialized; array order kept. */
