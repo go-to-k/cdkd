@@ -58,6 +58,9 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *    their observed baselines and reverts an out-of-band change, which must
  *    land on the prefixed resources rather than replace them under the bare
  *    template name.
+ *  - An unnamed IAM ManagedPolicy whose `Statement` is one OBJECT, a `Deny`
+ *    (issue #6622). Step 6g strips its observed baseline, adds a `Condition`
+ *    out of band, and requires drift to name it and `--revert` to remove it.
  *  - An Advanced-tier SSM Parameter declaring `Policies: '[]'` (issue #4884).
  *    verify.sh attaches a NoChangeNotification policy out of band; the
  *    declared, captured-empty baseline makes it drift, and `--revert` must
@@ -125,6 +128,20 @@ export class DriftRevertStack extends cdk.Stack {
           resources: ['arn:aws:s3:::cdkd-drift-revert-placeholder/*'],
         }),
       ],
+    });
+
+    // go-to-k/cdkd#6622: a single-OBJECT `Statement`, which IAM accepts and the
+    // L2 never renders. Step 6g adds a `Condition` to it out of band on a
+    // template-only baseline: drift must report it and `--revert` remove it.
+    new iam.CfnManagedPolicy(this, 'DriftDenyPolicy', {
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: {
+          Effect: 'Deny',
+          Action: 's3:DeleteBucket',
+          Resource: 'arn:aws:s3:::cdkd-drift-revert-placeholder',
+        },
+      },
     });
 
     const key = new kms.Key(this, 'DriftKey', {

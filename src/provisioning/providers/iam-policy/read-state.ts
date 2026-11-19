@@ -13,6 +13,7 @@ import type {
 } from '../../../types/resource.js';
 import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
+import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import { readPolicyTargetLists } from './shared.js';
 import { isStoredExpression } from '../../iam-sibling-managed-policies.js';
 
@@ -119,13 +120,16 @@ export async function readCurrentState(
   // The baseline is what `compare.ts` compares against: the recorded
   // `observedProperties` when present, else `properties`. A recorded baseline
   // lacking `PolicyDocument` has it compared against nothing, so any copy
-  // does; the recorded document then stands in.
+  // does; the recorded document then stands in. The document is a
+  // verbatim-echo path, union-walked on either baseline (go-to-k/cdkd#6622),
+  // so a key one copy alone holds differs here as it drifts there.
   const union = context?.driftBaseline !== undefined;
+  const unionWalkPaths = verbatimEchoDriftKeys('AWS::IAM::Policy');
   const comparatorEqual = (a: unknown, b: unknown): boolean =>
     calculateResourceDrift(
       { PolicyDocument: a },
       { PolicyDocument: b },
-      { unionWalkObjects: union }
+      { unionWalkObjects: union, unionWalkPaths }
     ).length === 0;
   const baseline =
     context?.driftBaseline?.['PolicyDocument'] !== undefined

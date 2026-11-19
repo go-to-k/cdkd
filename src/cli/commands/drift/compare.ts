@@ -15,6 +15,7 @@ import {
   canonicalizePrincipalUniqueIds,
 } from '../../../analyzer/drift-principal-normalize.js';
 import { canonicalizeIpProtocols } from '../../../analyzer/drift-protocol-normalize.js';
+import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import { hasOwnKey, ownValue, nullPrototypeRecord } from '../../../utils/own-keys.js';
 import {
   PATTERN_B_NAME_PROPERTIES,
@@ -488,6 +489,9 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     ignorePaths: extraIgnorePaths.length ? [...ignorePaths, ...extraIgnorePaths] : ignorePaths,
     unionWalkObjects: useObserved,
     unorderedPaths,
+    // go-to-k/cdkd#6622: a key added out of band inside a verbatim-echo
+    // document is drift on the template-only baseline too.
+    unionWalkPaths: verbatimEchoDriftKeys(resource.resourceType),
   });
   // Issue #1914: redacted BEFORE the outcome exists, so no reader can be
   // added later that sees the plaintext. Every consumer of a drifted
