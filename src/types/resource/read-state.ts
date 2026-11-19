@@ -90,4 +90,13 @@ export interface ReadCurrentStateContext {
    * Absent on the deploy capture and on records that carry none.
    */
   attributes?: Readonly<Record<string, unknown>>;
+  /**
+   * The read resource's OWN recorded `observedProperties` (the drift
+   * baseline), set by `buildReadCurrentStateContext` beside `attributes`. A
+   * provider that must pick ONE of several live copies to report may compare
+   * them against it, since it is what the drift comparator compares against
+   * when present (`AWS::IAM::Policy`, go-to-k/cdkd#6616). Only for that
+   * comparison: never returned, logged, or persisted from here.
+   */
+  observedProperties?: Readonly<Record<string, unknown>>;
 }

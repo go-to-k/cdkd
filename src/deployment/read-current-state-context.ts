@@ -46,14 +46,20 @@ export function buildReadCurrentStateContext(
   // go-to-k/cdkd#4447: the read resource's own recorded attributes, through
   // the same readability gate as a sibling's.
   const own: unknown = (state.resources ?? {})[excludedLogicalId];
-  const ownAttributesValue = isReadableResourceEntry(own)
-    ? (own as { attributes?: unknown }).attributes
-    : undefined;
-  const ownAttributes =
-    typeof ownAttributesValue === 'object' &&
-    ownAttributesValue !== null &&
-    !Array.isArray(ownAttributesValue)
-      ? (ownAttributesValue as Record<string, unknown>)
+  const ownRecord = (
+    key: 'attributes' | 'observedProperties'
+  ): Record<string, unknown> | undefined => {
+    const value = isReadableResourceEntry(own) ? (own as Record<string, unknown>)[key] : undefined;
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
       : undefined;
-  return { siblings, ...(ownAttributes && { attributes: ownAttributes }) };
+  };
+  const ownAttributes = ownRecord('attributes');
+  // go-to-k/cdkd#6616: the own drift baseline, through the same gate.
+  const ownObserved = ownRecord('observedProperties');
+  return {
+    siblings,
+    ...(ownAttributes && { attributes: ownAttributes }),
+    ...(ownObserved && { observedProperties: ownObserved }),
+  };
 }

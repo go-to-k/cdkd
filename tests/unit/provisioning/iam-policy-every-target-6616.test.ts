@@ -42,6 +42,39 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { buildReadCurrentStateContext } from '../../../src/deployment/read-current-state-context.js';
+
+describe('buildReadCurrentStateContext carries the read resource\'s own drift baseline (#6616)', () => {
+  const entry = (extra: Record<string, unknown>) => ({
+    resourceType: TYPE,
+    physicalId: 'pol',
+    properties: { PolicyDocument: {} },
+    ...extra,
+  });
+
+  it('sets observedProperties from the own record, never a sibling\'s', () => {
+    const ctx = buildReadCurrentStateContext(
+      {
+        resources: {
+          P: entry({ observedProperties: { PolicyDocument: { a: 1 } } }),
+          Other: entry({ observedProperties: { PolicyDocument: { b: 2 } } }),
+        },
+      } as never,
+      'P'
+    );
+    expect(ctx.observedProperties).toEqual({ PolicyDocument: { a: 1 } });
+  });
+
+  it('omits it when the own record has none, or a value that is not an object', () => {
+    for (const observedProperties of [undefined, null, 'x', ['y']]) {
+      const ctx = buildReadCurrentStateContext(
+        { resources: { P: entry({ observedProperties }) } } as never,
+        'P'
+      );
+      expect('observedProperties' in ctx).toBe(false);
+    }
+  });
+});
 
 const TYPE = 'AWS::IAM::Policy';
 const RECORDED = {
@@ -237,6 +270,96 @@ describe('IAMPolicyProvider.readCurrentState reads every recorded target (#6616)
     );
     expect(calledKeys()).toEqual(['role:R1']);
     expect(result).toEqual({ PolicyName: 'pol', PolicyDocument: RECORDED, Roles: ['R1', 'R2'] });
+  });
+
+  it('compares the copies against the drift baseline, not the template, when one is recorded', async () => {
+    // A `drift --accept` / `state refresh-observed` moved the baseline to
+    // ACCEPTED while `properties` still holds RECORDED; then the second copy
+    // was widened. The first copy equals the baseline, so reporting "the
+    // first copy that differs from the template" would read clean.
+    const ACCEPTED = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 's3:ListBucket', Resource: '*' }],
+    };
+    liveCopies({ 'role:R1': ACCEPTED, 'role:R2': WIDENED });
+    const result = await provider.readCurrentState(
+      'pol',
+      'P',
+      TYPE,
+      { PolicyDocument: RECORDED, Roles: ['R1', 'R2'] },
+      { observedProperties: { PolicyDocument: ACCEPTED, Roles: ['R1', 'R2'] } }
+    );
+    expect(result).toMatchObject({ PolicyDocument: WIDENED });
+  });
+
+  it.each([
+    ['a dynamic reference', '{{resolve:ssm:/bucket-arn}}'],
+    ['the *** mask', '***'],
+  ])(
+    'copies differing under a baseline holding %s read as drift unknown, never clean',
+    async (_label, leaf) => {
+      const withSecret = {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 's3:GetObject', Resource: leaf }],
+      };
+      liveCopies({ 'role:R1': RECORDED, 'role:R2': WIDENED });
+      const result = await provider.readCurrentState('pol', 'P', TYPE, {
+        PolicyDocument: withSecret,
+        Roles: ['R1', 'R2'],
+      });
+      expect(result).toBeUndefined();
+    }
+  );
+
+  it('every copy edited, each differently: an edited copy is reported', async () => {
+    const OTHER = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 'iam:*', Resource: '*' }],
+    };
+    liveCopies({ 'role:R1': OTHER, 'role:R2': WIDENED });
+    const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: RECORDED,
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toMatchObject({ PolicyDocument: OTHER });
+  });
+
+  it('an empty copy among readable ones is a differing copy, not drift unknown', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      Promise.resolve({
+        PolicyDocument:
+          command instanceof GetRolePolicyCommand && command.input.RoleName === 'R2'
+            ? undefined
+            : encodeURIComponent(JSON.stringify(RECORDED)),
+      })
+    );
+    const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: RECORDED,
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toEqual({ PolicyName: 'pol', PolicyDocument: undefined, Roles: ['R1', 'R2'] });
+  });
+
+  it('reads many targets at most five at a time, and still reports the last one edited', async () => {
+    const roles = Array.from({ length: 12 }, (_, i) => `R${i + 1}`);
+    let inFlight = 0;
+    let peak = 0;
+    mockSend.mockImplementation(async (command: unknown) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      const name = (command as GetRolePolicyCommand).input.RoleName;
+      return { PolicyDocument: encodeURIComponent(JSON.stringify(name === 'R12' ? WIDENED : RECORDED)) };
+    });
+    const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: RECORDED,
+      Roles: roles,
+    });
+    expect(mockSend).toHaveBeenCalledTimes(12);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(5);
+    expect(result).toMatchObject({ PolicyDocument: WIDENED, Roles: roles });
   });
 
   it('a drift read with a sibling context (no afterOwnWrite) still reads every target', async () => {

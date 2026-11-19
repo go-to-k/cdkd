@@ -17,6 +17,9 @@ import { readPolicyTargetLists } from './shared.js';
 
 type PolicyTarget = { kind: 'role' | 'group' | 'user'; name: string };
 
+/** How many targets' `Get*Policy` calls run at once on a drift read. */
+const TARGET_READ_CONCURRENCY = 5;
+
 /**
  * Read the AWS-current IAM inline policy in CFn-property shape.
  *
@@ -30,8 +33,11 @@ type PolicyTarget = { kind: 'role' | 'group' | 'user'; name: string };
  * JSON-parsed `PolicyDocument` (go-to-k/cdkd#6616: reading only the first
  * target hid an edit, a widened `Action` included, on any other one):
  *   - Every copy agrees: that document.
- *   - The copies differ: one that differs from the recorded document, so the
- *     comparator reports the edit whichever target holds it.
+ *   - The copies differ: one that differs from the drift baseline
+ *     (`context.observedProperties`, else the recorded document), so the
+ *     comparator reports the edit whichever target holds it. When no copy
+ *     equals that baseline (a secret leaf, say), the clean copy is unknown
+ *     and the read is drift unknown (`undefined`).
  *   - A target lacks the policy (removed, or the principal deleted): it drops
  *     out of the echoed `Roles` / `Groups` / `Users`, which reports as drift
  *     on that list. Every target lacking it is `RESOURCE_NOT_FOUND`.
@@ -74,31 +80,50 @@ export async function readCurrentState(
   if (allTargets.length === 0) return undefined;
   const readTargets = context?.afterOwnWrite === true ? allTargets.slice(0, 1) : allTargets;
 
-  const reads = await Promise.all(
-    readTargets.map(async (target) => {
-      try {
-        const raw = await getTargetPolicyDocument.call(this, target, policyName);
-        return { target, document: this.decodePolicyDocument(raw) };
-      } catch (err) {
-        if (err instanceof NoSuchEntityException) return { target, missing: true as const };
-        throw err;
-      }
-    })
-  );
+  const readOne = async (
+    target: PolicyTarget
+  ): Promise<
+    { target: PolicyTarget; document: unknown } | { target: PolicyTarget; missing: true }
+  > => {
+    try {
+      const raw = await getTargetPolicyDocument.call(this, target, policyName);
+      return { target, document: this.decodePolicyDocument(raw) };
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return { target, missing: true };
+      throw err;
+    }
+  };
+  // A few at a time: a policy on many principals must not burst IAM's
+  // throttle, which would fail the whole read.
+  const reads: Awaited<ReturnType<typeof readOne>>[] = [];
+  for (let i = 0; i < readTargets.length; i += TARGET_READ_CONCURRENCY) {
+    reads.push(
+      ...(await Promise.all(readTargets.slice(i, i + TARGET_READ_CONCURRENCY).map(readOne)))
+    );
+  }
 
-  const present = reads.filter(
-    (r): r is { target: PolicyTarget; document: unknown } => 'document' in r
-  );
-  if (present.length === 0) return RESOURCE_NOT_FOUND;
-  const documents = present.map((r) => r.document);
-  if (documents.some((d) => d === undefined)) return undefined;
+  const documents = reads.flatMap((r) => ('document' in r ? [r.document] : []));
+  if (documents.length === 0) return RESOURCE_NOT_FOUND;
+  // Every copy empty: nothing to compare. One empty copy among readable ones
+  // is a differing copy, below.
+  if (documents.every((d) => d === undefined)) return undefined;
 
   let liveDocument = documents[0];
   if (documents.some((d) => !isDeepStrictEqual(d, liveDocument))) {
-    // At most one of the differing copies can equal the recorded document,
-    // so this always finds an edited one.
-    const recorded = parseRecordedDocument(policyDocument);
-    liveDocument = documents.find((d) => !isDeepStrictEqual(d, recorded)) ?? liveDocument;
+    // Report a copy that differs from what the comparator compares against:
+    // the drift baseline when one is recorded, else the recorded document.
+    const baseline =
+      context?.observedProperties?.['PolicyDocument'] !== undefined
+        ? context.observedProperties['PolicyDocument']
+        : parseRecordedDocument(policyDocument);
+    // A baseline holding a `{{resolve:...}}` or `***` leaf equals no live
+    // copy (each holds the value resolved), so the clean copy is unknown and
+    // a pick could be the unedited one, reading clean: drift UNKNOWN instead.
+    // Without such a leaf, no copy equalling it means every copy is edited.
+    if (!documents.some((d) => isDeepStrictEqual(d, baseline)) && holdsSecretLeaf(baseline)) {
+      return undefined;
+    }
+    liveDocument = documents.find((d) => !isDeepStrictEqual(d, baseline)) ?? liveDocument;
   }
 
   const result: Record<string, unknown> = {
@@ -109,7 +134,7 @@ export async function readCurrentState(
   // target set for a named inline policy — see method docstring), less any
   // target that was read and lacks the policy: that absence IS the drift.
   const missing = new Set(
-    reads.filter((r) => 'missing' in r).map((r) => `${r.target.kind}\0${r.target.name}`)
+    reads.flatMap((r) => ('missing' in r ? [`${r.target.kind}\0${r.target.name}`] : []))
   );
   const echo = (kind: PolicyTarget['kind'], names: string[]): string[] =>
     names.filter((name) => !missing.has(`${kind}\0${name}`));
@@ -145,6 +170,19 @@ async function getTargetPolicyDocument(
         )
       ).PolicyDocument;
   }
+}
+
+/** Does the value hold a dynamic reference or cdkd's `***` mask in a string leaf? */
+function holdsSecretLeaf(value: unknown, depth = 0): boolean {
+  if (depth > 64) return true;
+  if (typeof value === 'string') return value.includes('{{resolve:') || value.includes('***');
+  if (Array.isArray(value)) return value.some((v) => holdsSecretLeaf(v, depth + 1));
+  if (typeof value === 'object' && value !== null) {
+    return Object.entries(value).some(
+      ([k, v]) => holdsSecretLeaf(k, depth + 1) || holdsSecretLeaf(v, depth + 1)
+    );
+  }
+  return false;
 }
 
 /** The recorded document as an object; `update` accepts a JSON string too. */
