@@ -27,7 +27,7 @@
  * as a one-element array; the comparator reads the two spellings as one
  * ({@link isVerbatimStatementPath}), as IAM's policy grammar does. KMS also
  * fills in a `Version` the document omits, which is not drift on the
- * template-only baseline either ({@link serviceFilledVersionKeys}).
+ * template-only baseline either ({@link isServiceFilledVersion}).
  *
  * Not listed: `AWS::ECR::Repository` `RepositoryPolicyText`, which the ECR
  * readback does not carry at all (go-to-k/cdkd#6631), and every resource policy
@@ -69,38 +69,19 @@ export function isVerbatimStatementPath(path: string, verbatimKeys: readonly str
 }
 
 /**
- * Top-level policy documents whose service fills in `Version: 2012-10-17`
- * when the submitted document omits it, measured (go-to-k/cdkd#6624): KMS
- * only. S3, SQS, SNS, Secrets Manager, the Cloud Control IAM inline policies
- * and the IAM role trust policy return a Version-less document without one,
- * so a live-only `Version` there was added out of band (it turns policy
- * variables on) and stays drift.
- */
-const SERVICE_FILLED_VERSION_KEYS: Readonly<Record<string, readonly string[]>> = {
-  'AWS::KMS::Key': ['KeyPolicy'],
-};
-
-/** The documents of `resourceType` whose service fills in `Version`, or none. */
-export function serviceFilledVersionKeys(resourceType: string): readonly string[] {
-  return Object.hasOwn(SERVICE_FILLED_VERSION_KEYS, resourceType)
-    ? SERVICE_FILLED_VERSION_KEYS[resourceType]!
-    : NONE;
-}
-
-/**
- * True when `value` at `path` is the `Version` the service fills in on a
- * document at one of `filledKeys` ({@link serviceFilledVersionKeys}) submitted
- * without one. The comparator does not report it on the template-only
- * baseline. Any other live-only `Version` (`2008-10-17` turns policy variables
- * off) is still drift, as is a declared one. The residual, on a KMS key policy
- * only: a template that omits `Version` and relies on `2008-10-17` reading
- * `${aws:...}` literally cannot tell KMS's fill from an out-of-band
- * `2012-10-17`.
+ * True when `value` at `path` is the `Version` a service fills in on a
+ * document at one of `verbatimKeys` submitted without one: KMS adds
+ * `2012-10-17` to such a key policy (go-to-k/cdkd#6624). The comparator does
+ * not report it on the template-only baseline. Any other live-only `Version`
+ * (`2008-10-17` turns policy variables off) is still drift, as is a declared
+ * one. The residual: a template that omits `Version` and relies on
+ * `2008-10-17` reading `${aws:...}` literally cannot tell AWS's fill from an
+ * out-of-band `2012-10-17`.
  */
 export function isServiceFilledVersion(
   path: string,
   value: unknown,
-  filledKeys: readonly string[]
+  verbatimKeys: readonly string[]
 ): boolean {
-  return value === '2012-10-17' && filledKeys.some((key) => path === `${key}.Version`);
+  return value === '2012-10-17' && verbatimKeys.some((key) => path === `${key}.Version`);
 }

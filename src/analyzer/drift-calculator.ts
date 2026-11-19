@@ -95,10 +95,6 @@ export interface PropertyDrift {
  * `<entry>.Statement` a statement object equals a one-element list holding it
  * (go-to-k/cdkd#6624), so entries must be `verbatimEchoDriftKeys` values: a
  * non-verbatim entry would take the fold too.
- *
- * `options.filledVersionKeys` (`serviceFilledVersionKeys`) names the documents
- * whose service fills in `Version: 2012-10-17` when the template omits it; on
- * the template-only baseline that one live-only value is not drift there.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
@@ -108,7 +104,6 @@ export function calculateResourceDrift(
     unionWalkObjects?: boolean;
     unorderedPaths?: readonly string[];
     unionWalkPaths?: readonly string[];
-    filledVersionKeys?: readonly string[];
   }
 ): PropertyDrift[] {
   const drifts: PropertyDrift[] = [];
@@ -116,7 +111,6 @@ export function calculateResourceDrift(
   const union = options?.unionWalkObjects ?? false;
   const unordered = options?.unorderedPaths ?? [];
   const unionPaths = options?.unionWalkPaths ?? [];
-  const filledVersion = options?.filledVersionKeys ?? [];
   // Canonicalize tag lists and AWS resource-id/ARN arrays on BOTH sides before
   // any comparison. AWS does not guarantee element ordering across reads, so a
   // reorder between the deploy-time observedProperties snapshot and a later
@@ -138,16 +132,7 @@ export function calculateResourceDrift(
   // deeper, on map-shaped values (Environment.Variables, etc.).
   for (const key of Object.keys(stateProperties)) {
     if (isIgnoredPath(key, ignore)) continue;
-    diffAt(
-      key,
-      stateProperties[key],
-      awsProperties[key],
-      drifts,
-      ignore,
-      union,
-      unionPaths,
-      filledVersion
-    );
+    diffAt(key, stateProperties[key], awsProperties[key], drifts, ignore, union, unionPaths);
   }
   return drifts;
 }
@@ -235,8 +220,7 @@ function diffAt(
   out: PropertyDrift[],
   ignorePaths: readonly string[],
   unionWalkObjects: boolean,
-  unionWalkPaths: readonly string[],
-  filledVersionKeys: readonly string[]
+  unionWalkPaths: readonly string[]
 ): void {
   // Compared and DESCENDED in JSON form (issue #3121 follow-up): a `Date` the
   // raw SDK readback carries now survives the canonicalizers by identity, and
@@ -301,7 +285,7 @@ function diffAt(
       if (
         !unionWalkObjects &&
         stateForm[key] === undefined &&
-        isServiceFilledVersion(childPath, awsForm[key], filledVersionKeys)
+        isServiceFilledVersion(childPath, awsForm[key], unionWalkPaths)
       ) {
         continue;
       }
@@ -312,8 +296,7 @@ function diffAt(
         out,
         ignorePaths,
         unionWalkObjects,
-        unionWalkPaths,
-        filledVersionKeys
+        unionWalkPaths
       );
     }
     return;
