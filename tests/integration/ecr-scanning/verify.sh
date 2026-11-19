@@ -29,7 +29,22 @@
 #      patterns with imageTagMutability UNCHANGED. Assert scanOnPush=false,
 #      env=prod, team untagged, exactly one user tag remains, and the new
 #      filters reached AWS (the filters-only update path).
-#   3. Destroy + assert the repo is gone and the cdkd state file is removed.
+#   3. Issue #6631, the repository policy's drift arm (both phases declare one
+#      `CdkdIntegPull` statement):
+#      3a. the post-write capture recorded `RepositoryPolicyText` in the
+#          repository's observedProperties, and no `EmptyOnDelete`;
+#      3b. `cdkd drift` reports neither key on the untouched repository;
+#      3c. an action added to the policy out of band reports under
+#          `RepositoryPolicyText`;
+#      3d. `cdkd drift --revert` restores the declared actions in place (the
+#          state physicalId and the AWS ARN + createdAt unchanged, and the
+#          revert output names no replacement), and drift no longer reports
+#          the key;
+#      3e. with the repository's observedProperties stripped (the template-only
+#          baseline), drift reports neither key;
+#      3f. the policy deleted out of band reports under `RepositoryPolicyText`
+#          on that baseline.
+#   4. Destroy + assert the repo is gone and the cdkd state file is removed.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
 
@@ -76,6 +91,7 @@ REPO="cdkdecrscanningexample-repo"
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+WORK_DIR=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -88,6 +104,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  if [ -n "${WORK_DIR:-}" ]; then rm -rf "${WORK_DIR}"; fi
   set -eu
 }
 trap cleanup EXIT
@@ -101,6 +118,7 @@ echo "==> Installing fixture deps"
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"
 cleanup
+WORK_DIR="$(mktemp -d)"
 
 scan_on_push() {
   aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
@@ -150,6 +168,115 @@ tag_value() {
 user_tag_count() {
   aws ecr list-tags-for-resource --resource-arn "$(repo_arn)" --region "${REGION}" \
     --query "length(tags[?!starts_with(Key, 'aws:')] || \`[]\`)" --output text
+}
+
+# The sorted, space-joined actions of the `CdkdIntegPull` statement in the
+# repository's live policy.
+policy_actions() {
+  aws ecr get-repository-policy --repository-name "${REPO}" --region "${REGION}" \
+    --query policyText --output text |
+    jq -r '[.Statement | if type == "array" then .[] else . end | select(.Sid == "CdkdIntegPull")
+      | .Action | if type == "array" then .[] else . end] | sort | join(" ")'
+}
+
+# The repository's logical id, read from the state record (one ECR repository).
+repo_logical_id() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - |
+    jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ECR::Repository") | .key]
+      | if length == 1 then .[0] else error("expected one repository record, got \(length)") end'
+}
+
+# The repository's identity in cdkd state (physicalId) and on AWS (ARN plus
+# creation time, which a delete + re-create under the same name changes).
+state_physical_id() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg lid "${REPO_LID}" '.resources[$lid].physicalId // empty'
+}
+aws_repo_identity() {
+  aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+    --query 'repositories[0].[repositoryArn, createdAt]' --output text
+}
+
+# True for "<ecr repository ARN><TAB><non-empty, non-None createdAt>".
+valid_identity() {
+  local arn="${1%%$'\t'*}" created="${1#*$'\t'}"
+  [[ "${arn}" == arn:aws*:ecr:*:repository/"${REPO}" ]] && [ "${created}" != "$1" ] &&
+    [ -n "${created}" ] && [ "${created}" != "None" ]
+}
+
+# `cdkd drift --json` into a file; echoes the exit code.
+run_drift() { # usage: run_drift <json file>
+  local rc
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+    --json >"$1" 2>"$1.err"
+  rc=$?
+  set -e
+  echo "${rc}"
+}
+
+# The repository's drifted paths in a `drift --json` file, one per line.
+repo_drift_paths() { # usage: repo_drift_paths <json file>
+  jq -r --arg lid "${REPO_LID}" \
+    '[.[] | .drifted[]? | select(.logicalId == $lid) | .changes[]? | .path] | unique | .[]' "$1"
+}
+
+# FAIL unless drift exited 0 or 1 with a non-empty JSON array listing the
+# repository once under clean / drifted, never notCompared; prints the repository's drifted paths.
+read_repo_paths() { # usage: read_repo_paths <label> <json file> <rc>
+  local paths
+  if [ "$3" != "0" ] && [ "$3" != "1" ]; then
+    echo "FAIL: $1: drift exited $3, expected 0 or 1" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  fi
+  if ! jq -e 'type == "array" and length > 0' "$2" >/dev/null 2>&1; then
+    echo "FAIL: $1: drift --json did not print a non-empty array (rc $3)" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  fi
+  if ! jq -e --arg lid "${REPO_LID}" \
+    '([.[] | (.clean[]?, .drifted[]?) | select(.logicalId == $lid)] | length == 1)
+      and ([.[] | .notCompared[]? | select(.logicalId == $lid)] | length == 0)' "$2" >/dev/null; then
+    echo "FAIL: $1: ${REPO_LID} is not listed once under clean / drifted (not compared?)" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  fi
+  paths="$(repo_drift_paths "$2")" || {
+    echo "FAIL: $1: drift --json is not readable (rc $3)" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  }
+  printf '%s' "${paths}"
+}
+
+# FAIL when a path under RepositoryPolicyText or EmptyOnDelete is among the
+# repository's drifted paths. Other paths are this issue's out of scope: NOTE.
+assert_no_policy_keys() { # usage: assert_no_policy_keys <label> <paths>
+  local hits others
+  hits="$(grep -E '^(RepositoryPolicyText|EmptyOnDelete)(\.|$)' <<<"$2" || true)"
+  others="$(grep -vE '^(RepositoryPolicyText|EmptyOnDelete)(\.|$)' <<<"$2" || true)"
+  if [ -n "${others}" ]; then
+    echo "    NOTE: $1: other drifted repository paths: [${others//$'\n'/, }]"
+  fi
+  if [ -n "${hits}" ]; then
+    echo "FAIL: $1: drift reported [${hits//$'\n'/, }] on a repository policy nobody changed (issue #6631)" >&2
+    exit 1
+  fi
+}
+
+# FAIL unless a path under RepositoryPolicyText is reported, with exit 1.
+assert_policy_reported() { # usage: assert_policy_reported <label> <json file> <rc>
+  local paths
+  paths="$(read_repo_paths "$1" "$2" "$3")"
+  if ! grep -qE '^RepositoryPolicyText(\.|$)' <<<"${paths}"; then
+    echo "FAIL: $1: drift did not report the out-of-band repository policy change; repository paths [${paths//$'\n'/, }] (issue #6631)" >&2
+    cat "$2" >&2
+    exit 1
+  fi
+  if [ "$3" != "1" ]; then
+    echo "FAIL: $1: drift exited $3 with the policy drift reported, expected 1" >&2
+    exit 1
+  fi
 }
 
 # --- Phase 1: deploy with scanOnPush=true -----------------------------
@@ -228,8 +355,96 @@ echo "    mutability (Phase 2): ${MUT2} filters=[${FILTERS2}] types=[${FTYPES2}]
 [ "${FTYPES2}" = "WILDCARD WILDCARD" ] || { echo "FAIL: expected both filters to carry filterType WILDCARD after update, got '${FTYPES2}'" >&2; exit 1; }
 echo "    filters-only update reached AWS"
 
-# --- Phase 3: destroy --------------------------------------------------
-echo "==> Phase 3: destroy"
+# --- Phase 3: the repository policy's drift arm (issue #6631) ----------
+DECLARED_ACTIONS="ecr:BatchGetImage ecr:GetDownloadUrlForLayer"
+ACTIONS0="$(policy_actions)"
+[ "${ACTIONS0}" = "${DECLARED_ACTIONS}" ] || { echo "FAIL: Phase 3 premise: the live CdkdIntegPull actions are [${ACTIONS0}], expected [${DECLARED_ACTIONS}]" >&2; exit 1; }
+REPO_LID="$(repo_logical_id)"
+echo "    repository record ${REPO_LID}; live policy carries the declared actions"
+
+echo "==> Phase 3a: the post-write capture recorded the repository policy"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state3a.json" >/dev/null
+OBS_SID="$(jq -r --arg lid "${REPO_LID}" \
+  '.resources[$lid].observedProperties.RepositoryPolicyText.Statement
+    | if type == "array" then .[0].Sid elif type == "object" then .Sid else "ABSENT" end' \
+  "${WORK_DIR}/state3a.json")"
+OBS_EOD="$(jq -r --arg lid "${REPO_LID}" \
+  '.resources[$lid].observedProperties | has("EmptyOnDelete")' "${WORK_DIR}/state3a.json")"
+[ "${OBS_SID}" = "CdkdIntegPull" ] || { echo "FAIL: Phase 3a: observedProperties.RepositoryPolicyText holds Sid '${OBS_SID}', expected CdkdIntegPull: the capture did not read the policy back (issue #6631)" >&2; exit 1; }
+[ "${OBS_EOD}" = "false" ] || { echo "FAIL: Phase 3a: observedProperties records EmptyOnDelete ('${OBS_EOD}'), which AWS cannot report" >&2; exit 1; }
+echo "    observed baseline holds the policy, and no EmptyOnDelete"
+
+echo "==> Phase 3b: drift on the untouched repository"
+RC3B="$(run_drift "${WORK_DIR}/drift3b.json")"
+P3B="$(read_repo_paths "Phase 3b" "${WORK_DIR}/drift3b.json" "${RC3B}")"
+assert_no_policy_keys "Phase 3b" "${P3B}"
+echo "    no policy drift reported (rc ${RC3B})"
+
+echo "==> Phase 3c: add an action to the policy out of band"
+aws ecr get-repository-policy --repository-name "${REPO}" --region "${REGION}" \
+  --query policyText --output text |
+  jq -c '.Statement |= ((if type == "array" then . else [.] end) | map(if .Sid == "CdkdIntegPull"
+    then .Action = ((if (.Action | type) == "array" then .Action else [.Action] end) + ["ecr:DescribeImages"])
+    else . end))' >"${WORK_DIR}/oob-policy.json"
+aws ecr set-repository-policy --repository-name "${REPO}" --region "${REGION}" \
+  --policy-text "file://${WORK_DIR}/oob-policy.json" >/dev/null
+ACTIONS3C="$(policy_actions)"
+[ "${ACTIONS3C}" = "ecr:BatchGetImage ecr:DescribeImages ecr:GetDownloadUrlForLayer" ] || { echo "FAIL: Phase 3c premise: the out-of-band edit left actions [${ACTIONS3C}]" >&2; exit 1; }
+RC3C="$(run_drift "${WORK_DIR}/drift3c.json")"
+assert_policy_reported "Phase 3c" "${WORK_DIR}/drift3c.json" "${RC3C}"
+echo "    the out-of-band policy change reported"
+
+echo "==> Phase 3d: cdkd drift --revert restores the declared policy"
+PID_BEFORE="$(state_physical_id)"
+AWSID_BEFORE="$(aws_repo_identity)"
+[ -n "${PID_BEFORE}" ] && valid_identity "${AWSID_BEFORE}" || { echo "FAIL: Phase 3d premise: empty identity before the revert (physicalId '${PID_BEFORE}', AWS '${AWSID_BEFORE}')" >&2; exit 1; }
+node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  >"${WORK_DIR}/revert3d.log" 2>&1 || { echo "FAIL: Phase 3d: drift --revert failed" >&2; cat "${WORK_DIR}/revert3d.log" >&2; exit 1; }
+cat "${WORK_DIR}/revert3d.log"
+grep -qF "/${REPO_LID} (AWS::ECR::Repository): reverted" "${WORK_DIR}/revert3d.log" || { echo "FAIL: Phase 3d: the revert output has no 'reverted' line for ${REPO_LID}" >&2; exit 1; }
+if grep -qiE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log"; then
+  echo "FAIL: Phase 3d: the revert output mentions a replacement / re-create" >&2
+  grep -iE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log" >&2
+  exit 1
+fi
+PID_AFTER="$(state_physical_id)"
+AWSID_AFTER="$(aws_repo_identity)"
+[ -n "${PID_AFTER}" ] && valid_identity "${AWSID_AFTER}" || { echo "FAIL: Phase 3d: empty identity after the revert (physicalId '${PID_AFTER}', AWS '${AWSID_AFTER}')" >&2; exit 1; }
+[ "${PID_AFTER}" = "${PID_BEFORE}" ] || { echo "FAIL: Phase 3d: the revert changed the state physicalId '${PID_BEFORE}' -> '${PID_AFTER}' (a replacement)" >&2; exit 1; }
+[ "${AWSID_AFTER}" = "${AWSID_BEFORE}" ] || { echo "FAIL: Phase 3d: the revert changed the repository's ARN / createdAt '${AWSID_BEFORE}' -> '${AWSID_AFTER}' (deleted and re-created)" >&2; exit 1; }
+echo "    revert kept the repository: physicalId ${PID_AFTER}, AWS identity unchanged"
+ACTIONS3D="$(policy_actions)"
+[ "${ACTIONS3D}" = "${DECLARED_ACTIONS}" ] || { echo "FAIL: Phase 3d: --revert left actions [${ACTIONS3D}], expected [${DECLARED_ACTIONS}] (issue #6631)" >&2; exit 1; }
+RC3D="$(run_drift "${WORK_DIR}/drift3d.json")"
+P3D="$(read_repo_paths "Phase 3d" "${WORK_DIR}/drift3d.json" "${RC3D}")"
+assert_no_policy_keys "Phase 3d" "${P3D}"
+echo "    declared actions restored; drift no longer reports the policy"
+
+echo "==> Phase 3e: drift on the template-only baseline (observedProperties stripped)"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/lock.json"; then
+  echo "FAIL: Phase 3e: a lock is held on ${STACK}; the state rewrite needs none" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state3e.json" >/dev/null
+HAS_OBS="$(jq -r --arg lid "${REPO_LID}" '.resources[$lid] | has("observedProperties")' "${WORK_DIR}/state3e.json")"
+[ "${HAS_OBS}" = "true" ] || { echo "FAIL: Phase 3e premise: ${REPO_LID} has no observedProperties to strip ('${HAS_OBS}')" >&2; exit 1; }
+jq --arg lid "${REPO_LID}" 'del(.resources[$lid].observedProperties)' "${WORK_DIR}/state3e.json" >"${WORK_DIR}/stripped.json"
+aws s3 cp "${WORK_DIR}/stripped.json" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+STRIPPED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg lid "${REPO_LID}" '.resources[$lid] | has("observedProperties")')"
+[ "${STRIPPED}" = "false" ] || { echo "FAIL: Phase 3e: the rewritten record still has observedProperties ('${STRIPPED}')" >&2; exit 1; }
+RC3E="$(run_drift "${WORK_DIR}/drift3e.json")"
+P3E="$(read_repo_paths "Phase 3e" "${WORK_DIR}/drift3e.json" "${RC3E}")"
+assert_no_policy_keys "Phase 3e" "${P3E}"
+echo "    no policy or EmptyOnDelete drift on the template-only baseline (rc ${RC3E})"
+
+echo "==> Phase 3f: delete the policy out of band (template-only baseline)"
+aws ecr delete-repository-policy --repository-name "${REPO}" --region "${REGION}" >/dev/null
+RC3F="$(run_drift "${WORK_DIR}/drift3f.json")"
+assert_policy_reported "Phase 3f" "${WORK_DIR}/drift3f.json" "${RC3F}"
+echo "    the deleted policy reported"
+
+# --- Phase 4: destroy --------------------------------------------------
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "repo ${REPO} still exists after destroy" aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}"
@@ -237,4 +452,4 @@ echo "    repo deleted"
 assert_gone "state file still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — ECR scanOnPush (CFn->SDK casing) + tag add/change/untag on update + ImageTagMutabilityExclusionFilters on create and on a filters-only update reach AWS, 3 phases passed"
+echo "[verify] PASS — ECR scanOnPush (CFn->SDK casing) + tag add/change/untag on update + ImageTagMutabilityExclusionFilters on create and on a filters-only update reach AWS + the repository policy's drift (capture, report, revert, template-only baseline), 4 phases passed"

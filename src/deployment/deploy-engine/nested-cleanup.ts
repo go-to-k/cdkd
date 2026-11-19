@@ -62,6 +62,8 @@ export async function runCleanupPhase(
       // A retry that deleted it dropped the verdict: so does the op.
       if (verdict !== undefined) op.oldResourceMaySurvive = verdict;
       else delete op.oldResourceMaySurvive;
+      // go-to-k/cdkd#6621: the generation rides only beside `'deferred'`.
+      if (verdict !== 'deferred') delete op.oldResourceIdentity;
     }
   }
   // go-to-k/cdkd#5111: an earlier deploy's, after this deploy's own.

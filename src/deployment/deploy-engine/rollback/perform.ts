@@ -8,6 +8,7 @@ import {
   readsRegeneratingSecret,
 } from '../../rollback-executor/regenerated-secrets.js';
 import { seedsDeleteFirstGuard } from '../../rollback-executor/plan.js';
+import { snapshotSurvivorIdentities } from '../../rollback-executor/replaced-survivor.js';
 import type { RolledBackCreate } from '../../../state/name-generation.js';
 import type {
   ResourceState,
@@ -173,6 +174,8 @@ export async function performRollback(
   // journal segments for THIS run, which `NestedStackProvider` reads from
   // the scope, and reports back into it.
   const runId = deps.options.eventRecorder?.runId;
+  // go-to-k/cdkd#6621: who holds each bucket survivor, before any revert writes.
+  await snapshotSurvivorIdentities(ctx, completedOperations);
   const { result, failed, unsettled, run } = await withNestedRevertRun(runId, async (scope) => {
     // The failed op is the newest work of the failed deploy, so it goes first
     // — as in `cdkd rollback`: it may depend on what the completed CREATEs

@@ -87,6 +87,7 @@ import {
 } from './rollback-executor.js';
 import { createOpMasker } from './rollback-executor/names.js';
 import { makeForeignHolderScan } from './rollback-executor/journaled-orphans.js';
+import { snapshotSegmentSurvivors } from './rollback-executor/replaced-survivor.js';
 import { RollbackInlinePolicyWriters } from './inline-policy-claims.js';
 import { producerRegionsFromState } from './secret-region-classification.js';
 import { inheritProducerRegions, type ProducerRegionEvidence } from './producer-regions-scope.js';
@@ -875,6 +876,8 @@ export async function revertNestedChildFromJournal(args: {
     const inlinePolicyWriters = new RollbackInlinePolicyWriters();
     // The grandchildren THIS replay completed, merged over its segments.
     const settledBelow: SettledNestedRows = new Map();
+    // go-to-k/cdkd#6621: who holds each bucket survivor, before any revert writes.
+    await snapshotSegmentSurvivors(execCtx, segments);
     for (let s = segments.length - 1; s >= 0; s--) {
       const segment = segments[s]!;
       // Issue #4018: the child's segment was written by the same deploy run as

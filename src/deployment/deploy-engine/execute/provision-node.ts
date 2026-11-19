@@ -374,6 +374,12 @@ export async function provisionCreateUpdateNode(
       engine.replacementRun.replacedOldMaySurvive.has(logicalId) && {
         oldResourceMaySurvive: engine.replacementRun.replacedOldMaySurvive.get(logicalId),
       }),
+    // go-to-k/cdkd#6621: the deferred old resource's generation at the deferral.
+    ...(change.changeType === 'UPDATE' &&
+      engine.replacementRun.replacedOldMaySurvive.get(logicalId) === 'deferred' &&
+      engine.replacementRun.replacedOldIdentity.has(logicalId) && {
+        oldResourceIdentity: engine.replacementRun.replacedOldIdentity.get(logicalId),
+      }),
     // go-to-k/cdkd#4615: the provider's own answer, where an `update()`
     // gave one; absent, the rollback infers a replacement from a changed
     // physical id, as it does for a journal an older binary wrote.

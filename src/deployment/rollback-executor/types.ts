@@ -7,6 +7,7 @@ import type {
   SupersededResourceRecord,
 } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
+import type { SurvivorIdentityRead } from '../../types/resource.js';
 import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { type PreDeleteSnapshotClients } from '../../provisioning/final-snapshot.js';
 import { type RecordedSecretValues } from '../secret-redaction.js';
@@ -106,6 +107,14 @@ export interface CompletedOperation {
    * or a delete that succeeded) keeps the re-create.
    */
   oldResourceMaySurvive?: 'kept' | 'unconfirmed' | 'deferred' | undefined;
+  /**
+   * go-to-k/cdkd#6621: beside a `'deferred'` verdict, the old resource's
+   * generation as its provider's `replacedSurvivorIdentity` read it when the
+   * deploy deferred its delete (an S3 bucket's `<region>|<CreationDate>`, no
+   * name). The rollback re-adopts only a survivor reading the same. ADDITIVE:
+   * absent (an older binary, an unanswered read) keeps the re-adopt.
+   */
+  oldResourceIdentity?: string | undefined;
   /**
    * The type of the resource that existed BEFORE this UPDATE — the state
    * record's `resourceType` (issue
@@ -329,6 +338,12 @@ export interface RollbackExecutorContext {
    * cleanup) keeps the re-adopt.
    */
   supersededResources?: readonly SupersededResourceRecord[] | undefined;
+  /**
+   * go-to-k/cdkd#6621: who held each S3-like survivor's old id before the
+   * replay applied any op (`snapshotSurvivorIdentities`), keyed by
+   * `survivorKey`. Absent or without an entry: the probe reads live.
+   */
+  survivorIdentities?: Map<string, SurvivorIdentityRead> | undefined;
   /** Region the resources live in — threaded into each provider delete. */
   region: string;
   logger: Logger;
