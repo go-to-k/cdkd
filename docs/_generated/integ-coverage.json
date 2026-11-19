@@ -7550,6 +7550,7 @@
         "refactor-lambda-version",
         "rename-refactor",
         "rollback-failure-injection",
+        "rollback-regenerated-secret",
         "s3-asset-deploy",
         "s3-event-notification",
         "scheduled-task",
@@ -7977,6 +7978,9 @@
           "literal"
         ],
         "rollback-failure-injection": [
+          "l2"
+        ],
+        "rollback-regenerated-secret": [
           "l2"
         ],
         "s3-asset-deploy": [
@@ -9806,6 +9810,7 @@
         "rollback-failure-injection",
         "rollback-nested-cross-region-secret",
         "rollback-observed-baseline-refresh",
+        "rollback-regenerated-secret",
         "rollback-replacement-retain",
         "rollback-replay-cc-generated-name",
         "rollback-replay-effective-props",
@@ -10071,6 +10076,10 @@
           "l1"
         ],
         "rollback-observed-baseline-refresh": [
+          "l1",
+          "literal"
+        ],
+        "rollback-regenerated-secret": [
           "l1",
           "literal"
         ],
@@ -10832,6 +10841,7 @@
         "output-never-resolved-diff",
         "remote-nested-stack-refusal",
         "replacement-immutable-name",
+        "rollback-regenerated-secret",
         "secret-substring-literal",
         "secrets-array-nested",
         "secrets-dynamic-ref",
@@ -10904,6 +10914,9 @@
         "replacement-immutable-name": [
           "l2",
           "literal"
+        ],
+        "rollback-regenerated-secret": [
+          "l2"
         ],
         "secret-substring-literal": [
           "l2",

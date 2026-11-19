@@ -2763,6 +2763,11 @@
       ]
     },
     {
+      "name": "rollback-regenerated-secret",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "rollback-replacement-retain",
       "annotated": true,
       "scenarios": [
@@ -4337,6 +4342,7 @@
     "retain-orphan-secret",
     "rollback-attribute-only-revert",
     "rollback-command",
+    "rollback-regenerated-secret",
     "rollback-replay-cc-generated-name",
     "s3-analytics-inventory",
     "s3-bucket-policy-existing",

@@ -380,6 +380,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`retain-orphan-secret`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/retain-orphan-secret/)
 - [`rollback-attribute-only-revert`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-attribute-only-revert/)
 - [`rollback-command`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-command/)
+- [`rollback-regenerated-secret`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-regenerated-secret/)
 - [`rollback-replay-cc-generated-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/rollback-replay-cc-generated-name/)
 - [`s3-analytics-inventory`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-analytics-inventory/)
 - [`s3-bucket-policy-existing`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/s3-bucket-policy-existing/)

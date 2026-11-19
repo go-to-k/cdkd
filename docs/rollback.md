@@ -27,7 +27,11 @@ cdkd rollback MyStack               # roll back a partial stack later
 
 The rollback handles each resource according to what the failed deploy had
 done to it. It works through them in the reverse of the order the deploy
-used.
+used. One exception: when restoring a Secrets Manager secret makes AWS
+generate a new value (the deploy had changed its `GenerateSecretString`), the
+secret is restored before the resources that read it through a
+`{{resolve:secretsmanager:...}}` reference, and they get its new value, as in
+CloudFormation's rollback.
 
 ```text diagram=guide-rollback-undo
                     A resource fails mid-deploy

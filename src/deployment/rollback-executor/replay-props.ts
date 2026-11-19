@@ -29,6 +29,7 @@ import {
 import { type RollbackExecutorContext } from './types.js';
 import { shownLogicalId } from './messages.js';
 import { masksOnlyAt } from './replay-noecho.js';
+import { leafReadsSecret } from './regenerated-secrets.js';
 
 /**
  * `provider.update()` for a rollback arm, retried unless the provider opts out.
@@ -237,6 +238,9 @@ class ReplayPins {
     for (const token of dynamicReferenceTokens(leaf)) {
       const pin = this.recorded.get(token);
       if (pin === undefined) continue;
+      // go-to-k/cdkd#6591: this replay regenerated the secret, so the pinned
+      // version is a value AWS no longer serves as current.
+      if (leafReadsSecret(token, this.resolvers.regeneratedSecrets)) continue;
       if (!(await this.usable(token, pin, recordedRegions))) continue;
       (out ??= new Map()).set(token, pin);
     }

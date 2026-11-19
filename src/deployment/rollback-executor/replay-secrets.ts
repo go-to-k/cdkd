@@ -85,10 +85,18 @@ export class ReplayResolvers {
   readonly primary: IntrinsicFunctionResolver;
   private readonly pinned = new Map<string, IntrinsicFunctionResolver>();
   private readonly stackRegion: string;
+  /**
+   * go-to-k/cdkd#6591: the ARNs / names of secrets this replay regenerated. A
+   * token addressing one resolves the CURRENT value, never its recorded pin.
+   * Set only on a resolver built fresh for the op, so no cache entry read
+   * before the regeneration can answer it.
+   */
+  readonly regeneratedSecrets: ReadonlySet<string>;
 
-  constructor(stackRegion: string) {
+  constructor(stackRegion: string, regeneratedSecrets: ReadonlySet<string> = new Set()) {
     this.stackRegion = stackRegion;
     this.primary = new IntrinsicFunctionResolver(stackRegion);
+    this.regeneratedSecrets = regeneratedSecrets;
   }
 
   /** The resolver that must answer for `region` — `primary` when it is the stack's own. */
