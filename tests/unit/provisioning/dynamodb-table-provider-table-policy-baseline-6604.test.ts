@@ -226,6 +226,15 @@ describe('DynamoDB Table ResourcePolicy baseline after its own write (go-to-k/cd
     expect(gone['ResourcePolicy']).toBeUndefined();
   });
 
+  it('a plain drift read believes a declared policy replaced outside cdkd, after the re-asks', async () => {
+    primeAws([OTHER_DOC]);
+    const live = bagOf(
+      await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE, tableProps(DOC))
+    );
+    expect(live['ResourcePolicy']).toEqual({ PolicyDocument: OTHER_DOC });
+    expect(policyReads()).toBe(4);
+  });
+
   it('a read with no desired bag takes the first answer', async () => {
     primeAws([DOC, 'none']);
     const live = bagOf(await provider.readCurrentState(TABLE_NAME, 'T', RESOURCE_TYPE));
