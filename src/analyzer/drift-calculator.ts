@@ -14,7 +14,9 @@
  *     wide defaults, etc.) that cdkd never set; treating those as drift
  *     would fire false positives on every resource. Mirrors the diff
  *     calculator's "keys-only-in-old-side ignored" rule, but applied in
- *     the opposite direction (state is now the authoritative side).
+ *     the opposite direction (state is now the authoritative side). Nested
+ *     objects follow the same rule unless `unionWalkObjects` or a declared
+ *     `unionWalkPaths` subtree says otherwise (see below).
  *   - Nested objects are compared structurally — a property change deep
  *     inside (`VersioningConfiguration.Status`) surfaces with the dotted
  *     path so the CLI output points at exactly the leaf that drifted.
@@ -84,6 +86,11 @@ export interface PropertyDrift {
  * canonical serialization). Those are sorted on BOTH sides before comparison
  * so an AWS-side reorder is not phantom drift. Path matching uses the same
  * prefix rule as `ignorePaths`.
+ *
+ * `options.unionWalkPaths` names subtrees walked by the key UNION even when
+ * `unionWalkObjects` is off: properties whose readback echoes the template
+ * verbatim (`verbatimEchoDriftKeys`, go-to-k/cdkd#6622), where a key only AWS
+ * holds can only have been added out of band. Same prefix rule.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
@@ -92,12 +99,14 @@ export function calculateResourceDrift(
     ignorePaths?: readonly string[];
     unionWalkObjects?: boolean;
     unorderedPaths?: readonly string[];
+    unionWalkPaths?: readonly string[];
   }
 ): PropertyDrift[] {
   const drifts: PropertyDrift[] = [];
   const ignore = options?.ignorePaths ?? [];
   const union = options?.unionWalkObjects ?? false;
   const unordered = options?.unorderedPaths ?? [];
+  const unionPaths = options?.unionWalkPaths ?? [];
   // Canonicalize tag lists and AWS resource-id/ARN arrays on BOTH sides before
   // any comparison. AWS does not guarantee element ordering across reads, so a
   // reorder between the deploy-time observedProperties snapshot and a later
@@ -119,7 +128,7 @@ export function calculateResourceDrift(
   // deeper, on map-shaped values (Environment.Variables, etc.).
   for (const key of Object.keys(stateProperties)) {
     if (isIgnoredPath(key, ignore)) continue;
-    diffAt(key, stateProperties[key], awsProperties[key], drifts, ignore, union);
+    diffAt(key, stateProperties[key], awsProperties[key], drifts, ignore, union, unionPaths);
   }
   return drifts;
 }
@@ -206,7 +215,8 @@ function diffAt(
   awsValue: unknown,
   out: PropertyDrift[],
   ignorePaths: readonly string[],
-  unionWalkObjects: boolean
+  unionWalkObjects: boolean,
+  unionWalkPaths: readonly string[]
 ): void {
   // Compared and DESCENDED in JSON form (issue #3121 follow-up): a `Date` the
   // raw SDK readback carries now survives the canonicalizers by identity, and
@@ -249,14 +259,24 @@ function diffAt(
     // union of state + aws keys so console-side key additions to a
     // map-shaped property (e.g. Lambda Environment.Variables) surface as
     // drift; without it, only state's keys are walked (preserves the
-    // pre-unionWalkObjects behavior for the v2-state-fallback baseline).
-    const keys = unionWalkObjects
+    // pre-unionWalkObjects behavior for the v2-state-fallback baseline),
+    // except under a declared verbatim-echo path (go-to-k/cdkd#6622).
+    const keys =
+      unionWalkObjects || matchesPathPrefix(path, unionWalkPaths)
       ? new Set([...Object.keys(stateForm), ...Object.keys(awsForm)])
       : Object.keys(stateForm);
     for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
-      diffAt(childPath, stateForm[key], awsForm[key], out, ignorePaths, unionWalkObjects);
+      diffAt(
+        childPath,
+        stateForm[key],
+        awsForm[key],
+        out,
+        ignorePaths,
+        unionWalkObjects,
+        unionWalkPaths
+      );
     }
     return;
   }

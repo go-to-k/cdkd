@@ -72,7 +72,12 @@ a property you never set in your CDK code.
 Some resources have no snapshot, for example one deployed with
 `--no-capture-observed-state`. For those, drift compares against the
 properties from your template, so it only catches changes to properties you
-did set. You can record a snapshot without redeploying:
+did set. A key added inside an object you set is not compared either, with one
+exception: an IAM policy document (`PolicyDocument` on `AWS::IAM::Policy` and
+`AWS::IAM::ManagedPolicy`, `AssumeRolePolicyDocument` on `AWS::IAM::Role`).
+IAM returns the document as submitted, so a key only AWS holds there, such as
+a `Condition` added to a single-object `Statement`, is reported as drift. You
+can record a snapshot without redeploying:
 
 ```bash
 cdkd state refresh-observed MyStack

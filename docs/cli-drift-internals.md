@@ -757,6 +757,14 @@ under `--dry-run`. A Glue Iceberg table's `table_type` / `metadata_location`,
 and the roughly eighteen untemplated attributes an ELBv2 load balancer
 reports, survive the revert instead of being reset.
 
+One class is exempt: a property whose readback echoes the template verbatim,
+which today is an IAM policy document (`PolicyDocument` on `AWS::IAM::Policy` /
+`AWS::IAM::ManagedPolicy`, `AssumeRolePolicyDocument` on `AWS::IAM::Role`). IAM
+adds no key of its own there, so a key only AWS holds was added out of band:
+detection walks the union of keys under it on this baseline too, and the revert
+sends the template's document whole and does not list it as preserved. Other
+services' resource policies (S3, SQS, SNS, KMS) are not exempt yet.
+
 Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them
 reverted too. Either populates `observedProperties`, after which the baseline
 IS a deploy-time AWS snapshot, an out-of-band addition is genuinely

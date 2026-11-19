@@ -12,6 +12,7 @@ import { maskSecretsInText } from '../../../deployment/secret-redaction.js';
 import { type StackDriftReport, matchOutcome, type DriftedOutcome } from './outcome.js';
 import { acceptRefusalReason } from './redaction.js';
 import { findRevertPreservedTagKeys, findRevertUnbaselinedAwsKeys } from './revert-merge.js';
+import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import {
   reportResource,
   reportPath,
@@ -388,7 +389,8 @@ export function printRevertPlan(
         const unbaselined = findRevertUnbaselinedAwsKeys(
           o.changes,
           stateResource.properties ?? {},
-          o.awsProperties
+          o.awsProperties,
+          verbatimEchoDriftKeys(o.resourceType)
         );
         if (o.secretsIncomplete && unbaselined.length > 0) {
           // Same withholding as the tag list above, and it must say something:

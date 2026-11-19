@@ -37,6 +37,7 @@ import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
 import { siblingOwnedRevertDesired } from '../../../provisioning/sibling-owned-members.js';
+import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -422,7 +423,10 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       desiredProperties,
       outcome.awsProperties,
       stateResource.observedProperties === undefined
-        ? { preserveUntemplated: true }
+        ? {
+            preserveUntemplated: true,
+            verbatimKeys: verbatimEchoDriftKeys(outcome.resourceType),
+          }
         : {
             // go-to-k/cdkd#5399: the keys detection compared while
             // the observed baseline lacked them.
