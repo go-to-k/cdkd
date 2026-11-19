@@ -3,7 +3,10 @@
  * Split out of `deploy-engine/rollback.ts` (go-to-k/cdkd#5835), which
  * re-exports what it exported.
  */
-import { readsRegeneratingSecret } from '../../rollback-executor/regenerated-secrets.js';
+import {
+  attemptUsesCompletedCreate,
+  readsRegeneratingSecret,
+} from '../../rollback-executor/regenerated-secrets.js';
 import type { RolledBackCreate } from '../../../state/name-generation.js';
 import type {
   ResourceState,
@@ -200,13 +203,16 @@ export async function performRollback(
     // go-to-k/cdkd#6597: except a failed op whose record reads a secret a
     // completed op's revert regenerates. It reverts after the completed ops,
     // at the secret's new value, as CloudFormation restores a reader after
-    // the secret it reads.
+    // the secret it reads; its settle wait moves with it. One whose attempt
+    // names a resource a completed CREATE made keeps its place: the replay
+    // deletes those CREATEs.
     const deferred = new Set<number>();
     failedOperations.forEach((op, i) => {
       if (
         op.changeType === 'UPDATE' &&
         !orphanIndexes.includes(i) &&
-        readsRegeneratingSecret(op.logicalId, stateResources, completedOperations)
+        readsRegeneratingSecret(op.logicalId, stateResources, completedOperations) &&
+        !attemptUsesCompletedCreate(op.attemptedProperties, completedOperations)
       ) {
         deferred.add(i);
       }

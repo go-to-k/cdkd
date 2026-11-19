@@ -298,6 +298,7 @@ const ROLLBACK_ORDER = [
   'guards.ts',
   'command.ts',
   'replay.ts',
+  'deferred-readers.ts',
   'preview.ts',
 ] as const;
 /** The modules under `rollback/`, the directory read recursively. */

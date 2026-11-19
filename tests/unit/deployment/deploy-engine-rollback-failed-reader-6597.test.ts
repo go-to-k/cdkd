@@ -98,11 +98,17 @@ interface Call {
   props: Record<string, unknown>;
 }
 
-async function deploy(secretLength: number): Promise<{ calls: Call[]; thrown: unknown }> {
+async function deploy(
+  secretLength: number,
+  withCreatedSg = false
+): Promise<{ calls: Call[]; thrown: unknown }> {
   const calls: Call[] = [];
   let fnCalls = 0;
   const provider = {
-    create: vi.fn(),
+    create: vi.fn(async (logicalId: string) => {
+      calls.push({ logicalId: `create ${logicalId}`, props: {} });
+      return { physicalId: 'sg-0123456789abcdef0', attributes: {} };
+    }),
     update: vi.fn(
       async (
         logicalId: string,
@@ -165,7 +171,16 @@ async function deploy(secretLength: number): Promise<{ calls: Call[]; thrown: un
         Type: SECRET,
         Properties: { Name: 'hunt-sec', GenerateSecretString: gen(secretLength) },
       },
-      Fn: { Type: FN, Properties: fnRecord('two'), DependsOn: ['Sec'] },
+      Fn: {
+        Type: FN,
+        Properties: withCreatedSg
+          ? { ...fnRecord('two'), VpcConfig: { SecurityGroupIds: [{ Ref: 'Sg' }] } }
+          : fnRecord('two'),
+        DependsOn: withCreatedSg ? ['Sec', 'Sg'] : ['Sec'],
+      },
+      ...(withCreatedSg && {
+        Sg: { Type: 'AWS::EC2::SecurityGroup', Properties: { GroupDescription: 'd' } },
+      }),
     },
   } as unknown as CloudFormationTemplate;
   const engine = new DeployEngine(
@@ -184,8 +199,12 @@ async function deploy(secretLength: number): Promise<{ calls: Call[]; thrown: un
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['Sec'], ['Fn']]),
-      getDirectDependencies: vi.fn((_g: unknown, id: string) => (id === 'Fn' ? ['Sec'] : [])),
+      getExecutionLevels: vi
+        .fn()
+        .mockReturnValue(withCreatedSg ? [['Sec', 'Sg'], ['Fn']] : [['Sec'], ['Fn']]),
+      getDirectDependencies: vi.fn((_g: unknown, id: string) =>
+        id === 'Fn' ? (withCreatedSg ? ['Sec', 'Sg'] : ['Sec']) : []
+      ),
     } as never,
     new DiffCalculator(),
     {
@@ -227,6 +246,14 @@ describe('a failed reader of a regenerated secret (#6597)', () => {
     expect(run.calls.map((c) => c.logicalId)).toEqual(['Sec', 'Fn', 'Sec', 'Fn']);
     expect(secret.version).toBe(RB);
     expect(fnPw(run.calls[3])).toBe('rollback-pw');
+  });
+
+  it('keeps a failed reader whose attempt uses a resource this deploy created before the replay', async () => {
+    const run = await deploy(24, true);
+    expect(run.thrown).toBeDefined();
+    const updates = run.calls.map((c) => c.logicalId).filter((id) => !id.startsWith('create '));
+    // Deploy: Sec, Fn (fails). Rollback: Fn first (the replay deletes Sg), then Sec.
+    expect(updates).toEqual(['Sec', 'Fn', 'Fn', 'Sec']);
   });
 
   it('keeps the old order and the pin when the secret revert does not regenerate', async () => {

@@ -59,7 +59,6 @@ import {
 } from '../../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../deployment/inline-policy-claims.js';
 import { makeForeignHolderScan } from '../../../deployment/rollback-executor/journaled-orphans.js';
-import { seedsDeleteFirstGuard } from '../../../deployment/rollback-executor/plan.js';
 import { segmentCleanupOptions } from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -104,6 +103,13 @@ import {
   judgeNestedPendingRecords,
 } from './guards.js';
 import { printRollbackPlanSegments } from './preview.js';
+import {
+  remainingAfterFailedReplay,
+  replayDeferredReaders,
+  splitDeferredReaders,
+  stripFailedOpsJournal,
+  type FailedOpsJournal,
+} from './deferred-readers.js';
 
 /**
  * What {@link runRollbackReplay} reads from the enclosing
@@ -712,10 +718,22 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                 // go-to-k/cdkd#4584: a plain rollback replays the proven
                 // orphans alone; the rest are kept by the strip below while
                 // the segment stays, and leave with it once it pops.
-                const failedToReplay = failedOpsToReplay(
-                  failedOps.replay,
-                  options.revertFailed === true
+                // go-to-k/cdkd#6597: a failed reader of a regenerated secret
+                // waits for the completed ops (journaled until then).
+                const { now: failedToReplay, deferred: deferredReaders } = splitDeferredReaders(
+                  failedOpsToReplay(failedOps.replay, options.revertFailed === true),
+                  stateResources,
+                  completedOps
                 );
+                const journal: FailedOpsJournal = {
+                  segment,
+                  writable: () => !declinedDivergentRewrite,
+                  set: (ops) =>
+                    setup.stateBackend.setRollbackJournalFailedOperations(stackName, region, ops),
+                  logger,
+                  stackName,
+                  region,
+                };
                 if (failedToReplay.length > 0) {
                   // go-to-k/cdkd#3869: the failed ops replay under a PRINTING
                   // bag judged from their journal entries, as `cdkd
@@ -766,61 +784,17 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                     }
                   }
 
-                  // Idempotency: persist ONLY the still-pending failed ops
-                  // (per-op strip). A handled op must never be re-issued on a
-                  // re-run — replaying `attemptedProperties` as the previous
-                  // diff side against an already-reverted resource would
-                  // generate a patch undoing changes that no longer exist
-                  // (fails on patch-based providers). Runs on the interrupt /
-                  // failure paths too so partial progress is never lost.
-                  // Best-effort: on a strip failure the re-run merely
-                  // re-attempts the revert.
-                  const remaining = [
-                    ...failedOps.imported,
-                    ...failedOps.displaced,
-                    ...failedOps.replay.filter((op) => !failedToReplay.includes(op)),
-                    ...failedResult.remainingFailedOps,
-                    // go-to-k/cdkd#4690: a handled delete-first replacement
-                    // stays while this segment's completed ops remain, so a
-                    // re-run's delete-first guard still sees the resource it
-                    // removed; it leaves with the segment once it pops. On a
-                    // `--revert-failed` re-run, the `replacementOrphaned` shape
-                    // re-classifies as the same skip and repeats its warning;
-                    // the bare shape (no orphan) re-attempts its forced revert
-                    // against the deleted old id, which normally fails
-                    // not-found and keeps it pending.
-                    ...(completedOps.length > 0
-                      ? failedToReplay.filter(
-                          (op) =>
-                            seedsDeleteFirstGuard(op) &&
-                            !failedResult.remainingFailedOps.includes(op)
-                        )
-                      : []),
-                  ];
-                  // NOT after a declined divergent rewrite (go-to-k/cdkd#3370):
-                  // the handled ops' state rows were never saved, so stripping
-                  // them would leave the record describing work the journal no
-                  // longer carries. Kept, the re-run after the region repair
-                  // replays them against the unsaved rows and reconciles (a
-                  // failed-CREATE delete reads not-found as done).
-                  if (
-                    !declinedDivergentRewrite &&
-                    remaining.length !== (segment.failedOperations ?? []).length
-                  ) {
-                    try {
-                      await setup.stateBackend.setRollbackJournalFailedOperations(
-                        stackName,
-                        region,
-                        remaining
-                      );
-                      if (remaining.length === 0) delete segment.failedOperations;
-                      else segment.failedOperations = remaining;
-                    } catch (stripError) {
-                      logger.warn(
-                        safeMsg`Failed to strip replayed failed-ops from the journal: ${backendErrorText(stripError, stackName, region)}`
-                      );
-                    }
-                  }
+                  // Idempotency (per-op strip, see the helper). Runs on the
+                  // interrupt / failure paths too, so partial progress stays.
+                  await stripFailedOpsJournal(
+                    journal,
+                    remainingAfterFailedReplay(
+                      failedOps,
+                      failedToReplay,
+                      failedResult,
+                      completedOps
+                    )
+                  );
                   if (failedResult.interrupted) {
                     return {
                       failures: failedOpFailures,
@@ -852,6 +826,30 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
                       ...cleanup,
                     })
                 );
+                if (deferredReaders.length > 0 && !replayResult.interrupted) {
+                  const deferredResult = await replayDeferredReaders(
+                    deferredReaders,
+                    replayResult,
+                    { stateResources, stackName, ctx, printing: failedOpsPrinting, journal },
+                    {
+                      afterOp: saveState,
+                      isInterrupted: () => interrupted,
+                      ...cleanup,
+                      onOrphan: (record) => mintedOrphans.push(record),
+                      onRolledBackCreate: (create) => rolledBackCreates.push(create),
+                      inlinePolicyWriters,
+                    }
+                  );
+                  failedOpFailures += deferredResult.failures;
+                  failedOpWarnings += deferredResult.warnings;
+                  if (deferredResult.interrupted) {
+                    return {
+                      failures: replayResult.failures + failedOpFailures,
+                      warnings: replayResult.warnings + failedOpWarnings,
+                      interrupted: true,
+                    };
+                  }
+                }
                 return {
                   failures: replayResult.failures + failedOpFailures,
                   warnings: replayResult.warnings + failedOpWarnings,

@@ -63,6 +63,7 @@ import { planRollback } from '../../../src/deployment/rollback-executor/plan.js'
 import { resolveReplayProps } from '../../../src/deployment/rollback-executor/replay-props.js';
 import { ReplayResolvers } from '../../../src/deployment/rollback-executor/replay-secrets.js';
 import {
+  attemptUsesCompletedCreate,
   orderAfterRegeneratedSecrets,
   regeneratedSecretAddresses,
   revertRegeneratesSecret,
@@ -402,5 +403,27 @@ describe('the pin skip by recorded Name (#6591)', () => {
 
   it('keeps the pin for a name token recorded in another region', async () => {
     expect(await replayNamed('eu-west-1')).toBe('pre-deploy-pw');
+  });
+});
+
+describe('attemptUsesCompletedCreate (#6597)', () => {
+  const created: CompletedOperation = {
+    logicalId: 'Sg',
+    changeType: 'CREATE',
+    resourceType: 'AWS::EC2::SecurityGroup',
+    provisionedBy: 'sdk',
+    physicalId: 'sg-0123456789abcdef0',
+  };
+  it('is true when the attempted bag names a resource a completed CREATE made', () => {
+    expect(
+      attemptUsesCompletedCreate({ VpcConfig: { SecurityGroupIds: ['sg-0123456789abcdef0'] } }, [created])
+    ).toBe(true);
+  });
+  it('is false otherwise, and for an UPDATE id or no bag', () => {
+    expect(attemptUsesCompletedCreate({ VpcConfig: {} }, [created])).toBe(false);
+    expect(attemptUsesCompletedCreate(undefined, [created])).toBe(false);
+    expect(
+      attemptUsesCompletedCreate({ Role: 'fn' }, [{ ...fnOp(), physicalId: 'fn' }])
+    ).toBe(false);
   });
 });

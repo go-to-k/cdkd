@@ -166,3 +166,23 @@ export function readsRegeneratingSecret(
       leafReadsSecret(text, regeneratedSecretAddresses(op))
   );
 }
+
+/**
+ * go-to-k/cdkd#6597: may the failed op's attempted bag still use a resource
+ * a completed CREATE made (its physical id appears in that bag)? Such a
+ * failed op keeps its place before the completed-op replay, whose CREATE
+ * deletions it must precede (#5505), even when it reads a regenerating secret.
+ */
+export function attemptUsesCompletedCreate(
+  attemptedProperties: Record<string, unknown> | undefined,
+  completedOps: readonly CompletedOperation[]
+): boolean {
+  const text = JSON.stringify(attemptedProperties ?? {});
+  return completedOps.some(
+    (op) =>
+      op.changeType === 'CREATE' &&
+      typeof op.physicalId === 'string' &&
+      op.physicalId !== '' &&
+      text.includes(op.physicalId)
+  );
+}
