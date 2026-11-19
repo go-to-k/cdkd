@@ -143,6 +143,11 @@ import {
 } from './s3-bucket/update-delete.js';
 import { create } from './s3-bucket/create.js';
 import { replacedSurvivorIdentity } from './s3-bucket/survivor-identity.js';
+import {
+  type DeclaredLifecycle,
+  LIFECYCLE_BASELINE_REREAD_DELAYS_MS,
+  settleLifecycleRead,
+} from './s3-bucket/lifecycle-baseline.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
   readCors,
@@ -870,6 +875,19 @@ export class S3BucketProvider implements ResourceProvider {
   }
   readLifecycle(bucket: string): Promise<Record<string, unknown>> {
     return readLifecycle.call(this, bucket);
+  }
+  /** Re-read schedule of the post-write lifecycle capture; tests zero it. */
+  protected lifecycleBaselineRereadDelaysMs: readonly number[] =
+    LIFECYCLE_BASELINE_REREAD_DELAYS_MS;
+  /** The post-write capture's lifecycle member (go-to-k/cdkd#6609); `undefined` records none. */
+  readLifecycleBaseline(
+    bucket: string,
+    declared: DeclaredLifecycle
+  ): Promise<Record<string, unknown> | undefined> {
+    return settleLifecycleRead(() => this.readLifecycle(bucket), {
+      declared,
+      delaysMs: this.lifecycleBaselineRereadDelaysMs,
+    });
   }
   readCors(bucket: string): Promise<Record<string, unknown>> {
     return readCors.call(this, bucket);

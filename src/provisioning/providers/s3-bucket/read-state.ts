@@ -22,6 +22,7 @@ import {
 import type { S3BucketProvider } from '../s3-bucket-provider.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
+import { declaredLifecycle } from './lifecycle-baseline.js';
 
 /**
  * Read the AWS-current S3 bucket configuration in CFn-property shape.
@@ -92,6 +93,20 @@ export async function readCurrentState(
     }
   }
 
+  // go-to-k/cdkd#6609: on the capture right after cdkd's own write, the
+  // lifecycle read is re-asked until it shows what the deploy just wrote
+  // (`lifecycle-baseline.ts`). Only with an informative desired bag, so import
+  // and every non-capture read keep the single first answer. A template that
+  // declares no lifecycle on a bucket holding an out-of-band one waits out the
+  // schedule too and records no LifecycleConfiguration: this read cannot tell
+  // that configuration from one the deploy just deleted.
+  const lifecycleDeclared =
+    context?.afterOwnWrite === true &&
+    _properties !== undefined &&
+    Object.keys(_properties).length > 0
+      ? declaredLifecycle(_properties)
+      : undefined;
+
   // Fire all 18 GET / List calls in parallel. Each helper handles its own
   // "feature not configured" → placeholder fallback.
   const [
@@ -120,7 +135,9 @@ export async function readCurrentState(
     this.readOwnershipControls(physicalId),
     this.readPublicAccessBlock(physicalId),
     this.readTags(physicalId),
-    this.readLifecycle(physicalId),
+    lifecycleDeclared === undefined
+      ? this.readLifecycle(physicalId)
+      : this.readLifecycleBaseline(physicalId, lifecycleDeclared),
     this.readCors(physicalId),
     this.readWebsite(physicalId),
     this.readLogging(physicalId),
@@ -143,7 +160,9 @@ export async function readCurrentState(
     OwnershipControls: ownership,
     PublicAccessBlockConfiguration: pab,
     Tags: tags,
-    LifecycleConfiguration: lifecycle,
+    // `undefined` (a post-write capture that never saw a just-deleted
+    // configuration go) records no key at all, never the deleted rules.
+    ...(lifecycle !== undefined ? { LifecycleConfiguration: lifecycle } : {}),
     CorsConfiguration: cors,
     WebsiteConfiguration: website,
     LoggingConfiguration: logging,

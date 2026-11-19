@@ -1290,6 +1290,57 @@ assert_no_drift() { # $1 = phase label
   echo "    [${phase}] no drift on a clean stack (#1430 read side)"
 }
 
+# --- go-to-k/cdkd#6609 B1: the lifecycle baseline captured after the write --
+# `GetBucketLifecycleConfiguration` answered the PREVIOUS rules, or none, on
+# about 28% of reads for 4 s after a Put (us-east-1, 2026-11-19), and the
+# deploy's capture took the first answer, so the baseline could hold the old
+# rules and `drift --revert` re-apply them. Phase 1 (create: the stale answer
+# is "none") and phase 2 (the rules CHANGE: the stale answer is the phase-1
+# rules) each pin the RECORDED rules to the declared values, then require the
+# bucket itself to be compared and clean in `cdkd drift --json`.
+assert_lifecycle_baseline() { # $1 = phase label, $2 = rule count, $3 = archive expiration, $4 = GLACIER days
+  local phase="$1" want_count="$2" want_exp="$3" want_glacier="$4" state recorded got logical report
+  state="$(state_json)" || { echo "FAIL [${phase}]: could not read s3://${STATE_BUCKET}/${STATE_KEY}" >&2; exit 1; }
+  recorded="$(printf '%s' "${state}" | jq -c --arg b "${BUCKET_NAME}" \
+    '[.resources[] | select(.physicalId == $b)][0].observedProperties.LifecycleConfiguration')" || exit 1
+  got="$(printf '%s' "${recorded}" | jq -r '[
+      (.Rules | length),
+      (.Rules[] | select(.Id == "archive") | .ExpirationInDays),
+      (.Rules[] | select(.Id == "archive") | .Transitions[] | select(.StorageClass == "GLACIER") | .TransitionInDays),
+      ([.Rules[] | select(.Id == "big-objects")] | length)
+    ] | map(tostring) | join("/")')" || {
+    echo "FAIL [${phase}]: the observed baseline holds no readable LifecycleConfiguration: ${recorded}" >&2
+    exit 1
+  }
+  local want_big=0
+  [ "${want_count}" = 4 ] && want_big=1
+  if [ "${got}" != "${want_count}/${want_exp}/${want_glacier}/${want_big}" ]; then
+    echo "FAIL [${phase}]: the observed LifecycleConfiguration baseline is not the declared one (#6609)" >&2
+    echo "      rules/archive-expiration/glacier-days/big-objects: got ${got}, want ${want_count}/${want_exp}/${want_glacier}/${want_big}" >&2
+    echo "      recorded: ${recorded}" >&2
+    exit 1
+  fi
+  logical="$(printf '%s' "${state}" | jq -r --arg b "${BUCKET_NAME}" \
+    '[.resources | to_entries[] | select(.value.physicalId == $b) | .key][0]')" || exit 1
+  report="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || {
+    echo "FAIL [${phase}]: cdkd drift failed or reported drift (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  }
+  if ! jq -e --arg stack "${STACK}" --arg id "${logical}" '
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[] | select(.logicalId == $id)] | length) == 1 and
+    ([$reports[0].drifted[] | select(.logicalId == $id)] | length) == 0 and
+    ([$reports[0].notCompared[] | select(.logicalId == $id)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL [${phase}]: ${logical} was not compared and drift-clean (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    [${phase}] the lifecycle baseline is the declared rules (${got}), and ${logical} is compared and clean (#6609)"
+}
+
 # --- issue #1748: the never-emitted key spellings ---------------------------
 # cdkd accepts more than one spelling on the DESIRED side while
 # `readCurrentState` emits only ONE, so a record written in the tolerated
@@ -1406,6 +1457,7 @@ assert_alias_spellings() { # $1 = phase label, $2 = expected transition Days
 assert_eventbridge_pair "phase 1" "${EB_TRUE_BUCKET}" "${LEGACY_BUCKET}"
 assert_eventbridge_absent "phase 1"
 assert_alias_spellings "phase 1" "90"
+assert_lifecycle_baseline "phase 1" 3 730 90
 assert_no_drift "phase 1"
 
 # --- Phase 1b: the `canonicalizeDesiredProperties` TWIN ---------------------
@@ -1747,6 +1799,7 @@ assert_eventbridge_absent "phase 2"
 # The alias transition day count CHANGES in UPDATE mode (90 -> 60), so this
 # really drives the update-path fold rather than re-reading the phase-1 record.
 assert_alias_spellings "phase 2" "60"
+assert_lifecycle_baseline "phase 2" 4 365 60
 assert_no_drift "phase 2"
 
 # --- Phase 2b: a MALFORMED EventBridgeEnabled on the template path (#1759, #3740)
