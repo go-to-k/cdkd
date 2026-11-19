@@ -86,7 +86,9 @@
  * per path inside it. A dispatch is an `if` / `else`, an early-return arm
  * before a sending tail, or a switch with two sending cases; two SIBLING ifs
  * toggling on one property (`if (on && !was) Enable; if (!on && was) Disable`)
- * are not one, so that shape reads as a gap. A change refused with any error but
+ * are not one, so that shape reads as a gap; the other way, a dispatch counts
+ * its condition even when one arm's send carries other properties. A change
+ * refused with any error but
  * `ResourceUpdateNotSupportedError` is not a refusal here (a `ProvisioningError`
  * is also what a validation throws), so it would read as a gap. Only
  * TOP-LEVEL properties are classified: a nested
