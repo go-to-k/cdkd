@@ -1806,23 +1806,14 @@ assert_no_drift "phase 2"
 # The #6609 heal changes which keys `drift --revert` compares on this bucket,
 # so the revert itself runs here: replace the rules OUT OF BAND, require drift
 # to report LifecycleConfiguration, revert, then require the template's rules
-# live again on the SAME bucket (state physicalId, a marker object's version,
-# and in us-east-1 the ListBuckets CreationDate), and a clean follow-up drift.
-# The marker is deleted (by version) on every exit from this block, because
-# the fixture's cleanup removes the bucket without emptying it.
+# live again on the SAME bucket, and a clean follow-up drift. "Same bucket"
+# is phase 1's go-to-k/cdkd#6621 identity check: the state record by physical
+# id, plus the ListBuckets CreationDate in us-east-1 or, elsewhere, a marker
+# object's version (`IDENTITY_MARKER_*`, which the cleanup trap removes).
 echo "==> Phase 2r: an out-of-band lifecycle change is reported and drift --revert restores it in place (#6609)"
-P2R_MARKER_KEY="cdkd-6609-revert-marker"
-P2R_MARKER_VERSION=""
-p2r_drop_marker() {
-  [ -n "${P2R_MARKER_VERSION}" ] || return 0
-  aws s3api delete-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
-    --key "${P2R_MARKER_KEY}" --version-id "${P2R_MARKER_VERSION}" >/dev/null 2>&1 || true
-  P2R_MARKER_VERSION=""
-}
 p2r_fail() { # $@ = message lines
   local line
   for line in "$@"; do echo "${line}" >&2; done
-  p2r_drop_marker
   exit 1
 }
 # Waits until 3 reads in a row answer $1 (the read flaps for seconds after a
@@ -1844,19 +1835,24 @@ p2r_await_live() { # $1 = rules|oob, $2 = label
   done
   p2r_fail "FAIL phase 2r: ${label}: the live rules never settled on ${want} (last: ${got})"
 }
-P2R_LOGICAL="$(state_json | jq -r --arg b "${BUCKET_NAME}" \
-  '[.resources | to_entries[] | select(.value.physicalId == $b) | .key][0]')" || exit 1
-[ -n "${P2R_LOGICAL}" ] && [ "${P2R_LOGICAL}" != null ] \
-  || p2r_fail "FAIL phase 2r premise: no state record holds ${BUCKET_NAME}"
-P2R_MARKER_FILE="$(mktemp)"
-printf 'marker' >"${P2R_MARKER_FILE}"
-P2R_MARKER_VERSION="$(aws s3api put-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
-  --key "${P2R_MARKER_KEY}" --body "${P2R_MARKER_FILE}" --query VersionId --output text)" \
-  || { rm -f "${P2R_MARKER_FILE}"; p2r_fail "FAIL phase 2r premise: could not write the marker object"; }
-rm -f "${P2R_MARKER_FILE}"
-case "${P2R_MARKER_VERSION}" in
-  '' | None | null) P2R_MARKER_VERSION=""; p2r_fail "FAIL phase 2r premise: the marker has no VersionId (is the bucket versioned?)" ;;
-esac
+# The AWS::S3::Bucket record(s) holding the bucket, by physical id.
+p2r_record_of() {
+  state_json | jq -r --arg n "${BUCKET_NAME}" \
+    '[.resources | to_entries[] | select(.value.physicalId == $n and .value.resourceType == "AWS::S3::Bucket") | .key] | join(",")'
+}
+P2R_LOGICAL="$(p2r_record_of)" || p2r_fail "FAIL phase 2r premise: could not read state"
+if [ -z "${P2R_LOGICAL}" ] || [[ "${P2R_LOGICAL}" == *,* ]]; then
+  p2r_fail "FAIL phase 2r premise: expected exactly one AWS::S3::Bucket record holding ${BUCKET_NAME}, got '${P2R_LOGICAL}'"
+fi
+if [ "${REGION}" != "us-east-1" ]; then
+  # Phase 2 removed phase 1's marker; a fresh one, under the same names.
+  IDENTITY_MARKER_KEY="cdkd-integ-identity-marker"
+  IDENTITY_MARKER_VERSION="$(aws s3api put-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${IDENTITY_MARKER_KEY}" --query VersionId --output text)"
+  if [ -z "${IDENTITY_MARKER_VERSION}" ] || [ "${IDENTITY_MARKER_VERSION}" = "None" ]; then
+    p2r_fail "FAIL phase 2r premise: could not put the identity marker into ${BUCKET_NAME} (VersionId '${IDENTITY_MARKER_VERSION}')"
+  fi
+fi
 
 aws s3api put-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --lifecycle-configuration '{"Rules":[{"ID":"oob-6609","Status":"Enabled","Filter":{"Prefix":"oob/"},"Expiration":{"Days":1}}]}' \
@@ -1882,20 +1878,23 @@ P2R_EXP="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}
   --query "Rules[?ID=='archive'].Expiration.Days | [0]" --output text)"
 [ "${P2R_EXP}" = 365 ] || p2r_fail "FAIL phase 2r: after --revert the archive expiration is ${P2R_EXP}, want 365"
 
-P2R_LOGICAL_AFTER="$(state_json | jq -r --arg b "${BUCKET_NAME}" \
-  '[.resources | to_entries[] | select(.value.physicalId == $b) | .key][0]')" || p2r_fail "FAIL phase 2r: could not read state"
+P2R_LOGICAL_AFTER="$(p2r_record_of)" || p2r_fail "FAIL phase 2r: could not read state"
 [ "${P2R_LOGICAL_AFTER}" = "${P2R_LOGICAL}" ] \
-  || p2r_fail "FAIL phase 2r: after --revert no state record (or another one) holds ${BUCKET_NAME}: ${P2R_LOGICAL_AFTER}"
-aws s3api head-object --bucket "${BUCKET_NAME}" --region "${REGION}" --key "${P2R_MARKER_KEY}" \
-  --version-id "${P2R_MARKER_VERSION}" >/dev/null \
-  || p2r_fail "FAIL phase 2r: the marker version is gone, so --revert replaced the bucket"
-if [ "${REGION}" = us-east-1 ]; then
+  || p2r_fail "FAIL phase 2r: the record holding ${BUCKET_NAME} is '${P2R_LOGICAL_AFTER}' after --revert, was '${P2R_LOGICAL}'"
+if [ "${REGION}" = "us-east-1" ]; then
   P2R_CREATION="$(aws s3api list-buckets --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
   [ "${P2R_CREATION}" = "${CREATION_P1}" ] \
     || p2r_fail "FAIL phase 2r: CreationDate ${CREATION_P1} -> ${P2R_CREATION}: --revert replaced the bucket"
+else
+  aws s3api head-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${IDENTITY_MARKER_KEY}" --version-id "${IDENTITY_MARKER_VERSION}" >/dev/null \
+    || p2r_fail "FAIL phase 2r: the identity marker version is gone from ${BUCKET_NAME}: --revert replaced the bucket"
+  # Removed by version, so the bucket is empty again for the later phases.
+  aws s3api delete-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${IDENTITY_MARKER_KEY}" --version-id "${IDENTITY_MARKER_VERSION}" >/dev/null
+  IDENTITY_MARKER_VERSION=""
 fi
-p2r_drop_marker
-echo "    --revert restored the template's rules on the same bucket (state record, marker version, CreationDate)"
+echo "    --revert restored the template's rules on the same bucket (record ${P2R_LOGICAL}, identity kept)"
 assert_lifecycle_baseline "phase 2r" 4 365 60
 
 # --- Phase 2b: a MALFORMED EventBridgeEnabled on the template path (#1759, #3740)

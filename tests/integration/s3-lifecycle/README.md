@@ -154,9 +154,9 @@ failed against real S3).
      replace the bucket's lifecycle rules out of band, require `cdkd drift
      --json` to report `LifecycleConfiguration`, run `cdkd drift --revert
      --yes`, and require the template's rules live again on the same bucket:
-     the same state record, a marker object's version still present (deleted
-     afterwards), and in us-east-1 an unchanged `CreationDate`. A follow-up
-     drift must be clean.
+     the same state record, plus phase 1's identity check (an unchanged
+     `CreationDate` in us-east-1, a marker object's version elsewhere). A
+     follow-up drift must be clean.
    - **Phase 2d** (issue [#4684](https://github.com/go-to-k/cdkd/issues/4684)):
      `RenameArmBucket` (`CDKD_RENAME_ARM_BUCKET`) is renamed by a deploy that
      then fails on a queue depending on it (`CDKD_RENAME_ARM_FAIL`,
