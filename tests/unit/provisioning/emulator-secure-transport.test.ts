@@ -89,13 +89,29 @@ describe('policyDocumentForEmulator', () => {
 
   it.each([
     ['no matching statement', { Statement: [ALLOW_EVENTS] }],
-    ['only the Deny', { Statement: [ENFORCE_SSL] }],
     ['a single Statement object', { Statement: ENFORCE_SSL }],
     ['an unparseable string', '{not json'],
   ])('returns the document unchanged for %s', (_label, document) => {
     setAwsEndpointOverrideSource(() => EMULATOR);
     expect(policyDocumentForEmulator(document, 'AWS::S3::BucketPolicy', 'B')).toBe(document);
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  // A policy of only the enforceSSL Deny denies every request on the emulator
+  // (an SQS event source mapping's receive among them), so none is sent.
+  it.each([
+    ['an object', { Statement: [ENFORCE_SSL] }],
+    ['a string', JSON.stringify({ Statement: [ENFORCE_SSL] })],
+  ])('sends no policy for %s holding only the Deny, warning so', (_label, document) => {
+    setAwsEndpointOverrideSource(() => EMULATOR);
+    expect(policyDocumentForEmulator(document, 'AWS::SQS::QueuePolicy', 'Q')).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('so no policy is set');
+  });
+
+  it('keeps a policy of only the Deny against AWS', () => {
+    const document = { Statement: [ENFORCE_SSL] };
+    expect(policyDocumentForEmulator(document, 'AWS::SQS::QueuePolicy', 'Q')).toBe(document);
   });
 });
 

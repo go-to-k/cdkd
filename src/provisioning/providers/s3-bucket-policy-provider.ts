@@ -212,6 +212,11 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const mask = context?.maskSecrets ?? ((t: string) => t);
     // Serialize policy document
     const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
+    if (policyDoc === undefined) {
+      // --aws-emulator: nothing left but the TLS Deny, so no policy is put and
+      // whatever the bucket holds is left alone.
+      return { physicalId: bucketName, attributes: {} };
+    }
 
     // go-to-k/cdkd#6109: PutBucketPolicy REPLACES whatever policy the bucket
     // holds, so a create without this look is an upsert that silently drops
@@ -324,12 +329,18 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       // Serialize policy document
       const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
 
-      await this.s3Client.send(
-        new PutBucketPolicyCommand({
-          Bucket: bucketName,
-          Policy: policyDoc,
-        })
-      );
+      // --aws-emulator with nothing left but the TLS Deny: remove the policy
+      // the previous document put rather than put an empty one.
+      if (policyDoc === undefined) {
+        await this.s3Client.send(new DeleteBucketPolicyCommand({ Bucket: bucketName }));
+      } else {
+        await this.s3Client.send(
+          new PutBucketPolicyCommand({
+            Bucket: bucketName,
+            Policy: policyDoc,
+          })
+        );
+      }
 
       this.logger.debug(`Successfully updated S3 bucket policy ${logicalId}`);
 

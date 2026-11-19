@@ -36,6 +36,16 @@ const ENFORCE_SSL = {
 };
 const ALLOW = { Action: '*', Effect: 'Allow', Principal: { Service: 'events.amazonaws.com' }, Resource: '*' };
 const DOC = { Version: '2012-10-17', Statement: [ENFORCE_SSL, ALLOW] };
+const SSL_ONLY = { Version: '2012-10-17', Statement: [ENFORCE_SSL] };
+const EMULATOR = () => ({ endpoint: 'https://127.0.0.1:9297' });
+
+/** Each command the provider sent: its class name and input. */
+function sentCommands(): Array<{ name: string; input: Record<string, unknown> }> {
+  return mockSend.mock.calls.map(([command]) => ({
+    name: (command as object).constructor.name,
+    input: (command as { input: Record<string, unknown> }).input,
+  }));
+}
 
 /** The policy JSON of every write the provider sent. */
 function sentPolicies(): unknown[] {
@@ -97,5 +107,56 @@ describe.each(CASES)('$type', ({ type, make, props, physicalId }) => {
     setAwsEndpointOverrideSource(() => ({ endpoint: 'https://127.0.0.1:9297' }));
     await make().update('P', physicalId, type, { ...props }, { ...props });
     expect(sentPolicies()).toEqual([{ Version: '2012-10-17', Statement: [ALLOW] }]);
+  });
+});
+
+// A queue / bucket / topic with only enforceSSL: the policy left after the drop
+// is empty, and the emulator would deny every request under the templated one
+// (an SQS -> Lambda event source mapping could not be created).
+describe('a policy of only the enforceSSL Deny under --aws-emulator', () => {
+  const QUEUE = 'https://sqs.us-east-1.amazonaws.com/000000000000/q';
+  const TOPIC = 'arn:aws:sns:us-east-1:000000000000:t';
+
+  it.each(['create', 'update'] as const)('SQS %s clears the queue policy', async (op) => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    const props = { Queues: [QUEUE], PolicyDocument: SSL_ONLY };
+    const provider = new SQSQueuePolicyProvider();
+    if (op === 'create') await provider.create('P', 'AWS::SQS::QueuePolicy', props);
+    else await provider.update('P', QUEUE, 'AWS::SQS::QueuePolicy', props, { ...props });
+    expect(sentCommands()).toEqual([
+      { name: 'SetQueueAttributesCommand', input: { QueueUrl: QUEUE, Attributes: { Policy: '' } } },
+    ]);
+  });
+
+  it.each(['create', 'update'] as const)('SNS %s sets the default topic policy', async (op) => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    const props = { Topics: [TOPIC], PolicyDocument: SSL_ONLY };
+    const provider = new SNSTopicPolicyProvider();
+    if (op === 'create') await provider.create('P', 'AWS::SNS::TopicPolicy', props);
+    else await provider.update('P', TOPIC, 'AWS::SNS::TopicPolicy', props, { ...props });
+    const [policy] = sentPolicies() as Array<{ Id?: string; Statement: unknown[] }>;
+    expect(sentPolicies()).toHaveLength(1);
+    expect(policy!.Id).toBe('__default_policy_ID');
+    expect(JSON.stringify(policy)).not.toContain('aws:SecureTransport');
+  });
+
+  it('S3 create sends nothing, leaving the bucket without a policy', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    const result = await new S3BucketPolicyProvider().create('P', 'AWS::S3::BucketPolicy', {
+      Bucket: 'b',
+      PolicyDocument: SSL_ONLY,
+    });
+    expect(result.physicalId).toBe('b');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('S3 update deletes the bucket policy', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    const props = { Bucket: 'b', PolicyDocument: SSL_ONLY };
+    await new S3BucketPolicyProvider().update('P', 'b', 'AWS::S3::BucketPolicy', props, {
+      Bucket: 'b',
+      PolicyDocument: DOC,
+    });
+    expect(sentCommands()).toEqual([{ name: 'DeleteBucketPolicyCommand', input: { Bucket: 'b' } }]);
   });
 });

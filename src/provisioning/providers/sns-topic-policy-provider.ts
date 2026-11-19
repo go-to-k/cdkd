@@ -126,7 +126,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     const applied: string[] = [];
     try {
       for (const topicArn of topics) {
-        await this.setTopicPolicy(topicArn, policyDoc);
+        await this.setTopicPolicy(
+          topicArn,
+          policyDoc ?? this.emulatorFallbackPolicy(topicArn, resourceType, logicalId)
+        );
         applied.push(topicArn);
       }
 
@@ -230,7 +233,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
 
     try {
       for (const topicArn of topics) {
-        await this.setTopicPolicy(topicArn, policyDoc);
+        await this.setTopicPolicy(
+          topicArn,
+          policyDoc ?? this.emulatorFallbackPolicy(topicArn, resourceType, logicalId)
+        );
       }
 
       // Then reset the dropped ones, after the new set holds the policy.
@@ -610,6 +616,8 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
     if (candidates.length === 0) return [];
     // Under --aws-emulator the topics hold what was sent, not the record.
     const sent = sentPolicyDocument(document);
+    // No policy sent for it (only the TLS Deny): no topic carries it.
+    if (sent === undefined && document != null) return [];
     let reference: string | undefined;
     if (typeof sent === 'string' && sent.length > 0) reference = canonicalPolicy(sent);
     else if (sent !== null && typeof sent === 'object') reference = canonicalJson(sent);
@@ -850,6 +858,28 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
   /**
    * Set the policy on a single SNS topic
    */
+  /**
+   * What a topic gets when --aws-emulator sends no policy for the document
+   * (only the TLS Deny was in it): the topic's default policy, since SNS
+   * always holds one.
+   */
+  private emulatorFallbackPolicy(
+    topicArn: string,
+    resourceType: string,
+    logicalId: string
+  ): string {
+    const defaultPolicy = defaultTopicPolicy(topicArn);
+    if (defaultPolicy === undefined) {
+      throw new ProvisioningError(
+        `Cannot set SNS topic policy ${logicalId} on ${topicArn}: not an SNS topic ARN`,
+        resourceType,
+        logicalId,
+        topicArn
+      );
+    }
+    return defaultPolicy;
+  }
+
   private async setTopicPolicy(topicArn: string, policyDoc: string): Promise<void> {
     const snsClient = getAwsClients().sns;
     await snsClient.send(

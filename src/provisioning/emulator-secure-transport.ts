@@ -50,10 +50,12 @@ export function isInsecureTransportDeny(statement: unknown): boolean {
 /**
  * `document` without its {@link isInsecureTransportDeny} statements, and how
  * many were left out. A string document is parsed first; an unparseable one,
- * one without a `Statement` array (a lone statement object cannot be dropped
- * without emptying the policy), or one the drop would leave with no statement
- * at all (a policy of only that `Deny` grants nothing either way) is returned
- * unchanged, with `dropped: 0`.
+ * or one without a `Statement` array, is returned unchanged, with
+ * `dropped: 0`. One the drop leaves with no statement at all — a queue, topic
+ * or bucket with only CDK's `enforceSSL` — comes back as `undefined`: no
+ * policy is sent. On AWS such a policy grants nothing and refuses only plain
+ * HTTP, but on the emulator it denies every request, an event source mapping's
+ * read of the queue included (go-to-k/cdkd#6636).
  */
 function withoutInsecureTransportDenies(document: unknown): { document: unknown; dropped: number } {
   let parsed: unknown = document;
@@ -71,15 +73,17 @@ function withoutInsecureTransportDenies(document: unknown): { document: unknown;
   if (!Array.isArray(statements)) return { document, dropped: 0 };
   const kept = statements.filter((statement) => !isInsecureTransportDeny(statement));
   const dropped = statements.length - kept.length;
-  if (dropped === 0 || kept.length === 0) return { document, dropped: 0 };
+  if (dropped === 0) return { document, dropped: 0 };
+  if (kept.length === 0) return { document: undefined, dropped };
   return { document: { ...(parsed as Record<string, unknown>), Statement: kept }, dropped };
 }
 
 /**
  * The policy document cdkd SENDS for `document` in this run: under
- * `--aws-emulator` without its {@link isInsecureTransportDeny} statements,
- * otherwise `document` itself. Silent: for comparing a live policy with a
- * templated or journaled one, which under the emulator holds what was sent.
+ * `--aws-emulator` without its {@link isInsecureTransportDeny} statements
+ * (`undefined` when none is left, and no policy is sent), otherwise `document`
+ * itself. Silent: for comparing a live policy with a templated or journaled
+ * one, which under the emulator holds what was sent.
  */
 export function sentPolicyDocument(document: unknown): unknown {
   if (!awsEndpointOverrideActive()) return document;
@@ -100,8 +104,9 @@ export function policyDocumentForEmulator(
   const { document: sent, dropped } = withoutInsecureTransportDenies(document);
   if (dropped === 0) return document;
   const what = dropped === 1 ? 'a Deny statement' : `${dropped} Deny statements`;
+  const outcome = sent === undefined ? ', which leaves no statement, so no policy is set' : '';
   getLogger().warn(
-    safeMsg`--aws-emulator: left ${what} on aws:SecureTransport out of ${logicalId} (${resourceType}): AWS Emulator does not evaluate that key, so the statement would deny every request; on AWS it never matches an HTTPS request. The state record keeps the templated policy.`
+    safeMsg`--aws-emulator: left ${what} on aws:SecureTransport out of ${logicalId} (${resourceType})${outcome}: AWS Emulator does not evaluate that key, so the statement would deny every request; on AWS it never matches an HTTPS request. The state record keeps the templated policy.`
   );
   return sent;
 }
@@ -109,13 +114,15 @@ export function policyDocumentForEmulator(
 /**
  * The resource-policy JSON a `QueuePolicy` / `BucketPolicy` / `TopicPolicy`
  * provider sends: {@link policyDocumentForEmulator}, then a string document as
- * given and any other one stringified.
+ * given and any other one stringified. `undefined` means no policy is sent:
+ * the provider clears the one it holds instead (each in its own API's way).
  */
 export function serializeResourcePolicy(
   document: unknown,
   resourceType: string,
   logicalId: string
-): string {
+): string | undefined {
   const sent = policyDocumentForEmulator(document, resourceType, logicalId);
+  if (sent === undefined) return undefined;
   return typeof sent === 'string' ? sent : JSON.stringify(sent);
 }

@@ -127,7 +127,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
           new SetQueueAttributesCommand({
             QueueUrl: queueUrl,
             Attributes: {
-              Policy: policyDoc,
+              // No policy left to send (--aws-emulator): '' clears it.
+              Policy: policyDoc ?? '',
             },
           })
         );
@@ -223,7 +224,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
           new SetQueueAttributesCommand({
             QueueUrl: queueUrl,
             Attributes: {
-              Policy: policyDoc,
+              // No policy left to send (--aws-emulator): '' clears it.
+              Policy: policyDoc ?? '',
             },
           })
         );
@@ -578,7 +580,12 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
   ): Promise<string[]> {
     const carrying: string[] = [];
     if (candidates.length === 0) return carrying;
-    const reference = policyReference(sentPolicyDocument(document));
+    const sent = sentPolicyDocument(document);
+    if (sent === undefined && document != null) {
+      // --aws-emulator sent no policy for this document: no queue carries it.
+      return carrying;
+    }
+    const reference = policyReference(sent);
     if (reference === undefined) {
       this.logger.warn(
         safeMsg`The queues ${candidates.join(', ')} listed by ${logicalId} were not checked (no policy document recorded to compare with) and may still carry its policy.`
