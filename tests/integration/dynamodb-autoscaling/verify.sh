@@ -160,6 +160,21 @@ if [ "${POLICIES_P1}" != "2" ]; then
 fi
 echo "    both TargetTracking ScalingPolicies present (compound-id Ref resolved)"
 
+# Issue #6612: `Ref` of the read ScalingPolicy is its ARN, never the Cloud
+# Control id `<Arn>|<ScalableDimension>` cdkd records.
+READ_POLICY_ARN="$(aws application-autoscaling describe-scaling-policies \
+  --service-namespace dynamodb --resource-id "${RESOURCE_ID}" --region "${REGION}" \
+  --query "ScalingPolicies[?ScalableDimension=='dynamodb:table:ReadCapacityUnits'].PolicyARN | [0]" --output text)"
+READ_POLICY_REF="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.outputs.ReadPolicyRef // ""')"
+case "${READ_POLICY_ARN}" in arn:aws*:autoscaling:*) ;; *)
+  echo "FAIL: #6612 premise: no live read ScalingPolicy ARN (got: ${READ_POLICY_ARN})" >&2; exit 1 ;;
+esac
+if [ "${READ_POLICY_REF}" != "${READ_POLICY_ARN}" ]; then
+  echo "FAIL: #6612: Ref of the read ScalingPolicy is '${READ_POLICY_REF}', expected its ARN ${READ_POLICY_ARN}" >&2
+  exit 1
+fi
+echo "    Ref of the read ScalingPolicy is its ARN (#6612)"
+
 CREATION_P1="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
   --query 'Table.CreationDateTime' --output text)"
 echo "    baseline table CreationDateTime=${CREATION_P1}"

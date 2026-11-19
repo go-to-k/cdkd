@@ -195,6 +195,10 @@ jobs:
       # AWS keeps the old value.
       - run: vp run audit:update-path-coverage:check
 
+      # go-to-k/cdkd#6612 — a compound-id type with no Ref decision resolves Ref
+      # to the whole `|`-joined id, which AWS often accepts silently.
+      - run: vp run audit:ref-segment-coverage:check
+
       - run: vp run audit:nested-key-coverage:check
 
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a

@@ -64,6 +64,19 @@ const walk = (dir: string): string[] => {
   return out;
 };
 
+// Issue #6612: the before-first-pipe Set takes the same pin; a wrong segment
+// there is as silent as one in the after-pipe Set.
+describe('REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE entries are pinned by a unit test', () => {
+  const entries = setEntriesOf(readResolverFamily(), 'REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE');
+  it('every entry is named by a file under tests/unit/deployment/', () => {
+    expect(entries.length).toBeGreaterThanOrEqual(7);
+    const corpus = walk(UNIT_DEPLOYMENT)
+      .map((f) => readFileSync(f, 'utf8'))
+      .join('\n');
+    expect(entries.filter((t) => !corpus.includes(t))).toEqual([]);
+  });
+});
+
 describe('REF_RETURNS_SEGMENT_AFTER_PIPE entries are pinned by a unit test', () => {
   const entries = setEntriesOf(
     readResolverFamily(),

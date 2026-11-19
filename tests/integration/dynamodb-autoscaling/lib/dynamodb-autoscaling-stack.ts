@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as appscaling from 'aws-cdk-lib/aws-applicationautoscaling';
 
 /**
  * A PROVISIONED DynamoDB table with read + write Application Auto Scaling — one
@@ -59,5 +60,18 @@ export class DynamodbAutoscalingStack extends cdk.Stack {
     writeScaling.scaleOnUtilization({ targetUtilizationPercent: 70 });
 
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
+
+    // Issue #6612: CloudFormation's `Ref` of a ScalingPolicy is its ARN alone
+    // (what a CloudWatch alarm's `AlarmActions` takes), while cdkd records the
+    // Cloud Control id `<Arn>|<ScalableDimension>`. verify.sh compares this
+    // output with the live read policy's ARN.
+    const readPolicy = this.node
+      .findAll()
+      .find(
+        (c): c is appscaling.CfnScalingPolicy =>
+          c instanceof appscaling.CfnScalingPolicy && c.node.path.includes('ReadScaling')
+      );
+    if (!readPolicy) throw new Error('no read-capacity CfnScalingPolicy in the stack');
+    new cdk.CfnOutput(this, 'ReadPolicyRef', { value: readPolicy.ref });
   }
 }
