@@ -121,7 +121,7 @@ export async function readDeferralIdentity(
 
 /** Key of a survivor in `RollbackExecutorContext.survivorIdentities`. */
 export function survivorKey(oldType: string, physicalId: string): string {
-  return `${oldType}\0${physicalId}`;
+  return JSON.stringify([oldType, physicalId]);
 }
 
 /**
