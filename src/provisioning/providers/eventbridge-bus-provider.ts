@@ -758,7 +758,10 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * go-to-k/cdkd#6609) a declared `Policy` the read does not show yet
    * (`PutPermission` is a separate call) is re-read alone until it does
    * ({@link settleDeclaredMember}); still none after the schedule, the
-   * declared policy is recorded. Every other read takes the first answer.
+   * declared policy is recorded. Settled means every declared statement reads
+   * back: a sibling `AWS::Events::EventBusPolicy` adds its own statements to
+   * the same document, and those never hold the capture. Every other read
+   * takes the first answer.
    */
   async readCurrentState(
     physicalId: string,
@@ -779,7 +782,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
         );
         return resp.Policy ? { value: parseBusPolicy(resp.Policy) } : 'absent';
       },
-      (value) => policyDocumentMatchesDeclared(value, declared),
+      (value) => declaredStatementsRead(value, declared),
       declared,
       this.ownWriteRereadDelaysMs,
       () => warnUnsettledMember(this.logger, logicalId, 'AWS::Events::EventBus', 'Policy')
@@ -882,4 +885,27 @@ function parseBusPolicy(policy: string): unknown {
   } catch {
     return policy;
   }
+}
+
+/**
+ * Whether every statement of the declared bus policy is in the read one (IAM
+ * spellings folded, statement by statement). A statement the template does
+ * not declare, such as a sibling `AWS::Events::EventBusPolicy`'s, is ignored.
+ */
+function declaredStatementsRead(value: unknown, declared: unknown): boolean {
+  const statements = (doc: unknown): unknown[] | undefined => {
+    if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) return undefined;
+    const s = (doc as Record<string, unknown>)['Statement'];
+    return s === undefined ? undefined : Array.isArray(s) ? s : [s];
+  };
+  const read = statements(value);
+  const want = statements(declared);
+  if (read === undefined || want === undefined) {
+    return policyDocumentMatchesDeclared(value, declared);
+  }
+  return want.every((statement) =>
+    read.some((entry) =>
+      policyDocumentMatchesDeclared({ Statement: [entry] }, { Statement: [statement] })
+    )
+  );
 }

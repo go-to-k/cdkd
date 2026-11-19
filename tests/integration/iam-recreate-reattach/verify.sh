@@ -237,6 +237,9 @@ set -e
   exit 1
 }
 echo "    OK: role, group and user re-created; every attachment is back"
+# go-to-k/cdkd#6609: the re-attach rewrote the attachments right after the
+# re-create, so their baselines must be the live values too.
+assert_iam_baselines "phase 3 (re-create and re-attach)"
 
 echo "==> Phase 4: Destroy + gone-probes"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes

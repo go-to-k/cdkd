@@ -233,13 +233,19 @@ function managedPolicyOwnWriteMembers(
       },
     });
   }
+  // One paginated `ListEntitiesForPolicy` per re-read round, shared by the
+  // three lists: a member's n-th re-read takes the round's n-th answer.
+  const rounds: Array<Promise<Record<'Groups' | 'Roles' | 'Users', string[]>>> = [];
+  const served = { Groups: 0, Roles: 0, Users: 0 };
   for (const key of ['Groups', 'Roles', 'Users'] as const) {
     const declared = declaredStringList(properties[key]);
     if (declared === undefined) continue;
     members.push(
-      stringListMember(key, declared, async () => ({
-        value: (await readAttachments.call(this, physicalId, properties, context))[key],
-      }))
+      stringListMember(key, declared, async () => {
+        const round = served[key]++;
+        rounds[round] ??= readAttachments.call(this, physicalId, properties, context);
+        return { value: (await rounds[round])[key] };
+      })
     );
   }
   return members;

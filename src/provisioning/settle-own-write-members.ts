@@ -13,9 +13,11 @@
  * `UserToGroupAddition`, a standalone rule), which the capture does not always
  * strip and the drift compare does (go-to-k/cdkd#6614); or an out-of-band add;
  * or a removal not yet visible, the undeclared-member residual of the earlier
- * slices. A declared entry still missing after the schedule is added to what
- * was read (`whenUnsettled`): the write just succeeded, and recording the list
- * without it would let `drift --revert` remove it.
+ * slices. A list still unsettled after the schedule is recorded as read, never
+ * merged with the declaration: an entry the read spells differently would be
+ * recorded twice, and an appended entry would break the read's order. Only a
+ * list read EMPTY while the template declares entries keeps the declared list
+ * (the whole member is not visible yet, A2's none-set arm).
  */
 import {
   type MemberRead,
@@ -33,8 +35,6 @@ export interface OwnWriteMember<T> {
   matches: (value: T) => boolean;
   /** Whether a read value means "none set yet" (the declared value is kept after the schedule). */
   isAbsent?: (value: T) => boolean;
-  /** For a list: the value to record when the schedule ends on `newest` without the declared entries. */
-  whenUnsettled?: (newest: T) => T;
   /** One read of the member alone; throws what the call throws. */
   read: () => Promise<MemberRead<T>>;
 }
@@ -62,23 +62,15 @@ export async function settleOwnWriteMembers(
         member.isAbsent?.(answer.value) === true
           ? 'absent'
           : answer;
-      let spent = false;
       const settled = await settleDeclaredMember(
         classify({ value: result[member.key] }),
         async () => classify(await member.read()),
         member.matches,
         member.declared,
         delaysMs,
-        () => {
-          spent = true;
-          unsettled(member.key);
-        }
+        () => unsettled(member.key)
       );
-      if (typeof settled !== 'object') return;
-      result[member.key] =
-        spent && member.whenUnsettled !== undefined
-          ? member.whenUnsettled(settled.value)
-          : settled.value;
+      if (typeof settled === 'object') result[member.key] = settled.value;
     })
   );
 }
@@ -90,10 +82,14 @@ export function declaredStringList(value: unknown): string[] | undefined {
     : undefined;
 }
 
+/** Whether a read list is empty while the template declares entries (the whole member absent). */
+export function emptyWhileDeclared(value: unknown, declared: readonly unknown[]): boolean {
+  return Array.isArray(value) && value.length === 0 && declared.length > 0;
+}
+
 /**
  * A declared list of strings as a member: settled once every declared entry
- * reads back; still missing after the schedule, the missing ones are added to
- * the read, in declared order.
+ * reads back (the module comment has the unsettled outcomes).
  */
 export function stringListMember(
   key: string,
@@ -108,7 +104,7 @@ export function stringListMember(
     key,
     declared,
     matches: (value) => Array.isArray(value) && missing(value).length === 0,
-    whenUnsettled: (newest) => [...(Array.isArray(newest) ? newest : []), ...missing(newest)],
+    isAbsent: (value) => emptyWhileDeclared(value, declared),
     read,
   };
 }
@@ -147,9 +143,6 @@ export function declaredInlinePolicies(value: unknown): DeclaredInlinePolicy[] |
 /**
  * The declared inline `Policies` as a member: settled once every declared
  * policy reads back under its name with its document (IAM spellings folded).
- * Still not after the schedule, a declared policy the read lacks is added in
- * declared form; one read under its name with another document is kept as
- * read.
  */
 export function inlinePoliciesMember(
   declared: readonly DeclaredInlinePolicy[],
@@ -175,10 +168,7 @@ export function inlinePoliciesMember(
           policyDocumentMatchesDeclared(entry['PolicyDocument'], policy.PolicyDocument)
         );
       }),
-    whenUnsettled: (newest) => [
-      ...entries(newest),
-      ...declared.filter((policy) => byName(newest, policy.PolicyName) === undefined),
-    ],
+    isAbsent: (value) => emptyWhileDeclared(value, declared),
     read,
   };
 }

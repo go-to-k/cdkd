@@ -41,7 +41,12 @@ import {
 } from '../../sg-sibling-rules.js';
 import type { EC2Provider } from '../ec2-provider.js';
 import { OWN_WRITE_REREAD_DELAYS_MS, warnUnsettledMember } from '../../settle-after-own-write.js';
-import { type OwnWriteMember, settleOwnWriteMembers } from '../../settle-own-write-members.js';
+import {
+  emptyWhileDeclared,
+  type OwnWriteMember,
+  settleOwnWriteMembers,
+} from '../../settle-own-write-members.js';
+import { declaredSgRulesRead } from '../../sg-own-write-rules.js';
 
 export async function readVpcCurrentState(
   this: EC2Provider,
@@ -358,8 +363,8 @@ export async function readSecurityGroupCurrentState(
     // go-to-k/cdkd#6609: `Authorize`/`Revoke...` are separate calls, so the
     // read right after cdkd's own write can still lack a rule just written.
     // A declared rule list is re-read until every declared rule shows
-    // (`settle-own-write-members.ts`); a rule the template does not declare
-    // (a sibling's, an out-of-band one) never holds the capture.
+    // (`sg-own-write-rules.ts`); a rule the template does not declare (a
+    // sibling's, an out-of-band one) never holds the capture.
     const members: OwnWriteMember<unknown>[] = [];
     for (const [key, direction] of [
       ['SecurityGroupIngress', 'ingress'],
@@ -367,13 +372,13 @@ export async function readSecurityGroupCurrentState(
     ] as const) {
       const declared = properties[key];
       if (!Array.isArray(declared)) continue;
-      const missing = (value: unknown): Array<Record<string, unknown>> =>
-        missingSgRules(value, declared as Array<Record<string, unknown>>, direction);
       members.push({
         key,
         declared,
-        matches: (value) => Array.isArray(value) && missing(value).length === 0,
-        whenUnsettled: (newest) => [...(Array.isArray(newest) ? newest : []), ...missing(newest)],
+        matches: (value) => declaredSgRulesRead(value, declared, direction),
+        // The whole member still absent keeps the declared rules (A2's arm);
+        // any other unsettled list is recorded as read.
+        isAbsent: (value) => emptyWhileDeclared(value, declared),
         read: async () => {
           const reread = await this.ec2Client.send(
             new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
@@ -390,27 +395,6 @@ export async function readSecurityGroupCurrentState(
     );
   }
   return result;
-}
-
-/**
- * The declared rules the read does not hold, matched by `sgRuleKey` as a
- * multiset. AWS reports the peer group's owner on an ingress rule the
- * template need not declare (CDK never does), so a read rule matches without
- * it too. A read rule the template does not declare is ignored.
- */
-function missingSgRules(
-  value: unknown,
-  declared: ReadonlyArray<Record<string, unknown>>,
-  direction: 'ingress' | 'egress'
-): Array<Record<string, unknown>> {
-  const remaining = declared.map((rule) => ({ rule, key: sgRuleKey(rule, direction) }));
-  for (const rule of Array.isArray(value) ? (value as CfnSgRule[]) : []) {
-    const { SourceSecurityGroupOwnerId: _owner, ...withoutOwner } = rule;
-    const keys = [sgRuleKey(rule, direction), sgRuleKey(withoutOwner, direction)];
-    const index = remaining.findIndex((entry) => keys.includes(entry.key));
-    if (index >= 0) remaining.splice(index, 1);
-  }
-  return remaining.map((entry) => entry.rule);
 }
 
 /**
