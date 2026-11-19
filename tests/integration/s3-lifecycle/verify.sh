@@ -1802,6 +1802,102 @@ assert_alias_spellings "phase 2" "60"
 assert_lifecycle_baseline "phase 2" 4 365 60
 assert_no_drift "phase 2"
 
+# --- Phase 2r: an out-of-band lifecycle change, `drift --revert` (go-to-k/cdkd#6609) ---
+# The #6609 heal changes which keys `drift --revert` compares on this bucket,
+# so the revert itself runs here: replace the rules OUT OF BAND, require drift
+# to report LifecycleConfiguration, revert, then require the template's rules
+# live again on the SAME bucket (state physicalId, a marker object's version,
+# and in us-east-1 the ListBuckets CreationDate), and a clean follow-up drift.
+# The marker is deleted (by version) on every exit from this block, because
+# the fixture's cleanup removes the bucket without emptying it.
+echo "==> Phase 2r: an out-of-band lifecycle change is reported and drift --revert restores it in place (#6609)"
+P2R_MARKER_KEY="cdkd-6609-revert-marker"
+P2R_MARKER_VERSION=""
+p2r_drop_marker() {
+  [ -n "${P2R_MARKER_VERSION}" ] || return 0
+  aws s3api delete-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+    --key "${P2R_MARKER_KEY}" --version-id "${P2R_MARKER_VERSION}" >/dev/null 2>&1 || true
+  P2R_MARKER_VERSION=""
+}
+p2r_fail() { # $@ = message lines
+  local line
+  for line in "$@"; do echo "${line}" >&2; done
+  p2r_drop_marker
+  exit 1
+}
+# Waits until 3 reads in a row answer $1 (the read flaps for seconds after a
+# write, measured): `rules` = the 4 template rules, `oob` = the out-of-band one.
+p2r_await_live() { # $1 = rules|oob, $2 = label
+  local want="$1" label="$2" seen=0 i got
+  for i in $(seq 1 30); do
+    # A failed read (the flap can answer "none") counts as not settled.
+    if ! got="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
+      --query "join(',', sort(Rules[].ID))" --output text 2>/dev/null)"; then
+      got="read-failed"
+    fi
+    case "${want}:${got}" in
+      'rules:abort-mpu,archive,big-objects,tag-scoped' | 'oob:oob-6609') seen=$((seen + 1)) ;;
+      *) seen=0 ;;
+    esac
+    [ "${seen}" -ge 3 ] && return 0
+    sleep 2
+  done
+  p2r_fail "FAIL phase 2r: ${label}: the live rules never settled on ${want} (last: ${got})"
+}
+P2R_LOGICAL="$(state_json | jq -r --arg b "${BUCKET_NAME}" \
+  '[.resources | to_entries[] | select(.value.physicalId == $b) | .key][0]')" || exit 1
+[ -n "${P2R_LOGICAL}" ] && [ "${P2R_LOGICAL}" != null ] \
+  || p2r_fail "FAIL phase 2r premise: no state record holds ${BUCKET_NAME}"
+P2R_MARKER_FILE="$(mktemp)"
+printf 'marker' >"${P2R_MARKER_FILE}"
+P2R_MARKER_VERSION="$(aws s3api put-object --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --key "${P2R_MARKER_KEY}" --body "${P2R_MARKER_FILE}" --query VersionId --output text)" \
+  || { rm -f "${P2R_MARKER_FILE}"; p2r_fail "FAIL phase 2r premise: could not write the marker object"; }
+rm -f "${P2R_MARKER_FILE}"
+case "${P2R_MARKER_VERSION}" in
+  '' | None | null) P2R_MARKER_VERSION=""; p2r_fail "FAIL phase 2r premise: the marker has no VersionId (is the bucket versioned?)" ;;
+esac
+
+aws s3api put-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --lifecycle-configuration '{"Rules":[{"ID":"oob-6609","Status":"Enabled","Filter":{"Prefix":"oob/"},"Expiration":{"Days":1}}]}' \
+  >/dev/null || p2r_fail "FAIL phase 2r: the out-of-band put-bucket-lifecycle-configuration failed"
+p2r_await_live oob "after the out-of-band put"
+
+set +e
+P2R_DRIFT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)"
+set -e
+P2R_PATHS="$(jq -c --arg id "${P2R_LOGICAL}" \
+  '[.[].drifted[] | select(.logicalId == $id) | .changes[].path]' <<<"${P2R_DRIFT}")" \
+  || p2r_fail "FAIL phase 2r: could not parse cdkd drift --json" "${P2R_DRIFT}"
+case "${P2R_PATHS}" in
+  *LifecycleConfiguration*) ;;
+  *) p2r_fail "FAIL phase 2r: drift did not report LifecycleConfiguration on ${P2R_LOGICAL} (paths: ${P2R_PATHS})" "${P2R_DRIFT}" ;;
+esac
+echo "    drift reports the out-of-band lifecycle (${P2R_PATHS})"
+
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes || p2r_fail "FAIL phase 2r: cdkd drift --revert failed"
+p2r_await_live rules "after drift --revert"
+P2R_EXP="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --query "Rules[?ID=='archive'].Expiration.Days | [0]" --output text)"
+[ "${P2R_EXP}" = 365 ] || p2r_fail "FAIL phase 2r: after --revert the archive expiration is ${P2R_EXP}, want 365"
+
+P2R_LOGICAL_AFTER="$(state_json | jq -r --arg b "${BUCKET_NAME}" \
+  '[.resources | to_entries[] | select(.value.physicalId == $b) | .key][0]')" || p2r_fail "FAIL phase 2r: could not read state"
+[ "${P2R_LOGICAL_AFTER}" = "${P2R_LOGICAL}" ] \
+  || p2r_fail "FAIL phase 2r: after --revert no state record (or another one) holds ${BUCKET_NAME}: ${P2R_LOGICAL_AFTER}"
+aws s3api head-object --bucket "${BUCKET_NAME}" --region "${REGION}" --key "${P2R_MARKER_KEY}" \
+  --version-id "${P2R_MARKER_VERSION}" >/dev/null \
+  || p2r_fail "FAIL phase 2r: the marker version is gone, so --revert replaced the bucket"
+if [ "${REGION}" = us-east-1 ]; then
+  P2R_CREATION="$(aws s3api list-buckets --query "Buckets[?Name=='${BUCKET_NAME}'].CreationDate | [0]" --output text)"
+  [ "${P2R_CREATION}" = "${CREATION_P1}" ] \
+    || p2r_fail "FAIL phase 2r: CreationDate ${CREATION_P1} -> ${P2R_CREATION}: --revert replaced the bucket"
+fi
+p2r_drop_marker
+echo "    --revert restored the template's rules on the same bucket (state record, marker version, CreationDate)"
+assert_lifecycle_baseline "phase 2r" 4 365 60
+
 # --- Phase 2b: a MALFORMED EventBridgeEnabled on the template path (#1759, #3740)
 # The same bucket's EventBridgeEnabled becomes the string 'yes' on top of the
 # phase-2 template. Since issue #3740 a template-path update REFUSES it before
