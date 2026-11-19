@@ -126,7 +126,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
 ];
 
 /** Methods whose bodies stay on the class. */
-const KEPT_ON_CLASS = new Set(['constructor']);
+const KEPT_ON_CLASS = new Set(['constructor', 'getDriftUnorderedPaths']);
 
 type Callable = (...args: unknown[]) => unknown;
 type Spy = ReturnType<typeof vi.fn>;

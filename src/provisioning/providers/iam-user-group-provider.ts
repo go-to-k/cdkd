@@ -458,6 +458,17 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
   // ─── readCurrentState dispatch ───────────────────────────────────
 
+  /**
+   * A user's `Groups` is a membership SET that `ListGroupsForUser` lists in its
+   * own order, not the template's: compared order-insensitively, so a baseline
+   * captured right after the write (go-to-k/cdkd#6609), which records a
+   * still-unread declared group at its declared position, compares equal to a
+   * later read.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::IAM::User' ? ['Groups'] : [];
+  }
+
   readCurrentState(
     physicalId: string,
     logicalId: string,

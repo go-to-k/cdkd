@@ -224,6 +224,17 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     return undefined;
   }
 
+  /**
+   * `Roles` / `Users` / `Groups` are attachment SETS that `ListEntitiesForPolicy`
+   * lists in entity-id order (measured for roles, us-east-1, 2026-11-19), not
+   * the template's: compared order-insensitively, so a baseline captured right
+   * after the write (go-to-k/cdkd#6609), which records a still-unread declared
+   * entry at its declared position, compares equal to a later read.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::IAM::ManagedPolicy' ? ['Roles', 'Users', 'Groups'] : [];
+  }
+
   readCurrentState(
     physicalId: string,
     logicalId: string,

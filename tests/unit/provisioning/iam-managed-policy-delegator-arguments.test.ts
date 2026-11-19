@@ -82,8 +82,8 @@ describe('IAMManagedPolicyProvider delegators hand every argument to the moved b
       // isSameResource, resourceIdentity, readPolicyIdIfExists,
       // attachToPrincipals, updatePrincipals, readLivePrincipals,
       // detachAllPrincipals, deleteAllNonDefaultVersions, ensureVersionCapacity,
-      // updateTags, findPolicyByName
-      own.length + 15
+      // updateTags, findPolicyByName, getDriftUnorderedPaths
+      own.length + 16
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });

@@ -89,6 +89,14 @@ export function sgRuleReadbackShape(
   rule: Record<string, unknown>,
   direction: SgDirection
 ): Record<string, unknown> | undefined {
+  // A rule without a protocol (CFn requires one) is never recorded.
+  if (
+    rule['IpProtocol'] === undefined ||
+    rule['IpProtocol'] === null ||
+    rule['IpProtocol'] === ''
+  ) {
+    return undefined;
+  }
   if (sgSettleRuleKey(rule, direction) === undefined) return undefined;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(rule)) {

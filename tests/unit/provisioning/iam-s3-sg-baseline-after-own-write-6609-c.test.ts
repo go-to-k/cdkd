@@ -60,6 +60,7 @@ import { EventBridgeBusProvider } from '../../../src/provisioning/providers/even
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import type { ReadCurrentStateContext } from '../../../src/types/resource.js';
 import { ResourceNotFoundException } from '@aws-sdk/client-eventbridge';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 const AFTER: ReadCurrentStateContext = { afterOwnWrite: true };
 const ACCT = '111111111111';
@@ -1006,5 +1007,69 @@ describe('review round 1 (#6629)', () => {
     answer('DescribeSecurityGroupsCommand', sgAnswer([ingressPermission], []));
     await readSg({ GroupDescription: 'd', SecurityGroupIngress: [INGRESS, INGRESS] }, AFTER);
     expect(callsOf('DescribeSecurityGroupsCommand')).toBe(4);
+  });
+
+  it('a security group rule matched only by the settle key: the unsettled baseline is in the order a settled read reconciles to', async () => {
+    const peer = { Description: 'p', FromPort: 443, IpProtocol: 'tcp', SourceSecurityGroupId: 'sg-peer', ToPort: 443 };
+    const cidr = { CidrIp: '10.0.0.0/8', FromPort: 22, IpProtocol: 'tcp', ToPort: 22 };
+    const peerPermission = {
+      IpProtocol: 'tcp',
+      FromPort: 443,
+      ToPort: 443,
+      UserIdGroupPairs: [{ GroupId: 'sg-peer', UserId: ACCT, Description: 'p' }],
+    };
+    const cidrPermission = { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, IpRanges: [{ CidrIp: '10.0.0.0/8' }] };
+    const properties = { GroupDescription: 'd', SecurityGroupIngress: [peer, cidr] };
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission], []));
+    const captured = await readSg(properties, AFTER);
+    expect(unsettledWarnings()).toHaveLength(1);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission, cidrPermission], []));
+    const settled = await readSg(properties, undefined);
+    expect(bag(captured)['SecurityGroupIngress']).toEqual(bag(settled)['SecurityGroupIngress']);
+  });
+
+  it('a declared rule without IpProtocol is never recorded', async () => {
+    answer('DescribeSecurityGroupsCommand', sgAnswer([], []));
+    const read = await readSg(
+      { GroupDescription: 'd', SecurityGroupIngress: [{ CidrIp: '10.0.0.0/8', FromPort: 22, ToPort: 22 }] },
+      AFTER
+    );
+    expect(bag(read)['SecurityGroupIngress']).toEqual([]);
+  });
+
+  it('managed policy Roles declared [r2, r1], read by AWS as [r1, r2] with r1 lagging: the baseline compares equal to the settled read', async () => {
+    const provider = zeroDelays(new IAMManagedPolicyProvider());
+    const MP = 'arn:aws:iam::111111111111:policy/mp';
+    const properties = { Roles: ['r2', 'r1'] };
+    answer('GetPolicyCommand', () => ({ Policy: { PolicyName: 'mp' } }));
+    answer('ListEntitiesForPolicyCommand', () => ({ PolicyRoles: [{ RoleName: 'r2' }] }));
+    const captured = bag(await provider.readCurrentState(MP, 'Mp', 'AWS::IAM::ManagedPolicy', properties, AFTER));
+    expect(unsettledWarnings()).toHaveLength(1);
+    answer('ListEntitiesForPolicyCommand', () => ({
+      PolicyRoles: [{ RoleName: 'r1' }, { RoleName: 'r2' }],
+    }));
+    const settled = bag(await provider.readCurrentState(MP, 'Mp', 'AWS::IAM::ManagedPolicy', properties, undefined));
+    expect(captured['Roles']).toEqual(['r2', 'r1']);
+    expect(settled['Roles']).toEqual(['r1', 'r2']);
+    const compare = (unorderedPaths: string[]) =>
+      calculateResourceDrift(captured, settled, { unorderedPaths }).filter((d) =>
+        String((d as { path?: unknown }).path ?? (d as { propertyPath?: unknown }).propertyPath).startsWith('Roles')
+      );
+    expect(compare(provider.getDriftUnorderedPaths('AWS::IAM::ManagedPolicy'))).toEqual([]);
+    expect(compare([]).length).toBeGreaterThan(0);
+  });
+
+  it('a user Groups declared [g2, g1], read as [g1, g2] with g1 lagging: the baseline compares equal to the settled read', async () => {
+    const provider = userGroup();
+    const properties = { Groups: ['g2', 'g1'] };
+    answer('GetUserCommand', () => ({ User: { UserName: 'u' } }));
+    answer('ListGroupsForUserCommand', () => ({ Groups: [{ GroupName: 'g2' }] }));
+    const captured = bag(await provider.readCurrentState('u', 'User', 'AWS::IAM::User', properties, AFTER));
+    answer('ListGroupsForUserCommand', () => ({ Groups: [{ GroupName: 'g1' }, { GroupName: 'g2' }] }));
+    const settled = bag(await provider.readCurrentState('u', 'User', 'AWS::IAM::User', properties, undefined));
+    const drifts = calculateResourceDrift(captured, settled, {
+      unorderedPaths: provider.getDriftUnorderedPaths('AWS::IAM::User'),
+    });
+    expect(drifts).toEqual([]);
   });
 });

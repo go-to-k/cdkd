@@ -372,7 +372,13 @@ export async function readSecurityGroupCurrentState(
         key,
         declared,
         matches: (value) => declaredSgRulesRead(value, declared, direction),
-        whenUnsettled: (newest) => mergeDeclaredSgRules(newest, declared, direction),
+        // Ordered by the read's own reconcile, so a later read lists it alike.
+        whenUnsettled: (newest) =>
+          reconcileSgRules(
+            mergeDeclaredSgRules(newest, declared, direction) as CfnSgRule[],
+            declared as Array<Record<string, unknown>>,
+            direction
+          ),
         read: async () => {
           const reread = await this.ec2Client.send(
             new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
