@@ -703,6 +703,24 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     }
   });
 
+  // go-to-k/cdkd#6621: the generation a re-adopt must find; absent is valid.
+  it('round-trips an oldResourceIdentity and refuses a non-string or empty one', () => {
+    const identity = 'us-east-1|2026-11-01T01:02:03.000Z';
+    const deferred = { ...op, changeType: 'UPDATE', oldResourceMaySurvive: 'deferred' };
+    expect(
+      parseRollbackJournal(journalWith([{ ...deferred, oldResourceIdentity: identity }]), 'S')
+        .segments[0]!.operations[0]
+    ).toMatchObject({ oldResourceIdentity: identity });
+    expect(
+      parseRollbackJournal(journalWith([deferred]), 'S').segments[0]!.operations[0]
+    ).not.toHaveProperty('oldResourceIdentity');
+    for (const planted of [42, '', { at: 1 }]) {
+      expect(messageOf(journalWith([{ ...deferred, oldResourceIdentity: planted }]))).toContain(
+        'oldResourceIdentity must be a non-empty string when present'
+      );
+    }
+  });
+
   it('TOLERATES what the state boundary tolerates: an absent nested field, and any provisionedBy', () => {
     // `previousState` is forwarded verbatim from the state record, which
     // `parseStateBody` deliberately does not validate (`s3-state-backend.ts`,

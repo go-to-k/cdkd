@@ -34,6 +34,7 @@ export { RESOURCE_NOT_FOUND, DriftReadRefusedError } from './resource/read-state
 export type {
   ResourceNotFound,
   ResourceIdentityVerdict,
+  SurvivorIdentityRead,
   ReadCurrentStateContext,
 } from './resource/read-state.js';
 export type { DeleteContext, ResourceProvider, ProviderRegistry } from './resource/provider.js';

@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
@@ -34,6 +35,12 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  *   The exclusion filters change to two DIFFERENT patterns while
  *   `imageTagMutability` stays IMMUTABLE_WITH_EXCLUSION — a filters-ONLY edit,
  *   which is precisely the case the pre-#1392 update() gate skipped.
+ *
+ * Both phases: one repository policy statement (`CdkdIntegPull`, the account
+ * root allowed two pull actions), the drift arm of issue #6631 —
+ * `readCurrentState` never read `RepositoryPolicyText` back, so an
+ * out-of-band policy change was never reported, and a template-only baseline
+ * reported the policy (and `EmptyOnDelete`) as drift on an untouched repo.
  */
 export class EcrScanningStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -72,6 +79,16 @@ export class EcrScanningStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
     });
+
+    // Identical in both phases: the drift arm edits it out of band only.
+    repo.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'CdkdIntegPull',
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.AccountRootPrincipal()],
+        actions: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer'],
+      })
+    );
 
     // Phase 1: env=dev, team=platform. Phase 2: env changed to prod, team
     // removed entirely (untag path).

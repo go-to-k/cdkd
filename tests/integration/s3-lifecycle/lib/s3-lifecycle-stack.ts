@@ -54,13 +54,13 @@ export class S3LifecycleStack extends cdk.Stack {
       new s3.CfnBucket(this, 'DepArmReplaceBucket', { bucketName: depArmReplaceBucket });
     }
 
-    // go-to-k/cdkd#4684 phase 2d: present ONLY while `verify.sh` sets the
-    // variable. The phase renames it (a replacement that creates the new bucket
-    // and deletes the old one), fails the deploy on the queue below
-    // (`--no-rollback`), plants a bucket under the OLD name, and runs
-    // `cdkd rollback`: the reverse replacement's re-create must refuse that
-    // bucket rather than adopt it. The tag is what an adoption would overwrite.
-    // Per-run unique names, as above.
+    // go-to-k/cdkd#4684 / #6621 phase 2d: present ONLY while `verify.sh` sets
+    // the variable. The phase renames it (a replacement that creates the new
+    // bucket and defers the old one's delete), fails the deploy on the queue
+    // below (`--no-rollback`), deletes the old bucket out of band, plants a
+    // bucket under the OLD name, and runs `cdkd rollback`: the re-adopt must
+    // refuse that bucket rather than take it. The tag is what an adoption would
+    // overwrite. Per-run unique names, as above.
     const renameArmBucketName = process.env.CDKD_RENAME_ARM_BUCKET;
     if (renameArmBucketName) {
       const renameArm = new s3.CfnBucket(this, 'RenameArmBucket', {
@@ -73,7 +73,7 @@ export class S3LifecycleStack extends cdk.Stack {
           queueName: `${cdk.Stack.of(this).stackName}-rename-arm-failing`,
           messageRetentionPeriod: 9999999,
         });
-        // After the replacement, old bucket deleted included.
+        // After the replacement; the old bucket's delete waits for a success.
         renameArmFailing.addDependency(renameArm);
       }
     }

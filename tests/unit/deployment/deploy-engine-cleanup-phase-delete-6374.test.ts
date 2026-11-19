@@ -19,6 +19,7 @@ import {
   warnUnretriedReplacedDeletes,
 } from '../../../src/deployment/deploy-engine/replacement.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
@@ -169,7 +170,8 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       } as unknown as never,
       {} as unknown as never,
       {
-        getDirectDependencies: (_d: unknown, id: string) => (id === 'Endpoint' ? ['Revision'] : []),
+        getDirectDependencies: (_d: unknown, id: string) =>
+          id === 'Endpoint' || id === 'Orphan' ? ['Revision'] : [],
       } as unknown as never,
       {} as unknown as never,
       registry as unknown as never,
@@ -186,6 +188,8 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       revisionType?: string;
       oldRecord?: Partial<ResourceState>;
       updateReplacePolicy?: string;
+      /** go-to-k/cdkd#6621: a CREATE beside Endpoint (a bucket policy). */
+      orphanCreate?: boolean;
     } = {}
   ): Promise<{ completedOperations: CompletedOperation[]; state: StackState }> {
     const engine = opts.engine ?? makeEngine();
@@ -200,6 +204,9 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
           }),
         },
         Endpoint: { Type: ENDPOINT, Properties: { FunctionName: 'todo-api', RevisionId: 'rev-new' } },
+        ...(opts.orphanCreate === true && {
+          Orphan: { Type: 'AWS::S3::BucketPolicy', Properties: { Bucket: 'rev-new' } },
+        }),
       },
     } as unknown as CloudFormationTemplate;
     const record = (physicalId: string, resourceType: string, properties: Record<string, unknown>) =>
@@ -250,6 +257,19 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
           ],
         } as unknown as ResourceChange,
       ],
+      ...(opts.orphanCreate === true
+        ? ([
+            [
+              'Orphan',
+              {
+                logicalId: 'Orphan',
+                changeType: 'CREATE',
+                resourceType: 'AWS::S3::BucketPolicy',
+                desiredProperties: { Bucket: 'rev-new' },
+              } as unknown as ResourceChange,
+            ],
+          ] as Array<[string, ResourceChange]>)
+        : []),
     ]);
     return (await executeDeployment(
       engine,
@@ -257,7 +277,7 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       currentState,
       changes,
       {} as never,
-      [['Revision'], ['Endpoint']],
+      opts.orphanCreate === true ? [['Revision'], ['Endpoint', 'Orphan']] : [['Revision'], ['Endpoint']],
       'MyStack',
       template,
       undefined,
@@ -317,6 +337,149 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     // That save came before the delete was sent.
     const saves = order.map((o, i) => (o === 'save' ? i : -1)).filter((i) => i >= 0);
     expect(saves[rowSave]!).toBeLessThan(order.indexOf('delete rev-old'));
+  });
+
+  // go-to-k/cdkd#6621: a global-name type journals the generation it read at
+  // the deferral, and the automatic rollback re-adopts only that generation.
+  describe('a deferred bucket journals its generation (go-to-k/cdkd#6621)', () => {
+    const BUCKET = 'AWS::S3::Bucket';
+    const bucketEngine = (o: Record<string, unknown> = {}) =>
+      makeEngine({ forceStatefulRecreation: true, ...o });
+    let generation: string | undefined;
+    let identityReads: string[];
+    beforeEach(() => {
+      generation = 'us-east-1|2026-11-01T00:00:00.000Z';
+      identityReads = [];
+      (provider as { replacedSurvivorIdentity?: unknown }).replacedSurvivorIdentity = vi.fn(
+        async (physicalId: string) => {
+          identityReads.push(physicalId);
+          return live.has(physicalId)
+            ? { kind: 'owned', identity: generation }
+            : { kind: 'gone' };
+        }
+      );
+    });
+
+    it('stamps the read beside the deferred verdict', async () => {
+      endpointFails = true;
+      await expect(deploy({ engine: bucketEngine(), revisionType: BUCKET })).rejects.toThrow();
+      const op = revisionOp(journaled[0]!);
+      expect(op.oldResourceMaySurvive).toBe('deferred');
+      expect(op.oldResourceIdentity).toBe('us-east-1|2026-11-01T00:00:00.000Z');
+      expect(identityReads).toEqual(['rev-old']);
+    });
+
+    it('drops the generation with the verdict once the cleanup phase deleted the old bucket', async () => {
+      const result = await deploy({ engine: bucketEngine(), revisionType: BUCKET });
+      const op = revisionOp(result.completedOperations);
+      expect(oldDeletes()).toBe(1);
+      expect('oldResourceMaySurvive' in op).toBe(false);
+      expect('oldResourceIdentity' in op).toBe(false);
+    });
+
+    it('stamps nothing when the read cannot name a generation', async () => {
+      endpointFails = true;
+      generation = undefined;
+      await expect(deploy({ engine: bucketEngine(), revisionType: BUCKET })).rejects.toThrow();
+      expect('oldResourceIdentity' in revisionOp(journaled[0]!)).toBe(false);
+    });
+
+    it('never reads for a type outside the table', async () => {
+      endpointFails = true;
+      await expect(deploy()).rejects.toThrow();
+      expect('oldResourceIdentity' in revisionOp(journaled[0]!)).toBe(false);
+      expect(identityReads).toEqual([]);
+    });
+
+    it('the automatic rollback re-adopts the same generation', async () => {
+      endpointFails = true;
+      const engine = bucketEngine({ noRollback: false });
+      await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
+      expect(provider.create).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+      expect([...live]).toEqual(['rev-old']);
+      expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    });
+
+    it('the automatic rollback judges the generation read before its replay began', async () => {
+      endpointFails = true;
+      generation = 'us-west-2|2026-11-01T00:00:00.000Z';
+      const engine = bucketEngine({ noRollback: false });
+      // Anything the replay runs once it began (here the probe's own
+      // existence read; in AWS a reverted bucket policy) may write the old
+      // bucket, which outside us-east-1 moves its date. Only this deploy has
+      // one completed op, so the read before the replay is the one before it.
+      const update = provider.update;
+      let failed = false;
+      provider.update = vi.fn(async (...args: Parameters<ResourceProvider['update']>) => {
+        try {
+          return await update(...args);
+        } catch (e) {
+          failed = true;
+          throw e;
+        }
+      }) as unknown as ResourceProvider['update'];
+      const read = provider.readCurrentState!;
+      provider.readCurrentState = vi.fn(
+        async (...args: Parameters<NonNullable<ResourceProvider['readCurrentState']>>) => {
+          if (failed) generation = 'us-west-2|2026-11-02T00:00:00.000Z';
+          return read(...args);
+        }
+      ) as unknown as ResourceProvider['readCurrentState'];
+      await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
+      // The deferral's read, the rollback's snapshot, the probe's confirmation.
+      expect(identityReads).toEqual(['rev-old', 'rev-old', 'rev-old']);
+      expect([...live]).toEqual(['rev-old']);
+    });
+
+    // Review round 2: the FAILED op's revert (here an orphan bucket policy's
+    // delete) runs before the completed ops; outside us-east-1 such a write
+    // moves the old bucket's date, so the snapshot must precede it too.
+    it("the automatic rollback judges the generation read before the failed op's revert wrote it", async () => {
+      generation = 'us-west-2|2026-11-01T00:00:00.000Z';
+      const engine = bucketEngine({ noRollback: false });
+      const create = provider.create;
+      provider.create = vi.fn(async (...args: Parameters<ResourceProvider['create']>) => {
+        if (args[0] === 'Orphan') {
+          throw markCreatedBeforeFailure(
+            new Error('MalformedPolicy: policy rejected after create'),
+            'Orphan',
+            'AWS::S3::BucketPolicy',
+            'orphan-pol'
+          );
+        }
+        return create(...args);
+      }) as unknown as ResourceProvider['create'];
+      const del = provider.delete;
+      let orphanDeleted = false;
+      provider.delete = vi.fn(async (...args: Parameters<ResourceProvider['delete']>) => {
+        if (args[1] === 'orphan-pol') {
+          orphanDeleted = true;
+          generation = 'us-west-2|2026-11-02T00:00:00.000Z';
+          return undefined;
+        }
+        return del(...args);
+      }) as unknown as ResourceProvider['delete'];
+      await expect(deploy({ engine, revisionType: BUCKET, orphanCreate: true })).rejects.toThrow();
+      expect(orphanDeleted).toBe(true);
+      expect([...live]).toEqual(['rev-old']);
+      expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    });
+
+    it('the automatic rollback refuses another generation, deleting nothing', async () => {
+      endpointFails = true;
+      const engine = bucketEngine({ noRollback: false });
+      // Re-created between the deferral and the rollback's read.
+      const update = provider.update;
+      provider.update = vi.fn(async (...args: Parameters<ResourceProvider['update']>) => {
+        generation = 'us-east-1|2026-11-02T00:00:00.000Z';
+        return update(...args);
+      }) as unknown as ResourceProvider['update'];
+      await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
+      expect(oldDeletes()).toBe(0);
+      expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).not.toContain('rev-new');
+      expect(live.has('rev-new')).toBe(true);
+    });
   });
 
   it('a deploy failing after the replacement sends no old delete, journals deferred, and the rollback re-adopts it', async () => {

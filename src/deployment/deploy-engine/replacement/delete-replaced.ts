@@ -22,7 +22,10 @@ import { green } from '../../../utils/colors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../../delete-outcome.js';
-import { replacedDeleteFailureVerdict } from '../../rollback-executor/replaced-survivor.js';
+import {
+  readDeferralIdentity,
+  replacedDeleteFailureVerdict,
+} from '../../rollback-executor/replaced-survivor.js';
 import { reportDeleteGuards } from '../../delete-guard-scope.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { isStandaloneInlinePolicyType } from '../../inline-policy-claims.js';
@@ -103,6 +106,16 @@ export async function deleteReplacedAfterCreate(
     })
   ) {
     run.replacedOldMaySurvive.set(logicalId, 'deferred');
+    // go-to-k/cdkd#6621: the generation a rollback re-adopting it must find
+    // (one read, on a replacement of a global-name type only).
+    const identity = await readDeferralIdentity(
+      deps.providerRegistry(),
+      oldResourceType,
+      currentResource.physicalId,
+      deps.stackRegion
+    );
+    if (identity !== undefined) run.replacedOldIdentity.set(logicalId, identity);
+    else run.replacedOldIdentity.delete(logicalId);
     run.deferredReplacedDeletes?.set(logicalId, {
       physicalId: currentResource.physicalId,
       resourceType: oldResourceType,
