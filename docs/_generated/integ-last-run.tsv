@@ -143,7 +143,7 @@ drift-revert-vpc	2026-11-19T14:40:15Z	PASS	448	verify.sh	#6626 HEAD 341ad3edc: r
 drift-rotation-schedule-revert	2026-11-17T14:11:25Z	PASS	140	verify.sh	rc ok, orph clean
 drift-sg-sibling-rules	2026-11-19T10:36:45Z	PASS	202	verify.sh	#6614 batch1 HEAD ba72216f9: rc ok, destroy 0 errors, orph clean
 drift-sns-sibling-subscription	2026-11-19T10:36:45Z	PASS	132	verify.sh	#6614 batch1 HEAD ba72216f9: rc ok, destroy 0 errors, orph clean
-drift-verbatim-readback	2026-11-19T16:02:08Z	PASS	322	verify.sh	us-east-1; #6633 HEAD 4608fddc5: rc ok, destroy 0 errors, orph clean
+drift-verbatim-readback	2026-11-19T17:11:53Z	PASS	370	verify.sh	us-east-1; #6633 HEAD c0c76760a: rc ok, destroy 0 errors, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
