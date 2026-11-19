@@ -497,6 +497,82 @@ function classMembers(
   return out;
 }
 
+/** What a subtree can do, following the calls it makes. */
+interface Effect {
+  /** Sends to AWS (`new XCommand`, `.send`, `waitUntil*`) or refuses (`ResourceUpdateNotSupportedError`). */
+  readonly hard: boolean;
+  /** Warns (`.warn(...)`, `replayWarn(...)`, a local `warn(...)`). */
+  readonly warn: boolean;
+}
+const NO_EFFECT: Effect = { hard: false, warn: false };
+const orEffect = (a: Effect, b: Effect): Effect => ({ hard: a.hard || b.hard, warn: a.warn || b.warn });
+
+/** The sink a call or `new` is, if any. */
+function sinkOf(n: ts.Node): Effect | null {
+  if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) {
+    const name = n.expression.text;
+    if (/Command$/.test(name) || name === 'ResourceUpdateNotSupportedError') {
+      return { hard: true, warn: false };
+    }
+  }
+  if (ts.isCallExpression(n)) {
+    const callee = n.expression;
+    const name = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : ts.isIdentifier(callee)
+        ? callee.text
+        : null;
+    if (name === 'send' && ts.isPropertyAccessExpression(callee)) return { hard: true, warn: false };
+    if (name !== null && /^waitUntil[A-Z]/.test(name)) return { hard: true, warn: false };
+    if (name === 'warn' || name === 'replayWarn') return { hard: false, warn: true };
+  }
+  return null;
+}
+
+/** Does a statement list end by leaving the function (an early `return`)? */
+function exitsEarly(node: ts.Node): boolean {
+  const statements = ts.isBlock(node) ? node.statements : [node as ts.Statement];
+  const last = statements[statements.length - 1];
+  return last !== undefined && ts.isReturnStatement(last);
+}
+
+/** The local variable / parameter an assignment target or receiver is rooted in. */
+function rootName(e: ts.Expression): string | null {
+  let cur: ts.Expression = e;
+  for (;;) {
+    if (ts.isParenthesizedExpression(cur) || ts.isNonNullExpression(cur) || ts.isAsExpression(cur)) {
+      cur = cur.expression;
+    } else if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
+      cur = cur.expression;
+    } else break;
+  }
+  return ts.isIdentifier(cur) ? cur.text : null;
+}
+
+/** Names a binding (identifier or destructuring pattern) introduces. */
+function boundNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((el) => (ts.isOmittedExpression(el) ? [] : boundNames(el.name)));
+}
+
+const isAssignment = (n: ts.Node): n is ts.BinaryExpression =>
+  ts.isBinaryExpression(n) &&
+  n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+  n.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+
+/** A mutating call on a local collection: `ops.push(x)`, `m.set(k, v)`, `Object.assign(t, x)`. */
+function mutatedRoot(n: ts.CallExpression): string | null {
+  const callee = n.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return null;
+  if (['push', 'unshift', 'set', 'add', 'splice'].includes(callee.name.text)) {
+    return rootName(callee.expression);
+  }
+  if (callee.name.text === 'assign' && callee.expression.getText() === 'Object' && n.arguments[0]) {
+    return rootName(n.arguments[0]);
+  }
+  return null;
+}
+
 /** Walk `update()` of one class for one resource type. */
 export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutput {
   const { cls, file, companions, index } = input;
@@ -506,113 +582,458 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
   if (!update) return { reads: new Set(), hasUpdate: false, unresolved };
 
   const reads = new Set<string>();
-  const visited = new Set<ts.Node>();
 
-  const walkNode = (root: ts.Node, rootFile: string): void => {
-    if (visited.has(root)) return;
-    visited.add(root);
-    const visit = (n: ts.Node): void => {
-      // Per-type narrowing.
-      if (ts.isIfStatement(n)) {
-        const reach = branchReach(n.expression, resourceType);
-        if (reach) {
-          visit(n.expression);
-          if (reach.then) visit(n.thenStatement);
-          if (reach.else && n.elseStatement) visit(n.elseStatement);
+  /** The declaration a callee or reference resolves to, with its file. */
+  const resolveTarget = (n: ts.Node, nodeFile: string): { node: ts.Node; file: string } | null => {
+    if (ts.isPropertyAccessExpression(n) && n.expression.kind === ts.SyntaxKind.ThisKeyword) {
+      const member = members.get(n.name.text);
+      if (member) return member;
+      const comp = companions.get(n.name.text);
+      return comp?.fn.body ? { node: comp.fn.body, file: comp.file } : null;
+    }
+    if (
+      ts.isCallExpression(n) &&
+      ts.isPropertyAccessExpression(n.expression) &&
+      n.expression.name.text === 'call' &&
+      n.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword
+    ) {
+      let target: ts.Expression = n.expression.expression;
+      while (ts.isParenthesizedExpression(target)) target = target.expression;
+      if (ts.isExpressionWithTypeArguments(target)) target = target.expression;
+      if (ts.isIdentifier(target)) {
+        const comp = companions.get(target.text);
+        if (comp?.fn.body) return { node: comp.fn.body, file: comp.file };
+      }
+      return null;
+    }
+    if (ts.isIdentifier(n) && !isDeclarationName(n)) {
+      const hit = index.resolve(nodeFile, n.text);
+      // Another CLASS is not followed: those are the infrastructure an update
+      // uses (SDK clients, the logger, `ReplacementRulesRegistry`, whose rules
+      // table names nearly every property), and a `this` in one is not the
+      // provider's. Nor a GENERATED module: `property-coverage.generated.ts`
+      // and `create-only-snapshot.generated.ts` name every type's properties.
+      if (hit && !ts.isClassDeclaration(hit.node) && !hit.file.endsWith('.generated.ts')) return hit;
+    }
+    return null;
+  };
+
+  // ---- what a subtree can do (memoized per declaration) ----
+  const effectMemo = new Map<ts.Node, Effect>();
+  const effectOf = (node: ts.Node, nodeFile: string, locals?: Map<string, ts.Node>): Effect => {
+    let acc = NO_EFFECT;
+    const seen = new Set<ts.Node>();
+    const visitE = (n: ts.Node, f: string, loc: Map<string, ts.Node> | undefined): void => {
+      if (acc.hard && acc.warn) return;
+      const sink = sinkOf(n);
+      if (sink) acc = orEffect(acc, sink);
+      const follow = (target: ts.Node, tf: string): void => {
+        if (seen.has(target)) return;
+        seen.add(target);
+        acc = orEffect(acc, declEffect(target, tf));
+      };
+      const target = resolveTarget(n, f);
+      if (target && (ts.isCallExpression(n.parent) || ts.isCallExpression(n))) follow(target.node, target.file);
+      // A local closure called by name: `const apply = async () => send(...)`.
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && loc?.has(n.expression.text)) {
+        follow(loc.get(n.expression.text)!, f);
+      }
+      ts.forEachChild(n, (c) => visitE(c, f, loc));
+    };
+    visitE(node, nodeFile, locals);
+    return acc;
+  };
+  const declEffect = (decl: ts.Node, declFile: string): Effect => {
+    const cached = effectMemo.get(decl);
+    if (cached) return cached;
+    effectMemo.set(decl, NO_EFFECT); // cycle guard
+    const e = effectOf(decl, declFile, localDeclarations(decl));
+    effectMemo.set(decl, e);
+    return e;
+  };
+
+  // ---- the reading walk ----
+  type Mode = 'effect' | 'plain';
+  const walked = new Map<ts.Node, Mode>();
+
+  const walkUnit = (root: ts.Node, rootFile: string, mode: Mode): void => {
+    const prior = walked.get(root);
+    if (prior === 'effect' || prior === mode) return;
+    walked.set(root, mode);
+    const locals = localDeclarations(root);
+    const requestLocals = requestDeclarations(root);
+    const subtreeEffect = (n: ts.Node): Effect => effectOf(n, rootFile, locals);
+    // A guarded block counts when it sends or refuses, or warns without being
+    // an early-exit "nothing to do" path.
+    const guards = (n: ts.Node | undefined): boolean => {
+      if (!n) return false;
+      const e = subtreeEffect(n);
+      return e.hard || (e.warn && !exitsEarly(n));
+    };
+
+    // Locals whose value reaches an effect, grown to a fixpoint.
+    const consumed = new Set<string>();
+    const run = (collect: boolean): void => {
+      const visit = (n: ts.Node, eff: boolean, cond: boolean, neg: boolean): void => {
+        // Per-type narrowing.
+        if (ts.isIfStatement(n)) {
+          const reach = branchReach(n.expression, resourceType);
+          // The condition counts when a branch this type can take has an effect.
+          const condEff =
+            eff ||
+            ((!reach || reach.then) && guards(n.thenStatement)) ||
+            ((!reach || reach.else) && guards(n.elseStatement));
+          visit(n.expression, condEff, true, false);
+          if (!reach || reach.then) visit(n.thenStatement, eff, false, false);
+          if ((!reach || reach.else) && n.elseStatement) visit(n.elseStatement, eff, false, false);
           return;
         }
-      }
-      if (ts.isConditionalExpression(n)) {
-        const reach = branchReach(n.condition, resourceType);
-        if (reach) {
-          visit(n.condition);
-          if (reach.then) visit(n.whenTrue);
-          if (reach.else) visit(n.whenFalse);
+        if (ts.isConditionalExpression(n)) {
+          const reach = branchReach(n.condition, resourceType);
+          visit(n.condition, eff || guards(n.whenTrue) || guards(n.whenFalse), true, false);
+          if (!reach || reach.then) visit(n.whenTrue, eff, false, false);
+          if (!reach || reach.else) visit(n.whenFalse, eff, false, false);
           return;
         }
-      }
-      if (ts.isSwitchStatement(n)) {
-        const clauses = n.caseBlock.clauses;
-        const literalOf = (c: ts.CaseOrDefaultClause): string | null =>
-          ts.isCaseClause(c) && ts.isStringLiteralLike(c.expression) && /^AWS::/.test(c.expression.text)
-            ? c.expression.text
-            : null;
-        if (isResourceTypeOperand(n.expression) && clauses.some((c) => literalOf(c) !== null)) {
-          visit(n.expression);
-          // Enter at the matching label (or `default` when none matches) and
-          // fall through until a clause ends in break / return / throw.
-          let start = clauses.findIndex((c) => literalOf(c) === resourceType);
-          if (start < 0) start = clauses.findIndex((c) => ts.isDefaultClause(c));
-          if (start >= 0) {
-            for (let i = start; i < clauses.length; i++) {
-              const c = clauses[i]!;
-              for (const s of c.statements) visit(s);
-              if (endsClause(c.statements)) break;
+        if (ts.isSwitchStatement(n)) {
+          const clauses = n.caseBlock.clauses;
+          const literalOf = (c: ts.CaseOrDefaultClause): string | null =>
+            ts.isCaseClause(c) && ts.isStringLiteralLike(c.expression) && /^AWS::/.test(c.expression.text)
+              ? c.expression.text
+              : null;
+          if (isResourceTypeOperand(n.expression) && clauses.some((c) => literalOf(c) !== null)) {
+            // Enter at the matching label (or `default` when none matches) and
+            // fall through until a clause ends in break / return / throw.
+            let start = clauses.findIndex((c) => literalOf(c) === resourceType);
+            if (start < 0) start = clauses.findIndex((c) => ts.isDefaultClause(c));
+            if (start >= 0) {
+              for (let i = start; i < clauses.length; i++) {
+                const c = clauses[i]!;
+                visitStatements(c.statements, eff);
+                if (endsClause(c.statements)) break;
+              }
             }
+            return;
+          }
+          const anyEffect = clauses.some((c) => guards(ts.factory.createBlock(c.statements)));
+          visit(n.expression, eff || anyEffect, true, false);
+          for (const c of clauses) {
+            if (ts.isCaseClause(c)) visit(c.expression, eff || guards(ts.factory.createBlock(c.statements)), true, false);
+            visitStatements(c.statements, eff);
           }
           return;
         }
-      }
+        if (ts.isBlock(n) || ts.isSourceFile(n) || ts.isModuleBlock(n)) {
+          visitStatements(n.statements, eff);
+          return;
+        }
+        if (
+          ts.isForOfStatement(n) ||
+          ts.isForInStatement(n) ||
+          ts.isWhileStatement(n) ||
+          ts.isDoStatement(n) ||
+          ts.isForStatement(n)
+        ) {
+          const loopVars =
+            (ts.isForOfStatement(n) || ts.isForInStatement(n)) && ts.isVariableDeclarationList(n.initializer)
+              ? n.initializer.declarations.flatMap((d) => boundNames(d.name))
+              : [];
+          const headerEff = eff || guards(n.statement) || loopVars.some((v) => consumed.has(v));
+          if (ts.isForOfStatement(n) || ts.isForInStatement(n)) {
+            visit(n.expression, headerEff, true, false);
+            visit(n.initializer, headerEff, false, false);
+          } else if (ts.isForStatement(n)) {
+            if (n.initializer) visit(n.initializer, headerEff, false, false);
+            if (n.condition) visit(n.condition, headerEff, true, false);
+            if (n.incrementor) visit(n.incrementor, eff, false, false);
+          } else {
+            visit(n.expression, headerEff, true, false);
+          }
+          visit(n.statement, eff, false, false);
+          return;
+        }
+        if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) {
+          visit(n.operand, eff, cond, !neg);
+          return;
+        }
+        if (ts.isBinaryExpression(n)) {
+          const op = n.operatorToken.kind;
+          if (op === ts.SyntaxKind.AmpersandAmpersandToken || op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken) {
+            // `cond && doIt()`: the left side guards the right.
+            visit(n.left, eff || guards(n.right), cond || guards(n.right), neg);
+            visit(n.right, eff, cond, neg);
+            return;
+          }
+          if (
+            cond &&
+            (op === ts.SyntaxKind.ExclamationEqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken)
+          ) {
+            visit(n.left, eff, cond, !neg);
+            visit(n.right, eff, cond, !neg);
+            return;
+          }
+          if (isAssignment(n)) {
+            const target = rootName(n.left);
+            visit(n.left, eff, false, false);
+            visit(n.right, eff || (target !== null && consumed.has(target)), false, false);
+            if (collect && eff && target) consumed.add(target);
+            return;
+          }
+        }
+        if (ts.isVariableDeclaration(n)) {
+          const names = boundNames(n.name);
+          const live = eff || names.some((v) => consumed.has(v));
+          if (n.initializer) visit(n.initializer, live, false, false);
+          // A destructuring read counts only for a binding whose value is used.
+          if (!ts.isIdentifier(n.name)) visitBinding(n.name, eff);
+          return;
+        }
+        if (ts.isReturnStatement(n)) {
+          if (n.expression) visit(n.expression, eff || mode === 'effect', false, false);
+          return;
+        }
+        if (
+          ts.isCallExpression(n) &&
+          ts.isPropertyAccessExpression(n.expression) &&
+          n.expression.name.text === 'get' &&
+          n.arguments.length === 1
+        ) {
+          // `TABLE.get(resourceType)`: only this type's entry.
+          const entry = keyedEntry(n.expression.expression, n.arguments[0]!, rootFile);
+          if (entry) {
+            if (!collect) walkUnit(entry.node, entry.file, eff ? 'effect' : 'plain');
+            return;
+          }
+        }
+        if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
+          const sink = sinkOf(n);
+          const target = resolveTarget(ts.isCallExpression(n) ? n.expression : n, rootFile) ??
+            (ts.isCallExpression(n) ? resolveTarget(n, rootFile) : null);
+          const local =
+            ts.isCallExpression(n) && ts.isIdentifier(n.expression) ? locals.get(n.expression.text) : undefined;
+          const calleeEffect = target
+            ? declEffect(target.node, target.file)
+            : local
+              ? effectOf(local, rootFile, locals)
+              : NO_EFFECT;
+          const mutated = ts.isCallExpression(n) ? mutatedRoot(n) : null;
+          const args = n.arguments ?? [];
+          // The arguments count when the call sends, refuses or warns: itself,
+          // through its callee, through a callback handed to it (`diff(prev.X,
+          // next.X, (cfg) => put(cfg))`), or by filling a request a send
+          // consumes (`fill(input, properties)` before `send(new X(input))`).
+          const fillsRequest = args.some(
+            (a) => ts.isIdentifier(a) && requestLocals.has(a.text) && consumed.has(a.text)
+          );
+          const composesEffect = args.some((a) => {
+            const e = subtreeEffect(a);
+            return e.hard || e.warn;
+          });
+          const argsEff =
+            eff ||
+            sink !== null ||
+            calleeEffect.hard ||
+            calleeEffect.warn ||
+            (mutated !== null && consumed.has(mutated)) ||
+            composesEffect ||
+            fillsRequest;
+          if (collect && local && argsEff && ts.isIdentifier((n as ts.CallExpression).expression)) {
+            consumed.add(((n as ts.CallExpression).expression as ts.Identifier).text);
+          }
+          visit(n.expression, eff, cond, neg);
+          for (const a of args) visit(a, argsEff, false, false);
+          if (!collect && target) {
+            walkUnit(target.node, target.file, eff || fillsRequest || composesEffect ? 'effect' : 'plain');
+          }
+          if (ts.isPropertyAccessExpression(n.expression) && n.expression.expression.kind === ts.SyntaxKind.ThisKeyword && !target && isInvokedOrBound(n.expression) && !collect) {
+            unresolved.add(n.expression.name.text);
+          }
+          return;
+        }
+        if (ts.isFunctionLike(n) && n !== root) {
+          // A closure: its body is reached when it is called (a consumed local)
+          // or when it sits in an effect position (a callback handed to a send).
+          const declName =
+            ts.isVariableDeclaration(n.parent) && ts.isIdentifier(n.parent.name) ? n.parent.name.text : null;
+          const body = (n as ts.FunctionLikeDeclaration).body;
+          if (body) visit(body, eff || (declName !== null && consumed.has(declName)), false, false);
+          return;
+        }
 
-      // Reads.
-      if (ts.isPropertyAccessExpression(n)) {
-        reads.add(n.name.text);
-        if (n.expression.kind === ts.SyntaxKind.ThisKeyword) {
-          const target = members.get(n.name.text);
-          // A companion `this:` function installed on the prototype (the
-          // mixin shape of ec2-provider.ts) is reached as `this.x()` too.
-          const comp = target ? undefined : companions.get(n.name.text);
-          if (target) walkNode(target.node, target.file);
-          else if (comp?.fn.body) walkNode(comp.fn.body, comp.file);
-          else if (isInvokedOrBound(n)) unresolved.add(n.name.text);
+        // Reads, and the references that make a local consumed.
+        if (ts.isIdentifier(n) && !isDeclarationName(n)) {
+          if (collect && eff) consumed.add(n.text);
+          if (!collect) {
+            const target = resolveTarget(n, rootFile);
+            // A table under a negation in a guard (`!MUTABLE.has(key)`) names the
+            // properties the guarded refusal EXEMPTS, which is no read of them.
+            if (target) walkUnit(target.node, target.file, eff && !(cond && neg) ? 'effect' : 'plain');
+          }
+        } else if (ts.isPropertyAccessExpression(n)) {
+          if (!collect && eff) reads.add(n.name.text);
+          if (n.expression.kind === ts.SyntaxKind.ThisKeyword) {
+            const target = resolveTarget(n, rootFile);
+            if (target && !collect) walkUnit(target.node, target.file, eff ? 'effect' : 'plain');
+            else if (!target && isInvokedOrBound(n) && !collect) unresolved.add(n.name.text);
+            return;
+          }
+          visit(n.expression, eff, cond, neg);
+          return;
+        } else if (ts.isElementAccessExpression(n)) {
+          if (!collect && eff && ts.isStringLiteralLike(n.argumentExpression)) {
+            reads.add(n.argumentExpression.text);
+          }
+          // `TABLE[resourceType]`: only this type's entry.
+          const entry = keyedEntry(n.expression, n.argumentExpression, rootFile);
+          if (entry) {
+            if (!collect) walkUnit(entry.node, entry.file, eff ? 'effect' : 'plain');
+            return;
+          }
+          visit(n.expression, eff, cond, neg);
+          visit(n.argumentExpression, eff, cond, neg);
+          return;
+        } else if (ts.isShorthandPropertyAssignment(n)) {
+          if (!collect && eff) reads.add(n.name.text);
+          if (collect && eff) consumed.add(n.name.text);
+        } else if (ts.isStringLiteralLike(n) && !isObjectLiteralKey(n)) {
+          if (!collect && eff && !(cond && neg)) reads.add(n.text);
         }
-      } else if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression)) {
-        reads.add(n.argumentExpression.text);
-      } else if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent)) {
-        const key = n.propertyName ?? n.name;
-        if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) reads.add(key.text);
-      } else if (ts.isShorthandPropertyAssignment(n)) {
-        reads.add(n.name.text);
-      } else if (ts.isStringLiteralLike(n) && !isObjectLiteralKey(n)) {
-        reads.add(n.text);
-      }
+        ts.forEachChild(n, (c) => visit(c, eff, cond, neg));
+      };
 
-      // Edges.
-      if (
-        ts.isCallExpression(n) &&
-        ts.isPropertyAccessExpression(n.expression) &&
-        n.expression.name.text === 'call' &&
-        n.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword
-      ) {
-        let target: ts.Expression = n.expression.expression;
-        while (ts.isParenthesizedExpression(target)) target = target.expression;
-        if (ts.isExpressionWithTypeArguments(target)) target = target.expression;
-        if (ts.isIdentifier(target)) {
-          const comp = companions.get(target.text);
-          if (comp?.fn.body) walkNode(comp.fn.body, comp.file);
+      // Statements in order, with early-return narrowing: after
+      // `if (resourceType === 'A') return ...;` the rest is not type A's.
+      const visitStatements = (statements: readonly ts.Statement[], eff: boolean): void => {
+        for (const st of statements) {
+          visit(st, eff, false, false);
+          if (ts.isIfStatement(st) && !st.elseStatement) {
+            const reach = branchReach(st.expression, resourceType);
+            if (reach && reach.then && !reach.else && endsClause([st.thenStatement])) return;
+          }
         }
-      }
-      if (ts.isIdentifier(n) && !isDeclarationName(n)) {
-        const hit = index.resolve(rootFile, n.text);
-        // Another CLASS is not followed: those are the infrastructure an
-        // update uses (SDK clients, the logger, `ReplacementRulesRegistry`,
-        // whose rules table names nearly every property), and a `this` in one
-        // is not the provider's.
-        // Nor a GENERATED module: `property-coverage.generated.ts` and
-        // `create-only-snapshot.generated.ts` name every type's properties,
-        // so reaching one (through `withoutSdkUnwiredProperties`, say) would
-        // count them all as read.
-        if (hit && !ts.isClassDeclaration(hit.node) && !hit.file.endsWith('.generated.ts')) {
-          walkNode(hit.node, hit.file);
+      };
+      const visitBinding = (pattern: ts.BindingPattern, eff: boolean): void => {
+        for (const el of pattern.elements) {
+          if (ts.isOmittedExpression(el)) continue;
+          if (ts.isObjectBindingPattern(pattern)) {
+            const key = el.propertyName ?? el.name;
+            const live = eff || boundNames(el.name).some((v) => consumed.has(v));
+            if (live && !collect && (ts.isIdentifier(key) || ts.isStringLiteralLike(key))) reads.add(key.text);
+          }
+          if (!ts.isIdentifier(el.name)) visitBinding(el.name, eff);
         }
-      }
-      ts.forEachChild(n, visit);
+      };
+      // `.get(resourceType)` on a keyed table: only this type's entry.
+      const visitRootBody = (): void => {
+        const body = ts.isFunctionLike(root) ? (root as ts.FunctionLikeDeclaration).body : root;
+        if (body) visit(body, mode === 'effect', false, false);
+      };
+      visitRootBody();
     };
-    visit(root);
+    for (let i = 0; i < 6; i++) {
+      const before = consumed.size;
+      run(true);
+      if (consumed.size === before) break;
+    }
+    run(false);
   };
 
-  walkNode(update.node, update.file);
+  /** `TABLE[resourceType]` / `TABLE.get(resourceType)` on a literal keyed table -> the entry. */
+  const keyedEntry = (
+    table: ts.Expression,
+    key: ts.Expression,
+    nodeFile: string
+  ): { node: ts.Node; file: string } | null => {
+    if (!isResourceTypeOperand(key) || !ts.isIdentifier(table)) return null;
+    const hit = resolveTarget(table, nodeFile);
+    if (!hit || !ts.isVariableDeclaration(hit.node) || !hit.node.initializer) return null;
+    let init: ts.Expression = hit.node.initializer;
+    while (ts.isAsExpression(init) || ts.isSatisfiesExpression(init) || ts.isParenthesizedExpression(init)) {
+      init = init.expression;
+    }
+    // `new Map([['AWS::X::Y', value], ...])`.
+    if (
+      ts.isNewExpression(init) &&
+      ts.isIdentifier(init.expression) &&
+      init.expression.text === 'Map' &&
+      init.arguments?.[0] &&
+      ts.isArrayLiteralExpression(init.arguments[0])
+    ) {
+      const entries = init.arguments[0].elements.filter(ts.isArrayLiteralExpression);
+      const keyed = entries.filter(
+        (e) => e.elements[0] && ts.isStringLiteralLike(e.elements[0]) && /^AWS::/.test(e.elements[0].text)
+      );
+      if (keyed.length === 0 || keyed.length !== entries.length) return null;
+      const match = keyed.find((e) => (e.elements[0] as ts.StringLiteralLike).text === resourceType);
+      return { node: match?.elements[1] ?? ts.factory.createNull(), file: hit.file };
+    }
+    if (ts.isObjectLiteralExpression(init)) {
+      for (const p of init.properties) {
+        if (
+          ts.isPropertyAssignment(p) &&
+          (ts.isStringLiteralLike(p.name) || ts.isIdentifier(p.name)) &&
+          p.name.text === resourceType
+        ) {
+          return { node: p.initializer, file: hit.file };
+        }
+      }
+      return /^AWS::/.test(
+        init.properties.map((p) => (p.name && ts.isStringLiteralLike(p.name) ? p.name.text : '')).join('')
+      )
+        ? { node: ts.factory.createNull(), file: hit.file }
+        : null;
+    }
+    return null;
+  };
+
+  walkUnit(update.node, update.file, 'plain');
   return { reads, hasUpdate: true, unresolved };
+}
+
+/**
+ * Locals a unit builds a request in: `const input = { ... }` / `[]` /
+ * `new Map()`. Only such a local, handed to a helper and later consumed by an
+ * effect, makes that helper a request filler; a parameter forwarded to a
+ * delegate does not (every update delegates its `logicalId`).
+ */
+function requestDeclarations(root: ts.Node): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+      let init: ts.Expression = n.initializer;
+      while (ts.isAsExpression(init) || ts.isSatisfiesExpression(init) || ts.isParenthesizedExpression(init)) {
+        init = init.expression;
+      }
+      if (
+        ts.isObjectLiteralExpression(init) ||
+        ts.isArrayLiteralExpression(init) ||
+        (ts.isNewExpression(init) && ts.isIdentifier(init.expression) && ['Map', 'Set'].includes(init.expression.text))
+      ) {
+        out.add(n.name.text);
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  return out;
+}
+
+/** The local `const name = <function>` declarations directly inside a unit. */
+function localDeclarations(root: ts.Node): Map<string, ts.Node> {
+  const out = new Map<string, ts.Node>();
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.initializer &&
+      (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))
+    ) {
+      out.set(n.name.text, n.initializer);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  return out;
 }
 
 function isDeclarationName(n: ts.Identifier): boolean {
