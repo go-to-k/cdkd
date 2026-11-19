@@ -57,7 +57,7 @@ cc-to-sdk-reroute-cloudfront-distribution	2026-11-18T01:46:29Z	PASS	666	verify.s
 cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-10	2026-11-17T16:32:48Z	PASS	191	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-11	2026-11-18T04:18:23Z	PASS	2545	verify.sh	rc ok, orph clean
-cc-to-sdk-reroute-common-types-12	2026-11-19T02:23:10Z	PASS	225	verify.sh	rc ok, orph clean; us-east-1; 4 flips (Archive, DeliverySource, DeliveryDestination, Delivery) id-stable + witnesses
+cc-to-sdk-reroute-common-types-12	2026-11-19T02:48:02Z	PASS	230	verify.sh	rc ok, orph clean; us-east-1; 4 flips (Archive, DeliverySource, DeliveryDestination, Delivery) id-stable + witnesses
 cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
