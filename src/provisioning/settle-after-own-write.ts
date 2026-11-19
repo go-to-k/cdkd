@@ -12,6 +12,14 @@
  * believes AWS on every other read (drift, import, `state refresh-observed`),
  * where a member that really changed must report.
  *
+ * An answer that never matches splits in two. One that still finds NOTHING
+ * written records no baseline, so drift compares against the template. One
+ * that finds ANOTHER document is recorded as read, as before: the service may
+ * store an equivalent spelling no comparison here folds, and leaving that
+ * resource without a baseline would report it against the template on every
+ * drift run. A replaced document still visible after the whole schedule is
+ * the residual.
+ *
  * Only a first answer that disagrees costs more calls, and the capture runs
  * beside the rest of the deploy, so a deploy whose reads agree pays nothing.
  */
@@ -57,10 +65,64 @@ export function declaredPolicyDocument(properties: unknown): unknown {
   return typeof doc === 'object' && doc !== null && !Array.isArray(doc) ? doc : undefined;
 }
 
-/** Whether a read policy is the declared one, IAM-equivalent spellings folded. */
+/**
+ * Whether a read policy is the declared one, IAM-equivalent spellings folded
+ * ({@link policyContentKey}), plus a one-element condition value list, which
+ * SQS stores as its scalar (measured, us-east-1, 2026-11-19).
+ */
 export function policyDocumentMatchesDeclared(answer: unknown, declared: unknown): boolean {
-  return answer !== undefined && policyContentKey(answer) === policyContentKey(declared);
+  return (
+    answer !== undefined &&
+    policyContentKey(foldConditionValues(answer)) ===
+      policyContentKey(foldConditionValues(declared))
+  );
 }
+
+/** A policy document with every one-element condition value list as its scalar. */
+function foldConditionValues(document: unknown): unknown {
+  let doc = document;
+  if (typeof doc === 'string') {
+    try {
+      doc = JSON.parse(doc) as unknown;
+    } catch {
+      return document;
+    }
+  }
+  if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) return doc;
+  const statement = (doc as Record<string, unknown>)['Statement'];
+  if (statement === undefined) return doc;
+  const statements = Array.isArray(statement) ? statement : [statement];
+  return {
+    ...(doc as Record<string, unknown>),
+    Statement: statements.map((entry: unknown) => {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
+      const condition = (entry as Record<string, unknown>)['Condition'];
+      if (typeof condition !== 'object' || condition === null || Array.isArray(condition)) {
+        return entry;
+      }
+      const folded: Record<string, unknown> = {};
+      for (const [operator, block] of Object.entries(condition as Record<string, unknown>)) {
+        if (typeof block !== 'object' || block === null || Array.isArray(block)) {
+          folded[operator] = block;
+          continue;
+        }
+        const values: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(block as Record<string, unknown>)) {
+          values[key] = Array.isArray(value) && value.length === 1 ? value[0] : value;
+        }
+        folded[operator] = values;
+      }
+      return { ...(entry as Record<string, unknown>), Condition: folded };
+    }),
+  };
+}
+
+/**
+ * The `Id` SNS gives the policy every topic holds until one is set. Read back
+ * after a `TopicPolicy` write, it is the write not yet visible, never a
+ * declared document.
+ */
+export const SNS_DEFAULT_POLICY_ID = '__default_policy_ID';
 
 /** The `AWS::Lambda::Permission` keys `readCurrentState` reads off the policy statement. */
 export const LAMBDA_PERMISSION_STATEMENT_KEYS = [

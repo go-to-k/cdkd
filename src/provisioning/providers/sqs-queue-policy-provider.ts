@@ -646,10 +646,11 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
    * The baseline capture right after cdkd's own write (`afterOwnWrite`,
    * go-to-k/cdkd#6609): `SetQueueAttributes` is eventually consistent, so the
    * read can still answer with the REPLACED policy, or none. It is re-asked
-   * until every named queue holds the declared document; one that never does
-   * captures no baseline (drift then compares against the template), since
-   * a stale document recorded there is what `drift --revert` would re-grant.
-   * Every other read takes the first answer.
+   * until every named queue holds the declared document. A queue still
+   * holding none captures no baseline (drift then compares against the
+   * template); another document is recorded as read
+   * (`settle-after-own-write.ts` says why). Every other read takes the first
+   * answer.
    */
   async readCurrentState(
     physicalId: string,
@@ -672,8 +673,15 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       this.ownWriteRereadDelaysMs
     );
     if (settled) return answer;
+    if (
+      answer !== undefined &&
+      answer !== RESOURCE_NOT_FOUND &&
+      (answer['Queues'] as string[]).length === queueCount
+    ) {
+      return answer;
+    }
     this.logger.debug(
-      safeMsg`No drift baseline captured for queue policy ${physicalId}: its queues did not read back the policy just written`
+      safeMsg`No drift baseline captured for queue policy ${physicalId}: a queue still read back no policy after the write`
     );
     return undefined;
   }

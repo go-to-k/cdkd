@@ -585,10 +585,10 @@ export class LambdaPermissionProvider implements ResourceProvider {
    * The baseline capture right after cdkd's own write (`afterOwnWrite`,
    * go-to-k/cdkd#6609): a just-added statement can still read back missing,
    * or as the statement an update replaced. It is re-asked until every key
-   * above reads as declared; one that never does captures no baseline (drift
-   * then compares against the template), since a replaced statement recorded
-   * there is what `drift --revert` would re-grant. Every other read takes the
-   * first answer.
+   * above reads as declared. A statement still missing captures no baseline
+   * (drift then compares against the template); another statement is
+   * recorded as read (`settle-after-own-write.ts` says why). Every other read
+   * takes the first answer.
    */
   async readCurrentState(
     physicalId: string,
@@ -608,9 +608,9 @@ export class LambdaPermissionProvider implements ResourceProvider {
         lambdaPermissionMatchesDeclared(read, properties),
       this.ownWriteRereadDelaysMs
     );
-    if (settled) return answer;
+    if (settled || (answer !== undefined && answer !== RESOURCE_NOT_FOUND)) return answer;
     this.logger.debug(
-      safeMsg`No drift baseline captured for permission ${physicalId}: its function policy did not read back the statement just written`
+      safeMsg`No drift baseline captured for permission ${physicalId}: its function policy still read back no such statement after the write`
     );
     return undefined;
   }

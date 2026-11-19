@@ -38,7 +38,17 @@ import {
   OWN_WRITE_REREAD_DELAYS_MS,
   policyDocumentMatchesDeclared,
   reReadUntilSettled,
+  SNS_DEFAULT_POLICY_ID,
 } from '../settle-after-own-write.js';
+
+/** Whether a read topic policy is the default SNS gives a topic with none set. */
+function isSnsDefaultPolicy(document: unknown): boolean {
+  return (
+    typeof document === 'object' &&
+    document !== null &&
+    (document as Record<string, unknown>)['Id'] === SNS_DEFAULT_POLICY_ID
+  );
+}
 
 /**
  * The skip reasons of a failed create's delete (go-to-k/cdkd#4612): a failure
@@ -679,10 +689,10 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
    * The baseline capture right after cdkd's own write (`afterOwnWrite`,
    * go-to-k/cdkd#6609): a just-set `Policy` can still read back as the one it
    * replaced (the topic's default, on a create). It is re-asked until it is
-   * the declared document; one that never is captures no baseline (drift then
-   * compares against the template), since a stale document recorded there is
-   * what `drift --revert` would re-grant. Every other read takes the first
-   * answer.
+   * the declared document. A topic still holding its default policy captures
+   * no baseline (drift then compares against the template); another document
+   * is recorded as read (`settle-after-own-write.ts` says why). Every other
+   * read takes the first answer.
    */
   async readCurrentState(
     physicalId: string,
@@ -703,8 +713,11 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       this.ownWriteRereadDelaysMs
     );
     if (settled) return answer;
+    const read =
+      answer === undefined || answer === RESOURCE_NOT_FOUND ? undefined : answer['PolicyDocument'];
+    if (read !== undefined && !isSnsDefaultPolicy(read)) return answer;
     this.logger.debug(
-      safeMsg`No drift baseline captured for topic policy ${physicalId}: its topic did not read back the policy just written`
+      safeMsg`No drift baseline captured for topic policy ${physicalId}: its topic still read back its default policy after the write`
     );
     return undefined;
   }
