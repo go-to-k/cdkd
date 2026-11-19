@@ -1,0 +1,3491 @@
+{
+  "schemaVersion": 1,
+  "summary": {
+    "types": 340,
+    "mapped": 60,
+    "compound": 115,
+    "no-ref": 40,
+    "not-a-segment": 6,
+    "unverified": 119,
+    "gap": 0
+  },
+  "types": [
+    {
+      "resourceType": "AWS::ACMPCA::Certificate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Arn",
+        "CertificateAuthorityArn"
+      ],
+      "status": "no-ref",
+      "detail": "docs Return values: Ref returns nothing usable: \"This reference should not be used in CloudFormation templates\""
+    },
+    {
+      "resourceType": "AWS::ACMPCA::Permission",
+      "tier": 2,
+      "primaryIdentifier": [
+        "CertificateAuthorityArn",
+        "Principal"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::ARCZonalShift::AutoshiftObserverNotificationStatus",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AccountId",
+        "Region"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::AccountAccess::Entitlement",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationArn",
+        "EntitlementId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the unique identifier of the entitlement\""
+    },
+    {
+      "resourceType": "AWS::AmplifyUIBuilder::Component",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AppId",
+        "EnvironmentName",
+        "Id"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::AmplifyUIBuilder::Form",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AppId",
+        "EnvironmentName",
+        "Id"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::AmplifyUIBuilder::Theme",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AppId",
+        "EnvironmentName",
+        "Id"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Authorizer",
+      "tier": 1,
+      "primaryIdentifier": [
+        "RestApiId",
+        "AuthorizerId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::BasePathMapping",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "BasePath"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Deployment",
+      "tier": 1,
+      "primaryIdentifier": [
+        "DeploymentId",
+        "RestApiId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::DocumentationPart",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DocumentationPartId",
+        "RestApiId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::DocumentationVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DocumentationVersion",
+        "RestApiId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Method",
+      "tier": 1,
+      "primaryIdentifier": [
+        "RestApiId",
+        "ResourceId",
+        "HttpMethod"
+      ],
+      "status": "compound",
+      "detail": "measured, issue #6243"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Model",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RestApiId",
+        "Name"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::RequestValidator",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RestApiId",
+        "RequestValidatorId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Resource",
+      "tier": 1,
+      "primaryIdentifier": [
+        "RestApiId",
+        "ResourceId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Stage",
+      "tier": 1,
+      "primaryIdentifier": [
+        "RestApiId",
+        "StageName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::ApiMapping",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApiMappingId",
+        "DomainName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "tier": 1,
+      "primaryIdentifier": [
+        "AuthorizerId",
+        "ApiId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Deployment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApiId",
+        "DeploymentId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ApiId",
+        "IntegrationId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::IntegrationResponse",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApiId",
+        "IntegrationId",
+        "IntegrationResponseId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Model",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApiId",
+        "ModelId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ApiId",
+        "RouteId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::RouteResponse",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApiId",
+        "RouteId",
+        "RouteResponseId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ApiId",
+        "StageName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::AppConfig::ConfigurationProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "ConfigurationProfileId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::AppConfig::Deployment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "EnvironmentId",
+        "DeploymentNumber"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::AppConfig::Environment",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "EnvironmentId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::AppConfig::ExperimentDefinition",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "Id"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::AppConfig::ExperimentRun",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "ExperimentDefinitionId",
+        "Run"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::AppConfig::HostedConfigurationVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "ConfigurationProfileId",
+        "VersionNumber"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::AppStream::ApplicationEntitlementAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "StackName",
+        "EntitlementName",
+        "ApplicationIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `StackName|EntitlementName|ApplicationIdentifier`"
+    },
+    {
+      "resourceType": "AWS::AppStream::ApplicationFleetAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FleetName",
+        "ApplicationArn"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `FleetName|ApplicationArn`"
+    },
+    {
+      "resourceType": "AWS::AppStream::Entitlement",
+      "tier": 2,
+      "primaryIdentifier": [
+        "StackName",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `StackName|Name`"
+    },
+    {
+      "resourceType": "AWS::AppStream::StackFleetAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FleetName",
+        "StackName"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::AppStream::StackUserAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "StackName",
+        "UserName",
+        "AuthenticationType"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::AppStream::User",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserName",
+        "AuthenticationType"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::AppSync::ApiKey",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ApiId",
+        "ApiKeyId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_ARN_FROM_STATE"
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "tier": 1,
+      "primaryIdentifier": [
+        "DataSourceArn"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_ARN_FROM_STATE"
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ResolverArn"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_ARN_FROM_STATE"
+    },
+    {
+      "resourceType": "AWS::ApplicationAutoScaling::ScalableTarget",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceId",
+        "ScalableDimension",
+        "ServiceNamespace"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<ResourceId>|<ScalableDimension>|<ServiceNamespace>`"
+    },
+    {
+      "resourceType": "AWS::ApplicationAutoScaling::ScalingPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Arn",
+        "ScalableDimension"
+      ],
+      "status": "mapped",
+      "detail": "REF_FROM_PHYSICAL_ID_HELPERS"
+    },
+    {
+      "resourceType": "AWS::ApplicationSignals::InstrumentationConfig",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstrumentationType",
+        "Service",
+        "Environment",
+        "SignalType",
+        "LocationHash"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Athena::PreparedStatement",
+      "tier": 2,
+      "primaryIdentifier": [
+        "StatementName",
+        "WorkGroup"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<StatementName>|<WorkGroup>` (the docs say the statement name)"
+    },
+    {
+      "resourceType": "AWS::AutoScaling::LifecycleHook",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AutoScalingGroupName",
+        "LifecycleHookName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::AutoScaling::ScheduledAction",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ScheduledActionName",
+        "AutoScalingGroupName"
+      ],
+      "status": "mapped",
+      "detail": "REF_FROM_PHYSICAL_ID_HELPERS"
+    },
+    {
+      "resourceType": "AWS::AutoScalingPlans::ScalingPlan",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ScalingPlanVersion",
+        "ScalingPlanName"
+      ],
+      "status": "not-a-segment",
+      "detail": "docs Return values: Ref returns the scaling plan ARN"
+    },
+    {
+      "resourceType": "AWS::Backup::RestoreTestingSelection",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RestoreTestingPlanName",
+        "RestoreTestingSelectionName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Bedrock::AgentAlias",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AgentId",
+        "AgentAliasId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `AGENT12345|ALIAS12345`"
+    },
+    {
+      "resourceType": "AWS::Bedrock::AutomatedReasoningPolicyVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyArn",
+        "Version"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the policy version ID\""
+    },
+    {
+      "resourceType": "AWS::Bedrock::DataSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "KnowledgeBaseId",
+        "DataSourceId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `KB12345678|DS12345678`"
+    },
+    {
+      "resourceType": "AWS::Bedrock::FlowAlias",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Arn",
+        "FlowArn"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<flowArn>|<aliasArn>`"
+    },
+    {
+      "resourceType": "AWS::Bedrock::FlowVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FlowArn",
+        "Version"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<flowArn>|<version>`"
+    },
+    {
+      "resourceType": "AWS::Bedrock::GuardrailVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GuardrailId",
+        "Version"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `guardrail-id|guardrail-version`"
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::GatewayRateLimit",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GatewayIdentifier",
+        "RateLimitId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::GatewayRule",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GatewayIdentifier",
+        "RuleId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::GatewayTarget",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GatewayIdentifier",
+        "TargetId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `my-gateway-a1b2c3d4e5|a1B2c3D4e5`"
+    },
+    {
+      "resourceType": "AWS::Budgets::BudgetsAction",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ActionId",
+        "BudgetName"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::Cassandra::Table",
+      "tier": 2,
+      "primaryIdentifier": [
+        "KeyspaceName",
+        "TableName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `myKeyspace|myTable`"
+    },
+    {
+      "resourceType": "AWS::Cassandra::Type",
+      "tier": 2,
+      "primaryIdentifier": [
+        "KeyspaceName",
+        "TypeName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `myKeyspace|myType`"
+    },
+    {
+      "resourceType": "AWS::Chime::Channel",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Arn",
+        "ChimeBearer"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::CleanRooms::AnalysisTemplate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AnalysisTemplateIdentifier",
+        "MembershipIdentifier"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns the AnalysisTemplateIdentifier (a Cloud Control-native type; not measured)"
+    },
+    {
+      "resourceType": "AWS::CleanRooms::ConfiguredTableAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ConfiguredTableAssociationIdentifier",
+        "MembershipIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<associationId>|<membershipId>`"
+    },
+    {
+      "resourceType": "AWS::CleanRooms::IdMappingTable",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IdMappingTableIdentifier",
+        "MembershipIdentifier"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource name\""
+    },
+    {
+      "resourceType": "AWS::CleanRooms::IdNamespaceAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IdNamespaceAssociationIdentifier",
+        "MembershipIdentifier"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource name\""
+    },
+    {
+      "resourceType": "AWS::CleanRooms::IntermediateTable",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IntermediateTableIdentifier",
+        "MembershipIdentifier"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::CleanRooms::PrivacyBudgetTemplate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PrivacyBudgetTemplateIdentifier",
+        "MembershipIdentifier"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns the ARN (no segment holds it; not measured)"
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AccessProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SpaceId",
+        "ProfileId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+    },
+    {
+      "resourceType": "AWS::CloudWatch::Alert",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SpaceId",
+        "AlertId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+    },
+    {
+      "resourceType": "AWS::CloudWatch::OmniDashboard",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SpaceId",
+        "DashboardId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+    },
+    {
+      "resourceType": "AWS::CodeDeploy::DeploymentGroup",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationName",
+        "DeploymentGroupName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::CodePipeline::CustomActionType",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Category",
+        "Provider",
+        "Version"
+      ],
+      "status": "not-a-segment",
+      "detail": "docs Return values: Ref returns a generated name such as `custo-MyCus-A1BCDEFGHIJ2`"
+    },
+    {
+      "resourceType": "AWS::CodeStarConnections::SyncConfiguration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceName",
+        "SyncType"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns the ARN (no segment holds it; not measured)"
+    },
+    {
+      "resourceType": "AWS::Cognito::IdentityPoolPrincipalTag",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IdentityPoolId",
+        "IdentityProviderName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<identityPoolId>|graph.facebook.com`"
+    },
+    {
+      "resourceType": "AWS::Cognito::ManagedLoginBranding",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "ManagedLoginBrandingId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<UserPoolId>|<ManagedLoginBrandingId>` (the docs say the style id)"
+    },
+    {
+      "resourceType": "AWS::Cognito::Terms",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "TermsId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolClient",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "ClientId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolClientSessionConfigurationAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "ClientId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolDomain",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "Domain"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolGroup",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "GroupName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolIdentityProvider",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "ProviderName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolReplica",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "RegionName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolResourceServer",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "Identifier"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolRiskConfigurationAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "ClientId"
+      ],
+      "status": "not-a-segment",
+      "detail": "docs Return values: Ref returns `UserPoolRiskConfigurationAttachment-<UserPoolId>-<ClientId>`"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolUICustomizationAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "ClientId"
+      ],
+      "status": "not-a-segment",
+      "detail": "docs Return values: Ref returns `UserPoolUICustomizationAttachment-<UserPoolId>-<ClientId>`"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolUser",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "Username"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPoolUserToGroupAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "GroupName",
+        "Username"
+      ],
+      "status": "not-a-segment",
+      "detail": "docs Return values: Ref returns a generated id such as `UserToGroupAttachment-YejJvzrEXAMPLE`"
+    },
+    {
+      "resourceType": "AWS::Config::AggregationAuthorization",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AuthorizedAccountId",
+        "AuthorizedAwsRegion"
+      ],
+      "status": "not-a-segment",
+      "detail": "docs Return values: Ref returns the aggregation authorization ARN"
+    },
+    {
+      "resourceType": "AWS::Connect::ApprovedOrigin",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceId",
+        "Origin"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Connect::DataLakeAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceId",
+        "DataSetId",
+        "TargetAccountId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `InstanceId|DataSetId|TargetAccountId`"
+    },
+    {
+      "resourceType": "AWS::Connect::DataTable",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "Arn"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Connect::DataTableAttribute",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "DataTableArn",
+        "AttributeId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Connect::DataTableRecord",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "DataTableArn",
+        "RecordId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Connect::InstanceStorageConfig",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "AssociationId",
+        "ResourceType"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the name of the instance storage configuration\""
+    },
+    {
+      "resourceType": "AWS::Connect::IntegrationAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceId",
+        "IntegrationType",
+        "IntegrationArn"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Connect::PredefinedAttribute",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "Name"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the predefined attribute\""
+    },
+    {
+      "resourceType": "AWS::Connect::SecurityKey",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceId",
+        "AssociationId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Connect::UseCase",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceId",
+        "IntegrationAssociationId",
+        "UseCaseId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::ControlTower::EnabledControl",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TargetIdentifier",
+        "ControlIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `target|control`"
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::CalculatedAttributeDefinition",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "CalculatedAttributeName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::DomainObjectType",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "ObjectTypeName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::EventStream",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "EventStreamName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::EventTrigger",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "EventTriggerName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::Integration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "Uri"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the DomainName and the Uri of the integration\""
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::ObjectType",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "ObjectTypeName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the DomainName and the ObjectTypeName of the object type\""
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::Recommender",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "RecommenderName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::CustomerProfiles::SegmentDefinition",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "SegmentDefinitionName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::DataZone::Connection",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "ConnectionId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|ConnectionId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::DataSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|DataSourceId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::DomainUnit",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|DomainUnitId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::Environment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|EnvironmentId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::EnvironmentActions",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "EnvironmentId",
+        "Id"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns a two-part `DomainId|EnvironmentActionId` for a three-part identifier"
+    },
+    {
+      "resourceType": "AWS::DataZone::EnvironmentBlueprintConfiguration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "EnvironmentBlueprintId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|EnvironmentBlueprintId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::EnvironmentProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|EnvironmentProfileId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::FormType",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainIdentifier",
+        "FormTypeIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainIdentifier|FormTypeIdentifier`"
+    },
+    {
+      "resourceType": "AWS::DataZone::GroupProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|GroupProfileId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::Owner",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainIdentifier",
+        "EntityType",
+        "EntityIdentifier",
+        "OwnerType",
+        "OwnerIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|EntityType|EntityId|OwnerType|OwnerId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::PolicyGrant",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainIdentifier",
+        "GrantId",
+        "EntityIdentifier",
+        "EntityType",
+        "PolicyType"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::DataZone::Project",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|ProjectId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::ProjectMembership",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainIdentifier",
+        "MemberIdentifier",
+        "MemberIdentifierType",
+        "ProjectIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|MemberId|MemberType|ProjectId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::ProjectProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainIdentifier",
+        "Identifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns a pipe-separated domain id and identifier (text copied from DomainUnit)"
+    },
+    {
+      "resourceType": "AWS::DataZone::SubscriptionTarget",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "EnvironmentId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|EnvironmentId|SubscriptionTargetId`"
+    },
+    {
+      "resourceType": "AWS::DataZone::UserProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "Id"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DomainId|UserProfileId`"
+    },
+    {
+      "resourceType": "AWS::Deadline::Limit",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FarmId",
+        "LimitId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the unique identifier of the limit\""
+    },
+    {
+      "resourceType": "AWS::Deadline::QueueEnvironment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FarmId",
+        "QueueId",
+        "QueueEnvironmentId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"a reference to a queue environment object\""
+    },
+    {
+      "resourceType": "AWS::Deadline::QueueFleetAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FarmId",
+        "FleetId",
+        "QueueId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns an ARN, which the type does not have"
+    },
+    {
+      "resourceType": "AWS::Deadline::QueueLimitAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FarmId",
+        "LimitId",
+        "QueueId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the unique identifier for the queue-limit association\""
+    },
+    {
+      "resourceType": "AWS::Deadline::StorageProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FarmId",
+        "StorageProfileId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns an ARN, which the type does not have"
+    },
+    {
+      "resourceType": "AWS::Detective::MemberInvitation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GraphArn",
+        "MemberId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the ARN of the behavior graph and the member account identifier, separated by a pipe\""
+    },
+    {
+      "resourceType": "AWS::DevOpsAgent::Asset",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AgentSpaceId",
+        "AssetId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `as-1234567890abcdef0|asset-0987654321fedcba0`"
+    },
+    {
+      "resourceType": "AWS::DevOpsAgent::Association",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AgentSpaceId",
+        "AssociationId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the association ID\" (a Cloud Control-native type; not measured)"
+    },
+    {
+      "resourceType": "AWS::DevOpsAgent::Trigger",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AgentSpaceId",
+        "TriggerId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the TriggerId\" (a Cloud Control-native type; not measured)"
+    },
+    {
+      "resourceType": "AWS::EC2::ClientVpnTargetNetworkAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ClientVpnEndpointId",
+        "AssociationId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns the association id `cvpn-assoc-…`; not measured (needs an imported ACM certificate)"
+    },
+    {
+      "resourceType": "AWS::EC2::EIP",
+      "tier": 1,
+      "primaryIdentifier": [
+        "PublicIp",
+        "AllocationId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::EC2::EnclaveCertificateIamRoleAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "CertificateArn",
+        "RoleArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the IAM role and ACM certificate association\""
+    },
+    {
+      "resourceType": "AWS::EC2::IPAMAllocation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IpamPoolId",
+        "IpamPoolAllocationId",
+        "Cidr"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the pool ID, allocation ID, and CIDR joined with |\""
+    },
+    {
+      "resourceType": "AWS::EC2::IPAMPoolCidr",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IpamPoolId",
+        "IpamPoolCidrId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ipam-pool-01123456|ipam-pool-cidr-0123456`"
+    },
+    {
+      "resourceType": "AWS::EC2::LocalGatewayRoute",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DestinationCidrBlock",
+        "LocalGatewayRouteTableId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns `lgw-rtb-…|10.0.0.0/24`, the REVERSE of the identifier order; needs an Outpost"
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAclEntry",
+      "tier": 1,
+      "primaryIdentifier": [
+        "Id"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the ID of the network ACL entry\" (2026-08-12 audit, issue #1667; not measured)"
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkPerformanceMetricSubscription",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Source",
+        "Destination",
+        "Metric",
+        "Statistic"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `source|destination|metric|statistic`"
+    },
+    {
+      "resourceType": "AWS::EC2::Route",
+      "tier": 1,
+      "primaryIdentifier": [
+        "RouteTableId",
+        "CidrBlock"
+      ],
+      "status": "compound",
+      "detail": "measured, issue #6243"
+    },
+    {
+      "resourceType": "AWS::EC2::RouteServerAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RouteServerId",
+        "VpcId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the route server ID and VPC ID separated by the pipe symbol\""
+    },
+    {
+      "resourceType": "AWS::EC2::RouteServerPropagation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RouteServerId",
+        "RouteTableId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the route server ID and route table ID separated by the pipe symbol\""
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "tier": 1,
+      "primaryIdentifier": [
+        "Id"
+      ],
+      "status": "no-ref",
+      "detail": "docs: no Ref (2026-08-12 audit, issue #1667)"
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupVpcAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GroupId",
+        "VpcId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `sg-id|vpc-id`"
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetCidrReservation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SubnetId",
+        "SubnetCidrReservationId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<SubnetId>|<SubnetCidrReservationId>`"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayMeteringPolicyEntry",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayMeteringPolicyId",
+        "PolicyRuleNumber"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayMulticastDomainAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayMulticastDomainId",
+        "TransitGatewayAttachmentId",
+        "SubnetId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DomainId>|<AttachmentId>|<SubnetId>` (the docs say the domain id)"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayMulticastGroupMember",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayMulticastDomainId",
+        "GroupIpAddress",
+        "NetworkInterfaceId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DomainId>|<GroupIpAddress>|<NetworkInterfaceId>`"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayMulticastGroupSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayMulticastDomainId",
+        "GroupIpAddress",
+        "NetworkInterfaceId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DomainId>|<GroupIpAddress>|<NetworkInterfaceId>`"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayPolicyTableAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayPolicyTableId",
+        "TransitGatewayAttachmentId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayPolicyTableEntry",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayPolicyTableId",
+        "PolicyRuleNumber"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayRoute",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayRouteTableId",
+        "DestinationCidrBlock"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<RouteTableId>|<DestinationCidrBlock>`"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayRouteTableAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayRouteTableId",
+        "TransitGatewayAttachmentId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<RouteTableId>|<AttachmentId>`"
+    },
+    {
+      "resourceType": "AWS::EC2::TransitGatewayRouteTablePropagation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TransitGatewayRouteTableId",
+        "TransitGatewayAttachmentId"
+      ],
+      "status": "mapped",
+      "detail": "REF_FROM_PHYSICAL_ID_HELPERS"
+    },
+    {
+      "resourceType": "AWS::EC2::VPCCidrBlock",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "VpcId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::EC2::VPCDHCPOptionsAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DhcpOptionsId",
+        "VpcId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DhcpOptionsId>|<VpcId>`"
+    },
+    {
+      "resourceType": "AWS::EC2::VPCGatewayAttachment",
+      "tier": 1,
+      "primaryIdentifier": [
+        "AttachmentType",
+        "VpcId"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::EC2::VPNConnectionRoute",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DestinationCidrBlock",
+        "VpnConnectionId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the ID of the VPN connection route\""
+    },
+    {
+      "resourceType": "AWS::EC2::VolumeAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "VolumeId",
+        "InstanceId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::ECS::GatewayClusterAssociations",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Gateway",
+        "Cluster"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::ECS::PrimaryTaskSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Cluster",
+        "Service"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource name\""
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ServiceArn",
+        "Cluster"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::ECS::TaskSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Cluster",
+        "Service",
+        "Id"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource name\""
+    },
+    {
+      "resourceType": "AWS::EKS::AccessEntry",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PrincipalArn",
+        "ClusterName"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource name\", with the principal ARN as the example"
+    },
+    {
+      "resourceType": "AWS::EKS::Addon",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ClusterName",
+        "AddonName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `cluster-name|vpc-cni`"
+    },
+    {
+      "resourceType": "AWS::EKS::CertificateAuthority",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ClusterName",
+        "Id"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::EKS::FargateProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ClusterName",
+        "FargateProfileName"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns `<cluster-name>/<Fargate_profile_name>`, slash-joined; not measured"
+    },
+    {
+      "resourceType": "AWS::EKS::IdentityProviderConfig",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IdentityProviderConfigName",
+        "ClusterName",
+        "Type"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns `cluster-name/oidc/identity-provider-config-name`, slash-joined; not measured"
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceFleetConfig",
+      "tier": 1,
+      "primaryIdentifier": [
+        "ClusterId",
+        "InstanceFleetId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceGroupConfig",
+      "tier": 1,
+      "primaryIdentifier": [
+        "InstanceGroupId",
+        "JobFlowId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::EMR::StudioSessionMapping",
+      "tier": 2,
+      "primaryIdentifier": [
+        "StudioId",
+        "IdentityType",
+        "IdentityName"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::ElasticBeanstalk::ApplicationVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationName",
+        "Id"
+      ],
+      "status": "mapped",
+      "detail": "REF_FROM_PHYSICAL_ID_HELPERS"
+    },
+    {
+      "resourceType": "AWS::ElasticBeanstalk::ConfigurationTemplate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationName",
+        "TemplateName"
+      ],
+      "status": "mapped",
+      "detail": "REF_FROM_PHYSICAL_ID_HELPERS"
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::TrustStoreRevocation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RevocationId",
+        "TrustStoreArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the ARN of the trust store\"; not measured (needs CA bundle objects)"
+    },
+    {
+      "resourceType": "AWS::EntityResolution::PolicyStatement",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Arn",
+        "StatementId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Events::EventBusPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "EventBusName",
+        "StatementId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<EventBusName>|<StatementId>` (the docs show a generated id)"
+    },
+    {
+      "resourceType": "AWS::FIS::TargetAccountConfiguration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ExperimentTemplateId",
+        "AccountId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "tier": 1,
+      "primaryIdentifier": [
+        "CatalogId",
+        "Name"
+      ],
+      "status": "mapped",
+      "detail": "REF_FROM_PHYSICAL_ID_HELPERS"
+    },
+    {
+      "resourceType": "AWS::Glue::Integration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IntegrationArn",
+        "IntegrationName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Glue::IntegrationResourceProperty",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceArn",
+        "ResourcePropertyArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"The resource property arn\" (a Cloud Control-native type; not measured)"
+    },
+    {
+      "resourceType": "AWS::Glue::Partition",
+      "tier": 2,
+      "primaryIdentifier": [
+        "CatalogId",
+        "DatabaseName",
+        "TableName",
+        "IdentifierPartitionInputValues"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the partition name\", which no identifier field holds"
+    },
+    {
+      "resourceType": "AWS::Glue::SchemaVersionMetadata",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SchemaVersionId",
+        "Key",
+        "Value"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "tier": 1,
+      "primaryIdentifier": [
+        "CatalogId",
+        "DatabaseName",
+        "Name"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::Glue::TableOptimizer",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TableName",
+        "DatabaseName",
+        "Type",
+        "CatalogId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::GroundStation::MissionProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "Arn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns the mission profile ARN (a Cloud Control-native type; not measured)"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::CustomDetectionRuleAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RuleId",
+        "AssociationId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::Filter",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DetectorId",
+        "Name"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::IPSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "DetectorId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::Master",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DetectorId",
+        "MasterId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::Member",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DetectorId",
+        "MemberId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::PublishingDestination",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DetectorId",
+        "Id"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource publishing destination ID\"; not measured (needs a bucket and key policy)"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::ThreatEntitySet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "DetectorId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the unique ID associated with the newly created threat entity set\"; not measured"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::ThreatIntelSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "DetectorId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::GuardDuty::TrustedEntitySet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "DetectorId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the unique ID of the TrustedEntitySet\"; not measured"
+    },
+    {
+      "resourceType": "AWS::IAM::GroupPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyName",
+        "GroupName"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyName>|<GroupName>`"
+    },
+    {
+      "resourceType": "AWS::IAM::RolePolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyName",
+        "RoleName"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyName>|<RoleName>`"
+    },
+    {
+      "resourceType": "AWS::IAM::UserPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyName",
+        "UserName"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyName>|<UserName>`"
+    },
+    {
+      "resourceType": "AWS::IdentityStore::Group",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GroupId",
+        "IdentityStoreId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `GroupID|IdentityStoreId`"
+    },
+    {
+      "resourceType": "AWS::IdentityStore::GroupMembership",
+      "tier": 2,
+      "primaryIdentifier": [
+        "MembershipId",
+        "IdentityStoreId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `GroupMembershipID|IdentityStoreId`"
+    },
+    {
+      "resourceType": "AWS::IoT::PolicyPrincipalAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyName",
+        "Principal"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::IoT::SoftwarePackageVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PackageName",
+        "VersionName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `package-name|version-name`"
+    },
+    {
+      "resourceType": "AWS::IoT::ThingPrincipalAttachment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ThingName",
+        "Principal"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::IoTTwinMaker::ComponentType",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WorkspaceId",
+        "ComponentTypeId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the workspace Id and the ComponentType Id\""
+    },
+    {
+      "resourceType": "AWS::IoTTwinMaker::Entity",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WorkspaceId",
+        "EntityId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the workspace Id and the entity Id\""
+    },
+    {
+      "resourceType": "AWS::IoTTwinMaker::Scene",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WorkspaceId",
+        "SceneId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the workspace ID and the scene ID\""
+    },
+    {
+      "resourceType": "AWS::IoTTwinMaker::SyncJob",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WorkspaceId",
+        "SyncSource"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the workspace Id and the entity Id\""
+    },
+    {
+      "resourceType": "AWS::Kendra::DataSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "IndexId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<data source ID>|<index ID>`"
+    },
+    {
+      "resourceType": "AWS::Kendra::Faq",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "IndexId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<faq-id>|<index-id>`"
+    },
+    {
+      "resourceType": "AWS::LakeFormation::DataCellsFilter",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TableCatalogId",
+        "DatabaseName",
+        "TableName",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `123456789012|ExampleDbName|ExampleTableName|ExampleFilter`"
+    },
+    {
+      "resourceType": "AWS::LakeFormation::PrincipalPermissions",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PrincipalIdentifier",
+        "ResourceIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<principal>|<resource>`"
+    },
+    {
+      "resourceType": "AWS::LakeFormation::TagAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceIdentifier",
+        "TagsIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"a combination of the ResourceIdentifier and TagsIdentifier seperated with a pipe\""
+    },
+    {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "tier": 1,
+      "primaryIdentifier": [
+        "FunctionName",
+        "Qualifier"
+      ],
+      "status": "compound",
+      "detail": "measured, issue #6243"
+    },
+    {
+      "resourceType": "AWS::Lambda::Permission",
+      "tier": 1,
+      "primaryIdentifier": [
+        "FunctionName",
+        "Id"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Lex::BotAlias",
+      "tier": 2,
+      "primaryIdentifier": [
+        "BotAliasId",
+        "BotId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::Lex::BotVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "BotId",
+        "BotVersion"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::LicenseManagerUserSubscriptions::LicenseServerEndpoint",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IdentityProviderArn",
+        "LicenseServerEndpointArn"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Lightsail::LoadBalancerTlsCertificate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "CertificateName",
+        "LoadBalancerName"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+    },
+    {
+      "resourceType": "AWS::Location::TrackerConsumer",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TrackerName",
+        "ConsumerArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the TrackerConsumer name\""
+    },
+    {
+      "resourceType": "AWS::Logs::AccountPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AccountId",
+        "PolicyType",
+        "PolicyName"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::Logs::LogStream",
+      "tier": 2,
+      "primaryIdentifier": [
+        "LogGroupName",
+        "LogStreamName"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::Logs::MetricFilter",
+      "tier": 2,
+      "primaryIdentifier": [
+        "LogGroupName",
+        "FilterName"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Logs::SubscriptionFilter",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FilterName",
+        "LogGroupName"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::MediaConnect::BridgeOutput",
+      "tier": 2,
+      "primaryIdentifier": [
+        "BridgeArn",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<bridgeArn>|<name>`"
+    },
+    {
+      "resourceType": "AWS::MediaConnect::BridgeSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "BridgeArn",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<bridgeArn>|<name>`"
+    },
+    {
+      "resourceType": "AWS::MediaConnect::FlowVpcInterface",
+      "tier": 2,
+      "primaryIdentifier": [
+        "FlowArn",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<flowArn>|<name>`"
+    },
+    {
+      "resourceType": "AWS::MediaLive::ChannelPlacementGroup",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "ClusterId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::MediaLive::Multiplexprogram",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ProgramName",
+        "MultiplexId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::MediaPackageV2::ChannelPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ChannelGroupName",
+        "ChannelName"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns `ChannelGroupName / ChannelName`; the probe was refused by the service"
+    },
+    {
+      "resourceType": "AWS::MediaPackageV2::OriginEndpointPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ChannelGroupName",
+        "ChannelName",
+        "OriginEndpointName"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns `ChannelGroupName / ChannelName / OriginEndpointName`; not measured"
+    },
+    {
+      "resourceType": "AWS::MediaTailor::LiveSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "LiveSourceName",
+        "SourceLocationName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::MediaTailor::VodSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SourceLocationName",
+        "VodSourceName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::ContextStoreAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ContextStoreId",
+        "ResourceArn"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::CoreNetworkPrefixListAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "CoreNetworkId",
+        "PrefixListArn"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::CustomerGatewayAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GlobalNetworkId",
+        "CustomerGatewayArn"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `global-network-…|<customerGatewayArn>`"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::Device",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GlobalNetworkId",
+        "DeviceId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `global-network-…|device-…`"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::Link",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GlobalNetworkId",
+        "LinkId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `global-network-…|link-…`"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::LinkAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GlobalNetworkId",
+        "DeviceId",
+        "LinkId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `global-network-…|device-…|link-…`"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::Site",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GlobalNetworkId",
+        "SiteId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `global-network-…|site-…`"
+    },
+    {
+      "resourceType": "AWS::NetworkManager::TransitGatewayRegistration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GlobalNetworkId",
+        "TransitGatewayArn"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `global-network-…|<transitGatewayArn>`"
+    },
+    {
+      "resourceType": "AWS::NetworkMonitor::Probe",
+      "tier": 2,
+      "primaryIdentifier": [
+        "MonitorName",
+        "ProbeId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Notifications::ChannelAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Arn",
+        "NotificationConfigurationArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the ARN of the configuration created\""
+    },
+    {
+      "resourceType": "AWS::Notifications::ManagedNotificationAccountContactAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ManagedNotificationConfigurationArn",
+        "ContactIdentifier"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the ARN of the configuration created\""
+    },
+    {
+      "resourceType": "AWS::Notifications::ManagedNotificationAdditionalChannelAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ChannelArn",
+        "ManagedNotificationConfigurationArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the ARN of the configuration created\""
+    },
+    {
+      "resourceType": "AWS::Notifications::OrganizationalUnitAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "NotificationConfigurationArn",
+        "OrganizationalUnitId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::OpenSearchServerless::AccessPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Type",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>|<Name>` (the docs say the policy name)"
+    },
+    {
+      "resourceType": "AWS::OpenSearchServerless::CollectionIndex",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "IndexName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::OpenSearchServerless::Index",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IndexName",
+        "CollectionEndpoint"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `index name|endpoint`"
+    },
+    {
+      "resourceType": "AWS::OpenSearchServerless::LifecyclePolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Type",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>|<Name>`"
+    },
+    {
+      "resourceType": "AWS::OpenSearchServerless::SecurityPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Type",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>|<Name>` (the docs say the policy name)"
+    },
+    {
+      "resourceType": "AWS::PCAConnectorAD::ServicePrincipalName",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ConnectorArn",
+        "DirectoryRegistrationArn"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::PCAConnectorAD::TemplateGroupAccessControlEntry",
+      "tier": 2,
+      "primaryIdentifier": [
+        "GroupSecurityIdentifier",
+        "TemplateArn"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Panorama::PackageVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PackageId",
+        "PackageVersion",
+        "PatchVersion"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::QBusiness::DataAccessor",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "DataAccessorId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|DataAccessorId`"
+    },
+    {
+      "resourceType": "AWS::QBusiness::DataSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "DataSourceId",
+        "IndexId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|DataSourceId|IndexId`"
+    },
+    {
+      "resourceType": "AWS::QBusiness::Index",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "IndexId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|IndexId`"
+    },
+    {
+      "resourceType": "AWS::QBusiness::Permission",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "StatementId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|StatementId`"
+    },
+    {
+      "resourceType": "AWS::QBusiness::Plugin",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "PluginId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|PluginId`"
+    },
+    {
+      "resourceType": "AWS::QBusiness::Retriever",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "RetrieverId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|RetrieverId`"
+    },
+    {
+      "resourceType": "AWS::QBusiness::WebExperience",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationId",
+        "WebExperienceId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `ApplicationId|WebExperienceId`"
+    },
+    {
+      "resourceType": "AWS::QLDB::Stream",
+      "tier": 2,
+      "primaryIdentifier": [
+        "LedgerName",
+        "Id"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::QuickSight::ActionConnector",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ActionConnectorId",
+        "AwsAccountId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Agent",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "AgentId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Analysis",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AnalysisId",
+        "AwsAccountId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::QuickSight::CustomPermissions",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "CustomPermissionsName"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::DLPSetting",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "DlpSettingId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Dashboard",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "DashboardId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::QuickSight::DataSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "DataSetId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::QuickSight::DataSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "DataSourceId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Folder",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "FolderId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::KnowledgeBase",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "KnowledgeBaseId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::LimitsProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AccountId",
+        "ProfileId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::RefreshSchedule",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "DataSetId",
+        "Schedule/ScheduleId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Space",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "SpaceId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Template",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "TemplateId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Theme",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ThemeId",
+        "AwsAccountId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::QuickSight::Topic",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "TopicId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::TopicV2",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "TopicId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::QuickSight::VPCConnection",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AwsAccountId",
+        "VPCConnectionId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::RAM::PermissionAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceShareArn",
+        "PermissionArn"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `resource-share-arn|permission-arn`"
+    },
+    {
+      "resourceType": "AWS::RAM::PrincipalAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceShareArn",
+        "Principal"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `resource-share-arn|principal`"
+    },
+    {
+      "resourceType": "AWS::RAM::ResourceAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceShareArn",
+        "ResourceArn"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `resource-share-arn|resource-arn`"
+    },
+    {
+      "resourceType": "AWS::RAM::SourceAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceShareArn",
+        "SourceId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `resource-share-arn|source-id`"
+    },
+    {
+      "resourceType": "AWS::RDS::CustomDBEngineVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Engine",
+        "EngineVersion"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the resource name, such as mystack-abc1d2efg3h4\""
+    },
+    {
+      "resourceType": "AWS::Redshift::EndpointAuthorization",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ClusterIdentifier",
+        "Account"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::RefactorSpaces::Application",
+      "tier": 2,
+      "primaryIdentifier": [
+        "EnvironmentIdentifier",
+        "ApplicationIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<EnvironmentId>|<ApplicationId>`"
+    },
+    {
+      "resourceType": "AWS::RefactorSpaces::Route",
+      "tier": 2,
+      "primaryIdentifier": [
+        "EnvironmentIdentifier",
+        "ApplicationIdentifier",
+        "RouteIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<EnvironmentId>|<ApplicationId>|<RouteId>`"
+    },
+    {
+      "resourceType": "AWS::RefactorSpaces::Service",
+      "tier": 2,
+      "primaryIdentifier": [
+        "EnvironmentIdentifier",
+        "ApplicationIdentifier",
+        "ServiceIdentifier"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `<EnvironmentId>|<ApplicationId>|<ServiceId>`"
+    },
+    {
+      "resourceType": "AWS::ResilienceHubV2::ServiceFunction",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ServiceArn",
+        "ServiceFunctionId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::ResilienceHubV2::UserJourney",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SystemIdentifier",
+        "UserJourneyId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Route53::KeySigningKey",
+      "tier": 2,
+      "primaryIdentifier": [
+        "HostedZoneId",
+        "Name"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `Z00001111A1ABCaaABC11|KSK1`"
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSet",
+      "tier": 1,
+      "primaryIdentifier": [
+        "Name",
+        "HostedZoneId",
+        "Type",
+        "SetIdentifier"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AT_INDEX"
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetGroup",
+      "tier": 1,
+      "primaryIdentifier": [
+        "Id"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AT_INDEX"
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetProtection",
+      "tier": 2,
+      "primaryIdentifier": [
+        "HostedZoneId",
+        "RecordName",
+        "RecordType"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the HostedZoneId, RecordName, and RecordType values, separated by a pipe\""
+    },
+    {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "tier": 1,
+      "primaryIdentifier": [
+        "TableBucketARN",
+        "Namespace"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "tier": 1,
+      "primaryIdentifier": [
+        "TableARN"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::SES::ConfigurationSetEventDestination",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Id",
+        "ConfigurationSetName"
+      ],
+      "status": "no-ref",
+      "detail": "docs: Return values documents Fn::GetAtt only, no Ref"
+    },
+    {
+      "resourceType": "AWS::SES::EmailIdentityCertificate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "EmailIdentity",
+        "FromAddress"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::SES::ReceiptRule",
+      "tier": 2,
+      "primaryIdentifier": [
+        "RuleName",
+        "RuleSetName"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE"
+    },
+    {
+      "resourceType": "AWS::SMSVOICE::SenderId",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IsoCountryCode",
+        "SenderId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `IsoCountryCode|SenderId`"
+    },
+    {
+      "resourceType": "AWS::SSM::MaintenanceWindowTarget",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WindowId",
+        "WindowTargetId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::SSM::MaintenanceWindowTask",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WindowId",
+        "WindowTaskId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::SSM::ResourcePolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyId",
+        "ResourceArn"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::SSO::ApplicationAssignment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationArn",
+        "PrincipalType",
+        "PrincipalId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"a generated ID, combined by all fields with the delimiter |\""
+    },
+    {
+      "resourceType": "AWS::SSO::Assignment",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "TargetId",
+        "TargetType",
+        "PermissionSetArn",
+        "PrincipalType",
+        "PrincipalId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"a generated ID, combined by all fields with the delimiter |\""
+    },
+    {
+      "resourceType": "AWS::SSO::PermissionSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "InstanceArn",
+        "PermissionSetArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns `permission-arn|sso-instance-arn`, the REVERSE of the identifier order; needs an Identity Center instance"
+    },
+    {
+      "resourceType": "AWS::SageMaker::App",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AppName",
+        "AppType",
+        "DomainId",
+        "UserProfileName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the app type, app name, Domain ID, and user profile name\""
+    },
+    {
+      "resourceType": "AWS::SageMaker::Space",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainId",
+        "SpaceName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the ID of the domain that the space is associated with and the name of the space\""
+    },
+    {
+      "resourceType": "AWS::SageMaker::UserProfile",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserProfileName",
+        "DomainId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns \"the Domain ID and the user profile name\""
+    },
+    {
+      "resourceType": "AWS::SecurityAgent::Pentest",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PentestId",
+        "AgentSpaceId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `pt-…|<agentSpaceId>`"
+    },
+    {
+      "resourceType": "AWS::SecurityLake::AwsLogSource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "SourceName",
+        "SourceVersion"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns the source name such as `VPC_FLOW`; not measured (needs a data lake)"
+    },
+    {
+      "resourceType": "AWS::ServiceCatalog::PortfolioPrincipalAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PortfolioId",
+        "PrincipalARN"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PortfolioId>|<PrincipalARN>`"
+    },
+    {
+      "resourceType": "AWS::ServiceCatalog::PortfolioProductAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PortfolioId",
+        "ProductId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"a unique identifier for the association\""
+    },
+    {
+      "resourceType": "AWS::ServiceCatalog::PortfolioShare",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PortfolioId",
+        "AccountId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the identifier of the portfolio share\"; needs a second account"
+    },
+    {
+      "resourceType": "AWS::ServiceCatalog::ServiceActionAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ProductId",
+        "ProvisioningArtifactId",
+        "ServiceActionId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::ServiceCatalog::TagOptionAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TagOptionId",
+        "ResourceId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<TagOptionId>|<ResourceId>`"
+    },
+    {
+      "resourceType": "AWS::ServiceCatalogAppRegistry::AttributeGroupAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationArn",
+        "AttributeGroupArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the application Id\"; the probe was refused: closed to new customers"
+    },
+    {
+      "resourceType": "AWS::ServiceCatalogAppRegistry::ResourceAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ApplicationArn",
+        "ResourceArn",
+        "ResourceType"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the application Id\"; closed to new customers"
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::Instance",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ServiceId",
+        "InstanceId"
+      ],
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
+    },
+    {
+      "resourceType": "AWS::Signer::ProfilePermission",
+      "tier": 2,
+      "primaryIdentifier": [
+        "StatementId",
+        "ProfileName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `StatementId|ProfileName`"
+    },
+    {
+      "resourceType": "AWS::SupportApp::SlackChannelConfiguration",
+      "tier": 2,
+      "primaryIdentifier": [
+        "TeamId",
+        "ChannelId"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    },
+    {
+      "resourceType": "AWS::Timestream::Table",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DatabaseName",
+        "TableName"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `DATABASE_NAME|TABLE_NAME`"
+    },
+    {
+      "resourceType": "AWS::Transfer::Agreement",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AgreementId",
+        "ServerId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::VerifiedPermissions::IdentitySource",
+      "tier": 2,
+      "primaryIdentifier": [
+        "IdentitySourceId",
+        "PolicyStoreId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<IdentitySourceId>|<PolicyStoreId>` (the docs say the identity source id)"
+    },
+    {
+      "resourceType": "AWS::VerifiedPermissions::Policy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyId",
+        "PolicyStoreId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyId>|<PolicyStoreId>` (the docs say the policy id)"
+    },
+    {
+      "resourceType": "AWS::VerifiedPermissions::PolicyTemplate",
+      "tier": 2,
+      "primaryIdentifier": [
+        "PolicyStoreId",
+        "PolicyTemplateId"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `POLICYSTOREabcde111111|POLICYTEMPLAT…`"
+    },
+    {
+      "resourceType": "AWS::WAFv2::IPSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Name",
+        "Id",
+        "Scope"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `name|id|scope`"
+    },
+    {
+      "resourceType": "AWS::WAFv2::RegexPatternSet",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Name",
+        "Id",
+        "Scope"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `name|id|scope`"
+    },
+    {
+      "resourceType": "AWS::WAFv2::RuleGroup",
+      "tier": 2,
+      "primaryIdentifier": [
+        "Name",
+        "Id",
+        "Scope"
+      ],
+      "status": "compound",
+      "detail": "docs Return values: Ref returns `name|id|scope`"
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "tier": 1,
+      "primaryIdentifier": [
+        "Name",
+        "Id",
+        "Scope"
+      ],
+      "status": "mapped",
+      "detail": "case"
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACLAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "ResourceArn",
+        "WebACLArn"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns text copied from WebACL (`name|id|scope`), which the type does not have"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AIAgent",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AIAgentId",
+        "AssistantId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AIAgentVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AssistantId",
+        "AIAgentId",
+        "VersionNumber"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AIGuardrail",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AIGuardrailId",
+        "AssistantId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AIGuardrailVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AssistantId",
+        "AIGuardrailId",
+        "VersionNumber"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AIPrompt",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AIPromptId",
+        "AssistantId"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AIPromptVersion",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AssistantId",
+        "AIPromptId",
+        "VersionNumber"
+      ],
+      "status": "unverified",
+      "detail": "docs: Return values has a Ref heading with no text"
+    },
+    {
+      "resourceType": "AWS::Wisdom::AssistantAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "AssistantAssociationId",
+        "AssistantId"
+      ],
+      "status": "unverified",
+      "detail": "docs Return values: Ref returns \"the association ID\" (a Cloud Control-native type; not measured)"
+    },
+    {
+      "resourceType": "AWS::WorkspacesInstances::VolumeAssociation",
+      "tier": 2,
+      "primaryIdentifier": [
+        "WorkspaceInstanceId",
+        "VolumeId",
+        "Device"
+      ],
+      "status": "no-ref",
+      "detail": "docs: the page has no Return values section"
+    }
+  ],
+  "staleDispositions": [],
+  "missingFromSnapshot": []
+}

@@ -11,6 +11,7 @@ import {
   s3TablesTableRefFromPhysicalId,
   s3TablesNamespaceRefFromPhysicalId,
   vpcGatewayAttachmentRefFromPhysicalId,
+  REF_FROM_PHYSICAL_ID_HELPERS,
   isPlaceholderArn,
 } from './ref-values/type-refs.js';
 
@@ -187,6 +188,19 @@ export const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::SSM::MaintenanceWindowTask',
   // `<ApplicationName>|<DeploymentGroupName>` -> the group name.
   'AWS::CodeDeploy::DeploymentGroup',
+  // Issue #6612 (sources per type: scripts/gen-ref-segment-coverage.ts).
+  // Measured: `<DetectorId>|<Name>`,
+  // `<AutoScalingGroupName>|<LifecycleHookName>` (a hook name has no `|`),
+  // `<ServiceId>|<InstanceId>` -> the trailing name / id.
+  'AWS::GuardDuty::Filter',
+  'AWS::AutoScaling::LifecycleHook',
+  'AWS::ServiceDiscovery::Instance',
+  // NOT measured (a second account / an EMR cluster): docs-verified, pre-registry
+  // (GuardDuty's convention measured on Filter / IPSet): `<DetectorId>|<account>`,
+  // `<ClusterId>|<InstanceFleetId>` (the SDK provider stores the bare id).
+  'AWS::GuardDuty::Master',
+  'AWS::GuardDuty::Member',
+  'AWS::EMR::InstanceFleetConfig',
   // `AWS::S3Tables::Namespace` is NOT here, though the 2026-07-03 close-out
   // audit added it on the docs' "Ref returns the namespace name": real
   // CloudFormation returns the whole `<tableBucketARN>|<namespace>` (measured,
@@ -249,6 +263,13 @@ export const REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE = new Set<string>([
   // a bare `vpc-cidr-assoc-…` (see the `cdkd export` splitter's comment); one
   // in a hand-edited record is pipe-free and passes through unchanged.
   'AWS::EC2::VPCCidrBlock',
+  // Issue #6612. Measured: `<RuleName>|<RuleSetName>` -> the rule name,
+  // `<Id>|<DetectorId>` -> the IPSet / ThreatIntelSet id.
+  'AWS::SES::ReceiptRule',
+  'AWS::GuardDuty::IPSet',
+  'AWS::GuardDuty::ThreatIntelSet',
+  // NOT measured (an EMR cluster), docs-verified: `<InstanceGroupId>|<JobFlowId>`.
+  'AWS::EMR::InstanceGroupConfig',
 ]);
 
 /**
@@ -689,6 +710,9 @@ export function cfnRefValueFromPhysicalId(
   if (resourceType === 'AWS::AppSync::GraphQLSchema') {
     return graphQLSchemaCfnId(physicalId);
   }
+  // Issue #6612 — per-type helpers, each stating its measured shape.
+  const typeRef = REF_FROM_PHYSICAL_ID_HELPERS.get(resourceType);
+  if (typeRef) return typeRef(physicalId, stateLookup);
   // AWS::Glue::Table: the table name, which may itself contain `|` (issue
   // #1672) — see the helper for why no generic Set can extract it.
   if (resourceType === 'AWS::Glue::Table') {
