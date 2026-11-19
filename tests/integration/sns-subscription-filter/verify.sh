@@ -22,6 +22,9 @@
 #      (b) the same failure over the record's C, then an outside write to D:
 #          `cdkd rollback --revert-failed` clears C and leaves D's;
 #      then overlapownv2 rewrites C through the record, for the destroy.
+#   1e. go-to-k/cdkd#6638: FilterPolicy and FilterPolicyScope changed together
+#      OUT OF BAND; `cdkd drift --revert -y` exits 2 refusing to replace the
+#      subscription, which keeps its SubscriptionArn and the out-of-band values.
 #   2. Destroy + assert the topic, queue and state file are gone, and that the
 #      policy was cleared from BOTH retained queues (verify.sh deletes them).
 #
@@ -81,9 +84,12 @@ JOURNAL_KEY="cdkd/${STACK}/${REGION}/rollback-journal.json"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+REVERT_LOG=""
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${REVERT_LOG:-}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -383,6 +389,61 @@ CDKD_TEST_UPDATE=overlapown,overlapownv2 node "${LOCAL_DIST}" deploy "${STACK}" 
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_policy_held C "${OVERLAP_QUEUE_C_URL}" "after the overlapownv2 deploy" OverlapOwnV2
 echo "    OK: the OverlapOwn record wrote C again"
+
+# --- Phase 1e: a revert never replaces the subscription (go-to-k/cdkd#6638)
+# FilterPolicy and FilterPolicyScope changed together cannot be applied in
+# place (two SetSubscriptionAttributes calls would apply one against the
+# other's old value), so a deploy replaces the subscription. `cdkd drift
+# --revert` used to do the same: Unsubscribe + Subscribe, a NEW SubscriptionArn
+# and the messages published in between lost. It must refuse instead, and
+# leave the subscription exactly as it is.
+echo "==> Phase 1e: drift --revert refuses to replace the subscription"
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+SUB_LID="$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::SNS::Subscription") | .key] | if length == 1 then .[0] else empty end' <<<"${STATE_JSON}")"
+[ -n "${SUB_LID}" ] || { echo "FAIL: premise: expected exactly one AWS::SNS::Subscription record" >&2; exit 1; }
+REC_SUB_ARN="$(jq -r --arg l "${SUB_LID}" '.resources[$l].physicalId' <<<"${STATE_JSON}")"
+[ "${REC_SUB_ARN}" = "${SUB_ARN}" ] || { echo "FAIL: premise: the record names ${REC_SUB_ARN}, AWS has ${SUB_ARN}" >&2; exit 1; }
+# PREMISE: the baseline records the scope, so BOTH attributes read as drift and
+# the revert's desired bag changes both — the replace branch, not the in-place one.
+REC_SCOPE="$(jq -r --arg l "${SUB_LID}" '.resources[$l].observedProperties.FilterPolicyScope // empty' <<<"${STATE_JSON}")"
+[ "${REC_SCOPE}" = "MessageAttributes" ] || { echo "FAIL: premise: the baseline's FilterPolicyScope is '${REC_SCOPE}', expected MessageAttributes; the arm would not reach the replace branch" >&2; exit 1; }
+aws sns set-subscription-attributes --subscription-arn "${SUB_ARN}" --region "${REGION}" \
+  --attribute-name FilterPolicyScope --attribute-value MessageBody
+aws sns set-subscription-attributes --subscription-arn "${SUB_ARN}" --region "${REGION}" \
+  --attribute-name FilterPolicy --attribute-value '{"color":["blue"]}'
+REVERT_LOG="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${REVERT_LOG}" 2>&1
+DRIFT_RC=$?
+set -e
+sed 's/^/    | /' "${REVERT_LOG}"
+[ "${DRIFT_RC}" = "1" ] || { rm -f "${REVERT_LOG}"; echo "FAIL: premise: cdkd drift exited ${DRIFT_RC} after the out-of-band change, want 1" >&2; exit 1; }
+# `FilterPolicy` is matched as a whole key: it is a prefix of `FilterPolicyScope`.
+for needle in "${SUB_LID}" 'FilterPolicyScope' 'FilterPolicy([^S]|$)'; do
+  grep -qE -- "${needle}" "${REVERT_LOG}" || { rm -f "${REVERT_LOG}"; echo "FAIL: premise: the drift report does not name ${needle}" >&2; exit 1; }
+done
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y >"${REVERT_LOG}" 2>&1
+REVERT_RC=$?
+set -e
+sed 's/^/    | /' "${REVERT_LOG}"
+# A refused resource is a partly failed revert: exit 2, never a success.
+[ "${REVERT_RC}" = "2" ] || { rm -f "${REVERT_LOG}"; echo "FAIL: cdkd drift --revert exited ${REVERT_RC}, want 2 (the subscription refused)" >&2; exit 1; }
+REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' "${REVERT_LOG}" | grep -F "${SUB_LID} (AWS::SNS::Subscription): could not revert" || true)"
+rm -f "${REVERT_LOG}"
+[ -n "${REFUSAL}" ] || { echo "FAIL: the revert printed no 'could not revert' line for ${SUB_LID}" >&2; exit 1; }
+grep -q 'a drift revert never replaces a resource' <<<"${REFUSAL}" || { echo "FAIL: the refusal does not say a revert never replaces: ${REFUSAL}" >&2; exit 1; }
+# THE ARM: the same subscription, alone on the topic, still carrying the
+# out-of-band attributes (nothing was written), and the record unchanged.
+LIVE_SUBS="$(aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" --region "${REGION}" \
+  --query "Subscriptions[?Protocol=='sqs'].SubscriptionArn" --output text)"
+[ "${LIVE_SUBS}" = "${SUB_ARN}" ] || { echo "FAIL: the topic's sqs subscriptions are '${LIVE_SUBS}', expected only ${SUB_ARN} — the revert replaced it" >&2; exit 1; }
+LIVE_SCOPE="$(aws sns get-subscription-attributes --subscription-arn "${SUB_ARN}" --region "${REGION}" \
+  --query 'Attributes.FilterPolicyScope' --output text)"
+[ "${LIVE_SCOPE}" = "MessageBody" ] || { echo "FAIL: FilterPolicyScope is '${LIVE_SCOPE}' after the refused revert, expected the untouched MessageBody" >&2; exit 1; }
+REC_AFTER="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "${SUB_LID}" '.resources[$l].physicalId')"
+[ "${REC_AFTER}" = "${SUB_ARN}" ] || { echo "FAIL: the record's physical id moved to ${REC_AFTER}" >&2; exit 1; }
+echo "    OK: the revert refused, and ${SUB_ARN} is the topic's only subscription, untouched"
 
 # --- Phase 2: destroy --------------------------------------------------
 echo "==> Phase 2: destroy"

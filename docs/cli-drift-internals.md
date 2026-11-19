@@ -691,13 +691,15 @@ recorded properties are normally NOT modified — once `provider.update`
 succeeds, AWS matches state by definition, so a subsequent `cdkd drift` reports
 clean. The one exception is a provider-reported narrowing, below.
 
-The record does take the physical id and attributes the update returned. A
-provider may re-create the resource to revert it — an
-`AWS::EC2::SecurityGroupIngress` rule is revoked and re-authorized under a new
-`sgr-` id — and the record then names the new resource, which a later
-`Fn::GetAtt` and `cdkd export` read. Attributes are replaced wholesale when the update
-replaced the resource and merged key by key when it updated in place. A
-`NoEcho` attribute is stored as `***`.
+The record does take the attributes the update returned, merged key by key. A
+revert never replaces a resource: `UpdateContext.desiredFromAwsReadback` makes
+each provider whose `update()` would re-create the resource refuse before any
+call (`src/provisioning/revert-no-replace.ts`), counted update-not-supported.
+`applyRevertUpdate` backstops that: an answer with `wasReplaced` or another
+physical id counts as failed, with both ids named, and the record still takes
+the replacement's identity (attributes replaced wholesale), so a later
+`Fn::GetAtt` and `cdkd export` read what AWS holds. A `NoEcho` attribute is
+stored as `***`.
 
 ### Tags a revert preserves
 

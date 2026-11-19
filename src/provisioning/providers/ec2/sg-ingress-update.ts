@@ -34,6 +34,7 @@ import {
   survivingRecordOfRuleId,
 } from './sg-support.js';
 import { updateSgRuleDescription } from './sg-rule-description.js';
+import { revertReplacementRefusal } from '../../revert-no-replace.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 /**
@@ -238,7 +239,8 @@ export async function updateSecurityGroupIngress(
   previousProperties: Record<string, unknown>,
   maskSecrets?: MaskerFn,
   replayingState = false,
-  recordedAttributes?: Readonly<Record<string, unknown>>
+  recordedAttributes?: Readonly<Record<string, unknown>>,
+  driftRevert = false
 ): Promise<ResourceUpdateResult> {
   this.logger.debug(`Updating SecurityGroupIngress ${logicalId}: ${physicalId}`);
 
@@ -381,8 +383,25 @@ export async function updateSecurityGroupIngress(
     }
   }
 
-  // An identity change (a state-borne caller: `drift --revert`, a rollback):
-  // revoke old, authorize new.
+  // go-to-k/cdkd#6638: a revert never replaces the rule. Revoke + authorize
+  // mints a new `sgr-` id (and leaves the group without the rule between the
+  // two calls); EC2's in-place `ModifySecurityGroupRules` is not a path this
+  // provider has, so the revert refuses before any call. Reached when the
+  // live rule's protocol, ports or source differ from the record (an
+  // out-of-band `ModifySecurityGroupRules`), the description update found no
+  // rule to update, or the recorded description is redacted.
+  if (driftRevert) {
+    throw revertReplacementRefusal(
+      resourceType,
+      logicalId,
+      `the rule cannot reach its record in place (the live rule's protocol, ports or ` +
+        `source differ from it, AWS no longer has the rule, or its recorded description ` +
+        `is redacted)`
+    );
+  }
+
+  // An identity change (a state-borne caller: a rollback): revoke old,
+  // authorize new.
   try {
     // go-to-k/cdkd#4492: an old rule a surviving record still holds is not
     // revoked (the delete would skip it for the same holder), and nothing

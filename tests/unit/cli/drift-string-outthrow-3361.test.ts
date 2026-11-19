@@ -448,8 +448,9 @@ describe('cdkd drift --revert (#3361)', () => {
 
   it('a state write rejecting with an unconvertible value after a landed revert warns, and the revert reaches its summary', async () => {
     drifted();
-    // A new identity, so the revert has something to record and saves state.
-    mockUpdate.mockResolvedValue({ physicalId: 'q-new', wasReplaced: true });
+    // New attributes in place, so the revert has something to record and
+    // saves state (a new physical id fails the revert since go-to-k/cdkd#6638).
+    mockUpdate.mockResolvedValue({ physicalId: 'q', wasReplaced: false, attributes: { Arn: 'a-new' } });
     mockSaveState.mockImplementation(() => Promise.reject(unconvertible()));
 
     const { error } = await revert();

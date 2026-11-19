@@ -13,6 +13,7 @@ import { generatedNameFor, recordedGeneratedNameKept } from '../../resource-name
 import { createMaskedLogSinks, withDerivedNameMasks } from '../../masked-retry-logger.js';
 import type { UpdateContext, ResourceUpdateResult } from '../../../types/resource.js';
 import { IAM_POLICY_NAME, readPolicyTargetLists, refusalRepair } from './shared.js';
+import { isDriftRevert, revertReplacementRefusal } from '../../revert-no-replace.js';
 
 /**
  * Update an IAM inline policy
@@ -57,6 +58,17 @@ export async function update(
     })
       ? oldPolicyName
       : derivedPolicyName;
+  // go-to-k/cdkd#6638: a rename puts the policy under the new name and removes
+  // the old one, a replacement of the policy; a revert refuses it before any
+  // call (a `{{resolve:...}}` PolicyName re-resolving to another value, or a
+  // case-only difference).
+  if (isDriftRevert(context) && newPolicyName !== oldPolicyName) {
+    throw revertReplacementRefusal(
+      resourceType,
+      logicalId,
+      'its PolicyName differs from the name the policy is recorded under'
+    );
+  }
   // Every name the recorded principals may hold the policy under
   // (go-to-k/cdkd#4152): the physical id's, and the recorded PolicyName when
   // it is a usable name that differs. They differ on a rollback revert, which
@@ -286,7 +298,11 @@ export async function update(
 
     log.debug(`Successfully updated IAM policy ${logicalId}`);
 
-    const newPhysicalId = newPolicyName;
+    // go-to-k/cdkd#6638: a drift revert (which refused a rename above) keeps
+    // the recorded id, so a legacy `policyName:roleName` record is not read
+    // as a replacement by the revert's backstop. A deploy still moves it to
+    // the bare name.
+    const newPhysicalId = isDriftRevert(context) ? physicalId : newPolicyName;
 
     return {
       physicalId: newPhysicalId,

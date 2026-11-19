@@ -23,6 +23,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { planSubscriptionAttributes } from './sns-subscription/attribute-plan.js';
+import { isDriftRevert, revertReplacementRefusal } from '../revert-no-replace.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -297,7 +298,13 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       properties,
       context
     );
-    if (plan === undefined) {
+    if (!Array.isArray(plan)) {
+      // go-to-k/cdkd#6638: a revert never replaces the subscription (a new
+      // SubscriptionArn, and the messages published between the delete and
+      // the create are lost).
+      if (isDriftRevert(context)) {
+        throw revertReplacementRefusal(resourceType, logicalId, plan.replace);
+      }
       return this.replace(logicalId, physicalId, resourceType, properties, context);
     }
     const mask = maskerOrIdentity(context?.maskSecrets);
@@ -334,11 +341,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
   /**
    * The `SetSubscriptionAttributes` calls that bring the live subscription to
-   * `properties`, in order, or `undefined` when the change must replace it.
+   * `properties`, in order, or why the change must replace it (`replace`).
    *
    * Computed against what AWS holds, never `previousProperties`: a
    * `cdkd drift --revert` hands the record as both bags while AWS differs, and
-   * a recorded value can be a mask. `undefined` (replace) for:
+   * a recorded value can be a mask. Replace for:
    * - the `PendingConfirmation` placeholder id, which names no subscription
    *   attributes can be set on;
    * - a subscription AWS no longer has (`NotFound`), or a readback with no
@@ -363,9 +370,11 @@ export class SNSSubscriptionProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     context: UpdateContext | undefined
-  ): Promise<Array<[string, string]> | undefined> {
+  ): Promise<Array<[string, string]> | { replace: string }> {
     if (physicalId === 'PendingConfirmation' || physicalId === 'pending confirmation') {
-      return undefined;
+      return {
+        replace: 'its record names the PendingConfirmation placeholder, not a subscription',
+      };
     }
     let current: Record<string, string> | undefined;
     try {
@@ -374,7 +383,9 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       );
       current = response?.Attributes;
     } catch (error) {
-      if (error instanceof NotFoundException) return undefined;
+      if (error instanceof NotFoundException) {
+        return { replace: 'AWS no longer has the subscription' };
+      }
       throw this.wrapMaskedAwsCallError(
         maskerOrIdentity(context?.maskSecrets),
         error,
@@ -384,15 +395,20 @@ export class SNSSubscriptionProvider implements ResourceProvider {
         physicalId
       );
     }
-    if (current === undefined || current['PendingConfirmation'] === 'true') return undefined;
+    if (current === undefined) return { replace: 'AWS returned no attributes for it' };
+    if (current['PendingConfirmation'] === 'true') {
+      return { replace: 'the subscription is still PendingConfirmation' };
+    }
     for (const field of CREATE_ONLY_FIELDS) {
       const desired = properties[field];
-      if (desired !== undefined && stringifyValue(desired) !== current[field]) return undefined;
+      if (desired !== undefined && stringifyValue(desired) !== current[field]) {
+        return { replace: `its ${field} differs from the live subscription's` };
+      }
     }
     // The attribute half is shared with `cdkd diff` (go-to-k/cdkd#6509), which
     // plans the same change against the state record.
     const planned = planSubscriptionAttributes(current, properties);
-    return planned.kind === 'replace' ? undefined : planned.calls;
+    return planned.kind === 'replace' ? { replace: planned.reason } : planned.calls;
   }
 
   /**

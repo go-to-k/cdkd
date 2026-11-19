@@ -220,7 +220,8 @@ export async function update(
         resourceType,
         properties,
         previousProperties,
-        log
+        log,
+        context?.desiredFromAwsReadback === true
       );
     case 'AWS::ApiGateway::Deployment':
       return this.updateDeployment(

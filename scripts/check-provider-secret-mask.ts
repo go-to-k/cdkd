@@ -686,6 +686,8 @@ const MESSAGE_SINK_FACTORIES: ReadonlySet<string> = new Set([
   'groupRefusalError',
   // Route 53's zone-key switch refusal (go-to-k/cdkd#6537).
   'zoneSwitchRefusalError',
+  // A drift revert's refusal to replace a resource (go-to-k/cdkd#6638).
+  'revertReplacementRefusal',
   'handleError',
   'wrapError',
   'wrapUpdateError',
