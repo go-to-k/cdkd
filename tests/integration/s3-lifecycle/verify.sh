@@ -55,12 +55,14 @@
 #      bucket's EventBridgeEnabled becomes the MALFORMED string 'yes' here
 #      (issue #1759): cdkd must warn and SKIP, leaving delivery OFF, where the
 #      pre-fix gate turned it ON.
-#   2d. go-to-k/cdkd#4684: rename an explicitly named bucket, fail the deploy
-#      after the replacement (`--no-rollback`), plant a bucket under the OLD
-#      name, and `cdkd rollback`. The reverse replacement's re-create must
-#      REFUSE that bucket (it did not make it): the revert fails with nothing
-#      deleted, the planted bucket keeps its marker tag, and the record still
-#      names the new bucket. Pre-fix it was adopted, retagged and recorded.
+#   2d. go-to-k/cdkd#4684 / #6621: rename an explicitly named bucket, fail the
+#      deploy after the replacement (`--no-rollback`; the old bucket survives,
+#      its delete journaled as deferred), delete the old bucket out of band,
+#      plant a bucket under the OLD name, and `cdkd rollback`. The re-adopt
+#      must REFUSE that bucket (it did not make it): the revert fails with
+#      nothing deleted, the planted bucket keeps its marker tag, and the record
+#      still names the new bucket. Pre-fix it was re-adopted as the stack's and
+#      the new bucket deleted.
 #   3. Destroy; assert every bucket is gone and the state file is removed.
 #
 # Required env vars:
@@ -1875,21 +1877,19 @@ esac
 rm -rf "${DEP_ARM_ID_WORKDIR}"
 echo "    [phase 2c] the rollback's delete of ${DEP_ARM_RB_BUCKET} persisted one RESOURCE_GUARD_INDETERMINATE (operation DELETE) in ${DEP_RB_JSONL_KEY}"
 
-# --- Phase 2d: a rollback's re-create must not adopt a bucket it did not make (go-to-k/cdkd#4684)
-# The deploy engine looks an explicit name up before a plain create and a
-# renamed replacement, but nothing looks before the rollback's REVERSE
-# replacement re-creates the old bucket. Rename `RenameArmBucket` (old -> new:
-# the new bucket is created, the old one deleted), fail the deploy on a queue
-# that depends on it (`--no-rollback`), plant a bucket under the OLD name with
-# a marker tag (one made outside the stack), and `cdkd rollback`. The re-create
-# must REFUSE that bucket (in us-east-1 before CreateBucket, whose legacy 200
-# would reset its ACLs), and the executor, whose records prove the live new
-# bucket does not hold the old name, must refuse the revert with nothing
-# deleted. Pre-fix the provider adopted it: overwrote its tags with the
-# template's, recorded it as the stack's, and deleted the new bucket.
+# --- Phase 2d: a rollback must not re-adopt a bucket it did not make (go-to-k/cdkd#4684, #6621)
+# A renamed bucket replacement creates the new bucket and DEFERS the old one's
+# delete to the deploy's success (#6397), so a failed deploy leaves the old
+# bucket whole and `cdkd rollback` re-adopts it. Rename `RenameArmBucket`
+# (old -> new), fail the deploy on a queue that depends on it
+# (`--no-rollback`), delete the old bucket out of band, plant a bucket under
+# the OLD name with a marker tag (one made outside the stack), and
+# `cdkd rollback`. The survivor probe must judge that bucket 'foreign' and
+# refuse the revert with nothing sent. Pre-fix it re-adopted it: recorded it
+# as the stack's and deleted the stack's live new bucket.
 RN_OLD_BUCKET="cdkd-lifecycle-rnold-${ACCOUNT_ID}-${CC_ARM_STAMP}"
 RN_NEW_BUCKET="cdkd-lifecycle-rnnew-${ACCOUNT_ID}-${CC_ARM_STAMP}"
-echo "==> Phase 2d: a rollback re-creating a replaced bucket must REFUSE ${RN_OLD_BUCKET}, made outside the stack"
+echo "==> Phase 2d: a rollback re-adopting a replaced bucket must REFUSE ${RN_OLD_BUCKET}, made outside the stack"
 CDKD_TEST_UPDATE=true CDKD_RENAME_ARM_BUCKET="${RN_OLD_BUCKET}" \
   node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -1904,9 +1904,12 @@ if [ "${RN_FAIL_RC}" -eq 0 ]; then
   echo "FAIL [phase 2d]: the inject-fail deploy SUCCEEDED, so there is no replacement to roll back" >&2
   exit 1
 fi
-# Premise: the replacement ran to completion before the queue failed.
-assert_gone_eventually "[phase 2d] premise: the replacement did not delete ${RN_OLD_BUCKET}" \
-  aws s3api head-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
+# Premise: the replacement ran before the queue failed, and its delete of the
+# old bucket was deferred, never sent.
+aws s3api head-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}" >/dev/null || {
+  echo "FAIL [phase 2d] premise: ${RN_OLD_BUCKET} did not survive the failed deploy (its delete should wait for a success)" >&2
+  exit 1
+}
 aws s3api head-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}" >/dev/null || {
   echo "FAIL [phase 2d] premise: the replacement did not create ${RN_NEW_BUCKET}" >&2
   exit 1
@@ -1916,14 +1919,25 @@ if [ "${RN_RECORD}" != "${RN_NEW_BUCKET}" ]; then
   echo "FAIL [phase 2d] premise: state records RenameArmBucket as ${RN_RECORD}, expected ${RN_NEW_BUCKET}" >&2
   exit 1
 fi
-RN_OPS="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq --arg b "${RN_NEW_BUCKET}" \
-  '[.segments[].operations[] | select(.logicalId == "RenameArmBucket" and .changeType == "UPDATE" and .physicalId == $b)] | length')"
+# Exactly one journaled UPDATE of RenameArmBucket, new -> old, its old bucket
+# marked deferred (`oldResourceMaySurvive`, src/types/rollback-journal.ts).
+rn_deferred_ops() {
+  aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq --arg b "${RN_NEW_BUCKET}" --arg o "${RN_OLD_BUCKET}" \
+    '[.segments[].operations[] | select(.logicalId == "RenameArmBucket" and .changeType == "UPDATE"
+      and .physicalId == $b and .previousState.physicalId == $o
+      and .oldResourceMaySurvive == "deferred")] | length'
+}
+RN_OPS="$(rn_deferred_ops)"
 if [ "${RN_OPS}" != "1" ]; then
-  echo "FAIL [phase 2d] premise: expected exactly one journaled UPDATE of RenameArmBucket naming ${RN_NEW_BUCKET}, got ${RN_OPS}" >&2
+  echo "FAIL [phase 2d] premise: expected exactly one journaled UPDATE of RenameArmBucket ${RN_OLD_BUCKET} -> ${RN_NEW_BUCKET} with oldResourceMaySurvive 'deferred', got ${RN_OPS}" >&2
   exit 1
 fi
 
-# The bucket made outside the stack, under the name the revert will ask for.
+# The old bucket goes out of band (it is empty: the stack writes no objects),
+# then a bucket made outside the stack takes its name.
+aws s3api delete-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
+assert_gone_eventually "[phase 2d] premise: the out-of-band delete of ${RN_OLD_BUCKET} did not take" \
+  aws s3api head-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
 plant_bucket "${RN_OLD_BUCKET}" "${REGION}"
 RN_MARKER="phase2d-$(date -u +%s)"
 aws s3api put-bucket-tagging --bucket "${RN_OLD_BUCKET}" --region "${REGION}" \
@@ -1940,6 +1954,10 @@ set -e
 printf '%s\n' "${RN_OUT}"
 RN_FLAT="$(printf '%s' "${RN_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
 # The pre-fix outcome first, so a regression names itself.
+if grep -qF -- 'was not deleted yet' <<<"${RN_FLAT}"; then
+  echo "FAIL [phase 2d]: the rollback RE-ADOPTED ${RN_OLD_BUCKET}, a bucket this stack never made" >&2
+  exit 1
+fi
 if grep -qF -- 'was ADOPTED, not created' <<<"${RN_FLAT}"; then
   echo "FAIL [phase 2d]: the re-create ADOPTED ${RN_OLD_BUCKET}, a bucket this stack never made" >&2
   exit 1
@@ -1948,11 +1966,11 @@ if [ "${RN_RC}" -eq 0 ]; then
   echo "FAIL [phase 2d]: cdkd rollback SUCCEEDED, so it reverted onto ${RN_OLD_BUCKET}, which it did not make" >&2
   exit 1
 fi
-# Literals of the executor's refusal (rollback-executor/replay-reverse-replacement.ts)
-# and the provider's (S3BucketProvider.refuseExplicitNameHeld).
-for needle in 'Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket)' \
-  'Nothing was deleted.' "Refusing to adopt S3 bucket ${RN_OLD_BUCKET} for RenameArmBucket" \
-  'its BucketName is set explicitly'; do
+# Literals of the executor's 'foreign' refusal (foreignSurvivorRefusal,
+# rollback-executor/replay-reverse-replacement.ts).
+for needle in 'Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket): AWS reports a resource under the old physical id' \
+  'another resource took that name after the stack'"'"'s was deleted' \
+  'Nothing was sent and the journal is kept.'; do
   if ! grep -qF -- "${needle}" <<<"${RN_FLAT}"; then
     echo "FAIL [phase 2d]: rollback output lacks message fragment: ${needle}" >&2
     exit 1
@@ -1975,7 +1993,12 @@ if [ "${RN_RECORD}" != "${RN_NEW_BUCKET}" ]; then
   echo "FAIL [phase 2d]: state records RenameArmBucket as ${RN_RECORD} after the refused revert, expected ${RN_NEW_BUCKET}" >&2
   exit 1
 fi
-echo "    [phase 2d] refused (rc=${RN_RC}): ${RN_OLD_BUCKET} untouched, ${RN_NEW_BUCKET} kept and still recorded"
+RN_OPS="$(rn_deferred_ops)"
+if [ "${RN_OPS}" != "1" ]; then
+  echo "FAIL [phase 2d]: the refused revert did not keep its journaled op (got ${RN_OPS} matching ops)" >&2
+  exit 1
+fi
+echo "    [phase 2d] refused (rc=${RN_RC}): ${RN_OLD_BUCKET} untouched, ${RN_NEW_BUCKET} kept and still recorded, journal kept"
 
 echo "==> Phase 2d teardown"
 # The refused revert keeps the journal for a re-run; this run abandons it.
