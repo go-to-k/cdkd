@@ -84,7 +84,9 @@ export function notComparedReason(cause: NotComparedCause, record?: ResourceStat
  * nothing) proves the credentials work, so it resets BOTH paths' counts — and
  * so keeps the interleaved guarantee across paths — including
  * when the COMPARISON after it then throws, which is a per-resource defect. A
- * type with no READ handler resets it too: that throw is about the type.
+ * type with no READ handler resets it too: that throw is about the type. So
+ * does a cdkd read refusal (`DriftReadRefusedError`, #6616): its AWS calls
+ * all answered.
  */
 export const DRIFT_READ_FAILURE_BREAKER_THRESHOLD = 5;
 

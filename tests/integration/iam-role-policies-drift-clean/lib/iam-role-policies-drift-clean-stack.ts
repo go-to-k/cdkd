@@ -43,7 +43,9 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * name between an `AWS::IAM::Policy` and an `AWS::IAM::RolePolicy` on a second
  * role, and asserts that role keeps both, that the rollback restores both, and
  * that the RolePolicy's name is no `Policies` drift on its role
- * (go-to-k/cdkd#4821).
+ * (go-to-k/cdkd#4821). A SHARED-POLICY phase edits one policy's copy on its
+ * SECOND role out of band and asserts drift reports it and `--revert` restores
+ * it (go-to-k/cdkd#6616).
  */
 export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -198,6 +200,15 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       policyName: mixedSwap ? 'cdkd-iam-drift-clean-mixed-x' : 'cdkd-iam-drift-clean-mixed-y',
       policyDocument: doc('sqs:CancelMessageMoveTask'),
       roleName: mixedRole.roleName,
+    });
+
+    // go-to-k/cdkd#6616: ONE inline policy on TWO roles, so each role holds
+    // its own copy of the document. verify.sh edits the SECOND role's copy out
+    // of band and asserts `cdkd drift` reports it and `--revert` puts it back.
+    new iam.CfnPolicy(this, 'SharedPolicy', {
+      policyName: 'cdkd-iam-drift-clean-shared',
+      policyDocument: doc('sqs:ListQueues'),
+      roles: [role.roleName, mixedRole.roleName],
     });
 
     // go-to-k/cdkd#4225: AWS rejects this queue (MessageRetentionPeriod is
