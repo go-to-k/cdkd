@@ -6246,6 +6246,7 @@
       "resourceType": "AWS::IAM::Group",
       "integs": [
         "cc-to-sdk-reroute-common-types-2",
+        "drift-verbatim-readback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
@@ -6258,6 +6259,10 @@
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
+        "drift-verbatim-readback": [
           "l1",
           "literal"
         ],
@@ -6364,6 +6369,7 @@
       "integs": [
         "cc-to-sdk-reroute-common-types",
         "drift-revert",
+        "drift-verbatim-readback",
         "generated-name-lifecycle",
         "getatt-iam-waf-s3vectors-evaluator",
         "getatt-vpc-managed-policy",
@@ -6384,6 +6390,10 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
         ],
         "generated-name-lifecycle": [
           "literal"
@@ -6433,6 +6443,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "codebuild-webhook",
+        "drift-verbatim-readback",
         "export",
         "generated-name-lifecycle",
         "getstackoutput-crossregion",
@@ -6455,6 +6466,10 @@
         ],
         "codebuild-webhook": [
           "l2"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
         ],
         "export": [
           "l2",
@@ -6532,6 +6547,7 @@
         "dlm-lifecycle-policy",
         "docdb-neptune",
         "drift-revert",
+        "drift-verbatim-readback",
         "ec2-instance",
         "ec2-instance-fanout",
         "ecs-bluegreen",
@@ -6741,6 +6757,10 @@
         ],
         "drift-revert": [
           "l2"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
         ],
         "ec2-instance": [
           "l2"
@@ -7094,6 +7114,7 @@
       "integs": [
         "access-key-cloudmap-fix-forward-orphan",
         "cc-to-sdk-reroute-common-types-2",
+        "drift-verbatim-readback",
         "iam-access-key",
         "iam-managed-policy",
         "iam-recreate-reattach",
@@ -7109,6 +7130,10 @@
           "l1"
         ],
         "cc-to-sdk-reroute-common-types-2": [
+          "l1",
+          "literal"
+        ],
+        "drift-verbatim-readback": [
           "l1",
           "literal"
         ],
@@ -7181,6 +7206,7 @@
       "integs": [
         "cc-to-sdk-reroute-common-types-2",
         "composite-stack",
+        "drift-verbatim-readback",
         "dynamodb-globaltable-replica-settings",
         "infra-security",
         "kms-encryption"
@@ -7191,6 +7217,10 @@
           "literal"
         ],
         "composite-stack": [
+          "literal"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
           "literal"
         ],
         "dynamodb-globaltable-replica-settings": [
@@ -7215,6 +7245,7 @@
         "cross-backend-same-stack",
         "docdb-neptune",
         "drift-revert",
+        "drift-verbatim-readback",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
         "dynamodb-streams",
@@ -7255,6 +7286,10 @@
         ],
         "drift-revert": [
           "l2"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
         ],
         "dynamodb-globaltable-replica-settings": [
           "l2",
@@ -8986,6 +9021,7 @@
         "diff-intrinsic-target-change",
         "drift-revert",
         "drift-revert-arrays",
+        "drift-verbatim-readback",
         "event-driven",
         "export",
         "firehose-iceberg-destination",
@@ -9119,6 +9155,9 @@
         ],
         "drift-revert-arrays": [
           "l2"
+        ],
+        "drift-verbatim-readback": [
+          "l1"
         ],
         "event-driven": [
           "l2"
@@ -9307,6 +9346,7 @@
       "resourceType": "AWS::S3::BucketPolicy",
       "integs": [
         "asset-migration",
+        "drift-verbatim-readback",
         "local-aws-emulator",
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
@@ -9317,6 +9357,10 @@
       ],
       "signals": {
         "asset-migration": [
+          "literal"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
           "literal"
         ],
         "local-aws-emulator": [
@@ -9518,6 +9562,7 @@
         "drift-revert",
         "drift-revert-arrays",
         "drift-sns-sibling-subscription",
+        "drift-verbatim-readback",
         "event-driven",
         "eventbridge-pipes",
         "export",
@@ -9617,6 +9662,9 @@
         "drift-sns-sibling-subscription": [
           "l1",
           "literal"
+        ],
+        "drift-verbatim-readback": [
+          "l1"
         ],
         "event-driven": [
           "l2"
@@ -9792,6 +9840,7 @@
       "integs": [
         "codecommit",
         "cross-region-concurrent-stacks",
+        "drift-verbatim-readback",
         "iam-propagation-stress",
         "local-aws-emulator",
         "migrate-from-cfn",
@@ -9805,6 +9854,10 @@
         ],
         "cross-region-concurrent-stacks": [
           "l2",
+          "literal"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
           "literal"
         ],
         "iam-propagation-stress": [
@@ -9856,6 +9909,7 @@
         "depends-on-flip",
         "drift-revert-arrays",
         "drift-sns-sibling-subscription",
+        "drift-verbatim-readback",
         "dynamodb-globaltable",
         "event-driven",
         "eventbridge",
@@ -10008,6 +10062,9 @@
           "l2"
         ],
         "drift-sns-sibling-subscription": [
+          "l1"
+        ],
+        "drift-verbatim-readback": [
           "l1"
         ],
         "dynamodb-globaltable": [
@@ -10264,6 +10321,7 @@
       "resourceType": "AWS::SQS::QueuePolicy",
       "integs": [
         "cross-stack-secret-import",
+        "drift-verbatim-readback",
         "iam-propagation-stress",
         "local-aws-emulator",
         "migrate-from-cfn",
@@ -10273,6 +10331,10 @@
       "signals": {
         "cross-stack-secret-import": [
           "l1"
+        ],
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
         ],
         "iam-propagation-stress": [
           "literal"
@@ -10931,6 +10993,7 @@
         "cross-stack-secret-import",
         "drift-revert-nested-write-only",
         "drift-rotation-schedule-revert",
+        "drift-verbatim-readback",
         "event-driven",
         "full-stack-demo",
         "iam-access-key",
@@ -10975,6 +11038,9 @@
         ],
         "drift-rotation-schedule-revert": [
           "l2"
+        ],
+        "drift-verbatim-readback": [
+          "l1"
         ],
         "event-driven": [
           "l2"
@@ -11297,7 +11363,9 @@
     "AWS::Events::EventBusPolicy",
     "AWS::GuardDuty::Detector",
     "AWS::HealthImaging::Datastore",
+    "AWS::IAM::GroupPolicy",
     "AWS::IAM::RolePolicy",
+    "AWS::IAM::UserPolicy",
     "AWS::ImageBuilder::InfrastructureConfiguration",
     "AWS::IoT::TopicRule",
     "AWS::KMS::Grant",
@@ -11332,6 +11400,7 @@
     "AWS::SSM::MaintenanceWindowTarget",
     "AWS::SSM::MaintenanceWindowTask",
     "AWS::Scheduler::ScheduleGroup",
+    "AWS::SecretsManager::ResourcePolicy",
     "AWS::SecretsManager::RotationSchedule",
     "AWS::Serverless::Function",
     "AWS::Signer::SigningProfile",

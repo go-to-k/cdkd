@@ -33,6 +33,7 @@ import {
   matchesPathPrefix,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
+import { isOmittedVersionDefault, isVerbatimStatementPath } from './drift-verbatim-paths.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -90,7 +91,10 @@ export interface PropertyDrift {
  * `options.unionWalkPaths` names subtrees walked by the key UNION even when
  * `unionWalkObjects` is off: properties whose readback echoes the template
  * verbatim (`verbatimEchoDriftKeys`, go-to-k/cdkd#6622), where a key only AWS
- * holds can only have been added out of band. Same prefix rule.
+ * holds can only have been added out of band. Same prefix rule. At
+ * `<entry>.Statement` a statement object equals a one-element list holding it
+ * (go-to-k/cdkd#6624), so entries must be `verbatimEchoDriftKeys` values: a
+ * non-verbatim entry would take the fold too.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
@@ -225,8 +229,15 @@ function diffAt(
   // forever. The PUSHED values stay the originals: `--accept` serializes the
   // Date to the same ISO string, and a caller inspecting `awsValue` sees what
   // AWS returned.
-  const stateForm = jsonForm(stateValue);
-  const awsForm = jsonForm(awsValue);
+  let stateForm = jsonForm(stateValue);
+  let awsForm = jsonForm(awsValue);
+  // go-to-k/cdkd#6624: a verbatim-echo document's `Statement` object and the
+  // one-element list a service returns it as are one value. Compared as two
+  // lists from here, so a key added inside the live statement still differs.
+  if (isVerbatimStatementPath(path, unionWalkPaths)) {
+    stateForm = asStatementList(stateForm, awsForm);
+    awsForm = asStatementList(awsForm, stateForm);
+  }
   if (deepEqual(stateForm, awsForm)) return;
 
   // FALLBACK for a state leaf whose `{{resolve:...}}` dynamic reference could
@@ -268,6 +279,17 @@ function diffAt(
     for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
+      // go-to-k/cdkd#6624: on the template-only baseline, the `2008-10-17`
+      // a service writes into a document the template submitted without a
+      // `Version` -- what the omission means. An observed baseline captured
+      // that write, so it compares as usual.
+      if (
+        !unionWalkObjects &&
+        stateForm[key] === undefined &&
+        isOmittedVersionDefault(childPath, awsForm[key], unionWalkPaths)
+      ) {
+        continue;
+      }
       diffAt(
         childPath,
         stateForm[key],
@@ -513,6 +535,19 @@ function sameJson(a: unknown, b: unknown): boolean {
  */
 function definedKeys(obj: Record<string, unknown>): string[] {
   return Object.keys(obj).filter((k) => obj[k] !== undefined);
+}
+
+/**
+ * `statement` as a one-element list when it is a single statement object and
+ * `other` is a list; otherwise `statement` itself. The wrapped object then
+ * equals only a ONE-element list holding an equal statement, so a list of two
+ * (or none) against one object is a statement added or removed, which stays
+ * drift.
+ */
+function asStatementList(statement: unknown, other: unknown): unknown {
+  return isPlainObject(statement) && !Array.isArray(statement) && Array.isArray(other)
+    ? [statement]
+    : statement;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
