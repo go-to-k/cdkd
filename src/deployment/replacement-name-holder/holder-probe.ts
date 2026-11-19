@@ -101,6 +101,29 @@ export function replacementNameKeyMoves(input: {
   return undefined;
 }
 
+/**
+ * go-to-k/cdkd#6589: whether renaming a `resourceType` resource in the
+ * template would make its `--recreate-via-*` create first — the name is one
+ * {@link nameKeyFor} reads and the old resource's is readable, as
+ * {@link replacementNameKeyMoves} needs. Read to word advice only.
+ */
+export function renameMakesRecreateCreateFirst(input: {
+  resourceType: string;
+  oldResourceType: string;
+  recorded: Record<string, unknown> | undefined;
+  observed: Record<string, unknown> | undefined;
+}): boolean {
+  if (input.resourceType !== input.oldResourceType) return false;
+  const key = nameKeyFor(input.resourceType);
+  if (key === undefined) return false;
+  for (const path of key.name) {
+    const held = heldAt(input.recorded, input.observed, path);
+    if (held.unreadable) return false;
+    if (held.value !== undefined) return true;
+  }
+  return false;
+}
+
 export function valueAt(
   bag: Record<string, unknown> | undefined,
   path: readonly string[]

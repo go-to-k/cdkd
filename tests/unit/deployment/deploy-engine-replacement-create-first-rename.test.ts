@@ -28,6 +28,7 @@ import {
   isMarkedNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
+import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
@@ -231,6 +232,8 @@ async function provision(
     newExtra?: Record<string, unknown>;
     /** go-to-k/cdkd#6589: other state records, keyed by logical id. */
     stateExtra?: Record<string, unknown>;
+    /** go-to-k/cdkd#6589: other template resources, keyed by logical id. */
+    templateExtra?: CloudFormationTemplate['Resources'];
   }
 ): Promise<Inner | null> {
   const type = opts.type ?? 'AWS::Lambda::Function';
@@ -276,6 +279,7 @@ async function provision(
         Properties: newProps,
         ...(opts.policy !== undefined && { UpdateReplacePolicy: opts.policy }),
       },
+      ...opts.templateExtra,
     },
   };
   return provisionResource(
@@ -688,6 +692,12 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
           provisionedBy: 'sdk',
         },
       };
+      const deliveryTemplate: CloudFormationTemplate['Resources'] = {
+        Delivery: {
+          Type: 'AWS::Logs::Delivery',
+          Properties: { DeliverySourceName: { Ref: 'Fn' } },
+        },
+      };
       const sameName = {
         type: 'AWS::Logs::DeliverySource',
         nameProperty: 'Name',
@@ -705,6 +715,7 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
           ...sameName,
           stateExtra: delivery,
+          templateExtra: deliveryTemplate,
         });
 
         expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
@@ -733,6 +744,7 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
           desired: 'src-1',
           physicalId: 'delivery-id',
           stateExtra: delivery,
+          templateExtra: deliveryTemplate,
         });
 
         expect(err!.message).toContain('still depend on it (Delivery)');
@@ -740,6 +752,70 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         expect(err!.message).toContain(
           'Remove those dependents from the template, deploy, recreate it, and add them back.'
         );
+      });
+
+      it('offers no rename when the old name is not readable', async () => {
+        h.deleteFailure = conflict();
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          oldExtra: { Name: '***' },
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('still depend on it (Delivery)');
+        expect(err!.message).not.toContain('new name in the template');
+        expect(err!.message).toContain('Remove those dependents from the template');
+      });
+
+      it('names no dependent the template no longer has reference the target', async () => {
+        h.deleteFailure = conflict();
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: {
+            Delivery: { Type: 'AWS::Logs::Delivery', Properties: { DeliverySourceName: 'other' } },
+          },
+        });
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).not.toContain('still depend on it');
+      });
+
+      it('adds nothing for a Cloud Control ResourceConflict (an operation in progress)', async () => {
+        h.deleteFailure = new CloudControlOperationFailedError(
+          'DELETE failed for Fn: Another operation is in progress',
+          'AWS::Logs::DeliverySource',
+          'Fn',
+          'src-1',
+          'ResourceConflict',
+          'DELETE'
+        );
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).not.toContain('still depend on it');
+      });
+
+      it('adds nothing for a ResourceConflictException (an operation in progress)', async () => {
+        h.deleteFailure = new Error('Failed to delete Fn', {
+          cause: awsSdkError('The operation cannot be performed at this time.'),
+        });
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).not.toContain('still depend on it');
       });
 
       it('adds nothing without a same-stack dependent', async () => {
@@ -759,6 +835,7 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
           ...sameName,
           stateExtra: delivery,
+          templateExtra: deliveryTemplate,
         });
 
         expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');

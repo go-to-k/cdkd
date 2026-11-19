@@ -6,7 +6,7 @@ import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { green } from '../../../utils/colors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
-import { reverseReplacementNameKeyKind } from '../../replacement-name-holder.js';
+import { renameMakesRecreateCreateFirst } from '../../replacement-name-holder.js';
 import { isInUseOrConflictRefusal } from '../../superseded-resources.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../../delete-outcome.js';
@@ -183,7 +183,12 @@ export async function recreateDestroyThenCreate(
             safeMsg`one, while resources of this stack still depend on it ` +
             safeMsg`(${sameStackDependents.map((id) => maskSecretsInText(id, shownSecrets)).join(', ')}); ` +
             `AWS refuses that delete while one of them uses it. ` +
-            (reverseReplacementNameKeyKind(resourceType) === 'keyed'
+            (renameMakesRecreateCreateFirst({
+              resourceType,
+              oldResourceType,
+              recorded: currentResource.properties,
+              observed: currentResource.observedProperties,
+            })
               ? `Give it a new name in the template, so that the recreate creates the new ` +
                 `resource first and deletes the old one once its dependents have moved, or ` +
                 `remove`

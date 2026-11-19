@@ -74,6 +74,7 @@ export {
 export {
   reverseReplacementNameKeyKind,
   replacementNameKeyMoves,
+  renameMakesRecreateCreateFirst,
   type ReverseReplacementHolderVerdict,
   replacementDerivedGeneratedNames,
 } from './replacement-name-holder/holder-probe.js';

@@ -25,11 +25,14 @@ import { noteRetainedResource } from '../../provisioning/providers/create-token-
 import { maskedInputSources } from './resolver-context.js';
 import { refuseUnsafeReplacement } from './update-replace/preflight.js';
 import { recreateDestroyThenCreate } from './update-replace/recreate.js';
+import { TemplateParser } from '../../analyzer/template-parser.js';
 import { replaceCreateFirst } from './update-replace/create-first.js';
 import {
   customResourcePayloadLeaves,
   customResourcePayloadLeavesField,
 } from './custom-resource-payload-leaves.js';
+
+const dependentParser = new TemplateParser();
 
 /** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
 export async function updateByReplacement(
@@ -335,15 +338,20 @@ export async function updateByReplacement(
       updateSecrets,
       recreateViaCcApi,
       typedPayloadLeaves,
-      // go-to-k/cdkd#6589: the records that still depend on the old resource,
-      // named if AWS refuses its delete because something uses it.
+      // go-to-k/cdkd#6589: the records that still depend on the old resource
+      // and whose template definition still references it, named if AWS
+      // refuses its delete because something uses it.
       sameStackDependents: Object.entries(stateResources)
-        .filter(
-          ([id, record]) =>
-            id !== logicalId &&
-            Array.isArray(record?.dependencies) &&
-            record.dependencies.includes(logicalId)
-        )
+        .filter(([id, record]) => {
+          if (id === logicalId) return false;
+          if (!Array.isArray(record?.dependencies) || !record.dependencies.includes(logicalId)) {
+            return false;
+          }
+          const declared = template?.Resources?.[id];
+          return (
+            declared !== undefined && dependentParser.extractDependencies(declared).has(logicalId)
+          );
+        })
         .map(([id]) => id)
         .sort(),
     });

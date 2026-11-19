@@ -23,7 +23,6 @@ import { reportDeleteGuards } from './delete-guard-scope.js';
 import { deleteSkipReason } from './delete-outcome.js';
 import { readsNoEchoDeleteValues } from './noecho-delete-reresolution.js';
 import { isMarkedNonRetryable } from './retryable-errors.js';
-import { isCcConflict } from '../provisioning/cloud-control/delete-guards.js';
 
 /**
  * The well-formed entries of `state.supersededResources`. A malformed entry
@@ -479,17 +478,17 @@ export function isInUseRefusal(error: unknown): boolean {
 }
 
 /**
- * Whether `error` (or an error it wraps) is an "in use" refusal or any
- * conflict (go-to-k/cdkd#6589): CloudWatch Logs refuses the delete of a
- * delivery source a delivery uses with a bare `ConflictException`, and Cloud
- * Control reports `ResourceConflict`. Wider than {@link isInUseRefusal}, so
- * only for wording a hint, never for retrying.
+ * Whether `error` (or an error it wraps) is an "in use" refusal, or a bare
+ * `ConflictException` (go-to-k/cdkd#6589): CloudWatch Logs refuses the delete
+ * of a delivery source a delivery uses with one. Not Cloud Control's
+ * `ResourceConflict` nor `ResourceConflictException`, which mean another
+ * operation is in progress. Wider than {@link isInUseRefusal}, so only for
+ * wording a hint, never for retrying.
  */
 export function isInUseOrConflictRefusal(error: unknown): boolean {
   if (isInUseRefusal(error)) return true;
   for (let current: unknown = error, depth = 0; current !== undefined && depth < 8; depth++) {
     if (typeof current !== 'object' || current === null) return false;
-    if (isCcConflict(current)) return true;
     if ((current as { name?: unknown }).name === 'ConflictException') return true;
     current = (current as { cause?: unknown }).cause;
   }
