@@ -41,7 +41,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
-import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { buildReadCurrentStateContext } from '../../../src/deployment/read-current-state-context.js';
 
 describe('buildReadCurrentStateContext carries the read resource\'s own drift baseline (#6616)', () => {
@@ -308,10 +308,76 @@ describe('IAMPolicyProvider.readCurrentState reads every recorded target (#6616)
         Roles: ['R1', 'R2'],
       });
       await expect(read).rejects.toThrow(/differ across its principals/);
+      // A cdkd refusal, not an AWS failure: drift keeps it off the breaker.
+      await expect(read).rejects.toBeInstanceOf(DriftReadRefusedError);
       // The message names the policy only, never a document's content.
       await expect(read).rejects.not.toThrow(/s3:GetObject|resolve:|\*\*\*/);
     }
   );
+
+  it('a secret-leaf baseline with every copy agreeing reads as before, no refusal', async () => {
+    liveCopies({ 'role:R1': RECORDED, 'role:R2': RECORDED });
+    const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: { ...RECORDED, Id: '{{resolve:ssm:/id}}' },
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toMatchObject({ PolicyDocument: RECORDED });
+  });
+
+  // go-to-k/cdkd#6616 review B1: every "equal" is the drift comparator's,
+  // which sorts ARN / id arrays. A copy that only REORDERS an ARN list is
+  // equal to the comparator; picking it as "the edited copy" would read clean
+  // and hide the widened copy beside it.
+  const ARN_A = 'arn:aws:s3:::bucket-a/*';
+  const ARN_B = 'arn:aws:s3:::bucket-b/*';
+  const twoArns = (action: string, resources: string[]) => ({
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: action, Resource: resources }],
+  });
+
+  it('a copy that only reorders an ARN list is not the edited copy: the widened one is reported', async () => {
+    const recorded = twoArns('s3:GetObject', [ARN_A, ARN_B]);
+    const reordered = twoArns('s3:GetObject', [ARN_B, ARN_A]);
+    const widened = twoArns('*', [ARN_A, ARN_B]);
+    for (const context of [undefined, { driftBaseline: { PolicyDocument: recorded } }]) {
+      liveCopies({ 'role:R1': reordered, 'role:R2': widened });
+      const result = await provider.readCurrentState(
+        'pol',
+        'P',
+        TYPE,
+        { PolicyDocument: recorded, Roles: ['R1', 'R2'] },
+        context
+      );
+      expect(result).toMatchObject({ PolicyDocument: widened });
+    }
+  });
+
+  it('copies differing only by ARN-list order are not differing copies', async () => {
+    const recorded = twoArns('s3:GetObject', [ARN_A, ARN_B]);
+    liveCopies({
+      'role:R1': twoArns('s3:GetObject', [ARN_B, ARN_A]),
+      'role:R2': recorded,
+    });
+    const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      // A secret leaf would refuse a genuine divergence; it must not here.
+      PolicyDocument: { ...recorded, Id: '{{resolve:ssm:/id}}' },
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toMatchObject({ Roles: ['R1', 'R2'] });
+  });
+
+  it('a missing target beside copies that are all empty still reports the list drift', async () => {
+    mockSend.mockImplementation((command: unknown) =>
+      command instanceof GetRolePolicyCommand && command.input.RoleName === 'R2'
+        ? Promise.reject(notFound())
+        : Promise.resolve({ PolicyDocument: undefined })
+    );
+    const result = await provider.readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: RECORDED,
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toEqual({ PolicyName: 'pol', PolicyDocument: undefined, Roles: ['R1'] });
+  });
 
   it('every copy edited, each differently: an edited copy is reported', async () => {
     const OTHER = {

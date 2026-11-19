@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
+import { DriftReadRefusedError } from '../../../src/types/resource.js';
 import { renderLikeLogger } from '../../render-like-logger.js';
 
 const errorSpy = vi.hoisted(() => vi.fn());
@@ -1768,6 +1769,9 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
               if (properties['Role'] === 'B') {
                 throw awsError('ExpiredTokenException', 'The security token included in the request is expired');
               }
+              if (properties['Role'] === 'F') {
+                throw new DriftReadRefusedError('cdkd cannot tell which copy was edited');
+              }
               return { MemorySize: 128, Role: properties['Role'] };
             },
             canonicalizeDriftProperties: (_type: string, bag: Record<string, unknown>) => {
@@ -1837,6 +1841,19 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     expect(exitSpy).toHaveBeenCalledWith(2);
     expect(exitSpy).not.toHaveBeenCalledWith(1);
     expect(exitSpy).not.toHaveBeenCalledWith(0);
+  });
+
+  it("a provider's own read refusal (#6616) is readFailed but never trips the breaker", async () => {
+    mockGetState.mockResolvedValue(stackOf('FFFFFFFG'));
+    installProviders();
+
+    const [report] = await runJson();
+
+    // Every resource is read: seven refusals in a row stop nothing.
+    expect(reads).toEqual(['R00', 'R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R07']);
+    expect(Object.values(causes(report!))).toEqual(Array(7).fill('readFailed'));
+    expect(report!.clean.map((c) => c.logicalId)).toEqual(['R07']);
+    expect(exitSpy).toHaveBeenCalledWith(2);
   });
 
   it('says once why it stopped, and names the unread resources in the human report', async () => {
