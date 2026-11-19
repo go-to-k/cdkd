@@ -121,12 +121,9 @@ export async function readCurrentState(
   // throttle, which would fail the whole read.
   const reads: Awaited<ReturnType<typeof readOne>>[] = [];
   if (declared !== undefined) {
-    let warned = false;
-    const unsettled = (): void => {
-      if (warned) return;
-      warned = true;
+    // The capture reads one target (above), so this warns at most once.
+    const unsettled = (): void =>
       warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::Policy', 'PolicyDocument');
-    };
     reads.push(
       ...(await Promise.all(
         readTargets.map((target) =>

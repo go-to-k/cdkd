@@ -224,9 +224,10 @@ assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path
   fi
   echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
 }
+SHARED_POLICY="cdkd-iam-drift-clean-shared"
 SHARED_POLICY_LID="SharedPolicy"
 shared_document() { # usage: shared_document <role> -> the role's copy, decoded JSON
-  aws iam get-role-policy --role-name "$1" --policy-name "cdkd-iam-drift-clean-shared" \
+  aws iam get-role-policy --role-name "$1" --policy-name "${SHARED_POLICY}" \
     --region "${REGION}" --query 'PolicyDocument' --output json
 }
 echo "==> Phase 2o: SharedPolicy's recorded baseline is what AWS holds"
@@ -239,7 +240,6 @@ assert_observed_member "${SHARED_POLICY_LID}" '.Roles' "[\"${ROLE_NAME}\",\"${MI
 # copy. Before the fix the policy's drift read fetched the FIRST role's copy
 # only, so a widened document on the second role read clean and `--revert`
 # left it in place.
-SHARED_POLICY="cdkd-iam-drift-clean-shared"
 SHARED_ACTION="sqs:ListQueues"
 WIDENED_ACTION="sqs:*"
 shared_action() { # usage: shared_action <role> -> the copy's first statement's action
@@ -395,9 +395,12 @@ REVERT_DRIFT="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>/dev/null)"
 revert_rc=$?
 set -e
-if ! jq -e --arg l "${SHARED_POLICY_LID}" '[.[].drifted[] | select(.logicalId == $l)] | length == 0' <<<"${REVERT_DRIFT}" >/dev/null; then
+# Compared AND clean: absent from `drifted` alone also holds for a read that
+# threw (notCompared) or a resource reported deleted.
+if ! jq -e --arg l "${SHARED_POLICY_LID}" '[.[].clean[] | select(.logicalId == $l)] | length == 1' <<<"${REVERT_DRIFT}" >/dev/null \
+    || [ "${revert_rc}" -ne 0 ]; then
   printf '%s\n' "${REVERT_DRIFT}" | sed 's/^/    | /' >&2
-  echo "FAIL: drift after the Phase 2r --revert still reports ${SHARED_POLICY_LID} (rc=${revert_rc}) (go-to-k/cdkd#6609)" >&2
+  echo "FAIL: drift after the Phase 2r --revert does not compare ${SHARED_POLICY_LID} clean, or exited ${revert_rc} (expected 0) (go-to-k/cdkd#6609)" >&2
   exit 1
 fi
 echo "    drift clean on SharedPolicy after --revert"

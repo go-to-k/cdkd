@@ -219,6 +219,23 @@ describe('AWS::IAM::Policy post-write capture settles the copy it reads (#6609 C
       'Throttling'
     );
     expect(calls()).toHaveLength(4);
+    // The throw is the message: no refresh-observed warning beside it.
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('every read failing throws the FIRST read\'s error, not a later re-read\'s: 4 calls', async () => {
+    const unavailable = () => () => {
+      throw Object.assign(new Error('ServiceUnavailable'), {
+        name: 'ServiceUnavailable',
+        $metadata: { httpStatusCode: 503 },
+      });
+    };
+    answer('role:R1', fail('Throttling'), unavailable());
+    const outcome = read({ PolicyDocument: DECLARED, Roles: ['R1'] }, AFTER);
+    await expect(outcome).rejects.toThrow('Throttling');
+    await expect(outcome).rejects.not.toThrow('ServiceUnavailable');
+    expect(calls()).toHaveLength(4);
+    expect(unsettledWarnings()).toEqual([]);
   });
 
   it('a deterministic re-read failure ends the schedule; a still-absent copy keeps the declaration', async () => {
@@ -226,6 +243,7 @@ describe('AWS::IAM::Policy post-write capture settles the copy it reads (#6609 C
     const result = await read({ PolicyDocument: DECLARED, Roles: ['R1'] }, AFTER);
     expect(calls()).toHaveLength(2);
     expect(result).toEqual({ PolicyName: 'pol', PolicyDocument: DECLARED, Roles: ['R1'] });
+    expect(unsettledWarnings()).toHaveLength(1);
   });
 
   it('a failed re-read keeps the newest answer, never a stale one before it', async () => {
@@ -233,11 +251,12 @@ describe('AWS::IAM::Policy post-write capture settles the copy it reads (#6609 C
     const result = await read({ PolicyDocument: DECLARED, Roles: ['R1'] }, AFTER);
     expect(calls()).toHaveLength(4);
     expect(result).toMatchObject({ PolicyDocument: PREVIOUS, Roles: ['R1'] });
+    expect(unsettledWarnings()).toHaveLength(1);
   });
 
   it('reads only the first target of a multi-principal policy, settling it while the others are echoed', async () => {
-    // R1 lags for the whole schedule; R2 and G1 are never read (each would
-    // answer differently), so neither can freeze anything into the baseline.
+    // R1 lags until its last re-read (read 4); R2 and G1 are never read (each
+    // would answer differently), so neither can freeze anything into the baseline.
     answer('role:R1', missing(), missing(), doc(PREVIOUS_RAW), doc(DECLARED_RAW));
     answer('role:R2', missing());
     answer('group:G1', doc(PREVIOUS_RAW));
@@ -253,6 +272,7 @@ describe('AWS::IAM::Policy post-write capture settles the copy it reads (#6609 C
       Groups: ['G1'],
       Users: ['U1'],
     });
+    expect(unsettledWarnings()).toEqual([]);
   });
 
   it('keeps the first target at its declared position when it never reads back on a multi-principal policy', async () => {
