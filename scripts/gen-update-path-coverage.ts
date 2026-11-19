@@ -654,12 +654,48 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
 
   // ---- the reading walk ----
   type Mode = 'effect' | 'plain';
-  const walked = new Map<ts.Node, Mode>();
+  const walked = new Map<ts.Node, Set<string>>();
+  const NO_SEED: ReadonlySet<string> = new Set();
 
-  const walkUnit = (root: ts.Node, rootFile: string, mode: Mode): void => {
-    const prior = walked.get(root);
-    if (prior === 'effect' || prior === mode) return;
-    walked.set(root, mode);
+  // Which parameters of a callee its own body hands to an effect (memoized;
+  // `null` while being computed, read as "all", so a cycle can only add reads).
+  const paramMemo = new Map<string, ReadonlySet<string> | null>();
+  const nodeIds = new Map<ts.Node, number>();
+  const consumedParams = (
+    target: { node: ts.Node; file: string },
+    seed: ReadonlySet<string>
+  ): ReadonlySet<string> | null => {
+    if (!nodeIds.has(target.node)) nodeIds.set(target.node, nodeIds.size);
+    const memoKey = `${nodeIds.get(target.node)}|${[...seed].sort().join(',')}`;
+    if (paramMemo.has(memoKey)) return paramMemo.get(memoKey)!;
+    paramMemo.set(memoKey, null);
+    const fn = signatureOf(target.node);
+    const unit = makeUnit(target.node, target.file, 'plain', seed);
+    unit.settle();
+    const names = new Set(
+      (fn?.parameters ?? []).flatMap((p) => boundNames(p.name)).filter((n) => unit.consumed.has(n))
+    );
+    paramMemo.set(memoKey, names);
+    return names;
+  };
+
+  const walkUnit = (root: ts.Node, rootFile: string, mode: Mode, seed: ReadonlySet<string> = NO_SEED): void => {
+    const key = `${mode}|${[...seed].sort().join(',')}`;
+    const keys = walked.get(root) ?? new Set<string>();
+    if (keys.has(key) || keys.has('effect|')) return;
+    keys.add(key);
+    walked.set(root, keys);
+    const unit = makeUnit(root, rootFile, mode, seed);
+    unit.settle();
+    unit.run(false);
+  };
+
+  function makeUnit(
+    root: ts.Node,
+    rootFile: string,
+    mode: Mode,
+    seed: ReadonlySet<string>
+  ): { consumed: Set<string>; settle: () => void; run: (collect: boolean) => void } {
     const locals = localDeclarations(root);
     const requestLocals = requestDeclarations(root);
     const subtreeEffect = (n: ts.Node): Effect => effectOf(n, rootFile, locals);
@@ -672,7 +708,8 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     };
 
     // Locals whose value reaches an effect, grown to a fixpoint.
-    const consumed = new Set<string>();
+    const consumed = new Set<string>([...seed].filter((k) => !k.startsWith(RETURN_KEY)));
+    const returnKeysFor = new Map<ts.CallExpression, Set<string>>();
     const run = (collect: boolean): void => {
       const visit = (n: ts.Node, eff: boolean, cond: boolean, neg: boolean): void => {
         // Per-type narrowing.
@@ -783,13 +820,54 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
         if (ts.isVariableDeclaration(n)) {
           const names = boundNames(n.name);
           const live = eff || names.some((v) => consumed.has(v));
+          // `const { a, b } = helper(...)` with only `a` used: the helper's
+          // returned `a` is what reaches an effect, not everything it reads.
+          const call = n.initializer ? unwrapCall(n.initializer) : undefined;
+          if (!eff && call && ts.isObjectBindingPattern(n.name)) {
+            const keys = new Set<string>();
+            for (const el of n.name.elements) {
+              const key = el.propertyName ?? el.name;
+              if (
+                (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) &&
+                boundNames(el.name).some((v) => consumed.has(v))
+              ) {
+                keys.add(key.text);
+              }
+            }
+            returnKeysFor.set(call, keys);
+            visit(n.initializer!, false, false, false);
+            visitBinding(n.name, eff);
+            return;
+          }
           if (n.initializer) visit(n.initializer, live, false, false);
           // A destructuring read counts only for a binding whose value is used.
           if (!ts.isIdentifier(n.name)) visitBinding(n.name, eff);
           return;
         }
         if (ts.isReturnStatement(n)) {
-          if (n.expression) visit(n.expression, eff || mode === 'effect', false, false);
+          if (!n.expression) return;
+          const keys = [...seed].filter((k) => k.startsWith(RETURN_KEY)).map((k) => k.slice(RETURN_KEY.length));
+          if (!eff && mode !== 'effect' && keys.length > 0) {
+            let e: ts.Expression = n.expression;
+            while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isAwaitExpression(e)) e = e.expression;
+            if (ts.isObjectLiteralExpression(e)) {
+              for (const prop of e.properties) {
+                const name = prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name)) ? prop.name.text : null;
+                const live = name !== null && keys.includes(name);
+                if (ts.isShorthandPropertyAssignment(prop)) visit(prop.name, live, false, false);
+                else if (ts.isPropertyAssignment(prop)) visit(prop.initializer, live, false, false);
+                else visit(prop, true, false, false);
+              }
+              return;
+            }
+            const call = unwrapCall(e);
+            if (call) {
+              returnKeysFor.set(call, new Set(keys));
+              visit(n.expression, false, false, false);
+              return;
+            }
+          }
+          visit(n.expression, eff || mode === 'effect' || keys.length > 0, false, false);
           return;
         }
         if (
@@ -822,28 +900,68 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
           // through its callee, through a callback handed to it (`diff(prev.X,
           // next.X, (cfg) => put(cfg))`), or by filling a request a send
           // consumes (`fill(input, properties)` before `send(new X(input))`).
-          const fillsRequest = args.some(
-            (a) => ts.isIdentifier(a) && requestLocals.has(a.text) && consumed.has(a.text)
-          );
           const composesEffect = args.some((a) => {
             const e = subtreeEffect(a);
             return e.hard || e.warn;
           });
-          const argsEff =
-            eff ||
-            sink !== null ||
-            calleeEffect.hard ||
-            calleeEffect.warn ||
-            (mutated !== null && consumed.has(mutated)) ||
-            composesEffect ||
-            fillsRequest;
-          if (collect && local && argsEff && ts.isIdentifier((n as ts.CallExpression).expression)) {
+          const base =
+            eff || sink !== null || (mutated !== null && consumed.has(mutated)) || composesEffect;
+          // Per argument, through the callee's own use of the parameter it binds:
+          // a flag handed to a sending function counts only if that function's
+          // body hands its parameter on to the send.
+          const calleeUnit = target ?? (local ? { node: local, file: rootFile } : null);
+          const fn = calleeUnit ? signatureOf(calleeUnit.node) : undefined;
+          const viaCall =
+            ts.isCallExpression(n) &&
+            ts.isPropertyAccessExpression(n.expression) &&
+            n.expression.name.text === 'call' &&
+            n.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword;
+          const offset = viaCall ? 1 : 0;
+          const params = (fn?.parameters ?? []).filter(
+            (p) => !(ts.isIdentifier(p.name) && p.name.text === 'this')
+          );
+          const paramAt = (i: number): ts.ParameterDeclaration | undefined => {
+            const j = i - offset;
+            if (j < 0) return undefined;
+            const last = params[params.length - 1];
+            return params[j] ?? (last?.dotDotDotToken ? last : undefined);
+          };
+          // A request local handed in is filled there: seed its parameter.
+          const seedNames = new Set<string>();
+          for (const k of returnKeysFor.get(n as ts.CallExpression) ?? []) seedNames.add(RETURN_KEY + k);
+          args.forEach((a, i) => {
+            const param = paramAt(i);
+            const fills =
+              ts.isIdentifier(a) && ((requestLocals.has(a.text) && consumed.has(a.text)) || seed.has(a.text));
+            if (fills && param) {
+              for (const name of boundNames(param.name)) seedNames.add(name);
+            }
+            // A delegator forwarding a seeded rest parameter (`...args`)
+            // seeds every parameter from there on.
+            if (ts.isSpreadElement(a) && ts.isIdentifier(a.expression) && seed.has(a.expression.text)) {
+              for (let j = i - offset; j < params.length; j++) {
+                if (j >= 0) for (const name of boundNames(params[j]!.name)) seedNames.add(name);
+              }
+            }
+          });
+          const argEffAt = (i: number): boolean => {
+            if (base) return true;
+            if (viaCall && i === 0) return false;
+            if (!calleeUnit || !fn) return calleeEffect.hard || calleeEffect.warn;
+            const used = consumedParams(calleeUnit, seedNames);
+            if (used === null) return true;
+            const a = args[i];
+            const param = paramAt(i);
+            if ((a && ts.isSpreadElement(a)) || !param) return used.size > 0;
+            return boundNames(param.name).some((name) => used.has(name));
+          };
+          if (collect && local && eff && ts.isIdentifier((n as ts.CallExpression).expression)) {
             consumed.add(((n as ts.CallExpression).expression as ts.Identifier).text);
           }
           visit(n.expression, eff, cond, neg);
-          for (const a of args) visit(a, argsEff, false, false);
+          args.forEach((a, i) => visit(a, argEffAt(i), false, false));
           if (!collect && target) {
-            walkUnit(target.node, target.file, eff || fillsRequest || composesEffect ? 'effect' : 'plain');
+            walkUnit(target.node, target.file, eff || composesEffect ? 'effect' : 'plain', seedNames);
           }
           if (ts.isPropertyAccessExpression(n.expression) && n.expression.expression.kind === ts.SyntaxKind.ThisKeyword && !target && isInvokedOrBound(n.expression) && !collect) {
             unresolved.add(n.expression.name.text);
@@ -930,13 +1048,15 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
       };
       visitRootBody();
     };
-    for (let i = 0; i < 6; i++) {
-      const before = consumed.size;
-      run(true);
-      if (consumed.size === before) break;
-    }
-    run(false);
-  };
+    const settle = (): void => {
+      for (let i = 0; i < 8; i++) {
+        const before = consumed.size;
+        run(true);
+        if (consumed.size === before) break;
+      }
+    };
+    return { consumed, settle, run };
+  }
 
   /** `TABLE[resourceType]` / `TABLE.get(resourceType)` on a literal keyed table -> the entry. */
   const keyedEntry = (
@@ -1016,6 +1136,28 @@ function requestDeclarations(root: ts.Node): Set<string> {
   };
   visit(root);
   return out;
+}
+
+/** A seed entry naming a returned object key the caller consumes. */
+const RETURN_KEY = 'return:';
+
+/** The call an initializer or return value is (through `await`, parens, `as`). */
+function unwrapCall(e: ts.Expression): ts.CallExpression | undefined {
+  let cur = e;
+  while (ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isAwaitExpression(cur)) {
+    cur = cur.expression;
+  }
+  return ts.isCallExpression(cur) ? cur : undefined;
+}
+
+/** The function a resolved unit (a body, a declaration, a closure) is the body of. */
+function signatureOf(node: ts.Node): ts.SignatureDeclaration | undefined {
+  if (ts.isFunctionLike(node)) return node;
+  if (ts.isVariableDeclaration(node) && node.initializer && ts.isFunctionLike(node.initializer)) {
+    return node.initializer;
+  }
+  if (ts.isBlock(node) && node.parent && ts.isFunctionLike(node.parent)) return node.parent;
+  return undefined;
 }
 
 /** The local `const name = <function>` declarations directly inside a unit. */

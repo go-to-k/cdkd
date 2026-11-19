@@ -297,6 +297,53 @@ describe('gen-update-path-coverage: a read counts only when it reaches a send, a
   });
 });
 
+describe('gen-update-path-coverage: what a helper does with what it is handed', () => {
+  it('a flag handed to a sending helper counts only if the helper hands that parameter on (the DynamoDB shape)', () => {
+    const helper = (usesFlag: boolean): string => `
+      async function applySettings(client, properties, protectionChanged, sseChanged) {
+        if (sseChanged) await client.send(new UpdateSseCommand(properties.Sse));
+        ${usesFlag ? 'if (protectionChanged) await client.send(new UpdateProtectionCommand(properties.Protection));' : ''}
+      }
+      function preflight(properties, previous) {
+        const protectionChanged = properties['Protection'] !== previous['Protection'];
+        if (protectionChanged && typeof properties['Protection'] !== 'boolean') throw new ProvisioningError('bad');
+        return { protectionChanged, sseChanged: properties['Sse'] !== previous['Sse'] };
+      }`;
+    const body = `
+      async update(id, pid, type, properties, previous) {
+        const { protectionChanged, sseChanged } = preflight(properties, previous);
+        await applySettings(this.c, properties, protectionChanged, sseChanged);
+      }`;
+    const kept = classify({ handled: ['Protection', 'Sse'], prelude: helper(true), classBody: body });
+    expect(statusOf(kept, 'Protection')).toBe('update');
+    const dropped = classify({ handled: ['Protection', 'Sse'], prelude: helper(false), classBody: body });
+    // The flag is still computed and still handed over, but nothing sends it:
+    // its validation refusal alone is no refusal of the change.
+    expect(statusOf(dropped, 'Protection')).toBe('gap');
+    expect(statusOf(dropped, 'Sse')).toBe('update');
+  });
+
+  it('a request filled through a delegating member and a spread rest parameter counts', () => {
+    const companion = `${ROOT}/fake/fill.ts`;
+    const rows = classify({
+      handled: ['A'],
+      companions: [companion],
+      extraFiles: {
+        [companion]: `export function fill(this: FakeProvider, input, properties) { input.a = properties.A; }`,
+      },
+      prelude: `import { fill } from './fake/fill.js';`,
+      classBody: `
+        fill(...args) { return fill.call(this, ...args); }
+        async update(id, pid, type, properties) {
+          const input = {};
+          this.fill(input, properties);
+          await this.c.send(new UpdateCommand(input));
+        }`,
+    });
+    expect(statusOf(rows, 'A')).toBe('update');
+  });
+});
+
 describe('gen-update-path-coverage: resourceType-keyed tables', () => {
   const types = ['AWS::Fake::One', 'AWS::Fake::Two'];
 
