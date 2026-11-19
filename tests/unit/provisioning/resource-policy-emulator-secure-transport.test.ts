@@ -164,6 +164,21 @@ describe('a policy of only the enforceSSL Deny under --aws-emulator', () => {
     expect(sentCommands().every((c) => c.name === 'GetBucketPolicyCommand')).toBe(true);
   });
 
+  it('S3 create replaying state removes the policy the bucket held since', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(DOC) });
+    await new S3BucketPolicyProvider().create(
+      'P',
+      'AWS::S3::BucketPolicy',
+      { Bucket: 'b', PolicyDocument: SSL_ONLY },
+      { replayingState: true }
+    );
+    expect(sentCommands()).toEqual([
+      { name: 'GetBucketPolicyCommand', input: { Bucket: 'b' } },
+      { name: 'DeleteBucketPolicyCommand', input: { Bucket: 'b' } },
+    ]);
+  });
+
   it('S3 update over a bucket already without a policy succeeds', async () => {
     setAwsEndpointOverrideSource(EMULATOR);
     mockSend.mockRejectedValueOnce(Object.assign(new Error('none'), { name: 'NoSuchBucketPolicy' }));

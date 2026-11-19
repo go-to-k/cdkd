@@ -30,7 +30,7 @@ import {
   markRefusedBeforeApplying,
 } from '../../deployment/prior-attempt-scope.js';
 import { policyContentKey } from '../policy-document-content.js';
-import { isS3BucketName } from '../s3-bucket-name.js';
+import { isS3BucketName, ownPolicyHolder } from '../s3-bucket-policy-helpers.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -252,7 +252,24 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     );
     if (policyDoc === undefined) {
       // --aws-emulator with nothing left but the TLS Deny (go-to-k/cdkd#6636):
-      // the bucket keeps no policy.
+      // the bucket keeps no policy, so one the check above let this create
+      // replace (a rollback replay, an own earlier attempt) is removed.
+      if (existing.kind === 'present') {
+        try {
+          await this.s3Client.send(new DeleteBucketPolicyCommand({ Bucket: bucketName }));
+        } catch (error) {
+          if ((error as { name?: string }).name !== 'NoSuchBucketPolicy') {
+            throw this.wrapOperationError(
+              'create',
+              logicalId,
+              resourceType,
+              bucketName,
+              error,
+              context?.maskSecrets
+            );
+          }
+        }
+      }
       return { physicalId: bucketName, attributes: {} };
     }
 
@@ -980,21 +997,4 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         `(e.g. my-bucket-12345) to point cdkd at the bucket this policy is attached to.`
     );
   }
-}
-
-/**
- * Another record of the bound stack holding the policy of `bucketName`
- * (go-to-k/cdkd#6109), or `undefined` outside a deploy.
- */
-function ownPolicyHolder(logicalId: string, bucketName: string): string | undefined {
-  for (const [otherId, record] of getStackRecords()?.live() ?? []) {
-    if (
-      otherId !== logicalId &&
-      record.resourceType === 'AWS::S3::BucketPolicy' &&
-      record.physicalId === bucketName
-    ) {
-      return otherId;
-    }
-  }
-  return undefined;
 }

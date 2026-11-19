@@ -1,3 +1,6 @@
+/** Pure helpers of the S3 BucketPolicy provider. */
+import { getStackRecords } from '../deployment/stack-records-scope.js';
+
 /**
  * Recognize an S3 bucket name. AWS rules
  * (https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html):
@@ -21,4 +24,21 @@ export function isS3BucketName(value: string): boolean {
   if (value.startsWith('xn--')) return false;
   if (value.endsWith('-s3alias') || value.endsWith('--ol-s3')) return false;
   return true;
+}
+
+/**
+ * Another record of the bound stack holding the policy of `bucketName`
+ * (go-to-k/cdkd#6109), or `undefined` outside a deploy.
+ */
+export function ownPolicyHolder(logicalId: string, bucketName: string): string | undefined {
+  for (const [otherId, record] of getStackRecords()?.live() ?? []) {
+    if (
+      otherId !== logicalId &&
+      record.resourceType === 'AWS::S3::BucketPolicy' &&
+      record.physicalId === bucketName
+    ) {
+      return otherId;
+    }
+  }
+  return undefined;
 }
