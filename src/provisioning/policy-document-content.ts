@@ -174,7 +174,7 @@ function unwrapSingle(value: unknown): unknown {
 }
 
 /** An account principal in one spelling: a bare id and its root ARN agree. */
-function accountKey(value: unknown): unknown {
+export function accountKey(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   if (ACCOUNT_ID.test(value)) return `account:${value}`;
   const m = ACCOUNT_ROOT_ARN.exec(value);

@@ -245,6 +245,35 @@ for _arn in "${POLICY_TOPIC_A_ARN}" "${POLICY_TOPIC_B_ARN}"; do
   fi
 done
 
+# go-to-k/cdkd#6609: the baseline captured right after each queue policy /
+# topic policy / Lambda permission write matches the settled resource, so
+# drift compares every one of them and finds nothing. Drift elsewhere in the
+# stack (exit 1) or an incomplete comparison of another type (exit 2) is not
+# this check's subject; only these three types are read off the report.
+check_policy_baselines() { # phase label
+  local report rc=0
+  report=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${report}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report after $1" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  if ! jq -e --arg stack "${STACK}" '
+    def policy: .type == "AWS::SQS::QueuePolicy" or .type == "AWS::SNS::TopicPolicy" or .type == "AWS::Lambda::Permission";
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[] | select(.type == "AWS::SQS::QueuePolicy")] | length) >= 1 and
+    ([$reports[0].clean[] | select(.type == "AWS::SNS::TopicPolicy")] | length) >= 1 and
+    ([$reports[0].clean[] | select(.type == "AWS::Lambda::Permission")] | length) >= 1 and
+    ([($reports[0].drifted // [])[], ($reports[0].notCompared // [])[] | select(policy)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL: a queue policy, topic policy or Lambda permission is drifted or not compared after $1" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    OK: every queue policy, topic policy and Lambda permission is drift-clean after $1"
+}
+
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
 node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -404,6 +433,7 @@ for _arn in "${POLICY_TOPIC_A_ARN}" "${POLICY_TOPIC_B_ARN}"; do
   assert_policy_present "${_arn}" "after Phase 1"
 done
 echo "    OK: the two-topic TopicPolicy is on both out-of-stack topics"
+check_policy_baselines "Phase 1"
 
 # --- Phase 2: removal-reset redeploy (issue #1160 sqs batch) --------------
 echo "==> Phase 2: re-deploy dropping SqsManagedSseEnabled (must be RETAINED, issue #5004)"
@@ -497,6 +527,7 @@ if [ "${_a_shape}" != "true" ]; then
 fi
 assert_policy_reset "${POLICY_TOPIC_B_ARN}" "after narrowing Topics to the first topic" "${POLICY_B_BASELINE}"
 echo "    OK: the dropped topic is back on SNS's default policy; the kept one still carries the statement"
+check_policy_baselines "the Topics narrowing redeploy"
 
 # --- Phase 2b: a failed TopicPolicy's topics are reset by content (#4612) ---
 # "true" when a topic's live Policy has a statement with Sid $2 (bounded wait

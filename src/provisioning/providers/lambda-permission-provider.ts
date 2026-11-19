@@ -29,8 +29,14 @@ import type {
   ResourceImportResult,
   UpdateContext,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import {
+  lambdaPermissionMatchesDeclared,
+  OWN_WRITE_REREAD_DELAYS_MS,
+  reReadUntilSettled,
+} from '../settle-after-own-write.js';
 import {
   createMaskedLogSinks,
   maskerOrIdentity,
@@ -113,6 +119,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
   /** `AddPermission` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
   private readonly createClient = new LambdaCreateClientCache(() => this.lambdaClient);
   private logger = getLogger().child('LambdaPermissionProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Lambda::Permission',
@@ -573,12 +581,45 @@ export class LambdaPermissionProvider implements ResourceProvider {
    *     to "absent" matching CFn's default.
    *   - `Condition.ArnLike.AWS:SourceAccount` is left alone — drift on the
    *     condition operator key would be confusing here.
+   *
+   * The baseline capture right after cdkd's own write (`afterOwnWrite`,
+   * go-to-k/cdkd#6609): a just-added statement can still read back missing,
+   * or as the statement an update replaced. It is re-asked until every key
+   * above reads as declared. A statement still missing captures no baseline
+   * (drift then compares against the template); another statement is
+   * recorded as read (`settle-after-own-write.ts` says why). Every other read
+   * takes the first answer.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
     _resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    // No function name: the read answers `undefined` however often it is asked.
+    if (context?.afterOwnWrite !== true || typeof properties?.['FunctionName'] !== 'string') {
+      return this.readPermission(physicalId, properties);
+    }
+    const { answer, settled } = await reReadUntilSettled(
+      () => this.readPermission(physicalId, properties),
+      (read) =>
+        read !== undefined &&
+        read !== RESOURCE_NOT_FOUND &&
+        lambdaPermissionMatchesDeclared(read, properties),
+      this.ownWriteRereadDelaysMs
+    );
+    if (settled || (answer !== undefined && answer !== RESOURCE_NOT_FOUND)) return answer;
+    this.logger.debug(
+      safeMsg`No drift baseline captured for permission ${physicalId}: its function policy still read back no such statement after the write`
+    );
+    return undefined;
+  }
+
+  /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */
+  private async readPermission(
+    physicalId: string,
+    properties: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const functionName = properties?.['FunctionName'] as string | undefined;
     if (!functionName) return undefined;

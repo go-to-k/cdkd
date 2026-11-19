@@ -486,7 +486,7 @@ shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic split head; rc ok, orph clean
-sns-sqs-event	2026-11-04T22:19:15Z	PASS	255	verify.sh	own state bucket, rc ok, orph clean
+sns-sqs-event	2026-11-19T08:49:10Z	PASS	295	verify.sh	own state bucket, rc ok, orph clean, policy baselines drift-clean x2 (#6615)
 sns-subscription-filter	2026-11-17T17:54:15Z	PASS	330	verify.sh	rc ok, orph clean
 sns-subscription-update	2026-11-17T17:54:15Z	PASS	160	verify.sh	#6509 diff reports provider replacement (2c); rc ok, orph clean
 sns-topic-attr-removal	2026-11-13T15:36:43Z	PASS	80	verify.sh	rc ok, orph clean

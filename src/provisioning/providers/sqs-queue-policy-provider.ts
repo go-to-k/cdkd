@@ -29,12 +29,19 @@ import type {
   ResourceNotFound,
   CreateContext,
   UpdateContext,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
+import {
+  declaredPolicyDocument,
+  OWN_WRITE_REREAD_DELAYS_MS,
+  policyDocumentMatchesDeclared,
+  reReadUntilSettled,
+} from '../settle-after-own-write.js';
 
 /**
  * The skip reasons of a failed create's delete (go-to-k/cdkd#4612): a failure
@@ -64,6 +71,8 @@ export const QUEUE_POLICY_NOT_COMPARED_LEFT_REASON =
 export class SQSQueuePolicyProvider implements ResourceProvider {
   private sqsClient: SQSClient;
   private logger = getLogger().child('SQSQueuePolicyProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::SQS::QueuePolicy', new Set(['Queues', 'PolicyDocument'])],
@@ -633,11 +642,63 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
    * Returns `RESOURCE_NOT_FOUND` when no named queue carries a policy (each
    * is gone — `QueueDoesNotExist` — or its `Policy` attribute is absent or
    * empty, which is what deleting the QueuePolicy leaves).
+   *
+   * The baseline capture right after cdkd's own write (`afterOwnWrite`,
+   * go-to-k/cdkd#6609): `SetQueueAttributes` is eventually consistent, so the
+   * read can still answer with the REPLACED policy, or none. It is re-asked
+   * until every named queue holds the declared document. A queue still
+   * holding none captures no baseline (drift then compares against the
+   * template); another document is recorded as read
+   * (`settle-after-own-write.ts` says why). Every other read takes the first
+   * answer.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const declared =
+      context?.afterOwnWrite === true ? declaredPolicyDocument(properties) : undefined;
+    if (declared === undefined) return this.readQueuePolicy(physicalId);
+    const queueCount = splitQueueUrls(physicalId).length;
+    // Every named queue's policy, not only the first one the result carries:
+    // the write went to each of them.
+    let policies: string[] = [];
+    const { answer, settled } = await reReadUntilSettled(
+      () => {
+        policies = [];
+        return this.readQueuePolicy(physicalId, policies);
+      },
+      (read) =>
+        read !== undefined &&
+        read !== RESOURCE_NOT_FOUND &&
+        policies.length === queueCount &&
+        policies.every((policy) => policyDocumentMatchesDeclared(policy, declared)),
+      this.ownWriteRereadDelaysMs
+    );
+    if (settled) return answer;
+    if (
+      answer !== undefined &&
+      answer !== RESOURCE_NOT_FOUND &&
+      (answer['Queues'] as string[]).length === queueCount
+    ) {
+      return answer;
+    }
+    this.logger.debug(
+      safeMsg`No drift baseline captured for queue policy ${physicalId}: a queue still read back no policy after the write`
+    );
+    return undefined;
+  }
+
+  /**
+   * One read of {@link readCurrentState}, the answer taken as AWS gives it.
+   * `policies` collects each held queue's `Policy`, in id order.
+   */
+  private async readQueuePolicy(
+    physicalId: string,
+    policies?: string[]
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const queueUrls = splitQueueUrls(physicalId);
     if (queueUrls.length === 0) return undefined;
@@ -673,6 +734,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       // go-to-k/cdkd#4283: an empty Policy attribute is what deleting the QueuePolicy leaves.
       if (!policyAttr) continue;
       held.push(queueUrl);
+      policies?.push(policyAttr);
       firstPolicy ??= policyAttr;
     }
     if (firstPolicy === undefined) return RESOURCE_NOT_FOUND;
