@@ -14,6 +14,9 @@
 #      FieldDelimiter for a CloudWatch Logs destination). All applied in place:
 #      the source and destination ARNs and the delivery id are unchanged.
 #   3. `cdkd drift` and `cdkd diff` are clean against the updated template.
+#      The log group's data protection policy (one data identifier, two after
+#      phase 2) and the destination policy are also drift-clean right after
+#      phase 1 (go-to-k/cdkd#6609).
 #   4. Destroy; the delivery, source, destination (whose policy is still
 #      attached, so DeleteDeliveryDestination must succeed with one), log
 #      group, bus and state are all gone. A destination re-created under the
@@ -112,6 +115,83 @@ tags_of() { # usage: tags_of <arn>
   printf '%s' "${json}" | jq -c '.tags // {} | with_entries(select(.key | startswith("aws:") | not))'
 }
 
+# go-to-k/cdkd#6609: the baseline captured right after a member write (a
+# policy or setting a separate call puts on the resource) matches the settled
+# resource, so drift compares that member and finds nothing. Drift elsewhere
+# (exit 1) or an incomplete comparison of another type (exit 2) is not this
+# check's subject; only the member's path on the named type is read off the
+# report. The phase's env goes after the label, as `env` arguments.
+check_member_baseline() { # usage: check_member_baseline <type> <key> <phase label> [env args...]
+  local type="$1" key="$2" label="$3" report rc=0
+  shift 3
+  report=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${report}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report after ${label}" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  if ! jq -e --arg stack "${STACK}" --arg type "${type}" --arg key "${key}" '
+    def member: .path == $key or (.path | startswith($key + ".")) or (.path | startswith($key + "["));
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[], ($reports[0].drifted // [])[] | select(.type == $type)] | length) >= 1 and
+    ([($reports[0].drifted // [])[] | select(.type == $type) | .changes[] | select(member)] | length) == 0 and
+    ([($reports[0].notCompared // [])[] | select(.type == $type)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL: ${type} ${key} is drifted, or a ${type} is not compared, after ${label} (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    OK: every ${type} ${key} is drift-clean after ${label} (#6609)"
+}
+
+# go-to-k/cdkd#6609: drift alone cannot see a stale baseline while the live
+# member is the declared one (the drift heal rule skips the key then), so this
+# reads the baseline itself. The state record's observed member must be
+# exactly what AWS holds now, key order aside ('<absent>' when neither holds
+# one); a baseline captured before the write showed fails here.
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+state_lids() { # usage: state_lids <resourceType> -- every logical id of that type
+  state_json | jq -r --arg t "$1" '.resources | to_entries[] | select(.value.resourceType == $t) | .key'
+}
+state_field() { # usage: state_field <logical-id> <jq path into the record>
+  state_json | jq -r --arg l "$1" ".resources[\$l] | $2"
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON, '' for none> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  if [ -z "$3" ]; then live='"<absent>"'; else live=$(jq -cS . <<<"$3"); fi
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+
+check_delivery_records() { # usage: check_delivery_records <phase label>
+  local lid
+  assert_observed_member Destination .DeliveryDestinationPolicy.DeliveryDestinationPolicy \
+    "$(aws logs get-delivery-destination-policy --delivery-destination-name "${DESTINATION_NAME}" \
+      --region "${REGION}" --query 'policy.deliveryDestinationPolicy' --output text)" "$1"
+  lid=$(state_lids AWS::Logs::LogGroup)
+  [ -n "${lid}" ] || { echo "FAIL: no AWS::Logs::LogGroup in state after $1" >&2; exit 1; }
+  assert_observed_member "${lid}" .DataProtectionPolicy \
+    "$(aws logs get-data-protection-policy --log-group-identifier "${LOG_GROUP}" --region "${REGION}" \
+      --query policyDocument --output text)" "$1"
+}
+
+# The data identifiers of the log group's data protection policy, sorted and comma-joined.
+dpp_identifiers() {
+  local doc
+  doc="$(aws logs get-data-protection-policy --log-group-identifier "${LOG_GROUP}" --region "${REGION}" \
+    --query policyDocument --output text)" || return 1
+  printf '%s' "${doc}" | jq -r '[(.Statement // .statement)[0] | (.DataIdentifier // .dataIdentifier)[] | split("/") | last] | sort | join(",")'
+}
+
 echo "==> Phase 1: deploy"
 OUT="$(env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || {
   echo "${OUT}"; echo "FAIL: phase 1 deploy" >&2; exit 1
@@ -145,6 +225,11 @@ POLICY="$(aws logs get-delivery-destination-policy --delivery-destination-name "
   --query 'policy.deliveryDestinationPolicy' --output text)"
 jq -e '.Statement[0].Sid == "AllowCreateDelivery"' <<<"${POLICY}" >/dev/null \
   || { echo "FAIL: destination policy: ${POLICY}" >&2; exit 1; }
+DPP="$(dpp_identifiers)"
+[ "${DPP}" = "EmailAddress" ] || { echo "FAIL: log group data protection identifiers after phase 1: '${DPP}'" >&2; exit 1; }
+check_member_baseline AWS::Logs::DeliveryDestination DeliveryDestinationPolicy "phase 1" -u CDKD_TEST_UPDATE
+check_member_baseline AWS::Logs::LogGroup DataProtectionPolicy "phase 1" -u CDKD_TEST_UPDATE
+check_delivery_records "phase 1"
 
 DEL="$(aws logs describe-deliveries --region "${REGION}" --output json \
   | jq -c --arg id "${DELIVERY_ID}" '.deliveries[] | select(.id == $id) | {arn, deliverySourceName, deliveryDestinationArn}')"
@@ -170,6 +255,9 @@ POLICY="$(aws logs get-delivery-destination-policy --delivery-destination-name "
   --query 'policy.deliveryDestinationPolicy' --output text)"
 jq -e '.Statement[0].Sid == "AllowCreateDeliveryUpdated"' <<<"${POLICY}" >/dev/null \
   || { echo "FAIL: updated destination policy: ${POLICY}" >&2; exit 1; }
+DPP="$(dpp_identifiers)"
+[ "${DPP}" = "EmailAddress,IpAddress" ] || { echo "FAIL: log group data protection identifiers after phase 2: '${DPP}'" >&2; exit 1; }
+check_delivery_records "phase 2"
 FIELDS="$(aws logs get-delivery --id "${DELIVERY_ID}" --region "${REGION}" --output json | jq -c '.delivery.recordFields')"
 [ "${FIELDS}" = '["resource_arn","event_bus_name"]' ] || { echo "FAIL: delivery recordFields is ${FIELDS}" >&2; exit 1; }
 echo "    OK: tags, policy and RecordFields applied; ids and ARNs unchanged"
