@@ -189,6 +189,14 @@ export const UPDATE_PATH_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new M
     },
   ],
   [
+    'AWS::CloudFormation::Stack#TemplateURL',
+    {
+      rationale:
+        "informational: the update deploys the child from the assembly's local template " +
+        "(Metadata['aws:asset:path']), so a changed child template is applied without reading the URL",
+    },
+  ],
+  [
     'AWS::Glue::SecurityConfiguration#EncryptionConfiguration',
     {
       rationale:
@@ -351,6 +359,58 @@ function typeComparison(expr: ts.Expression): { literal: string; equal: boolean 
   return null;
 }
 
+/**
+ * Which branches of a condition the type under classification can take, or
+ * null when the condition does not test the resource type. `&&` / `||` chains
+ * narrow through a resource-type comparison in either operand.
+ */
+function branchReach(
+  expr: ts.Expression,
+  resourceType: string
+): { then: boolean; else: boolean } | null {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  const cmp = typeComparison(e);
+  if (cmp) {
+    const match = (cmp.literal === resourceType) === cmp.equal;
+    return { then: match, else: !match };
+  }
+  if (!ts.isBinaryExpression(e)) return null;
+  const op = e.operatorToken.kind;
+  if (op !== ts.SyntaxKind.AmpersandAmpersandToken && op !== ts.SyntaxKind.BarBarToken) return null;
+  const left = branchReach(e.left, resourceType);
+  const right = branchReach(e.right, resourceType);
+  if (!left && !right) return null;
+  const any = { then: true, else: true };
+  const l = left ?? any;
+  const r = right ?? any;
+  return op === ts.SyntaxKind.AmpersandAmpersandToken
+    ? { then: l.then && r.then, else: l.else || r.else }
+    : { then: l.then || r.then, else: l.else && r.else };
+}
+
+/** Does a case clause's statement list end the switch (a braced body included)? */
+function endsClause(statements: ts.NodeArray<ts.Statement> | readonly ts.Statement[]): boolean {
+  const last = statements[statements.length - 1];
+  if (!last) return false;
+  if (ts.isBlock(last)) return endsClause(last.statements);
+  return ts.isBreakStatement(last) || ts.isReturnStatement(last) || ts.isThrowStatement(last);
+}
+
+/**
+ * Is `this.x` invoked or handed on as a function here: `this.x()`, or
+ * `this.x.call(...)` / `.apply(...)` / `.bind(...)`?
+ */
+function isInvokedOrBound(n: ts.PropertyAccessExpression): boolean {
+  const p = n.parent;
+  if (ts.isCallExpression(p) && p.expression === n) return true;
+  return (
+    ts.isPropertyAccessExpression(p) &&
+    p.expression === n &&
+    ['call', 'apply', 'bind'].includes(p.name.text)
+  );
+}
+
 /** Is `node` an object-literal KEY (a name, not a read)? */
 function isObjectLiteralKey(node: ts.Node): boolean {
   const p = node.parent;
@@ -446,19 +506,20 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     const visit = (n: ts.Node): void => {
       // Per-type narrowing.
       if (ts.isIfStatement(n)) {
-        const cmp = typeComparison(n.expression);
-        if (cmp) {
-          const takesThen = (cmp.literal === resourceType) === cmp.equal;
-          if (takesThen) visit(n.thenStatement);
-          else if (n.elseStatement) visit(n.elseStatement);
+        const reach = branchReach(n.expression, resourceType);
+        if (reach) {
+          visit(n.expression);
+          if (reach.then) visit(n.thenStatement);
+          if (reach.else && n.elseStatement) visit(n.elseStatement);
           return;
         }
       }
       if (ts.isConditionalExpression(n)) {
-        const cmp = typeComparison(n.condition);
-        if (cmp) {
-          const takesThen = (cmp.literal === resourceType) === cmp.equal;
-          visit(takesThen ? n.whenTrue : n.whenFalse);
+        const reach = branchReach(n.condition, resourceType);
+        if (reach) {
+          visit(n.condition);
+          if (reach.then) visit(n.whenTrue);
+          if (reach.else) visit(n.whenFalse);
           return;
         }
       }
@@ -478,13 +539,7 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
             for (let i = start; i < clauses.length; i++) {
               const c = clauses[i]!;
               for (const s of c.statements) visit(s);
-              const last = c.statements[c.statements.length - 1];
-              if (
-                last &&
-                (ts.isBreakStatement(last) || ts.isReturnStatement(last) || ts.isThrowStatement(last))
-              ) {
-                break;
-              }
+              if (endsClause(c.statements)) break;
             }
           }
           return;
@@ -501,9 +556,7 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
           const comp = target ? undefined : companions.get(n.name.text);
           if (target) walkNode(target.node, target.file);
           else if (comp?.fn.body) walkNode(comp.fn.body, comp.file);
-          else if (ts.isCallExpression(n.parent) && n.parent.expression === n) {
-            unresolved.add(n.name.text);
-          }
+          else if (isInvokedOrBound(n)) unresolved.add(n.name.text);
         }
       } else if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression)) {
         reads.add(n.argumentExpression.text);
@@ -537,7 +590,13 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
         // update uses (SDK clients, the logger, `ReplacementRulesRegistry`,
         // whose rules table names nearly every property), and a `this` in one
         // is not the provider's.
-        if (hit && !ts.isClassDeclaration(hit.node)) walkNode(hit.node, hit.file);
+        // Nor a GENERATED module: `property-coverage.generated.ts` and
+        // `create-only-snapshot.generated.ts` name every type's properties,
+        // so reaching one (through `withoutSdkUnwiredProperties`, say) would
+        // count them all as read.
+        if (hit && !ts.isClassDeclaration(hit.node) && !hit.file.endsWith('.generated.ts')) {
+          walkNode(hit.node, hit.file);
+        }
       }
       ts.forEachChild(n, visit);
     };
@@ -686,6 +745,12 @@ export interface TypeRow {
   readonly file: string;
   readonly className: string;
   readonly properties: readonly PropertyRow[];
+  /**
+   * Handled names the committed schema lists as no writable top-level
+   * property (absent, or read-only): a template cannot change one, so it is
+   * not classified, but it is counted rather than dropped unseen.
+   */
+  readonly outsideSchema: readonly string[];
   /** See {@link WalkOutput.unresolved}. A non-empty list BLOCKS CI. */
   readonly unresolved: readonly string[];
 }
@@ -761,7 +826,11 @@ export function classifyFile(input: ClassifyInput): TypeRow[] {
       const handled = parseProviderSource(n.getText(), file).handled;
       for (const [resourceType, props] of handled) {
         const facts = schema(resourceType);
-        if (!facts) continue;
+        // Fail closed: a type without a committed schema would drop out with
+        // every gap it has (scripts/refresh-cfn-schemas.mjs captures one).
+        if (!facts) {
+          throw new Error(`${resourceType} (${input.displayFile ?? file}) has no CFn schema fixture`);
+        }
         const walk = walkUpdatePath({ cls: n, file, companions, index }, resourceType);
         // Fail closed: a provider class whose update() cannot be found would
         // otherwise drop out of the matrix, and its gaps with it.
@@ -772,15 +841,17 @@ export function classifyFile(input: ClassifyInput): TypeRow[] {
           );
         }
         const typeRules = rules.get(resourceType);
-        const properties = [...props]
-          .filter((p) => facts.properties.has(p) && !facts.readOnly.has(p))
-          .sort((a, b) => a.localeCompare(b))
+        const inSchema = (p: string): boolean => facts.properties.has(p) && !facts.readOnly.has(p);
+        const sorted = [...props].sort((a, b) => a.localeCompare(b));
+        const properties = sorted
+          .filter(inSchema)
           .map((p) => classifyProperty(resourceType, p, walk.reads, typeRules, facts, allowList));
         rows.push({
           resourceType,
           file: input.displayFile ?? file,
           className: n.name.text,
           properties,
+          outsideSchema: sorted.filter((p) => !inSchema(p)),
           unresolved: [...walk.unresolved].sort((a, b) => a.localeCompare(b)),
         });
       }
@@ -799,6 +870,7 @@ export interface UpdatePathCoverageReport {
     readonly replacement: number;
     readonly allowListed: number;
     readonly gap: number;
+    readonly outsideSchema: number;
   };
   readonly types: readonly TypeRow[];
 }
@@ -815,6 +887,7 @@ export function buildReport(rows: readonly TypeRow[]): UpdatePathCoverageReport 
       replacement: count('replacement'),
       allowListed: count('allow-listed'),
       gap: count('gap'),
+      outsideSchema: sorted.reduce((n, r) => n + r.outsideSchema.length, 0),
     },
     types: sorted,
   };
@@ -912,6 +985,7 @@ function renderMarkdown(report: UpdatePathCoverageReport): string {
     `- Read on the update path: **${s.update}**`,
     `- Replacement: **${s.replacement}**`,
     `- Allow-listed (does NOT block CI): **${s.allowListed}**`,
+    `- Handled names outside the schema's writable properties (not classified): **${s.outsideSchema}**`,
     `- **Gaps (blocks CI): ${s.gap}**`,
     '',
   ];

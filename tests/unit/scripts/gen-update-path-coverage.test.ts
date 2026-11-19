@@ -42,6 +42,7 @@ function classify(opts: {
   companions?: string[];
   rules?: Map<string, RuleSets>;
   createOnly?: string[];
+  schema?: SchemaFacts | null;
 }): TypeRow[] {
   const types = opts.types ?? ['AWS::Fake::Thing'];
   const handledDecl = types
@@ -59,7 +60,7 @@ export class FakeProvider {
     companions: opts.companions ?? [],
     index: new ModuleIndex(host),
     rules: opts.rules ?? new Map(),
-    schema: () => schemaOf(opts.handled, opts.createOnly),
+    schema: () => (opts.schema === undefined ? schemaOf(opts.handled, opts.createOnly) : opts.schema),
     allowList: new Map(),
   });
 }
@@ -152,6 +153,39 @@ describe('gen-update-path-coverage: what counts as a read on the update path', (
     expect(statusOf(rows, 'A')).toBe('gap');
   });
 
+  it('does not walk a generated module, whose tables name every type\'s properties', () => {
+    const generated = `${ROOT}/../coverage.generated.ts`;
+    const rows = classify({
+      handled: ['A'],
+      prelude: `import { TABLE } from '../coverage.generated.js';`,
+      extraFiles: { [generated]: `export const TABLE = new Set(['A']);` },
+      classBody: `async update() { return TABLE; }`,
+    });
+    expect(statusOf(rows, 'A')).toBe('gap');
+  });
+
+  it('counts a handled name outside the schema instead of classifying it, and refuses a type with no schema', () => {
+    const rows = classify({
+      handled: ['A', 'NotCfn', 'Arn'],
+      schema: { properties: new Set(['A', 'Arn']), readOnly: new Set(['Arn']), createOnly: new Set() },
+      classBody: `async update(id, pid, type, p) { return p.A; }`,
+    });
+    expect(rows[0]!.properties.map((p) => p.property)).toEqual(['A']);
+    expect(rows[0]!.outsideSchema).toEqual(['Arn', 'NotCfn']);
+    expect(buildReport(rows).summary.outsideSchema).toBe(2);
+    expect(() => classify({ handled: ['A'], schema: null, classBody: `async update() {}` })).toThrow(
+      /no CFn schema fixture/
+    );
+  });
+
+  it('flags this.x.call / .apply / .bind on an unresolvable member too', () => {
+    const rows = classify({
+      handled: ['A'],
+      classBody: `async update() { this.a.call(this); this.b.apply(this, []); const f = this.c.bind(this); }`,
+    });
+    expect(rows[0]!.unresolved).toEqual(['a', 'b', 'c']);
+  });
+
   it('records an unresolvable this.x() call, and refuses a class with no update()', () => {
     const rows = classify({ handled: ['A'], classBody: `async update() { this.inherited(); }` });
     expect(rows[0]!.unresolved).toEqual(['inherited']);
@@ -223,6 +257,40 @@ describe('gen-update-path-coverage: per-type narrowing', () => {
     expect(statusOf(rows, 'A', 'AWS::Fake::Two')).toBe('gap');
   });
 
+  it('a braced case body that returns does not fall through into the next case', () => {
+    const rows = classify({
+      types,
+      handled: ['A', 'B'],
+      classBody: `
+        async update(id, pid, resourceType, properties) {
+          switch (resourceType) {
+            case 'AWS::Fake::One': { const a = properties.A; return a; }
+            case 'AWS::Fake::Two': { return properties.B; }
+          }
+        }`,
+    });
+    expect(statusOf(rows, 'B', 'AWS::Fake::One')).toBe('gap');
+  });
+
+  it('narrows through && and ||, and still reads the condition', () => {
+    const rows = classify({
+      types,
+      handled: ['A', 'B', 'C'],
+      classBody: `
+        async update(id, pid, resourceType, properties) {
+          if (resourceType === 'AWS::Fake::One' && properties.C) return properties.A;
+          if (resourceType === 'AWS::Fake::One' || resourceType === 'AWS::Fake::Three') return;
+          return properties.B;
+        }`,
+    });
+    expect(statusOf(rows, 'A', 'AWS::Fake::One')).toBe('update');
+    expect(statusOf(rows, 'A', 'AWS::Fake::Two')).toBe('gap');
+    expect(statusOf(rows, 'C', 'AWS::Fake::Two')).toBe('update');
+    // `||` with a matching operand: the then-branch returns, but the
+    // fall-through after it is not a branch of the if, so B stays reachable.
+    expect(statusOf(rows, 'B', 'AWS::Fake::One')).toBe('update');
+  });
+
   it('a comparison of something else with an AWS:: literal does not narrow', () => {
     const rows = classify({
       types,
@@ -285,6 +353,7 @@ describe('gen-update-path-coverage: replacement and allow-listing', () => {
           { property: 'B', status: 'update' },
           { property: 'C', status: 'gap' },
         ],
+        outsideSchema: [],
         unresolved: [],
       },
     ]);
