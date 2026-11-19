@@ -10,6 +10,7 @@ import {
   DescribeSecurityGroupsCommand,
   DescribeSecurityGroupRulesCommand,
   DescribeNetworkAclsCommand,
+  type SecurityGroup,
   type SecurityGroupRule,
 } from '@aws-sdk/client-ec2';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -39,6 +40,8 @@ import {
   withoutSiblingOwnedSgRules,
 } from '../../sg-sibling-rules.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { OWN_WRITE_REREAD_DELAYS_MS, warnUnsettledMember } from '../../settle-after-own-write.js';
+import { type OwnWriteMember, settleOwnWriteMembers } from '../../settle-own-write-members.js';
 
 export async function readVpcCurrentState(
   this: EC2Provider,
@@ -349,32 +352,100 @@ export async function readSecurityGroupCurrentState(
   const tags = normalizeAwsTagsToCfn(sg.Tags);
   if (tags.length > 0) result['Tags'] = tags;
 
-  // Reverse-map AWS IpPermissions[] → CFn SecurityGroupIngress[].
-  // Each AWS IpPermission can produce multiple CFn rules (one per
-  // IpRanges / Ipv6Ranges / UserIdGroupPairs / PrefixListIds entry).
-  // Order is reconciled against state's templated rules so the
-  // comparator's positional array compare doesn't fire false drift on
-  // AWS's normalized order.
+  Object.assign(result, sgRuleLists(sg, physicalId, properties, context));
+
+  if (context?.afterOwnWrite === true && properties !== undefined) {
+    // go-to-k/cdkd#6609: `Authorize`/`Revoke...` are separate calls, so the
+    // read right after cdkd's own write can still lack a rule just written.
+    // A declared rule list is re-read until every declared rule shows
+    // (`settle-own-write-members.ts`); a rule the template does not declare
+    // (a sibling's, an out-of-band one) never holds the capture.
+    const members: OwnWriteMember<unknown>[] = [];
+    for (const [key, direction] of [
+      ['SecurityGroupIngress', 'ingress'],
+      ['SecurityGroupEgress', 'egress'],
+    ] as const) {
+      const declared = properties[key];
+      if (!Array.isArray(declared)) continue;
+      const missing = (value: unknown): Array<Record<string, unknown>> =>
+        missingSgRules(value, declared as Array<Record<string, unknown>>, direction);
+      members.push({
+        key,
+        declared,
+        matches: (value) => Array.isArray(value) && missing(value).length === 0,
+        whenUnsettled: (newest) => [...(Array.isArray(newest) ? newest : []), ...missing(newest)],
+        read: async () => {
+          const reread = await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
+          );
+          const group = reread.SecurityGroups?.[0];
+          return group
+            ? { value: sgRuleLists(group, physicalId, properties, context)[key] }
+            : 'failed';
+        },
+      });
+    }
+    await settleOwnWriteMembers(result, members, OWN_WRITE_REREAD_DELAYS_MS, (key) =>
+      warnUnsettledMember(this.logger, physicalId, 'AWS::EC2::SecurityGroup', key)
+    );
+  }
+  return result;
+}
+
+/**
+ * The declared rules the read does not hold, matched by `sgRuleKey` as a
+ * multiset. AWS reports the peer group's owner on an ingress rule the
+ * template need not declare (CDK never does), so a read rule matches without
+ * it too. A read rule the template does not declare is ignored.
+ */
+function missingSgRules(
+  value: unknown,
+  declared: ReadonlyArray<Record<string, unknown>>,
+  direction: 'ingress' | 'egress'
+): Array<Record<string, unknown>> {
+  const remaining = declared.map((rule) => ({ rule, key: sgRuleKey(rule, direction) }));
+  for (const rule of Array.isArray(value) ? (value as CfnSgRule[]) : []) {
+    const { SourceSecurityGroupOwnerId: _owner, ...withoutOwner } = rule;
+    const keys = [sgRuleKey(rule, direction), sgRuleKey(withoutOwner, direction)];
+    const index = remaining.findIndex((entry) => keys.includes(entry.key));
+    if (index >= 0) remaining.splice(index, 1);
+  }
+  return remaining.map((entry) => entry.rule);
+}
+
+/**
+ * A group's `SecurityGroupIngress` / `SecurityGroupEgress` in CFn shape.
+ *
+ * Each AWS IpPermission can produce multiple CFn rules (one per IpRanges /
+ * Ipv6Ranges / UserIdGroupPairs / PrefixListIds entry). Order is reconciled
+ * against state's templated rules so the comparator's positional array
+ * compare doesn't fire false drift on AWS's normalized order.
+ *
+ * go-to-k/cdkd#6418: a rule a sibling standalone `SecurityGroupIngress` /
+ * `SecurityGroupEgress` record of the stack authorizes is that resource's,
+ * not this group's, unless the group's own template declares it too
+ * (`sg-sibling-rules.ts`).
+ *
+ * Egress: AWS auto-attaches an `allow-all 0.0.0.0/0` rule on creation when
+ * the user doesn't template `SecurityGroupEgress`. It is filtered out when
+ * state didn't template egress so the auto-default doesn't fire false drift,
+ * and surfaced as-is when state DID template egress (the user owns the egress
+ * list, AWS-default is just one of the rules).
+ */
+function sgRuleLists(
+  sg: SecurityGroup,
+  physicalId: string,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): { SecurityGroupIngress: CfnSgRule[]; SecurityGroupEgress: CfnSgRule[] } {
   const stateIngress = Array.isArray(properties?.['SecurityGroupIngress'])
     ? (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>)
     : undefined;
-  //
-  // go-to-k/cdkd#6418: a rule a sibling standalone `SecurityGroupIngress` /
-  // `SecurityGroupEgress` record of the stack authorizes is that resource's,
-  // not this group's, unless the group's own template declares it too
-  // (`sg-sibling-rules.ts`).
   const ingressRules = withoutSiblingOwnedSgRules(
     flattenIpPermissions(sg.IpPermissions ?? [], 'ingress'),
     siblingOwnedSgRuleIdentities(physicalId, 'ingress', properties, context),
     'ingress'
   );
-  result['SecurityGroupIngress'] = reconcileSgRules(ingressRules, stateIngress, 'ingress');
-
-  // Egress: AWS auto-attaches an `allow-all 0.0.0.0/0` rule on creation
-  // when the user doesn't template `SecurityGroupEgress`. Filter it out
-  // when state didn't template egress so the auto-default doesn't fire
-  // false drift; surface it as-is when state DID template egress (the
-  // user owns the egress list, AWS-default is just one of the rules).
   const stateEgress = Array.isArray(properties?.['SecurityGroupEgress'])
     ? (properties['SecurityGroupEgress'] as Array<Record<string, unknown>>)
     : undefined;
@@ -386,9 +457,10 @@ export async function readSecurityGroupCurrentState(
   if (stateEgress === undefined) {
     egressRules = egressRules.filter((r) => !isDefaultEgressRule(r));
   }
-  result['SecurityGroupEgress'] = reconcileSgRules(egressRules, stateEgress, 'egress');
-
-  return result;
+  return {
+    SecurityGroupIngress: reconcileSgRules(ingressRules, stateIngress, 'ingress'),
+    SecurityGroupEgress: reconcileSgRules(egressRules, stateEgress, 'egress'),
+  };
 }
 
 export async function readNetworkAclCurrentState(

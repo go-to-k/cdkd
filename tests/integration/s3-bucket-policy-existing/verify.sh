@@ -88,6 +88,58 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
+# go-to-k/cdkd#6609 (slice C): the baseline captured right after cdkd's own
+# write must hold the member the deploy just wrote. `cdkd drift` alone cannot
+# see a stale baseline while the live member is the declared one (the drift
+# heal rule skips the key then), so this reads the baseline itself: the state
+# record's observed member must be exactly what AWS holds now, key order
+# aside ('<absent>' when neither holds one).
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+state_lids() { # usage: state_lids <resourceType> -- every logical id of that type
+  state_json | jq -r --arg t "$1" '.resources | to_entries[] | select(.value.resourceType == $t) | .key'
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON, '' for none> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  if [ -z "$3" ]; then live='"<absent>"'; else live=$(jq -cS . <<<"$3"); fi
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+
+# go-to-k/cdkd#6609: `cdkd drift --json` compares at least one resource of the
+# type, none is left uncompared, and no drifted change sits on the member's
+# path. The phase's env goes after the label, as `env` arguments.
+check_member_baseline() { # usage: check_member_baseline <type> <key> <phase label> [env args...]
+  local type="$1" key="$2" label="$3" report rc=0
+  shift 3
+  report=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${report}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report after ${label}" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  if ! jq -e --arg stack "${STACK}" --arg type "${type}" --arg key "${key}" '
+    def member: .path == $key or (.path | startswith($key + ".")) or (.path | startswith($key + "["));
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[], ($reports[0].drifted // [])[] | select(.type == $type)] | length) >= 1 and
+    ([($reports[0].drifted // [])[] | select(.type == $type) | .changes[] | select(member)] | length) == 0 and
+    ([($reports[0].notCompared // [])[] | select(.type == $type)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL: ${type} ${key} is drifted, or a ${type} is not compared, after ${label} (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    OK: every ${type} ${key} is drift-clean after ${label} (#6609)"
+}
+
 # The bucket's policy document, or the empty string when it holds none.
 # Any other read failure fails the run.
 bucket_policy() {
@@ -160,9 +212,20 @@ CDKD_TEST_UPDATE=policy node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "$
 P3="$(bucket_policy)" || exit 1
 grep -q "${TEMPLATE_SID}" <<<"${P3}" || { echo "FAIL: the template's BucketPolicy is not on the bucket after phase 3: ${P3:-<no policy>}" >&2; exit 1; }
 echo "    OK: the BucketPolicy create succeeded on a bucket with no policy"
+POLICY_LID="$(state_lids AWS::S3::BucketPolicy)"
+[ -n "${POLICY_LID}" ] || { echo "FAIL: no AWS::S3::BucketPolicy in state after phase 3" >&2; exit 1; }
+assert_observed_member "${POLICY_LID}" .PolicyDocument "${P3}" "phase 3 (create)"
+check_member_baseline AWS::S3::BucketPolicy PolicyDocument "phase 3 (create)" CDKD_TEST_UPDATE=policy
+
+echo "==> Phase 3b: replace the BucketPolicy document (#6609)"
+CDKD_TEST_UPDATE=policy,policy2 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3B="$(bucket_policy)" || exit 1
+grep -q "CdkdIntegTemplateStatement2" <<<"${P3B}" || { echo "FAIL: the replaced BucketPolicy lacks its second statement: ${P3B:-<no policy>}" >&2; exit 1; }
+assert_observed_member "${POLICY_LID}" .PolicyDocument "${P3B}" "phase 3b (replace)"
+check_member_baseline AWS::S3::BucketPolicy PolicyDocument "phase 3b (replace)" CDKD_TEST_UPDATE=policy,policy2
 
 echo "==> Phase 4: destroy"
-CDKD_TEST_UPDATE=policy node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+CDKD_TEST_UPDATE=policy,policy2 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "bucket ${BUCKET} still exists after destroy" aws s3api head-bucket --bucket "${BUCKET}" --region "${REGION}"
 echo "    OK: bucket gone"
 assert_gone "state ${STATE_KEY} remains after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

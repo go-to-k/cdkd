@@ -121,6 +121,8 @@ cleanup() {
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
     aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${arn}" >/dev/null 2>&1
   done
+  aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-inline >/dev/null 2>&1
+  aws iam delete-role-permissions-boundary --role-name "${ROLE_NAME}" >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
   for arn in $(aws iam list-attached-role-policies --role-name "${ATTACHER_NAME}" \
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
@@ -130,6 +132,8 @@ cleanup() {
   for u in "${ADD_U1}" "${ADD_U2}" "${ADD_U3}"; do
     aws iam remove-user-from-group --group-name "${ADD_GROUP}" --user-name "${u}" >/dev/null 2>&1
     aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${u}" >/dev/null 2>&1
+    aws iam delete-user-policy --user-name "${u}" --policy-name cdkd-6609-u3-inline >/dev/null 2>&1
+    aws iam delete-user-permissions-boundary --user-name "${u}" >/dev/null 2>&1
     aws iam delete-user --user-name "${u}" >/dev/null 2>&1
   done
   for arn in $(aws iam list-attached-group-policies --group-name "${ADD_GROUP}" \
@@ -270,6 +274,65 @@ assert_block_names_deny() { # usage: assert_block_names_deny <type>
   fi
 }
 
+# go-to-k/cdkd#6609: the baseline captured right after cdkd's own write must
+# hold the member the deploy just wrote. `cdkd drift` alone cannot see a stale
+# baseline while the live member is the declared one (the drift heal rule
+# skips the key then), so this reads the record itself: its observed member
+# must be exactly what AWS holds now, key order aside.
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+lid_of() { # usage: lid_of <resourceType> <physicalId>
+  state_json | jq -r --arg t "$1" --arg p "$2" \
+    '.resources | to_entries[] | select(.value.resourceType == $t and .value.physicalId == $p) | .key'
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON> <label>
+  local recorded live
+  [ -n "$1" ] || { echo "FAIL: no state record to check $2 on after $4" >&2; exit 1; }
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  live=$(jq -cS . <<<"$3") || { echo "FAIL: the live value of $1 $2 is not JSON after $4: $3" >&2; exit 1; }
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+# Attached ARNs of a principal, sorted, minus the sibling ManagedPolicy's own
+# attachment (that resource's, which the principal's capture strips, #6324).
+attached_own_json() { # usage: attached_own_json role|user|group <name>
+  aws iam "list-attached-$1-policies" "--$1-name" "$2" --query 'sort(AttachedPolicies[].PolicyArn)' --output json \
+    | jq -c --arg m "${MP_ARN}" 'map(select(. != $m))'
+}
+inline_json() { # usage: inline_json role|user <name> <policy name>
+  local doc
+  doc=$(aws iam "get-$1-policy" "--$1-name" "$2" --policy-name "$3" --query PolicyDocument --output json) || return 1
+  jq -cn --arg n "$3" --argjson d "${doc}" '[{PolicyName: $n, PolicyDocument: $d}]'
+}
+check_6609_baselines() { # usage: check_6609_baselines <phase label>
+  local role_lid u3_lid mp_lid version
+  role_lid=$(lid_of AWS::IAM::Role "${ROLE_NAME}")
+  u3_lid=$(lid_of AWS::IAM::User "${ADD_U3}")
+  mp_lid=$(lid_of AWS::IAM::ManagedPolicy "${MP_ARN}")
+  assert_observed_member "${role_lid}" .AssumeRolePolicyDocument \
+    "$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.AssumeRolePolicyDocument --output json)" "$1"
+  assert_observed_member "${role_lid}" .PermissionsBoundary \
+    "$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output json)" "$1"
+  assert_observed_member "${role_lid}" .Policies "$(inline_json role "${ROLE_NAME}" cdkd-6609-inline)" "$1"
+  assert_observed_member "${role_lid}" '.ManagedPolicyArns | sort' "$(attached_own_json role "${ROLE_NAME}")" "$1"
+  assert_observed_member "$(lid_of AWS::IAM::User "${USER_NAME}")" '.ManagedPolicyArns | sort' \
+    "$(attached_own_json user "${USER_NAME}")" "$1"
+  assert_observed_member "$(lid_of AWS::IAM::Group "${GROUP_NAME}")" '.ManagedPolicyArns | sort' \
+    "$(attached_own_json group "${GROUP_NAME}")" "$1"
+  version=$(aws iam get-policy --policy-arn "${MP_ARN}" --query Policy.DefaultVersionId --output text) || return 1
+  assert_observed_member "${mp_lid}" .PolicyDocument "$(aws iam get-policy-version --policy-arn "${MP_ARN}" \
+    --version-id "${version}" --query PolicyVersion.Document --output json)" "$1"
+  assert_observed_member "${u3_lid}" .Policies "$(inline_json user "${ADD_U3}" cdkd-6609-u3-inline)" "$1"
+  assert_observed_member "${u3_lid}" .PermissionsBoundary \
+    "$(aws iam get-user --user-name "${ADD_U3}" --query 'User.PermissionsBoundary.PermissionsBoundaryArn || `""`' --output json)" "$1"
+}
+
 WANT_ROLE="$(sorted "${BASIC_ARN}" "${MP_ARN}")"
 WANT_OTHER="$(sorted "${OWN_ARN}" "${MP_ARN}")"
 
@@ -305,6 +368,7 @@ if [ "${premise_ok}" -ne 1 ]; then
   exit 1
 fi
 echo "    the sibling policy is attached to the role, the user, the group and the attacher role; all three addition users are in ${ADD_GROUP}"
+check_6609_baselines "Phase 1b"
 
 # --- Phase 2: no drift on a fresh stack ----------------------------------
 echo "==> Phase 2: cdkd drift on the fresh stack (expect exit 0)"
@@ -518,6 +582,10 @@ if [ "${GOT_BASELINES}" != "${WANT_PLANTED}" ]; then
   exit 1
 fi
 echo "    each baseline holds its sibling's member: ${GOT_BASELINES}"
+check_6609_baselines "Phase 9 (touch)"
+U3_BOUNDARY="$(aws iam get-user --user-name "${ADD_U3}" --query 'User.PermissionsBoundary.PermissionsBoundaryArn' --output text)"
+[ "${U3_BOUNDARY}" = "arn:${PARTITION}:iam::aws:policy/PowerUserAccess" ] \
+  || { echo "FAIL: the touch deploy did not put ${ADD_U3}'s permissions boundary: ${U3_BOUNDARY}" >&2; exit 1; }
 
 export CDKD_TEST_UPDATE=late,shrink,touch,drop
 echo "==> Phase 9: the Attacher role drops the policy; the addition drops ${ADD_U3}"

@@ -1,0 +1,723 @@
+/**
+ * go-to-k/cdkd#6609, slice C: the members a separate call writes onto an IAM
+ * role / user / group / managed policy / instance profile, an S3 bucket
+ * policy, an event bus `Policy` and a security group's rule lists are settled
+ * on the baseline captured right after cdkd's own write, and every other read
+ * takes the first answer.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+const mockSend = vi.fn();
+const fakeClient = { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } };
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    iam: fakeClient,
+    s3: fakeClient,
+    eventBridge: fakeClient,
+    ec2: fakeClient,
+    ec2SingleSend: fakeClient,
+    cloudFront: fakeClient,
+    sts: fakeClient,
+  }),
+}));
+
+// The EC2 provider reads the shared schedule directly; zero it for every provider.
+vi.mock('../../../src/provisioning/settle-after-own-write.js', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  OWN_WRITE_REREAD_DELAYS_MS: [0, 0, 0],
+}));
+
+const childLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  child: vi.fn().mockReturnThis(),
+}));
+/** The `refresh-observed` warnings, for the unsettled outcome (value-free). */
+const unsettledWarnings = (): string[] =>
+  childLogger.warn.mock.calls
+    .map((c) => String(c[0]))
+    .filter((m) => m.includes('refresh-observed'));
+
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    child: () => childLogger,
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }),
+}));
+
+import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
+import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
+import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
+import { S3BucketPolicyProvider } from '../../../src/provisioning/providers/s3-bucket-policy-provider.js';
+import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
+import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import type { ReadCurrentStateContext } from '../../../src/types/resource.js';
+
+const AFTER: ReadCurrentStateContext = { afterOwnWrite: true };
+const ACCT = '111111111111';
+
+/** Per SDK command name, the answers in order (the last one repeats); others answer `{}`. */
+let script: Record<string, Array<() => unknown>> = {};
+function answer(command: string, ...answers: Array<() => unknown>): void {
+  script[command] = answers;
+}
+const callsOf = (command: string): number =>
+  mockSend.mock.calls.filter((c) => (c[0] as object).constructor.name === command).length;
+const fail = (name: string) => () => {
+  throw Object.assign(new Error(name), { name, $metadata: {} });
+};
+
+beforeEach(() => {
+  mockSend.mockReset();
+  childLogger.warn.mockClear();
+  script = {};
+  const served: Record<string, number> = {};
+  mockSend.mockImplementation((command: object) => {
+    const name = command.constructor.name;
+    const queue = script[name];
+    if (queue === undefined) return Promise.resolve({});
+    const index = Math.min(served[name] ?? 0, queue.length - 1);
+    served[name] = (served[name] ?? 0) + 1;
+    try {
+      return Promise.resolve(queue[index]!());
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+});
+
+function zeroDelays<T extends object>(provider: T): T {
+  (provider as unknown as { ownWriteRereadDelaysMs: readonly number[] }).ownWriteRereadDelaysMs = [
+    0, 0, 0,
+  ];
+  return provider;
+}
+type Read = Record<string, unknown> | symbol | undefined;
+const bag = (read: unknown): Record<string, unknown> => read as Record<string, unknown>;
+const encoded = (doc: unknown): string => encodeURIComponent(JSON.stringify(doc));
+
+const DOC = {
+  Version: '2012-10-17',
+  Statement: [{ Action: 's3:GetObject', Effect: 'Allow', Resource: 'arn:aws:s3:::b/*' }],
+};
+const OLD_DOC = {
+  Version: '2012-10-17',
+  Statement: [{ Action: 's3:PutObject', Effect: 'Allow', Resource: 'arn:aws:s3:::old/*' }],
+};
+const ARN_A = 'arn:aws:iam::aws:policy/ReadOnlyAccess';
+const ARN_B = `arn:aws:iam::${ACCT}:policy/mine`;
+const ARN_OLD = 'arn:aws:iam::aws:policy/AdministratorAccess';
+const BOUNDARY = `arn:aws:iam::${ACCT}:policy/boundary`;
+
+/**
+ * One settled member: the declared bag, the command whose answers the test
+ * scripts (the member's own re-read), its three answers, the other commands'
+ * fixed answers, and what each outcome records under `key`.
+ */
+interface Spec {
+  name: string;
+  key: string;
+  read: (properties: Record<string, unknown>, context?: ReadCurrentStateContext) => Promise<Read>;
+  properties: Record<string, unknown>;
+  command: string;
+  good: () => unknown;
+  absent: () => unknown;
+  other: () => unknown;
+  base?: Record<string, () => unknown>;
+  /** A list read holding every declared entry plus one the template does not declare. */
+  extra?: () => unknown;
+  goodValue: unknown;
+  /** What a kept-declared baseline records under `key` (`NO_BASELINE`: the whole read is `undefined`). */
+  declaredValue: unknown;
+  otherValue: unknown;
+  absentValue: unknown;
+}
+const NO_BASELINE = Symbol('no baseline');
+
+const role = () => zeroDelays(new IAMRoleProvider());
+const userGroup = () => zeroDelays(new IAMUserGroupProvider());
+const getRole = (extra: Record<string, unknown> = {}) => () => ({
+  Role: { RoleName: 'r', AssumeRolePolicyDocument: encoded(TRUST), ...extra },
+});
+const TRUST = {
+  Version: '2012-10-17',
+  Statement: [
+    { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' } },
+  ],
+};
+const OLD_TRUST = {
+  Version: '2012-10-17',
+  Statement: [
+    { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'ec2.amazonaws.com' } },
+  ],
+};
+const attached = (...arns: string[]) => () => ({
+  AttachedPolicies: arns.map((PolicyArn) => ({ PolicyArn })),
+});
+const names = (...PolicyNames: string[]) => () => ({ PolicyNames });
+
+const specs: Spec[] = [
+  {
+    name: 'AWS::IAM::Role AssumeRolePolicyDocument',
+    key: 'AssumeRolePolicyDocument',
+    read: (p, c) => role().readCurrentState('r', 'Role', 'AWS::IAM::Role', p, c),
+    properties: { AssumeRolePolicyDocument: TRUST },
+    command: 'GetRoleCommand',
+    good: getRole(),
+    absent: getRole({ AssumeRolePolicyDocument: encoded(OLD_TRUST) }),
+    other: getRole({ AssumeRolePolicyDocument: encoded(OLD_TRUST) }),
+    goodValue: TRUST,
+    declaredValue: OLD_TRUST,
+    otherValue: OLD_TRUST,
+    absentValue: OLD_TRUST,
+  },
+  {
+    name: 'AWS::IAM::Role PermissionsBoundary',
+    key: 'PermissionsBoundary',
+    read: (p, c) => role().readCurrentState('r', 'Role', 'AWS::IAM::Role', p, c),
+    properties: { PermissionsBoundary: BOUNDARY },
+    command: 'GetRoleCommand',
+    good: getRole({ PermissionsBoundary: { PermissionsBoundaryArn: BOUNDARY } }),
+    absent: getRole(),
+    other: getRole({ PermissionsBoundary: { PermissionsBoundaryArn: ARN_OLD } }),
+    goodValue: BOUNDARY,
+    declaredValue: BOUNDARY,
+    otherValue: ARN_OLD,
+    absentValue: '',
+  },
+  {
+    name: 'AWS::IAM::Role ManagedPolicyArns',
+    key: 'ManagedPolicyArns',
+    read: (p, c) => role().readCurrentState('r', 'Role', 'AWS::IAM::Role', p, c),
+    properties: { ManagedPolicyArns: [ARN_A, ARN_B] },
+    command: 'ListAttachedRolePoliciesCommand',
+    base: { GetRoleCommand: getRole() },
+    // ListAttachedRolePolicies answers in its own order.
+    good: attached(ARN_B, ARN_A),
+    absent: attached(ARN_A),
+    other: attached(ARN_A, ARN_OLD),
+    extra: attached(ARN_OLD, ARN_B, ARN_A),
+    goodValue: [ARN_B, ARN_A],
+    declaredValue: [ARN_A, ARN_B],
+    otherValue: [ARN_A, ARN_OLD, ARN_B],
+    absentValue: [ARN_A],
+  },
+  {
+    name: 'AWS::IAM::Role Policies',
+    key: 'Policies',
+    read: (p, c) => role().readCurrentState('r', 'Role', 'AWS::IAM::Role', p, c),
+    properties: { Policies: [{ PolicyName: 'p', PolicyDocument: DOC }] },
+    command: 'ListRolePoliciesCommand',
+    base: { GetRoleCommand: getRole(), GetRolePolicyCommand: () => ({ PolicyDocument: encoded(DOC) }) },
+    good: names('p'),
+    absent: names(),
+    other: names('old'),
+    extra: names('old', 'p'),
+    goodValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
+    declaredValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
+    otherValue: [
+      { PolicyName: 'old', PolicyDocument: DOC },
+      { PolicyName: 'p', PolicyDocument: DOC },
+    ],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::IAM::User PermissionsBoundary',
+    key: 'PermissionsBoundary',
+    read: (p, c) => userGroup().readCurrentState('u', 'User', 'AWS::IAM::User', p, c),
+    properties: { PermissionsBoundary: BOUNDARY },
+    command: 'GetUserCommand',
+    good: () => ({ User: { UserName: 'u', PermissionsBoundary: { PermissionsBoundaryArn: BOUNDARY } } }),
+    absent: () => ({ User: { UserName: 'u' } }),
+    other: () => ({ User: { UserName: 'u', PermissionsBoundary: { PermissionsBoundaryArn: ARN_OLD } } }),
+    goodValue: BOUNDARY,
+    declaredValue: BOUNDARY,
+    otherValue: ARN_OLD,
+    absentValue: '',
+  },
+  {
+    name: 'AWS::IAM::User ManagedPolicyArns',
+    key: 'ManagedPolicyArns',
+    read: (p, c) => userGroup().readCurrentState('u', 'User', 'AWS::IAM::User', p, c),
+    properties: { ManagedPolicyArns: [ARN_A] },
+    command: 'ListAttachedUserPoliciesCommand',
+    base: { GetUserCommand: () => ({ User: { UserName: 'u' } }) },
+    good: attached(ARN_A),
+    absent: attached(),
+    other: attached(ARN_OLD),
+    extra: attached(ARN_OLD, ARN_A),
+    goodValue: [ARN_A],
+    declaredValue: [ARN_A],
+    otherValue: [ARN_OLD, ARN_A],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::IAM::User Groups',
+    key: 'Groups',
+    read: (p, c) => userGroup().readCurrentState('u', 'User', 'AWS::IAM::User', p, c),
+    properties: { Groups: ['g1', 'g2'] },
+    command: 'ListGroupsForUserCommand',
+    base: { GetUserCommand: () => ({ User: { UserName: 'u' } }) },
+    good: () => ({ Groups: [{ GroupName: 'g2' }, { GroupName: 'g1' }] }),
+    absent: () => ({ Groups: [{ GroupName: 'g1' }] }),
+    other: () => ({ Groups: [{ GroupName: 'g1' }, { GroupName: 'gone' }] }),
+    extra: () => ({ Groups: [{ GroupName: 'g2' }, { GroupName: 'other' }, { GroupName: 'g1' }] }),
+    goodValue: ['g2', 'g1'],
+    declaredValue: ['g1', 'g2'],
+    otherValue: ['g1', 'gone', 'g2'],
+    absentValue: ['g1'],
+  },
+  {
+    name: 'AWS::IAM::User Policies',
+    key: 'Policies',
+    read: (p, c) => userGroup().readCurrentState('u', 'User', 'AWS::IAM::User', p, c),
+    properties: { Policies: [{ PolicyName: 'p', PolicyDocument: JSON.stringify(DOC) }] },
+    command: 'ListUserPoliciesCommand',
+    base: {
+      GetUserCommand: () => ({ User: { UserName: 'u' } }),
+      GetUserPolicyCommand: () => ({ PolicyDocument: encoded(DOC) }),
+    },
+    good: names('p'),
+    absent: names(),
+    other: names('old'),
+    extra: names('old', 'p'),
+    goodValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
+    // A declared JSON-string document is kept in the read's parsed shape.
+    declaredValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
+    otherValue: [
+      { PolicyName: 'old', PolicyDocument: DOC },
+      { PolicyName: 'p', PolicyDocument: DOC },
+    ],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::IAM::Group ManagedPolicyArns',
+    key: 'ManagedPolicyArns',
+    read: (p, c) => userGroup().readCurrentState('g', 'Group', 'AWS::IAM::Group', p, c),
+    properties: { ManagedPolicyArns: [ARN_A] },
+    command: 'ListAttachedGroupPoliciesCommand',
+    base: { GetGroupCommand: () => ({ Group: { GroupName: 'g' } }) },
+    good: attached(ARN_A),
+    absent: attached(),
+    other: attached(ARN_OLD),
+    extra: attached(ARN_OLD, ARN_A),
+    goodValue: [ARN_A],
+    declaredValue: [ARN_A],
+    otherValue: [ARN_OLD, ARN_A],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::IAM::Group Policies',
+    key: 'Policies',
+    read: (p, c) => userGroup().readCurrentState('g', 'Group', 'AWS::IAM::Group', p, c),
+    properties: { Policies: [{ PolicyName: 'p', PolicyDocument: DOC }] },
+    command: 'ListGroupPoliciesCommand',
+    base: {
+      GetGroupCommand: () => ({ Group: { GroupName: 'g' } }),
+      GetGroupPolicyCommand: () => ({ PolicyDocument: encoded(DOC) }),
+    },
+    good: names('p'),
+    absent: names(),
+    other: names('old'),
+    extra: names('old', 'p'),
+    goodValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
+    declaredValue: [{ PolicyName: 'p', PolicyDocument: DOC }],
+    otherValue: [
+      { PolicyName: 'old', PolicyDocument: DOC },
+      { PolicyName: 'p', PolicyDocument: DOC },
+    ],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::IAM::ManagedPolicy PolicyDocument',
+    key: 'PolicyDocument',
+    read: (p, c) =>
+      zeroDelays(new IAMManagedPolicyProvider()).readCurrentState(
+        'arn:aws:iam::111111111111:policy/mp',
+        'Mp',
+        'AWS::IAM::ManagedPolicy',
+        p,
+        c
+      ),
+    properties: { PolicyDocument: DOC },
+    command: 'GetPolicyVersionCommand',
+    base: { GetPolicyCommand: () => ({ Policy: { PolicyName: 'mp', DefaultVersionId: 'v2' } }) },
+    good: () => ({ PolicyVersion: { Document: encoded(DOC) } }),
+    absent: () => ({ PolicyVersion: { Document: encoded(OLD_DOC) } }),
+    other: () => ({ PolicyVersion: { Document: encoded(OLD_DOC) } }),
+    goodValue: DOC,
+    declaredValue: OLD_DOC,
+    otherValue: OLD_DOC,
+    absentValue: OLD_DOC,
+  },
+  {
+    name: 'AWS::IAM::ManagedPolicy Roles',
+    key: 'Roles',
+    read: (p, c) =>
+      zeroDelays(new IAMManagedPolicyProvider()).readCurrentState(
+        'arn:aws:iam::111111111111:policy/mp',
+        'Mp',
+        'AWS::IAM::ManagedPolicy',
+        p,
+        c
+      ),
+    properties: { Roles: ['r1'] },
+    command: 'ListEntitiesForPolicyCommand',
+    base: { GetPolicyCommand: () => ({ Policy: { PolicyName: 'mp' } }) },
+    good: () => ({ PolicyRoles: [{ RoleName: 'r1' }] }),
+    absent: () => ({}),
+    other: () => ({ PolicyRoles: [{ RoleName: 'old' }] }),
+    // A role attaching the policy through its own ManagedPolicyArns, unstripped on the capture.
+    extra: () => ({ PolicyRoles: [{ RoleName: 'attacher' }, { RoleName: 'r1' }] }),
+    goodValue: ['r1'],
+    declaredValue: ['r1'],
+    otherValue: ['old', 'r1'],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::IAM::InstanceProfile Roles',
+    key: 'Roles',
+    read: (p, c) =>
+      zeroDelays(new IAMInstanceProfileProvider()).readCurrentState(
+        'ip',
+        'Profile',
+        'AWS::IAM::InstanceProfile',
+        p,
+        c
+      ),
+    properties: { Roles: ['r1'] },
+    command: 'GetInstanceProfileCommand',
+    good: () => ({ InstanceProfile: { InstanceProfileName: 'ip', Roles: [{ RoleName: 'r1' }] } }),
+    absent: () => ({ InstanceProfile: { InstanceProfileName: 'ip', Roles: [] } }),
+    other: () => ({ InstanceProfile: { InstanceProfileName: 'ip', Roles: [{ RoleName: 'old' }] } }),
+    goodValue: ['r1'],
+    declaredValue: ['r1'],
+    otherValue: ['old', 'r1'],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::S3::BucketPolicy PolicyDocument',
+    key: 'PolicyDocument',
+    read: (p, c) =>
+      zeroDelays(new S3BucketPolicyProvider()).readCurrentState(
+        'bkt',
+        'Policy',
+        'AWS::S3::BucketPolicy',
+        p,
+        c
+      ),
+    properties: { Bucket: 'bkt', PolicyDocument: DOC },
+    command: 'GetBucketPolicyCommand',
+    good: () => ({ Policy: JSON.stringify(DOC) }),
+    absent: fail('NoSuchBucketPolicy'),
+    other: () => ({ Policy: JSON.stringify(OLD_DOC) }),
+    goodValue: DOC,
+    declaredValue: NO_BASELINE,
+    otherValue: OLD_DOC,
+    absentValue: NO_BASELINE,
+  },
+  {
+    name: 'AWS::Events::EventBus Policy',
+    key: 'Policy',
+    read: (p, c) =>
+      zeroDelays(new EventBridgeBusProvider()).readCurrentState(
+        'bus',
+        'Bus',
+        'AWS::Events::EventBus',
+        p,
+        c
+      ),
+    properties: { Name: 'bus', Policy: DOC },
+    command: 'DescribeEventBusCommand',
+    good: () => ({ Name: 'bus', Policy: JSON.stringify(DOC) }),
+    absent: () => ({ Name: 'bus' }),
+    other: () => ({ Name: 'bus', Policy: JSON.stringify(OLD_DOC) }),
+    goodValue: DOC,
+    declaredValue: DOC,
+    otherValue: OLD_DOC,
+    absentValue: undefined,
+  },
+];
+
+const INGRESS = {
+  CidrIp: '10.0.0.0/8',
+  Description: 'from 10.0.0.0/8:443',
+  FromPort: 443,
+  IpProtocol: 'tcp',
+  ToPort: 443,
+};
+const EGRESS = {
+  CidrIp: '0.0.0.0/0',
+  Description: 'Allow all outbound traffic by default',
+  IpProtocol: '-1',
+};
+const ingressPermission = {
+  IpProtocol: 'tcp',
+  FromPort: 443,
+  ToPort: 443,
+  IpRanges: [{ CidrIp: '10.0.0.0/8', Description: 'from 10.0.0.0/8:443' }],
+};
+const oldPermission = {
+  IpProtocol: 'tcp',
+  FromPort: 22,
+  ToPort: 22,
+  IpRanges: [{ CidrIp: '10.0.0.0/8' }],
+};
+const sgAnswer = (ingress: unknown[], egress: unknown[]) => () => ({
+  SecurityGroups: [
+    {
+      GroupId: 'sg-1',
+      GroupName: 'g',
+      Description: 'd',
+      VpcId: 'vpc-1',
+      IpPermissions: ingress,
+      IpPermissionsEgress: egress,
+    },
+  ],
+});
+const readSg = (p: Record<string, unknown>, c?: ReadCurrentStateContext) =>
+  new EC2Provider().readCurrentState('sg-1', 'Sg', 'AWS::EC2::SecurityGroup', p, c);
+// CDK's default egress, as EC2 stores it.
+const cdkEgressPermission = {
+  IpProtocol: '-1',
+  IpRanges: [{ CidrIp: '0.0.0.0/0', Description: 'Allow all outbound traffic by default' }],
+};
+specs.push(
+  {
+    name: 'AWS::EC2::SecurityGroup SecurityGroupIngress',
+    key: 'SecurityGroupIngress',
+    read: readSg,
+    properties: { GroupDescription: 'd', SecurityGroupIngress: [INGRESS] },
+    command: 'DescribeSecurityGroupsCommand',
+    good: sgAnswer([ingressPermission], []),
+    absent: sgAnswer([], []),
+    other: sgAnswer([oldPermission], []),
+    extra: sgAnswer([oldPermission, ingressPermission], []),
+    goodValue: [INGRESS],
+    declaredValue: [INGRESS],
+    otherValue: [{ IpProtocol: 'tcp', FromPort: 22, ToPort: 22, CidrIp: '10.0.0.0/8' }, INGRESS],
+    absentValue: [],
+  },
+  {
+    name: 'AWS::EC2::SecurityGroup SecurityGroupEgress',
+    key: 'SecurityGroupEgress',
+    read: readSg,
+    properties: { GroupDescription: 'd', SecurityGroupEgress: [EGRESS] },
+    command: 'DescribeSecurityGroupsCommand',
+    good: sgAnswer([], [cdkEgressPermission]),
+    absent: sgAnswer([], []),
+    // The allow-all rule EC2 creates with the group, not yet revoked.
+    other: sgAnswer([], [{ IpProtocol: '-1', IpRanges: [{ CidrIp: '0.0.0.0/0' }] }]),
+    goodValue: [EGRESS],
+    declaredValue: [EGRESS],
+    otherValue: [{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }, EGRESS],
+    absentValue: [],
+  }
+);
+
+/** The recorded member, `NO_BASELINE` when the read recorded no baseline at all. */
+const recorded = (read: Read, key: string): unknown =>
+  read === undefined ? NO_BASELINE : bag(read)[key];
+const script4 = (spec: Spec, ...answers: Array<() => unknown>): void => {
+  for (const [command, value] of Object.entries(spec.base ?? {})) answer(command, value);
+  answer(spec.command, ...answers);
+};
+/** A re-read command's answers: each of `spec.command`'s is one read of the member. */
+const throttled = fail('ThrottlingException');
+const refused = fail('AccessDeniedException');
+
+describe.each(specs)('$name', (spec) => {
+  it('settled on the first read: recorded as read, one call, no warning', async () => {
+    script4(spec, spec.good);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.goodValue);
+    expect(callsOf(spec.command)).toBe(1);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('a just-added member read as missing settles on a re-read', async () => {
+    script4(spec, spec.absent, spec.good);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.goodValue);
+    expect(callsOf(spec.command)).toBe(2);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('a replaced member read as its previous value settles on a re-read', async () => {
+    script4(spec, spec.other, spec.good);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.goodValue);
+    expect(callsOf(spec.command)).toBe(2);
+  });
+
+  it('still missing after the schedule: the declared member is kept (4 reads, one warning)', async () => {
+    script4(spec, spec.absent);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.declaredValue);
+    expect(callsOf(spec.command)).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
+    expect(unsettledWarnings()[0]).toContain(spec.key);
+  });
+
+  it('another value after the schedule: recorded as read, one value-free warning', async () => {
+    script4(spec, spec.other);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.otherValue);
+    expect(callsOf(spec.command)).toBe(4);
+    const warnings = unsettledWarnings();
+    expect(warnings).toHaveLength(1);
+    for (const needle of ['old', 's3:', 'ec2.amazonaws.com', 'AdministratorAccess', '10.0.0.0']) {
+      expect(warnings[0]).not.toContain(needle);
+    }
+  });
+
+  it('a deterministic re-read failure ends the schedule', async () => {
+    script4(spec, spec.other, refused, spec.good);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.otherValue);
+    expect(callsOf(spec.command)).toBe(2);
+  });
+
+  it('a transient re-read failure keeps the newest answer and the schedule goes on', async () => {
+    script4(spec, spec.other, throttled, throttled, throttled);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.otherValue);
+    expect(callsOf(spec.command)).toBe(4);
+  });
+
+  it('a transient failure, then the declared member: settled', async () => {
+    script4(spec, spec.other, throttled, spec.good);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(recorded(read, spec.key)).toEqual(spec.goodValue);
+    expect(callsOf(spec.command)).toBe(3);
+  });
+
+  it('without the post-write context the first answer is believed (one call)', async () => {
+    script4(spec, spec.absent, spec.good);
+    const read = await spec.read(spec.properties, undefined);
+    if (spec.absentValue === NO_BASELINE) {
+      expect(typeof read).toBe('symbol'); // RESOURCE_NOT_FOUND: the policy is gone
+    } else {
+      expect(bag(read)[spec.key]).toEqual(spec.absentValue);
+    }
+    expect(callsOf(spec.command)).toBe(1);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('on the post-write capture, an undeclared member is not settled (one call)', async () => {
+    script4(spec, spec.other, spec.good);
+    const undeclared = { ...spec.properties };
+    delete undeclared[spec.key];
+    await spec.read(undeclared, AFTER);
+    expect(callsOf(spec.command)).toBe(1);
+  });
+});
+
+describe.each(specs.filter((spec) => spec.extra !== undefined))('$name (list)', (spec) => {
+  it('every declared entry plus an undeclared one (a sibling\'s, an out-of-band one) is settled: one call, recorded as read', async () => {
+    script4(spec, spec.extra!, spec.good);
+    const read = await spec.read(spec.properties, AFTER);
+    expect(callsOf(spec.command)).toBe(1);
+    const value = recorded(read, spec.key) as unknown[];
+    expect(value.length).toBe((spec.goodValue as unknown[]).length + 1);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+});
+
+describe('stored spellings and sibling-owned members settle on the first read', () => {
+  it('a role ManagedPolicyArns read minus a sibling ManagedPolicy attach (#6614) is the declared list', async () => {
+    answer('GetRoleCommand', getRole());
+    answer('ListAttachedRolePoliciesCommand', attached(ARN_A, ARN_B));
+    const context: ReadCurrentStateContext = {
+      afterOwnWrite: true,
+      siblings: {
+        Mp: {
+          resourceType: 'AWS::IAM::ManagedPolicy',
+          physicalId: ARN_B,
+          properties: { Roles: ['r'] },
+          attributes: {},
+        },
+      },
+    } as unknown as ReadCurrentStateContext;
+    const read = await role().readCurrentState(
+      'r',
+      'Role',
+      'AWS::IAM::Role',
+      { ManagedPolicyArns: [ARN_A] },
+      context
+    );
+    expect(bag(read)['ManagedPolicyArns']).toEqual([ARN_A]);
+    expect(callsOf('ListAttachedRolePoliciesCommand')).toBe(1);
+  });
+
+  it('a security group ingress rule from a peer group, read with its owner id, is the declared rule', async () => {
+    const declared = {
+      Description: 'from peer:443',
+      FromPort: 443,
+      IpProtocol: 'tcp',
+      SourceSecurityGroupId: 'sg-peer',
+      ToPort: 443,
+    };
+    answer(
+      'DescribeSecurityGroupsCommand',
+      sgAnswer(
+        [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            UserIdGroupPairs: [{ GroupId: 'sg-peer', UserId: ACCT, Description: 'from peer:443' }],
+          },
+        ],
+        []
+      )
+    );
+    await readSg({ GroupDescription: 'd', SecurityGroupIngress: [declared] }, AFTER);
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(1);
+  });
+
+  it('a CDK enforce-SSL bucket policy, stored as S3 stored it (2026-11-19, us-east-1), is the declared one', async () => {
+    const declared = {
+      Statement: [
+        {
+          Action: 's3:*',
+          Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          Effect: 'Deny',
+          Principal: { AWS: '*' },
+          Resource: ['arn:aws:s3:::bkt', 'arn:aws:s3:::bkt/*'],
+        },
+      ],
+      Version: '2012-10-17',
+    };
+    // S3 keeps the document as sent, its keys in its own order.
+    const stored = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Deny',
+          Principal: { AWS: '*' },
+          Action: 's3:*',
+          Resource: ['arn:aws:s3:::bkt', 'arn:aws:s3:::bkt/*'],
+          Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+        },
+      ],
+    };
+    answer('GetBucketPolicyCommand', () => ({ Policy: JSON.stringify(stored) }));
+    const read = await zeroDelays(new S3BucketPolicyProvider()).readCurrentState(
+      'bkt',
+      'Policy',
+      'AWS::S3::BucketPolicy',
+      { Bucket: 'bkt', PolicyDocument: declared },
+      AFTER
+    );
+    expect(bag(read)['PolicyDocument']).toEqual(stored);
+    expect(callsOf('GetBucketPolicyCommand')).toBe(1);
+  });
+});

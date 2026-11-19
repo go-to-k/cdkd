@@ -31,6 +31,8 @@ import {
 } from '../../deployment/prior-attempt-scope.js';
 import { policyContentKey } from '../policy-document-content.js';
 import { isS3BucketName, ownPolicyHolder } from '../s3-bucket-policy-helpers.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
+import { settleBucketPolicyRead } from './s3-bucket-policy-own-write.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -172,6 +174,8 @@ import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 export class S3BucketPolicyProvider implements ResourceProvider {
   private s3Client: S3Client;
   private logger = getLogger().child('S3BucketPolicyProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
   /** The wait between policy re-reads; replaced by tests. */
   sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -760,23 +764,31 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   }
 
   /**
-   * Read the AWS-current S3 bucket policy in CFn-property shape.
-   *
-   * Issues `GetBucketPolicy` against the bucket (physicalId === bucket
-   * name) and surfaces:
-   *   - `Bucket` — derived directly from `physicalId`.
-   *   - `PolicyDocument` — JSON-parsed back to the object form cdkd state
-   *     typically holds.
+   * Read the AWS-current S3 bucket policy in CFn-property shape: `Bucket` (the
+   * physical id) and `PolicyDocument` (`GetBucketPolicy`, JSON-parsed).
    *
    * Returns `RESOURCE_NOT_FOUND` when the bucket is gone (`NoSuchBucket`) or when
-   * no policy is currently attached (`NoSuchBucketPolicy`).
+   * no policy is currently attached (`NoSuchBucketPolicy`). The capture right
+   * after cdkd's own write settles it (`settleBucketPolicyRead`, go-to-k/cdkd#6609).
    */
   async readCurrentState(
     physicalId: string,
-    _logicalId: string,
+    logicalId: string,
     _resourceType: string,
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const read = () => this.readPolicyOnce(physicalId, properties, context);
+    const delaysMs = this.ownWriteRereadDelaysMs;
+    const options = { logicalId, properties, context, delaysMs, logger: this.logger };
+    return settleBucketPolicyRead(await read(), read, options);
+  }
+
+  /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */
+  private async readPolicyOnce(
+    physicalId: string,
+    properties: Record<string, unknown> | undefined,
+    context: ReadCurrentStateContext | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let policyJson: string | undefined;
     try {
@@ -798,9 +810,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     }
     if (!policyJson) return undefined;
 
-    const result: Record<string, unknown> = {
-      Bucket: physicalId,
-    };
+    const result: Record<string, unknown> = { Bucket: physicalId };
     let policyDoc: unknown;
     try {
       policyDoc = JSON.parse(policyJson) as unknown;
@@ -809,14 +819,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       return result;
     }
 
-    // Canonicalize CloudFront OAI grant principals (issue #872). AWS returns an
-    // OAI grant's principal in THREE unstable forms over a policy's lifetime —
-    // the template's `{ CanonicalUser: <64-hex> }`, a transient
-    // `{ AWS: <IAM-unique-id> }` right after PutBucketPolicy, and the settled
-    // `{ AWS: arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity <id> }`.
-    // The drift comparator sees these as different and fires a guaranteed false
-    // positive. Normalize every recognizable OAI principal back to the canonical
-    // user id form (matching what the template carries + what cdkd state holds).
+    // Issue #872: every recognizable CloudFront OAI grant principal back to the
+    // template's canonical user id form (the three unstable forms are below).
     await this.normalizeOaiPrincipals(policyDoc, properties, context);
     result['PolicyDocument'] = policyDoc;
     return result;

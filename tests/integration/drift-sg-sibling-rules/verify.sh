@@ -180,6 +180,21 @@ read_ports
 expect_ports "SgA ingress" "${A_IN}" "443 5432"
 expect_ports "SgA egress" "${A_OUT}" "443 8080"
 expect_ports "SgB ingress" "${B_IN}" "22 8080"
+# go-to-k/cdkd#6609: the baseline captured right after the create holds each
+# group's own written rules (the sibling-owned 5432 / 8080 stripped), read off
+# the state record itself: drift alone cannot see a stale baseline while the
+# live rules are the declared ones.
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+baseline_ports() { # usage: baseline_ports <group id> <member key>
+  jq -r --arg g "$1" --arg k "$2" \
+    '[.resources[] | select(.resourceType == "AWS::EC2::SecurityGroup" and .physicalId == $g)
+      | .observedProperties[$k][]? | .FromPort // .IpProtocol] | map(tostring) | sort | join(" ")' \
+    <<<"${STATE_JSON}"
+}
+expect_ports "SgA ingress baseline after the create (#6609)" "$(baseline_ports "${GROUP_A}" SecurityGroupIngress)" "443"
+expect_ports "SgA egress baseline after the create (#6609)" "$(baseline_ports "${GROUP_A}" SecurityGroupEgress)" "443"
+expect_ports "SgB ingress baseline after the create (#6609)" "$(baseline_ports "${GROUP_B}" SecurityGroupIngress)" "22"
+expect_ports "SgB egress baseline after the create (#6609)" "$(baseline_ports "${GROUP_B}" SecurityGroupEgress)" "-1"
 
 echo "==> Phase 2: cdkd drift on the fresh stack reports no drift"
 run_drift

@@ -17,6 +17,7 @@ import {
   type Policy,
 } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
@@ -89,6 +90,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   /** `CreatePolicy` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
   readonly createClient = new IamCreateClientCache(() => this.iamClient);
   logger: ConsoleLogger = getLogger().child('IAMManagedPolicyProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   /**
    * A failure wrap that never quotes AWS's own text (issue #2319). The thrown

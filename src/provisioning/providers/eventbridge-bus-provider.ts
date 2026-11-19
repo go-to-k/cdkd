@@ -46,10 +46,18 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { definedAttributes } from '../attribute-map.js';
 import { withRemovalDefaults } from '../update-removal.js';
+import {
+  declaredMemberDocument,
+  OWN_WRITE_REREAD_DELAYS_MS,
+  policyDocumentMatchesDeclared,
+  settleDeclaredMember,
+  warnUnsettledMember,
+} from '../settle-after-own-write.js';
 
 /**
  * Sanitise a CFn-shape `DeadLetterConfig` (object with optional `Arn`) for
@@ -123,6 +131,8 @@ function sortKeys(value: unknown): unknown {
 export class EventBridgeBusProvider implements ResourceProvider {
   private eventBridgeClient: EventBridgeClient;
   private logger = getLogger().child('EventBridgeBusProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -743,11 +753,44 @@ export class EventBridgeBusProvider implements ResourceProvider {
    * only and not surfaced by `DescribeEventBus`.
    *
    * Returns `RESOURCE_NOT_FOUND` when the bus is gone (`ResourceNotFoundException`).
+   *
+   * On the capture right after cdkd's own write (`context.afterOwnWrite`,
+   * go-to-k/cdkd#6609) a declared `Policy` the read does not show yet
+   * (`PutPermission` is a separate call) is re-read alone until it does
+   * ({@link settleDeclaredMember}); still none after the schedule, the
+   * declared policy is recorded. Every other read takes the first answer.
    */
   async readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string
+    logicalId: string,
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const result = await this.readBus(physicalId);
+    const declared =
+      context?.afterOwnWrite === true ? declaredMemberDocument(properties?.['Policy']) : undefined;
+    if (declared === undefined || typeof result !== 'object') return result;
+    const settled = await settleDeclaredMember(
+      result['Policy'] === undefined ? 'absent' : { value: result['Policy'] },
+      async () => {
+        const resp = await this.eventBridgeClient.send(
+          new DescribeEventBusCommand({ Name: physicalId })
+        );
+        return resp.Policy ? { value: parseBusPolicy(resp.Policy) } : 'absent';
+      },
+      (value) => policyDocumentMatchesDeclared(value, declared),
+      declared,
+      this.ownWriteRereadDelaysMs,
+      () => warnUnsettledMember(this.logger, logicalId, 'AWS::Events::EventBus', 'Policy')
+    );
+    if (typeof settled === 'object') result['Policy'] = settled.value;
+    return result;
+  }
+
+  /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */
+  private async readBus(
+    physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     try {
       const resp = await this.eventBridgeClient.send(
@@ -769,13 +812,7 @@ export class EventBridgeBusProvider implements ResourceProvider {
         if (resp.LogConfig.Level !== undefined) lc['Level'] = resp.LogConfig.Level;
         if (Object.keys(lc).length > 0) result['LogConfig'] = lc;
       }
-      if (resp.Policy) {
-        try {
-          result['Policy'] = JSON.parse(resp.Policy) as unknown;
-        } catch {
-          result['Policy'] = resp.Policy;
-        }
-      }
+      if (resp.Policy) result['Policy'] = parseBusPolicy(resp.Policy);
       // Tags via ListTagsForResource (needs the bus ARN that DescribeEventBus
       // just returned).
       if (resp.Arn) {
@@ -836,4 +873,13 @@ function isBusHasRulesRefusal(error: unknown): boolean {
     error.name === 'ValidationException' &&
     /has rules/i.test(error.message)
   );
+}
+
+/** A `DescribeEventBus` `Policy`, JSON-parsed when it parses. */
+function parseBusPolicy(policy: string): unknown {
+  try {
+    return JSON.parse(policy) as unknown;
+  } catch {
+    return policy;
+  }
 }

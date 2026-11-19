@@ -19,6 +19,17 @@ import {
   collectPrincipalsAttachingPolicy,
   withoutSiblingOwned,
 } from '../../iam-sibling-managed-policies.js';
+import {
+  declaredMemberDocument,
+  policyDocumentMatchesDeclared,
+  warnUnsettledMember,
+} from '../../settle-after-own-write.js';
+import {
+  declaredStringList,
+  type OwnWriteMember,
+  settleOwnWriteMembers,
+  stringListMember,
+} from '../../settle-own-write-members.js';
 
 /**
  * Matches an AWS-managed IAM policy ARN in ANY AWS partition (issue #1815).
@@ -57,12 +68,17 @@ const AWS_MANAGED_POLICY_ARN_RE = /^arn:aws[a-z0-9-]*:iam::aws:/;
  *  - `Tags` — via `ListPolicyTags`, with the `aws:cdk:path` etc. filtered
  *    out by `normalizeAwsTagsToCfn`.
  *
+ * On the capture right after cdkd's own write (`context.afterOwnWrite`,
+ * go-to-k/cdkd#6609) each declared member that disagrees is re-read alone
+ * ({@link managedPolicyOwnWriteMembers}); every other read takes the first
+ * answer.
+ *
  * Returns `RESOURCE_NOT_FOUND` when the policy is gone (`NoSuchEntityException`).
  */
 export async function readCurrentState(
   this: IAMManagedPolicyProvider,
   physicalId: string,
-  _logicalId: string,
+  logicalId: string,
   _resourceType: string,
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
@@ -84,56 +100,15 @@ export async function readCurrentState(
 
   if (policy.DefaultVersionId) {
     try {
-      const versionResp = await this.iamClient.send(
-        new GetPolicyVersionCommand({
-          PolicyArn: physicalId,
-          VersionId: policy.DefaultVersionId,
-        })
-      );
-      const doc = versionResp.PolicyVersion?.Document;
-      if (typeof doc === 'string') {
-        try {
-          result['PolicyDocument'] = JSON.parse(decodeURIComponent(doc));
-        } catch {
-          result['PolicyDocument'] = doc;
-        }
-      }
+      const doc = await readDefaultVersionDocument.call(this, physicalId, policy.DefaultVersionId);
+      if (doc !== undefined) result['PolicyDocument'] = doc;
     } catch (err) {
       if (!(err instanceof NoSuchEntityException)) throw err;
     }
   }
 
   try {
-    const groups: string[] = [];
-    const roles: string[] = [];
-    const users: string[] = [];
-    let marker: string | undefined;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const resp = await this.iamClient.send(
-        new ListEntitiesForPolicyCommand({
-          PolicyArn: physicalId,
-          ...(marker ? { Marker: marker } : {}),
-        })
-      );
-      for (const g of resp.PolicyGroups ?? []) if (g.GroupName) groups.push(g.GroupName);
-      for (const r of resp.PolicyRoles ?? []) if (r.RoleName) roles.push(r.RoleName);
-      for (const u of resp.PolicyUsers ?? []) if (u.UserName) users.push(u.UserName);
-      if (!resp.IsTruncated) break;
-      marker = resp.Marker;
-    }
-    // go-to-k/cdkd#6328: a principal attaching this policy through its OWN
-    // `ManagedPolicyArns` (`role.addManagedPolicy(mp)`) owns that attachment.
-    const own = (key: 'Groups' | 'Roles' | 'Users', names: string[]): string[] =>
-      withoutSiblingOwned(
-        names,
-        collectPrincipalsAttachingPolicy(physicalId, context, key),
-        properties,
-        key
-      );
-    result['Groups'] = own('Groups', groups);
-    result['Roles'] = own('Roles', roles);
-    result['Users'] = own('Users', users);
+    Object.assign(result, await readAttachments.call(this, physicalId, properties, context));
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
@@ -160,7 +135,114 @@ export async function readCurrentState(
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
 
+  if (context?.afterOwnWrite === true && properties !== undefined) {
+    await settleOwnWriteMembers(
+      result,
+      managedPolicyOwnWriteMembers.call(this, physicalId, properties, context),
+      this.ownWriteRereadDelaysMs,
+      (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::ManagedPolicy', key)
+    );
+  }
   return result;
+}
+
+/** The default version's document, URL-decoded and parsed (the raw string when that fails). */
+async function readDefaultVersionDocument(
+  this: IAMManagedPolicyProvider,
+  physicalId: string,
+  versionId: string
+): Promise<unknown> {
+  const versionResp = await this.iamClient.send(
+    new GetPolicyVersionCommand({ PolicyArn: physicalId, VersionId: versionId })
+  );
+  const doc = versionResp.PolicyVersion?.Document;
+  if (typeof doc !== 'string') return undefined;
+  try {
+    return JSON.parse(decodeURIComponent(doc)) as unknown;
+  } catch {
+    return doc;
+  }
+}
+
+/**
+ * `Groups` / `Roles` / `Users` from `ListEntitiesForPolicy`, minus a sibling
+ * principal that attaches the policy through its OWN `ManagedPolicyArns`
+ * (`role.addManagedPolicy(mp)`, go-to-k/cdkd#6328) unless this policy's
+ * template lists it too.
+ */
+async function readAttachments(
+  this: IAMManagedPolicyProvider,
+  physicalId: string,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): Promise<Record<'Groups' | 'Roles' | 'Users', string[]>> {
+  const groups: string[] = [];
+  const roles: string[] = [];
+  const users: string[] = [];
+  let marker: string | undefined;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const resp = await this.iamClient.send(
+      new ListEntitiesForPolicyCommand({
+        PolicyArn: physicalId,
+        ...(marker ? { Marker: marker } : {}),
+      })
+    );
+    for (const g of resp.PolicyGroups ?? []) if (g.GroupName) groups.push(g.GroupName);
+    for (const r of resp.PolicyRoles ?? []) if (r.RoleName) roles.push(r.RoleName);
+    for (const u of resp.PolicyUsers ?? []) if (u.UserName) users.push(u.UserName);
+    if (!resp.IsTruncated) break;
+    marker = resp.Marker;
+  }
+  const own = (key: 'Groups' | 'Roles' | 'Users', names: string[]): string[] =>
+    withoutSiblingOwned(
+      names,
+      collectPrincipalsAttachingPolicy(physicalId, context, key),
+      properties,
+      key
+    );
+  return { Groups: own('Groups', groups), Roles: own('Roles', roles), Users: own('Users', users) };
+}
+
+/**
+ * The members a post-write capture settles on a managed policy
+ * (go-to-k/cdkd#6609): the `PolicyDocument` (`CreatePolicyVersion` as the
+ * new default; IAM is documented as eventually consistent, so the read right
+ * after can still answer the replaced version) and the `Groups` / `Roles` /
+ * `Users` attachments, each only when the template declares it.
+ */
+function managedPolicyOwnWriteMembers(
+  this: IAMManagedPolicyProvider,
+  physicalId: string,
+  properties: Record<string, unknown>,
+  context: ReadCurrentStateContext
+): OwnWriteMember<unknown>[] {
+  const members: OwnWriteMember<unknown>[] = [];
+  const document = declaredMemberDocument(properties['PolicyDocument']);
+  if (document !== undefined) {
+    members.push({
+      key: 'PolicyDocument',
+      declared: document,
+      matches: (value) => policyDocumentMatchesDeclared(value, document),
+      read: async () => {
+        const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
+        const versionId = resp.Policy?.DefaultVersionId;
+        if (!versionId) return 'failed';
+        const value = await readDefaultVersionDocument.call(this, physicalId, versionId);
+        return value === undefined ? 'failed' : { value };
+      },
+    });
+  }
+  for (const key of ['Groups', 'Roles', 'Users'] as const) {
+    const declared = declaredStringList(properties[key]);
+    if (declared === undefined) continue;
+    members.push(
+      stringListMember(key, declared, async () => ({
+        value: (await readAttachments.call(this, physicalId, properties, context))[key],
+      }))
+    );
+  }
+  return members;
 }
 
 /**

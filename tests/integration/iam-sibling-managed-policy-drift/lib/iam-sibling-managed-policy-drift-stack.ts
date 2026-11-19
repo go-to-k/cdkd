@@ -33,6 +33,15 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
       ],
+      // go-to-k/cdkd#6609: an inline policy and a permissions boundary, so the
+      // create's baseline capture is checked on both (static: the role stays
+      // NO_CHANGE in every later phase).
+      inlinePolicies: {
+        'cdkd-6609-inline': new iam.PolicyDocument({
+          statements: [new iam.PolicyStatement({ actions: ['sqs:ListQueues'], resources: ['*'] })],
+        }),
+      },
+      permissionsBoundary: iam.ManagedPolicy.fromAwsManagedPolicyName('PowerUserAccess'),
     });
     // The user and the group declare one AWS managed policy of their own too,
     // so their `ManagedPolicyArns` is compared (an undeclared, empty baseline
@@ -103,6 +112,26 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
       userName: 'cdkd-iam-sibling-mp-add-u3',
       groups: [group.groupName],
       ...(touch && { tags: [{ key: 'cdkd-6343', value: 'touch' }] }),
+      // go-to-k/cdkd#6609: `touch` replaces the inline policy and adds a
+      // permissions boundary, so the update's baseline capture is checked.
+      policies: [
+        {
+          policyName: 'cdkd-6609-u3-inline',
+          policyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              {
+                Effect: 'Allow',
+                Action: touch ? ['sqs:GetQueueUrl', 'sqs:ListQueues'] : 'sqs:ListQueues',
+                Resource: '*',
+              },
+            ],
+          },
+        },
+      ],
+      ...(touch && {
+        permissionsBoundary: `arn:${this.partition}:iam::aws:policy/PowerUserAccess`,
+      }),
     });
     new iam.CfnUserToGroupAddition(this, 'Add', {
       groupName: addGroup.ref,
