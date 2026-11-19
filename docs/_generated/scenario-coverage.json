@@ -672,6 +672,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute-common-types-12",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-to-sdk-reroute-common-types-2",
       "annotated": false,
       "scenarios": []
@@ -4114,6 +4119,7 @@
     "cc-to-sdk-reroute-common-types",
     "cc-to-sdk-reroute-common-types-10",
     "cc-to-sdk-reroute-common-types-11",
+    "cc-to-sdk-reroute-common-types-12",
     "cc-to-sdk-reroute-common-types-2",
     "cc-to-sdk-reroute-common-types-3",
     "cc-to-sdk-reroute-common-types-4",
