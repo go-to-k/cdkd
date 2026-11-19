@@ -279,7 +279,16 @@ export async function readCurrentState(
       tableArn ? this.readTableTags(tableArn) : Promise.resolve(undefined),
       this.readPointInTimeRecovery(physicalId),
       this.readTimeToLive(physicalId),
-      tableArn ? this.readTableResourcePolicy(physicalId, tableArn) : Promise.resolve(undefined),
+      tableArn
+        ? this.readTableResourcePolicy(
+            physicalId,
+            tableArn,
+            false,
+            properties !== undefined && bagInformative
+              ? { desired: properties, afterOwnWrite: context?.afterOwnWrite === true }
+              : undefined
+          )
+        : Promise.resolve(undefined),
       this.readKinesisStreamSpecification(physicalId),
       this.readTableContributorInsights(physicalId),
       this.readIndexContributorInsights(physicalId, result, properties, bagInformative),
@@ -400,26 +409,75 @@ export async function readTimeToLive(
  * it is drift-comparable against the templated value. A table with no policy
  * returns ResourceNotFoundException / PolicyNotFound — omit the key rather
  * than fail the whole drift read.
+ *
+ * `settle` (go-to-k/cdkd#6604): `GetResourcePolicy` is eventually consistent
+ * — measured us-east-1, it answered with a just-DELETED policy for ~2 s, and
+ * "not found" for a just-PUT one — and the deploy captures the baseline right
+ * after its own write. So with the desired bag in hand an answer that differs
+ * from the declaration (a policy when none is declared, or another document)
+ * is re-asked on the stream members' schedule before it is believed, as
+ * {@link readStreamMembers} does for the stream-level policy. Without it a
+ * removal froze the OLD policy into the baseline, and `drift --revert`
+ * re-granted it. On an `afterOwnWrite` capture a declared policy still absent
+ * when the schedule is spent, or a read that failed transiently, keeps the
+ * DECLARED member; a present answer is recorded as read. The rollback's
+ * strict read passes no `settle`.
  */
 export async function readTableResourcePolicy(
   this: DynamoDBTableProvider,
   physicalId: string,
   tableArn: string,
-  strict = false
+  strict = false,
+  settle?: { desired: Record<string, unknown>; afterOwnWrite: boolean }
 ): Promise<Record<string, unknown> | undefined> {
+  const declared = settle !== undefined && streamDeclaresPolicy(settle.desired);
+  const afterOwnWrite = settle?.afterOwnWrite === true;
+  // The last answer the schedule got, for a read that throws after it.
+  let lastPolicy: string | undefined;
   try {
-    const rpResp = await this.dynamoDBClient.send(
-      new GetResourcePolicyCommand({ ResourceArn: tableArn })
-    );
-    if (!rpResp.Policy) return undefined;
-    let doc: unknown = rpResp.Policy;
+    const readOnce = async (): Promise<string | undefined> => {
+      try {
+        const rpResp = await this.dynamoDBClient.send(
+          new GetResourcePolicyCommand({ ResourceArn: tableArn })
+        );
+        lastPolicy = rpResp.Policy;
+      } catch (err) {
+        if (settle === undefined || !(err instanceof PolicyNotFoundException)) throw err;
+        lastPolicy = undefined;
+      }
+      return lastPolicy;
+    };
+    const livePolicy =
+      settle === undefined
+        ? await readOnce()
+        : await this.reAskUntilSettled(readOnce, (answer) =>
+            declared
+              ? streamPolicyMatchesDeclared(answer, settle.desired)
+              : answer === undefined || answer === ''
+          );
+    if (!livePolicy) {
+      return afterOwnWrite && declared ? declaredStreamPolicyMember(settle?.desired) : undefined;
+    }
+    if (settle !== undefined) return reverseMapStreamPolicy(livePolicy, settle.desired);
+    let doc: unknown = livePolicy;
     try {
-      doc = JSON.parse(rpResp.Policy);
+      doc = JSON.parse(livePolicy);
     } catch {
       // Leave as the raw string if AWS returned a non-JSON body.
     }
     return { PolicyDocument: doc };
   } catch (err) {
+    if (afterOwnWrite && !(err instanceof ResourceNotFoundException)) {
+      if (lastPolicy !== undefined && lastPolicy !== '') {
+        return reverseMapStreamPolicy(lastPolicy, settle?.desired);
+      }
+      if (declared && isTransientStreamReadFailure(err)) {
+        this.logger.debug(
+          safeMsg`Kept the declared ResourcePolicy of ${physicalId} in the baseline captured after its write: the read failed transiently`
+        );
+        return declaredStreamPolicyMember(settle?.desired);
+      }
+    }
     // A table with no policy answers PolicyNotFoundException: "not set",
     // strict or not, or an unsettled ResourcePolicy would refuse forever.
     if (
