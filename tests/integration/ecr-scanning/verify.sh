@@ -201,9 +201,27 @@ repo_drift_paths() { # usage: repo_drift_paths <json file>
     '[.[] | .drifted[]? | select(.logicalId == $lid) | .changes[]? | .path] | unique | .[]' "$1"
 }
 
-# FAIL unless the drift file is readable; prints the repository's paths.
+# FAIL unless drift exited 0 or 1 with a non-empty JSON array listing the
+# repository once under clean / drifted, never notCompared; prints the repository's drifted paths.
 read_repo_paths() { # usage: read_repo_paths <label> <json file> <rc>
   local paths
+  if [ "$3" != "0" ] && [ "$3" != "1" ]; then
+    echo "FAIL: $1: drift exited $3, expected 0 or 1" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  fi
+  if ! jq -e 'type == "array" and length > 0' "$2" >/dev/null 2>&1; then
+    echo "FAIL: $1: drift --json did not print a non-empty array (rc $3)" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  fi
+  if ! jq -e --arg lid "${REPO_LID}" \
+    '([.[] | (.clean[]?, .drifted[]?) | select(.logicalId == $lid)] | length == 1)
+      and ([.[] | .notCompared[]? | select(.logicalId == $lid)] | length == 0)' "$2" >/dev/null; then
+    echo "FAIL: $1: ${REPO_LID} is not listed once under clean / drifted (not compared?)" >&2
+    cat "$2" "$2.err" >&2
+    exit 1
+  fi
   paths="$(repo_drift_paths "$2")" || {
     echo "FAIL: $1: drift --json is not readable (rc $3)" >&2
     cat "$2" "$2.err" >&2

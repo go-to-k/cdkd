@@ -243,6 +243,18 @@ describe('ECRProvider.readCurrentState', () => {
     expect(result?.Tags).toEqual([]);
   });
 
+  it('throws the lifecycle read\'s failure first when two sub-reads fail', async () => {
+    route({
+      describe: repoWithArn,
+      lifecycle: Object.assign(new Error('lifecycle failed'), { name: 'AccessDeniedException' }),
+      policy: noPolicy(),
+      tags: Object.assign(new Error('tags failed'), { name: 'AccessDeniedException' }),
+    });
+    await expect(provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).rejects.toThrow(
+      'lifecycle failed'
+    );
+  });
+
   describe('RepositoryPolicyText (go-to-k/cdkd#6631)', () => {
     it('surfaces the policy GetRepositoryPolicy returns, JSON-parsed', async () => {
       route({
@@ -391,6 +403,28 @@ describe('ECRProvider.readCurrentState', () => {
       expect(String(warn.mock.calls[0]?.[0])).not.toContain('ecr:BatchGetImage');
     });
 
+    it('records another policy as read, and warns, when no read shows the declared one', async () => {
+      const other = { ...POLICY, Statement: [{ ...POLICY.Statement[0], Action: 'ecr:*' }] };
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: () => ({ policyText: JSON.stringify(other) }),
+        tags: { tags: [] },
+      });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: POLICY },
+          { afterOwnWrite: true }
+        )
+      );
+      expect(policyCalls()).toBe(4);
+      expect(result?.['RepositoryPolicyText']).toEqual(other);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
     it('re-reads a throttled first answer', async () => {
       const answers: Answer[] = [throttled(), { policyText: JSON.stringify(POLICY) }];
       route({
@@ -451,25 +485,6 @@ describe('ECRProvider drift hooks (go-to-k/cdkd#6631)', () => {
   it('declares EmptyOnDelete unknown to drift, for the repository type only', () => {
     expect(provider.getDriftUnknownPaths(TYPE)).toEqual(['EmptyOnDelete']);
     expect(provider.getDriftUnknownPaths('AWS::ECR::PublicRepository')).toEqual([]);
-  });
-
-  it('compares an absent RepositoryPolicyText only when the template declares no policy', () => {
-    expect(provider.getDriftAbsentMeansDefaultKeys(TYPE, { RepositoryName: 'r' })).toEqual([
-      'RepositoryPolicyText',
-    ]);
-    expect(
-      provider.getDriftAbsentMeansDefaultKeys(TYPE, { RepositoryName: 'r', RepositoryPolicyText: '' })
-    ).toEqual(['RepositoryPolicyText']);
-    expect(
-      provider.getDriftAbsentMeansDefaultKeys(TYPE, { RepositoryPolicyText: POLICY })
-    ).toEqual([]);
-    expect(
-      provider.getDriftAbsentMeansDefaultKeys(TYPE, {
-        RepositoryPolicyText: JSON.stringify(POLICY),
-      })
-    ).toEqual([]);
-    expect(provider.getDriftAbsentMeansDefaultKeys(TYPE, {})).toEqual([]);
-    expect(provider.getDriftAbsentMeansDefaultKeys('AWS::S3::Bucket', { A: 1 })).toEqual([]);
   });
 
   it('canonicalizes a string RepositoryPolicyText to its parsed document', () => {

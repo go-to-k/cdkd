@@ -696,24 +696,6 @@ export class ECRProvider implements ResourceProvider {
   }
 
   /**
-   * `RepositoryPolicyText` when the template declares no policy: the read omits
-   * the key for a repository with none, so a baseline without it records "no
-   * policy", and a policy added out of band reports. `drift --revert` sends it
-   * absent, and `update()` deletes the live policy (`DeleteRepositoryPolicy`),
-   * as CloudFormation does for a template that drops the property. An empty
-   * bag (nothing recorded) names nothing.
-   */
-  getDriftAbsentMeansDefaultKeys(
-    resourceType: string,
-    properties: Record<string, unknown>
-  ): readonly string[] {
-    if (resourceType !== 'AWS::ECR::Repository' || Object.keys(properties).length === 0) return [];
-    return declaredMemberDocument(properties['RepositoryPolicyText']) === undefined
-      ? ['RepositoryPolicyText']
-      : [];
-  }
-
-  /**
    * A string `RepositoryPolicyText` (an L1 template may pass the JSON text) as
    * the document it parses to, the shape the read records, on both drift sides.
    * Anything else is returned by identity.
