@@ -190,6 +190,11 @@ jobs:
 
       - run: vp run audit:update-wrap-coverage:check
 
+      # go-to-k/cdkd#6611 — a handled property that update() never reads and
+      # that does not replace is a change the deploy reports applied while
+      # AWS keeps the old value.
+      - run: vp run audit:update-path-coverage:check
+
       - run: vp run audit:nested-key-coverage:check
 
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a
