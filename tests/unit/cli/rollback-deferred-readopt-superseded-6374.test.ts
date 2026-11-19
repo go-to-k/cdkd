@@ -85,6 +85,9 @@ const TOPIC = 'AWS::SNS::Topic';
 
 let resourceType = TOPIC;
 let extraOp: Record<string, unknown> = {};
+/** Ops completed AFTER the Topic op (so replayed before it), and their records. */
+let laterOps: Array<Record<string, unknown>> = [];
+let laterRecords: Record<string, unknown> = {};
 const rec = (physicalId: string, properties: Record<string, unknown>) => ({
   physicalId,
   resourceType,
@@ -101,7 +104,10 @@ function install(opts: { superseded?: boolean } = {}): void {
     version: 9,
     stackName: STACK,
     region: REGION,
-    resources: { Topic: rec('topic-new', { TopicName: 'topic-new' }) },
+    resources: {
+      Topic: rec('topic-new', { TopicName: 'topic-new' }),
+      ...laterRecords,
+    } as StackState['resources'],
     outputs: {},
     // The failed deploy's row save recorded the old topic, its delete
     // waiting for the cleanup phase the deploy never reached.
@@ -139,6 +145,7 @@ function install(opts: { superseded?: boolean } = {}): void {
               oldResourceMaySurvive: 'deferred',
               ...extraOp,
             },
+            ...laterOps,
           ],
         },
       ],
@@ -173,6 +180,8 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
     saves = [];
     resourceType = TOPIC;
     extraOp = {};
+    laterOps = [];
+    laterRecords = {};
     provider.readCurrentState.mockResolvedValue({ TopicName: 'topic-old' });
     provider.delete.mockResolvedValue(undefined);
   });
@@ -223,25 +232,53 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
   // go-to-k/cdkd#6621: a bucket's holder is read before the replay applies
   // any op, so a write during the replay (moving its CreationDate outside
   // us-east-1) cannot make the stack's own bucket look like another.
-  it('judges a deferred bucket by the read taken before the replay', async () => {
+  // go-to-k/cdkd#6621: a bucket's holder is read before the replay applies
+  // any op. An op completed after the bucket's is replayed BEFORE it, and its
+  // write (a bucket policy put back) moves the old bucket's CreationDate
+  // outside us-east-1; the stack's own bucket must still be re-adopted.
+  it('judges a deferred bucket by the read taken before a preceding op wrote it', async () => {
     resourceType = 'AWS::S3::Bucket';
-    extraOp = { oldResourceIdentity: 'us-east-1|2026-11-01T00:00:00.000Z' };
+    const D1 = 'us-west-2|2026-11-01T00:00:00.000Z';
+    extraOp = { oldResourceIdentity: D1 };
+    const POLICY = 'AWS::S3::BucketPolicy';
+    const policy = (v: number) => ({
+      physicalId: 'pol',
+      resourceType: POLICY,
+      properties: { Bucket: 'topic-old', PolicyDocument: { Version: String(v) } },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk' as const,
+    });
+    laterRecords = { Policy: policy(2) };
+    laterOps = [
+      {
+        logicalId: 'Policy',
+        changeType: 'UPDATE',
+        resourceType: POLICY,
+        provisionedBy: 'sdk',
+        physicalId: 'pol',
+        properties: policy(2).properties,
+        previousState: policy(1),
+      },
+    ];
     install();
-    let generation = 'us-east-1|2026-11-01T00:00:00.000Z';
-    provider.replacedSurvivorIdentity.mockImplementation(async () => ({
-      kind: 'owned',
-      identity: generation,
-    }));
-    provider.readCurrentState.mockImplementation(async () => {
-      generation = 'us-east-1|2026-11-02T00:00:00.000Z';
-      return { BucketName: 'topic-old' };
+    let generation = D1;
+    const order: string[] = [];
+    provider.replacedSurvivorIdentity.mockImplementation(async () => {
+      order.push('holder read');
+      return { kind: 'owned', identity: generation };
+    });
+    provider.update.mockImplementation(async (logicalId: string, physicalId: string) => {
+      order.push(`update ${logicalId}`);
+      generation = 'us-west-2|2026-11-02T00:00:00.000Z';
+      return { physicalId, wasReplaced: false, attributes: {} };
     });
     await rollbackCommand(STACK, {
       yes: true,
       stateBucket: 'b',
       region: REGION,
     } as unknown as Parameters<typeof rollbackCommand>[1]);
-    expect(provider.replacedSurvivorIdentity).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['holder read', 'update Policy']);
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
     expect(saves.at(-1)!.resources['Topic']!.physicalId).toBe('topic-old');
   });

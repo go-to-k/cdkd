@@ -63,6 +63,9 @@
 #      nothing deleted, the planted bucket keeps its marker tag, and the record
 #      still names the new bucket. Pre-fix it was re-adopted as the stack's and
 #      the new bucket deleted.
+#   2e. go-to-k/cdkd#6621, the negative control: the same failed rename with
+#      nothing touched afterwards; `cdkd rollback` must re-adopt the old
+#      bucket (state names it, its marker tag kept) and delete the new one.
 #   3. Destroy; assert every bucket is gone and the state file is removed.
 #
 # Required env vars:
@@ -287,6 +290,13 @@ cleanup() {
   fi
   if [ -n "${RN_NEW_BUCKET:-}" ]; then
     aws s3api delete-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  # go-to-k/cdkd#6621 phase 2e: per-run names too.
+  if [ -n "${RL_OLD_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${RL_OLD_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${RL_NEW_BUCKET:-}" ]; then
+    aws s3api delete-bucket --bucket "${RL_NEW_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -2023,6 +2033,91 @@ assert_gone_eventually "[phase 2d] ${RN_NEW_BUCKET} survived the deploy that rem
   aws s3api head-bucket --bucket "${RN_NEW_BUCKET}" --region "${REGION}"
 assert_gone_eventually "[phase 2d] ${RN_OLD_BUCKET} survived its teardown" \
   aws s3api head-bucket --bucket "${RN_OLD_BUCKET}" --region "${REGION}"
+
+# --- Phase 2e: a rollback re-adopts the stack's own deferred bucket (go-to-k/cdkd#6621)
+# The negative control for phase 2d, in any region: the same failed rename,
+# nothing touched out of band afterwards, and `cdkd rollback` must take the
+# old bucket back. The marker tag goes on BEFORE the failed deploy, so the
+# CreationDate it moves outside us-east-1 is the one the deferral journals.
+RL_OLD_BUCKET="cdkd-lifecycle-rlold-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+RL_NEW_BUCKET="cdkd-lifecycle-rlnew-${ACCOUNT_ID}-${CC_ARM_STAMP}"
+echo "==> Phase 2e: a rollback of a failed bucket rename must RE-ADOPT ${RL_OLD_BUCKET}"
+CDKD_TEST_UPDATE=true CDKD_RENAME_ARM_BUCKET="${RL_OLD_BUCKET}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+RL_MARKER="phase2e-$(date -u +%s)"
+# The template's own tag kept beside the marker: put-bucket-tagging replaces the set.
+aws s3api put-bucket-tagging --bucket "${RL_OLD_BUCKET}" --region "${REGION}" \
+  --tagging "TagSet=[{Key=cdkd-integ-arm,Value=template},{Key=cdkd-integ-marker,Value=${RL_MARKER}}]" || {
+  echo "FAIL [phase 2e] premise: could not tag ${RL_OLD_BUCKET}" >&2
+  exit 1
+}
+set +e
+CDKD_TEST_UPDATE=true CDKD_RENAME_ARM_BUCKET="${RL_NEW_BUCKET}" CDKD_RENAME_ARM_FAIL=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback --force-stateful-recreation
+RL_FAIL_RC=$?
+set -e
+if [ "${RL_FAIL_RC}" -eq 0 ]; then
+  echo "FAIL [phase 2e]: the inject-fail deploy SUCCEEDED, so there is no replacement to roll back" >&2
+  exit 1
+fi
+aws s3api head-bucket --bucket "${RL_OLD_BUCKET}" --region "${REGION}" >/dev/null || {
+  echo "FAIL [phase 2e] premise: ${RL_OLD_BUCKET} did not survive the failed deploy" >&2
+  exit 1
+}
+aws s3api head-bucket --bucket "${RL_NEW_BUCKET}" --region "${REGION}" >/dev/null || {
+  echo "FAIL [phase 2e] premise: the replacement did not create ${RL_NEW_BUCKET}" >&2
+  exit 1
+}
+RL_OPS="$(aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq --arg b "${RL_NEW_BUCKET}" --arg o "${RL_OLD_BUCKET}" --arg r "${REGION}" \
+  '[.segments[].operations[] | select(.logicalId == "RenameArmBucket" and .changeType == "UPDATE"
+    and .physicalId == $b and .previousState.physicalId == $o
+    and .oldResourceMaySurvive == "deferred"
+    and ((.oldResourceIdentity // "") | startswith($r + "|")))] | length')"
+if [ "${RL_OPS}" != "1" ]; then
+  echo "FAIL [phase 2e] premise: expected one journaled deferred UPDATE of RenameArmBucket ${RL_OLD_BUCKET} -> ${RL_NEW_BUCKET} with an oldResourceIdentity in ${REGION}, got ${RL_OPS}" >&2
+  exit 1
+fi
+
+set +e
+RL_OUT="$(node "${LOCAL_DIST}" rollback "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+RL_RC=$?
+set -e
+printf '%s\n' "${RL_OUT}"
+RL_FLAT="$(printf '%s' "${RL_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
+if [ "${RL_RC}" -ne 0 ]; then
+  echo "FAIL [phase 2e]: cdkd rollback exited ${RL_RC}, refusing the stack's own bucket" >&2
+  exit 1
+fi
+if ! grep -qF -- 'was not deleted yet' <<<"${RL_FLAT}"; then
+  echo "FAIL [phase 2e]: the rollback did not re-adopt ${RL_OLD_BUCKET} (no 'was not deleted yet' line)" >&2
+  exit 1
+fi
+RL_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.RenameArmBucket.physicalId // "MISSING"')"
+if [ "${RL_RECORD}" != "${RL_OLD_BUCKET}" ]; then
+  echo "FAIL [phase 2e]: state records RenameArmBucket as ${RL_RECORD} after the rollback, expected ${RL_OLD_BUCKET}" >&2
+  exit 1
+fi
+assert_gone_eventually "[phase 2e] the rollback left the new bucket ${RL_NEW_BUCKET}" \
+  aws s3api head-bucket --bucket "${RL_NEW_BUCKET}" --region "${REGION}"
+RL_TAG="$(aws s3api get-bucket-tagging --bucket "${RL_OLD_BUCKET}" --region "${REGION}" \
+  --query "TagSet[?Key=='cdkd-integ-marker'].Value | [0]" --output text 2>&1)" || RL_TAG="<get-bucket-tagging failed: ${RL_TAG}>"
+if [ "${RL_TAG}" != "${RL_MARKER}" ]; then
+  echo "FAIL [phase 2e]: ${RL_OLD_BUCKET} lost its marker tag (got '${RL_TAG}', expected '${RL_MARKER}')" >&2
+  exit 1
+fi
+assert_gone "[phase 2e] the clean rollback left its journal ${JOURNAL_KEY}" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"
+echo "    [phase 2e] re-adopted: state names ${RL_OLD_BUCKET} (marker kept), ${RL_NEW_BUCKET} deleted, journal gone"
+
+echo "==> Phase 2e teardown"
+# Back to the phase-2 template: removes RenameArmBucket (the re-adopted old bucket).
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone_eventually "[phase 2e] ${RL_OLD_BUCKET} survived the deploy that removed it" \
+  aws s3api head-bucket --bucket "${RL_OLD_BUCKET}" --region "${REGION}"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

@@ -63,7 +63,15 @@ export type ReplacedSurvivorVerdict =
    * moves it too (an S3 bucket outside us-east-1): modified or re-created,
    * undecidable. Never re-adopted.
    */
-  | 'modified';
+  | 'modified'
+  /**
+   * go-to-k/cdkd#6621: who holds the id could not be read (no
+   * `s3:ListAllMyBuckets`, a throttle). `exists-unverified`: AWS reports it,
+   * so it re-adopts as `'exists'` with a warning; `owner-unverified`: the
+   * existence read did not answer either, so it is refused.
+   */
+  | 'exists-unverified'
+  | 'owner-unverified';
 
 /** Every verdict naming a holder that is not the stack's resource. */
 export function isForeignSurvivor(
@@ -279,12 +287,19 @@ async function readExistence(
 /**
  * go-to-k/cdkd#6621: a {@link SURVIVOR_LIVE_READ_TYPES} survivor, judged by
  * who holds its id: the read `snapshotSurvivorIdentities` took before the
- * replay applied any op, else a live one. A holder proven not the stack's is
- * foreign whatever the existence read answered (another account's bucket
- * fails it). Otherwise the existence read decides, then the generation: a
- * journaled one must equal the live one; none journaled (an older binary's
- * journal, an unanswered read at the deferral) keeps the re-adopt, as the
- * IAM arm does for a record without its RoleId.
+ * replay applied any op, else a live one. What the holder read PROVES comes
+ * before the existence read, which a transient failure (or another
+ * account's 403) leaves unanswered: a holder not the stack's, one absent
+ * when the rollback started, or this account's bucket under another
+ * generation than the journaled one is refused whatever existence says.
+ * Then the existence read decides. A holder that could not be read (no
+ * `s3:ListAllMyBuckets`, a throttle) refuses unless existence answers, and
+ * then re-adopts with a warning (`'exists-unverified'`). None journaled (an
+ * older binary's journal, an unanswered read at the deferral) keeps the
+ * re-adopt, as the IAM arm does for a record without its RoleId. In the
+ * region whose generation only a re-create moves, an equal snapshot is
+ * confirmed by a second read at the probe (a re-create in between);
+ * elsewhere the rollback's own writes move it, so the snapshot decides.
  */
 async function holderVerdict(
   s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
@@ -292,24 +307,52 @@ async function holderVerdict(
   oldType: string,
   existence: 'exists' | 'unreadable' | 'unknown'
 ): Promise<ReplacedSurvivorVerdict> {
+  const live = () =>
+    withReplayDeletePrinting(s, () => liveSurvivorRead(s.ctx, oldType, physicalId));
   const snapshot = s.ctx.survivorIdentities?.get(survivorKey(oldType, physicalId));
-  const read =
-    snapshot ??
-    (await withReplayDeletePrinting(s, () => liveSurvivorRead(s.ctx, oldType, physicalId)));
-  if (read.kind === 'foreign') {
-    return read.seen === 'other-account' ? 'foreign-account' : 'foreign-region';
+  const verdict = judgeHolder(s, oldType, existence, snapshot ?? (await live()), snapshot);
+  const journaled = s.op.oldResourceIdentity;
+  const stable = journaled?.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType];
+  if (verdict !== 'exists' || snapshot === undefined || journaled === undefined || !stable) {
+    return verdict;
+  }
+  const now = await live();
+  if (now.kind === 'foreign') return foreignHolder(now);
+  if (now.kind === 'owned' && now.identity !== undefined && now.identity !== journaled) {
+    return 'foreign-recreated';
+  }
+  return 'exists';
+}
+
+function foreignHolder(read: { seen: 'other-account' | 'other-region' }): ReplacedSurvivorVerdict {
+  return read.seen === 'other-account' ? 'foreign-account' : 'foreign-region';
+}
+
+function judgeHolder(
+  s: Pick<ReplayOpScope, 'op'>,
+  oldType: string,
+  existence: 'exists' | 'unreadable' | 'unknown',
+  read: SurvivorIdentityRead,
+  snapshot: SurvivorIdentityRead | undefined
+): ReplacedSurvivorVerdict {
+  if (read.kind === 'foreign') return foreignHolder(read);
+  // Absent at the snapshot, not gone now: it appeared during this rollback.
+  // A live read finding it gone saw it go between the two reads.
+  if (read.kind === 'gone') {
+    if (snapshot !== undefined) return 'foreign-appeared';
+    return existence === 'exists' ? 'gone' : existence;
+  }
+  if (read.kind === 'unknown')
+    return existence === 'exists' ? 'exists-unverified' : 'owner-unverified';
+  const journaled = s.op.oldResourceIdentity;
+  if (journaled !== undefined && read.identity !== undefined && read.identity !== journaled) {
+    return journaled.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType]
+      ? 'foreign-recreated'
+      : 'modified';
   }
   if (existence !== 'exists') return existence;
-  // Absent at the snapshot, there now: it appeared during this rollback.
-  // A live read finding it gone saw it go between the two reads.
-  if (read.kind === 'gone') return snapshot !== undefined ? 'foreign-appeared' : 'gone';
-  if (read.kind === 'unknown') return 'unknown';
-  const journaled = s.op.oldResourceIdentity;
   if (journaled === undefined) return 'exists';
-  if (read.identity === undefined) return 'unknown';
-  if (read.identity === journaled) return 'exists';
-  const stableRegion = SURVIVOR_LIVE_READ_TYPES[oldType];
-  return journaled.split('|')[0] === stableRegion ? 'foreign-recreated' : 'modified';
+  return read.identity === undefined ? 'unknown' : 'exists';
 }
 
 /**

@@ -163,4 +163,27 @@ describe('S3BucketProvider.replacedSurvivorIdentity (go-to-k/cdkd#6621)', () => 
     });
     expect(mockSend).not.toHaveBeenCalled();
   });
+
+  it("re-reads the list while it has not caught up, and answers the bucket it then shows", async () => {
+    world({ [OLD]: {} });
+    const answer = mockSend.getMockImplementation()!;
+    let lists = 0;
+    mockSend.mockImplementation((cmd: Cmd) => {
+      if (cmd.constructor.name === 'ListBucketsCommand' && ++lists === 1) {
+        return Promise.resolve({ Buckets: [] });
+      }
+      return answer(cmd);
+    });
+    await expect(read()).resolves.toEqual({ kind: 'owned', identity: `us-east-1|${CREATED.toISOString()}` });
+    expect(lists).toBe(2);
+  });
+
+  it('answers no identity for an unreadable CreationDate', async () => {
+    world({ [OLD]: { listed: new Date('not a date') } });
+    await expect(provider.replacedSurvivorIdentity(OLD, TYPE, CTX)).resolves.toEqual({
+      kind: 'owned',
+      identity: undefined,
+    });
+  });
 });
+

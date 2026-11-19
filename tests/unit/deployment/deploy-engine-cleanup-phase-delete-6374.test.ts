@@ -381,11 +381,14 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
     });
 
-    it('the automatic rollback judges the generation read before its replay, not a later one', async () => {
+    it('the automatic rollback judges the generation read before its replay began', async () => {
       endpointFails = true;
+      generation = 'us-west-2|2026-11-01T00:00:00.000Z';
       const engine = bucketEngine({ noRollback: false });
-      // The probe's own existence read runs after the replay began: a write
-      // there (a reverted bucket policy outside us-east-1) moves the date.
+      // Anything the replay runs once it began (here the probe's own
+      // existence read; in AWS a reverted bucket policy) may write the old
+      // bucket, which outside us-east-1 moves its date. Only this deploy has
+      // one completed op, so the read before the replay is the one before it.
       const update = provider.update;
       let failed = false;
       provider.update = vi.fn(async (...args: Parameters<ResourceProvider['update']>) => {
@@ -397,10 +400,12 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
         }
       }) as unknown as ResourceProvider['update'];
       const read = provider.readCurrentState!;
-      provider.readCurrentState = vi.fn(async (...args: Parameters<NonNullable<ResourceProvider['readCurrentState']>>) => {
-        if (failed) generation = 'us-east-1|2026-11-02T00:00:00.000Z';
-        return read(...args);
-      }) as unknown as ResourceProvider['readCurrentState'];
+      provider.readCurrentState = vi.fn(
+        async (...args: Parameters<NonNullable<ResourceProvider['readCurrentState']>>) => {
+          if (failed) generation = 'us-west-2|2026-11-02T00:00:00.000Z';
+          return read(...args);
+        }
+      ) as unknown as ResourceProvider['readCurrentState'];
       await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
       // The deferral's read and the rollback's snapshot; no read at the probe.
       expect(identityReads).toEqual(['rev-old', 'rev-old']);

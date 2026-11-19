@@ -152,19 +152,42 @@ the delete since. The deferred delete of a custom resource or nested stack
 that needs a NoEcho value is never in state, so when its read cannot answer,
 a later `cdkd rollback` refuses it.
 
-A deferred `AWS::S3::Bucket` is re-adopted only when the bucket under the old
-name is still the stack's. Bucket names are global, so after an out-of-band
-delete another party can take the name. Before it replays any operation, the
-rollback reads who holds the name. A bucket that is not in this account's
-`ListBuckets`, or that is in another region, is refused. When the deploy
-deferred the delete, it journaled the bucket's `CreationDate`, and the live
-date must match it. In us-east-1 only a re-create moves that date, so a
-different date is refused as another bucket. Outside us-east-1 a versioning,
-tagging, encryption or policy write also moves it, so a different date is
-refused with a message saying the bucket may have been re-created or modified.
-A journal written by an older cdkd carries no date, and this account's bucket
-is re-adopted as before. Each refusal sends nothing, keeps the journal, and
-prints the `--orphan` command, which keeps the new bucket in its place.
+A deferred `AWS::S3::Bucket` is judged by who holds the old name, because
+bucket names are global and another party can take the name after an
+out-of-band delete. When the deploy defers the delete, it journals the
+bucket's `CreationDate`. Before the rollback replays any operation, it reads
+who holds each such name (`ListBuckets` and `GetBucketLocation`). Then:
+
+- **Refused, whatever the existence read answered:**
+  - a bucket that is not in this account's `ListBuckets`, or is in another region;
+  - a bucket that was absent when the rollback started;
+  - this account's bucket with a date other than the journaled one. In
+    us-east-1 only a re-create moves the date, so it is refused as another
+    bucket. Elsewhere a versioning, tagging, encryption or policy write also
+    moves it, so it is refused with a message saying the bucket may have been
+    re-created or modified.
+- **Re-adopted when the dates match.** In us-east-1 the date is read again at
+  the probe and must still match.
+- **Who holds the name could not be read** (no `s3:ListAllMyBuckets`, or a
+  throttle): re-adopted with a warning when AWS reports the bucket, and
+  refused when the existence read did not answer either.
+- **A date that could not be read** takes the rule for a read that cannot
+  answer: re-adopted only while state still lists the bucket as awaiting its
+  delete.
+- **A journal written by an older cdkd** carries no date, and this account's
+  bucket is re-adopted as before.
+
+Each refusal sends nothing, keeps the journal, and prints the `--orphan`
+command, which keeps the new bucket in its place.
+
+Known limits, each refusing rather than re-adopting:
+
+- Outside us-east-1, a `cdkd rollback` re-run after an earlier run wrote the
+  old bucket (it reverted a bucket policy, then failed on another operation)
+  finds a moved date and refuses with the re-created-or-modified message.
+- A rollback that re-created a deleted old bucket and then stopped before it
+  saved state finds the re-created bucket's new date on the next run. Once
+  state is saved, a re-run sees the operation already reverted and skips it.
 
 On a stack with an instance id, a resource the template does not name is
 re-created under the generated name its OLD record held (that record's name
