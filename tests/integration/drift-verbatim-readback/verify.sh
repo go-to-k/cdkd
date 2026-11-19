@@ -102,12 +102,14 @@ cleanup() {
   q_url=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null) &&
     aws sqs delete-queue --queue-url "${q_url}" --region "${REGION}" >/dev/null 2>&1
   aws secretsmanager delete-secret --secret-id "${SECRET}" --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
-  # A run that died with no state record leaves the key: find it by alias.
-  [ -n "${KEY_ID}" ] || KEY_ID=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text 2>/dev/null)
+  # A run that died with no state record leaves the key: find it by alias as
+  # well as by the id state recorded (the two can differ), and schedule both.
+  alias_key=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text 2>/dev/null)
   aws kms delete-alias --alias-name "${KEY_ALIAS}" --region "${REGION}" >/dev/null 2>&1 || true
-  if [ -n "${KEY_ID}" ]; then
-    aws kms schedule-key-deletion --key-id "${KEY_ID}" --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  for k in "${KEY_ID}" "${alias_key}"; do
+    [ -n "${k}" ] || continue
+    aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1 || true
+  done
   # The managed policy is detached here before its own delete below can run.
   for r in "${SIB_ROLE}" "${BARE_ROLE}"; do delete_principal role "${r}"; done
   for u in "${SIB_USER}" "${BARE_USER}"; do delete_principal user "${u}"; done

@@ -11,12 +11,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * Template-only drift baseline probe for go-to-k/cdkd#6624 and #6627.
  *
  * Every resource policy here is written with an OBJECT-form `Statement` and no
- * `Version` / `Id` / `Sid`, so a key the service adds on its own shows in the readback as
- * a key the template never submitted. verify.sh records each resource's
- * deploy-time readback (`observedProperties`) beside its template properties.
+ * `Version` / `Id` / `Sid`, so a key the service adds on its own shows in the
+ * readback as a key the template never submitted. verify.sh records each
+ * resource's deploy-time readback (`observedProperties`) beside its template
+ * properties.
  *
  * - #6624: one resource policy per service (S3, SQS, SNS, KMS, Secrets
- *   Manager; ECR's readback carries no repository policy, so it is not here) and the Cloud Control-routed IAM inline policies (RolePolicy,
+ *   Manager; ECR's readback carries no repository policy, so it is not
+ *   here) and the Cloud Control-routed IAM inline policies (RolePolicy,
  *   UserPolicy, GroupPolicy), plus an `AWS::IAM::Policy` and an
  *   `AWS::IAM::ManagedPolicy` attaching to the same principals.
  * - #6627: a role, a user and a group that declare no `ManagedPolicyArns`,
