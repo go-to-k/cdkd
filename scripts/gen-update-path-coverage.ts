@@ -30,6 +30,8 @@
  *   - allow-listed  — an {@link UPDATE_PATH_ALLOW_LIST} entry with its reason.
  *   - gap           — none of the above: a change would be dropped silently.
  *                     BLOCKS CI.
+ * A `this.x()` call the walk cannot resolve also BLOCKS CI: the code behind it
+ * is unseen, so the row's verdicts would rest on a partial read.
  *
  * HOW "READS" IS DECIDED (offline, TypeScript AST)
  * ------------------------------------------------
@@ -824,6 +826,13 @@ export function findGaps(report: UpdatePathCoverageReport): string[] {
   );
 }
 
+/** `Class (Type): callee` for every unresolved `this.x()` call. BLOCKS CI. */
+export function findUnresolved(report: UpdatePathCoverageReport): string[] {
+  return report.types.flatMap((t) =>
+    t.unresolved.map((u) => `${t.className} (${t.resourceType}): this.${u}()`)
+  );
+}
+
 /** Allow-list keys that no longer name an `allow-listed` row. */
 export function findStaleAllowEntries(
   report: UpdatePathCoverageReport,
@@ -951,7 +960,8 @@ function main(): void {
   if (process.argv.includes('--check')) {
     const gaps = findGaps(report);
     const stale = findStaleAllowEntries(report);
-    if (gaps.length > 0 || stale.length > 0) {
+    const unresolved = findUnresolved(report);
+    if (gaps.length > 0 || stale.length > 0 || unresolved.length > 0) {
       process.stderr.write(
         'update-path-coverage: FAIL\n' +
           (gaps.length > 0
@@ -965,6 +975,11 @@ function main(): void {
           (stale.length > 0
             ? 'UPDATE_PATH_ALLOW_LIST entries that are no longer gaps — delete them:\n' +
               stale.map((g) => `  stale: ${g}\n`).join('')
+            : '') +
+          (unresolved.length > 0
+            ? 'update() reaches this.x() calls that resolve to no member, base-class member or\n' +
+              'companion function, so the code behind them is unseen — make them resolvable:\n' +
+              unresolved.map((u) => `  unresolved: ${u}\n`).join('')
             : '')
       );
       process.exit(1);

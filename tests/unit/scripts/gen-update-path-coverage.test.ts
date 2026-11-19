@@ -9,6 +9,7 @@ import {
   classifyFile,
   findGaps,
   findStaleAllowEntries,
+  findUnresolved,
   loadReport,
   parseReplacementRules,
   type RuleSets,
@@ -154,6 +155,7 @@ describe('gen-update-path-coverage: what counts as a read on the update path', (
   it('records an unresolvable this.x() call, and refuses a class with no update()', () => {
     const rows = classify({ handled: ['A'], classBody: `async update() { this.inherited(); }` });
     expect(rows[0]!.unresolved).toEqual(['inherited']);
+    expect(findUnresolved(buildReport(rows))).toEqual(['FakeProvider (AWS::Fake::Thing): this.inherited()']);
     expect(() => classify({ handled: ['A'], classBody: `async create() {}` })).toThrow(/no update\(\)/);
   });
 
@@ -333,7 +335,7 @@ describe('gen-update-path-coverage on the real tree', () => {
 
   it('has no gap, no unresolved call and no stale allow-list entry', () => {
     expect(findGaps(report)).toEqual([]);
-    expect(report.types.filter((t) => t.unresolved.length > 0).map((t) => t.className)).toEqual([]);
+    expect(findUnresolved(report)).toEqual([]);
     expect(findStaleAllowEntries(report, UPDATE_PATH_ALLOW_LIST)).toEqual([]);
   });
 
