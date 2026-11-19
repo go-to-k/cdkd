@@ -83,7 +83,10 @@
  * effect carries (a same-named field of an AWS response, a property only
  * interpolated into a warning). A call whose result an effect consumes walks
  * its callee whole. A callee's parameters are judged per call site but not
- * per path inside it. A change refused with any error but
+ * per path inside it. A dispatch is an `if` / `else`, an early-return arm
+ * before a sending tail, or a switch with two sending cases; two SIBLING ifs
+ * toggling on one property (`if (on && !was) Enable; if (!on && was) Disable`)
+ * are not one, so that shape reads as a gap. A change refused with any error but
  * `ResourceUpdateNotSupportedError` is not a refusal here (a `ProvisioningError`
  * is also what a validation throws), so it would read as a gap. Only
  * TOP-LEVEL properties are classified: a nested
@@ -791,6 +794,7 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     // Locals whose value reaches an effect, grown to a fixpoint.
     const consumed = new Set<string>([...seed].filter((k) => !k.startsWith(RETURN_KEY)));
     const returnKeysFor = new Map<ts.CallExpression, Set<string>>();
+    const earlyDispatch = new Set<ts.IfStatement>();
     const run = (collect: boolean): void => {
       const visit = (n: ts.Node, eff: boolean, cond: boolean, neg: boolean): void => {
         // Per-type narrowing.
@@ -803,7 +807,7 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
             eff ||
             ((!reach || reach.then) && guards(n.thenStatement)) ||
             ((!reach || reach.else) && guards(n.elseStatement)) ||
-            (!reach && dispatches(n.thenStatement, n.elseStatement));
+            (!reach && (dispatches(n.thenStatement, n.elseStatement) || earlyDispatch.has(n)));
           visit(n.expression, condEff, true, false);
           if (!reach || reach.then) visit(n.thenStatement, eff, false, false);
           if ((!reach || reach.else) && n.elseStatement) visit(n.elseStatement, eff, false, false);
@@ -1113,6 +1117,19 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
       // Statements in order, with early-return narrowing: after
       // `if (resourceType === 'A') return ...;` the rest is not type A's.
       const visitStatements = (statements: readonly ts.Statement[], eff: boolean): void => {
+        statements.forEach((st, i) => {
+          // `if (on) { send(Enable); return; } send(Disable);`: an early-exit
+          // arm that sends, before a tail that sends, is a dispatch too.
+          if (
+            ts.isIfStatement(st) &&
+            !st.elseStatement &&
+            exitsEarly(st.thenStatement) &&
+            subtreeEffect(st.thenStatement).hard &&
+            subtreeEffect(ts.factory.createBlock(statements.slice(i + 1))).hard
+          ) {
+            earlyDispatch.add(st);
+          }
+        });
         for (const st of statements) {
           visit(st, eff, false, false);
           if (ts.isIfStatement(st) && !st.elseStatement) {

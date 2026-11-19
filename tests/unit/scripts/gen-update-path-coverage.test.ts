@@ -364,7 +364,7 @@ describe('gen-update-path-coverage: guards, dispatch and helper effects', () => 
 
   it('a value that picks between two sends is read (if / else and switch)', () => {
     const rows = classify({
-      handled: ['Monitoring', 'Mode'],
+      handled: ['Monitoring', 'Mode', 'Rotation'],
       classBody: `
         async update(id, pid, type, properties) {
           if (properties.Monitoring) await this.c.send(new MonitorCommand({ id }));
@@ -373,10 +373,16 @@ describe('gen-update-path-coverage: guards, dispatch and helper effects', () => 
             case 'on': await this.c.send(new OnCommand({ id })); break;
             case 'off': await this.c.send(new OffCommand({ id })); break;
           }
+          await this.rotate(properties);
+        }
+        async rotate(properties) {
+          if (properties.Rotation) { await this.c.send(new EnableRotationCommand({})); return; }
+          await this.c.send(new DisableRotationCommand({}));
         }`,
     });
     expect(statusOf(rows, 'Monitoring')).toBe('update');
     expect(statusOf(rows, 'Mode')).toBe('update');
+    expect(statusOf(rows, 'Rotation')).toBe('update');
   });
 
   it("a helper's effect is narrowed by type, and a call cycle does not cache a partial answer", () => {
