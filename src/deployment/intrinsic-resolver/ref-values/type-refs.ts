@@ -3,7 +3,7 @@
  * which re-exports every symbol here.
  */
 import { carriesSecretMask } from '../../secret-redaction.js';
-import { COMPOSITE_ID_SEPARATOR } from '../../../provisioning/composite-id.js';
+import { COMPOSITE_ID_SEPARATOR, segmentAfterAnchor } from '../../../provisioning/composite-id.js';
 import type { RefStateLookup } from '../ref-values.js';
 
 /**
@@ -106,6 +106,116 @@ export function vpcGatewayAttachmentRefFromPhysicalId(physicalId: string): strin
   if (gatewayId.startsWith('vgw-')) return `VGW${COMPOSITE_ID_SEPARATOR}${vpcId}`;
   return physicalId;
 }
+
+/**
+ * CloudFormation's `Ref` for an `AWS::EC2::TransitGatewayRouteTablePropagation`:
+ * `<attachmentId>_<routeTableId>` (measured, issue #6612), while Cloud Control's
+ * id joins the schema order, `<routeTableId>|<attachmentId>`. Only that exact
+ * `tgw-rtb-…|tgw-attach-…` shape is rewritten; anything else passes through.
+ */
+export function tgwRouteTablePropagationRefFromPhysicalId(physicalId: string): string {
+  const parts = physicalId.split(COMPOSITE_ID_SEPARATOR);
+  if (parts.length !== 2) return physicalId;
+  const [routeTableId, attachmentId] = parts as [string, string];
+  if (!routeTableId.startsWith('tgw-rtb-') || !attachmentId.startsWith('tgw-attach-')) {
+    return physicalId;
+  }
+  return `${attachmentId}_${routeTableId}`;
+}
+
+/**
+ * CloudFormation's `Ref` for an `AWS::Glue::Connection`: the connection name
+ * (issue #6612). Cloud Control's id is `<CatalogId>|<Name>`, and a connection
+ * name may itself contain `|` while a catalog id is a 12-digit account id, so
+ * the name is everything after that FIRST segment. The SDK provider stores the
+ * bare name, which passes through — anchoring on the account-id shape keeps a
+ * bare name containing `|` intact.
+ */
+export function glueConnectionRefFromPhysicalId(physicalId: string): string {
+  const match = /^\d{12}\|(.+)$/s.exec(physicalId);
+  return match ? match[1]! : physicalId;
+}
+
+/**
+ * CloudFormation's `Ref` for an `AWS::AutoScaling::ScheduledAction`: the action
+ * name (measured, issue #6612). Cloud Control's id is
+ * `<ScheduledActionName>|<AutoScalingGroupName>`, and BOTH names may contain
+ * `|`. A two-segment id is exact and reads nothing; a longer one anchors on the
+ * recorded `AutoScalingGroupName` when the id ends with it (a masked one is
+ * returned as the mask), else takes everything before the FIRST `|`. A
+ * pipe-free id passes through.
+ */
+export function scheduledActionRefFromPhysicalId(
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string {
+  const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
+  if (firstPipe < 0) return physicalId;
+  if (physicalId.includes(COMPOSITE_ID_SEPARATOR, firstPipe + 1)) {
+    const group = stateLookup?.(['AutoScalingGroupName']);
+    // A masked anchor is served as-is, as for a Glue table: its readers
+    // recognise the mask, never a guess.
+    if (group !== undefined && carriesSecretMask(group)) return group;
+    const suffix = `${COMPOSITE_ID_SEPARATOR}${group ?? ''}`;
+    if (suffix.length > 1 && physicalId.length > suffix.length && physicalId.endsWith(suffix)) {
+      return physicalId.slice(0, physicalId.length - suffix.length);
+    }
+  }
+  return physicalId.slice(0, firstPipe);
+}
+
+/**
+ * CloudFormation's `Ref` for an `AWS::ApplicationAutoScaling::ScalingPolicy`:
+ * the policy ARN (measured, issue #6612), from Cloud Control's
+ * `<Arn>|<ScalableDimension>`. The ARN ends in `:policyName/<name>` and a
+ * policy name may contain `|` while the dimension (an enum) cannot, so the ARN
+ * is everything before the LAST `|`. A pipe-free id passes through.
+ */
+export function scalingPolicyRefFromPhysicalId(physicalId: string): string {
+  const lastPipe = physicalId.lastIndexOf(COMPOSITE_ID_SEPARATOR);
+  return lastPipe < 0 ? physicalId : physicalId.slice(0, lastPipe);
+}
+
+/**
+ * CloudFormation's `Ref` for an `AWS::ElasticBeanstalk::ConfigurationTemplate`
+ * / `::ApplicationVersion`: the template name / version label (both measured,
+ * issue #6612), from Cloud Control's `<ApplicationName>|<child>`. A two-segment
+ * id is exact and reads nothing; a longer one anchors on the recorded
+ * `ApplicationName` (a masked one is returned as the mask), else takes
+ * everything after the FIRST `|`. A pipe-free id
+ * passes through.
+ */
+export function elasticBeanstalkChildRefFromPhysicalId(
+  physicalId: string,
+  stateLookup?: RefStateLookup
+): string {
+  const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
+  if (firstPipe < 0) return physicalId;
+  if (physicalId.includes(COMPOSITE_ID_SEPARATOR, firstPipe + 1)) {
+    const application = stateLookup?.(['ApplicationName']);
+    if (application !== undefined && carriesSecretMask(application)) return application;
+    const anchored = segmentAfterAnchor(physicalId, application);
+    if (anchored !== undefined) return anchored;
+  }
+  return physicalId.slice(firstPipe + 1);
+}
+
+/**
+ * The issue #6612 types whose `Ref` a per-type helper derives from the physical
+ * id (and, for an ambiguous id, a recorded anchor). `cfnRefValueFromPhysicalId`
+ * consults it; `scripts/gen-ref-segment-coverage.ts` reads it as a mapping table.
+ */
+export const REF_FROM_PHYSICAL_ID_HELPERS: ReadonlyMap<
+  string,
+  (physicalId: string, stateLookup?: RefStateLookup) => string
+> = new Map<string, (physicalId: string, stateLookup?: RefStateLookup) => string>([
+  ['AWS::EC2::TransitGatewayRouteTablePropagation', tgwRouteTablePropagationRefFromPhysicalId],
+  ['AWS::Glue::Connection', glueConnectionRefFromPhysicalId],
+  ['AWS::AutoScaling::ScheduledAction', scheduledActionRefFromPhysicalId],
+  ['AWS::ApplicationAutoScaling::ScalingPolicy', scalingPolicyRefFromPhysicalId],
+  ['AWS::ElasticBeanstalk::ConfigurationTemplate', elasticBeanstalkChildRefFromPhysicalId],
+  ['AWS::ElasticBeanstalk::ApplicationVersion', elasticBeanstalkChildRefFromPhysicalId],
+]);
 
 /**
  * Types whose `Ref` is an ARN recovered from a recorded attribute while their

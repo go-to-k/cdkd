@@ -542,6 +542,23 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-update-path-coverage.ts --check',
         cache: false,
       },
+      // Issue #6612: every compound-id type has a decided CloudFormation `Ref`
+      // (a segment mapping, or a recorded "compound" / "no Ref" / ... with source).
+      'gen:ref-segment-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-ref-segment-coverage.ts',
+        cache: false,
+      },
+      'audit:ref-segment-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-ref-segment-coverage.ts --check',
+        cache: false,
+      },
+      // Re-captures tests/fixtures/cfn-primary-identifiers.json from AWS's
+      // public schema bundle (network, no AWS identity). NOT in CI or
+      // gen:all-matrices: the capture is the oracle the critic reads.
+      'gen:ref-segment-identifiers': {
+        command: 'node --experimental-strip-types scripts/gen-ref-segment-coverage.ts --refresh-identifiers',
+        cache: false,
+      },
       // Re-captures the AWS CLI's removed-command table into
       // tests/fixtures/aws-cli-removed-commands.json (issue #1402). Needs a
       // locally installed AWS CLI v2, so it is deliberately NOT wired into CI:
@@ -691,6 +708,7 @@ export default defineConfig({
           'vp run gen:sdk-attr-coverage',
           'vp run gen:update-wrap-coverage',
           'vp run gen:update-path-coverage',
+          'vp run gen:ref-segment-coverage',
           'vp run gen:nested-key-coverage',
           'vp run gen:getatt-attributes',
           // Not a matrix, but the same class of CI guard: a rebase can
