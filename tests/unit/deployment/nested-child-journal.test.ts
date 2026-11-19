@@ -813,6 +813,35 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
     expect(seen).toEqual([entry]);
   });
 
+  // go-to-k/cdkd#6621: a deferred bucket's holder is read before any replay.
+  it("hands the replay the holder of each deferred bucket, read before it ran", async () => {
+    const BUCKET = 'AWS::S3::Bucket';
+    const replacedSurvivorIdentity = vi.fn(async () => ({ kind: 'owned', identity: 'us-east-1|D1' }));
+    let seen: unknown;
+    replay.duringReplay = (_run, ctx) => {
+      seen = (ctx as { survivorIdentities?: Map<string, unknown> }).survivorIdentities;
+      expect(replacedSurvivorIdentity).toHaveBeenCalledTimes(1);
+    };
+    const op = {
+      logicalId: 'Q',
+      resourceType: BUCKET,
+      changeType: 'UPDATE',
+      physicalId: 'b-new',
+      previousState: { physicalId: 'b-old', resourceType: BUCKET, properties: {} },
+      oldResourceMaySurvive: 'deferred',
+    };
+    const h = harness({
+      segments: [seg('r', [], { operations: [op] as never })],
+      state: childState({ Q: { physicalId: 'b-new', resourceType: BUCKET, properties: {} } }),
+      ctxExtra: { providerRegistry: { getProvider: () => ({ replacedSurvivorIdentity }) } },
+    });
+    await h.run('r');
+    expect(replacedSurvivorIdentity).toHaveBeenCalledWith('b-old', BUCKET, { expectedRegion: REGION });
+    expect([...((seen as Map<string, unknown>) ?? new Map()).values()]).toEqual([
+      { kind: 'owned', identity: 'us-east-1|D1' },
+    ]);
+  });
+
   it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {
     const h = harness({ segments: [seg('r', ['Q'])], divergentBodyRegion: 'eu-west-1' });
 

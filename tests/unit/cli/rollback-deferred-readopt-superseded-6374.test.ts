@@ -32,10 +32,12 @@ const provider = vi.hoisted(() => ({
   update: vi.fn(),
   delete: vi.fn(),
   readCurrentState: vi.fn(),
+  replacedSurvivorIdentity: vi.fn(),
 }));
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
   ProviderRegistry: vi.fn().mockImplementation(() => ({
     getProviderFor: () => ({ provider, provisionedBy: 'sdk' }),
+    getProvider: () => provider,
     setCustomResourceResponseBucket: vi.fn(),
   })),
 }));
@@ -81,9 +83,11 @@ const REGION = 'us-east-1';
 const STACK = 'S';
 const TOPIC = 'AWS::SNS::Topic';
 
+let resourceType = TOPIC;
+let extraOp: Record<string, unknown> = {};
 const rec = (physicalId: string, properties: Record<string, unknown>) => ({
   physicalId,
-  resourceType: TOPIC,
+  resourceType,
   properties,
   attributes: {},
   dependencies: [],
@@ -127,12 +131,13 @@ function install(opts: { superseded?: boolean } = {}): void {
             {
               logicalId: 'Topic',
               changeType: 'UPDATE',
-              resourceType: TOPIC,
+              resourceType,
               provisionedBy: 'sdk',
               physicalId: 'topic-new',
               previousState: rec('topic-old', { TopicName: 'topic-old' }),
               oldResourceRetained: false,
               oldResourceMaySurvive: 'deferred',
+              ...extraOp,
             },
           ],
         },
@@ -166,6 +171,8 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
   beforeEach(() => {
     vi.clearAllMocks();
     saves = [];
+    resourceType = TOPIC;
+    extraOp = {};
     provider.readCurrentState.mockResolvedValue({ TopicName: 'topic-old' });
     provider.delete.mockResolvedValue(undefined);
   });
@@ -209,6 +216,32 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
       stateBucket: 'b',
       region: REGION,
     } as unknown as Parameters<typeof rollbackCommand>[1]);
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
+    expect(saves.at(-1)!.resources['Topic']!.physicalId).toBe('topic-old');
+  });
+
+  // go-to-k/cdkd#6621: a bucket's holder is read before the replay applies
+  // any op, so a write during the replay (moving its CreationDate outside
+  // us-east-1) cannot make the stack's own bucket look like another.
+  it('judges a deferred bucket by the read taken before the replay', async () => {
+    resourceType = 'AWS::S3::Bucket';
+    extraOp = { oldResourceIdentity: 'us-east-1|2026-11-01T00:00:00.000Z' };
+    install();
+    let generation = 'us-east-1|2026-11-01T00:00:00.000Z';
+    provider.replacedSurvivorIdentity.mockImplementation(async () => ({
+      kind: 'owned',
+      identity: generation,
+    }));
+    provider.readCurrentState.mockImplementation(async () => {
+      generation = 'us-east-1|2026-11-02T00:00:00.000Z';
+      return { BucketName: 'topic-old' };
+    });
+    await rollbackCommand(STACK, {
+      yes: true,
+      stateBucket: 'b',
+      region: REGION,
+    } as unknown as Parameters<typeof rollbackCommand>[1]);
+    expect(provider.replacedSurvivorIdentity).toHaveBeenCalledTimes(1);
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
     expect(saves.at(-1)!.resources['Topic']!.physicalId).toBe('topic-old');
   });
