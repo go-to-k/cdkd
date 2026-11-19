@@ -11,23 +11,21 @@
  * rules make `drift --revert` re-apply an old expiration (the data-loss
  * direction) or delete the declared rules.
  *
- * So on that capture only, an answer that differs from the declaration is
- * re-read on {@link LIFECYCLE_BASELINE_REREAD_DELAYS_MS}. A declared
- * configuration the schedule never sees is KEPT in the readback's shape; a
- * just-deleted one still visible records nothing for the key. Every other
- * read takes the first answer.
+ * So on that capture, and only when THIS create / update sent a lifecycle Put
+ * or Delete ({@link recordLifecycleWrite}), an answer that differs from what
+ * was written is re-read on {@link LIFECYCLE_BASELINE_REREAD_DELAYS_MS}. A
+ * written configuration the schedule never sees is KEPT in the readback's
+ * shape; a just-deleted one still visible records nothing for the key. Every
+ * other read, a capture after a write that left the lifecycle alone included,
+ * takes the first answer.
  */
-import {
-  isAmbiguousOutcomeError,
-  isThrottlingError,
-  isTransientServerError,
-} from '../../../deployment/retryable-errors.js';
+import { memberReadFailure, reReadUntilSettled } from '../../settle-after-own-write.js';
 import {
   deepSameValue,
   effectiveLifecycleConfiguration,
   lifecycleRuleRefused,
 } from './lifecycle-fold.js';
-import { isPlainObject } from './shared.js';
+import { coerceCfnNumber, isPlainObject } from './shared.js';
 
 /**
  * Waits between re-reads of a disagreeing answer: five reads, 7.5 s at most,
@@ -48,17 +46,51 @@ export const LIFECYCLE_DEFAULT_TRANSITION_MIN_SIZE = 'all_storage_classes_128K';
 
 const TDMOS_KEY = 'TransitionDefaultMinimumObjectSize';
 
+/** The lifecycle call a create / update just sent for a bucket. */
+export type LifecycleWrite = 'put' | 'delete';
+
+/**
+ * Per S3 client, the buckets whose lifecycle the running create / update
+ * wrote. Keyed by the client so a per-call view of the provider (its
+ * prototype is the provider, the client inherited) shares it, while the
+ * `noWriteProbe` stub client never reaches a real capture.
+ */
+const lifecycleWrites = new WeakMap<object, Map<string, LifecycleWrite>>();
+
+/** Note that a lifecycle Put / Delete for `bucket` just succeeded. */
+export function recordLifecycleWrite(client: object, bucket: string, write: LifecycleWrite): void {
+  let writes = lifecycleWrites.get(client);
+  if (writes === undefined) {
+    writes = new Map();
+    lifecycleWrites.set(client, writes);
+  }
+  writes.set(bucket, write);
+}
+
+/** The lifecycle write noted for `bucket`, consumed by the capture that reads it. */
+export function takeLifecycleWrite(client: object, bucket: string): LifecycleWrite | undefined {
+  const writes = lifecycleWrites.get(client);
+  const write = writes?.get(bucket);
+  writes?.delete(bucket);
+  return write;
+}
+
 /**
  * What the template declares for the lifecycle, folded onto the readback's
- * shape: `absent` (no rules: nothing configured, or a just-deleted
- * configuration), `present` with the folded configuration, or `undefined`
- * when the declaration is one the applier would not send as declared (a
- * non-object rule, a refused rule): AWS then keeps the previous
- * configuration, so the first answer is the truth and nothing is re-read.
+ * shape: `absent` (no configuration or no rules), `present` with the folded
+ * configuration, or `undefined` when the applier would not send the
+ * declaration as written, so no readback can ever equal it: a non-object
+ * configuration or rule, a refused rule, or a folded rule holding a shape
+ * `readLifecycle` never emits (an `ExpiredObjectDeleteMarker` beside an
+ * expiration, which the applier drops with a warning; a non-numeric day
+ * count; a date it does not fold). Quoted numbers are coerced, as the wire
+ * sends them: S3 reads them back as numbers.
+ *
+ * `onUnsettled` rides along for the capture to say when it never settled.
  */
 export type DeclaredLifecycle =
-  | { kind: 'absent' }
-  | { kind: 'present'; expected: Record<string, unknown> };
+  | { kind: 'absent'; onUnsettled?: () => void }
+  | { kind: 'present'; expected: Record<string, unknown>; onUnsettled?: () => void };
 
 export function declaredLifecycle(properties: unknown): DeclaredLifecycle | undefined {
   if (!isPlainObject(properties)) return undefined;
@@ -69,10 +101,150 @@ export function declaredLifecycle(properties: unknown): DeclaredLifecycle | unde
   if (rules == null || (Array.isArray(rules) && rules.length === 0)) return { kind: 'absent' };
   if (!Array.isArray(rules) || !rules.every(isPlainObject)) return undefined;
   if (rules.some(lifecycleRuleRefused)) return undefined;
-  return {
-    kind: 'present',
-    expected: effectiveLifecycleConfiguration(config) as Record<string, unknown>,
-  };
+  const folded = effectiveLifecycleConfiguration(config) as Record<string, unknown>;
+  const expected = readbackShape(folded);
+  return expected === undefined ? undefined : { kind: 'present', expected };
+}
+
+/**
+ * What the post-write capture settles on, given the lifecycle call the
+ * create / update sent ({@link takeLifecycleWrite}): a Delete settles on
+ * absent; a Put on the declared configuration, when the bag declares one the
+ * applier sends as written; anything else (no lifecycle call, no informative
+ * bag) `undefined`, the first answer. Built here, not at the read site, whose
+ * object literals the nested-key coverage walk reads as reverse-map keys.
+ */
+export function lifecycleSettleTarget(
+  write: LifecycleWrite | undefined,
+  properties: Record<string, unknown> | undefined,
+  onUnsettled: () => void
+): DeclaredLifecycle | undefined {
+  if (write === 'delete') return { kind: 'absent', onUnsettled };
+  if (write !== 'put' || properties === undefined || Object.keys(properties).length === 0) {
+    return undefined;
+  }
+  const declared = declaredLifecycle(properties);
+  return declared?.kind === 'present' ? { ...declared, onUnsettled } : undefined;
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const RULE_KEYS = new Set([
+  'Id',
+  'Status',
+  'Prefix',
+  'ExpirationInDays',
+  'ExpirationDate',
+  'ExpiredObjectDeleteMarker',
+  'Transitions',
+  'NoncurrentVersionExpiration',
+  'NoncurrentVersionTransitions',
+  'AbortIncompleteMultipartUpload',
+  'Filter',
+]);
+
+/** Thrown inside {@link readbackShape} for a value no readback can hold. */
+class NotReadable extends Error {}
+
+function num(value: unknown): number {
+  const n = coerceCfnNumber(value);
+  if (n === undefined) throw new NotReadable();
+  return n;
+}
+
+/** `block`'s numeric members coerced, or {@link NotReadable} for a key outside `keys`. */
+function numbers(block: unknown, numeric: string[], other: string[] = []): Record<string, unknown> {
+  if (!isPlainObject(block)) throw new NotReadable();
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(block)) {
+    if (numeric.includes(key)) out[key] = num(value);
+    else if (other.includes(key)) out[key] = value;
+    else throw new NotReadable();
+  }
+  return out;
+}
+
+/** The folded declaration in what `readLifecycle` can emit, or `undefined`. */
+function readbackShape(config: Record<string, unknown>): Record<string, unknown> | undefined {
+  try {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(config)) {
+      if (key === TDMOS_KEY) {
+        if (typeof value !== 'string') throw new NotReadable();
+        out[key] = value;
+      } else if (key === 'Rules') {
+        out[key] = (value as Array<Record<string, unknown>>).map(readbackRule);
+      } else {
+        throw new NotReadable();
+      }
+    }
+    return out;
+  } catch (err) {
+    if (err instanceof NotReadable) return undefined;
+    throw err;
+  }
+}
+
+function readbackRule(rule: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rule)) {
+    if (!RULE_KEYS.has(key)) throw new NotReadable();
+    switch (key) {
+      case 'ExpirationInDays':
+        // A string here is sent as a DATE by the applier, not a day count.
+        if (typeof value !== 'number') throw new NotReadable();
+        out[key] = value;
+        break;
+      case 'ExpirationDate':
+        if (typeof value !== 'string' || !ISO_DATE.test(value)) throw new NotReadable();
+        out[key] = value;
+        break;
+      case 'ExpiredObjectDeleteMarker':
+        if (typeof value !== 'boolean') throw new NotReadable();
+        out[key] = value;
+        break;
+      case 'Transitions':
+        if (!Array.isArray(value)) throw new NotReadable();
+        out[key] = value.map((t: unknown) => {
+          const item = numbers(t, ['TransitionInDays'], ['StorageClass', 'TransitionDate']);
+          const date = item['TransitionDate'];
+          if (date !== undefined && (typeof date !== 'string' || !ISO_DATE.test(date))) {
+            throw new NotReadable();
+          }
+          return item;
+        });
+        break;
+      case 'NoncurrentVersionExpiration':
+        out[key] = numbers(value, ['NoncurrentDays', 'NewerNoncurrentVersions']);
+        break;
+      case 'NoncurrentVersionTransitions':
+        if (!Array.isArray(value)) throw new NotReadable();
+        out[key] = value.map((t: unknown) =>
+          numbers(t, ['TransitionInDays', 'NewerNoncurrentVersions'], ['StorageClass'])
+        );
+        break;
+      case 'AbortIncompleteMultipartUpload':
+        out[key] = numbers(value, ['DaysAfterInitiation']);
+        break;
+      case 'Filter':
+        out[key] = numbers(
+          value,
+          ['ObjectSizeGreaterThan', 'ObjectSizeLessThan'],
+          ['Prefix', 'TagFilters']
+        );
+        break;
+      default:
+        out[key] = value;
+    }
+  }
+  // S3 forbids the marker beside a day count or date; the applier sends the
+  // expiration and drops the marker with a warning.
+  if (
+    out['ExpiredObjectDeleteMarker'] !== undefined &&
+    (out['ExpirationInDays'] !== undefined || out['ExpirationDate'] !== undefined)
+  ) {
+    throw new NotReadable();
+  }
+  return out;
 }
 
 /** Whether a `readLifecycle` answer holds no configuration (`NoSuchLifecycleConfiguration`). */
@@ -145,29 +317,23 @@ export function declaredLifecycleBaseline(
 }
 
 /**
- * A lifecycle read failure worth keeping the declared configuration over: a
- * throttle, a 5xx, or a socket failure the SDK's retries did not absorb. A
- * deterministic one (`AccessDenied`) is not: keeping the declared value there
- * would freeze a member every later read drops.
- */
-export function isTransientLifecycleReadFailure(err: unknown): boolean {
-  return isThrottlingError(err) || isTransientServerError(err) || isAmbiguousOutcomeError(err);
-}
-
-/**
- * The lifecycle member of the post-write baseline: `read` re-asked until it
- * matches `declared`. Returns the value to record, or `undefined` to
- * record no `LifecycleConfiguration` at all (an absent top-level key is not
- * compared by drift).
+ * The lifecycle member of the post-write baseline: `read` re-asked
+ * ({@link reReadUntilSettled}) until it matches what was written. Returns the
+ * value to record, or `undefined` to record no `LifecycleConfiguration` at
+ * all (an absent top-level key is not compared by drift).
  *
  * - settled: the read, as AWS gave it;
- * - declared present, never settled (absent, another configuration, or a read
- *   that failed transiently or after an unsettled answer): the declared
- *   configuration ({@link declaredLifecycleBaseline});
- * - declared present, a deterministic failure on the first read: nothing;
- * - declared absent, still configured, or a re-read that failed: nothing,
- *   never the configuration this deploy just deleted;
- * - declared absent, the FIRST read failed: the error, as before.
+ * - written present, never settled (absent, another configuration, a re-read
+ *   that failed, or a first read that failed transiently —
+ *   {@link memberReadFailure}): the written configuration
+ *   ({@link declaredLifecycleBaseline});
+ * - just deleted, still configured or a re-read that failed: nothing, never
+ *   the configuration this deploy just deleted;
+ * - a first read that failed deterministically (`AccessDenied`), or any first
+ *   read failure after a delete: the error, as before this capture re-read,
+ *   so the capture records no baseline and drift compares the template.
+ *
+ * `declared.onUnsettled` runs once on every arm that did not settle.
  */
 export async function settleLifecycleRead(
   read: () => Promise<Record<string, unknown>>,
@@ -178,25 +344,26 @@ export async function settleLifecycleRead(
     declared.kind === 'absent'
       ? lifecycleReadIsAbsent(answer)
       : lifecycleMatchesDeclared(answer, declared.expected);
+  const unsettled = (): Record<string, unknown> | undefined => {
+    declared.onUnsettled?.();
+    return declared.kind === 'present' ? declaredLifecycleBaseline(declared.expected) : undefined;
+  };
   let answered = false;
   try {
-    let answer = await read();
-    answered = true;
-    for (const delayMs of delaysMs) {
-      if (settled(answer)) return answer;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      answer = await read();
-    }
-    if (settled(answer)) return answer;
-    return declared.kind === 'present' ? declaredLifecycleBaseline(declared.expected) : undefined;
+    const outcome = await reReadUntilSettled(
+      async () => {
+        const answer = await read();
+        answered = true;
+        return answer;
+      },
+      settled,
+      delaysMs
+    );
+    return outcome.settled ? outcome.answer : unsettled();
   } catch (err) {
-    if (declared.kind === 'absent') {
-      if (answered) return undefined;
-      throw err;
-    }
-    return answered || isTransientLifecycleReadFailure(err)
-      ? declaredLifecycleBaseline(declared.expected)
-      : undefined;
+    if (answered) return unsettled();
+    if (declared.kind === 'present' && memberReadFailure(err) === 'failed') return unsettled();
+    throw err;
   }
 }
 

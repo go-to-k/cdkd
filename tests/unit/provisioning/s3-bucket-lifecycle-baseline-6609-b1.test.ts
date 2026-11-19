@@ -41,10 +41,13 @@ import {
   declaredLifecycle,
   declaredLifecycleBaseline,
   lifecycleMatchesDeclared,
+  type LifecycleWrite,
+  recordLifecycleWrite,
 } from '../../../src/provisioning/providers/s3-bucket/lifecycle-baseline.js';
 import { effectiveLifecycleConfiguration } from '../../../src/provisioning/providers/s3-bucket/lifecycle-fold.js';
 import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const BUCKET = 'my-bucket';
 const TDMOS = 'all_storage_classes_128K';
@@ -66,6 +69,11 @@ function throttled(): Error {
   const err = new Error('Slow Down');
   err.name = 'SlowDown';
   Object.assign(err, { $metadata: { httpStatusCode: 503 } });
+  return err;
+}
+function socketReset(): Error {
+  const err = new Error('socket hang up');
+  Object.assign(err, { code: 'ECONNRESET' });
   return err;
 }
 function accessDenied(): Error {
@@ -110,14 +118,16 @@ function makeProvider(): S3BucketProvider {
 async function capture(
   provider: S3BucketProvider,
   properties: Record<string, unknown> | undefined,
-  context?: { afterOwnWrite?: boolean }
+  context?: { afterOwnWrite?: boolean; write?: LifecycleWrite }
 ): Promise<Record<string, unknown>> {
+  // What the create / update before this capture sent, as the appliers note it.
+  if (context?.write !== undefined) recordLifecycleWrite(provider.s3Client, BUCKET, context.write);
   const out = await provider.readCurrentState(
     BUCKET,
     'Bucket',
     'AWS::S3::Bucket',
     properties,
-    context
+    context === undefined ? undefined : { afterOwnWrite: context.afterOwnWrite }
   );
   return out as Record<string, unknown>;
 }
@@ -141,35 +151,35 @@ beforeEach(() => {
 describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
   it('settles on the first read with ONE call', async () => {
     scriptLifecycle(NEW);
-    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
     expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(1);
   });
 
   it('re-reads a just-written configuration that still reads ABSENT', async () => {
     scriptLifecycle(NONE, NONE, NEW);
-    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
     expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(3);
   });
 
   it('re-reads a just-replaced configuration that still reads the OLD rules', async () => {
     scriptLifecycle(OLD, NEW);
-    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
     expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(2);
   });
 
   it('a FLAPPING read (old, new, old) stops on the first new answer', async () => {
     scriptLifecycle(OLD, NEW, OLD);
-    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
     expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(2);
   });
 
   it('keeps the DECLARED rules, in the readback shape, after the schedule still reads OLD', async () => {
     scriptLifecycle(OLD);
-    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
     // Exactly what the next drift read emits once AWS settles.
     expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(5);
@@ -177,14 +187,14 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
 
   it('keeps the DECLARED rules after the schedule still reads ABSENT', async () => {
     scriptLifecycle(NONE);
-    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
     expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
     expect(lifecycleCalls).toBe(5);
   });
 
   it('records NO key when a just-deleted configuration still reads after the schedule', async () => {
     scriptLifecycle(OLD);
-    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' });
     expect(out).not.toHaveProperty('LifecycleConfiguration');
     expect(out['BucketName']).toBe(BUCKET);
     expect(lifecycleCalls).toBe(5);
@@ -192,14 +202,14 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
 
   it('records the empty placeholder once a just-deleted configuration reads gone', async () => {
     scriptLifecycle(OLD, NONE);
-    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' });
     expect(out['LifecycleConfiguration']).toEqual({ Rules: [] });
     expect(lifecycleCalls).toBe(2);
   });
 
   it('an undeclared, unconfigured lifecycle settles on ONE call', async () => {
     scriptLifecycle(NONE);
-    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true });
+    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' });
     expect(out['LifecycleConfiguration']).toEqual({ Rules: [] });
     expect(lifecycleCalls).toBe(1);
   });
@@ -207,35 +217,44 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
   describe('read failures', () => {
     it('a TRANSIENT failure on the first read keeps the declared rules', async () => {
       scriptLifecycle(throttled);
-      const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+      const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
       expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
       expect(lifecycleCalls).toBe(1);
     });
 
-    it('a DETERMINISTIC failure on the first read records no key', async () => {
+    it('a DETERMINISTIC failure on the first read fails the read, as before', async () => {
       scriptLifecycle(accessDenied);
-      const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
-      expect(out).not.toHaveProperty('LifecycleConfiguration');
-      expect(out['BucketName']).toBe(BUCKET);
+      await expect(
+        capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' })
+      ).rejects.toThrow('Access Denied');
+      expect(lifecycleCalls).toBe(1);
+    });
+
+    it('a SOCKET failure on the first read keeps the declared rules', async () => {
+      scriptLifecycle(socketReset);
+      const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
+      expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
+      expect(lifecycleCalls).toBe(1);
     });
 
     it('any failure AFTER a stale answer keeps the declared rules, never the stale one', async () => {
       scriptLifecycle(OLD, accessDenied);
-      const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+      const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
       expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
       expect(lifecycleCalls).toBe(2);
     });
 
     it('a just-deleted configuration whose re-read fails records no key, never the deleted rules', async () => {
       scriptLifecycle(OLD, throttled);
-      const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true });
+      const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' });
       expect(out).not.toHaveProperty('LifecycleConfiguration');
+      expect(lifecycleCalls).toBe(2);
     });
 
     it('an undeclared lifecycle whose FIRST read fails still fails the read, as before', async () => {
       scriptLifecycle(accessDenied);
       await expect(
-        capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true })
+        capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' })
       ).rejects.toThrow('Access Denied');
     });
   });
@@ -267,7 +286,7 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
           Rules: [{ Id: 'r1', Status: 'Enabled', Filter: 'logs/', ExpirationInDays: 7 }],
         },
       };
-      const out = await capture(makeProvider(), refused, { afterOwnWrite: true });
+      const out = await capture(makeProvider(), refused, { afterOwnWrite: true, write: 'put' });
       expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
       expect(lifecycleCalls).toBe(1);
     });
@@ -280,7 +299,7 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
 
     it('settles on ONE call against the generated Id', async () => {
       scriptLifecycle(sdkConfig(7, 'OGJiNDg2NTAtNmVhOS00Njg3LTkxMTUtMDEyNGY1MTBiNDBk'));
-      const out = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true });
+      const out = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true, write: 'put' });
       expect(lifecycleCalls).toBe(1);
       expect(
         (out['LifecycleConfiguration'] as { Rules: Array<Record<string, unknown>> }).Rules[0]!['Id']
@@ -289,13 +308,196 @@ describe('post-write capture of LifecycleConfiguration (#6609 B1)', () => {
 
     it('a stale read with an Id does not settle it, and the kept rules carry no Id', async () => {
       scriptLifecycle(sdkConfig(30, 'b2xk'));
-      const out = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true });
+      const out = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true, write: 'put' });
       expect(lifecycleCalls).toBe(5);
       expect(out['LifecycleConfiguration']).toEqual({
         TransitionDefaultMinimumObjectSize: TDMOS,
         Rules: [{ Status: 'Enabled', ExpirationInDays: 7, Filter: { Prefix: '' } }],
       });
     });
+  });
+});
+
+describe('the capture re-reads only a lifecycle THIS write touched (#6609 B1)', () => {
+  it('a tags-only update on a bucket with an out-of-band lifecycle and no declaration records it, ONE call', async () => {
+    scriptLifecycle(OLD, NONE);
+    const out = await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it('a tags-only update with a declared lifecycle takes the read as is, ONE call', async () => {
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(makeProvider(), DECLARED, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it('the applier notes its Put, so the next capture re-reads', async () => {
+    const provider = makeProvider();
+    const applied = await provider.applyLifecycleConfiguration(
+      BUCKET,
+      DECLARED.LifecycleConfiguration
+    );
+    expect(applied).toBe(true);
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(provider, DECLARED, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(NEW_READBACK);
+    expect(lifecycleCalls).toBe(2);
+  });
+
+  it('an update removing the lifecycle notes its Delete, so the next capture re-reads', async () => {
+    const provider = makeProvider();
+    await provider.update('Bucket', BUCKET, 'AWS::S3::Bucket', DECLARED_NONE, DECLARED);
+    expect(
+      mockSend.mock.calls.some(
+        ([command]) => (command as object).constructor.name === 'DeleteBucketLifecycleCommand'
+      )
+    ).toBe(true);
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NONE);
+    const out = await capture(provider, DECLARED_NONE, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual({ Rules: [] });
+    expect(lifecycleCalls).toBe(2);
+  });
+
+  it('the note is consumed: a second capture takes the first answer', async () => {
+    const provider = makeProvider();
+    scriptLifecycle(OLD, NEW);
+    await capture(provider, DECLARED, { afterOwnWrite: true, write: 'put' });
+    lifecycleCalls = 0;
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(provider, DECLARED, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it('a TransitionDefaultMinimumObjectSize-only change re-reads until the new size shows (2 calls)', async () => {
+    const declared = {
+      LifecycleConfiguration: {
+        TransitionDefaultMinimumObjectSize: 'varies_by_storage_class',
+        Rules: DECLARED.LifecycleConfiguration.Rules,
+      },
+    };
+    scriptLifecycle(NEW, { ...NEW, TransitionDefaultMinimumObjectSize: 'varies_by_storage_class' });
+    const out = await capture(makeProvider(), declared, { afterOwnWrite: true, write: 'put' });
+    expect(out['LifecycleConfiguration']).toEqual({
+      ...NEW_READBACK,
+      TransitionDefaultMinimumObjectSize: 'varies_by_storage_class',
+    });
+    expect(lifecycleCalls).toBe(2);
+  });
+
+  it('quoted numbers settle on the first read', async () => {
+    // Measured (us-east-1, 2026-11-19): put through the applier, these read
+    // back as numbers. Two rules: S3 refuses an abort rule with a size filter.
+    const declared = {
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            Id: 'q',
+            Status: 'Enabled',
+            ObjectSizeGreaterThan: '1024',
+            Transitions: [{ StorageClass: 'GLACIER', TransitionInDays: '30' }],
+          },
+          { Id: 'a', Status: 'Enabled', AbortIncompleteMultipartUpload: { DaysAfterInitiation: '7' } },
+        ],
+      },
+    };
+    scriptLifecycle({
+      TransitionDefaultMinimumObjectSize: TDMOS,
+      Rules: [
+        {
+          ID: 'q',
+          Status: 'Enabled',
+          Filter: { ObjectSizeGreaterThan: 1024 },
+          Transitions: [{ Days: 30, StorageClass: 'GLACIER' }],
+        },
+        {
+          ID: 'a',
+          Status: 'Enabled',
+          Filter: { Prefix: '' },
+          AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+        },
+      ],
+    });
+    const out = await capture(makeProvider(), declared, { afterOwnWrite: true, write: 'put' });
+    expect(lifecycleCalls).toBe(1);
+    // ...and the heal compares them the same way.
+    expect(
+      preFixBaselineUncomparedDriftKeys('AWS::S3::Bucket', {}, declared, {
+        LifecycleConfiguration: out['LifecycleConfiguration'],
+      })
+    ).toEqual(['LifecycleConfiguration']);
+  });
+
+  describe('unsettled arms warn once, value-free; settled ones never', () => {
+    const warn = () => vi.mocked(getLogger().child('S3BucketProvider').warn);
+
+    it('kept declared after the schedule: one warning naming no value', async () => {
+      scriptLifecycle(OLD);
+      await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
+      expect(warn()).toHaveBeenCalledTimes(1);
+      const message = String(warn().mock.calls[0]![0]);
+      expect(message).toContain('LifecycleConfiguration');
+      expect(message).not.toContain('30');
+      expect(message).not.toContain('Expiration');
+    });
+
+    it('a just-deleted configuration still visible: one warning', async () => {
+      scriptLifecycle(OLD);
+      await capture(makeProvider(), DECLARED_NONE, { afterOwnWrite: true, write: 'delete' });
+      expect(warn()).toHaveBeenCalledTimes(1);
+    });
+
+    it('settled: no warning', async () => {
+      scriptLifecycle(OLD, NEW);
+      await capture(makeProvider(), DECLARED, { afterOwnWrite: true, write: 'put' });
+      expect(warn()).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('declaredLifecycle: declarations no readback can equal are not settled on', () => {
+  it.each([
+    ['a non-object configuration', { LifecycleConfiguration: 'x' }],
+    ['a non-object rule', { LifecycleConfiguration: { Rules: ['r'] } }],
+    ['non-array rules', { LifecycleConfiguration: { Rules: { Id: 'r' } } }],
+    [
+      'ExpiredObjectDeleteMarker beside an expiration (the applier drops the marker)',
+      {
+        LifecycleConfiguration: {
+          Rules: [{ Id: 'm', ExpiredObjectDeleteMarker: true, ExpirationInDays: 3 }],
+        },
+      },
+    ],
+    [
+      'a quoted ExpirationInDays (the applier sends it as a date)',
+      { LifecycleConfiguration: { Rules: [{ Id: 'm', ExpirationInDays: '30' }] } },
+    ],
+    [
+      'an unreadable day count',
+      { LifecycleConfiguration: { Rules: [{ Id: 'm', AbortIncompleteMultipartUpload: { DaysAfterInitiation: 'x' } }] } },
+    ],
+  ])('%s', async (_label, properties) => {
+    expect(declaredLifecycle(properties)).toBeUndefined();
+    scriptLifecycle(OLD, NEW);
+    const out = await capture(makeProvider(), properties, { afterOwnWrite: true, write: 'put' });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
+  });
+
+  it.each([
+    ['no configuration', {}],
+    ['`Rules: []` (the update path skips it)', { LifecycleConfiguration: { Rules: [] } }],
+    ['`{}`', { LifecycleConfiguration: {} }],
+  ])('%s reads as absent, and without a Delete takes the first answer', async (_l, lifecycle) => {
+    const properties = { BucketName: BUCKET, ...lifecycle };
+    expect(declaredLifecycle(properties)).toEqual({ kind: 'absent' });
+    scriptLifecycle(OLD, NONE);
+    const out = await capture(makeProvider(), properties, { afterOwnWrite: true });
+    expect(out['LifecycleConfiguration']).toEqual(OLD_READBACK);
+    expect(lifecycleCalls).toBe(1);
   });
 });
 
@@ -557,7 +759,21 @@ describe('lifecycleMatchesDeclared', () => {
     ).toBe(false);
     expect(lifecycleMatchesDeclared({ Rules: [a] }, expected)).toBe(false);
     expect(lifecycleMatchesDeclared({ Rules: [b, a] }, expected)).toBe(false);
+    const declaredSize = expectedOf({
+      TransitionDefaultMinimumObjectSize: 'varies_by_storage_class',
+      Rules: [{ Id: 'a', ExpirationInDays: 1 }, { Id: 'b', ExpirationInDays: 2 }],
+    });
+    expect(
+      lifecycleMatchesDeclared({ TransitionDefaultMinimumObjectSize: TDMOS, Rules: [a, b] }, declaredSize)
+    ).toBe(false);
     expect(lifecycleMatchesDeclared({ Rules: [] }, expected)).toBe(false);
+  });
+
+  it('a top-level key other than Rules / TransitionDefaultMinimumObjectSize that differs is not a match', () => {
+    const expected = expectedOf({ Rules: [{ Id: 'a', ExpirationInDays: 1 }] });
+    const rule = { Id: 'a', Status: 'Enabled', ExpirationInDays: 1, Filter: { Prefix: '' } };
+    expect(lifecycleMatchesDeclared({ Rules: [rule] }, expected)).toBe(true);
+    expect(lifecycleMatchesDeclared({ Rules: [rule], Other: 1 }, expected)).toBe(false);
   });
 
   it('an Id-less declared rule needs SOME Id on the read rule', () => {
@@ -594,7 +810,7 @@ describe('drift heal of a LifecycleConfiguration baseline (#6609 B1)', () => {
   it('Id-less end to end: kept without an Id, read later with the generated one, reports nothing', async () => {
     // The capture: the schedule only ever sees the previous rules.
     scriptLifecycle(sdkConfig(30, 'b2xk'));
-    const observed = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true });
+    const observed = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true, write: 'put' });
     expect(lifecycleCalls).toBe(5);
     // A later drift read, once S3 settled: the declared rule under its generated Id.
     lifecycleCalls = 0;
@@ -608,7 +824,7 @@ describe('drift heal of a LifecycleConfiguration baseline (#6609 B1)', () => {
 
   it('Id-less end to end: a rule changed out of band is still reported', async () => {
     scriptLifecycle(sdkConfig(30, 'b2xk'));
-    const observed = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true });
+    const observed = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true, write: 'put' });
     scriptLifecycle(sdkConfig(9, GENERATED));
     const aws = await capture(makeProvider(), declaredNoId);
     expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, declaredNoId, aws)).toEqual([]);

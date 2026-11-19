@@ -22,7 +22,8 @@ import {
 import type { S3BucketProvider } from '../s3-bucket-provider.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
-import { declaredLifecycle } from './lifecycle-baseline.js';
+import { lifecycleSettleTarget, takeLifecycleWrite } from './lifecycle-baseline.js';
+import { warnUnsettledMember } from '../../settle-after-own-write.js';
 
 /**
  * Read the AWS-current S3 bucket configuration in CFn-property shape.
@@ -93,19 +94,16 @@ export async function readCurrentState(
     }
   }
 
-  // go-to-k/cdkd#6609: on the capture right after cdkd's own write, the
-  // lifecycle read is re-asked until it shows what the deploy just wrote
-  // (`lifecycle-baseline.ts`). Only with an informative desired bag, so import
-  // and every non-capture read keep the single first answer. A template that
-  // declares no lifecycle on a bucket holding an out-of-band one waits out the
-  // schedule too and records no LifecycleConfiguration: this read cannot tell
-  // that configuration from one the deploy just deleted.
-  const lifecycleDeclared =
-    context?.afterOwnWrite === true &&
-    _properties !== undefined &&
-    Object.keys(_properties).length > 0
-      ? declaredLifecycle(_properties)
-      : undefined;
+  // go-to-k/cdkd#6609: on the capture right after a create / update that
+  // SENT a lifecycle Put or Delete (`recordLifecycleWrite`), the lifecycle
+  // read is re-asked until it shows what was written (`lifecycle-baseline.ts`).
+  // A capture after a write that left the lifecycle alone, import, and every
+  // non-capture read keep the single first answer. The note is consumed here.
+  const lifecycleWrite =
+    context?.afterOwnWrite === true ? takeLifecycleWrite(this.s3Client, physicalId) : undefined;
+  const lifecycleDeclared = lifecycleSettleTarget(lifecycleWrite, _properties, () =>
+    warnUnsettledMember(this.logger, logicalId, 'AWS::S3::Bucket', 'LifecycleConfiguration')
+  );
 
   // Fire all 18 GET / List calls in parallel. Each helper handles its own
   // "feature not configured" → placeholder fallback.

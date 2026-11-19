@@ -25,6 +25,7 @@ import { effectiveLifecycleConfiguration } from './lifecycle-fold.js';
 import { effectiveNotificationConfiguration } from './effective-items.js';
 import { metadataConfigurationRefusal } from './metadata.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { recordLifecycleWrite } from './lifecycle-baseline.js';
 
 /**
  * Apply the diff between previous and new sub-configs, issuing Put / Delete
@@ -383,6 +384,7 @@ export async function applySubConfigDiffs(
       if (!cfg.Rules || !Array.isArray(cfg.Rules) || cfg.Rules.length === 0) {
         if (context?.desiredFromAwsReadback === true) {
           await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
+          recordLifecycleWrite(this.s3Client, bucketName, 'delete');
           this.logger.debug(
             `Deleted lifecycle configuration on bucket ${this.shown(bucketName)} (reverting to an unset baseline)`
           );
@@ -409,6 +411,7 @@ export async function applySubConfigDiffs(
     },
     async () => {
       await this.s3Client.send(new DeleteBucketLifecycleCommand({ Bucket: bucketName }));
+      recordLifecycleWrite(this.s3Client, bucketName, 'delete');
       this.logger.debug(`Deleted lifecycle configuration on bucket ${this.shown(bucketName)}`);
     }
   );

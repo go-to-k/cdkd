@@ -30,6 +30,7 @@ import {
   shownLifecycleRuleId,
 } from './shared.js';
 import { maskDeep } from '../../masked-retry-logger.js';
+import { recordLifecycleWrite } from './lifecycle-baseline.js';
 import { parseCfnTimestamp } from '../../../utils/cfn-timestamp.js';
 
 /**
@@ -334,6 +335,8 @@ export async function applyLifecycleConfiguration(
         | undefined,
     })
   );
+  // The post-write capture re-reads only a lifecycle this call wrote (#6609).
+  recordLifecycleWrite(this.s3Client, bucketName, 'put');
   this.logger.debug(`Applied lifecycle configuration to bucket ${this.shown(bucketName)}`);
   return true;
 }
