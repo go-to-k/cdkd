@@ -143,6 +143,14 @@ export function warnOnUnremovablePoliciesSubKeys(
 }
 
 /**
+ * Does `update()` send this verification / authentication message member?
+ * Not when absent or the `''` unset placeholder, which AWS refuses (#6645).
+ */
+export function sendsMessageMember(value: unknown): boolean {
+  return value !== undefined && value !== '';
+}
+
+/**
  * Announce a removed {@link KEPT_ON_REMOVAL_MEMBERS} property (issue #1160).
  * `UpdateUserPool` keeps each one when the call omits it (issue #4066's
  * ledger at `readLiveMfaConfiguration`), and CloudFormation keeps each one
@@ -547,22 +555,25 @@ export async function update(
     if (properties['UserPoolAddOns'] && !isEmptyObjectPlaceholder(properties['UserPoolAddOns'])) {
       updateParams.UserPoolAddOns = properties['UserPoolAddOns'] as UserPoolAddOnsType;
     }
-    // `!== undefined` (not truthy) so empty-string placeholders that
-    // `readCurrentState` emits for unset message fields reach AWS — a
-    // truthy gate would silently drop `''` and `cdkd drift --revert`
-    // (which round-trips observed → desired) would report `✓ reverted`
-    // while leaving the AWS-side message untouched. The next drift run
-    // re-detects the same drift — silent fail.
-    if (properties['EmailVerificationMessage'] !== undefined) {
+    // The `''` placeholder `readCurrentState` emits for an unset message is
+    // never sent (issue #6645): AWS refuses `''` for all four members (a
+    // minimum length and a pattern), whether the pool has a value or not.
+    // Omitting a member is what CLEARS it -- MEASURED us-east-1 2026-11-20:
+    // an `UpdateUserPool` omitting each one left it absent on DescribeUserPool
+    // (with its `VerificationMessageTemplate` mirror), and CloudFormation
+    // clears all four the same way when a template drops them. So a
+    // `drift --revert` of an out-of-band message does clear it, and its
+    // `✓ reverted` is true.
+    if (sendsMessageMember(properties['EmailVerificationMessage'])) {
       updateParams.EmailVerificationMessage = properties['EmailVerificationMessage'] as string;
     }
-    if (properties['EmailVerificationSubject'] !== undefined) {
+    if (sendsMessageMember(properties['EmailVerificationSubject'])) {
       updateParams.EmailVerificationSubject = properties['EmailVerificationSubject'] as string;
     }
-    if (properties['SmsAuthenticationMessage'] !== undefined) {
+    if (sendsMessageMember(properties['SmsAuthenticationMessage'])) {
       updateParams.SmsAuthenticationMessage = properties['SmsAuthenticationMessage'] as string;
     }
-    if (properties['SmsVerificationMessage'] !== undefined) {
+    if (sendsMessageMember(properties['SmsVerificationMessage'])) {
       updateParams.SmsVerificationMessage = properties['SmsVerificationMessage'] as string;
     }
     if (properties['UserPoolTier']) {
