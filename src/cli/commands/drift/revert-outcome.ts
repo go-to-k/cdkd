@@ -36,8 +36,7 @@ import { getSettledWriteOnlyPropertyPaths } from '../../../provisioning/write-on
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
-import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
-import { stripSiblingOwnedSgRules } from '../../../provisioning/sg-sibling-rules.js';
+import { siblingOwnedRevertDesired } from '../../../provisioning/sibling-owned-members.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -391,23 +390,19 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // go-to-k/cdkd#6418: and a security-group rule a sibling standalone
     // `SecurityGroupIngress` / `SecurityGroupEgress` authorizes, which the
     // readback dropped too, so `update()` neither revokes nor re-authorizes it.
+    //
+    // go-to-k/cdkd#6610: every other `sibling-owned-members.ts` pair leaves
+    // the desired bag the same way, then takes its LIVE members back from the
+    // readback (the previous side), which a Cloud Control read never filtered.
     const siblingContext = buildReadCurrentStateContext(report.state, outcome.logicalId);
-    desiredProperties = stripSiblingOwnedMembers(
+    desiredProperties = siblingOwnedRevertDesired(
       outcome.resourceType,
       stateResource.physicalId,
       desiredProperties,
       outcome.awsProperties,
       stateResource.properties,
       siblingContext
-    ).baseline;
-    desiredProperties = stripSiblingOwnedSgRules(
-      outcome.resourceType,
-      stateResource.physicalId,
-      desiredProperties,
-      outcome.awsProperties,
-      stateResource.properties,
-      siblingContext
-    ).baseline;
+    );
     if (provider.canonicalizeDriftPair) {
       desiredProperties = (
         await provider.canonicalizeDriftPair(

@@ -171,14 +171,15 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'choke point and `cdkd scrub`. Redacts by construction.',
   },
   'src/deployment/deploy-engine/observed-capture.ts': {
-    sites: 3,
+    sites: 4,
     why:
       '`drainObservedCaptures`, a method of the engine\'s `ObservedCapture` collaborator ' +
       '— the one ASSIGNMENT site that legitimately does NOT redact at the call ' +
       'site; see UNREDACTED_AT_SITE below — plus a `:`-form WRITE in ' +
       '`pruneMembersSiblingsStoppedWriting` (go-to-k/cdkd#6343), which drops IAM list ' +
       'members from a bag already on the record and so adds no leaf, and its twin ' +
-      'for security-group rules (go-to-k/cdkd#6420), which likewise only drops rules; ' +
+      'for security-group rules (go-to-k/cdkd#6420), which likewise only drops rules, ' +
+      'and its table-driven twin (go-to-k/cdkd#6610), which drops or empties a member list; ' +
       "the record persists through the same engine choke point.",
   },
   'src/cli/commands/drift/accept.ts': {
@@ -346,8 +347,9 @@ describe('observedProperties write population (issue #2828)', () => {
     // sibling-member prune in `observed-capture.ts` added one: 17 across 13.
     // go-to-k/cdkd#6420's security-group twin of it added one: 18 across 13.
     // go-to-k/cdkd#6526's rollback baseline refresh added two: 20 across 14.
+    // go-to-k/cdkd#6610's table-driven sibling prune added one: 21 across 14.
     const actual = scanPopulation();
-    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(20);
+    expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(21);
     expect(Object.keys(EXPECTED)).toHaveLength(14);
   });
 

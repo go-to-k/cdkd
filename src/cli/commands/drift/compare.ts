@@ -55,8 +55,7 @@ import {
   stripDerivedEchoMembers,
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
-import { stripSiblingOwnedMembers } from '../../../provisioning/iam-sibling-managed-policies.js';
-import { stripSiblingOwnedSgRules } from '../../../provisioning/sg-sibling-rules.js';
+import { stripSiblingOwnedParentMembers } from '../../../provisioning/sibling-owned-members.js';
 
 /** What {@link compareDriftReadback} reads from `runDriftForStack`'s scope. */
 interface CompareDriftReadbackArgs {
@@ -337,7 +336,10 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // whose captured value was empty; CFn drift only compares
   // template-declared properties, so this restores parity for exactly
   // that class while keeping detection on undeclared keys captured with
-  // a real value (AWS-side defaults a console edit could change).
+  // a real value (AWS-side defaults a console edit could change). A baseline
+  // RE-captured once the sibling has written (a later update of the parent)
+  // is not empty; the sibling-owned strip below covers that case for every
+  // pair in `provisioning/sibling-owned-members.ts` (go-to-k/cdkd#6610).
   const observedIgnorePaths = useObserved
     ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {})
     : [];
@@ -370,27 +372,19 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     normalized.aws,
     resource.resourceType
   );
-  // go-to-k/cdkd#6324 / #6328: a list member a SIBLING owns (a managed policy
-  // a sibling `AWS::IAM::ManagedPolicy` attaches, a group a
-  // `UserToGroupAddition` adds, a principal attaching this managed policy) is
-  // that resource's. The readback already dropped it; the BASELINE drops it
-  // here, so one captured after the sibling's write (or before the fix)
-  // compares clean.
-  const memberStripped = stripSiblingOwnedMembers(
+  // go-to-k/cdkd#6324 / #6328 / #6418 / #6610: a member a SIBLING record of
+  // the stack writes onto this resource (a managed policy a sibling
+  // `AWS::IAM::ManagedPolicy` attaches, a security-group rule a standalone
+  // `SecurityGroupIngress` authorizes, a topic's standalone subscription, a
+  // cluster's capacity provider association, ...) is that resource's. It
+  // leaves BOTH sides, so a baseline captured after the sibling's write (or
+  // before the fix) compares clean; the table lives in
+  // `provisioning/sibling-owned-members.ts`.
+  const siblingStripped = stripSiblingOwnedParentMembers(
     resource.resourceType,
     resource.physicalId,
     protocolNormalized.baseline,
     protocolNormalized.aws,
-    resource.properties,
-    readContext
-  );
-  // go-to-k/cdkd#6418: likewise a security-group rule a sibling standalone
-  // `SecurityGroupIngress` / `SecurityGroupEgress` authorizes.
-  const siblingStripped = stripSiblingOwnedSgRules(
-    resource.resourceType,
-    resource.physicalId,
-    memberStripped.baseline,
-    memberStripped.aws,
     resource.properties,
     readContext
   );
