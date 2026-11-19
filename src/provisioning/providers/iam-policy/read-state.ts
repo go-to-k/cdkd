@@ -123,7 +123,9 @@ export async function readCurrentState(
     if (!documents.some((d) => isDeepStrictEqual(d, baseline)) && holdsSecretLeaf(baseline)) {
       return undefined;
     }
-    liveDocument = documents.find((d) => !isDeepStrictEqual(d, baseline)) ?? liveDocument;
+    // By index: an empty copy (`undefined`) is a valid pick, which `??` would drop.
+    const edited = documents.findIndex((d) => !isDeepStrictEqual(d, baseline));
+    if (edited !== -1) liveDocument = documents[edited];
   }
 
   const result: Record<string, unknown> = {
