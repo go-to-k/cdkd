@@ -391,15 +391,21 @@ grant_phase() { # $1 = baseline label (observed | template-only)
     count=$(grep -cF -- "${line#*|}" "${ARTIFACT_DIR}/revert-grants-${label}.log" || true)
     [ "${count}" = "${line%%|*}" ] || { echo "FAIL: #6627 (${label}): the revert plan names '${line#*|}' ${count} time(s), expected ${line%%|*}" >&2; exit 1; }
   done
-  if grep -E '^ +- ' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -qE "${MP_NAME}|cdkd-dvr-(role|user|group)-policy|cdkd-dvr-policy"; then
-    echo "FAIL: #6627 (${label}): the revert plan names a sibling's member for removal" >&2
+  # Captured, never `| grep -q`: under pipefail an early-exiting reader
+  # SIGPIPEs the writer and the pipeline reads as "no match".
+  local hits
+  hits=$(grep -E '^ +- ' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -E "${MP_NAME}|cdkd-dvr-(role|user|group)-policy|cdkd-dvr-policy" || true)
+  if [ -n "${hits}" ]; then
+    echo "FAIL: #6627 (${label}): the revert plan names a sibling's member for removal:" >&2
+    echo "${hits}" >&2
     exit 1
   fi
   # A Cloud Control patch's own `"op":"replace"` (the verbose debug line
   # listing it) is a JSON Patch verb, not a resource replacement.
-  if grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -qvF 'patch operations for'; then
+  hits=$(grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -vF 'patch operations for' || true)
+  if [ -n "${hits}" ]; then
     echo "FAIL: #6627 (${label}): drift --revert output names a replacement:" >&2
-    grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -vF 'patch operations for' >&2
+    echo "${hits}" >&2
     exit 1
   fi
   identities "${ARTIFACT_DIR}/identity-grants-${label}-after.tsv" || exit 1
