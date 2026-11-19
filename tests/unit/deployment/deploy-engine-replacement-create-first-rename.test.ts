@@ -28,6 +28,7 @@ import {
   isMarkedNonRetryable,
 } from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
+import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
@@ -229,6 +230,10 @@ async function provision(
     /** Extra properties on the old / new bag. */
     oldExtra?: Record<string, unknown>;
     newExtra?: Record<string, unknown>;
+    /** go-to-k/cdkd#6589: other state records, keyed by logical id. */
+    stateExtra?: Record<string, unknown>;
+    /** go-to-k/cdkd#6589: other template resources, keyed by logical id. */
+    templateExtra?: CloudFormationTemplate['Resources'];
   }
 ): Promise<Inner | null> {
   const type = opts.type ?? 'AWS::Lambda::Function';
@@ -265,6 +270,7 @@ async function provision(
       provisionedBy: opts.provisionedBy ?? ('sdk' as const),
       ...(opts.statePolicy !== undefined && { updateReplacePolicy: opts.statePolicy }),
     },
+    ...opts.stateExtra,
   };
   const template: CloudFormationTemplate = {
     Resources: {
@@ -273,6 +279,7 @@ async function provision(
         Properties: newProps,
         ...(opts.policy !== undefined && { UpdateReplacePolicy: opts.policy }),
       },
+      ...opts.templateExtra,
     },
   };
   return provisionResource(
@@ -620,6 +627,220 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
         'Nothing was deleted (UpdateReplacePolicy: Retain keeps the old resource in place)'
       );
       expect(h.callOrder).toEqual(['create']);
+    });
+
+    // go-to-k/cdkd#6589: a name only the reverse-replacement name keys read
+    // (a delivery source is in neither adoption table) ordered the recreate
+    // delete-first, so a delivery that still used the old source blocked it.
+    it('creates first for a renamed CloudWatch Logs delivery source (#6589)', async () => {
+      h = makeHarness('AWS::Logs::DeliverySource', { withImport: false });
+
+      const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+        type: 'AWS::Logs::DeliverySource',
+        nameProperty: 'Name',
+        recorded: 'src-1',
+        desired: 'src-2',
+      });
+
+      expect(err).toBeNull();
+      expect(h.callOrder).toEqual(['create', 'delete']);
+      expect(infoLines().some((l) => l.includes('before recreate'))).toBe(false);
+    });
+
+    it('keeps destroy-then-create for a same-name delivery source (#6589)', async () => {
+      h = makeHarness('AWS::Logs::DeliverySource', { withImport: false });
+
+      const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+        type: 'AWS::Logs::DeliverySource',
+        nameProperty: 'Name',
+        recorded: 'src-1',
+        desired: 'src-1',
+      });
+
+      expect(err).toBeNull();
+      expect(h.callOrder).toEqual(['delete', 'create']);
+    });
+
+    it('keeps destroy-then-create when the old name is not recorded (#6589)', async () => {
+      h = makeHarness('AWS::Logs::DeliverySource', { withImport: false });
+
+      const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+        type: 'AWS::Logs::DeliverySource',
+        nameProperty: 'Name',
+        recorded: 'src-1',
+        desired: 'src-2',
+        // The record holds a mask where the name was: the old name is unknown.
+        oldExtra: { Name: '***' },
+      });
+
+      expect(err).toBeNull();
+      expect(h.callOrder).toEqual(['delete', 'create']);
+    });
+
+    describe('a same-name recreate whose delete a same-stack dependent blocks (#6589)', () => {
+      const conflict = (): Error =>
+        new Error('Failed to delete CloudWatch Logs delivery source Fn: ConflictException.', {
+          cause: awsSdkError('Delivery source is in use', 'ConflictException'),
+        });
+      const delivery = {
+        Delivery: {
+          physicalId: 'delivery-id',
+          resourceType: 'AWS::Logs::Delivery',
+          properties: { DeliverySourceName: 'src-1' },
+          attributes: {},
+          dependencies: ['Fn'],
+          provisionedBy: 'sdk',
+        },
+      };
+      const deliveryTemplate: CloudFormationTemplate['Resources'] = {
+        Delivery: {
+          Type: 'AWS::Logs::Delivery',
+          Properties: { DeliverySourceName: { Ref: 'Fn' } },
+        },
+      };
+      const sameName = {
+        type: 'AWS::Logs::DeliverySource',
+        nameProperty: 'Name',
+        recorded: 'src-1',
+        desired: 'src-1',
+      };
+
+      beforeEach(() => {
+        h = makeHarness('AWS::Logs::DeliverySource', { withImport: false });
+      });
+
+      it('names the dependent and both ways round it', async () => {
+        h.deleteFailure = conflict();
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).toContain(
+          "\n  Fn's replacement is not known to take a new name, so --recreate-via-cc-api " +
+            'deletes the old resource before it creates the new one, while resources of ' +
+            'this stack still depend on it (Delivery)'
+        );
+        expect(err!.message).toContain('Give it a new name in the template');
+        expect(err!.message).toContain(
+          'remove those dependents from the template, deploy, recreate it, and add them back.'
+        );
+        expect(h.callOrder).toEqual(['delete']);
+      });
+
+      it('offers no rename for a type with no name it reads', async () => {
+        h = makeHarness('AWS::Logs::Delivery', { withImport: false });
+        h.deleteFailure = new Error('DependencyViolation', {
+          cause: awsSdkError('in use', 'DependencyViolation'),
+        });
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          type: 'AWS::Logs::Delivery',
+          nameProperty: 'DeliverySourceName',
+          recorded: 'src-1',
+          desired: 'src-1',
+          physicalId: 'delivery-id',
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('still depend on it (Delivery)');
+        expect(err!.message).not.toContain('new name in the template');
+        expect(err!.message).toContain(
+          'Remove those dependents from the template, deploy, recreate it, and add them back.'
+        );
+      });
+
+      it('offers no rename when the old name is not readable', async () => {
+        h.deleteFailure = conflict();
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          oldExtra: { Name: '***' },
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('still depend on it (Delivery)');
+        expect(err!.message).not.toContain('new name in the template');
+        expect(err!.message).toContain('Remove those dependents from the template');
+      });
+
+      it('names no dependent the template no longer has reference the target', async () => {
+        h.deleteFailure = conflict();
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: {
+            Delivery: { Type: 'AWS::Logs::Delivery', Properties: { DeliverySourceName: 'other' } },
+          },
+        });
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).not.toContain('still depend on it');
+      });
+
+      it('adds nothing for a Cloud Control ResourceConflict (an operation in progress)', async () => {
+        h.deleteFailure = new CloudControlOperationFailedError(
+          'DELETE failed for Fn: Another operation is in progress',
+          'AWS::Logs::DeliverySource',
+          'Fn',
+          'src-1',
+          'ResourceConflict',
+          'DELETE'
+        );
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).not.toContain('still depend on it');
+      });
+
+      it('adds nothing for a ResourceConflictException (an operation in progress)', async () => {
+        h.deleteFailure = new Error('Failed to delete Fn', {
+          cause: awsSdkError('The operation cannot be performed at this time.'),
+        });
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).not.toContain('still depend on it');
+      });
+
+      it('adds nothing without a same-stack dependent', async () => {
+        h.deleteFailure = conflict();
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), sameName);
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).not.toContain('still depend on it');
+      });
+
+      it('adds nothing for a delete failure that is not a conflict', async () => {
+        h.deleteFailure = new Error('AccessDenied: logs:DeleteDeliverySource', {
+          cause: awsSdkError('denied', 'AccessDeniedException'),
+        });
+
+        const err = await provision(makeEngine(h, { recreateViaCcApi: true }), {
+          ...sameName,
+          stateExtra: delivery,
+          templateExtra: deliveryTemplate,
+        });
+
+        expect(err!.message).toContain('Failed to destroy old resource Fn (src-1)');
+        expect(err!.message).not.toContain('still depend on it');
+      });
     });
 
     it('creates first under --recreate-via-cc-api too', async () => {

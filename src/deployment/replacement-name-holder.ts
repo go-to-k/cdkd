@@ -73,6 +73,8 @@ export {
 } from './replacement-name-holder/rewritten.js';
 export {
   reverseReplacementNameKeyKind,
+  replacementNameKeyMoves,
+  renameMakesRecreateCreateFirst,
   type ReverseReplacementHolderVerdict,
   replacementDerivedGeneratedNames,
 } from './replacement-name-holder/holder-probe.js';

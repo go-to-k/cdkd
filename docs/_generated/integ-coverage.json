@@ -5895,6 +5895,7 @@
         "eventbus-policy",
         "getatt-asg-arn-rule-name",
         "logs-delivery",
+        "recreate-renamed-logs-delivery",
         "sdk-ccapi-crossref"
       ],
       "signals": {
@@ -5924,6 +5925,9 @@
           "l2"
         ],
         "logs-delivery": [
+          "l2"
+        ],
+        "recreate-renamed-logs-delivery": [
           "l2"
         ],
         "sdk-ccapi-crossref": [
@@ -8240,7 +8244,8 @@
       "resourceType": "AWS::Logs::Delivery",
       "integs": [
         "cc-to-sdk-reroute-common-types-12",
-        "logs-delivery"
+        "logs-delivery",
+        "recreate-renamed-logs-delivery"
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types-12": [
@@ -8248,6 +8253,10 @@
           "literal"
         ],
         "logs-delivery": [
+          "l1",
+          "literal"
+        ],
+        "recreate-renamed-logs-delivery": [
           "l1",
           "literal"
         ]
@@ -8257,7 +8266,8 @@
       "resourceType": "AWS::Logs::DeliveryDestination",
       "integs": [
         "cc-to-sdk-reroute-common-types-12",
-        "logs-delivery"
+        "logs-delivery",
+        "recreate-renamed-logs-delivery"
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types-12": [
@@ -8265,6 +8275,10 @@
           "literal"
         ],
         "logs-delivery": [
+          "l1",
+          "literal"
+        ],
+        "recreate-renamed-logs-delivery": [
           "l1",
           "literal"
         ]
@@ -8274,7 +8288,8 @@
       "resourceType": "AWS::Logs::DeliverySource",
       "integs": [
         "cc-to-sdk-reroute-common-types-12",
-        "logs-delivery"
+        "logs-delivery",
+        "recreate-renamed-logs-delivery"
       ],
       "signals": {
         "cc-to-sdk-reroute-common-types-12": [
@@ -8282,6 +8297,10 @@
           "literal"
         ],
         "logs-delivery": [
+          "l1",
+          "literal"
+        ],
+        "recreate-renamed-logs-delivery": [
           "l1",
           "literal"
         ]
@@ -8325,6 +8344,7 @@
         "monitoring",
         "orphan-getatt-takeover",
         "perf-cross-backend-check",
+        "recreate-renamed-logs-delivery",
         "ref-shape-compound-cc-ids",
         "remove-protection",
         "retain-orphan-redeploy",
@@ -8458,6 +8478,9 @@
         "perf-cross-backend-check": [
           "l2",
           "literal"
+        ],
+        "recreate-renamed-logs-delivery": [
+          "l2"
         ],
         "ref-shape-compound-cc-ids": [
           "l1",

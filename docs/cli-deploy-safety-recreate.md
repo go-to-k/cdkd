@@ -231,6 +231,20 @@ bucket or a log group is under
 
 ## What else the recreate changes
 
+### Order of the delete and the create
+
+A recreate deletes the old resource first when the new one keeps its name,
+because the create would otherwise collide with it. When the template also
+gives the target a new name, cdkd creates the new resource first and deletes
+the old one at the end of the deploy, once the resources that used it have
+moved to the new one.
+
+The delete-first order can fail when another resource in the stack still uses
+the target and AWS refuses the delete, for example an `AWS::Logs::Delivery`
+that uses an `AWS::Logs::DeliverySource`. The error then names those
+resources. Give the target a new name in the template, or remove those
+resources from the template, deploy, recreate the target, and add them back.
+
 ### Resources that reference the target
 
 When AWS assigns the physical ID, as it does for a security group or a REST

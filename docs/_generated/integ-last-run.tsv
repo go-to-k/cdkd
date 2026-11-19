@@ -57,7 +57,7 @@ cc-to-sdk-reroute-cloudfront-distribution	2026-11-18T01:46:29Z	PASS	666	verify.s
 cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-10	2026-11-17T16:32:48Z	PASS	191	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-11	2026-11-18T04:18:23Z	PASS	2545	verify.sh	rc ok, orph clean
-cc-to-sdk-reroute-common-types-12	2026-11-19T03:07:34Z	PASS	231	verify.sh	rc ok, orph clean; us-east-1; 4 flips (Archive, DeliverySource, DeliveryDestination, Delivery) id-stable + witnesses
+cc-to-sdk-reroute-common-types-12	2026-11-19T03:38:31Z	PASS	216	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
@@ -392,9 +392,10 @@ rds-multiaz-cluster	2026-11-08T20:08:02Z	PASS	4107	verify.sh	3 phases ok; class 
 recreate-mixed-direction	2026-11-04T19:47:52Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-nested-logical-id-collision	2026-11-04T19:21:11Z	PASS	113	verify.sh	rc ok, orph clean
 recreate-parent-child-permission	2026-11-10T15:28:59Z	PASS	100	verify.sh	rc ok, orph clean; own bucket
-recreate-target-readers	2026-11-04T06:43:31Z	PASS	75	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
-recreate-via-cc-api	2026-11-18T12:47:19Z	PASS	240	verify.sh	rc ok, orph clean (#6553 PR #6554 r2)
-recreate-via-sdk-provider	2026-11-04T19:47:52Z	PASS	85	verify.sh	rc ok, orph clean
+recreate-renamed-logs-delivery	2026-11-19T04:14:06Z	PASS	115	verify.sh	rc ok, orph clean
+recreate-target-readers	2026-11-19T03:20:45Z	PASS	85	verify.sh	rc ok, orph clean
+recreate-via-cc-api	2026-11-19T03:20:45Z	PASS	141	verify.sh	rc ok, orph clean
+recreate-via-sdk-provider	2026-11-19T03:20:45Z	PASS	110	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-11-04T20:42:09Z	PASS	91	verify.sh	rc ok; #3952 redacted ApiId skip + clean destroy; us-east-1; orph clean
 redshift-cluster-getatt	2026-11-04T07:36:26Z	PASS	301	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 ref-shape-compound-cc-ids	2026-11-14T09:41:03Z	PASS	116	verify.sh	rc ok, orph clean
