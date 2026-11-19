@@ -5,6 +5,7 @@
 
 import { ownRecord } from './replay-failed-checks.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { type RolledBackCreate } from '../../state/name-generation.js';
 import { type ReplayDeferral } from './replay-scope.js';
 import {
@@ -30,6 +31,12 @@ import {
   type FailedOperation,
 } from './types.js';
 import { ReplayResolvers } from './replay-secrets.js';
+import {
+  leafReadsSecret,
+  orderAfterRegeneratedSecrets,
+  regeneratedSecretAddresses,
+  revertRegeneratesSecret,
+} from './regenerated-secrets.js';
 import {
   partitionOps,
   sortRollbackCreates,
@@ -208,10 +215,24 @@ export async function replayRollbackUnbound(
   // The re-create of one it depends on runs before its own.
   // go-to-k/cdkd#6423: and a delete-first reversal runs after the reverts of
   // the ops its old record depends on.
-  const stepOne = orderDeleteFirstAfterDependencies(
-    orderInlinePolicyReversals([...otherOps].reverse(), stateResources),
-    stateResources,
-    orphanLogicalIds
+  // go-to-k/cdkd#6591: and an op whose old record depends on a secret whose
+  // revert regenerates its value runs after that revert.
+  const stepOne = orderAfterRegeneratedSecrets(
+    orderDeleteFirstAfterDependencies(
+      orderInlinePolicyReversals([...otherOps].reverse(), stateResources),
+      stateResources,
+      orphanLogicalIds
+    ),
+    stateResources
+  );
+  // go-to-k/cdkd#6591: logical id -> addresses of each secret whose revert
+  // regenerated its value in this replay.
+  const regenerated = new Map<string, Set<string>>();
+  // The regenerating secret reverts not yet run.
+  const pendingRegenerating = new Map(
+    stepOne
+      .filter((op) => revertRegeneratesSecret(op, stateResources))
+      .map((op) => [op.logicalId, regeneratedSecretAddresses(op)] as const)
   );
   const stepOneIds = new Map<string, CompletedOperation>();
   const stepOneIndex = new Map<CompletedOperation, number>();
@@ -239,12 +260,39 @@ export async function replayRollbackUnbound(
   const runOp = async (op: CompletedOperation, deferral?: ReplayDeferral): Promise<void> => {
     const failuresBefore = result.failures;
     const skippedBefore = result.skipped;
+    // go-to-k/cdkd#6591: a reader of a secret this replay regenerated gets a
+    // fresh resolver (no cache entry from before the regeneration) that
+    // resolves those tokens at the current value.
+    // Decided before the revert, which writes the old record back over the
+    // one this compares against.
+    const regenerates = revertRegeneratesSecret(op, stateResources);
+    pendingRegenerating.delete(op.logicalId);
+    // Only an op whose old record reads the secret's value through a token.
+    const oldText = JSON.stringify(op.previousState?.properties ?? {});
+    const blockedBehind = (
+      Array.isArray(op.previousState?.dependencies) ? op.previousState.dependencies : []
+    ).find((id) => {
+      const addresses = typeof id === 'string' ? pendingRegenerating.get(id) : undefined;
+      return addresses !== undefined && leafReadsSecret(oldText, addresses);
+    });
+    if (op.changeType !== 'CREATE' && typeof blockedBehind === 'string') {
+      // The order could not put this op after the secret (an op depending on
+      // it sits between them): it is restored at its record's version, which
+      // the secret's restore is about to replace.
+      ctx.logger.warn(
+        safeMsg`Rollback restores ${shownLogicalId(op.logicalId)} before secret ${shownLogicalId(blockedBehind)}, whose restore generates a new value, so it may keep the value from before the deploy. Run ${proseQuoted(cdkdRemedy('cdkd drift', stackName, '--revert'))} after the rollback to restore it from the secret's current value.`
+      );
+    }
+    const readsRegenerated = new Set<string>();
+    for (const id of revertReferences(op, stateResources)) {
+      for (const address of regenerated.get(id) ?? []) readsRegenerated.add(address);
+    }
     await replaySingle(
       op,
       stateResources,
       stackName,
       ctx,
-      resolver,
+      readsRegenerated.size === 0 ? resolver : new ReplayResolvers(ctx.region, readsRegenerated),
       orphanLogicalIds,
       result,
       options.onOrphan,
@@ -257,6 +305,9 @@ export async function replayRollbackUnbound(
       movedIdCleanups
     );
     if (result.failures > failuresBefore || result.skipped > skippedBefore) failedOps.add(op);
+    else if (regenerates) {
+      regenerated.set(op.logicalId, regeneratedSecretAddresses(op));
+    }
   };
   const recreateAhead = async (refs: ReadonlySet<string>): Promise<void> => {
     for (const target of [...refs].map((id) => stepOneIds.get(id))) {

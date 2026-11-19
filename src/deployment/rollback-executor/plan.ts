@@ -6,6 +6,7 @@ import { samePhysicalId } from '../replacement-name-holder/name-keys.js';
 import { classifyRollbackOp, isReplacementOp } from './plan/classify.js';
 import { isStandaloneInlinePolicyType } from '../inline-policy-claims.js';
 import { nearestMemberDependencies, recordedDependencies } from '../deploy-engine/dependencies.js';
+import { orderAfterRegeneratedSecrets } from './regenerated-secrets.js';
 
 export {
   resolveReplacementOldType,
@@ -52,7 +53,10 @@ export function planRollback(
 ): RollbackPlanItem[] {
   const { createOps, otherOps } = partitionOps(operations);
   const ordered: CompletedOperation[] = [
-    ...orderDeleteFirstAfterDependencies([...otherOps].reverse(), stateResources, orphanLogicalIds),
+    ...orderAfterRegeneratedSecrets(
+      orderDeleteFirstAfterDependencies([...otherOps].reverse(), stateResources, orphanLogicalIds),
+      stateResources
+    ),
     ...sortRollbackCreates(createOps, stateResources),
   ];
   return ordered.map((op) => {
