@@ -1157,6 +1157,11 @@
       "scenarios": []
     },
     {
+      "name": "drift-verbatim-readback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dsql",
       "annotated": true,
       "scenarios": []
@@ -4197,6 +4202,7 @@
     "drift-rotation-schedule-revert",
     "drift-sg-sibling-rules",
     "drift-sns-sibling-subscription",
+    "drift-verbatim-readback",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",
