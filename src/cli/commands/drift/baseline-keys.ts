@@ -9,6 +9,12 @@ import {
   readStreamPolicy,
   streamPolicyMatchesDeclared,
 } from '../../../provisioning/dynamodb-stream-members.js';
+import {
+  declaredPolicyDocument,
+  LAMBDA_PERMISSION_STATEMENT_KEYS,
+  lambdaPermissionMatchesDeclared,
+  policyDocumentMatchesDeclared,
+} from '../../../provisioning/settle-after-own-write.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -136,6 +142,14 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * removed policy, or deleted a declared one. What the rule cannot tell apart
  * is an out-of-band change that put the table back to the template, which
  * CloudFormation would not report either.
+ *
+ * Third rule (go-to-k/cdkd#6609): an `AWS::SQS::QueuePolicy` /
+ * `AWS::SNS::TopicPolicy` `PolicyDocument`, or the statement keys of an
+ * `AWS::Lambda::Permission`, recorded as something other than the declared
+ * value while the live resource holds exactly the declared value. Before
+ * #6609 the baseline took the first answer right after the write, which can
+ * still be the policy the write replaced, so `drift --revert` re-granted it.
+ * Same blind spot as the second rule.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -150,6 +164,21 @@ export function preFixBaselineUncomparedDriftKeys(
   if (resourceType === 'AWS::DynamoDB::Table') {
     return staleTablePolicyBaseline(observed, properties as Record<string, unknown>, aws)
       ? ['ResourcePolicy']
+      : [];
+  }
+  if (resourceType === 'AWS::SQS::QueuePolicy' || resourceType === 'AWS::SNS::TopicPolicy') {
+    const declared = declaredPolicyDocument(properties);
+    return declared !== undefined &&
+      policyDocumentMatchesDeclared(aws['PolicyDocument'], declared) &&
+      !policyDocumentMatchesDeclared(observed['PolicyDocument'], declared)
+      ? ['PolicyDocument']
+      : [];
+  }
+  if (resourceType === 'AWS::Lambda::Permission') {
+    const declared = properties as Record<string, unknown>;
+    return lambdaPermissionMatchesDeclared(aws, declared) &&
+      !lambdaPermissionMatchesDeclared(observed, declared)
+      ? [...LAMBDA_PERMISSION_STATEMENT_KEYS]
       : [];
   }
   if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];

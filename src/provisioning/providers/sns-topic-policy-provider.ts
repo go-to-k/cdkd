@@ -25,6 +25,7 @@ import type {
   ResourceNotFound,
   CreateContext,
   UpdateContext,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -32,6 +33,12 @@ import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
+import {
+  declaredPolicyDocument,
+  OWN_WRITE_REREAD_DELAYS_MS,
+  policyDocumentMatchesDeclared,
+  reReadUntilSettled,
+} from '../settle-after-own-write.js';
 
 /**
  * The skip reasons of a failed create's delete (go-to-k/cdkd#4612): a failure
@@ -63,6 +70,8 @@ export const TOPIC_POLICY_NOT_COMPARED_LEFT_REASON =
  */
 export class SNSTopicPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('SNSTopicPolicyProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::SNS::TopicPolicy', new Set(['Topics', 'PolicyDocument'])],
@@ -666,11 +675,43 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
    * Returns `undefined` when no topics are listed in the physical id, and
    * `RESOURCE_NOT_FOUND` when the first listed topic is gone
    * (`NotFoundException`).
+   *
+   * The baseline capture right after cdkd's own write (`afterOwnWrite`,
+   * go-to-k/cdkd#6609): a just-set `Policy` can still read back as the one it
+   * replaced (the topic's default, on a create). It is re-asked until it is
+   * the declared document; one that never is captures no baseline (drift then
+   * compares against the template), since a stale document recorded there is
+   * what `drift --revert` would re-grant. Every other read takes the first
+   * answer.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const declared =
+      context?.afterOwnWrite === true ? declaredPolicyDocument(properties) : undefined;
+    if (declared === undefined) return this.readTopicPolicy(physicalId);
+    const { answer, settled } = await reReadUntilSettled(
+      () => this.readTopicPolicy(physicalId),
+      (read) =>
+        read !== undefined &&
+        read !== RESOURCE_NOT_FOUND &&
+        policyDocumentMatchesDeclared(read['PolicyDocument'], declared),
+      this.ownWriteRereadDelaysMs
+    );
+    if (settled) return answer;
+    this.logger.debug(
+      safeMsg`No drift baseline captured for topic policy ${physicalId}: its topic did not read back the policy just written`
+    );
+    return undefined;
+  }
+
+  /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */
+  private async readTopicPolicy(
+    physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const topics = physicalId.split(',').filter((t) => t.length > 0);
     if (topics.length === 0) return undefined;
