@@ -295,6 +295,12 @@ P1=()
 # before its destroy. A missing resource is the normal answer.
 delete_leftovers() { (
   set +eu
+  # Deliveries first: CloudWatch Logs refuses to delete a source or a
+  # destination a delivery still uses.
+  for id in $(aws logs describe-deliveries --region "${REGION}" \
+    --query "deliveries[?starts_with(deliverySourceName, '${SOURCE_PREFIX}')].id" --output text 2>/dev/null); do
+    [ "${id}" = "None" ] || aws logs delete-delivery --id "${id}" --region "${REGION}" >/dev/null 2>&1
+  done
   for gen in 1 2; do
     aws logs delete-delivery-source --name "${SOURCE_PREFIX}${gen}" --region "${REGION}" >/dev/null 2>&1
     aws logs delete-delivery-destination --name "${DESTINATION_PREFIX}${gen}" --region "${REGION}" >/dev/null 2>&1

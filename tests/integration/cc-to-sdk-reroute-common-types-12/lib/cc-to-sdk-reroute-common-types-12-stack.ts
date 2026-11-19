@@ -76,7 +76,8 @@ export class CcToSdkRerouteCommonTypes12Stack extends cdk.Stack {
     super(scope, id, props);
 
     const phaseName = process.env.CDKD_TEST_PHASE ?? 'base';
-    const value = VALUE_BY_PHASE[phaseName] ?? 'a';
+    const value = VALUE_BY_PHASE[phaseName];
+    if (value === undefined) throw new Error(`unknown CDKD_TEST_PHASE '${phaseName}'`);
     // 1 for the SDK create, 2 from the Cloud Control recreate onwards.
     const generation = phaseName === 'base' || phaseName === 'unhook' ? '1' : '2';
     const tags = [{ key: 'cdkd-reroute', value }];
@@ -121,7 +122,6 @@ export class CcToSdkRerouteCommonTypes12Stack extends cdk.Stack {
     });
     destination.overrideLogicalId('RerouteDeliveryDestination');
 
-
     // Ref of an archive, a source and a destination is its name, and of a
     // delivery its id, on both layers; the ARNs are read beside them.
     new cdk.CfnOutput(this, 'ArchiveRef', { value: archive.ref });
@@ -132,10 +132,12 @@ export class CcToSdkRerouteCommonTypes12Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'DestinationArn', { value: destination.attrArn });
 
     if (WITHOUT_DELIVERY.has(phaseName)) return;
+    const deliveryValue = DELIVERY_VALUE_BY_PHASE[phaseName];
+    if (deliveryValue === undefined) throw new Error(`no delivery value for phase '${phaseName}'`);
     const delivery = new logs.CfnDelivery(this, 'RerouteDelivery', {
       deliverySourceName: source.ref,
       deliveryDestinationArn: destination.attrArn,
-      tags: [{ key: 'cdkd-reroute', value: DELIVERY_VALUE_BY_PHASE[phaseName] ?? 'a' }],
+      tags: [{ key: 'cdkd-reroute', value: deliveryValue }],
     });
     delivery.overrideLogicalId('RerouteDelivery');
     new cdk.CfnOutput(this, 'DeliveryRef', { value: delivery.ref });
