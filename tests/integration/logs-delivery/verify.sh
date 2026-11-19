@@ -189,7 +189,7 @@ dpp_identifiers() {
   local doc
   doc="$(aws logs get-data-protection-policy --log-group-identifier "${LOG_GROUP}" --region "${REGION}" \
     --query policyDocument --output text)" || return 1
-  printf '%s' "${doc}" | jq -r '[.statement[0].dataIdentifier[] | split("/") | last] | sort | join(",")'
+  printf '%s' "${doc}" | jq -r '[(.Statement // .statement)[0] | (.DataIdentifier // .dataIdentifier)[] | split("/") | last] | sort | join(",")'
 }
 
 echo "==> Phase 1: deploy"
