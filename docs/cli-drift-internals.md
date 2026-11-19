@@ -757,13 +757,21 @@ under `--dry-run`. A Glue Iceberg table's `table_type` / `metadata_location`,
 and the roughly eighteen untemplated attributes an ELBv2 load balancer
 reports, survive the revert instead of being reset.
 
-One class is exempt: a property whose readback echoes the template verbatim,
-which today is an IAM policy document (`PolicyDocument` on `AWS::IAM::Policy` /
-`AWS::IAM::ManagedPolicy`, `AssumeRolePolicyDocument` on `AWS::IAM::Role`). IAM
-adds no key of its own there, so a key only AWS holds was added out of band:
-detection walks the union of keys under it on this baseline too, and the revert
-sends the template's document whole and does not list it as preserved. Other
-services' resource policies (S3, SQS, SNS, KMS) are not exempt yet.
+One class is exempt: a property whose readback echoes the template verbatim
+(`verbatimEchoDriftKeys` in `src/analyzer/drift-verbatim-paths.ts`). Today
+that means the policy documents of `AWS::IAM::Policy`, `ManagedPolicy`,
+`RolePolicy`, `UserPolicy` and `GroupPolicy`, the role trust policy, and the
+resource policies of `AWS::S3::BucketPolicy`, `AWS::SQS::QueuePolicy`,
+`AWS::SNS::TopicPolicy`, `AWS::KMS::Key` and
+`AWS::SecretsManager::ResourcePolicy`, each measured on a real readback. The
+service adds no key of its own there, so a key only AWS holds was added out of
+band. Detection walks the union of keys under it on this baseline too, and the
+revert sends the template's document whole and does not list it as preserved.
+S3, SQS, SNS, KMS, Secrets Manager and the IAM trust policy return a
+single-object `Statement` as a one-element list, so detection reads the two
+forms at `<key>.Statement` as one value. That list is then compared whole, so a
+key added inside it is still drift. `AWS::ECR::Repository` is not exempt,
+because its readback carries no `RepositoryPolicyText`.
 
 Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them
 reverted too. Either populates `observedProperties`, after which the baseline

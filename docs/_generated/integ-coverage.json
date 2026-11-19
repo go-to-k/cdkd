@@ -5175,7 +5175,6 @@
         "created-before-failure-revert",
         "cross-region-concurrent-stacks",
         "destroy-data-guard",
-        "drift-verbatim-readback",
         "ecr",
         "ecr-scanning",
         "local-run-task-from-state",
@@ -5201,10 +5200,6 @@
         ],
         "destroy-data-guard": [
           "l2"
-        ],
-        "drift-verbatim-readback": [
-          "l1",
-          "literal"
         ],
         "ecr": [
           "l2",

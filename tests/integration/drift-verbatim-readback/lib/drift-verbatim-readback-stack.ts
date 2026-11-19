@@ -4,7 +4,6 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as kms from 'aws-cdk-lib/aws-kms';
-import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
 
@@ -16,8 +15,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * a key the template never submitted. verify.sh records each resource's
  * deploy-time readback (`observedProperties`) beside its template properties.
  *
- * - #6624: one resource policy per service (S3, SQS, SNS, KMS, ECR, Secrets
- *   Manager) and the Cloud Control-routed IAM inline policies (RolePolicy,
+ * - #6624: one resource policy per service (S3, SQS, SNS, KMS, Secrets
+ *   Manager; ECR's readback carries no repository policy, so it is not here) and the Cloud Control-routed IAM inline policies (RolePolicy,
  *   UserPolicy, GroupPolicy), plus an `AWS::IAM::Policy` and an
  *   `AWS::IAM::ManagedPolicy` attaching to the same principals.
  * - #6627: a role, a user and a group that declare no `ManagedPolicyArns`,
@@ -33,7 +32,6 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * covers: AWS::SQS::QueuePolicy
  * covers: AWS::SNS::TopicPolicy
  * covers: AWS::KMS::Key
- * covers: AWS::ECR::Repository
  * covers: AWS::SecretsManager::ResourcePolicy
  * covers: AWS::IAM::RolePolicy
  * covers: AWS::IAM::UserPolicy
@@ -104,17 +102,6 @@ export class DriftVerbatimReadbackStack extends cdk.Stack {
       }),
     });
     key.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-
-    const repo = new ecr.CfnRepository(this, 'ProbeRepo', {
-      repositoryName: 'cdkd-dvr-repo',
-      emptyOnDelete: true,
-      repositoryPolicyText: doc({
-        Effect: 'Deny',
-        Principal: root,
-        Action: 'ecr:DeleteLifecyclePolicy',
-      }),
-    });
-    repo.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     const secret = new secretsmanager.CfnSecret(this, 'ProbeSecret', {
       name: 'cdkd-dvr-secret',

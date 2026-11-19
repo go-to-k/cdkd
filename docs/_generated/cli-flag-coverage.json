@@ -3340,6 +3340,7 @@
     "--resource-mapping-inline",
     "--resource-model",
     "--resource-name",
+    "--resource-policy",
     "--resource-request-status-filter",
     "--resource-type",
     "--resource-type-filters",

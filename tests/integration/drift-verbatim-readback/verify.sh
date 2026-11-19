@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# verify.sh -- readback probe for go-to-k/cdkd#6624 / #6627.
+# verify.sh -- template-only drift baseline for resource policies and IAM
+# principals (go-to-k/cdkd#6624 / #6627).
 #
-# Deploys object-form resource policies (S3, SQS, SNS, KMS, ECR, Secrets
-# Manager, the Cloud Control-routed IAM inline policies, IAM Policy and
-# ManagedPolicy) and IAM principals that declare no attachment-class key, then
-# RECORDS what cdkd's readers return for each: the deploy-time readback
-# (`observedProperties`, from `cdkd state show --json`), a summary of the keys
-# only the readback holds (summarize-readback.ts), `cdkd drift --json` on the
-# observed baseline, the same on the template-only baseline (strip-all-observed.ts),
-# and a second readback after `cdkd state refresh-observed`. Every file lands
-# in one artifact directory whose path is printed at the end.
-#
-# This phase asserts only that every step ran and that the destroy left
-# nothing behind; the readback decides which types get a verbatim-key row.
+# Deploys object-form resource policies (S3, SQS, SNS, KMS, Secrets Manager,
+# the Cloud Control-routed IAM inline policies) and IAM principals, records
+# each resource's deploy-time readback (`cdkd state show --json`, summarized by
+# summarize-readback.ts) into an artifact directory printed at the end, then:
+#   1. drift on the observed baseline is clean;
+#   2. with every observed baseline stripped (strip-all-observed.ts: the
+#      template-only baseline a capture-off deploy leaves), drift is clean;
+#   3. a Condition added out of band to every document is drift, named by
+#      path; `drift --revert` removes it from AWS; drift is clean again.
 
 set -euo pipefail
 
@@ -59,7 +57,6 @@ mkdir -p "${ARTIFACT_DIR}"
 BUCKET_PREFIX="cdkd-dvr-"
 QUEUE="cdkd-dvr-queue"
 TOPIC="cdkd-dvr-topic"
-REPO="cdkd-dvr-repo"
 SECRET="cdkd-dvr-secret"
 SIB_ROLE="cdkd-dvr-sibling-role"
 SIB_USER="cdkd-dvr-sibling-user"
@@ -103,7 +100,6 @@ cleanup() {
   fi
   q_url=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null) &&
     aws sqs delete-queue --queue-url "${q_url}" --region "${REGION}" >/dev/null 2>&1
-  aws ecr delete-repository --repository-name "${REPO}" --force --region "${REGION}" >/dev/null 2>&1 || true
   aws secretsmanager delete-secret --secret-id "${SECRET}" --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${KEY_ID}" ]; then
     aws kms schedule-key-deletion --key-id "${KEY_ID}" --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1 || true
@@ -143,6 +139,7 @@ node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --regi
 run_drift() { # $1 = output file
   local rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --json >"$1" || rc=$?
+  DRIFT_RC="${rc}"
   case "${rc}" in
     0 | 1 | 2) echo "    drift rc=${rc} -> $1" ;;
     *) echo "FAIL: cdkd drift exited ${rc}" >&2; exit 1 ;;
@@ -165,19 +162,129 @@ missing=$(node -e '
   const s = require(process.argv[1]);
   process.stdout.write(Object.keys(s).filter((k) => !s[k].hasObserved).join(" "));
 ' "${ARTIFACT_DIR}/summary-deploy.json")
-echo "    resources without a deploy-time readback: ${missing:-none}"
+[ -z "${missing}" ] || { echo "FAIL: no deploy-time readback for: ${missing}" >&2; exit 1; }
+echo "    OK: every resource recorded a deploy-time readback"
 
-echo "==> Drift on the observed baseline"
+# Drift JSON -> one "<logicalId> <path>" line per change, sorted.
+drift_paths() { # $1 = drift --json file
+  node -e '
+    const [r] = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const out = r.drifted.flatMap((d) => d.changes.map((c) => `${d.logicalId} ${c.path}`));
+    process.stdout.write(out.sort().join("\n"));
+  ' "$1"
+}
+
+echo "==> Drift on the observed baseline: clean"
 run_drift "${ARTIFACT_DIR}/drift-observed.json"
+got=$(drift_paths "${ARTIFACT_DIR}/drift-observed.json")
+[ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: observed-baseline drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
+echo "    OK: observed baseline clean"
 
-echo "==> Drift on the template-only baseline"
-STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" AWS_REGION="${REGION}" node strip-all-observed.ts
+# The template-only baseline: a deploy with capture off, or a failed capture.
+echo "==> Strip every observed baseline"
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET:-}" AWS_REGION="${REGION}" node strip-all-observed.ts
+
+# go-to-k/cdkd#6624: before the fix, the object-form Statement each of S3,
+# SQS, SNS, KMS, Secrets Manager and the role trust policy returns as a
+# one-element list was drift here on a stack nobody touched.
+echo "==> Drift on the template-only baseline: clean"
 run_drift "${ARTIFACT_DIR}/drift-template-only.json"
+got=$(drift_paths "${ARTIFACT_DIR}/drift-template-only.json")
+[ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: template-only drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
+echo "    OK: template-only baseline clean"
 
-echo "==> Second readback via state refresh-observed"
-node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
-show_state "${ARTIFACT_DIR}/state-show-refresh.json"
-node summarize-readback.ts "${ARTIFACT_DIR}/state-show-refresh.json" >"${ARTIFACT_DIR}/summary-refresh.json"
+# --- go-to-k/cdkd#6624: a Condition added out of band to each document ------
+COND="{\"StringEquals\":{\"aws:PrincipalAccount\":\"${ACCOUNT}\"}}"
+ROOT="{\"AWS\":\"arn:${PARTITION}:iam::${ACCOUNT}:root\"}"
+stmt() { # $1 = Effect, $2 = Principal JSON or "", $3 = Action, $4 = Resource or ""
+  local p="" r=""
+  [ -n "$2" ] && p=",\"Principal\":$2"
+  [ -n "$4" ] && r=",\"Resource\":\"$4\""
+  printf '{"Version":"2012-10-17","Statement":{"Effect":"%s"%s,"Action":"%s"%s,"Condition":%s}}' \
+    "$1" "${p}" "$3" "${r}" "${COND}"
+}
+BUCKET="${BUCKET_PREFIX}${ACCOUNT}-${REGION}"
+TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT}:${TOPIC}"
+QUEUE_URL=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" --query QueueUrl --output text)
+QUEUE_ARN="arn:${PARTITION}:sqs:${REGION}:${ACCOUNT}:${QUEUE}"
+
+echo "==> Add a Condition to every probed document out of band"
+aws s3api put-bucket-policy --bucket "${BUCKET}" --region "${REGION}" \
+  --policy "$(stmt Deny "${ROOT}" s3:PutObjectLegalHold "arn:${PARTITION}:s3:::${BUCKET}/*")"
+node -e 'process.stdout.write(JSON.stringify({ Policy: process.argv[1] }))' \
+  "$(stmt Deny "${ROOT}" sqs:PurgeQueue "${QUEUE_ARN}")" >"${ARTIFACT_DIR}/sqs-attrs.json"
+aws sqs set-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" \
+  --attributes "file://${ARTIFACT_DIR}/sqs-attrs.json"
+aws sns set-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --attribute-name Policy \
+  --attribute-value "$(stmt Deny "${ROOT}" sns:ListSubscriptionsByTopic "${TOPIC_ARN}")"
+aws kms put-key-policy --key-id "${KEY_ID}" --region "${REGION}" --policy-name default \
+  --policy "$(stmt Allow "${ROOT}" 'kms:*' '*')"
+aws secretsmanager put-resource-policy --secret-id "${SECRET}" --region "${REGION}" \
+  --resource-policy "$(stmt Deny "${ROOT}" secretsmanager:RestoreSecret '*')" >/dev/null
+aws iam put-role-policy --role-name "${SIB_ROLE}" --policy-name cdkd-dvr-role-policy \
+  --policy-document "$(stmt Deny "" s3:PutObjectLegalHold '*')"
+aws iam put-user-policy --user-name "${SIB_USER}" --policy-name cdkd-dvr-user-policy \
+  --policy-document "$(stmt Deny "" s3:PutObjectLegalHold '*')"
+aws iam put-group-policy --group-name "${SIB_GROUP}" --policy-name cdkd-dvr-group-policy \
+  --policy-document "$(stmt Deny "" s3:PutObjectLegalHold '*')"
+aws iam update-assume-role-policy --role-name "${BARE_ROLE}" \
+  --policy-document "$(stmt Allow '{"Service":"lambda.amazonaws.com"}' sts:AssumeRole "")"
+# IAM is eventually consistent; let every read see the write.
+sleep 15
+
+# A one-element-list readback compares as a list, so the drift names the
+# Statement; an object readback (the Cloud Control IAM inline types) names
+# the added key.
+EXPECTED_DRIFT=$(printf '%s\n' \
+  "BareRole AssumeRolePolicyDocument.Statement" \
+  "ProbeBucketPolicy PolicyDocument.Statement" \
+  "ProbeGroupPolicy PolicyDocument.Statement.Condition" \
+  "ProbeKey KeyPolicy.Statement" \
+  "ProbeQueuePolicy PolicyDocument.Statement" \
+  "ProbeRolePolicy PolicyDocument.Statement.Condition" \
+  "ProbeSecretPolicy ResourcePolicy.Statement" \
+  "ProbeTopicPolicy PolicyDocument.Statement" \
+  "ProbeUserPolicy PolicyDocument.Statement.Condition" | LC_ALL=C sort)
+
+echo "==> Drift on the template-only baseline names every added Condition"
+run_drift "${ARTIFACT_DIR}/drift-condition.json"
+got=$(drift_paths "${ARTIFACT_DIR}/drift-condition.json" | LC_ALL=C sort)
+if [ "${got}" != "${EXPECTED_DRIFT}" ] || [ "${DRIFT_RC}" != 1 ]; then
+  echo "FAIL: template-only drift after the out-of-band Conditions differs from the expected set" >&2
+  diff <(echo "${EXPECTED_DRIFT}") <(echo "${got}") >&2 || true
+  exit 1
+fi
+echo "    OK: all 9 documents report the added Condition"
+
+echo "==> drift --revert"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes
+sleep 15
+
+echo "==> The live documents hold no Condition after the revert"
+live_docs() {
+  aws s3api get-bucket-policy --bucket "${BUCKET}" --region "${REGION}" --query Policy --output text
+  aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names Policy --query Attributes.Policy --output text
+  aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.Policy --output text
+  aws kms get-key-policy --key-id "${KEY_ID}" --region "${REGION}" --policy-name default --query Policy --output text
+  aws secretsmanager get-resource-policy --secret-id "${SECRET}" --region "${REGION}" --query ResourcePolicy --output text
+  aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name cdkd-dvr-role-policy --output json
+  aws iam get-user-policy --user-name "${SIB_USER}" --policy-name cdkd-dvr-user-policy --output json
+  aws iam get-group-policy --group-name "${SIB_GROUP}" --policy-name cdkd-dvr-group-policy --output json
+  aws iam get-role --role-name "${BARE_ROLE}" --output json
+}
+LIVE=$(live_docs)
+if grep -q 'PrincipalAccount' <<<"${LIVE}"; then
+  echo "FAIL: a Condition survived drift --revert:" >&2
+  echo "${LIVE}" >&2
+  exit 1
+fi
+echo "    OK: every Condition removed from AWS"
+
+echo "==> Drift on the template-only baseline after the revert: clean"
+run_drift "${ARTIFACT_DIR}/drift-after-revert.json"
+got=$(drift_paths "${ARTIFACT_DIR}/drift-after-revert.json")
+[ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
+echo "    OK: clean after the revert"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force
@@ -186,8 +293,6 @@ assert_gone "bucket ${BUCKET_PREFIX}${ACCOUNT}-${REGION} still exists after dest
   aws s3api head-bucket --bucket "${BUCKET_PREFIX}${ACCOUNT}-${REGION}" --region "${REGION}"
 assert_gone "topic ${TOPIC} still exists after destroy" \
   aws sns get-topic-attributes --topic-arn "arn:${PARTITION}:sns:${REGION}:${ACCOUNT}:${TOPIC}" --region "${REGION}"
-assert_gone "repository ${REPO} still exists after destroy" \
-  aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}"
 assert_gone "managed policy ${MP_NAME} still exists after destroy" \
   aws iam get-policy --policy-arn "arn:${PARTITION}:iam::${ACCOUNT}:policy/${MP_NAME}"
 for r in "${SIB_ROLE}" "${BARE_ROLE}"; do

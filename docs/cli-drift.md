@@ -73,10 +73,15 @@ Some resources have no snapshot, for example one deployed with
 `--no-capture-observed-state`. For those, drift compares against the
 properties from your template, so it only catches changes to properties you
 did set. A key added inside an object you set is not compared either, with one
-exception: an IAM policy document (`PolicyDocument` on `AWS::IAM::Policy` and
-`AWS::IAM::ManagedPolicy`, `AssumeRolePolicyDocument` on `AWS::IAM::Role`).
-IAM returns the document as submitted, so a key only AWS holds there, such as
-a `Condition` added to a single-object `Statement`, is reported as drift. You
+exception: a policy document whose service returns it with no key of its own.
+These are `PolicyDocument` on `AWS::IAM::Policy`, `AWS::IAM::ManagedPolicy`,
+`AWS::IAM::RolePolicy`, `AWS::IAM::UserPolicy`, `AWS::IAM::GroupPolicy`,
+`AWS::S3::BucketPolicy`, `AWS::SQS::QueuePolicy` and `AWS::SNS::TopicPolicy`,
+`AssumeRolePolicyDocument` on `AWS::IAM::Role`, `KeyPolicy` on `AWS::KMS::Key`
+and `ResourcePolicy` on `AWS::SecretsManager::ResourcePolicy`. A key only AWS
+holds there, such as a `Condition` added to a single-object `Statement`, is
+reported as drift. Some of these services return a single-object `Statement`
+as a one-element list, and drift treats the two forms as the same value. You
 can record a snapshot without redeploying:
 
 ```bash
