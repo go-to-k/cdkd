@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "summary": {
     "types": 340,
-    "mapped": 60,
-    "compound": 115,
+    "mapped": 62,
+    "compound": 200,
     "no-ref": 40,
-    "not-a-segment": 6,
-    "unverified": 119,
+    "not-a-segment": 7,
+    "unverified": 31,
     "gap": 0
   },
   "types": [
@@ -37,8 +37,8 @@
         "AccountId",
         "Region"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::AccountAccess::Entitlement",
@@ -48,7 +48,7 @@
         "EntitlementId"
       ],
       "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the unique identifier of the entitlement\""
+      "detail": "docs Return values: Ref returns \"the unique identifier of the entitlement\"; not measured (needs IAM Identity Center)"
     },
     {
       "resourceType": "AWS::AmplifyUIBuilder::Component",
@@ -314,8 +314,8 @@
         "ApplicationId",
         "Id"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::AppConfig::ExperimentRun",
@@ -325,8 +325,8 @@
         "ExperimentDefinitionId",
         "Run"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::AppConfig::HostedConfigurationVersion",
@@ -460,8 +460,8 @@
         "SignalType",
         "LocationHash"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Athena::PreparedStatement",
@@ -510,8 +510,8 @@
         "RestoreTestingPlanName",
         "RestoreTestingSelectionName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Bedrock::AgentAlias",
@@ -530,8 +530,8 @@
         "PolicyArn",
         "Version"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the policy version ID\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Bedrock::DataSource",
@@ -580,8 +580,8 @@
         "GatewayIdentifier",
         "RateLimitId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::BedrockAgentCore::GatewayRule",
@@ -590,8 +590,8 @@
         "GatewayIdentifier",
         "RuleId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::BedrockAgentCore::GatewayTarget",
@@ -650,8 +650,8 @@
         "AnalysisTemplateIdentifier",
         "MembershipIdentifier"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns the AnalysisTemplateIdentifier (a Cloud Control-native type; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CleanRooms::ConfiguredTableAssociation",
@@ -680,8 +680,8 @@
         "IdNamespaceAssociationIdentifier",
         "MembershipIdentifier"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the resource name\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CleanRooms::IntermediateTable",
@@ -700,8 +700,8 @@
         "PrivacyBudgetTemplateIdentifier",
         "MembershipIdentifier"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns the ARN (no segment holds it; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CloudWatch::AccessProfile",
@@ -710,8 +710,8 @@
         "SpaceId",
         "ProfileId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CloudWatch::Alert",
@@ -721,7 +721,7 @@
         "AlertId"
       ],
       "status": "unverified",
-      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\"; the #6628 probe was refused (the access-profile trust grant)"
     },
     {
       "resourceType": "AWS::CloudWatch::OmniDashboard",
@@ -730,8 +730,8 @@
         "SpaceId",
         "DashboardId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CodeDeploy::DeploymentGroup",
@@ -762,7 +762,7 @@
         "SyncType"
       ],
       "status": "unverified",
-      "detail": "docs Return values: Ref returns the ARN (no segment holds it; not measured)"
+      "detail": "docs Return values: Ref returns the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake)"
     },
     {
       "resourceType": "AWS::Cognito::IdentityPoolPrincipalTag",
@@ -791,8 +791,8 @@
         "UserPoolId",
         "TermsId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Cognito::UserPoolClient",
@@ -811,8 +811,8 @@
         "UserPoolId",
         "ClientId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Cognito::UserPoolDomain",
@@ -851,8 +851,8 @@
         "UserPoolId",
         "RegionName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Cognito::UserPoolResourceServer",
@@ -922,8 +922,8 @@
         "InstanceId",
         "Origin"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::DataLakeAssociation",
@@ -943,8 +943,8 @@
         "InstanceArn",
         "Arn"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::DataTableAttribute",
@@ -954,8 +954,8 @@
         "DataTableArn",
         "AttributeId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::DataTableRecord",
@@ -965,8 +965,8 @@
         "DataTableArn",
         "RecordId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::InstanceStorageConfig",
@@ -976,8 +976,8 @@
         "AssociationId",
         "ResourceType"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the name of the instance storage configuration\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::IntegrationAssociation",
@@ -987,8 +987,8 @@
         "IntegrationType",
         "IntegrationArn"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::PredefinedAttribute",
@@ -997,8 +997,8 @@
         "InstanceArn",
         "Name"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the predefined attribute\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::SecurityKey",
@@ -1007,8 +1007,8 @@
         "InstanceId",
         "AssociationId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Connect::UseCase",
@@ -1018,8 +1018,8 @@
         "IntegrationAssociationId",
         "UseCaseId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ControlTower::EnabledControl",
@@ -1038,8 +1038,8 @@
         "DomainName",
         "CalculatedAttributeName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CustomerProfiles::DomainObjectType",
@@ -1049,7 +1049,7 @@
         "ObjectTypeName"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; the #6628 probe was refused: every field Target tried was invalid"
     },
     {
       "resourceType": "AWS::CustomerProfiles::EventStream",
@@ -1058,8 +1058,8 @@
         "DomainName",
         "EventStreamName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CustomerProfiles::EventTrigger",
@@ -1068,8 +1068,8 @@
         "DomainName",
         "EventTriggerName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::CustomerProfiles::Integration",
@@ -1099,7 +1099,7 @@
         "RecommenderName"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; not measured (needs ingested interaction and catalog data)"
     },
     {
       "resourceType": "AWS::CustomerProfiles::SegmentDefinition",
@@ -1108,8 +1108,8 @@
         "DomainName",
         "SegmentDefinitionName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::DataZone::Connection",
@@ -1225,8 +1225,8 @@
         "EntityType",
         "PolicyType"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::DataZone::Project",
@@ -1288,8 +1288,8 @@
         "FarmId",
         "LimitId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the unique identifier of the limit\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Deadline::QueueEnvironment",
@@ -1299,8 +1299,8 @@
         "QueueId",
         "QueueEnvironmentId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"a reference to a queue environment object\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Deadline::QueueFleetAssociation",
@@ -1310,8 +1310,8 @@
         "FleetId",
         "QueueId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns an ARN, which the type does not have"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Deadline::QueueLimitAssociation",
@@ -1321,8 +1321,8 @@
         "LimitId",
         "QueueId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the unique identifier for the queue-limit association\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Deadline::StorageProfile",
@@ -1331,8 +1331,8 @@
         "FarmId",
         "StorageProfileId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns an ARN, which the type does not have"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Detective::MemberInvitation",
@@ -1361,8 +1361,8 @@
         "AgentSpaceId",
         "AssociationId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the association ID\" (a Cloud Control-native type; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::DevOpsAgent::Trigger",
@@ -1371,8 +1371,8 @@
         "AgentSpaceId",
         "TriggerId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the TriggerId\" (a Cloud Control-native type; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EC2::ClientVpnTargetNetworkAssociation",
@@ -1381,8 +1381,8 @@
         "ClientVpnEndpointId",
         "AssociationId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns the association id `cvpn-assoc-…`; not measured (needs an imported ACM certificate)"
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
     },
     {
       "resourceType": "AWS::EC2::EIP",
@@ -1401,8 +1401,8 @@
         "CertificateArn",
         "RoleArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the IAM role and ACM certificate association\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EC2::IPAMAllocation",
@@ -1441,8 +1441,8 @@
       "primaryIdentifier": [
         "Id"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the ID of the network ACL entry\" (2026-08-12 audit, issue #1667; not measured)"
+      "status": "not-a-segment",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20): a generated id such as `cdkd-p-AclEn-Ige4PmWgSxQE`"
     },
     {
       "resourceType": "AWS::EC2::NetworkPerformanceMetricSubscription",
@@ -1522,8 +1522,8 @@
         "TransitGatewayMeteringPolicyId",
         "PolicyRuleNumber"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EC2::TransitGatewayMulticastDomainAssociation",
@@ -1565,8 +1565,8 @@
         "TransitGatewayPolicyTableId",
         "TransitGatewayAttachmentId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EC2::TransitGatewayPolicyTableEntry",
@@ -1575,8 +1575,8 @@
         "TransitGatewayPolicyTableId",
         "PolicyRuleNumber"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EC2::TransitGatewayRoute",
@@ -1645,8 +1645,8 @@
         "DestinationCidrBlock",
         "VpnConnectionId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the ID of the VPN connection route\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EC2::VolumeAttachment",
@@ -1665,8 +1665,8 @@
         "Gateway",
         "Cluster"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ECS::PrimaryTaskSet",
@@ -1675,8 +1675,8 @@
         "Cluster",
         "Service"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the resource name\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ECS::Service",
@@ -1696,8 +1696,8 @@
         "Service",
         "Id"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the resource name\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EKS::AccessEntry",
@@ -1706,8 +1706,8 @@
         "PrincipalArn",
         "ClusterName"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the resource name\", with the principal ARN as the example"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EKS::Addon",
@@ -1726,8 +1726,8 @@
         "ClusterName",
         "Id"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EKS::FargateProfile",
@@ -1736,8 +1736,8 @@
         "ClusterName",
         "FargateProfileName"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns `<cluster-name>/<Fargate_profile_name>`, slash-joined; not measured"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EKS::IdentityProviderConfig",
@@ -1747,8 +1747,8 @@
         "ClusterName",
         "Type"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns `cluster-name/oidc/identity-provider-config-name`, slash-joined; not measured"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EMR::InstanceFleetConfig",
@@ -1808,8 +1808,8 @@
         "RevocationId",
         "TrustStoreArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the ARN of the trust store\"; not measured (needs CA bundle objects)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::EntityResolution::PolicyStatement",
@@ -1838,8 +1838,8 @@
         "ExperimentTemplateId",
         "AccountId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Glue::Connection",
@@ -1868,8 +1868,8 @@
         "ResourceArn",
         "ResourcePropertyArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"The resource property arn\" (a Cloud Control-native type; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Glue::Partition",
@@ -1880,8 +1880,8 @@
         "TableName",
         "IdentifierPartitionInputValues"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the partition name\", which no identifier field holds"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Glue::SchemaVersionMetadata",
@@ -1891,8 +1891,8 @@
         "Key",
         "Value"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Glue::Table",
@@ -1914,8 +1914,8 @@
         "Type",
         "CatalogId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::GroundStation::MissionProfile",
@@ -1924,8 +1924,8 @@
         "Id",
         "Arn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns the mission profile ARN (a Cloud Control-native type; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::GuardDuty::CustomDetectionRuleAssociation",
@@ -1934,8 +1934,8 @@
         "RuleId",
         "AssociationId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::GuardDuty::Filter",
@@ -1984,8 +1984,8 @@
         "DetectorId",
         "Id"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the resource publishing destination ID\"; not measured (needs a bucket and key policy)"
+      "status": "mapped",
+      "detail": "REF_RETURNS_SEGMENT_AFTER_PIPE"
     },
     {
       "resourceType": "AWS::GuardDuty::ThreatEntitySet",
@@ -1994,8 +1994,8 @@
         "Id",
         "DetectorId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the unique ID associated with the newly created threat entity set\"; not measured"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::GuardDuty::ThreatIntelSet",
@@ -2014,8 +2014,8 @@
         "Id",
         "DetectorId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the unique ID of the TrustedEntitySet\"; not measured"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::IAM::GroupPolicy",
@@ -2246,8 +2246,8 @@
         "CertificateName",
         "LoadBalancerName"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"a unique identifier for this resource\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Location::TrackerConsumer",
@@ -2256,8 +2256,8 @@
         "TrackerName",
         "ConsumerArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the TrackerConsumer name\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Logs::AccountPolicy",
@@ -2337,8 +2337,8 @@
         "Id",
         "ClusterId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::MediaLive::Multiplexprogram",
@@ -2348,7 +2348,7 @@
         "MultiplexId"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; the #6628 probe failed: AlreadyExists on a fresh multiplex"
     },
     {
       "resourceType": "AWS::MediaPackageV2::ChannelPolicy",
@@ -2357,8 +2357,8 @@
         "ChannelGroupName",
         "ChannelName"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns `ChannelGroupName / ChannelName`; the probe was refused by the service"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::MediaPackageV2::OriginEndpointPolicy",
@@ -2368,8 +2368,8 @@
         "ChannelName",
         "OriginEndpointName"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns `ChannelGroupName / ChannelName / OriginEndpointName`; not measured"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::MediaTailor::LiveSource",
@@ -2378,8 +2378,8 @@
         "LiveSourceName",
         "SourceLocationName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::MediaTailor::VodSource",
@@ -2388,8 +2388,8 @@
         "SourceLocationName",
         "VodSourceName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::NetworkManager::ContextStoreAssociation",
@@ -2399,7 +2399,7 @@
         "ResourceArn"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; the #6628 probe failed in CloudFormation's own handler (NotFound right after create)"
     },
     {
       "resourceType": "AWS::NetworkManager::CoreNetworkPrefixListAssociation",
@@ -2409,7 +2409,7 @@
         "PrefixListArn"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; not measured (needs a core network)"
     },
     {
       "resourceType": "AWS::NetworkManager::CustomerGatewayAssociation",
@@ -2489,8 +2489,8 @@
         "Arn",
         "NotificationConfigurationArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the ARN of the configuration created\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Notifications::ManagedNotificationAccountContactAssociation",
@@ -2499,8 +2499,8 @@
         "ManagedNotificationConfigurationArn",
         "ContactIdentifier"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the ARN of the configuration created\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Notifications::ManagedNotificationAdditionalChannelAssociation",
@@ -2509,8 +2509,8 @@
         "ChannelArn",
         "ManagedNotificationConfigurationArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the ARN of the configuration created\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Notifications::OrganizationalUnitAssociation",
@@ -2520,7 +2520,7 @@
         "OrganizationalUnitId"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; not measured (needs AWS Organizations)"
     },
     {
       "resourceType": "AWS::OpenSearchServerless::AccessPolicy",
@@ -2539,8 +2539,8 @@
         "Id",
         "IndexName"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::OpenSearchServerless::Index",
@@ -2964,8 +2964,8 @@
         "ServiceArn",
         "ServiceFunctionId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ResilienceHubV2::UserJourney",
@@ -2974,8 +2974,8 @@
         "SystemIdentifier",
         "UserJourneyId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Route53::KeySigningKey",
@@ -3055,8 +3055,8 @@
         "EmailIdentity",
         "FromAddress"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::SES::ReceiptRule",
@@ -3106,7 +3106,7 @@
         "ResourceArn"
       ],
       "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "detail": "docs: Return values has a Ref heading with no text; the #6628 probe failed: GeneralServiceException on every target"
     },
     {
       "resourceType": "AWS::SSO::ApplicationAssignment",
@@ -3212,8 +3212,8 @@
         "PortfolioId",
         "ProductId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"a unique identifier for the association\""
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ServiceCatalog::PortfolioShare",
@@ -3222,8 +3222,8 @@
         "PortfolioId",
         "AccountId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the identifier of the portfolio share\"; needs a second account"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ServiceCatalog::ServiceActionAssociation",
@@ -3233,8 +3233,8 @@
         "ProvisioningArtifactId",
         "ServiceActionId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::ServiceCatalog::TagOptionAssociation",
@@ -3314,8 +3314,8 @@
         "AgreementId",
         "ServerId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::VerifiedPermissions::IdentitySource",
@@ -3398,8 +3398,8 @@
         "ResourceArn",
         "WebACLArn"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns text copied from WebACL (`name|id|scope`), which the type does not have"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AIAgent",
@@ -3408,8 +3408,8 @@
         "AIAgentId",
         "AssistantId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AIAgentVersion",
@@ -3419,8 +3419,8 @@
         "AIAgentId",
         "VersionNumber"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AIGuardrail",
@@ -3429,8 +3429,8 @@
         "AIGuardrailId",
         "AssistantId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AIGuardrailVersion",
@@ -3440,8 +3440,8 @@
         "AIGuardrailId",
         "VersionNumber"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AIPrompt",
@@ -3450,8 +3450,8 @@
         "AIPromptId",
         "AssistantId"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AIPromptVersion",
@@ -3461,8 +3461,8 @@
         "AIPromptId",
         "VersionNumber"
       ],
-      "status": "unverified",
-      "detail": "docs: Return values has a Ref heading with no text"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::Wisdom::AssistantAssociation",
@@ -3471,8 +3471,8 @@
         "AssistantAssociationId",
         "AssistantId"
       ],
-      "status": "unverified",
-      "detail": "docs Return values: Ref returns \"the association ID\" (a Cloud Control-native type; not measured)"
+      "status": "compound",
+      "detail": "measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20)"
     },
     {
       "resourceType": "AWS::WorkspacesInstances::VolumeAssociation",
