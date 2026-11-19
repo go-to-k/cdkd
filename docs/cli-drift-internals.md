@@ -770,7 +770,9 @@ revert sends the template's document whole and does not list it as preserved.
 S3, SQS, SNS, KMS, Secrets Manager and the IAM trust policy return a
 single-object `Statement` as a one-element list, so detection reads the two
 forms at `<key>.Statement` as one value. That list is then compared whole, so a
-key added inside it is still drift. `AWS::ECR::Repository` is not exempt,
+key added inside it is still drift. A `Version` only the live document holds
+(one the service filled in for a template that omitted it) is not compared; a
+declared `Version` still is. `AWS::ECR::Repository` is not exempt,
 because its readback carries no `RepositoryPolicyText`.
 
 Run **`cdkd state refresh-observed '<stack>'`**, or redeploy, if you want them

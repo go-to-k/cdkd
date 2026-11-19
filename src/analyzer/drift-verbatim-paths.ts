@@ -24,7 +24,9 @@
  * as submitted, key order aside. S3, SQS, SNS, KMS, Secrets Manager — and IAM's
  * role trust policy — add no key either, but return a single-OBJECT `Statement`
  * as a one-element array; the comparator reads the two spellings as one
- * ({@link isVerbatimStatementPath}), as IAM's policy grammar does.
+ * ({@link isVerbatimStatementPath}), as IAM's policy grammar does. A `Version`
+ * the service fills in on a document submitted without one is not drift
+ * either ({@link isVerbatimVersionPath}).
  *
  * Not listed: `AWS::ECR::Repository` `RepositoryPolicyText`, which the ECR
  * readback does not carry at all (go-to-k/cdkd#6631), and every resource policy
@@ -63,4 +65,15 @@ export function verbatimEchoDriftKeys(resourceType: string): readonly string[] {
  */
 export function isVerbatimStatementPath(path: string, verbatimKeys: readonly string[]): boolean {
   return verbatimKeys.some((key) => path === `${key}.Statement`);
+}
+
+/**
+ * True when `path` is the `Version` of a document at one of `verbatimKeys`.
+ * The policy language version is optional, and a service may fill it in for a
+ * document submitted without one (go-to-k/cdkd#6624), so the union walk does
+ * not report a `Version` only the live side holds. One the template declares
+ * is still compared.
+ */
+export function isVerbatimVersionPath(path: string, verbatimKeys: readonly string[]): boolean {
+  return verbatimKeys.some((key) => path === `${key}.Version`);
 }

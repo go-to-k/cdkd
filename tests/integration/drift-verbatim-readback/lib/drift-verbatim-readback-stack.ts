@@ -173,7 +173,9 @@ export class DriftVerbatimReadbackStack extends cdk.Stack {
       roles: [siblingRole.ref],
       users: [siblingUser.ref],
       groups: [siblingGroup.ref],
-      policyDocument: denyLegalHold,
+      // IAM refuses a managed policy without `Version`
+      // (MalformedPolicyDocument); its readback was measured with one.
+      policyDocument: { Version: '2012-10-17', ...denyLegalHold },
     });
 
     // --- #6627: principals declaring no attachment-class key ---------------

@@ -33,7 +33,7 @@ import {
   matchesPathPrefix,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
-import { isVerbatimStatementPath } from './drift-verbatim-paths.js';
+import { isVerbatimStatementPath, isVerbatimVersionPath } from './drift-verbatim-paths.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -279,6 +279,11 @@ function diffAt(
     for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
+      // go-to-k/cdkd#6624: a `Version` the service filled in on a document
+      // the template submitted without one.
+      if (stateForm[key] === undefined && isVerbatimVersionPath(childPath, unionWalkPaths)) {
+        continue;
+      }
       diffAt(
         childPath,
         stateForm[key],

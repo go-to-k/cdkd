@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import {
   isVerbatimStatementPath,
+  isVerbatimVersionPath,
   verbatimEchoDriftKeys,
 } from '../../../src/analyzer/drift-verbatim-paths.js';
 
@@ -164,5 +165,44 @@ describe('calculateResourceDrift: a Statement object against its one-element lis
         { unionWalkPaths: verbatimEchoDriftKeys('AWS::IAM::Role') }
       )
     ).toEqual([]);
+  });
+});
+
+describe('calculateResourceDrift: a Version the service fills in', () => {
+  const paths = ['KeyPolicy'];
+  const allow = { Effect: 'Allow', Principal: ROOT, Action: 'kms:*', Resource: '*' };
+
+  it('matches only `<key>.Version` of a listed key', () => {
+    expect(isVerbatimVersionPath('KeyPolicy.Version', paths)).toBe(true);
+    expect(isVerbatimVersionPath('KeyPolicy.Statement.Version', paths)).toBe(false);
+    expect(isVerbatimVersionPath('KeyPolicy.Version', [])).toBe(false);
+  });
+
+  it('is clean when the template omits Version and the live document carries one', () => {
+    expect(
+      calculateResourceDrift(
+        { KeyPolicy: { Statement: allow } },
+        { KeyPolicy: { Version: '2012-10-17', Statement: [allow] } },
+        { unionWalkPaths: paths }
+      )
+    ).toEqual([]);
+  });
+
+  it('still reports a declared Version that changed', () => {
+    const drift = calculateResourceDrift(
+      { KeyPolicy: { Version: '2012-10-17', Statement: allow } },
+      { KeyPolicy: { Version: '2008-10-17', Statement: [allow] } },
+      { unionWalkPaths: paths }
+    );
+    expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Version']);
+  });
+
+  it('still reports any other key only the live document holds', () => {
+    const drift = calculateResourceDrift(
+      { KeyPolicy: { Statement: allow } },
+      { KeyPolicy: { Version: '2012-10-17', Id: 'added', Statement: [allow] } },
+      { unionWalkPaths: paths }
+    );
+    expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Id']);
   });
 });
