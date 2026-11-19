@@ -52,7 +52,7 @@ describe('buildReadCurrentStateContext carries the read resource\'s own drift ba
     ...extra,
   });
 
-  it('sets observedProperties from the own record, never a sibling\'s', () => {
+  it('sets driftBaseline from its observedProperties, the own record, never a sibling\'s', () => {
     const ctx = buildReadCurrentStateContext(
       {
         resources: {
@@ -62,7 +62,7 @@ describe('buildReadCurrentStateContext carries the read resource\'s own drift ba
       } as never,
       'P'
     );
-    expect(ctx.observedProperties).toEqual({ PolicyDocument: { a: 1 } });
+    expect(ctx.driftBaseline).toEqual({ PolicyDocument: { a: 1 } });
   });
 
   it('omits it when the own record has none, or a value that is not an object', () => {
@@ -71,7 +71,7 @@ describe('buildReadCurrentStateContext carries the read resource\'s own drift ba
         { resources: { P: entry({ observedProperties }) } } as never,
         'P'
       );
-      expect('observedProperties' in ctx).toBe(false);
+      expect('driftBaseline' in ctx).toBe(false);
     }
   });
 });
@@ -287,7 +287,7 @@ describe('IAMPolicyProvider.readCurrentState reads every recorded target (#6616)
       'P',
       TYPE,
       { PolicyDocument: RECORDED, Roles: ['R1', 'R2'] },
-      { observedProperties: { PolicyDocument: ACCEPTED, Roles: ['R1', 'R2'] } }
+      { driftBaseline: { PolicyDocument: ACCEPTED, Roles: ['R1', 'R2'] } }
     );
     expect(result).toMatchObject({ PolicyDocument: WIDENED });
   });

@@ -98,5 +98,5 @@ export interface ReadCurrentStateContext {
    * when present (`AWS::IAM::Policy`, go-to-k/cdkd#6616). Only for that
    * comparison: never returned, logged, or persisted from here.
    */
-  observedProperties?: Readonly<Record<string, unknown>>;
+  driftBaseline?: Readonly<Record<string, unknown>>;
 }

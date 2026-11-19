@@ -35,7 +35,7 @@ const TARGET_READ_CONCURRENCY = 5;
  * target hid an edit, a widened `Action` included, on any other one):
  *   - Every copy agrees: that document.
  *   - The copies differ: one that differs from the drift baseline
- *     (`context.observedProperties`, else the recorded document), so the
+ *     (`context.driftBaseline`, else the recorded document), so the
  *     comparator reports the edit whichever target holds it. When no copy
  *     equals that baseline (a secret leaf, say), the clean copy is unknown
  *     and the read fails, which drift reports as not fully compared.
@@ -114,8 +114,8 @@ export async function readCurrentState(
     // Report a copy that differs from what the comparator compares against:
     // the drift baseline when one is recorded, else the recorded document.
     const baseline =
-      context?.observedProperties?.['PolicyDocument'] !== undefined
-        ? context.observedProperties['PolicyDocument']
+      context?.driftBaseline?.['PolicyDocument'] !== undefined
+        ? context.driftBaseline['PolicyDocument']
         : parseRecordedDocument(policyDocument);
     // A baseline holding a `{{resolve:...}}` or `***` leaf equals no live
     // copy (each holds the value resolved), so the clean copy is unknown and
@@ -146,11 +146,12 @@ export async function readCurrentState(
   // Echo the recorded targets back (AWS has no API to enumerate the full
   // target set for a named inline policy — see method docstring), less any
   // target that was read and lacks the policy: that absence IS the drift.
-  const missing = new Set(
-    reads.flatMap((r) => ('missing' in r ? [`${r.target.kind}\0${r.target.name}`] : []))
-  );
-  const echo = (kind: PolicyTarget['kind'], names: string[]): string[] =>
-    names.filter((name) => !missing.has(`${kind}\0${name}`));
+  const echo = (kind: PolicyTarget['kind'], names: string[]): string[] => {
+    const missing = new Set(
+      reads.flatMap((r) => ('missing' in r && r.target.kind === kind ? [r.target.name] : []))
+    );
+    return names.filter((name) => !missing.has(name));
+  };
   if (roles) result['Roles'] = echo('role', roles);
   if (groups) result['Groups'] = echo('group', groups);
   if (users) result['Users'] = echo('user', users);

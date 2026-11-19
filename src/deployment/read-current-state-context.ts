@@ -60,6 +60,6 @@ export function buildReadCurrentStateContext(
   return {
     siblings,
     ...(ownAttributes && { attributes: ownAttributes }),
-    ...(ownObserved && { observedProperties: ownObserved }),
+    ...(ownObserved && { driftBaseline: ownObserved }),
   };
 }
