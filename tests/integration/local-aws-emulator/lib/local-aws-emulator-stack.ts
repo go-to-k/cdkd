@@ -59,9 +59,6 @@ exports.handler = async (event) => {
  *   resources run in the Lambda runtime image on the host, not in the
  *   emulator's own runtime.
  * - A NestedStack holding a second table + function.
- * - A queue, topic and bucket with only `enforceSSL`, so each policy holds
- *   nothing but the `aws:SecureTransport` Deny the emulator cannot evaluate,
- *   and an SQS event source mapping on that queue (go-to-k/cdkd#6636).
  *
  * covers: AWS::DynamoDB::Table
  * covers: AWS::Lambda::Function
@@ -71,11 +68,6 @@ exports.handler = async (event) => {
  * covers: Custom::CDKBucketDeployment
  * covers: Custom::S3AutoDeleteObjects
  * covers: AWS::CloudFormation::Stack
- * covers: AWS::SQS::QueuePolicy
- * covers: AWS::SNS::Topic
- * covers: AWS::SNS::TopicPolicy
- * covers: AWS::S3::BucketPolicy
- * covers: AWS::Lambda::EventSourceMapping
  */
 export class LocalAwsEmulatorStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -138,8 +130,29 @@ export class LocalAwsEmulatorStack extends cdk.Stack {
     });
     innerTable.grantReadWriteData(innerFn);
 
-    // go-to-k/cdkd#6636: policies of nothing but the enforceSSL Deny. On the
-    // emulator such a queue policy refused the mapping's read of the queue.
+    new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
+    new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
+  }
+}
+
+/**
+ * A queue, topic and bucket with only `enforceSSL`, so each policy holds
+ * nothing but the `aws:SecureTransport` Deny AWS Emulator cannot evaluate, and
+ * an SQS event source mapping on that queue (go-to-k/cdkd#6636). A stack of its
+ * own: CloudFormation cannot IMPORT a QueuePolicy or TopicPolicy, so the main
+ * stack's `cdkd export --dry-run` phase would refuse them.
+ *
+ * covers: AWS::SQS::QueuePolicy
+ * covers: AWS::SNS::Topic
+ * covers: AWS::SNS::TopicPolicy
+ * covers: AWS::S3::BucketPolicy
+ * covers: AWS::Lambda::EventSourceMapping
+ */
+export class SslOnlyPoliciesStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // On the emulator such a queue policy refused the mapping's read of it.
     const sslQueue = new sqs.Queue(this, 'SslQueue', {
       enforceSSL: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -157,11 +170,10 @@ export class LocalAwsEmulatorStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
+
     new cdk.CfnOutput(this, 'SslQueueUrl', { value: sslQueue.queueUrl });
     new cdk.CfnOutput(this, 'SslQueueArn', { value: sslQueue.queueArn });
     new cdk.CfnOutput(this, 'SslTopicArn', { value: sslTopic.topicArn });
     new cdk.CfnOutput(this, 'SslBucketName', { value: sslBucket.bucketName });
-    new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
   }
 }
