@@ -401,6 +401,18 @@ describe('gen-update-path-coverage: guards, dispatch and helper effects', () => 
     });
     // The arm sends, returns, and the tail sends Tags; Monitoring reaches neither.
     expect(statusOf(rows, 'Monitoring')).toBe('gap');
+    // A test against a LIVE read is change detection too.
+    const live = classify({
+      handled: ['Rot'],
+      classBody: `
+        async update(id, pid, type, properties) {
+          const cur = await this.describe();
+          if (properties.Rot !== cur.Rot) { await this.c.send(new OtherCommand({ id })); return; }
+          await this.c.send(new TagCommand({ id }));
+        }
+        async describe() { return this.c.send(new DescribeCommand({})); }`,
+    });
+    expect(statusOf(live, 'Rot')).toBe('gap');
     expect(statusOf(rows, 'Tags')).toBe('update');
   });
 

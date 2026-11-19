@@ -1271,14 +1271,16 @@ function requestDeclarations(root: ts.Node): Set<string> {
 }
 
 /**
- * Names in a unit derived from the PREVIOUS side: a parameter named
- * `previous*` / `prev*` / `old*`, and, to a fixpoint, a local whose value or a
+ * Names in a unit derived from the PREVIOUS or LIVE side: a parameter or
+ * local named `previous*` / `prev*` / `old*` / `current*` / `cur*` / `live*` /
+ * `existing*` / `recorded*` / `observed*`, and, to a fixpoint, a local whose value or a
  * closure whose body reads one (`const oldX = coerce(previousProperties.X)`,
  * `const changed = (k) => props[k] !== previousProperties[k]`).
  */
 function previousDerived(root: ts.Node): Set<string> {
   const names = new Set<string>();
-  const isPrevName = (n: string): boolean => /^(previous|prev|old)([A-Z_]|$)/.test(n);
+  const isPrevName = (n: string): boolean =>
+    /^(previous|prev|old|current|cur|live|existing|recorded|observed)([A-Z_]|$)/.test(n);
   const decls: Array<{ names: string[]; value: ts.Node }> = [];
   const visit = (n: ts.Node): void => {
     if (ts.isParameter(n)) for (const b of boundNames(n.name)) if (isPrevName(b)) names.add(b);
