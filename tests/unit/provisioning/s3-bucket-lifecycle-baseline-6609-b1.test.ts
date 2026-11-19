@@ -43,6 +43,8 @@ import {
   lifecycleMatchesDeclared,
 } from '../../../src/provisioning/providers/s3-bucket/lifecycle-baseline.js';
 import { effectiveLifecycleConfiguration } from '../../../src/provisioning/providers/s3-bucket/lifecycle-fold.js';
+import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
 const BUCKET = 'my-bucket';
 const TDMOS = 'all_storage_classes_128K';
@@ -563,5 +565,95 @@ describe('lifecycleMatchesDeclared', () => {
     const rule = { Status: 'Enabled', ExpirationInDays: 1, Filter: { Prefix: '' } };
     expect(lifecycleMatchesDeclared({ Rules: [{ Id: 'gen', ...rule }] }, expected)).toBe(true);
     expect(lifecycleMatchesDeclared({ Rules: [rule] }, expected)).toBe(false);
+  });
+});
+
+describe('drift heal of a LifecycleConfiguration baseline (#6609 B1)', () => {
+  const TYPE = 'AWS::S3::Bucket';
+  const GENERATED = 'OGJiNDg2NTAtNmVhOS00Njg3LTkxMTUtMDEyNGY1MTBiNDBk';
+  const declaredNoId = {
+    BucketName: BUCKET,
+    LifecycleConfiguration: { Rules: [{ Status: 'Enabled', ExpirationInDays: 7 }] },
+  };
+
+  /** The drift comparison as `compare.ts` runs it on an observed baseline. */
+  function driftPaths(
+    observed: Record<string, unknown>,
+    properties: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    heal = true
+  ): string[] {
+    const ignorePaths = heal
+      ? preFixBaselineUncomparedDriftKeys(TYPE, observed, properties, aws)
+      : [];
+    return calculateResourceDrift(observed, aws, { ignorePaths, unionWalkObjects: true }).map(
+      (change) => change.path
+    );
+  }
+
+  it('Id-less end to end: kept without an Id, read later with the generated one, reports nothing', async () => {
+    // The capture: the schedule only ever sees the previous rules.
+    scriptLifecycle(sdkConfig(30, 'b2xk'));
+    const observed = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true });
+    expect(lifecycleCalls).toBe(5);
+    // A later drift read, once S3 settled: the declared rule under its generated Id.
+    lifecycleCalls = 0;
+    scriptLifecycle(sdkConfig(7, GENERATED));
+    const aws = await capture(makeProvider(), declaredNoId);
+    expect(lifecycleCalls).toBe(1);
+    expect(driftPaths(observed, declaredNoId, aws)).toEqual([]);
+    // The heal is what makes it clean: compared, the generated Id would be drift.
+    expect(driftPaths(observed, declaredNoId, aws, false)).not.toEqual([]);
+  });
+
+  it('Id-less end to end: a rule changed out of band is still reported', async () => {
+    scriptLifecycle(sdkConfig(30, 'b2xk'));
+    const observed = await capture(makeProvider(), declaredNoId, { afterOwnWrite: true });
+    scriptLifecycle(sdkConfig(9, GENERATED));
+    const aws = await capture(makeProvider(), declaredNoId);
+    expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, declaredNoId, aws)).toEqual([]);
+    expect(driftPaths(observed, declaredNoId, aws).join(',')).toContain('LifecycleConfiguration');
+  });
+
+  it('a pre-fix baseline holding the OLD rules is not compared while live is the declared one', () => {
+    const observed = { BucketName: BUCKET, LifecycleConfiguration: OLD_READBACK };
+    const aws = { BucketName: BUCKET, LifecycleConfiguration: NEW_READBACK };
+    expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, DECLARED, aws)).toEqual([
+      'LifecycleConfiguration',
+    ]);
+    expect(driftPaths(observed, DECLARED, aws)).toEqual([]);
+  });
+
+  it('a pre-fix baseline holding the declared rules while live changed out of band is reported', () => {
+    const observed = { BucketName: BUCKET, LifecycleConfiguration: NEW_READBACK };
+    const aws = { BucketName: BUCKET, LifecycleConfiguration: OLD_READBACK };
+    expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, DECLARED, aws)).toEqual([]);
+    expect(driftPaths(observed, DECLARED, aws).join(',')).toContain('LifecycleConfiguration');
+  });
+
+  it('a pre-fix baseline holding just-deleted rules is not compared while none are declared or live', () => {
+    const observed = { BucketName: BUCKET, LifecycleConfiguration: OLD_READBACK };
+    const aws = { BucketName: BUCKET, LifecycleConfiguration: { Rules: [] } };
+    expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, DECLARED_NONE, aws)).toEqual([
+      'LifecycleConfiguration',
+    ]);
+  });
+
+  it('rules added out of band to a bucket that declares none are reported', () => {
+    const observed = { BucketName: BUCKET, LifecycleConfiguration: { Rules: [] } };
+    const aws = { BucketName: BUCKET, LifecycleConfiguration: OLD_READBACK };
+    expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, DECLARED_NONE, aws)).toEqual([]);
+    expect(driftPaths(observed, DECLARED_NONE, aws).join(',')).toContain('LifecycleConfiguration');
+  });
+
+  it('a declaration the applier refuses skips nothing', () => {
+    const refused = {
+      LifecycleConfiguration: {
+        Rules: [{ Id: 'r1', Status: 'Enabled', Filter: 'logs/', ExpirationInDays: 7 }],
+      },
+    };
+    const observed = { LifecycleConfiguration: OLD_READBACK };
+    const aws = { LifecycleConfiguration: NEW_READBACK };
+    expect(preFixBaselineUncomparedDriftKeys(TYPE, observed, refused, aws)).toEqual([]);
   });
 });
