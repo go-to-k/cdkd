@@ -597,7 +597,8 @@ export class LambdaPermissionProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    if (context?.afterOwnWrite !== true || properties === undefined) {
+    // No function name: the read answers `undefined` however often it is asked.
+    if (context?.afterOwnWrite !== true || typeof properties?.['FunctionName'] !== 'string') {
       return this.readPermission(physicalId, properties);
     }
     const { answer, settled } = await reReadUntilSettled(

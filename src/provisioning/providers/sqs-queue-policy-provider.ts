@@ -663,13 +663,19 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       context?.afterOwnWrite === true ? declaredPolicyDocument(properties) : undefined;
     if (declared === undefined) return this.readQueuePolicy(physicalId);
     const queueCount = splitQueueUrls(physicalId).length;
+    // Every named queue's policy, not only the first one the result carries:
+    // the write went to each of them.
+    let policies: string[] = [];
     const { answer, settled } = await reReadUntilSettled(
-      () => this.readQueuePolicy(physicalId),
+      () => {
+        policies = [];
+        return this.readQueuePolicy(physicalId, policies);
+      },
       (read) =>
         read !== undefined &&
         read !== RESOURCE_NOT_FOUND &&
-        (read['Queues'] as string[]).length === queueCount &&
-        policyDocumentMatchesDeclared(read['PolicyDocument'], declared),
+        policies.length === queueCount &&
+        policies.every((policy) => policyDocumentMatchesDeclared(policy, declared)),
       this.ownWriteRereadDelaysMs
     );
     if (settled) return answer;
@@ -686,9 +692,13 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
     return undefined;
   }
 
-  /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */
+  /**
+   * One read of {@link readCurrentState}, the answer taken as AWS gives it.
+   * `policies` collects each held queue's `Policy`, in id order.
+   */
   private async readQueuePolicy(
-    physicalId: string
+    physicalId: string,
+    policies?: string[]
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const queueUrls = splitQueueUrls(physicalId);
     if (queueUrls.length === 0) return undefined;
@@ -724,6 +734,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       // go-to-k/cdkd#4283: an empty Policy attribute is what deleting the QueuePolicy leaves.
       if (!policyAttr) continue;
       held.push(queueUrl);
+      policies?.push(policyAttr);
       firstPolicy ??= policyAttr;
     }
     if (firstPolicy === undefined) return RESOURCE_NOT_FOUND;

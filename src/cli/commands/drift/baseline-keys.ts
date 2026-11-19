@@ -149,7 +149,11 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * value while the live resource holds exactly the declared value. Before
  * #6609 the baseline took the first answer right after the write, which can
  * still be the policy the write replaced, so `drift --revert` re-granted it.
- * Same blind spot as the second rule.
+ * Same blind spot as the second rule, and the rule cannot tell a stale
+ * baseline from one `drift --accept` wrote: an accepted out-of-band change
+ * that is later undone outside cdkd, putting the resource back to the
+ * template, is not reported. CloudFormation, which compares with the
+ * template, would not report it either.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,

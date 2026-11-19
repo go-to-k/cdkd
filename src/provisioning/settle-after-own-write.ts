@@ -138,7 +138,8 @@ export const LAMBDA_PERMISSION_STATEMENT_KEYS = [
  * Whether a read `AWS::Lambda::Permission` is the declared one, on every key
  * the read emits. An account principal reads back as its root ARN, and
  * `InvokedViaFunctionUrl: false` reads back absent, so both compare as the
- * same value.
+ * same value. A declared `null` or `''` declares nothing, so it matches a
+ * read that omits the key.
  */
 export function lambdaPermissionMatchesDeclared(
   read: Record<string, unknown>,
@@ -150,7 +151,7 @@ export function lambdaPermissionMatchesDeclared(
     }
     const want = declared[key];
     const got = read[key];
-    if (want === undefined || want === null) return got === undefined;
+    if (want === undefined || want === null || want === '') return got === undefined;
     return key === 'Principal' ? accountKey(got) === accountKey(want) : got === want;
   });
 }

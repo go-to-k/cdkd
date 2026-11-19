@@ -162,6 +162,11 @@ export class SnsSqsEventStack extends cdk.Stack {
       })
     );
 
+    // go-to-k/cdkd#6609: an AWS::Lambda::Permission (the SNS invoke grant),
+    // whose post-write drift baseline verify.sh checks beside the queue and
+    // topic policies.
+    topic.addSubscription(new subscriptions.LambdaSubscription(processor));
+
     // SNS Topic Policy
     new sns.TopicPolicy(this, 'TopicPolicy', {
       topics: [topic],

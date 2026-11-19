@@ -8175,7 +8175,8 @@
         "s3-event-notification",
         "secrets-rotation-schedule",
         "serverless-api",
-        "sns-event-source"
+        "sns-event-source",
+        "sns-sqs-event"
       ],
       "signals": {
         "apigw-stage-throttling": [
@@ -8225,6 +8226,9 @@
           "l1"
         ],
         "sns-event-source": [
+          "literal"
+        ],
+        "sns-sqs-event": [
           "literal"
         ]
       }

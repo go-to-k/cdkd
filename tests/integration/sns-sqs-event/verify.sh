@@ -264,6 +264,7 @@ check_policy_baselines() { # phase label
     ($reports | length) == 1 and
     ([$reports[0].clean[] | select(.type == "AWS::SQS::QueuePolicy")] | length) >= 1 and
     ([$reports[0].clean[] | select(.type == "AWS::SNS::TopicPolicy")] | length) >= 1 and
+    ([$reports[0].clean[] | select(.type == "AWS::Lambda::Permission")] | length) >= 1 and
     ([($reports[0].drifted // [])[], ($reports[0].notCompared // [])[] | select(policy)] | length) == 0
   ' <<<"${report}" >/dev/null; then
     echo "FAIL: a queue policy, topic policy or Lambda permission is drifted or not compared after $1" >&2

@@ -4,6 +4,15 @@ import { GetTopicAttributesCommand } from '@aws-sdk/client-sns';
 import { GetPolicyCommand, ResourceNotFoundException } from '@aws-sdk/client-lambda';
 
 const mockSend = vi.fn();
+const childLogger = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  child: vi.fn().mockReturnThis(),
+}));
+const loggedNoBaseline = (): boolean =>
+  childLogger.debug.mock.calls.some((c) => String(c[0]).includes('No drift baseline captured'));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -14,13 +23,6 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 vi.mock('../../../src/utils/logger.js', () => {
-  const childLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  };
   return {
     getLogger: () => ({
       child: () => childLogger,
@@ -164,6 +166,28 @@ describe('SQSQueuePolicyProvider.readCurrentState afterOwnWrite (#6609)', () => 
     expect(
       await read(`${Q1},${Q2}`, { Queues: [Q1, Q2], PolicyDocument: sqsDeclared }, AFTER)
     ).toBeUndefined();
+    expect(mockSend).toHaveBeenCalledTimes(8);
+  });
+
+  it('4e: two queues, Q2 still OLD on read 1, both declared on read 2: 4 sends', async () => {
+    mockSend
+      .mockResolvedValueOnce(attrs(sqsDeclared))
+      .mockResolvedValueOnce(attrs(sqsOld))
+      .mockResolvedValueOnce(attrs(sqsDeclared))
+      .mockResolvedValueOnce(attrs(sqsDeclared));
+    expect(
+      await read(`${Q1},${Q2}`, { Queues: [Q1, Q2], PolicyDocument: sqsDeclared }, AFTER)
+    ).toEqual({ Queues: [Q1, Q2], PolicyDocument: sqsDeclared });
+    expect(mockSend).toHaveBeenCalledTimes(4);
+  });
+
+  it('4f: two queues, Q2 OLD on every read: returned as read after 8 sends', async () => {
+    mockSend.mockImplementation(async (cmd: { input: { QueueUrl: string } }) =>
+      cmd.input.QueueUrl === Q1 ? attrs(sqsDeclared) : attrs(sqsOld)
+    );
+    expect(
+      await read(`${Q1},${Q2}`, { Queues: [Q1, Q2], PolicyDocument: sqsDeclared }, AFTER)
+    ).toEqual({ Queues: [Q1, Q2], PolicyDocument: sqsDeclared });
     expect(mockSend).toHaveBeenCalledTimes(8);
   });
 
@@ -360,6 +384,7 @@ describe('LambdaPermissionProvider.readCurrentState afterOwnWrite (#6609)', () =
     });
     expect(await read(props, AFTER)).toBeUndefined();
     expect(mockSend).toHaveBeenCalledTimes(4);
+    expect(loggedNoBaseline()).toBe(true);
   });
 
   it('12: a bare account principal settles against its root-ARN readback', async () => {
@@ -384,6 +409,33 @@ describe('LambdaPermissionProvider.readCurrentState afterOwnWrite (#6609)', () =
   it('13: InvokedViaFunctionUrl false settles against a statement without the Bool condition', async () => {
     mockSend.mockResolvedValueOnce(matching);
     expect(await read({ ...props, InvokedViaFunctionUrl: false }, AFTER)).toEqual(expected);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('14b: afterOwnWrite without a FunctionName sends nothing and captures no baseline', async () => {
+    expect(
+      await read({ Action: 'lambda:InvokeFunction', Principal: 's3.amazonaws.com' }, AFTER)
+    ).toBeUndefined();
+    expect(mockSend).toHaveBeenCalledTimes(0);
+    expect(loggedNoBaseline()).toBe(false);
+  });
+
+  it('13b: a declared empty SourceAccount settles against a statement without the condition', async () => {
+    mockSend.mockResolvedValueOnce(
+      policy({
+        Action: 'lambda:InvokeFunction',
+        Principal: { Service: 's3.amazonaws.com' },
+        Condition: { ArnLike: { 'AWS:SourceArn': 'arn:aws:s3:::bucket' } },
+      })
+    );
+    const { SourceAccount: _unused, ...rest } = props;
+    void _unused;
+    expect(await read({ ...rest, SourceAccount: '' }, AFTER)).toEqual({
+      FunctionName: 'fn',
+      Action: 'lambda:InvokeFunction',
+      Principal: 's3.amazonaws.com',
+      SourceArn: 'arn:aws:s3:::bucket',
+    });
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
