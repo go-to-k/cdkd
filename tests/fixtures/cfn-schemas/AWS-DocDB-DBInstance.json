@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::DocDB::DBInstance",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-19",
   "properties": [
     "AutoMinorVersionUpgrade",
     "AvailabilityZone",
@@ -11,14 +11,12 @@
     "DBInstanceIdentifier",
     "EnablePerformanceInsights",
     "Endpoint",
-    "Id",
     "Port",
     "PreferredMaintenanceWindow",
     "Tags"
   ],
   "readOnlyProperties": [
     "Endpoint",
-    "Id",
     "Port"
   ],
   "createOnlyProperties": [
@@ -38,7 +36,7 @@
     ]
   ],
   "primaryIdentifier": [
-    "Id"
+    "DBInstanceIdentifier"
   ],
   "nestedProperties": {
     "Tags": [
@@ -65,7 +63,6 @@
       "CACertificateIdentifier": "scalar",
       "CertificateRotationRestart": "scalar",
       "Endpoint": "scalar",
-      "Id": "scalar",
       "Tags": "array"
     },
     "Tag": {
@@ -88,5 +85,26 @@
       "Key",
       "Value"
     ]
+  },
+  "propertyShapes": {
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "AutoMinorVersionUpgrade": "boolean",
+    "AvailabilityZone": "string",
+    "CACertificateIdentifier": "string",
+    "CertificateRotationRestart": "boolean",
+    "DBClusterIdentifier": "string",
+    "DBInstanceClass": "string",
+    "DBInstanceIdentifier": "string",
+    "EnablePerformanceInsights": "boolean",
+    "Endpoint": "string",
+    "Port": "string",
+    "PreferredMaintenanceWindow": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
   }
 }

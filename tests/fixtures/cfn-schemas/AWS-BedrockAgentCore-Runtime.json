@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::BedrockAgentCore::Runtime",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-19",
   "properties": [
     "AgentRuntimeArn",
     "AgentRuntimeArtifact",
@@ -14,12 +14,14 @@
     "EnvironmentVariables",
     "FailureReason",
     "FilesystemConfigurations",
+    "HooksConfiguration",
     "LastUpdatedAt",
     "LifecycleConfiguration",
     "NetworkConfiguration",
     "PlatformVersion",
     "ProtocolConfiguration",
     "RequestHeaderConfiguration",
+    "ResourceConfigurations",
     "RoleArn",
     "Status",
     "Tags",
@@ -115,6 +117,17 @@
     "CapacityProviderConfiguration": [
       "CapacityProviderArn"
     ],
+    "HooksConfiguration": [
+      "Action",
+      "Build",
+      "HttpPost",
+      "Path",
+      "Port",
+      "Warmup"
+    ],
+    "ResourceConfigurations": [
+      "MinimumMemoryInMiB"
+    ],
     "WorkloadIdentityDetails": [
       "WorkloadIdentityArn"
     ]
@@ -202,6 +215,17 @@
     "CapacityProviderConfiguration": [
       "CapacityProviderArn"
     ],
+    "HooksConfiguration": [
+      "Build",
+      "Build.Warmup",
+      "Build.Warmup.Action",
+      "Build.Warmup.Action.HttpPost",
+      "Build.Warmup.Action.HttpPost.Path",
+      "Build.Warmup.Action.HttpPost.Port"
+    ],
+    "ResourceConfigurations": [
+      "MinimumMemoryInMiB"
+    ],
     "WorkloadIdentityDetails": [
       "WorkloadIdentityArn"
     ]
@@ -223,6 +247,8 @@
       "RequestHeaderConfiguration": "object",
       "FilesystemConfigurations": "array",
       "CapacityProviderConfiguration": "object",
+      "HooksConfiguration": "object",
+      "ResourceConfigurations": "array",
       "AgentRuntimeVersion": "scalar",
       "WorkloadIdentityDetails": "object",
       "CreatedAt": "scalar",
@@ -326,6 +352,25 @@
       "S3FilesAccessPoint": "object",
       "CapacityProviderVolume": "object"
     },
+    "RuntimeHooksConfiguration": {
+      "Build": "object"
+    },
+    "BuildLifecycleHooks": {
+      "Warmup": "object"
+    },
+    "LifecycleHook": {
+      "Action": "object"
+    },
+    "LifecycleHookAction": {
+      "HttpPost": "object"
+    },
+    "HttpPostLifecycleHookAction": {
+      "Path": "scalar",
+      "Port": "scalar"
+    },
+    "ResourceConfiguration": {
+      "MinimumMemoryInMiB": "scalar"
+    },
     "SelfManagedLatticeResource": {
       "ResourceConfigurationIdentifier": "scalar"
     },
@@ -403,6 +448,18 @@
       "MountPath",
       "VolumeName"
     ],
+    "LifecycleHook": [
+      "Action"
+    ],
+    "LifecycleHookAction": [
+      "HttpPost"
+    ],
+    "HttpPostLifecycleHookAction": [
+      "Path"
+    ],
+    "ResourceConfiguration": [
+      "MinimumMemoryInMiB"
+    ],
     "SelfManagedLatticeResource": [
       "ResourceConfigurationIdentifier"
     ],
@@ -466,12 +523,24 @@
     "FilesystemConfigurations.SessionStorage": [
       "MountPath"
     ],
+    "HooksConfiguration.Build.Warmup": [
+      "Action"
+    ],
+    "HooksConfiguration.Build.Warmup.Action": [
+      "HttpPost"
+    ],
+    "HooksConfiguration.Build.Warmup.Action.HttpPost": [
+      "Path"
+    ],
     "NetworkConfiguration": [
       "NetworkMode"
     ],
     "NetworkConfiguration.NetworkModeConfig": [
       "SecurityGroups",
       "Subnets"
+    ],
+    "ResourceConfigurations": [
+      "MinimumMemoryInMiB"
     ],
     "WorkloadIdentityDetails": [
       "WorkloadIdentityArn"
@@ -520,6 +589,11 @@
     "FilesystemConfigurations[].EfsAccessPoint": "object",
     "FilesystemConfigurations[].S3FilesAccessPoint": "object",
     "FilesystemConfigurations[].SessionStorage": "object",
+    "HooksConfiguration": "object",
+    "HooksConfiguration.Build": "object",
+    "HooksConfiguration.Build.Warmup": "object",
+    "HooksConfiguration.Build.Warmup.Action": "object",
+    "HooksConfiguration.Build.Warmup.Action.HttpPost": "object",
     "LifecycleConfiguration": "object",
     "NetworkConfiguration": "object",
     "NetworkConfiguration.NetworkModeConfig": "object",
@@ -527,6 +601,8 @@
     "NetworkConfiguration.NetworkModeConfig.Subnets": "array",
     "RequestHeaderConfiguration": "object",
     "RequestHeaderConfiguration.RequestHeaderAllowlist": "array",
+    "ResourceConfigurations": "array",
+    "ResourceConfigurations[]": "object",
     "Tags": "object",
     "WorkloadIdentityDetails": "object"
   },
@@ -618,6 +694,13 @@
     "FilesystemConfigurations[].S3FilesAccessPoint.MountPath": "string",
     "FilesystemConfigurations[].SessionStorage": "object",
     "FilesystemConfigurations[].SessionStorage.MountPath": "string",
+    "HooksConfiguration": "object",
+    "HooksConfiguration.Build": "object",
+    "HooksConfiguration.Build.Warmup": "object",
+    "HooksConfiguration.Build.Warmup.Action": "object",
+    "HooksConfiguration.Build.Warmup.Action.HttpPost": "object",
+    "HooksConfiguration.Build.Warmup.Action.HttpPost.Path": "string",
+    "HooksConfiguration.Build.Warmup.Action.HttpPost.Port": "integer",
     "LastUpdatedAt": "string",
     "LifecycleConfiguration": "object",
     "LifecycleConfiguration.IdleRuntimeSessionTimeout": "integer",
@@ -634,6 +717,9 @@
     "RequestHeaderConfiguration": "object",
     "RequestHeaderConfiguration.RequestHeaderAllowlist": "array",
     "RequestHeaderConfiguration.RequestHeaderAllowlist[]": "string",
+    "ResourceConfigurations": "array",
+    "ResourceConfigurations[]": "object",
+    "ResourceConfigurations[].MinimumMemoryInMiB": "integer",
     "RoleArn": "string",
     "Status": "string",
     "Tags": "object",
