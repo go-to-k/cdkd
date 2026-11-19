@@ -257,6 +257,18 @@ describe('ECRProvider.readCurrentState', () => {
     );
   });
 
+  it('throws the policy read\'s failure ahead of the tags read\'s', async () => {
+    route({
+      describe: repoWithArn,
+      lifecycle: noLifecycle,
+      policy: Object.assign(new Error('policy failed'), { name: 'AccessDeniedException' }),
+      tags: Object.assign(new Error('tags failed'), { name: 'AccessDeniedException' }),
+    });
+    await expect(
+      provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED)
+    ).rejects.toThrow('policy failed');
+  });
+
   describe('RepositoryPolicyText (go-to-k/cdkd#6631)', () => {
     it('surfaces the policy GetRepositoryPolicy returns, JSON-parsed', async () => {
       route({
