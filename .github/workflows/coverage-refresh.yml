@@ -91,13 +91,20 @@ jobs:
           vp run audit:coverage:regenerate
           vp run audit:stateful-candidates:regenerate
           vp run gen:unsupported-types
+          # go-to-k/cdkd#6612: the ordered primaryIdentifier snapshot (public
+          # schema bundle, no AWS identity) follows the Tier 1/2 lists, and the
+          # Ref matrix is regenerated from it. A new single-field type only adds
+          # a snapshot line; a new multi-field type with no Ref decision makes
+          # `audit:ref-segment-coverage:check` red on the bot PR, as it should.
+          vp run gen:ref-segment-identifiers
+          vp run gen:ref-segment-coverage
 
       - name: Collect what changed
         id: diff
         if: steps.role.outputs.configured == 'true'
         run: |
           set -euo pipefail
-          files="docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md docs/_generated/stateful-candidates.json docs/_generated/stateful-candidates.md src/provisioning/unsupported-types.generated.ts"
+          files="docs/_generated/provider-coverage.json docs/_generated/provider-coverage.md docs/_generated/stateful-candidates.json docs/_generated/stateful-candidates.md src/provisioning/unsupported-types.generated.ts tests/fixtures/cfn-primary-identifiers.json docs/_generated/ref-segment-coverage.json docs/_generated/ref-segment-coverage.md"
           # Assigned on its own line: `set -e` does not fire inside an `if`
           # condition, so an inlined git failure would read as "no change".
           # shellcheck disable=SC2086
@@ -173,7 +180,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "${branch}"
-          git add docs/_generated/ src/provisioning/unsupported-types.generated.ts
+          git add docs/_generated/ src/provisioning/unsupported-types.generated.ts tests/fixtures/cfn-primary-identifiers.json
           # The title follows what changed, as the repository's title check
           # requires: a Tier 3 move changes the pre-flight refusal list in
           # src/ and is a user-visible fix that needs a changelog entry; a
@@ -196,6 +203,7 @@ jobs:
           - A type entering Tier 3 is refused at pre-flight from this release on; one leaving it now routes through Cloud Control.
           - If \`audit:stateful-candidates:check\` is red, a new Tier-2 type looks data-bearing: add it to \`STATEFUL_TYPES\` (and \`docs/cli-deploy-safety.md\`) or to \`NOT_GUARDED\` with its reason, on this branch.
           - Also review types that LEFT Tier 3 for data they hold: the candidate scan does not propose every one.
+          - If \`audit:ref-segment-coverage:check\` is red, a new type's physical id is several fields joined with \`|\`: read its docs page's \`Ref\`, measure it if unclear, then map it in \`ref-values.ts\` or record it in \`REF_SEGMENT_DISPOSITIONS\` (go-to-k/cdkd#6612), on this branch.
           ${changelog_note}
           EOF
           )
