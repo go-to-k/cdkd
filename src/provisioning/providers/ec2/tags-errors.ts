@@ -227,16 +227,17 @@ export async function applyTagDiff(
  * (NotFound, AccessDenied, throttle, etc.) propagate immediately so
  * the caller's existing error handling is unchanged.
  *
- * Note on retry layering: `DependencyViolation` is also in
- * `RETRYABLE_ERROR_MESSAGE_PATTERNS` (consumed by `withRetry`) and
- * the destroy-runner's inner 3-attempt loop also matches it. After
- * this helper's budget exhausts and re-throws, those outer retry
- * loops will see the error and try a few more times — adding at
- * most ~1 min on top of the 10 min budget, still bounded by the
- * per-resource `--resource-timeout` deadline (default 30 min).
- * That extra is harmless (worst case slightly later failure surface)
- * and avoids threading a per-error-class "already exhausted" flag
- * through every retry layer.
+ * Retry layering: `DependencyViolation` is also in
+ * `RETRYABLE_ERROR_MESSAGE_PATTERNS` (consumed by `withRetry`), the
+ * destroy-runner's 3-attempt loop matches it, and a superseded delete's
+ * `retryWhileInUse` reads it as "in use". Each of those calls the
+ * provider again, and each call starts a FRESH budget here, so an
+ * unmarked exhausted error turned the 10 min into 30 min (the
+ * per-resource timeout) on destroy (go-to-k/cdkd#6592). The error
+ * rethrown once the budget is exhausted is therefore `markNonRetryable`,
+ * which every one of those layers reads before its message match; an
+ * error rethrown at once (not a `DependencyViolation`) stays unmarked,
+ * so its classification is unchanged.
  */
 export async function withDependencyViolationRetry<T>(
   this: EC2Provider,
@@ -253,7 +254,7 @@ export async function withDependencyViolationRetry<T>(
   // Loop forever — exit conditions are (a) operation succeeds (return),
   // (b) operation throws non-DependencyViolation (re-throw immediately),
   // (c) elapsed >= budget AND operation still throws DependencyViolation
-  // (re-throw the last DependencyViolation error).
+  // (re-throw the last DependencyViolation error, marked non-retryable).
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
@@ -264,7 +265,8 @@ export async function withDependencyViolationRetry<T>(
       }
       const elapsed = Date.now() - startedAt;
       if (elapsed >= totalBudgetMs) {
-        throw error;
+        // `isDependencyViolationError` admits only an `Error`.
+        throw markNonRetryable(error as Error);
       }
       attempt += 1;
       const sleepMs = Math.min(delay, totalBudgetMs - elapsed);
