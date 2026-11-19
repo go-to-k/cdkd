@@ -9,6 +9,14 @@ import {
 } from '../../../src/provisioning/sibling-owned-members.js';
 import { pruneMembersSiblingsStoppedWriting } from '../../../src/deployment/deploy-engine/observed-capture.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { applyLifecycleHooksDiff } from '../../../src/provisioning/providers/asg/update-lists.js';
+import {
+  isLeafCertifiedBag,
+  isSameGenerationBag,
+  markLeafCertifiedBag,
+  markSameGenerationBag,
+} from '../../../src/deployment/secret-redaction.js';
 
 /**
  * go-to-k/cdkd#6610: the table of child types that write into a parent's
@@ -600,5 +608,226 @@ describe('tableMembersSiblingsStoppedWriting', () => {
     expect(withoutStoppedTableMembers(topic.observedProperties!, stopped.get('Topic')!, {})).toEqual({
       Subscription: [STRANGER],
     });
+  });
+});
+
+describe('review round 4 (go-to-k/cdkd#6614)', () => {
+  const polSibling = (doc: unknown = { Version: '2012-10-17' }) => ({
+    resourceType: 'AWS::IAM::Policy',
+    properties: { PolicyName: 'X', PolicyDocument: doc, Roles: [ROLE] },
+  });
+  const recorded = { PolicyName: 'X', PolicyDocument: { Version: '2012-10-17' } };
+  const edited = { PolicyName: 'X', PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }] } };
+
+  it('M1: a Cloud Control readback holding the sibling policy under an edited document keeps the pair compared', () => {
+    const out = stripSiblingOwnedParentMembers('AWS::IAM::Role', ROLE, { Policies: [recorded] }, { Policies: [edited] }, {}, ctx({ Pol: polSibling() }));
+    expect(out.baseline).toEqual({ Policies: [recorded] });
+    expect(out.aws).toEqual({ Policies: [edited] });
+  });
+
+  it('M1: --revert keeps the recorded document in the desired bag, so the update restores it', () => {
+    const desired = siblingOwnedRevertDesired('AWS::IAM::Role', ROLE, { Policies: [recorded] }, { Policies: [edited] }, {}, ctx({ Pol: polSibling() }));
+    expect(desired).toEqual({ Policies: [recorded] });
+  });
+
+  it('M1: an unchanged live document still leaves both sides', () => {
+    const out = stripSiblingOwnedParentMembers('AWS::IAM::Role', ROLE, { Policies: [recorded] }, { Policies: [recorded] }, {}, ctx({ Pol: polSibling() }));
+    expect(out).toEqual({ baseline: { Policies: [] }, aws: { Policies: [] } });
+  });
+
+  it('n2: a re-added member goes after its nearest earlier live neighbour the desired bag holds', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::AutoScaling::AutoScalingGroup',
+      ASG,
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      { LifecycleHookSpecificationList: [hook('Stranger'), hook('H'), hook('Own')] },
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      ctx({ Hook: { resourceType: 'AWS::AutoScaling::LifecycleHook', physicalId: 'x', properties: { AutoScalingGroupName: ASG, ...hook('H') } } })
+    );
+    expect(desired).toEqual({ LifecycleHookSpecificationList: [hook('H'), hook('Own')] });
+  });
+
+  describe('t1: pruneMembersSiblingsStoppedWriting wiring for a table row', () => {
+    const topic = () =>
+      ({ resourceType: 'AWS::SNS::Topic', physicalId: TOPIC, properties: { Subscription: [INLINE] }, observedProperties: { Subscription: [INLINE, SIB] } }) as ResourceState;
+    const sub = (id = 's') => ({ resourceType: 'AWS::SNS::Subscription', physicalId: id, properties: { TopicArn: TOPIC, ...SIB } }) as ResourceState;
+
+    it.each([
+      ['kept', { retainedOldOnReplacement: new Set(['Sub']), replacedOldMaySurvive: new Map() }],
+      ['unconfirmed', { retainedOldOnReplacement: new Set<string>(), replacedOldMaySurvive: new Map([['Sub', 'unconfirmed']]) }],
+    ])('a replaced subscription whose old resource may survive (%s) stops nothing', (_l, replacementRun) => {
+      const t = topic();
+      const next: Record<string, ResourceState> = { Topic: t, Sub: { ...sub('s2'), properties: { TopicArn: TOPIC, ...SIB, Endpoint: 'new' } } as ResourceState };
+      expect(pruneMembersSiblingsStoppedWriting({ Topic: t, Sub: sub() }, next, replacementRun)).toBe(0);
+      expect(next['Topic']).toBe(t);
+    });
+
+    it("a removed subscription under the template's DeletionPolicy Retain stops nothing", () => {
+      const t = topic();
+      const next: Record<string, ResourceState> = { Topic: t };
+      const template = { Resources: { Sub: { Type: 'AWS::SNS::Subscription', DeletionPolicy: 'Retain' } } } as unknown as CloudFormationTemplate;
+      // The record carries no policy, so the template's is read.
+      expect(pruneMembersSiblingsStoppedWriting({ Topic: t, Sub: sub() }, next, undefined, template)).toBe(0);
+      expect(pruneMembersSiblingsStoppedWriting({ Topic: t, Sub: sub() }, { Topic: t })).toBe(1);
+      const replaced: Record<string, ResourceState> = { Topic: t, Sub: { ...sub('s2'), properties: { TopicArn: TOPIC, ...SIB, Endpoint: 'new' } } as ResourceState };
+      const retainTemplate = { Resources: { Sub: { Type: 'AWS::SNS::Subscription', UpdateReplacePolicy: 'Retain' } } } as unknown as CloudFormationTemplate;
+      expect(pruneMembersSiblingsStoppedWriting({ Topic: t, Sub: sub() }, replaced, undefined, retainTemplate)).toBe(0);
+    });
+
+    it.each([true, false])('carries the same-generation mark over (marked: %s)', (marked) => {
+      const t = topic();
+      if (marked) markSameGenerationBag(t.observedProperties!);
+      const next: Record<string, ResourceState> = { Topic: t };
+      pruneMembersSiblingsStoppedWriting({ Topic: t, Sub: sub() }, next);
+      expect(next['Topic']!.observedProperties).toEqual({ Subscription: [INLINE] });
+      expect(isSameGenerationBag(next['Topic']!.observedProperties)).toBe(marked);
+    });
+
+    it('carries the leaf-certified mark over too', () => {
+      const t = topic();
+      markLeafCertifiedBag(t.observedProperties!);
+      const next: Record<string, ResourceState> = { Topic: t };
+      pruneMembersSiblingsStoppedWriting({ Topic: t, Sub: sub() }, next);
+      expect(isLeafCertifiedBag(next['Topic']!.observedProperties)).toBe(true);
+    });
+  });
+
+  it('t2: a removed standalone hook leaves the ASG baseline; a hook the group declares stays', () => {
+    const asg = (declared: unknown[]) =>
+      ({ resourceType: 'AWS::AutoScaling::AutoScalingGroup', physicalId: ASG, properties: { LifecycleHookSpecificationList: declared }, observedProperties: { LifecycleHookSpecificationList: [hook('Own'), hook('H')] } }) as ResourceState;
+    const h = { resourceType: 'AWS::AutoScaling::LifecycleHook', physicalId: `${ASG}|H`, properties: { AutoScalingGroupName: ASG, ...hook('H') } } as ResourceState;
+    const a = asg([hook('Own')]);
+    const next: Record<string, ResourceState> = { Asg: a };
+    expect(pruneMembersSiblingsStoppedWriting({ Asg: a, Hook: h }, next)).toBe(1);
+    expect(next['Asg']!.observedProperties).toEqual({ LifecycleHookSpecificationList: [hook('Own')] });
+    const declares = asg([hook('Own'), hook('H')]);
+    const next2: Record<string, ResourceState> = { Asg: declares };
+    expect(pruneMembersSiblingsStoppedWriting({ Asg: declares, Hook: h }, next2)).toBe(0);
+    const aws = { LifecycleHookSpecificationList: [hook('H')] };
+    expect(
+      stripSiblingOwnedParentMembers('AWS::AutoScaling::AutoScalingGroup', ASG, aws, aws, { LifecycleHookSpecificationList: [hook('H')] }, ctx({ Hook: h })).aws
+    ).toBe(aws);
+  });
+
+  describe('t3: EMR fleets', () => {
+    const fleet = (type = 'TASK') => ({ resourceType: 'AWS::EMR::InstanceFleetConfig', physicalId: 'if-1', properties: { ClusterId: JOB, InstanceFleetType: type, Name: 'F' } });
+    const live = { Instances: { TaskInstanceFleets: [{ Name: 'F', TargetOnDemandCapacity: 1 }] } };
+
+    it('a non-TASK fleet owns nothing', () => {
+      expect(stripSiblingOwnedParentMembers('AWS::EMR::Cluster', JOB, {}, live, {}, ctx({ F: fleet('CORE') })).aws).toBe(live);
+    });
+
+    it('--revert puts the live sibling fleet back into the desired Instances', () => {
+      expect(siblingOwnedRevertDesired('AWS::EMR::Cluster', JOB, { Instances: { Ec2SubnetId: 's' } }, live, {}, ctx({ F: fleet() }))).toEqual({
+        Instances: { Ec2SubnetId: 's', TaskInstanceFleets: [{ Name: 'F', TargetOnDemandCapacity: 1 }] },
+      });
+    });
+
+    it('a removed fleet leaves the cluster baseline', () => {
+      const cluster = { resourceType: 'AWS::EMR::Cluster', physicalId: JOB, properties: {}, observedProperties: { Instances: { TaskInstanceFleets: [{ Name: 'F' }] } } } as ResourceState;
+      const next: Record<string, ResourceState> = { Cluster: cluster };
+      expect(pruneMembersSiblingsStoppedWriting({ Cluster: cluster, F: fleet() as ResourceState }, next)).toBe(1);
+      expect(next['Cluster']!.observedProperties).toEqual({ Instances: {} });
+    });
+  });
+
+  describe('t4: standalone policy prune and a redacted sibling document', () => {
+    it.each([
+      ['AWS::IAM::RolePolicy', 'AWS::IAM::Role', 'RoleName'],
+      ['AWS::IAM::UserPolicy', 'AWS::IAM::User', 'UserName'],
+      ['AWS::IAM::GroupPolicy', 'AWS::IAM::Group', 'GroupName'],
+    ])('a removed %s leaves the principal baseline', (childType, parentType, field) => {
+      const principal = { resourceType: parentType, physicalId: ROLE, properties: {}, observedProperties: { Policies: [policy('P')] } } as ResourceState;
+      const next: Record<string, ResourceState> = { Pr: principal };
+      const child = { resourceType: childType, physicalId: 'c', properties: { ...policy('P'), [field]: ROLE } } as ResourceState;
+      expect(pruneMembersSiblingsStoppedWriting({ Pr: principal, C: child }, next)).toBe(1);
+      expect(next['Pr']!.observedProperties).toEqual({ Policies: [] });
+    });
+
+    it.each([
+      ['a mask', '***'],
+      ['a dynamic reference', { Statement: [{ Resource: '{{resolve:ssm:/arn}}' }] }],
+      ['unparsable JSON', '{not json'],
+    ])('a sibling whose recorded document is %s owns nothing', (_l, doc) => {
+      const aws = { Policies: [policy('X')] };
+      expect(stripSiblingOwnedParentMembers('AWS::IAM::Role', ROLE, aws, aws, {}, ctx({ Pol: polSibling(doc) })).aws).toBe(aws);
+    });
+  });
+
+  describe('t5: remaining branches', () => {
+    it('an emptied list the cluster template declares stays as [] (emptyMeansAbsent applies to undeclared lists only)', () => {
+      const out = stripSiblingOwnedParentMembers(
+        'AWS::EMR::Cluster',
+        JOB,
+        {},
+        { Instances: { TaskInstanceGroups: [taskGroup('Sib')] } },
+        { Instances: { TaskInstanceGroups: [] } },
+        ctx({ Group: { resourceType: 'AWS::EMR::InstanceGroupConfig', properties: { JobFlowId: JOB, InstanceRole: 'TASK', ...taskGroup('Sib') } } })
+      );
+      expect(out.aws).toEqual({ Instances: { TaskInstanceGroups: [] } });
+    });
+
+    it('--revert leaves a desired bag without the Instances container alone', () => {
+      const desired = { Name: 'c' };
+      expect(
+        siblingOwnedRevertDesired('AWS::EMR::Cluster', JOB, desired, { Instances: { TaskInstanceGroups: [taskGroup('Sib')] } }, {}, ctx({ Group: { resourceType: 'AWS::EMR::InstanceGroupConfig', properties: { JobFlowId: JOB, InstanceRole: 'TASK', ...taskGroup('Sib') } } }))
+      ).toBe(desired);
+    });
+
+    it('--revert keeps InstanceId when the association names another address', () => {
+      const desired = { Domain: 'vpc', InstanceId: 'i-old' };
+      expect(
+        siblingOwnedRevertDesired('AWS::EC2::EIP', EIP, desired, { Domain: 'vpc', InstanceId: 'i-new' }, {}, ctx({ Assoc: eipAssociation({ AllocationId: 'eipalloc-other' }) }))
+      ).toBe(desired);
+    });
+
+    it.each([
+      ['AWS::EC2::VolumeAttachment', 'Volumes', 'VolumeId', 'vol-1'],
+      ['AWS::EC2::NetworkInterfaceAttachment', 'NetworkInterfaces', 'NetworkInterfaceId', 'eni-1'],
+    ])('a Cloud Control instance read drops the %s member from both sides', (childType, key, idField, id) => {
+      const member = { [idField]: id, Device: '/dev/sdf', DeviceIndex: '1' };
+      const out = stripSiblingOwnedParentMembers(
+        'AWS::EC2::Instance',
+        'i-1',
+        { [key]: [] },
+        { [key]: [member, { [idField]: 'stranger' }] },
+        {},
+        ctx({ A: { resourceType: childType, properties: { InstanceId: 'i-1', [idField]: id } } })
+      );
+      expect(out.aws).toEqual({ [key]: [{ [idField]: 'stranger' }] });
+    });
+  });
+});
+
+describe('t2: --revert through the ASG provider keeps a sibling hook', () => {
+  it('applyLifecycleHooksDiff sends no DeleteLifecycleHook for the sibling hook the desired bag got back', async () => {
+    const sent: string[] = [];
+    const live = [hook('H'), hook('Own'), hook('Stranger')];
+    const desired = siblingOwnedRevertDesired(
+      'AWS::AutoScaling::AutoScalingGroup',
+      ASG,
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      { LifecycleHookSpecificationList: live },
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      ctx({ Hook: { resourceType: 'AWS::AutoScaling::LifecycleHook', physicalId: 'x', properties: { AutoScalingGroupName: ASG, ...hook('H') } } })
+    );
+    const deleted: string[] = [];
+    const recordingProvider = {
+      getClient: () => ({
+        send: async (cmd: { constructor: { name: string }; input: { LifecycleHookName?: string } }) => {
+          sent.push(cmd.constructor.name);
+          if (cmd.constructor.name === 'DeleteLifecycleHookCommand') deleted.push(cmd.input.LifecycleHookName ?? '');
+          return {};
+        },
+      }),
+    };
+    await applyLifecycleHooksDiff.call(
+      recordingProvider as never,
+      ASG,
+      desired['LifecycleHookSpecificationList'] as unknown[],
+      live
+    );
+    expect(deleted).toEqual(['Stranger']);
+    expect(sent.filter((n) => n === 'PutLifecycleHookCommand')).toEqual([]);
   });
 });

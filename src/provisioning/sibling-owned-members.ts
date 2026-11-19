@@ -168,6 +168,11 @@ function effectiveDrop(
  * `collectInlinePolicyNamesManagedBySiblings`), so a baseline copy of it under
  * any document is the sibling's.
  */
+// KNOWN LIMIT (go-to-k/cdkd#6616): on a Cloud Control-routed principal the
+// readback is not filtered, so a sibling policy deleted out of band from this
+// principal also reads as "no member of that name" and leaves the baseline
+// here, as it does by identity. The sibling `AWS::IAM::Policy` owns that
+// delete, and its own read covers its FIRST target only until #6616 lands.
 function namesDroppedFromBaseline(
   row: SiblingOwnedRow,
   drop: MemberCounts,
@@ -184,6 +189,30 @@ function namesDroppedFromBaseline(
   for (const id of drop.keys()) {
     const name = memberName(id);
     if (name !== undefined && !live.has(name) && !declared.has(name)) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * For a {@link SiblingOwnedRow.nameOf} row and a BASELINE bag: the names the
+ * readback holds under an identity no sibling writes (fails closed on an
+ * unreadable live member).
+ */
+function namesChangedInReadback(
+  row: SiblingOwnedRow,
+  drop: MemberCounts,
+  readback: Record<string, unknown> | undefined
+): Set<string> {
+  const { nameOf, identity } = row;
+  const names = new Set<string>();
+  if (nameOf === undefined || identity === undefined || readback === undefined) return names;
+  const liveList = getAt(readback, pathOf(row));
+  if (!Array.isArray(liveList)) return names;
+  for (const m of liveList) {
+    const id = identity(m);
+    if (id !== undefined && drop.has(id)) continue;
+    const name = nameOf(m);
+    if (name !== undefined) names.add(name);
   }
   return names;
 }
@@ -210,6 +239,7 @@ function withoutOwned(
   const drop = effectiveDrop(row, owned, properties);
   if (drop.size === 0) return bag;
   const byName = namesDroppedFromBaseline(row, drop, properties, readback);
+  const changed = namesChangedInReadback(row, drop, readback);
   // Each written copy drops ONE matching member: a second member of the same
   // identity (two same-named EMR groups) is nobody's, so it stays compared.
   const left = new Map(drop);
@@ -217,6 +247,12 @@ function withoutOwned(
     const id = identity(m);
     const n = id === undefined ? undefined : left.get(id);
     if (n !== undefined && n > 0) {
+      // The readback holds this NAME under another identity (an inline
+      // policy whose document was edited out of band): the pair stays
+      // compared, so drift reports the change and `--revert` sends this
+      // recorded member back rather than dropping the live one.
+      const name = row.nameOf?.(m);
+      if (name !== undefined && changed.has(name)) return true;
       left.set(id!, n - 1);
       return false;
     }
@@ -331,11 +367,23 @@ export function siblingOwnedRevertDesired(
     // many copies out, so a copy still in `result` is NOT a sibling's (a
     // second same-identity member) and does not count against the re-add.
     const room = new Map(drop);
+    // A live member's anchor is the nearest EARLIER live member that is
+    // already in `result` (by identity, else by value): the re-added one goes
+    // right after it, so a live member the desired bag lacks shifts nothing.
+    const keyOf = (m: unknown): string => identity(m) ?? JSON.stringify(m) ?? '';
     live.forEach((m, index) => {
       const id = identity(m);
       const n = id === undefined ? undefined : room.get(id);
       if (n === undefined || n <= 0) return;
-      result.splice(Math.min(index, result.length), 0, m);
+      let at = 0;
+      for (let j = index - 1; j >= 0; j--) {
+        const pos = result.findIndex((r) => keyOf(r) === keyOf(live[j]));
+        if (pos >= 0) {
+          at = pos + 1;
+          break;
+        }
+      }
+      result.splice(at, 0, m);
       room.set(id!, n - 1);
     });
     out =

@@ -123,7 +123,9 @@ expect_providers() { # usage: expect_providers <label> <want>
     echo "FAIL: describe-clusters ${CLUSTER} failed" >&2
     exit 1
   fi
-  got="$(printf '%s\n' "${out}" | tr -s ' \t' '\n' | grep -v -e '^$' -e '^None$' | sort | tr '\n' ' ' | sed 's/ $//')"
+  # `|| true`: grep exits 1 on an EMPTY list, which under pipefail would end
+  # the run at this assignment, before the comparison that expects it empty.
+  got="$(printf '%s\n' "${out}" | tr -s ' \t' '\n' | { grep -v -e '^$' -e '^None$' || true; } | sort | tr '\n' ' ' | sed 's/ $//')"
   if [ "${got}" != "$2" ]; then
     echo "FAIL: $1 capacity providers: want [$2], got [${got}]" >&2
     exit 1
@@ -150,8 +152,11 @@ expect_baseline() { # usage: expect_baseline <label> <want>
     echo "FAIL: could not read ${STATE_KEY}" >&2
     exit 1
   fi
-  got="$(jq -r '[.resources[] | select(.resourceType == "AWS::ECS::Cluster")
-    | .observedProperties.CapacityProviders[]?] | sort | join(" ")' <<<"${state}")"
+  # MISSING when the record or its recorded list is absent, so an empty
+  # want ("") is the recorded list being EMPTY, never the key being gone.
+  got="$(jq -r '[.resources[] | select(.resourceType == "AWS::ECS::Cluster")] as $c
+    | if ($c | length) != 1 or (($c[0].observedProperties.CapacityProviders | type) != "array")
+      then "MISSING" else ($c[0].observedProperties.CapacityProviders | sort | join(" ")) end' <<<"${state}")"
   if [ "${got}" != "$2" ]; then
     echo "FAIL: $1 recorded CapacityProviders: want [$2], got [${got}]" >&2
     exit 1

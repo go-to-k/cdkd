@@ -126,7 +126,9 @@ endpoints() {
   local out
   out="$(aws sns list-subscriptions-by-topic --topic-arn "${TOPIC_ARN}" \
     --query 'Subscriptions[].Endpoint' --output text)" || return 1
-  printf '%s\n' "${out}" | tr -s ' \t' '\n' | grep -v '^$' | while read -r e || [ -n "${e}" ]; do
+  # `|| true`: grep exits 1 when the topic has no subscription, which under
+  # pipefail would fail this read instead of answering an empty set.
+  printf '%s\n' "${out}" | tr -s ' \t' '\n' | { grep -v -e '^$' -e '^None$' || true; } | while read -r e || [ -n "${e}" ]; do
     case "${e}" in
       "${QUEUE_A}") echo A ;;
       "${QUEUE_B}") echo B ;;

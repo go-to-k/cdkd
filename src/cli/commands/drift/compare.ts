@@ -336,7 +336,10 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // whose captured value was empty; CFn drift only compares
   // template-declared properties, so this restores parity for exactly
   // that class while keeping detection on undeclared keys captured with
-  // a real value (AWS-side defaults a console edit could change).
+  // a real value (AWS-side defaults a console edit could change). A baseline
+  // RE-captured once the sibling has written (a later update of the parent)
+  // is not empty; the sibling-owned strip below covers that case for every
+  // pair in `provisioning/sibling-owned-members.ts` (go-to-k/cdkd#6610).
   const observedIgnorePaths = useObserved
     ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {})
     : [];

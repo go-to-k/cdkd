@@ -55,7 +55,10 @@ function plainString(value: unknown): string | undefined {
 
 /**
  * An association's `Cluster`: the cluster name, or its ARN, which names the
- * cluster after `cluster/`. The cluster's physical id is its name.
+ * cluster after `cluster/`. The cluster's physical id is its name. The ARN's
+ * account and region are not matched: the association is a record of the
+ * SAME stack (one account and region), and ECS refuses an association whose
+ * cluster is in another account or region, so its name alone names the cluster.
  */
 function clusterWrites(properties: Record<string, unknown>): SiblingWrite[] {
   const cluster = plainString(properties['Cluster']);
@@ -213,6 +216,20 @@ function emrFleetWrites(properties: Record<string, unknown>): SiblingWrite[] {
   return cluster === undefined || member === undefined ? [] : [{ parent: cluster, member }];
 }
 
+/** An instance attachment's write onto its instance: the attached volume or interface id. */
+function instanceAttachmentWrites(idField: 'VolumeId' | 'NetworkInterfaceId') {
+  return (properties: Record<string, unknown>): SiblingWrite[] => {
+    const instance = plainString(properties['InstanceId']);
+    const member = plainString(properties[idField]);
+    return instance === undefined || member === undefined ? [] : [{ parent: instance, member }];
+  };
+}
+
+function instanceAttachmentIdentity(idField: 'VolumeId' | 'NetworkInterfaceId') {
+  return (element: unknown): string | undefined =>
+    isPlainRecord(element) ? plainString(element[idField]) : undefined;
+}
+
 const PRINCIPALS = [
   ['AWS::IAM::Role', 'Roles', 'AWS::IAM::RolePolicy', 'RoleName'],
   ['AWS::IAM::User', 'Users', 'AWS::IAM::UserPolicy', 'UserName'],
@@ -266,6 +283,23 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
     writes: emrFleetWrites,
     identity: emrFleetIdentity,
     emptyMeansAbsent: true,
+  },
+  // An instance's SDK read emits neither list (`VolumeAttachment`'s devices
+  // are `BlockDeviceMappings`, #6384); a Cloud Control read returns the
+  // attached volumes and interfaces in `Volumes` / `NetworkInterfaces`.
+  {
+    child: 'AWS::EC2::VolumeAttachment',
+    parent: 'AWS::EC2::Instance',
+    key: 'Volumes',
+    writes: instanceAttachmentWrites('VolumeId'),
+    identity: instanceAttachmentIdentity('VolumeId'),
+  },
+  {
+    child: 'AWS::EC2::NetworkInterfaceAttachment',
+    parent: 'AWS::EC2::Instance',
+    key: 'NetworkInterfaces',
+    writes: instanceAttachmentWrites('NetworkInterfaceId'),
+    identity: instanceAttachmentIdentity('NetworkInterfaceId'),
   },
   // The EIP's SDK read emits `InstanceId` only when the EIP declares it; a
   // Cloud Control read returns the association's instance on every address.
