@@ -88,6 +88,8 @@ let extraOp: Record<string, unknown> = {};
 /** Ops completed AFTER the Topic op (so replayed before it), and their records. */
 let laterOps: Array<Record<string, unknown>> = [];
 let laterRecords: Record<string, unknown> = {};
+/** A NEWER segment's ops (a later failed deploy), replayed before the Topic's segment. */
+let newerSegmentOps: Array<Record<string, unknown>> = [];
 const rec = (physicalId: string, properties: Record<string, unknown>) => ({
   physicalId,
   resourceType,
@@ -148,6 +150,7 @@ function install(opts: { superseded?: boolean } = {}): void {
             ...laterOps,
           ],
         },
+        ...(newerSegmentOps.length > 0 ? [{ operations: newerSegmentOps }] : []),
       ],
     }),
     saveState: vi.fn(async (_s: string, _r: string, state: StackState) => {
@@ -182,6 +185,7 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
     extraOp = {};
     laterOps = [];
     laterRecords = {};
+    newerSegmentOps = [];
     provider.readCurrentState.mockResolvedValue({ TopicName: 'topic-old' });
     provider.delete.mockResolvedValue(undefined);
   });
@@ -278,7 +282,58 @@ describe('cdkd rollback re-adopts a deferred old resource and drops its supersed
       stateBucket: 'b',
       region: REGION,
     } as unknown as Parameters<typeof rollbackCommand>[1]);
-    expect(order).toEqual(['holder read', 'update Policy']);
+    // The snapshot, the preceding write, then the probe's confirmation read.
+    expect(order).toEqual(['holder read', 'update Policy', 'holder read']);
+    expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
+    expect(saves.at(-1)!.resources['Topic']!.physicalId).toBe('topic-old');
+  });
+
+  // Review round 2: a NEWER segment replays first, and its revert can write
+  // an OLDER segment's old bucket; every segment's buckets are read before
+  // the first segment replays, so a per-segment read would see the moved date.
+  it("judges an older segment's deferred bucket by the read taken before a newer segment wrote it", async () => {
+    resourceType = 'AWS::S3::Bucket';
+    const D1 = 'us-west-2|2026-11-01T00:00:00.000Z';
+    extraOp = { oldResourceIdentity: D1 };
+    const POLICY = 'AWS::S3::BucketPolicy';
+    const policy = (v: number) => ({
+      physicalId: 'pol',
+      resourceType: POLICY,
+      properties: { Bucket: 'topic-old', PolicyDocument: { Version: String(v) } },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk' as const,
+    });
+    laterRecords = { Policy: policy(2) };
+    newerSegmentOps = [
+      {
+        logicalId: 'Policy',
+        changeType: 'UPDATE',
+        resourceType: POLICY,
+        provisionedBy: 'sdk',
+        physicalId: 'pol',
+        properties: policy(2).properties,
+        previousState: policy(1),
+      },
+    ];
+    install();
+    let generation = D1;
+    const order: string[] = [];
+    provider.replacedSurvivorIdentity.mockImplementation(async () => {
+      order.push('holder read');
+      return { kind: 'owned', identity: generation };
+    });
+    provider.update.mockImplementation(async (logicalId: string, physicalId: string) => {
+      order.push(`update ${logicalId}`);
+      generation = 'us-west-2|2026-11-02T00:00:00.000Z';
+      return { physicalId, wasReplaced: false, attributes: {} };
+    });
+    await rollbackCommand(STACK, {
+      yes: true,
+      stateBucket: 'b',
+      region: REGION,
+    } as unknown as Parameters<typeof rollbackCommand>[1]);
+    expect(order).toEqual(['holder read', 'update Policy', 'holder read']);
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
     expect(saves.at(-1)!.resources['Topic']!.physicalId).toBe('topic-old');
   });

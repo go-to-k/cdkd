@@ -306,7 +306,8 @@ describe('re-adopting a replaced S3 bucket (go-to-k/cdkd#6621)', () => {
       // An earlier revert moves the date (a policy write outside us-east-1).
       holder = async () => ({ kind: 'owned', identity: `us-west-2|${D2}` });
       expectReadopted(await replay(o));
-      expect(identityReads).toBe(1);
+      // The confirmation read at the probe compares holder, not generation, here.
+      expect(identityReads).toBe(2);
     });
 
     // Review SEC nit: in us-east-1 the stack's own writes leave the date
@@ -347,7 +348,49 @@ describe('re-adopting a replaced S3 bucket (go-to-k/cdkd#6621)', () => {
         throw Object.assign(new Error('Forbidden'), { name: '403' });
       };
       ctx.supersededResources = [{ logicalId: 'Bucket', supersededAt: 1, state: rec('bucket-old') }];
-      expectRefused(await replay(o), 'nothing held that id when this rollback started');
+      const r = await replay(o);
+      expectRefused(
+        r,
+        'nothing held that name when this rollback started, and its current state could not be read; re-running cdkd rollback reads it again'
+      );
+      expect(r.text).not.toContain('another resource took that name');
+    });
+
+    // Round 2: absent at the start and still absent re-creates as before.
+    it('re-creates a bucket absent at the start that the existence read still finds gone', async () => {
+      holder = async () => ({ kind: 'gone' });
+      live.delete('bucket-old');
+      const o = op({ oldResourceIdentity: `us-east-1|${D1}` });
+      await snapshotSurvivorIdentities(ctx, [o]);
+      const r = await replay(o);
+      expect(r.result.failures).toBe(0);
+      expect(provider.create).toHaveBeenCalledTimes(1);
+    });
+
+    // Round 2: the probe's confirmation read runs in every region.
+    it.each([
+      ['us-east-1', `us-east-1|${D1}`],
+      ['us-west-2', `us-west-2|${D1}`],
+      ['a journal without a generation', undefined],
+    ] as const)('refuses when the confirmation read finds the name free (%s)', async (_l, journaled) => {
+      if (journaled?.startsWith('us-west-2')) ctx.region = 'us-west-2';
+      holder = async () => ({ kind: 'owned', identity: journaled ?? `us-east-1|${D1}` });
+      const o = op({ oldResourceIdentity: journaled });
+      await snapshotSurvivorIdentities(ctx, [o]);
+      holder = async () => ({ kind: 'gone' });
+      expectRefused(await replay(o), 'the name went free while this rollback read it');
+    });
+
+    it.each([
+      ['another account', { kind: 'foreign', seen: 'other-account' }, 'belongs to another account'],
+      ['another region', { kind: 'foreign', seen: 'other-region' }, 'a bucket never moves region'],
+    ] as const)('outside us-east-1, refuses when the confirmation read finds %s', async (_l, now, needle) => {
+      ctx.region = 'us-west-2';
+      holder = async () => ({ kind: 'owned', identity: `us-west-2|${D1}` });
+      const o = op({ oldResourceIdentity: `us-west-2|${D1}` });
+      await snapshotSurvivorIdentities(ctx, [o]);
+      holder = async () => now as SurvivorIdentityRead;
+      expectRefused(await replay(o), needle);
     });
 
     it('skips ops whose old resource may not survive, and other types', async () => {

@@ -160,14 +160,18 @@ who holds each such name (`ListBuckets` and `GetBucketLocation`). Then:
 
 - **Refused, whatever the existence read answered:**
   - a bucket that is not in this account's `ListBuckets`, or is in another region;
-  - a bucket that was absent when the rollback started;
+  - a bucket that was absent when the rollback started and that AWS now
+    reports, or whose current state cannot be read;
   - this account's bucket with a date other than the journaled one. In
     us-east-1 only a re-create moves the date, so it is refused as another
     bucket. Elsewhere a versioning, tagging, encryption or policy write also
     moves it, so it is refused with a message saying the bucket may have been
     re-created or modified.
-- **Re-adopted when the dates match.** In us-east-1 the date is read again at
-  the probe and must still match.
+- **Re-adopted when the dates match.** Just before the re-adopt, who holds
+  the name is read again. A bucket that is now another account's or in another
+  region is refused, and so is a name that went free in between, since
+  re-adopting would delete the new bucket for nothing. In us-east-1 that read's
+  date must still match too.
 - **Who holds the name could not be read** (no `s3:ListAllMyBuckets`, or a
   throttle): re-adopted with a warning when AWS reports the bucket, and
   refused when the existence read did not answer either.

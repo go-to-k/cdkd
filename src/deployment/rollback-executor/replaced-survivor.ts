@@ -71,7 +71,15 @@ export type ReplacedSurvivorVerdict =
    * existence read did not answer either, so it is refused.
    */
   | 'exists-unverified'
-  | 'owner-unverified';
+  | 'owner-unverified'
+  /**
+   * go-to-k/cdkd#6621: refused, never re-adopted. `free-unreadable`: nothing
+   * held the id when the rollback started and its state now cannot be read;
+   * `vacated`: the probe's confirmation read found the id free after the
+   * existence read reported it.
+   */
+  | 'free-unreadable'
+  | 'vacated';
 
 /** Every verdict naming a holder that is not the stack's resource. */
 export function isForeignSurvivor(
@@ -311,14 +319,19 @@ async function holderVerdict(
     withReplayDeletePrinting(s, () => liveSurvivorRead(s.ctx, oldType, physicalId));
   const snapshot = s.ctx.survivorIdentities?.get(survivorKey(oldType, physicalId));
   const verdict = judgeHolder(s, oldType, existence, snapshot ?? (await live()), snapshot);
-  const journaled = s.op.oldResourceIdentity;
-  const stable = journaled?.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType];
-  if (verdict !== 'exists' || snapshot === undefined || journaled === undefined || !stable) {
-    return verdict;
-  }
+  if (verdict !== 'exists' || snapshot === undefined) return verdict;
+  // A confirmation read at the probe, in every region: the holder may have
+  // changed since the snapshot. Who holds it (account, region) and whether
+  // anything does are compared everywhere; the generation only where the
+  // stack's own writes leave it alone.
   const now = await live();
   if (now.kind === 'foreign') return foreignHolder(now);
-  if (now.kind === 'owned' && now.identity !== undefined && now.identity !== journaled) {
+  // The name went free since the existence read: re-adopting would delete
+  // the new bucket for nothing.
+  if (now.kind === 'gone') return 'vacated';
+  const journaled = s.op.oldResourceIdentity;
+  const stable = journaled?.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType];
+  if (stable && now.kind === 'owned' && now.identity !== undefined && now.identity !== journaled) {
     return 'foreign-recreated';
   }
   return 'exists';
@@ -336,10 +349,13 @@ function judgeHolder(
   snapshot: SurvivorIdentityRead | undefined
 ): ReplacedSurvivorVerdict {
   if (read.kind === 'foreign') return foreignHolder(read);
-  // Absent at the snapshot, not gone now: it appeared during this rollback.
   // A live read finding it gone saw it go between the two reads.
   if (read.kind === 'gone') {
-    if (snapshot !== undefined) return 'foreign-appeared';
+    // Absent at the snapshot and reported now: someone created it since.
+    // Absent at the snapshot and unreadable now: nothing proves either, and
+    // re-adopting what may be another owner's deletes the new bucket.
+    if (snapshot !== undefined)
+      return existence === 'exists' ? 'foreign-appeared' : 'free-unreadable';
     return existence === 'exists' ? 'gone' : existence;
   }
   if (read.kind === 'unknown')

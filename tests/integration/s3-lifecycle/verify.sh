@@ -2091,6 +2091,12 @@ if [ "${RL_RC}" -ne 0 ]; then
   echo "FAIL [phase 2e]: cdkd rollback exited ${RL_RC}, refusing the stack's own bucket" >&2
   exit 1
 fi
+# A re-adopt whose owner could not be verified (no s3:ListAllMyBuckets, a
+# throttle) warns instead of proving the bucket the stack's: not this phase.
+if grep -qF -- 'could not verify that the old resource' <<<"${RL_FLAT}"; then
+  echo "FAIL [phase 2e]: the re-adopt of ${RL_OLD_BUCKET} was unverified (its owner could not be read)" >&2
+  exit 1
+fi
 if ! grep -qF -- 'was not deleted yet' <<<"${RL_FLAT}"; then
   echo "FAIL [phase 2e]: the rollback did not re-adopt ${RL_OLD_BUCKET} (no 'was not deleted yet' line)" >&2
   exit 1

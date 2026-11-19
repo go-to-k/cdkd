@@ -186,7 +186,13 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // go-to-k/cdkd#6621: modified or re-created, undecidable; re-adopting
     // would delete the new copy for what may be someone else's.
     if (survivor === 'modified') throw modifiedSurvivorRefusal(s, oldType);
-    if (survivor === 'owner-unverified') throw survivorUnprovenRefusal(s, oldType, survivor);
+    if (
+      survivor === 'owner-unverified' ||
+      survivor === 'free-unreadable' ||
+      survivor === 'vacated'
+    ) {
+      throw survivorUnprovenRefusal(s, oldType, survivor);
+    }
     if (survivor === 'exists-unverified') {
       // AWS reports it, but who owns it could not be read: re-adopted as
       // before, said out loud. Value-free: no name, no AWS text.
@@ -632,7 +638,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
 function survivorUnprovenRefusal(
   s: Pick<ReplayOpScope, 'op' | 'ctx' | 'mask'>,
   oldType: string,
-  verdict: 'unreadable' | 'unknown' | 'interrupted' | 'maybe-deleting' | 'owner-unverified'
+  verdict:
+    | 'unreadable'
+    | 'unknown'
+    | 'interrupted'
+    | 'maybe-deleting'
+    | 'owner-unverified'
+    | 'free-unreadable'
+    | 'vacated'
 ): Error {
   const { op, ctx, mask } = s;
   const remedy = orphanRemedy(op.logicalId, ctx);
@@ -642,29 +655,37 @@ function survivorUnprovenRefusal(
     : 'no recorded id';
   const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
   const why =
-    verdict === 'owner-unverified'
-      ? // go-to-k/cdkd#6621: re-adopting another owner's bucket deletes the new one.
-        `cdkd could not read whether it does, nor whether it belongs to this account (this ` +
-        `account's bucket list could not be read; it needs s3:ListAllMyBuckets). Re-adopting ` +
-        `another owner's bucket would delete the new one; re-running ${rerun} reads both again`
-      : verdict === 'unreadable'
-        ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
-          `it could duplicate it or collide with it`
-        : verdict === 'interrupted'
-          ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
-            `${rerun} reads it`
-          : verdict === 'unknown'
-            ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
-              `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
-              `with it`
-            : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
-              // the resource before AWS refused it, so "accepted" is not the only cause.
-              `AWS still reports it, but its failed delete may have been accepted and still be ` +
-              `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
-              `running delete finishes, or one that delete already stripped; once ` +
-              `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
-              `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
-              `then re-run ${rerun}`;
+    verdict === 'free-unreadable'
+      ? // go-to-k/cdkd#6621: absent at the start, unreadable now.
+        `nothing held that name when this rollback started, and its current state could not ` +
+        `be read; re-running ${rerun} reads it again`
+      : verdict === 'vacated'
+        ? `the name went free while this rollback read it (AWS reported it, then a second read ` +
+          `found no bucket under it), so re-adopting it would delete the new resource for ` +
+          `nothing; re-running ${rerun} reads it again`
+        : verdict === 'owner-unverified'
+          ? // go-to-k/cdkd#6621: re-adopting another owner's bucket deletes the new one.
+            `cdkd could not read whether it does, nor whether it belongs to this account (this ` +
+            `account's bucket list could not be read; it needs s3:ListAllMyBuckets). Re-adopting ` +
+            `another owner's bucket would delete the new one; re-running ${rerun} reads both again`
+          : verdict === 'unreadable'
+            ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
+              `it could duplicate it or collide with it`
+            : verdict === 'interrupted'
+              ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
+                `${rerun} reads it`
+              : verdict === 'unknown'
+                ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
+                  `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
+                  `with it`
+                : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
+                  // the resource before AWS refused it, so "accepted" is not the only cause.
+                  `AWS still reports it, but its failed delete may have been accepted and still be ` +
+                  `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
+                  `running delete finishes, or one that delete already stripped; once ` +
+                  `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
+                  `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
+                  `then re-run ${rerun}`;
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
