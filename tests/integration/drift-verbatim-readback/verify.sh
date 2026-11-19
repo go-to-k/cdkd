@@ -10,7 +10,9 @@
 #   2. with every observed baseline stripped (strip-all-observed.ts: the
 #      template-only baseline a capture-off deploy leaves), drift is clean;
 #   3. a Condition added out of band to every document is drift, named by
-#      path; `drift --revert` removes it from AWS; drift is clean again.
+#      path; `drift --revert` removes it from AWS, replacing nothing (every
+#      resource's physical id and AWS-side identity unchanged); drift is
+#      clean again.
 
 set -euo pipefail
 
@@ -171,6 +173,32 @@ missing=$(node -e '
 [ -z "${missing}" ] || { echo "FAIL: no deploy-time readback for: ${missing}" >&2; exit 1; }
 echo "    OK: every resource recorded a deploy-time readback"
 
+# go-to-k/cdkd#6624: what the drift comparator relies on. These services write
+# `Version: 2008-10-17` (what an omitted Version means) into a document the
+# template submitted without one; the Cloud Control IAM inline types and
+# AWS::IAM::Policy write none. A change on AWS's side fails here, by name.
+node -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).state.resources;
+  const filled = {
+    BareRole: "AssumeRolePolicyDocument", SiblingRole: "AssumeRolePolicyDocument",
+    ProbeBucketPolicy: "PolicyDocument", ProbeQueuePolicy: "PolicyDocument",
+    ProbeTopicPolicy: "PolicyDocument", ProbeKey: "KeyPolicy", ProbeSecretPolicy: "ResourcePolicy",
+  };
+  const none = ["ProbeRolePolicy", "ProbeUserPolicy", "ProbeGroupPolicy", "ProbePolicy"];
+  const bad = [];
+  for (const [id, key] of Object.entries(filled)) {
+    const v = s[id]?.observedProperties?.[key]?.Version;
+    if (v !== "2008-10-17") bad.push(`${id}.${key}.Version is ${JSON.stringify(v)}, expected "2008-10-17"`);
+  }
+  for (const id of none) {
+    const doc = s[id]?.observedProperties?.PolicyDocument;
+    if (doc === undefined) bad.push(`${id} has no observed PolicyDocument`);
+    else if (doc.Version !== undefined) bad.push(`${id}.PolicyDocument.Version is ${JSON.stringify(doc.Version)}, expected none`);
+  }
+  if (bad.length) { console.error("FAIL: Version fill differs from the measured one:\n  " + bad.join("\n  ")); process.exit(1); }
+' "${ARTIFACT_DIR}/state-show-deploy.json"
+echo "    OK: 7 documents read back with Version 2008-10-17, 4 with none"
+
 # Drift JSON -> one "<logicalId> <path>" line per change, sorted.
 drift_paths() { # $1 = drift --json file
   node -e '
@@ -262,9 +290,73 @@ if [ "${got}" != "${EXPECTED_DRIFT}" ] || [ "${DRIFT_RC}" != 1 ]; then
 fi
 echo "    OK: all 9 documents report the added Condition"
 
+# --- The revert must update in place: no resource replaced ------------------
+# One line per state resource: its logical id, the physical id state records,
+# and an AWS-side identity that a delete + create would change (a creation
+# timestamp or IAM's unique id; for a policy resource, the target it is
+# attached to). The count is checked against state so the comparison below
+# cannot pass over an empty or partial snapshot.
+identities() { # $1 = output file
+  local st="${ARTIFACT_DIR}/state-identity.json" n
+  show_state "${st}"
+  node -e '
+    const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).state.resources;
+    for (const id of Object.keys(s).sort()) {
+      console.log(`${id}\t${s[id].resourceType}\t${s[id].physicalId}`);
+    }
+  ' "${st}" >"${ARTIFACT_DIR}/state-ids.tsv"
+  n=$(wc -l <"${ARTIFACT_DIR}/state-ids.tsv" | tr -d ' ')
+  [ "${n}" = 21 ] || { echo "FAIL: identity snapshot holds ${n} resources, expected the stack's 21" >&2; return 1; }
+  : >"$1"
+  local id type pid aws
+  while IFS=$'\t' read -r id type pid; do
+    [ -n "${pid}" ] && [ "${pid}" != "undefined" ] || { echo "FAIL: ${id} has no physical id in state" >&2; return 1; }
+    case "${type}" in
+      AWS::S3::Bucket) aws=$(aws s3api list-buckets --query "Buckets[?Name=='${pid}'].CreationDate" --output text) || return 1 ;;
+      AWS::S3::BucketPolicy) aws=$(aws s3api get-bucket-policy --bucket "${pid}" --region "${REGION}" >/dev/null && echo "attached:${pid}") || return 1 ;;
+      AWS::SQS::Queue) aws=$(aws sqs get-queue-attributes --queue-url "${pid}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
+      AWS::SQS::QueuePolicy) aws=$(aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
+      AWS::SNS::Topic | AWS::SNS::TopicPolicy) aws=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.TopicArn --output text) || return 1 ;;
+      AWS::KMS::Key) aws=$(aws kms describe-key --key-id "${pid}" --region "${REGION}" --query KeyMetadata.CreationDate --output text) || return 1 ;;
+      AWS::KMS::Alias) aws=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text) || return 1 ;;
+      AWS::SecretsManager::Secret | AWS::SecretsManager::ResourcePolicy) aws=$(aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}" --query CreatedDate --output text) || return 1 ;;
+      AWS::IAM::Role) aws=$(aws iam get-role --role-name "${pid}" --query Role.RoleId --output text) || return 1 ;;
+      AWS::IAM::User) aws=$(aws iam get-user --user-name "${pid}" --query User.UserId --output text) || return 1 ;;
+      AWS::IAM::Group) aws=$(aws iam get-group --group-name "${pid}" --query Group.GroupId --output text) || return 1 ;;
+      AWS::IAM::ManagedPolicy) aws=$(aws iam get-policy --policy-arn "${pid}" --query Policy.PolicyId --output text) || return 1 ;;
+      # Cloud Control physical id `<policy name>|<principal name>`.
+      AWS::IAM::RolePolicy) aws=$(aws iam get-role-policy --role-name "${pid#*|}" --policy-name "${pid%%|*}" --query RoleName --output text) || return 1 ;;
+      AWS::IAM::UserPolicy) aws=$(aws iam get-user-policy --user-name "${pid#*|}" --policy-name "${pid%%|*}" --query UserName --output text) || return 1 ;;
+      AWS::IAM::GroupPolicy) aws=$(aws iam get-group-policy --group-name "${pid#*|}" --policy-name "${pid%%|*}" --query GroupName --output text) || return 1 ;;
+      AWS::IAM::Policy) aws=$(aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name "${pid}" --query PolicyName --output text) || return 1 ;;
+      *) echo "FAIL: identity snapshot has no AWS-side probe for ${type} (${id})" >&2; return 1 ;;
+    esac
+    [ -n "${aws}" ] && [ "${aws}" != "None" ] || { echo "FAIL: no AWS-side identity for ${id} (${type})" >&2; return 1; }
+    printf '%s\t%s\t%s\n' "${id}" "${pid}" "${aws}" >>"$1"
+  done <"${ARTIFACT_DIR}/state-ids.tsv"
+  [ "$(wc -l <"$1" | tr -d ' ')" = "${n}" ] || { echo "FAIL: identity snapshot lost rows" >&2; return 1; }
+}
+
+identities "${ARTIFACT_DIR}/identity-before.tsv" || exit 1
+echo "    identity snapshot: $(wc -l <"${ARTIFACT_DIR}/identity-before.tsv" | tr -d ' ') resources"
+
 echo "==> drift --revert"
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
+  2>&1 | tee "${ARTIFACT_DIR}/revert.log"
 sleep 15
+
+# A revert updates in place; its output must not describe a replacement.
+if grep -qiE 'replac|re-?creat' "${ARTIFACT_DIR}/revert.log"; then
+  echo "FAIL: drift --revert output names a replacement:" >&2
+  grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert.log" >&2
+  exit 1
+fi
+identities "${ARTIFACT_DIR}/identity-after.tsv" || exit 1
+if ! diff "${ARTIFACT_DIR}/identity-before.tsv" "${ARTIFACT_DIR}/identity-after.tsv" >&2; then
+  echo "FAIL: drift --revert replaced a resource (physical id or AWS identity changed, diff above)" >&2
+  exit 1
+fi
+echo "    OK: the revert replaced nothing ($(wc -l <"${ARTIFACT_DIR}/identity-after.tsv" | tr -d ' ') identities unchanged)"
 
 echo "==> The live documents hold no Condition after the revert"
 live_docs() {
