@@ -19,8 +19,7 @@
  *    `undeclaredUncomparedDriftKeys` entry in `cli/commands/drift/baseline-keys.ts`);
  *  - `none`: the parent's drift read never returns the child's members, so
  *    the pair does not collide (the evidence names the read).
- * A new colliding pair is a row of {@link SIBLING_OWNED_ROWS} plus its
- * `table` entry, not new code.
+ * A new colliding pair is a row of {@link SIBLING_OWNED_ROWS}, not new code.
  *
  * What a row does, always from the stack's OWN state records (no AWS call):
  *  - DETECTION ({@link stripSiblingOwnedParentMembers}): a member a sibling
@@ -65,14 +64,62 @@ interface SiblingWrite {
 interface SiblingOwnedRow {
   child: string;
   parent: string;
+  /** The parent property, a `.`-separated path for a nested one (`Instances.TaskInstanceGroups`). */
   key: string;
-  /** What the child record writes, from its recorded `properties`. */
-  writes: (properties: Record<string, unknown>) => SiblingWrite[];
+  /** What the child record writes, from its recorded `properties` and physical id. */
+  writes: (properties: Record<string, unknown>, physicalId: string | undefined) => SiblingWrite[];
   /** A list element's identity on the parent; absent for a whole-key row. */
   identity?: (element: unknown) => string | undefined;
   /** The ids a child may name the parent by; absent: its physical id alone. */
   parentIds?: (physicalId: string) => string[];
+  /**
+   * The parent's read OMITS the list when it is empty (rather than emitting
+   * `[]`), so a list the strip empties leaves the bag, both sides alike.
+   */
+  emptyMeansAbsent?: boolean;
 }
+
+/** Marker for {@link setAt}: remove the key. */
+const REMOVE: unique symbol = Symbol('remove');
+
+/** The value at `path` in `bag`, `undefined` when any segment is missing or not an object. */
+function getAt(bag: unknown, path: readonly string[]): unknown {
+  let node: unknown = bag;
+  for (const segment of path) {
+    if (!isPlainRecord(node) || !hasOwnKey(node, segment)) return undefined;
+    node = node[segment];
+  }
+  return node;
+}
+
+/** Whether `bag` holds `path` (own keys, every segment). */
+function hasAt(bag: unknown, path: readonly string[]): boolean {
+  let node: unknown = bag;
+  for (const segment of path) {
+    if (!isPlainRecord(node) || !hasOwnKey(node, segment)) return false;
+    node = node[segment];
+  }
+  return true;
+}
+
+/** `bag` with `value` at `path` (copy-on-write along the path); `path`'s containers must exist. */
+function setAt(
+  bag: Record<string, unknown>,
+  path: readonly string[],
+  value: unknown
+): Record<string, unknown> {
+  const [head, ...rest] = path;
+  if (head === undefined) return bag;
+  if (rest.length === 0) {
+    if (value !== REMOVE) return { ...bag, [head]: value };
+    const { [head]: _removed, ...kept } = bag;
+    return kept;
+  }
+  const child = bag[head];
+  return isPlainRecord(child) ? { ...bag, [head]: setAt(child, rest, value) } : bag;
+}
+
+const pathOf = (row: SiblingOwnedRow): string[] => row.key.split('.');
 
 /** The ids `row`'s children may name a parent of `physicalId` by. */
 function parentIdsOf(row: SiblingOwnedRow, physicalId: string): string[] {
@@ -117,15 +164,47 @@ function snsSubscriptionWrites(properties: Record<string, unknown>): SiblingWrit
   return topic === undefined || member === undefined ? [] : [{ parent: topic, member }];
 }
 
-/** An inline policy's identity on a principal: its `PolicyName`. */
+/** `value` as key-sorted JSON, or `undefined` when it holds a mask or a `{{resolve:...}}` reference. */
+function canonicalJson(value: unknown): string | undefined {
+  let doc = value;
+  if (typeof doc === 'string') {
+    try {
+      doc = JSON.parse(doc) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  if (doc === undefined || isRedactedRecordedValue(doc)) return undefined;
+  const sort = (v: unknown): unknown =>
+    Array.isArray(v)
+      ? v.map(sort)
+      : isPlainRecord(v)
+        ? Object.fromEntries(
+            Object.keys(v)
+              .sort()
+              .map((k) => [k, sort(v[k])])
+          )
+        : v;
+  return JSON.stringify(sort(doc));
+}
+
+/**
+ * An inline policy's identity on a principal: its `PolicyName` AND its
+ * document. A sibling owns only the document it RECORDED: an `AWS::IAM::Policy`
+ * naming several principals reads back its first only, so a document edited
+ * on another one must stay this principal's drift rather than leave it.
+ */
 function inlinePolicyIdentity(element: unknown): string | undefined {
-  return isPlainRecord(element) ? plainString(element['PolicyName']) : undefined;
+  if (!isPlainRecord(element)) return undefined;
+  const name = plainString(element['PolicyName']);
+  const doc = canonicalJson(element['PolicyDocument']);
+  return name === undefined || doc === undefined ? undefined : JSON.stringify([name, doc]);
 }
 
 /** An `AWS::IAM::Policy`'s writes onto each principal its `field` list names. */
 function iamPolicyWrites(field: 'Roles' | 'Users' | 'Groups') {
   return (properties: Record<string, unknown>): SiblingWrite[] => {
-    const member = plainString(properties['PolicyName']);
+    const member = inlinePolicyIdentity(properties);
     const names = properties[field];
     if (member === undefined || !Array.isArray(names)) return [];
     return names.flatMap((n) => {
@@ -138,7 +217,7 @@ function iamPolicyWrites(field: 'Roles' | 'Users' | 'Groups') {
 /** A standalone `RolePolicy` / `UserPolicy` / `GroupPolicy`'s write onto the principal its `field` names. */
 function standalonePolicyWrites(field: 'RoleName' | 'UserName' | 'GroupName') {
   return (properties: Record<string, unknown>): SiblingWrite[] => {
-    const member = plainString(properties['PolicyName']);
+    const member = inlinePolicyIdentity(properties);
     const parent = plainString(properties[field]);
     return member === undefined || parent === undefined ? [] : [{ parent, member }];
   };
@@ -151,6 +230,57 @@ function standalonePolicyWrites(field: 'RoleName' | 'UserName' | 'GroupName') {
 function eipAssociationWrites(properties: Record<string, unknown>): SiblingWrite[] {
   const parent = plainString(properties['AllocationId']) ?? plainString(properties['EIP']);
   return parent === undefined ? [] : [{ parent }];
+}
+
+/**
+ * A standalone lifecycle hook's write onto its group: the hook's name, from
+ * `LifecycleHookName` or, for a generated one, the second segment of its
+ * Cloud Control id `<group>|<hook>`.
+ */
+function lifecycleHookWrites(
+  properties: Record<string, unknown>,
+  physicalId: string | undefined
+): SiblingWrite[] {
+  const group = plainString(properties['AutoScalingGroupName']);
+  const fromId = typeof physicalId === 'string' ? physicalId.split('|') : [];
+  const name =
+    plainString(properties['LifecycleHookName']) ??
+    (fromId.length === 2 && fromId[0] === group ? plainString(fromId[1]) : undefined);
+  return group === undefined || name === undefined ? [] : [{ parent: group, member: name }];
+}
+
+function lifecycleHookIdentity(element: unknown): string | undefined {
+  return isPlainRecord(element) ? plainString(element['LifecycleHookName']) : undefined;
+}
+
+/**
+ * A TASK instance group's identity in the cluster's `Instances`: its `Name` and
+ * `InstanceType`. A group with no name owns nothing (it stays compared), since
+ * two unnamed groups of one type cannot be told apart.
+ */
+function emrGroupIdentity(element: unknown): string | undefined {
+  if (!isPlainRecord(element)) return undefined;
+  const name = plainString(element['Name']);
+  const type = plainString(element['InstanceType']);
+  return name === undefined || type === undefined ? undefined : JSON.stringify([name, type]);
+}
+
+function emrGroupWrites(properties: Record<string, unknown>): SiblingWrite[] {
+  const cluster = plainString(properties['JobFlowId']);
+  const member = properties['InstanceRole'] === 'TASK' ? emrGroupIdentity(properties) : undefined;
+  return cluster === undefined || member === undefined ? [] : [{ parent: cluster, member }];
+}
+
+/** A TASK instance fleet's identity in the cluster's `Instances`: its `Name`. */
+function emrFleetIdentity(element: unknown): string | undefined {
+  return isPlainRecord(element) ? plainString(element['Name']) : undefined;
+}
+
+function emrFleetWrites(properties: Record<string, unknown>): SiblingWrite[] {
+  const cluster = plainString(properties['ClusterId']);
+  const member =
+    properties['InstanceFleetType'] === 'TASK' ? emrFleetIdentity(properties) : undefined;
+  return cluster === undefined || member === undefined ? [] : [{ parent: cluster, member }];
 }
 
 const PRINCIPALS = [
@@ -180,6 +310,33 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
     writes: snsSubscriptionWrites,
     identity: snsSubscriptionIdentity,
   },
+  // The group's read emits every live hook (`DescribeLifecycleHooks`), and
+  // `update()` deletes a previous hook the desired side lacks.
+  {
+    child: 'AWS::AutoScaling::LifecycleHook',
+    parent: 'AWS::AutoScaling::AutoScalingGroup',
+    key: 'LifecycleHookSpecificationList',
+    writes: lifecycleHookWrites,
+    identity: lifecycleHookIdentity,
+  },
+  // The cluster's read lists every TASK group / fleet under `Instances`, and
+  // omits a list that is empty.
+  {
+    child: 'AWS::EMR::InstanceGroupConfig',
+    parent: 'AWS::EMR::Cluster',
+    key: 'Instances.TaskInstanceGroups',
+    writes: emrGroupWrites,
+    identity: emrGroupIdentity,
+    emptyMeansAbsent: true,
+  },
+  {
+    child: 'AWS::EMR::InstanceFleetConfig',
+    parent: 'AWS::EMR::Cluster',
+    key: 'Instances.TaskInstanceFleets',
+    writes: emrFleetWrites,
+    identity: emrFleetIdentity,
+    emptyMeansAbsent: true,
+  },
   // The EIP's SDK read emits `InstanceId` only when the EIP declares it; a
   // Cloud Control read returns the association's instance on every address.
   {
@@ -189,9 +346,10 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
     writes: eipAssociationWrites,
     parentIds: (physicalId) => physicalId.split('|').filter((part) => part !== ''),
   },
-  // The IAM providers' own readback already drops these
+  // The IAM providers' own readback already drops these by name
   // (`collectInlinePolicyNamesManagedBySiblings`, #323 / #4821); the rows add
-  // the baseline side, a Cloud Control readback, and the deploy-time prune.
+  // the baseline side, a Cloud Control readback, and the deploy-time prune,
+  // and own a policy only under the document the sibling recorded.
   ...PRINCIPALS.flatMap(([parent, field, standalone, nameField]) => [
     {
       child: 'AWS::IAM::Policy',
@@ -322,6 +480,18 @@ export const SIBLING_WRITE_PAIRS: readonly SiblingWritePair[] = [
       ],
       ['AWS::SQS::QueuePolicy', 'AWS::SQS::Queue', 'policy', 'the SQS queue read emits no Policy'],
       [
+        'AWS::SNS::TopicInlinePolicy',
+        'AWS::SNS::Topic',
+        'policy',
+        'sns-topic read-state emits no Policy',
+      ],
+      [
+        'AWS::SQS::QueueInlinePolicy',
+        'AWS::SQS::Queue',
+        'policy',
+        'the SQS queue read emits no Policy',
+      ],
+      [
         'AWS::Logs::SubscriptionFilter',
         'AWS::Logs::LogGroup',
         'filters',
@@ -425,7 +595,7 @@ function ownedByRow(
     let any = false;
     for (const sibling of Object.values(context?.siblings ?? {})) {
       if (sibling.resourceType !== row.child || !isPlainRecord(sibling.properties)) continue;
-      for (const w of row.writes(sibling.properties)) {
+      for (const w of row.writes(sibling.properties, sibling.physicalId)) {
         if (!ids.has(w.parent)) continue;
         any = true;
         if (w.member !== undefined) members.add(w.member);
@@ -447,7 +617,7 @@ function effectiveDrop(
 ): Set<string> {
   const drop = new Set(owned ?? []);
   const identity = row.identity;
-  const own = isPlainRecord(properties) ? properties[row.key] : undefined;
+  const own = getAt(properties, pathOf(row));
   if (identity === undefined || drop.size === 0 || !Array.isArray(own)) return drop;
   for (const entry of own) {
     const id = identity(entry);
@@ -467,14 +637,11 @@ function withoutOwned(
   owned: ReadonlySet<string> | undefined,
   properties: Record<string, unknown> | undefined
 ): Record<string, unknown> {
-  if (!hasOwnKey(bag, row.key)) return bag;
-  const declared = isPlainRecord(properties) && hasOwnKey(properties, row.key);
-  if (row.identity === undefined) {
-    if (declared) return bag;
-    const { [row.key]: _dropped, ...rest } = bag;
-    return rest;
-  }
-  const list = bag[row.key];
+  const path = pathOf(row);
+  if (!hasAt(bag, path)) return bag;
+  const declared = hasAt(properties, path);
+  if (row.identity === undefined) return declared ? bag : setAt(bag, path, REMOVE);
+  const list = getAt(bag, path);
   if (!Array.isArray(list)) return bag;
   const identity = row.identity;
   const drop = effectiveDrop(row, owned, properties);
@@ -483,7 +650,8 @@ function withoutOwned(
     const id = identity(m);
     return id === undefined || !drop.has(id);
   });
-  return kept.length === list.length ? bag : { ...bag, [row.key]: kept };
+  if (kept.length === list.length) return bag;
+  return setAt(bag, path, kept.length === 0 && row.emptyMeansAbsent && !declared ? REMOVE : kept);
 }
 
 /**
@@ -554,26 +722,49 @@ export function siblingOwnedRevertDesired(
   ).baseline;
   out = stripSiblingOwnedSgRules(resourceType, physicalId, out, aws, properties, context).baseline;
   for (const [row, owned] of ownedByRow(resourceType, physicalId, context)) {
+    const path = pathOf(row);
     const stripped = withoutOwned(out, row, owned, properties);
-    const live = hasOwnKey(aws, row.key) ? aws[row.key] : undefined;
+    const live = getAt(aws, path);
     if (row.identity === undefined) {
-      // Whole key: nothing to send unless the parent's template leaves it to the sibling.
-      out = stripped === out || live === undefined ? stripped : { ...stripped, [row.key]: live };
+      // Whole key: it never drifts (both sides drop it), so the overlay sends
+      // the live value and the desired bag needs none.
+      out = stripped;
       continue;
     }
-    const kept = stripped[row.key];
     const drop = effectiveDrop(row, owned, properties);
-    if (!Array.isArray(kept) || !Array.isArray(live) || drop.size === 0) {
+    if (!Array.isArray(live) || drop.size === 0) {
       out = stripped;
       continue;
     }
     const identity = row.identity;
-    const present = new Set(kept.map((m) => identity(m)));
-    const liveOwned = live.filter((m) => {
+    const strippedList = getAt(stripped, path);
+    // A list the parent's read omits when empty (`emptyMeansAbsent`) may be
+    // absent from the desired bag, removed by the strip or never captured:
+    // the live members still go back, into the container the desired bag
+    // holds. A desired bag without that container is left alone.
+    const kept = Array.isArray(strippedList)
+      ? strippedList
+      : row.emptyMeansAbsent && strippedList === undefined
+        ? []
+        : undefined;
+    if (kept === undefined || !hasAt(stripped, path.slice(0, -1))) {
+      out = stripped;
+      continue;
+    }
+    // Each live sibling-owned member goes back at its live position, so a
+    // provider that pairs list items by position sees them where they are.
+    const result = [...kept];
+    const present = new Set(result.map((m) => identity(m)));
+    live.forEach((m, index) => {
       const id = identity(m);
-      return id !== undefined && drop.has(id) && !present.has(id);
+      if (id === undefined || !drop.has(id) || present.has(id)) return;
+      result.splice(Math.min(index, result.length), 0, m);
+      present.add(id);
     });
-    out = liveOwned.length === 0 ? stripped : { ...stripped, [row.key]: [...kept, ...liveOwned] };
+    out =
+      result.length === kept.length && Array.isArray(strippedList)
+        ? stripped
+        : setAt(stripped, path, result);
   }
   return out;
 }
@@ -609,7 +800,7 @@ export function tableMembersSiblingsStoppedWriting(
     const out: Array<[number, SiblingWrite]> = [];
     SIBLING_OWNED_ROWS.forEach((row, index) => {
       if (row.child !== record.resourceType) return;
-      for (const w of row.writes(props)) out.push([index, w]);
+      for (const w of row.writes(props, record.physicalId)) out.push([index, w]);
     });
     return out;
   };
@@ -642,15 +833,26 @@ export function tableMembersSiblingsStoppedWriting(
     const entries: StoppedTableMembers[] = [];
     SIBLING_OWNED_ROWS.forEach((row, index) => {
       if (row.parent !== record.resourceType) return;
+      // Every id the parent answers to: a sibling still writing under ANY of
+      // them (an association replaced by one naming the address the other
+      // way) stopped nothing.
+      const ids = [...new Set(parentIdsOf(row, id))];
+      const written = (member: string | undefined): boolean =>
+        ids.some((pid) => stillWritten.has(encode(index, pid, member)));
       let merged: StoppedTableMembers | undefined;
-      for (const parentId of new Set(parentIdsOf(row, id))) {
+      for (const parentId of ids) {
         const entry = stopped.get(injectiveKey(index, parentId));
         if (entry === undefined) continue;
-        if (merged === undefined)
-          merged = { row, members: entry.members && new Set(entry.members) };
-        else if (merged.members && entry.members)
-          for (const m of entry.members) merged.members.add(m);
-        else merged.members = undefined;
+        if (entry.members === undefined) {
+          if (!written(undefined)) merged = { row, members: undefined };
+          continue;
+        }
+        if (merged !== undefined && merged.members === undefined) continue;
+        for (const m of entry.members) {
+          if (written(m)) continue;
+          merged ??= { row, members: new Set() };
+          merged.members!.add(m);
+        }
       }
       if (merged !== undefined) entries.push(merged);
     });
@@ -677,17 +879,13 @@ export function withoutStoppedTableMembers(
       out = withoutOwned(out, row, members, properties);
       continue;
     }
-    const value = hasOwnKey(out, row.key) ? out[row.key] : undefined;
+    const path = pathOf(row);
+    const value = getAt(out, path);
     if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) {
       continue;
     }
-    if (isPlainRecord(properties) && hasOwnKey(properties, row.key)) continue;
-    if (Array.isArray(value)) {
-      out = { ...out, [row.key]: [] };
-    } else {
-      const { [row.key]: _dropped, ...rest } = out;
-      out = rest;
-    }
+    if (hasAt(properties, path)) continue;
+    out = setAt(out, path, Array.isArray(value) ? [] : REMOVE);
   }
   return out;
 }

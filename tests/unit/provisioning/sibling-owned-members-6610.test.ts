@@ -109,7 +109,7 @@ describe('ECS cluster <- ClusterCapacityProviderAssociations (whole key)', () =>
     expect(out.aws['DefaultCapacityProviderStrategy']).toBeUndefined();
   });
 
-  it('--revert sends the LIVE lists, so update() sees no capacity-provider change', () => {
+  it('--revert drops the stale lists from the desired bag (the overlay sends the live ones)', () => {
     const live = clusterBag(['FARGATE', 'FARGATE_SPOT']);
     const desired = siblingOwnedRevertDesired(
       'AWS::ECS::Cluster',
@@ -119,10 +119,8 @@ describe('ECS cluster <- ClusterCapacityProviderAssociations (whole key)', () =>
       { ClusterName: CLUSTER },
       ctx({ Assoc: association() })
     );
-    expect(desired['CapacityProviders']).toEqual(live['CapacityProviders']);
-    expect(desired['DefaultCapacityProviderStrategy']).toEqual(
-      live['DefaultCapacityProviderStrategy']
-    );
+    expect(desired['CapacityProviders']).toBeUndefined();
+    expect(desired['DefaultCapacityProviderStrategy']).toBeUndefined();
     expect(desired['ClusterSettings']).toEqual([{ Name: 'containerInsights', Value: 'enabled' }]);
   });
 });
@@ -180,7 +178,8 @@ describe('SNS topic <- AWS::SNS::Subscription (members by Protocol + Endpoint)',
       { Subscription: [INLINE] },
       ctx({ Sub: subscription() })
     );
-    expect(desired).toEqual({ Subscription: [INLINE, SIB] });
+    // At its live position, so a provider pairing items by position finds it there.
+    expect(desired).toEqual({ Subscription: [SIB, INLINE] });
   });
 
   it('--revert does not re-add a sibling subscription the readback lacks', () => {
@@ -196,27 +195,58 @@ describe('SNS topic <- AWS::SNS::Subscription (members by Protocol + Endpoint)',
   });
 });
 
-describe('IAM principal <- AWS::IAM::Policy / RolePolicy (inline Policies by PolicyName)', () => {
-  it.each([
-    [
-      'an AWS::IAM::Policy naming the role',
-      { resourceType: 'AWS::IAM::Policy', properties: { PolicyName: 'P', Roles: [ROLE] } },
-    ],
-    [
-      'a standalone AWS::IAM::RolePolicy',
-      { resourceType: 'AWS::IAM::RolePolicy', properties: { PolicyName: 'P', RoleName: ROLE } },
-    ],
-  ])('drops %s from both sides', (_l, sibling) => {
+describe('IAM principal <- AWS::IAM::Policy / RolePolicy / UserPolicy / GroupPolicy (inline Policies)', () => {
+  const PRINCIPALS = [
+    ['AWS::IAM::Role', 'Roles', 'AWS::IAM::RolePolicy', 'RoleName'],
+    ['AWS::IAM::User', 'Users', 'AWS::IAM::UserPolicy', 'UserName'],
+    ['AWS::IAM::Group', 'Groups', 'AWS::IAM::GroupPolicy', 'GroupName'],
+  ] as const;
+  const siblingsFor = (field: string, standalone: string, nameField: string) => [
+    ['an AWS::IAM::Policy', { resourceType: 'AWS::IAM::Policy', properties: { ...policy('P'), [field]: [ROLE] } }],
+    [standalone, { resourceType: standalone, properties: { ...policy('P'), [nameField]: ROLE } }],
+  ] as const;
+
+  for (const [type, field, standalone, nameField] of PRINCIPALS) {
+    for (const [label, sibling] of siblingsFor(field, standalone, nameField)) {
+      it(`${type}: drops ${label}'s policy from both sides`, () => {
+        const out = stripSiblingOwnedParentMembers(
+          type,
+          ROLE,
+          { Policies: [policy('Own'), policy('P')] },
+          { Policies: [policy('Own'), policy('P'), policy('Stranger')] },
+          { Policies: [policy('Own')] },
+          ctx({ Pol: sibling })
+        );
+        expect(out.baseline).toEqual({ Policies: [policy('Own')] });
+        expect(out.aws).toEqual({ Policies: [policy('Own'), policy('Stranger')] });
+      });
+    }
+  }
+
+  it('a sibling owns only the document it recorded: an edited live document stays compared', () => {
+    const edited = { PolicyName: 'P', PolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }] } };
+    const aws = { Policies: [edited] };
     const out = stripSiblingOwnedParentMembers(
       'AWS::IAM::Role',
       ROLE,
-      { Policies: [policy('Own'), policy('P')] },
-      { Policies: [policy('Own'), policy('P'), policy('Stranger')] },
-      { Policies: [policy('Own')] },
-      ctx({ Pol: sibling })
+      { Policies: [] },
+      aws,
+      {},
+      ctx({ Pol: { resourceType: 'AWS::IAM::Policy', properties: { ...policy('P'), Roles: [ROLE] } } })
     );
-    expect(out.baseline).toEqual({ Policies: [policy('Own')] });
-    expect(out.aws).toEqual({ Policies: [policy('Own'), policy('Stranger')] });
+    expect(out.aws).toBe(aws);
+  });
+
+  it('a document recorded as a JSON string matches the live object, keys in any order', () => {
+    const out = stripSiblingOwnedParentMembers(
+      'AWS::IAM::Role',
+      ROLE,
+      { Policies: [] },
+      { Policies: [{ PolicyDocument: { Version: '2012-10-17' }, PolicyName: 'P' }] },
+      {},
+      ctx({ Pol: { resourceType: 'AWS::IAM::Policy', properties: { PolicyName: 'P', PolicyDocument: '{"Version":"2012-10-17"}', Roles: [ROLE] } } })
+    );
+    expect(out.aws).toEqual({ Policies: [] });
   });
 
   it('a UserPolicy does not reach a role of the same name', () => {
@@ -227,9 +257,128 @@ describe('IAM principal <- AWS::IAM::Policy / RolePolicy (inline Policies by Pol
       { Policies: [] },
       aws,
       {},
-      ctx({ Pol: { resourceType: 'AWS::IAM::UserPolicy', properties: { PolicyName: 'P', UserName: ROLE } } })
+      ctx({ Pol: { resourceType: 'AWS::IAM::UserPolicy', properties: { ...policy('P'), UserName: ROLE } } })
     );
     expect(out.aws).toBe(aws);
+  });
+
+  it('--revert drops a sibling policy an old baseline holds, so update() does not re-put it', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::IAM::Role',
+      ROLE,
+      { Policies: [policy('Own'), policy('P')] },
+      { Policies: [policy('Own')] },
+      { Policies: [policy('Own')] },
+      ctx({ Pol: { resourceType: 'AWS::IAM::Policy', properties: { ...policy('P'), Roles: [ROLE] } } })
+    );
+    expect(desired).toEqual({ Policies: [policy('Own')] });
+  });
+
+  it('a removed AWS::IAM::Policy leaves the role baseline', () => {
+    const role = { resourceType: 'AWS::IAM::Role', physicalId: ROLE, properties: {}, observedProperties: { Policies: [policy('P')] } } as ResourceState;
+    const next: Record<string, ResourceState> = { Role: role };
+    const pol = { resourceType: 'AWS::IAM::Policy', physicalId: 'p', properties: { ...policy('P'), Roles: [ROLE] } } as ResourceState;
+    expect(pruneMembersSiblingsStoppedWriting({ Role: role, Pol: pol }, next)).toBe(1);
+    expect(next['Role']!.observedProperties).toEqual({ Policies: [] });
+  });
+});
+
+const ASG = 'my-asg';
+const hook = (name: string) => ({ LifecycleHookName: name, LifecycleTransition: 'autoscaling:EC2_INSTANCE_LAUNCHING' });
+
+describe('ASG <- AWS::AutoScaling::LifecycleHook (members by LifecycleHookName)', () => {
+  it.each([
+    ['a named hook', { AutoScalingGroupName: ASG, ...hook('H') }, 'hook-cc-id'],
+    ['a generated name, read from its Cloud Control id', { AutoScalingGroupName: ASG, LifecycleTransition: 'x' }, `${ASG}|H`],
+  ])('drops %s from both sides', (_l, props, physicalId) => {
+    const out = stripSiblingOwnedParentMembers(
+      'AWS::AutoScaling::AutoScalingGroup',
+      ASG,
+      { LifecycleHookSpecificationList: [hook('Own'), hook('H')] },
+      { LifecycleHookSpecificationList: [hook('Own'), hook('H'), hook('Stranger')] },
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      ctx({ Hook: { resourceType: 'AWS::AutoScaling::LifecycleHook', physicalId, properties: props } })
+    );
+    expect(out.baseline).toEqual({ LifecycleHookSpecificationList: [hook('Own')] });
+    expect(out.aws).toEqual({ LifecycleHookSpecificationList: [hook('Own'), hook('Stranger')] });
+  });
+
+  it('--revert keeps the live sibling hook at its live position', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::AutoScaling::AutoScalingGroup',
+      ASG,
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      { LifecycleHookSpecificationList: [hook('H'), hook('Own'), hook('Stranger')] },
+      { LifecycleHookSpecificationList: [hook('Own')] },
+      ctx({ Hook: { resourceType: 'AWS::AutoScaling::LifecycleHook', physicalId: 'x', properties: { AutoScalingGroupName: ASG, ...hook('H') } } })
+    );
+    expect(desired).toEqual({ LifecycleHookSpecificationList: [hook('H'), hook('Own')] });
+  });
+});
+
+const JOB = 'j-ABC';
+const taskGroup = (name: string) => ({ Name: name, InstanceType: 'm5.xlarge', InstanceCount: 1 });
+
+describe('EMR cluster <- InstanceGroupConfig / InstanceFleetConfig (nested Instances lists)', () => {
+  const groupSibling = (props: Record<string, unknown> = {}) => ({
+    resourceType: 'AWS::EMR::InstanceGroupConfig',
+    physicalId: 'ig-1',
+    properties: { JobFlowId: JOB, InstanceRole: 'TASK', ...taskGroup('Sib'), ...props },
+  });
+
+  it('drops a sibling TASK group from both sides, removing a list it empties', () => {
+    const out = stripSiblingOwnedParentMembers(
+      'AWS::EMR::Cluster',
+      JOB,
+      { Name: 'c', Instances: { CoreInstanceGroup: { InstanceCount: 2 } } },
+      { Name: 'c', Instances: { CoreInstanceGroup: { InstanceCount: 2 }, TaskInstanceGroups: [taskGroup('Sib')] } },
+      { Instances: { CoreInstanceGroup: { InstanceCount: 2 } } },
+      ctx({ Group: groupSibling() })
+    );
+    expect(out.aws).toEqual({ Name: 'c', Instances: { CoreInstanceGroup: { InstanceCount: 2 } } });
+    expect(out.baseline).toEqual(out.aws);
+  });
+
+  it.each([
+    ['an unnamed group', groupSibling({ Name: undefined })],
+    ['a group of another cluster', groupSibling({ JobFlowId: 'j-OTHER' })],
+  ])('keeps the group compared for %s', (_l, sibling) => {
+    const aws = { Instances: { TaskInstanceGroups: [taskGroup('Sib')] } };
+    expect(stripSiblingOwnedParentMembers('AWS::EMR::Cluster', JOB, {}, aws, {}, ctx({ Group: sibling })).aws).toBe(aws);
+  });
+
+  it('drops a sibling TASK fleet, and keeps a stranger task group', () => {
+    const fleet = { resourceType: 'AWS::EMR::InstanceFleetConfig', properties: { ClusterId: JOB, InstanceFleetType: 'TASK', Name: 'F' } };
+    const out = stripSiblingOwnedParentMembers(
+      'AWS::EMR::Cluster',
+      JOB,
+      { Instances: {} },
+      { Instances: { TaskInstanceFleets: [{ Name: 'F', TargetOnDemandCapacity: 1 }], TaskInstanceGroups: [taskGroup('Stranger')] } },
+      {},
+      ctx({ Fleet: fleet })
+    );
+    expect(out.aws).toEqual({ Instances: { TaskInstanceGroups: [taskGroup('Stranger')] } });
+  });
+
+  it('--revert puts the live sibling group back where the read lists it', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::EMR::Cluster',
+      JOB,
+      { Instances: { CoreInstanceGroup: { InstanceCount: 2 } } },
+      { Instances: { CoreInstanceGroup: { InstanceCount: 3 }, TaskInstanceGroups: [taskGroup('Sib')] } },
+      {},
+      ctx({ Group: groupSibling() })
+    );
+    expect(desired).toEqual({
+      Instances: { CoreInstanceGroup: { InstanceCount: 2 }, TaskInstanceGroups: [taskGroup('Sib')] },
+    });
+  });
+
+  it('a removed group leaves the cluster baseline, and the emptied list with it', () => {
+    const cluster = { resourceType: 'AWS::EMR::Cluster', physicalId: JOB, properties: {}, observedProperties: { Instances: { TaskInstanceGroups: [taskGroup('Sib')] } } } as ResourceState;
+    const next: Record<string, ResourceState> = { Cluster: cluster };
+    expect(pruneMembersSiblingsStoppedWriting({ Cluster: cluster, Group: groupSibling() as ResourceState }, next)).toBe(1);
+    expect(next['Cluster']!.observedProperties).toEqual({ Instances: {} });
   });
 });
 
@@ -266,6 +415,28 @@ describe('EC2 EIP <- EIPAssociation (whole key, Cloud Control readback)', () => 
     ).toBe(aws);
   });
 
+  it('--revert drops a stale InstanceId from the desired bag', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::EC2::EIP',
+      EIP,
+      { Domain: 'vpc', InstanceId: 'i-old' },
+      { Domain: 'vpc', InstanceId: 'i-new' },
+      { Domain: 'vpc' },
+      ctx({ Assoc: eipAssociation({ EIP: '203.0.113.10' }) })
+    );
+    expect(desired).toEqual({ Domain: 'vpc' });
+  });
+
+  it('an association replaced by one naming the address the other way stops nothing', () => {
+    const eip = { resourceType: 'AWS::EC2::EIP', physicalId: EIP, properties: {} } as ResourceState;
+    expect(
+      tableMembersSiblingsStoppedWriting(
+        { Assoc: eipAssociation({ EIP: '203.0.113.10' }) as ResourceState },
+        { Eip: eip, Assoc2: eipAssociation({ AllocationId: 'eipalloc-0abc' }) as ResourceState }
+      ).size
+    ).toBe(0);
+  });
+
   it('a removed association drops InstanceId from the recorded baseline', () => {
     const eip = { resourceType: 'AWS::EC2::EIP', physicalId: EIP, properties: { Domain: 'vpc' }, observedProperties: { Domain: 'vpc', InstanceId: 'i-old' } } as ResourceState;
     const next: Record<string, ResourceState> = { Eip: eip };
@@ -299,6 +470,16 @@ describe('tableMembersSiblingsStoppedWriting', () => {
       ...clusterBag([]),
       ClusterSettings: [],
     });
+  });
+
+  it('a removed association leaves a list the cluster template declares itself', () => {
+    const cluster = rec('AWS::ECS::Cluster', CLUSTER, { CapacityProviders: ['FARGATE'] }, {
+      observedProperties: clusterBag(['FARGATE']),
+    });
+    const next: Record<string, ResourceState> = { Cluster: cluster };
+    pruneMembersSiblingsStoppedWriting({ Cluster: cluster, Assoc: association() as ResourceState }, next);
+    expect(next['Cluster']!.observedProperties!['CapacityProviders']).toEqual(['FARGATE']);
+    expect(next['Cluster']!.observedProperties!['DefaultCapacityProviderStrategy']).toEqual([]);
   });
 
   it('an association still naming the cluster, or a retained one, stops nothing', () => {

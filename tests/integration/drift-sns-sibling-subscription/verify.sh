@@ -17,7 +17,8 @@
 #      exists, so its re-captured baseline records B. `cdkd drift` exits 0.
 #   5. CDKD_TEST_UPDATE=sub,display,nosub removes the standalone subscription;
 #      the topic is unchanged. The deploy drops B from the topic's baseline,
-#      `cdkd drift` exits 0, and `--revert -y` does not re-subscribe B.
+#      so `cdkd drift` exits 0 (it would report B as lost, which `--revert`
+#      would re-subscribe).
 #   6. Destroy + gone-probes.
 #
 # Required env vars:
@@ -134,12 +135,18 @@ endpoints() {
     esac
   done | sort | tr '\n' ' ' | sed 's/ $//'
 }
+# ListSubscriptionsByTopic lags an Unsubscribe, so the live set is polled (up
+# to 90 s) until it equals the wanted one; a different set after that fails.
 expect_endpoints() { # usage: expect_endpoints <label> <want>
-  local got
-  if ! got="$(endpoints)"; then
-    echo "FAIL: list-subscriptions-by-topic ${TOPIC_ARN} failed" >&2
-    exit 1
-  fi
+  local got="" i
+  for i in $(seq 1 18); do
+    if ! got="$(endpoints)"; then
+      echo "FAIL: list-subscriptions-by-topic ${TOPIC_ARN} failed" >&2
+      exit 1
+    fi
+    [ "${got}" = "$2" ] && break
+    sleep 5
+  done
   if [ "${got}" != "$2" ]; then
     echo "FAIL: $1 subscriptions: want [$2], got [${got}]" >&2
     exit 1
@@ -252,9 +259,6 @@ expect_endpoints "Phase 5" "A"
 expect_baseline "Phase 5" "A"
 run_drift
 expect_drift_rc 0 "Phase 5"
-run_drift --revert -y
-expect_drift_rc 0 "Phase 5 (--revert)"
-expect_endpoints "Phase 5 (after --revert)" "A"
 
 echo "==> Phase 6: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

@@ -104,7 +104,7 @@ interface Sub {
 }
 const INLINE: Sub = { Protocol: 'email', Endpoint: 'ops@example.com' };
 const SIB: Sub = { Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:123456789012:q' };
-const STRANGER: Sub = { Protocol: 'email', Endpoint: 'stranger@example.com' };
+const STRANGER: Sub = { Protocol: 'sqs', Endpoint: 'arn:aws:sqs:us-east-1:123456789012:stranger' };
 
 /** The topic's live subscriptions; the mocked SNS reads and writes them. */
 let liveSubs: Sub[] = [];
