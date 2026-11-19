@@ -167,7 +167,7 @@ ec2-subnet-dns64	2026-11-07T07:23:23Z	PASS	316	verify.sh	rc ok, orph clean, PR #
 ec2-vpc	2026-11-19T05:16:25Z	PASS	210	verify.sh	rc ok, orph clean; #6596 IGW detach budget
 ec2-vpc-ipam	2026-11-07T19:15:05Z	PASS	3944	verify.sh	rc ok, orph clean, IPv6 IPAM-pool subnet arm
 ecr	2026-11-05T03:57:45Z	PASS	40	standard	deploy+destroy clean, 0 orphans
-ecr-scanning	2026-11-19T15:14:27Z	PASS	130	verify.sh	us-west-2; rc ok, orph clean
+ecr-scanning	2026-11-19T15:33:16Z	PASS	125	verify.sh	us-east-1; rc ok, orph clean
 ecs-bluegreen	2026-10-30T09:15:32Z	PASS	235	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-cluster-capacity-settings	2026-11-18T18:43:49Z	PASS	194	verify.sh	rc ok, orph clean
 ecs-fargate	2026-11-14T08:46:06Z	PASS	446	verify.sh	#6284 branch f9fbbe448; rc ok, orph clean
