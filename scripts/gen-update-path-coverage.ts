@@ -13,12 +13,12 @@
  *
  * CLASSIFICATION (per SDK provider type x handled top-level property)
  * -------------------------------------------------------------------
- *   - update        — the code reachable from `update()` READS the property:
- *                     it sends it, refuses its change
+ *   - update        — a read of the property on the `update()` path reaches
+ *                     an EFFECT: it is sent, its change is refused
  *                     (`ResourceUpdateNotSupportedError`, which the deploy
- *                     engine turns into a replacement), or warns about it.
- *                     All three mean the change is not dropped silently, and
- *                     telling them apart statically would be a guess.
+ *                     engine turns into a replacement), or it is warned about.
+ *                     The three are not told apart; each means the change is
+ *                     not dropped silently.
  *   - replacement   — the diff replaces the resource for any change of it:
  *                     `replacementProperties` in cdkd's replacement rules
  *                     (`src/analyzer/replacement-rules/rules.ts`), or
@@ -33,35 +33,56 @@
  * A `this.x()` call the walk cannot resolve also BLOCKS CI: the code behind it
  * is unseen, so the row's verdicts would rest on a partial read.
  *
- * HOW "READS" IS DECIDED (offline, TypeScript AST)
- * ------------------------------------------------
- * Per provider class, walk from `update()` and follow, transitively:
- *   - `this.x(...)` / `this.x` to the class member `x` (method, arrow or field);
- *   - `fn.call(this, ...)` to a companion-file function
- *     (`scripts/provider-companion-files.ts`);
- *   - any identifier that resolves to a module-level function or variable of
- *     the file it appears in, or to an `import` of one from a relative module
- *     under `src/` (a shared converter, a constant table of property names).
- * A property counts as read when the walked code holds `<expr>.Prop`,
- * `<expr>['Prop']`, a destructuring `{ Prop }`, or the string `'Prop'` in any
- * position other than an object-literal key (an SDK request field named like
- * the CFn property says nothing about where its value came from).
+ * WHAT IS WALKED (offline, TypeScript AST)
+ * ----------------------------------------
+ * From `update()`, transitively: `this.x` to class members and resolvable
+ * base classes; `fn.call(this, ...)` and `this.x()` mixins to companion-file
+ * `this:` functions (`scripts/provider-companion-files.ts`); any identifier
+ * resolving to a module-level function or variable of its file, or to a
+ * relative `import` under `src/`. Not walked: other classes (SDK clients, the
+ * logger, `ReplacementRulesRegistry`), `*.generated.ts` modules, and the
+ * declarative provider tables (DECLARATIVE_FIELDS), each of which names
+ * properties without acting on them.
+ *
+ * WHEN A READ COUNTS (an effect position)
+ * ---------------------------------------
+ * A read is `<expr>.Prop`, `<expr>['Prop']`, a destructured `{ Prop }`, or the
+ * string `'Prop'` anywhere but an object-literal key. It counts only in an
+ * effect position:
+ *   - inside a `new XCommand(...)`, `.send(...)`, `waitUntil*(...)`,
+ *     `new ResourceUpdateNotSupportedError(...)` or `.warn(...)`;
+ *   - in an argument a resolvable callee hands on to an effect itself (per
+ *     PARAMETER, from the callee's own body), or any argument of a call that
+ *     is a sink, takes a callback holding one, or is the value of an effect;
+ *   - in the condition of an `if` / loop / `?:` / `&&` guarding a branch the
+ *     type can take that sends or refuses — or warns, unless that branch is an
+ *     early `return` (a "nothing to do" path);
+ *   - in the value of a local that reaches an effect position (grown to a
+ *     fixpoint), including a request local a helper fills: the parameter it
+ *     binds is seeded as consumed in that helper;
+ *   - for `const { a } = helper()`, only under the returned keys used.
+ * A table under a negation in a guard (`!MUTABLE.has(key)`) and a string
+ * compared with `!==` there name what the guarded refusal EXEMPTS: not reads.
+ * So a property read only by change detection or validation (a `changed('X')`
+ * flag that guards nothing that sends, a `typeof` refusal of a malformed
+ * value) is a gap.
  *
  * A class handling several types is narrowed per type: an `if` / `switch` /
- * `?:` comparing an expression with an `'AWS::X::Y'` literal walks only the
- * branch the type under classification can take.
+ * `?:` (through `&&` / `||`) comparing `resourceType` with an `'AWS::X::Y'`
+ * literal walks only the branches the type can take, an early `return` on
+ * such a test ends that type's walk of the block, and `TABLE[resourceType]` /
+ * `MAP.get(resourceType)` over a literal keyed table walks only the entry.
  *
- * BOUNDS (the direction is "a read is assumed to be a write")
- * -----------------------------------------------------------
- * A read is not proof of a send: a property read only for a log line, a
- * same-named field of an AWS response, or a name in a list the update walks
- * for another purpose, counts as `update`. Only TOP-LEVEL properties are
- * classified: a nested member an update drops (#5365's replica settings) is
- * out of reach. The check catches
- * the shape every listed incident had — the update path never looks at the
- * property at all — and reports nothing about a read that goes nowhere; the
- * sdk-wire harness (`tests/unit/provisioning/sdk-wire-*.ts`) is the layer
- * that pins what a call carries.
+ * BOUNDS
+ * ------
+ * Positions, not values: a read in an effect position need not be what the
+ * effect carries (a same-named field of an AWS response, a property only
+ * interpolated into a warning). A call whose result an effect consumes walks
+ * its callee whole. A callee's parameters are judged per call site but not
+ * per path inside it. Only TOP-LEVEL properties are classified: a nested
+ * member an update drops (#5365's replica settings) is out of reach; the
+ * sdk-wire harness (`tests/unit/provisioning/sdk-wire-*.ts`) pins what a call
+ * carries.
  *
  * Writes `docs/_generated/update-path-coverage.{json,md}`; `--check` fails on
  * any `gap` and on a stale allow-list entry (one whose property is no longer a
@@ -1543,9 +1564,9 @@ function renderMarkdown(report: UpdatePathCoverageReport): string {
     '<!-- Regenerate: `vp run gen:update-path-coverage`. -->',
     '',
     'For every SDK provider type and every top-level property its `handledProperties` ' +
-      'declares, whether a change of that property reaches AWS on an update: the code ' +
-      'reachable from `update()` reads it (`update` — sent, refused into a replacement, ' +
-      'or warned), or the diff replaces the resource for it (`replacement`). A property ' +
+      'declares, whether a change of that property reaches AWS on an update: a read of it ' +
+      'on the `update()` path reaches a send, a refusal (a replacement) or a warning ' +
+      '(`update`), or the diff replaces the resource for it (`replacement`). A property ' +
       'in neither is a change the deploy would report applied while AWS keeps the old ' +
       'value (issue #6611).',
     '',
