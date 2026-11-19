@@ -154,15 +154,9 @@ export function isTransientLifecycleReadFailure(err: unknown): boolean {
   return isThrottlingError(err) || isTransientServerError(err) || isAmbiguousOutcomeError(err);
 }
 
-/** The settle inputs `readCurrentState` hands the lifecycle read. */
-export interface LifecycleSettle {
-  declared: DeclaredLifecycle;
-  delaysMs: readonly number[];
-}
-
 /**
  * The lifecycle member of the post-write baseline: `read` re-asked until it
- * matches `settle.declared`. Returns the value to record, or `undefined` to
+ * matches `declared`. Returns the value to record, or `undefined` to
  * record no `LifecycleConfiguration` at all (an absent top-level key is not
  * compared by drift).
  *
@@ -177,9 +171,9 @@ export interface LifecycleSettle {
  */
 export async function settleLifecycleRead(
   read: () => Promise<Record<string, unknown>>,
-  settle: LifecycleSettle
+  declared: DeclaredLifecycle,
+  delaysMs: readonly number[]
 ): Promise<Record<string, unknown> | undefined> {
-  const { declared } = settle;
   const settled = (answer: Record<string, unknown>): boolean =>
     declared.kind === 'absent'
       ? lifecycleReadIsAbsent(answer)
@@ -188,7 +182,7 @@ export async function settleLifecycleRead(
   try {
     let answer = await read();
     answered = true;
-    for (const delayMs of settle.delaysMs) {
+    for (const delayMs of delaysMs) {
       if (settled(answer)) return answer;
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       answer = await read();

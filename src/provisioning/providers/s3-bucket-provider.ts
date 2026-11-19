@@ -884,10 +884,13 @@ export class S3BucketProvider implements ResourceProvider {
     bucket: string,
     declared: DeclaredLifecycle
   ): Promise<Record<string, unknown> | undefined> {
-    return settleLifecycleRead(() => this.readLifecycle(bucket), {
+    // Positional, not an options literal: `gen-nested-key-coverage` reads an
+    // object literal in a readCurrentState path as reverse-map keys.
+    return settleLifecycleRead(
+      () => this.readLifecycle(bucket),
       declared,
-      delaysMs: this.lifecycleBaselineRereadDelaysMs,
-    });
+      this.lifecycleBaselineRereadDelaysMs
+    );
   }
   readCors(bucket: string): Promise<Record<string, unknown>> {
     return readCors.call(this, bucket);
