@@ -5,6 +5,10 @@
 import { hasOwnKey } from '../../../utils/own-keys.js';
 import type { ResourceState } from '../../../types/state.js';
 import { coerceCfnBoolean } from '../../../provisioning/config-shape.js';
+import {
+  readStreamPolicy,
+  streamPolicyMatchesDeclared,
+} from '../../../provisioning/dynamodb-stream-members.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -121,6 +125,17 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * baseline is rewritten by the next update deploy of the mapping or by
  * `cdkd state refresh-observed`. Only the observed baseline can carry the
  * artifact; the `properties` fallback is the template itself.
+ *
+ * Second rule (go-to-k/cdkd#6604): an `AWS::DynamoDB::Table` `ResourcePolicy`
+ * that the baseline and the live table disagree on while the live table
+ * agrees with the TEMPLATE — a recorded policy the template no longer
+ * declares and the table no longer holds, or a missing or other recorded
+ * policy while the table holds exactly the declared one. Before #6604 the baseline was read
+ * right after the put / delete, and `GetResourcePolicy` lags (a deleted
+ * policy is still served for seconds), so `drift --revert` re-granted a
+ * removed policy, or deleted a declared one. What the rule cannot tell apart
+ * is an out-of-band change that put the table back to the template, which
+ * CloudFormation would not report either.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -128,11 +143,16 @@ export function preFixBaselineUncomparedDriftKeys(
   properties: unknown,
   aws: Record<string, unknown>
 ): string[] {
-  if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];
   if (observed === undefined) return [];
   if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
     return [];
   }
+  if (resourceType === 'AWS::DynamoDB::Table') {
+    return staleTablePolicyBaseline(observed, properties as Record<string, unknown>, aws)
+      ? ['ResourcePolicy']
+      : [];
+  }
+  if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];
   const declared = hasOwnKey(properties as Record<string, unknown>, 'Enabled')
     ? coerceCfnBoolean((properties as Record<string, unknown>)['Enabled'])
     : undefined;
@@ -141,6 +161,28 @@ export function preFixBaselineUncomparedDriftKeys(
     : undefined;
   const live = hasOwnKey(aws, 'Enabled') ? aws['Enabled'] : undefined;
   return recorded === false && declared !== false && live === true ? ['Enabled'] : [];
+}
+
+/** The #6604 half of {@link preFixBaselineUncomparedDriftKeys}. */
+function staleTablePolicyBaseline(
+  observed: Record<string, unknown>,
+  properties: Record<string, unknown>,
+  aws: Record<string, unknown>
+): boolean {
+  const recorded = readStreamPolicy(observed);
+  const declared = readStreamPolicy(properties);
+  const live = readStreamPolicy(aws);
+  if (recorded.kind === 'usable' && declared.kind === 'absent' && live.kind === 'absent') {
+    return true;
+  }
+  // A recorded document other than the live one, while the live one is the
+  // declared one: whatever the baseline holds, `--revert` would push a stale
+  // value (a replaced policy captured before the put showed).
+  return (
+    declared.kind === 'usable' &&
+    live.kind === 'usable' &&
+    streamPolicyMatchesDeclared(live.document, properties)
+  );
 }
 
 /**

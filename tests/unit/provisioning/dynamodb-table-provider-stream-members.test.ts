@@ -986,7 +986,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
         );
       });
 
-      it('records a PRESENT answer that differs as read: AWS may store the document in another spelling', async () => {
+      it('keeps the DECLARED policy over a PRESENT answer that differs (the replaced one, go-to-k/cdkd#6604); tags record it as read', async () => {
         const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
         aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
         aws.tags.set(streamArnOf(1), new Map([['team', 'old']]));
@@ -996,11 +996,14 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
             Tags: MEMBERS.Tags,
           })
         );
-        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+        // Recording DOC would let --revert re-grant the policy the put replaced.
+        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: OTHER_DOC });
         expect(streamOf(baseline)['Tags']).toEqual([{ Key: 'team', Value: 'old' }]);
-        expect(
-          childLogger.debug.mock.calls.some(([message]) => String(message).includes('Kept the'))
-        ).toBe(false);
+        const kept = childLogger.debug.mock.calls
+          .map(([message]) => String(message))
+          .filter((line) => line.includes('Kept the'));
+        expect(kept).toHaveLength(1);
+        expect(kept[0]).toContain('the read still found another policy');
       });
 
       /** Every stream-arn read rejects with `error`; table-level reads pass through. */
@@ -1071,7 +1074,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
         ).toEqual([]);
       });
 
-      it('records a PRESENT answer that differs when a later re-ask throws', async () => {
+      it('keeps the declared policy, and records the differing tags, when a later re-ask throws', async () => {
         const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
         aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
         aws.tags.set(streamArnOf(1), new Map([['team', 'old']]));
@@ -1099,7 +1102,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
         );
         expect(reads.get(GetResourcePolicyCommand)).toBe(2);
         expect(reads.get(ListTagsOfResourceCommand)).toBe(2);
-        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
+        expect(streamOf(baseline)['ResourcePolicy']).toEqual({ PolicyDocument: OTHER_DOC });
         expect(streamOf(baseline)['Tags']).toEqual([{ Key: 'team', Value: 'old' }]);
       });
 

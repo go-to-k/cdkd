@@ -279,7 +279,16 @@ export async function readCurrentState(
       tableArn ? this.readTableTags(tableArn) : Promise.resolve(undefined),
       this.readPointInTimeRecovery(physicalId),
       this.readTimeToLive(physicalId),
-      tableArn ? this.readTableResourcePolicy(physicalId, tableArn) : Promise.resolve(undefined),
+      tableArn
+        ? this.readTableResourcePolicy(
+            physicalId,
+            tableArn,
+            false,
+            properties !== undefined && bagInformative
+              ? { desired: properties, afterOwnWrite: context?.afterOwnWrite === true }
+              : undefined
+          )
+        : Promise.resolve(undefined),
       this.readKinesisStreamSpecification(physicalId),
       this.readTableContributorInsights(physicalId),
       this.readIndexContributorInsights(physicalId, result, properties, bagInformative),
@@ -400,26 +409,84 @@ export async function readTimeToLive(
  * it is drift-comparable against the templated value. A table with no policy
  * returns ResourceNotFoundException / PolicyNotFound — omit the key rather
  * than fail the whole drift read.
+ *
+ * `settle` (go-to-k/cdkd#6604): `GetResourcePolicy` is eventually consistent
+ * — measured us-east-1, it answered with a just-DELETED policy for ~2 s, and
+ * "not found" for a just-PUT one — and the deploy captures the baseline right
+ * after its own write. So with the desired bag in hand an answer that differs
+ * from a DECLARED policy is re-asked on the stream members' schedule before it
+ * is believed — on that capture, a policy when none is declared too — as
+ * {@link readStreamMembers} does for the stream-level policy. Without it a
+ * removal froze the OLD policy into the baseline, and `drift --revert`
+ * re-granted it. On an `afterOwnWrite` capture of a DECLARED policy, an
+ * answer the schedule never settled on the declaration — absent, still the
+ * PREVIOUS document, or a read that failed transiently or after a stale
+ * answer — keeps the DECLARED member: the put just succeeded, and recording a
+ * replaced document would let `--revert` re-grant it. An UNDECLARED policy
+ * whose read fails records nothing, never the stale answer before the
+ * failure. Elsewhere a read that fails after a present answer records that
+ * answer. The rollback's strict read passes no `settle`.
  */
 export async function readTableResourcePolicy(
   this: DynamoDBTableProvider,
   physicalId: string,
   tableArn: string,
-  strict = false
+  strict = false,
+  settle?: { desired: Record<string, unknown>; afterOwnWrite: boolean }
 ): Promise<Record<string, unknown> | undefined> {
+  const declared = settle !== undefined && streamDeclaresPolicy(settle.desired);
+  const afterOwnWrite = settle?.afterOwnWrite === true;
+  // The last answer the schedule got, for a read that throws after it.
+  let lastPolicy: string | undefined;
   try {
-    const rpResp = await this.dynamoDBClient.send(
-      new GetResourcePolicyCommand({ ResourceArn: tableArn })
-    );
-    if (!rpResp.Policy) return undefined;
-    let doc: unknown = rpResp.Policy;
+    const readOnce = async (): Promise<string | undefined> => {
+      try {
+        const rpResp = await this.dynamoDBClient.send(
+          new GetResourcePolicyCommand({ ResourceArn: tableArn })
+        );
+        lastPolicy = rpResp.Policy;
+      } catch (err) {
+        if (settle === undefined || !(err instanceof PolicyNotFoundException)) throw err;
+        lastPolicy = undefined;
+      }
+      return lastPolicy;
+    };
+    // An undeclared policy is re-asked only on the capture after cdkd's own
+    // write (a just-deleted one): elsewhere it is an out-of-band addition,
+    // and a drift run would wait out the schedule for nothing.
+    const livePolicy =
+      settle === undefined || (!declared && !afterOwnWrite)
+        ? await readOnce()
+        : await this.reAskUntilSettled(readOnce, (answer) =>
+            declared
+              ? streamPolicyMatchesDeclared(answer, settle.desired)
+              : answer === undefined || answer === ''
+          );
+    const keepDeclared = afterOwnWrite && declared;
+    if (!livePolicy) {
+      return keepDeclared ? declaredStreamPolicyMember(settle?.desired) : undefined;
+    }
+    if (settle !== undefined) {
+      return keepDeclared && !streamPolicyMatchesDeclared(livePolicy, settle.desired)
+        ? declaredStreamPolicyMember(settle.desired)
+        : reverseMapStreamPolicy(livePolicy, settle.desired);
+    }
+    let doc: unknown = livePolicy;
     try {
-      doc = JSON.parse(rpResp.Policy);
+      doc = JSON.parse(livePolicy);
     } catch {
       // Leave as the raw string if AWS returned a non-JSON body.
     }
     return { PolicyDocument: doc };
   } catch (err) {
+    const answered = lastPolicy !== undefined && lastPolicy !== '';
+    if (declared && afterOwnWrite && (answered || isTransientStreamReadFailure(err))) {
+      this.logger.debug(
+        safeMsg`Kept the declared ResourcePolicy of ${physicalId} in the baseline captured after its write: the read failed before it settled`
+      );
+      return declaredStreamPolicyMember(settle?.desired);
+    }
+    if (declared && answered) return reverseMapStreamPolicy(lastPolicy, settle?.desired);
     // A table with no policy answers PolicyNotFoundException: "not set",
     // strict or not, or an unsettled ResourcePolicy would refuse forever.
     if (
@@ -602,17 +669,18 @@ export async function reAskUntilSettled<T>(
  * a successful create / update by this deploy, whose template declares the
  * member. There a member still ABSENT when the schedule is spent, or a read
  * that threw, keeps the DECLARED member instead of freezing "absent" into a
- * baseline the settled stream can never equal. Only absence: a PRESENT
- * answer that differs is recorded as read, since AWS may store a document
- * in another spelling and the declared one would then never match. An
+ * baseline the settled stream can never equal. A POLICY still answering
+ * another document keeps the declared one too (go-to-k/cdkd#6604): it is the
+ * replaced policy the put just overwrote, and recording it would let
+ * `--revert` re-grant it. Tags still record a differing answer as read. An
  * update that sent no stream call keeps the declared member over an
  * out-of-band removal too, which drift then reports against it. A thrown
  * read keeps the declared member only when the failure is TRANSIENT
  * ({@link isTransientStreamReadFailure}); a deterministic one (a role that
  * may put but not read) fails the same way on every drift read, so keeping
- * the declared member there would report a removal forever. And a read that
- * throws after an earlier PRESENT answer records that answer, as a settled
- * one would. Every other caller (drift, import, a refresh) believes the last
+ * the declared member there would report a removal forever. A read that
+ * throws after an earlier PRESENT answer records that answer for tags, and
+ * keeps the declared policy (an unsettled answer). Every other caller (drift, import, a refresh) believes the last
  * answer, so a member that really is gone stays drift.
  *
  * `cdkd drift --revert` replays through `update()`, where the read-back is
@@ -659,6 +727,8 @@ export async function readStreamMembers(
       );
       if (afterOwnWrite && (livePolicy === undefined || livePolicy === '')) {
         keepDeclared(STREAM_POLICY_KEY, 'the read still found no policy');
+      } else if (afterOwnWrite && !streamPolicyMatchesDeclared(livePolicy, desiredBlock)) {
+        keepDeclared(STREAM_POLICY_KEY, 'the read still found another policy');
       } else {
         const member = reverseMapStreamPolicy(livePolicy, desiredBlock);
         if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
@@ -667,11 +737,10 @@ export async function readStreamMembers(
       this.logger.debug(
         `Could not read the stream ResourcePolicy for ${tableName}: ${describeAwsFailure(err).detail}`
       );
-      if (afterOwnWrite && lastPolicy !== undefined && lastPolicy !== '') {
-        const member = reverseMapStreamPolicy(lastPolicy, desiredBlock);
-        if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
-      } else if (afterOwnWrite && isTransientStreamReadFailure(err)) {
+      if (afterOwnWrite && isTransientStreamReadFailure(err)) {
         keepDeclared(STREAM_POLICY_KEY, 'the read failed transiently');
+      } else if (afterOwnWrite && lastPolicy !== undefined && lastPolicy !== '') {
+        keepDeclared(STREAM_POLICY_KEY, 'the read failed after an unsettled answer');
       }
     }
   }
