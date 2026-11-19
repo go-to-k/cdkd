@@ -17,6 +17,21 @@ import type { StickyExemptEntry } from './sticky-exempt-entry.js';
 export type { StickyExemptEntry, StickyExemptMode } from './sticky-exempt-entry.js';
 
 /**
+ * Batch 12 (go-to-k/cdkd#6588): types that were Cloud Control only until their
+ * SDK provider shipped in 0.357.0, so every resource deployed before then is
+ * recorded `cc-api`. The fixture's identity witnesses: the archive CreationTime,
+ * an out-of-band tag on the source and the destination, the AWS-minted delivery
+ * id. Admission also fixes the delivery's update: Cloud Control refuses every
+ * update of a delivery to a log group (measured us-east-1, 2026-11-19).
+ */
+const batch12 = (physicalIdForm: string): StickyExemptEntry => ({
+  mode: 'sdk-coverage',
+  physicalIdForm,
+  issue: 'https://github.com/go-to-k/cdkd/issues/6588',
+  integFixture: 'cc-to-sdk-reroute-common-types-12',
+});
+
+/**
  * Types exempt from the sticky `provisionedBy: 'cc-api'` routing rule.
  *
  * The sticky rule (rule 2 in `getProviderFor`) exists to avoid physical-ID
@@ -965,5 +980,21 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       issue: 'https://github.com/go-to-k/cdkd/issues/6490',
       integFixture: 'cc-to-sdk-reroute-common-types-11',
     },
+  ],
+  [
+    'AWS::Events::Archive',
+    batch12('both layers store the ArchiveName (primaryIdentifier) CreateArchive takes'),
+  ],
+  [
+    'AWS::Logs::DeliverySource',
+    batch12('both layers store the Name (primaryIdentifier) PutDeliverySource takes'),
+  ],
+  [
+    'AWS::Logs::DeliveryDestination',
+    batch12('both layers store the Name (primaryIdentifier) PutDeliveryDestination takes'),
+  ],
+  [
+    'AWS::Logs::Delivery',
+    batch12('both layers store the DeliveryId (primaryIdentifier) CreateDelivery mints'),
   ],
 ]);

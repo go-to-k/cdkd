@@ -287,6 +287,17 @@ describe('sticky-CC exemption table', () => {
       'AWS::RDS::DBProxyEndpoint',
       { DBProxyEndpointName: 'e', DBProxyName: 'p', VpcSubnetIds: ['subnet-1'], VpcSecurityGroupIds: ['sg-1'] },
     ],
+    // Batch 12 (go-to-k/cdkd#6588).
+    ['AWS::Events::Archive', { ArchiveName: 'a', SourceArn: 'arn', Description: 'd', RetentionDays: 1 }],
+    [
+      'AWS::Logs::DeliverySource',
+      { Name: 's', ResourceArn: 'arn', LogType: 'INFO_LOGS', Tags: [{ Key: 'k', Value: 'v' }] },
+    ],
+    ['AWS::Logs::DeliveryDestination', { Name: 'd', DestinationResourceArn: 'arn', Tags: [{ Key: 'k', Value: 'v' }] }],
+    [
+      'AWS::Logs::Delivery',
+      { DeliverySourceName: 's', DeliveryDestinationArn: 'arn', Tags: [{ Key: 'k', Value: 'v' }] },
+    ],
   ])(
     'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654, #6454)',
     (resourceType, properties) => {

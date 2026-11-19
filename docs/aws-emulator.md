@@ -528,7 +528,8 @@ cdkd creates `AWS::Events::Archive` through its own SDK provider, so
 `aws events list-archives` lists the archive and `start-replay` can read it.
 An archive created through Cloud Control in the emulator is reported created
 but never reaches the EventBridge API. A stack deployed into the emulator by an
-earlier release keeps such an archive on Cloud Control; destroy that stack and
+earlier release still records such an archive. A deploy that changes such an
+archive fails, because the archive does not exist; destroy that stack and
 deploy it again once.
 
 ### A log delivery fails with `attributes are not enriched`

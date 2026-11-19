@@ -5871,9 +5871,14 @@
     {
       "resourceType": "AWS::Events::Archive",
       "integs": [
+        "cc-to-sdk-reroute-common-types-12",
         "eventbridge-archive"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-12": [
+          "l1",
+          "literal"
+        ],
         "eventbridge-archive": [
           "literal"
         ]
@@ -5883,6 +5888,7 @@
       "resourceType": "AWS::Events::EventBus",
       "integs": [
         "appsync",
+        "cc-to-sdk-reroute-common-types-12",
         "cc-to-sdk-reroute-common-types-4",
         "eventbridge",
         "eventbridge-archive",
@@ -5894,6 +5900,9 @@
       "signals": {
         "appsync": [
           "l1"
+        ],
+        "cc-to-sdk-reroute-common-types-12": [
+          "l2"
         ],
         "cc-to-sdk-reroute-common-types-4": [
           "l1",
@@ -8230,9 +8239,14 @@
     {
       "resourceType": "AWS::Logs::Delivery",
       "integs": [
+        "cc-to-sdk-reroute-common-types-12",
         "logs-delivery"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-12": [
+          "l1",
+          "literal"
+        ],
         "logs-delivery": [
           "l1",
           "literal"
@@ -8242,9 +8256,14 @@
     {
       "resourceType": "AWS::Logs::DeliveryDestination",
       "integs": [
+        "cc-to-sdk-reroute-common-types-12",
         "logs-delivery"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-12": [
+          "l1",
+          "literal"
+        ],
         "logs-delivery": [
           "l1",
           "literal"
@@ -8254,9 +8273,14 @@
     {
       "resourceType": "AWS::Logs::DeliverySource",
       "integs": [
+        "cc-to-sdk-reroute-common-types-12",
         "logs-delivery"
       ],
       "signals": {
+        "cc-to-sdk-reroute-common-types-12": [
+          "l1",
+          "literal"
+        ],
         "logs-delivery": [
           "l1",
           "literal"
@@ -8270,6 +8294,7 @@
         "apigw-stage-props",
         "apigw-stage-throttling",
         "cache-streaming",
+        "cc-to-sdk-reroute-common-types-12",
         "cloudtrail-trail",
         "cloudwatch",
         "cloudwatch-metric-stream-default-name",
@@ -8327,6 +8352,9 @@
           "literal"
         ],
         "cache-streaming": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-common-types-12": [
           "l2"
         ],
         "cloudtrail-trail": [
