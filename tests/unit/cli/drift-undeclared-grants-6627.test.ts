@@ -504,6 +504,29 @@ describe('the observed baseline\'s recorded members (go-to-k/cdkd#6627)', () => 
     expect(writes).toEqual([]);
   });
 
+  it('a revert driven by an out-of-band member does not re-grant a recorded member AWS lost', async () => {
+    resources = {
+      Subject: principalRecord('User', {
+        ...(await captureObserved('User')),
+        ManagedPolicyArns: [ACCEPTED_ARN],
+        Groups: ['stale-group'],
+        Policies: [{ PolicyName: 'gone', PolicyDocument: DOC('s3:*') }],
+      }),
+    };
+    live.managed.push(OOB_ARN);
+    live.groups.push('oob-group');
+    live.inline.set('oob-inline', DOC('*'));
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual([
+      `DetachUserPolicy ${OOB_ARN}`,
+      'RemoveUserFromGroup oob-group',
+      'DeleteUserPolicy oob-inline',
+    ]);
+    expect(live.managed).toEqual([]);
+    expect(live.groups).toEqual([]);
+    expect([...live.inline.keys()]).toEqual([]);
+  });
+
   it('beside an accepted member, only the new out-of-band one is drift and removed', async () => {
     live.managed.push(ACCEPTED_ARN);
     resources = {
