@@ -159,8 +159,10 @@ export async function readReplicaSubSpecs(
  * baseline right after the put: on that capture (`afterOwnWrite`) an answer
  * that differs from the declaration is re-asked a few times before it is
  * believed. Any other read takes the first answer. `afterOwnWrite`: a policy
- * still ABSENT then, or a read that failed transiently, keeps the declared
- * member rather than freeze an absence the settled replica never shows.
+ * still ABSENT or still another document then, or a read that failed
+ * transiently or after an unsettled answer, keeps the declared member rather
+ * than freeze a value the settled replica never shows (a replaced document
+ * recorded there would let `--revert` re-grant it, go-to-k/cdkd#6604).
  * Every other read believes its answer, so a policy removed out of band is
  * drift. Policy text is never logged.
  */
@@ -205,9 +207,12 @@ export async function readReplicaPolicies(
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         live = await read();
       }
-      if (afterOwnWrite && (live === undefined || live === '')) {
+      // go-to-k/cdkd#6604: an answer still differing from the declaration is
+      // the replaced policy the put overwrote; recording it would let
+      // `--revert` re-grant it.
+      if (afterOwnWrite && !policyMatchesDeclared(live, container)) {
         this.logger.debug(
-          safeMsg`Kept the declared ${what} of the ${regionLabel} replica of ${tableName} in the baseline captured after its write: the read still found no policy`
+          safeMsg`Kept the declared ${what} of the ${regionLabel} replica of ${tableName} in the baseline captured after its write: the read never settled on it`
         );
         return declaredMember();
       }
@@ -220,12 +225,10 @@ export async function readReplicaPolicies(
       this.logger.debug(
         safeMsg`Could not read the ${what} of the ${regionLabel} replica of ${tableName}: ${describeAwsFailure(err).detail}`
       );
-      if (afterOwnWrite && last !== undefined && last !== '') {
-        return reverseMapPolicyMember(last, container);
-      }
       if (
         afterOwnWrite &&
-        (isThrottlingError(err) ||
+        ((last !== undefined && last !== '') ||
+          isThrottlingError(err) ||
           isTransientServerError(err) ||
           isAmbiguousOutcomeError(err) ||
           err instanceof ResourceNotFoundException)

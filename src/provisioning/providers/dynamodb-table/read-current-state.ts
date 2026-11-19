@@ -669,17 +669,18 @@ export async function reAskUntilSettled<T>(
  * a successful create / update by this deploy, whose template declares the
  * member. There a member still ABSENT when the schedule is spent, or a read
  * that threw, keeps the DECLARED member instead of freezing "absent" into a
- * baseline the settled stream can never equal. Only absence: a PRESENT
- * answer that differs is recorded as read, since AWS may store a document
- * in another spelling and the declared one would then never match. An
+ * baseline the settled stream can never equal. A POLICY still answering
+ * another document keeps the declared one too (go-to-k/cdkd#6604): it is the
+ * replaced policy the put just overwrote, and recording it would let
+ * `--revert` re-grant it. Tags still record a differing answer as read. An
  * update that sent no stream call keeps the declared member over an
  * out-of-band removal too, which drift then reports against it. A thrown
  * read keeps the declared member only when the failure is TRANSIENT
  * ({@link isTransientStreamReadFailure}); a deterministic one (a role that
  * may put but not read) fails the same way on every drift read, so keeping
- * the declared member there would report a removal forever. And a read that
- * throws after an earlier PRESENT answer records that answer, as a settled
- * one would. Every other caller (drift, import, a refresh) believes the last
+ * the declared member there would report a removal forever. A read that
+ * throws after an earlier PRESENT answer records that answer for tags, and
+ * keeps the declared policy (an unsettled answer). Every other caller (drift, import, a refresh) believes the last
  * answer, so a member that really is gone stays drift.
  *
  * `cdkd drift --revert` replays through `update()`, where the read-back is
@@ -726,6 +727,8 @@ export async function readStreamMembers(
       );
       if (afterOwnWrite && (livePolicy === undefined || livePolicy === '')) {
         keepDeclared(STREAM_POLICY_KEY, 'the read still found no policy');
+      } else if (afterOwnWrite && !streamPolicyMatchesDeclared(livePolicy, desiredBlock)) {
+        keepDeclared(STREAM_POLICY_KEY, 'the read still found another policy');
       } else {
         const member = reverseMapStreamPolicy(livePolicy, desiredBlock);
         if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
@@ -734,11 +737,10 @@ export async function readStreamMembers(
       this.logger.debug(
         `Could not read the stream ResourcePolicy for ${tableName}: ${describeAwsFailure(err).detail}`
       );
-      if (afterOwnWrite && lastPolicy !== undefined && lastPolicy !== '') {
-        const member = reverseMapStreamPolicy(lastPolicy, desiredBlock);
-        if (member !== undefined) streamBlock[STREAM_POLICY_KEY] = member;
-      } else if (afterOwnWrite && isTransientStreamReadFailure(err)) {
+      if (afterOwnWrite && isTransientStreamReadFailure(err)) {
         keepDeclared(STREAM_POLICY_KEY, 'the read failed transiently');
+      } else if (afterOwnWrite && lastPolicy !== undefined && lastPolicy !== '') {
+        keepDeclared(STREAM_POLICY_KEY, 'the read failed after an unsettled answer');
       }
     }
   }

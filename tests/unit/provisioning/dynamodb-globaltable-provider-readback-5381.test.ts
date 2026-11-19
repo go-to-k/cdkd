@@ -705,19 +705,24 @@ describe('read-back edges (go-to-k/cdkd#5381 review)', () => {
     expect(replicaOf(bag, 'eu-west-1')).not.toHaveProperty('ResourcePolicy');
   });
 
-  it('records a present answer a later re-ask failed on, after its own write', async () => {
+  // go-to-k/cdkd#6604: after its own write a differing answer is the policy
+  // the put replaced; recording it would let `--revert` re-grant it.
+  it('keeps the declared policy when a re-ask fails after a differing answer, after its own write', async () => {
     (provider as unknown as { policyRereadDelaysMs: number[] }).policyRereadDelaysMs = [0];
     const other = policy('dynamodb:PutItem');
     setLive({}, { tablePolicyReads: [JSON.stringify(other), throttle()] });
     const bag = await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl(), { afterOwnWrite: true });
-    expect(replicaOf(bag, 'eu-west-1')['ResourcePolicy']).toEqual({ PolicyDocument: other });
+    expect(replicaOf(bag, 'eu-west-1')['ResourcePolicy']).toEqual({ PolicyDocument: doc });
   });
 
-  it('believes a different live policy after its own write', async () => {
+  it('keeps the declared policy over a different live policy after its own write, believes it on a drift read', async () => {
     const other = policy('dynamodb:PutItem');
     setLive({}, { tablePolicyReads: [JSON.stringify(other)] });
     const bag = await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl(), { afterOwnWrite: true });
-    expect(replicaOf(bag, 'eu-west-1')['ResourcePolicy']).toEqual({ PolicyDocument: other });
+    expect(replicaOf(bag, 'eu-west-1')['ResourcePolicy']).toEqual({ PolicyDocument: doc });
+    setLive({}, { tablePolicyReads: [JSON.stringify(other)] });
+    const drift = await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl());
+    expect(replicaOf(drift, 'eu-west-1')['ResourcePolicy']).toEqual({ PolicyDocument: other });
   });
 
   it('reads no local key while SSE is not ENABLED', async () => {
