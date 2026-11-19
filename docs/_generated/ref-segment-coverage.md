@@ -13,19 +13,19 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 ## Summary
 
 - Compound-id types: **340**
-- Mapped by `cfnRefValueFromPhysicalId`: **60**
-- `Ref` is the joined id too: **115**
+- Mapped by `cfnRefValueFromPhysicalId`: **62**
+- `Ref` is the joined id too: **200**
 - No `Ref` documented: **40**
-- `Ref` is no segment of the id: **6**
-- Unverified (does NOT block CI): **119**
+- `Ref` is no segment of the id: **7**
+- Unverified (does NOT block CI): **31**
 - **Gaps (blocks CI): 0**
 
 | Type | Tier | primaryIdentifier | Status | Mechanism / source |
 | --- | --- | --- | --- | --- |
 | `AWS::ACMPCA::Certificate` | 2 | Arn, CertificateAuthorityArn | no-ref | docs Return values: Ref returns nothing usable: "This reference should not be used in CloudFormation templates" |
 | `AWS::ACMPCA::Permission` | 2 | CertificateAuthorityArn, Principal | no-ref | docs: the page has no Return values section |
-| `AWS::ARCZonalShift::AutoshiftObserverNotificationStatus` | 2 | AccountId, Region | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::AccountAccess::Entitlement` | 2 | ApplicationArn, EntitlementId | unverified | docs Return values: Ref returns "the unique identifier of the entitlement" |
+| `AWS::ARCZonalShift::AutoshiftObserverNotificationStatus` | 2 | AccountId, Region | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::AccountAccess::Entitlement` | 2 | ApplicationArn, EntitlementId | unverified | docs Return values: Ref returns "the unique identifier of the entitlement"; not measured (needs IAM Identity Center) |
 | `AWS::AmplifyUIBuilder::Component` | 2 | AppId, EnvironmentName, Id | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
 | `AWS::AmplifyUIBuilder::Form` | 2 | AppId, EnvironmentName, Id | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
 | `AWS::AmplifyUIBuilder::Theme` | 2 | AppId, EnvironmentName, Id | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
@@ -51,8 +51,8 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::AppConfig::ConfigurationProfile` | 2 | ApplicationId, ConfigurationProfileId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::AppConfig::Deployment` | 2 | ApplicationId, EnvironmentId, DeploymentNumber | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::AppConfig::Environment` | 1 | ApplicationId, EnvironmentId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
-| `AWS::AppConfig::ExperimentDefinition` | 2 | ApplicationId, Id | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::AppConfig::ExperimentRun` | 2 | ApplicationId, ExperimentDefinitionId, Run | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::AppConfig::ExperimentDefinition` | 2 | ApplicationId, Id | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::AppConfig::ExperimentRun` | 2 | ApplicationId, ExperimentDefinitionId, Run | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::AppConfig::HostedConfigurationVersion` | 2 | ApplicationId, ConfigurationProfileId, VersionNumber | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::AppStream::ApplicationEntitlementAssociation` | 2 | StackName, EntitlementName, ApplicationIdentifier | compound | docs Return values: Ref returns `StackName\|EntitlementName\|ApplicationIdentifier` |
 | `AWS::AppStream::ApplicationFleetAssociation` | 2 | FleetName, ApplicationArn | compound | docs Return values: Ref returns `FleetName\|ApplicationArn` |
@@ -65,71 +65,71 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::AppSync::Resolver` | 1 | ResolverArn | mapped | REF_RETURNS_ARN_FROM_STATE |
 | `AWS::ApplicationAutoScaling::ScalableTarget` | 2 | ResourceId, ScalableDimension, ServiceNamespace | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<ResourceId>\|<ScalableDimension>\|<ServiceNamespace>` |
 | `AWS::ApplicationAutoScaling::ScalingPolicy` | 2 | Arn, ScalableDimension | mapped | REF_FROM_PHYSICAL_ID_HELPERS |
-| `AWS::ApplicationSignals::InstrumentationConfig` | 2 | InstrumentationType, Service, Environment, SignalType, LocationHash | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::ApplicationSignals::InstrumentationConfig` | 2 | InstrumentationType, Service, Environment, SignalType, LocationHash | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Athena::PreparedStatement` | 2 | StatementName, WorkGroup | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<StatementName>\|<WorkGroup>` (the docs say the statement name) |
 | `AWS::AutoScaling::LifecycleHook` | 2 | AutoScalingGroupName, LifecycleHookName | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::AutoScaling::ScheduledAction` | 2 | ScheduledActionName, AutoScalingGroupName | mapped | REF_FROM_PHYSICAL_ID_HELPERS |
 | `AWS::AutoScalingPlans::ScalingPlan` | 2 | ScalingPlanVersion, ScalingPlanName | not-a-segment | docs Return values: Ref returns the scaling plan ARN |
-| `AWS::Backup::RestoreTestingSelection` | 2 | RestoreTestingPlanName, RestoreTestingSelectionName | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Backup::RestoreTestingSelection` | 2 | RestoreTestingPlanName, RestoreTestingSelectionName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Bedrock::AgentAlias` | 2 | AgentId, AgentAliasId | compound | docs Return values: Ref returns `AGENT12345\|ALIAS12345` |
-| `AWS::Bedrock::AutomatedReasoningPolicyVersion` | 2 | PolicyArn, Version | unverified | docs Return values: Ref returns "the policy version ID" |
+| `AWS::Bedrock::AutomatedReasoningPolicyVersion` | 2 | PolicyArn, Version | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Bedrock::DataSource` | 2 | KnowledgeBaseId, DataSourceId | compound | docs Return values: Ref returns `KB12345678\|DS12345678` |
 | `AWS::Bedrock::FlowAlias` | 2 | Arn, FlowArn | compound | docs Return values: Ref returns `<flowArn>\|<aliasArn>` |
 | `AWS::Bedrock::FlowVersion` | 2 | FlowArn, Version | compound | docs Return values: Ref returns `<flowArn>\|<version>` |
 | `AWS::Bedrock::GuardrailVersion` | 2 | GuardrailId, Version | compound | docs Return values: Ref returns `guardrail-id\|guardrail-version` |
-| `AWS::BedrockAgentCore::GatewayRateLimit` | 2 | GatewayIdentifier, RateLimitId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::BedrockAgentCore::GatewayRule` | 2 | GatewayIdentifier, RuleId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::BedrockAgentCore::GatewayRateLimit` | 2 | GatewayIdentifier, RateLimitId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::BedrockAgentCore::GatewayRule` | 2 | GatewayIdentifier, RuleId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::BedrockAgentCore::GatewayTarget` | 2 | GatewayIdentifier, TargetId | compound | docs Return values: Ref returns `my-gateway-a1b2c3d4e5\|a1B2c3D4e5` |
 | `AWS::Budgets::BudgetsAction` | 2 | ActionId, BudgetName | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
 | `AWS::Cassandra::Table` | 2 | KeyspaceName, TableName | compound | docs Return values: Ref returns `myKeyspace\|myTable` |
 | `AWS::Cassandra::Type` | 2 | KeyspaceName, TypeName | compound | docs Return values: Ref returns `myKeyspace\|myType` |
 | `AWS::Chime::Channel` | 2 | Arn, ChimeBearer | no-ref | docs: the page has no Return values section |
-| `AWS::CleanRooms::AnalysisTemplate` | 2 | AnalysisTemplateIdentifier, MembershipIdentifier | unverified | docs Return values: Ref returns the AnalysisTemplateIdentifier (a Cloud Control-native type; not measured) |
+| `AWS::CleanRooms::AnalysisTemplate` | 2 | AnalysisTemplateIdentifier, MembershipIdentifier | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::CleanRooms::ConfiguredTableAssociation` | 2 | ConfiguredTableAssociationIdentifier, MembershipIdentifier | compound | docs Return values: Ref returns `<associationId>\|<membershipId>` |
 | `AWS::CleanRooms::IdMappingTable` | 2 | IdMappingTableIdentifier, MembershipIdentifier | unverified | docs Return values: Ref returns "the resource name" |
-| `AWS::CleanRooms::IdNamespaceAssociation` | 2 | IdNamespaceAssociationIdentifier, MembershipIdentifier | unverified | docs Return values: Ref returns "the resource name" |
+| `AWS::CleanRooms::IdNamespaceAssociation` | 2 | IdNamespaceAssociationIdentifier, MembershipIdentifier | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::CleanRooms::IntermediateTable` | 2 | IntermediateTableIdentifier, MembershipIdentifier | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::CleanRooms::PrivacyBudgetTemplate` | 2 | PrivacyBudgetTemplateIdentifier, MembershipIdentifier | unverified | docs Return values: Ref returns the ARN (no segment holds it; not measured) |
-| `AWS::CloudWatch::AccessProfile` | 2 | SpaceId, ProfileId | unverified | docs Return values: Ref returns "a unique identifier for this resource" |
-| `AWS::CloudWatch::Alert` | 2 | SpaceId, AlertId | unverified | docs Return values: Ref returns "a unique identifier for this resource" |
-| `AWS::CloudWatch::OmniDashboard` | 2 | SpaceId, DashboardId | unverified | docs Return values: Ref returns "a unique identifier for this resource" |
+| `AWS::CleanRooms::PrivacyBudgetTemplate` | 2 | PrivacyBudgetTemplateIdentifier, MembershipIdentifier | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::CloudWatch::AccessProfile` | 2 | SpaceId, ProfileId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::CloudWatch::Alert` | 2 | SpaceId, AlertId | unverified | docs Return values: Ref returns "a unique identifier for this resource"; the #6628 probe was refused (the access-profile trust grant) |
+| `AWS::CloudWatch::OmniDashboard` | 2 | SpaceId, DashboardId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::CodeDeploy::DeploymentGroup` | 2 | ApplicationName, DeploymentGroupName | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::CodePipeline::CustomActionType` | 2 | Category, Provider, Version | not-a-segment | docs Return values: Ref returns a generated name such as `custo-MyCus-A1BCDEFGHIJ2` |
-| `AWS::CodeStarConnections::SyncConfiguration` | 2 | ResourceName, SyncType | unverified | docs Return values: Ref returns the ARN (no segment holds it; not measured) |
+| `AWS::CodeStarConnections::SyncConfiguration` | 2 | ResourceName, SyncType | unverified | docs Return values: Ref returns the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake) |
 | `AWS::Cognito::IdentityPoolPrincipalTag` | 2 | IdentityPoolId, IdentityProviderName | compound | docs Return values: Ref returns `<identityPoolId>\|graph.facebook.com` |
 | `AWS::Cognito::ManagedLoginBranding` | 2 | UserPoolId, ManagedLoginBrandingId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<UserPoolId>\|<ManagedLoginBrandingId>` (the docs say the style id) |
-| `AWS::Cognito::Terms` | 2 | UserPoolId, TermsId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Cognito::Terms` | 2 | UserPoolId, TermsId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Cognito::UserPoolClient` | 2 | UserPoolId, ClientId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
-| `AWS::Cognito::UserPoolClientSessionConfigurationAttachment` | 2 | UserPoolId, ClientId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Cognito::UserPoolClientSessionConfigurationAttachment` | 2 | UserPoolId, ClientId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Cognito::UserPoolDomain` | 2 | UserPoolId, Domain | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::Cognito::UserPoolGroup` | 2 | UserPoolId, GroupName | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::Cognito::UserPoolIdentityProvider` | 2 | UserPoolId, ProviderName | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
-| `AWS::Cognito::UserPoolReplica` | 2 | UserPoolId, RegionName | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Cognito::UserPoolReplica` | 2 | UserPoolId, RegionName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Cognito::UserPoolResourceServer` | 2 | UserPoolId, Identifier | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::Cognito::UserPoolRiskConfigurationAttachment` | 2 | UserPoolId, ClientId | not-a-segment | docs Return values: Ref returns `UserPoolRiskConfigurationAttachment-<UserPoolId>-<ClientId>` |
 | `AWS::Cognito::UserPoolUICustomizationAttachment` | 2 | UserPoolId, ClientId | not-a-segment | docs Return values: Ref returns `UserPoolUICustomizationAttachment-<UserPoolId>-<ClientId>` |
 | `AWS::Cognito::UserPoolUser` | 2 | UserPoolId, Username | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::Cognito::UserPoolUserToGroupAttachment` | 2 | UserPoolId, GroupName, Username | not-a-segment | docs Return values: Ref returns a generated id such as `UserToGroupAttachment-YejJvzrEXAMPLE` |
 | `AWS::Config::AggregationAuthorization` | 2 | AuthorizedAccountId, AuthorizedAwsRegion | not-a-segment | docs Return values: Ref returns the aggregation authorization ARN |
-| `AWS::Connect::ApprovedOrigin` | 2 | InstanceId, Origin | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Connect::ApprovedOrigin` | 2 | InstanceId, Origin | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Connect::DataLakeAssociation` | 2 | InstanceId, DataSetId, TargetAccountId | compound | docs Return values: Ref returns `InstanceId\|DataSetId\|TargetAccountId` |
-| `AWS::Connect::DataTable` | 2 | InstanceArn, Arn | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Connect::DataTableAttribute` | 2 | InstanceArn, DataTableArn, AttributeId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Connect::DataTableRecord` | 2 | InstanceArn, DataTableArn, RecordId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Connect::InstanceStorageConfig` | 2 | InstanceArn, AssociationId, ResourceType | unverified | docs Return values: Ref returns "the name of the instance storage configuration" |
-| `AWS::Connect::IntegrationAssociation` | 2 | InstanceId, IntegrationType, IntegrationArn | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Connect::PredefinedAttribute` | 2 | InstanceArn, Name | unverified | docs Return values: Ref returns "the predefined attribute" |
-| `AWS::Connect::SecurityKey` | 2 | InstanceId, AssociationId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Connect::UseCase` | 2 | InstanceId, IntegrationAssociationId, UseCaseId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Connect::DataTable` | 2 | InstanceArn, Arn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::DataTableAttribute` | 2 | InstanceArn, DataTableArn, AttributeId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::DataTableRecord` | 2 | InstanceArn, DataTableArn, RecordId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::InstanceStorageConfig` | 2 | InstanceArn, AssociationId, ResourceType | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::IntegrationAssociation` | 2 | InstanceId, IntegrationType, IntegrationArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::PredefinedAttribute` | 2 | InstanceArn, Name | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::SecurityKey` | 2 | InstanceId, AssociationId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Connect::UseCase` | 2 | InstanceId, IntegrationAssociationId, UseCaseId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::ControlTower::EnabledControl` | 2 | TargetIdentifier, ControlIdentifier | compound | docs Return values: Ref returns `target\|control` |
-| `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 2 | DomainName, CalculatedAttributeName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::CustomerProfiles::DomainObjectType` | 2 | DomainName, ObjectTypeName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::CustomerProfiles::EventStream` | 2 | DomainName, EventStreamName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::CustomerProfiles::EventTrigger` | 2 | DomainName, EventTriggerName | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::CustomerProfiles::CalculatedAttributeDefinition` | 2 | DomainName, CalculatedAttributeName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::CustomerProfiles::DomainObjectType` | 2 | DomainName, ObjectTypeName | unverified | docs: Return values has a Ref heading with no text; the #6628 probe was refused: every field Target tried was invalid |
+| `AWS::CustomerProfiles::EventStream` | 2 | DomainName, EventStreamName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::CustomerProfiles::EventTrigger` | 2 | DomainName, EventTriggerName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::CustomerProfiles::Integration` | 2 | DomainName, Uri | compound | docs Return values: Ref returns "the DomainName and the Uri of the integration" |
 | `AWS::CustomerProfiles::ObjectType` | 2 | DomainName, ObjectTypeName | compound | docs Return values: Ref returns "the DomainName and the ObjectTypeName of the object type" |
-| `AWS::CustomerProfiles::Recommender` | 2 | DomainName, RecommenderName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::CustomerProfiles::SegmentDefinition` | 2 | DomainName, SegmentDefinitionName | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::CustomerProfiles::Recommender` | 2 | DomainName, RecommenderName | unverified | docs: Return values has a Ref heading with no text; not measured (needs ingested interaction and catalog data) |
+| `AWS::CustomerProfiles::SegmentDefinition` | 2 | DomainName, SegmentDefinitionName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::DataZone::Connection` | 2 | DomainId, ConnectionId | compound | docs Return values: Ref returns `DomainId\|ConnectionId` |
 | `AWS::DataZone::DataSource` | 2 | DomainId, Id | compound | docs Return values: Ref returns `DomainId\|DataSourceId` |
 | `AWS::DataZone::DomainUnit` | 2 | DomainId, Id | compound | docs Return values: Ref returns `DomainId\|DomainUnitId` |
@@ -140,28 +140,28 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::DataZone::FormType` | 2 | DomainIdentifier, FormTypeIdentifier | compound | docs Return values: Ref returns `DomainIdentifier\|FormTypeIdentifier` |
 | `AWS::DataZone::GroupProfile` | 2 | DomainId, Id | compound | docs Return values: Ref returns `DomainId\|GroupProfileId` |
 | `AWS::DataZone::Owner` | 2 | DomainIdentifier, EntityType, EntityIdentifier, OwnerType, OwnerIdentifier | compound | docs Return values: Ref returns `DomainId\|EntityType\|EntityId\|OwnerType\|OwnerId` |
-| `AWS::DataZone::PolicyGrant` | 2 | DomainIdentifier, GrantId, EntityIdentifier, EntityType, PolicyType | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::DataZone::PolicyGrant` | 2 | DomainIdentifier, GrantId, EntityIdentifier, EntityType, PolicyType | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::DataZone::Project` | 2 | DomainId, Id | compound | docs Return values: Ref returns `DomainId\|ProjectId` |
 | `AWS::DataZone::ProjectMembership` | 2 | DomainIdentifier, MemberIdentifier, MemberIdentifierType, ProjectIdentifier | compound | docs Return values: Ref returns `DomainId\|MemberId\|MemberType\|ProjectId` |
 | `AWS::DataZone::ProjectProfile` | 2 | DomainIdentifier, Identifier | compound | docs Return values: Ref returns a pipe-separated domain id and identifier (text copied from DomainUnit) |
 | `AWS::DataZone::SubscriptionTarget` | 2 | DomainId, EnvironmentId, Id | compound | docs Return values: Ref returns `DomainId\|EnvironmentId\|SubscriptionTargetId` |
 | `AWS::DataZone::UserProfile` | 2 | DomainId, Id | compound | docs Return values: Ref returns `DomainId\|UserProfileId` |
-| `AWS::Deadline::Limit` | 2 | FarmId, LimitId | unverified | docs Return values: Ref returns "the unique identifier of the limit" |
-| `AWS::Deadline::QueueEnvironment` | 2 | FarmId, QueueId, QueueEnvironmentId | unverified | docs Return values: Ref returns "a reference to a queue environment object" |
-| `AWS::Deadline::QueueFleetAssociation` | 2 | FarmId, FleetId, QueueId | unverified | docs Return values: Ref returns an ARN, which the type does not have |
-| `AWS::Deadline::QueueLimitAssociation` | 2 | FarmId, LimitId, QueueId | unverified | docs Return values: Ref returns "the unique identifier for the queue-limit association" |
-| `AWS::Deadline::StorageProfile` | 2 | FarmId, StorageProfileId | unverified | docs Return values: Ref returns an ARN, which the type does not have |
+| `AWS::Deadline::Limit` | 2 | FarmId, LimitId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Deadline::QueueEnvironment` | 2 | FarmId, QueueId, QueueEnvironmentId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Deadline::QueueFleetAssociation` | 2 | FarmId, FleetId, QueueId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Deadline::QueueLimitAssociation` | 2 | FarmId, LimitId, QueueId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Deadline::StorageProfile` | 2 | FarmId, StorageProfileId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Detective::MemberInvitation` | 2 | GraphArn, MemberId | compound | docs Return values: Ref returns "the ARN of the behavior graph and the member account identifier, separated by a pipe" |
 | `AWS::DevOpsAgent::Asset` | 2 | AgentSpaceId, AssetId | compound | docs Return values: Ref returns `as-1234567890abcdef0\|asset-0987654321fedcba0` |
-| `AWS::DevOpsAgent::Association` | 2 | AgentSpaceId, AssociationId | unverified | docs Return values: Ref returns "the association ID" (a Cloud Control-native type; not measured) |
-| `AWS::DevOpsAgent::Trigger` | 2 | AgentSpaceId, TriggerId | unverified | docs Return values: Ref returns "the TriggerId" (a Cloud Control-native type; not measured) |
-| `AWS::EC2::ClientVpnTargetNetworkAssociation` | 2 | ClientVpnEndpointId, AssociationId | unverified | docs Return values: Ref returns the association id `cvpn-assoc-…`; not measured (needs an imported ACM certificate) |
+| `AWS::DevOpsAgent::Association` | 2 | AgentSpaceId, AssociationId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::DevOpsAgent::Trigger` | 2 | AgentSpaceId, TriggerId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::EC2::ClientVpnTargetNetworkAssociation` | 2 | ClientVpnEndpointId, AssociationId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::EC2::EIP` | 1 | PublicIp, AllocationId | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
-| `AWS::EC2::EnclaveCertificateIamRoleAssociation` | 2 | CertificateArn, RoleArn | unverified | docs Return values: Ref returns "the IAM role and ACM certificate association" |
+| `AWS::EC2::EnclaveCertificateIamRoleAssociation` | 2 | CertificateArn, RoleArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EC2::IPAMAllocation` | 2 | IpamPoolId, IpamPoolAllocationId, Cidr | compound | docs Return values: Ref returns "the pool ID, allocation ID, and CIDR joined with \|" |
 | `AWS::EC2::IPAMPoolCidr` | 2 | IpamPoolId, IpamPoolCidrId | compound | docs Return values: Ref returns `ipam-pool-01123456\|ipam-pool-cidr-0123456` |
 | `AWS::EC2::LocalGatewayRoute` | 2 | DestinationCidrBlock, LocalGatewayRouteTableId | unverified | docs Return values: Ref returns `lgw-rtb-…\|10.0.0.0/24`, the REVERSE of the identifier order; needs an Outpost |
-| `AWS::EC2::NetworkAclEntry` | 1 | Id | unverified | docs Return values: Ref returns "the ID of the network ACL entry" (2026-08-12 audit, issue #1667; not measured) |
+| `AWS::EC2::NetworkAclEntry` | 1 | Id | not-a-segment | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20): a generated id such as `cdkd-p-AclEn-Ige4PmWgSxQE` |
 | `AWS::EC2::NetworkPerformanceMetricSubscription` | 2 | Source, Destination, Metric, Statistic | compound | docs Return values: Ref returns `source\|destination\|metric\|statistic` |
 | `AWS::EC2::Route` | 1 | RouteTableId, CidrBlock | compound | measured, issue #6243 |
 | `AWS::EC2::RouteServerAssociation` | 2 | RouteServerId, VpcId | compound | docs Return values: Ref returns "the route server ID and VPC ID separated by the pipe symbol" |
@@ -169,55 +169,55 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::EC2::SecurityGroupIngress` | 1 | Id | no-ref | docs: no Ref (2026-08-12 audit, issue #1667) |
 | `AWS::EC2::SecurityGroupVpcAssociation` | 2 | GroupId, VpcId | compound | docs Return values: Ref returns `sg-id\|vpc-id` |
 | `AWS::EC2::SubnetCidrReservation` | 2 | SubnetId, SubnetCidrReservationId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<SubnetId>\|<SubnetCidrReservationId>` |
-| `AWS::EC2::TransitGatewayMeteringPolicyEntry` | 2 | TransitGatewayMeteringPolicyId, PolicyRuleNumber | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::EC2::TransitGatewayMeteringPolicyEntry` | 2 | TransitGatewayMeteringPolicyId, PolicyRuleNumber | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EC2::TransitGatewayMulticastDomainAssociation` | 2 | TransitGatewayMulticastDomainId, TransitGatewayAttachmentId, SubnetId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DomainId>\|<AttachmentId>\|<SubnetId>` (the docs say the domain id) |
 | `AWS::EC2::TransitGatewayMulticastGroupMember` | 2 | TransitGatewayMulticastDomainId, GroupIpAddress, NetworkInterfaceId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DomainId>\|<GroupIpAddress>\|<NetworkInterfaceId>` |
 | `AWS::EC2::TransitGatewayMulticastGroupSource` | 2 | TransitGatewayMulticastDomainId, GroupIpAddress, NetworkInterfaceId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DomainId>\|<GroupIpAddress>\|<NetworkInterfaceId>` |
-| `AWS::EC2::TransitGatewayPolicyTableAssociation` | 2 | TransitGatewayPolicyTableId, TransitGatewayAttachmentId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::EC2::TransitGatewayPolicyTableEntry` | 2 | TransitGatewayPolicyTableId, PolicyRuleNumber | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::EC2::TransitGatewayPolicyTableAssociation` | 2 | TransitGatewayPolicyTableId, TransitGatewayAttachmentId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::EC2::TransitGatewayPolicyTableEntry` | 2 | TransitGatewayPolicyTableId, PolicyRuleNumber | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EC2::TransitGatewayRoute` | 2 | TransitGatewayRouteTableId, DestinationCidrBlock | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<RouteTableId>\|<DestinationCidrBlock>` |
 | `AWS::EC2::TransitGatewayRouteTableAssociation` | 2 | TransitGatewayRouteTableId, TransitGatewayAttachmentId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<RouteTableId>\|<AttachmentId>` |
 | `AWS::EC2::TransitGatewayRouteTablePropagation` | 2 | TransitGatewayRouteTableId, TransitGatewayAttachmentId | mapped | REF_FROM_PHYSICAL_ID_HELPERS |
 | `AWS::EC2::VPCCidrBlock` | 2 | Id, VpcId | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
 | `AWS::EC2::VPCDHCPOptionsAssociation` | 2 | DhcpOptionsId, VpcId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<DhcpOptionsId>\|<VpcId>` |
 | `AWS::EC2::VPCGatewayAttachment` | 1 | AttachmentType, VpcId | mapped | case |
-| `AWS::EC2::VPNConnectionRoute` | 2 | DestinationCidrBlock, VpnConnectionId | unverified | docs Return values: Ref returns "the ID of the VPN connection route" |
+| `AWS::EC2::VPNConnectionRoute` | 2 | DestinationCidrBlock, VpnConnectionId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EC2::VolumeAttachment` | 2 | VolumeId, InstanceId | no-ref | docs: the page has no Return values section |
-| `AWS::ECS::GatewayClusterAssociations` | 2 | Gateway, Cluster | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::ECS::PrimaryTaskSet` | 2 | Cluster, Service | unverified | docs Return values: Ref returns "the resource name" |
+| `AWS::ECS::GatewayClusterAssociations` | 2 | Gateway, Cluster | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::ECS::PrimaryTaskSet` | 2 | Cluster, Service | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::ECS::Service` | 1 | ServiceArn, Cluster | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
-| `AWS::ECS::TaskSet` | 2 | Cluster, Service, Id | unverified | docs Return values: Ref returns "the resource name" |
-| `AWS::EKS::AccessEntry` | 2 | PrincipalArn, ClusterName | unverified | docs Return values: Ref returns "the resource name", with the principal ARN as the example |
+| `AWS::ECS::TaskSet` | 2 | Cluster, Service, Id | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::EKS::AccessEntry` | 2 | PrincipalArn, ClusterName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EKS::Addon` | 2 | ClusterName, AddonName | compound | docs Return values: Ref returns `cluster-name\|vpc-cni` |
-| `AWS::EKS::CertificateAuthority` | 2 | ClusterName, Id | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::EKS::FargateProfile` | 2 | ClusterName, FargateProfileName | unverified | docs Return values: Ref returns `<cluster-name>/<Fargate_profile_name>`, slash-joined; not measured |
-| `AWS::EKS::IdentityProviderConfig` | 2 | IdentityProviderConfigName, ClusterName, Type | unverified | docs Return values: Ref returns `cluster-name/oidc/identity-provider-config-name`, slash-joined; not measured |
+| `AWS::EKS::CertificateAuthority` | 2 | ClusterName, Id | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::EKS::FargateProfile` | 2 | ClusterName, FargateProfileName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::EKS::IdentityProviderConfig` | 2 | IdentityProviderConfigName, ClusterName, Type | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EMR::InstanceFleetConfig` | 1 | ClusterId, InstanceFleetId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::EMR::InstanceGroupConfig` | 1 | InstanceGroupId, JobFlowId | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
 | `AWS::EMR::StudioSessionMapping` | 2 | StudioId, IdentityType, IdentityName | no-ref | docs: the page has no Return values section |
 | `AWS::ElasticBeanstalk::ApplicationVersion` | 2 | ApplicationName, Id | mapped | REF_FROM_PHYSICAL_ID_HELPERS |
 | `AWS::ElasticBeanstalk::ConfigurationTemplate` | 2 | ApplicationName, TemplateName | mapped | REF_FROM_PHYSICAL_ID_HELPERS |
-| `AWS::ElasticLoadBalancingV2::TrustStoreRevocation` | 2 | RevocationId, TrustStoreArn | unverified | docs Return values: Ref returns "the ARN of the trust store"; not measured (needs CA bundle objects) |
+| `AWS::ElasticLoadBalancingV2::TrustStoreRevocation` | 2 | RevocationId, TrustStoreArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::EntityResolution::PolicyStatement` | 2 | Arn, StatementId | no-ref | docs: the page has no Return values section |
 | `AWS::Events::EventBusPolicy` | 2 | EventBusName, StatementId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<EventBusName>\|<StatementId>` (the docs show a generated id) |
-| `AWS::FIS::TargetAccountConfiguration` | 2 | ExperimentTemplateId, AccountId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::FIS::TargetAccountConfiguration` | 2 | ExperimentTemplateId, AccountId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Glue::Connection` | 1 | CatalogId, Name | mapped | REF_FROM_PHYSICAL_ID_HELPERS |
 | `AWS::Glue::Integration` | 2 | IntegrationArn, IntegrationName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Glue::IntegrationResourceProperty` | 2 | ResourceArn, ResourcePropertyArn | unverified | docs Return values: Ref returns "The resource property arn" (a Cloud Control-native type; not measured) |
-| `AWS::Glue::Partition` | 2 | CatalogId, DatabaseName, TableName, IdentifierPartitionInputValues | unverified | docs Return values: Ref returns "the partition name", which no identifier field holds |
-| `AWS::Glue::SchemaVersionMetadata` | 2 | SchemaVersionId, Key, Value | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Glue::IntegrationResourceProperty` | 2 | ResourceArn, ResourcePropertyArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Glue::Partition` | 2 | CatalogId, DatabaseName, TableName, IdentifierPartitionInputValues | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Glue::SchemaVersionMetadata` | 2 | SchemaVersionId, Key, Value | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Glue::Table` | 1 | CatalogId, DatabaseName, Name | mapped | case |
-| `AWS::Glue::TableOptimizer` | 2 | TableName, DatabaseName, Type, CatalogId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::GroundStation::MissionProfile` | 2 | Id, Arn | unverified | docs Return values: Ref returns the mission profile ARN (a Cloud Control-native type; not measured) |
-| `AWS::GuardDuty::CustomDetectionRuleAssociation` | 2 | RuleId, AssociationId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Glue::TableOptimizer` | 2 | TableName, DatabaseName, Type, CatalogId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::GroundStation::MissionProfile` | 2 | Id, Arn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::GuardDuty::CustomDetectionRuleAssociation` | 2 | RuleId, AssociationId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::GuardDuty::Filter` | 2 | DetectorId, Name | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::GuardDuty::IPSet` | 2 | Id, DetectorId | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
 | `AWS::GuardDuty::Master` | 2 | DetectorId, MasterId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::GuardDuty::Member` | 2 | DetectorId, MemberId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
-| `AWS::GuardDuty::PublishingDestination` | 2 | DetectorId, Id | unverified | docs Return values: Ref returns "the resource publishing destination ID"; not measured (needs a bucket and key policy) |
-| `AWS::GuardDuty::ThreatEntitySet` | 2 | Id, DetectorId | unverified | docs Return values: Ref returns "the unique ID associated with the newly created threat entity set"; not measured |
+| `AWS::GuardDuty::PublishingDestination` | 2 | DetectorId, Id | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
+| `AWS::GuardDuty::ThreatEntitySet` | 2 | Id, DetectorId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::GuardDuty::ThreatIntelSet` | 2 | Id, DetectorId | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
-| `AWS::GuardDuty::TrustedEntitySet` | 2 | Id, DetectorId | unverified | docs Return values: Ref returns "the unique ID of the TrustedEntitySet"; not measured |
+| `AWS::GuardDuty::TrustedEntitySet` | 2 | Id, DetectorId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::IAM::GroupPolicy` | 2 | PolicyName, GroupName | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyName>\|<GroupName>` |
 | `AWS::IAM::RolePolicy` | 2 | PolicyName, RoleName | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyName>\|<RoleName>` |
 | `AWS::IAM::UserPolicy` | 2 | PolicyName, UserName | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyName>\|<UserName>` |
@@ -240,8 +240,8 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::Lex::BotAlias` | 2 | BotAliasId, BotId | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
 | `AWS::Lex::BotVersion` | 2 | BotId, BotVersion | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
 | `AWS::LicenseManagerUserSubscriptions::LicenseServerEndpoint` | 2 | IdentityProviderArn, LicenseServerEndpointArn | no-ref | docs: the page has no Return values section |
-| `AWS::Lightsail::LoadBalancerTlsCertificate` | 2 | CertificateName, LoadBalancerName | unverified | docs Return values: Ref returns "a unique identifier for this resource" |
-| `AWS::Location::TrackerConsumer` | 2 | TrackerName, ConsumerArn | unverified | docs Return values: Ref returns "the TrackerConsumer name" |
+| `AWS::Lightsail::LoadBalancerTlsCertificate` | 2 | CertificateName, LoadBalancerName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Location::TrackerConsumer` | 2 | TrackerName, ConsumerArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Logs::AccountPolicy` | 2 | AccountId, PolicyType, PolicyName | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
 | `AWS::Logs::LogStream` | 2 | LogGroupName, LogStreamName | mapped | case |
 | `AWS::Logs::MetricFilter` | 2 | LogGroupName, FilterName | no-ref | docs: the page has no Return values section |
@@ -249,14 +249,14 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::MediaConnect::BridgeOutput` | 2 | BridgeArn, Name | compound | docs Return values: Ref returns `<bridgeArn>\|<name>` |
 | `AWS::MediaConnect::BridgeSource` | 2 | BridgeArn, Name | compound | docs Return values: Ref returns `<bridgeArn>\|<name>` |
 | `AWS::MediaConnect::FlowVpcInterface` | 2 | FlowArn, Name | compound | docs Return values: Ref returns `<flowArn>\|<name>` |
-| `AWS::MediaLive::ChannelPlacementGroup` | 2 | Id, ClusterId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::MediaLive::Multiplexprogram` | 2 | ProgramName, MultiplexId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::MediaPackageV2::ChannelPolicy` | 2 | ChannelGroupName, ChannelName | unverified | docs Return values: Ref returns `ChannelGroupName / ChannelName`; the probe was refused by the service |
-| `AWS::MediaPackageV2::OriginEndpointPolicy` | 2 | ChannelGroupName, ChannelName, OriginEndpointName | unverified | docs Return values: Ref returns `ChannelGroupName / ChannelName / OriginEndpointName`; not measured |
-| `AWS::MediaTailor::LiveSource` | 2 | LiveSourceName, SourceLocationName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::MediaTailor::VodSource` | 2 | SourceLocationName, VodSourceName | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::NetworkManager::ContextStoreAssociation` | 2 | ContextStoreId, ResourceArn | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::NetworkManager::CoreNetworkPrefixListAssociation` | 2 | CoreNetworkId, PrefixListArn | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::MediaLive::ChannelPlacementGroup` | 2 | Id, ClusterId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::MediaLive::Multiplexprogram` | 2 | ProgramName, MultiplexId | unverified | docs: Return values has a Ref heading with no text; the #6628 probe failed: AlreadyExists on a fresh multiplex |
+| `AWS::MediaPackageV2::ChannelPolicy` | 2 | ChannelGroupName, ChannelName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::MediaPackageV2::OriginEndpointPolicy` | 2 | ChannelGroupName, ChannelName, OriginEndpointName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::MediaTailor::LiveSource` | 2 | LiveSourceName, SourceLocationName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::MediaTailor::VodSource` | 2 | SourceLocationName, VodSourceName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::NetworkManager::ContextStoreAssociation` | 2 | ContextStoreId, ResourceArn | unverified | docs: Return values has a Ref heading with no text; the #6628 probe failed in CloudFormation's own handler (NotFound right after create) |
+| `AWS::NetworkManager::CoreNetworkPrefixListAssociation` | 2 | CoreNetworkId, PrefixListArn | unverified | docs: Return values has a Ref heading with no text; not measured (needs a core network) |
 | `AWS::NetworkManager::CustomerGatewayAssociation` | 2 | GlobalNetworkId, CustomerGatewayArn | compound | docs Return values: Ref returns `global-network-…\|<customerGatewayArn>` |
 | `AWS::NetworkManager::Device` | 2 | GlobalNetworkId, DeviceId | compound | docs Return values: Ref returns `global-network-…\|device-…` |
 | `AWS::NetworkManager::Link` | 2 | GlobalNetworkId, LinkId | compound | docs Return values: Ref returns `global-network-…\|link-…` |
@@ -264,12 +264,12 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::NetworkManager::Site` | 2 | GlobalNetworkId, SiteId | compound | docs Return values: Ref returns `global-network-…\|site-…` |
 | `AWS::NetworkManager::TransitGatewayRegistration` | 2 | GlobalNetworkId, TransitGatewayArn | compound | docs Return values: Ref returns `global-network-…\|<transitGatewayArn>` |
 | `AWS::NetworkMonitor::Probe` | 2 | MonitorName, ProbeId | no-ref | docs: the page has no Return values section |
-| `AWS::Notifications::ChannelAssociation` | 2 | Arn, NotificationConfigurationArn | unverified | docs Return values: Ref returns "the ARN of the configuration created" |
-| `AWS::Notifications::ManagedNotificationAccountContactAssociation` | 2 | ManagedNotificationConfigurationArn, ContactIdentifier | unverified | docs Return values: Ref returns "the ARN of the configuration created" |
-| `AWS::Notifications::ManagedNotificationAdditionalChannelAssociation` | 2 | ChannelArn, ManagedNotificationConfigurationArn | unverified | docs Return values: Ref returns "the ARN of the configuration created" |
-| `AWS::Notifications::OrganizationalUnitAssociation` | 2 | NotificationConfigurationArn, OrganizationalUnitId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Notifications::ChannelAssociation` | 2 | Arn, NotificationConfigurationArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Notifications::ManagedNotificationAccountContactAssociation` | 2 | ManagedNotificationConfigurationArn, ContactIdentifier | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Notifications::ManagedNotificationAdditionalChannelAssociation` | 2 | ChannelArn, ManagedNotificationConfigurationArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Notifications::OrganizationalUnitAssociation` | 2 | NotificationConfigurationArn, OrganizationalUnitId | unverified | docs: Return values has a Ref heading with no text; not measured (needs AWS Organizations) |
 | `AWS::OpenSearchServerless::AccessPolicy` | 2 | Type, Name | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>\|<Name>` (the docs say the policy name) |
-| `AWS::OpenSearchServerless::CollectionIndex` | 2 | Id, IndexName | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::OpenSearchServerless::CollectionIndex` | 2 | Id, IndexName | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::OpenSearchServerless::Index` | 2 | IndexName, CollectionEndpoint | compound | docs Return values: Ref returns `index name\|endpoint` |
 | `AWS::OpenSearchServerless::LifecyclePolicy` | 2 | Type, Name | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>\|<Name>` |
 | `AWS::OpenSearchServerless::SecurityPolicy` | 2 | Type, Name | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>\|<Name>` (the docs say the policy name) |
@@ -311,8 +311,8 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::RefactorSpaces::Application` | 2 | EnvironmentIdentifier, ApplicationIdentifier | compound | docs Return values: Ref returns `<EnvironmentId>\|<ApplicationId>` |
 | `AWS::RefactorSpaces::Route` | 2 | EnvironmentIdentifier, ApplicationIdentifier, RouteIdentifier | compound | docs Return values: Ref returns `<EnvironmentId>\|<ApplicationId>\|<RouteId>` |
 | `AWS::RefactorSpaces::Service` | 2 | EnvironmentIdentifier, ApplicationIdentifier, ServiceIdentifier | compound | docs Return values: Ref returns `<EnvironmentId>\|<ApplicationId>\|<ServiceId>` |
-| `AWS::ResilienceHubV2::ServiceFunction` | 2 | ServiceArn, ServiceFunctionId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::ResilienceHubV2::UserJourney` | 2 | SystemIdentifier, UserJourneyId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::ResilienceHubV2::ServiceFunction` | 2 | ServiceArn, ServiceFunctionId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::ResilienceHubV2::UserJourney` | 2 | SystemIdentifier, UserJourneyId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::Route53::KeySigningKey` | 2 | HostedZoneId, Name | compound | docs Return values: Ref returns `Z00001111A1ABCaaABC11\|KSK1` |
 | `AWS::Route53::RecordSet` | 1 | Name, HostedZoneId, Type, SetIdentifier | mapped | REF_RETURNS_SEGMENT_AT_INDEX |
 | `AWS::Route53::RecordSetGroup` | 1 | Id | mapped | REF_RETURNS_SEGMENT_AT_INDEX |
@@ -320,12 +320,12 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::S3Tables::Namespace` | 1 | TableBucketARN, Namespace | mapped | case |
 | `AWS::S3Tables::Table` | 1 | TableARN | mapped | case |
 | `AWS::SES::ConfigurationSetEventDestination` | 2 | Id, ConfigurationSetName | no-ref | docs: Return values documents Fn::GetAtt only, no Ref |
-| `AWS::SES::EmailIdentityCertificate` | 2 | EmailIdentity, FromAddress | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::SES::EmailIdentityCertificate` | 2 | EmailIdentity, FromAddress | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::SES::ReceiptRule` | 2 | RuleName, RuleSetName | mapped | REF_RETURNS_SEGMENT_BEFORE_FIRST_PIPE |
 | `AWS::SMSVOICE::SenderId` | 2 | IsoCountryCode, SenderId | compound | docs Return values: Ref returns `IsoCountryCode\|SenderId` |
 | `AWS::SSM::MaintenanceWindowTarget` | 2 | WindowId, WindowTargetId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
 | `AWS::SSM::MaintenanceWindowTask` | 2 | WindowId, WindowTaskId | mapped | REF_RETURNS_SEGMENT_AFTER_PIPE |
-| `AWS::SSM::ResourcePolicy` | 2 | PolicyId, ResourceArn | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::SSM::ResourcePolicy` | 2 | PolicyId, ResourceArn | unverified | docs: Return values has a Ref heading with no text; the #6628 probe failed: GeneralServiceException on every target |
 | `AWS::SSO::ApplicationAssignment` | 2 | ApplicationArn, PrincipalType, PrincipalId | compound | docs Return values: Ref returns "a generated ID, combined by all fields with the delimiter \|" |
 | `AWS::SSO::Assignment` | 2 | InstanceArn, TargetId, TargetType, PermissionSetArn, PrincipalType, PrincipalId | compound | docs Return values: Ref returns "a generated ID, combined by all fields with the delimiter \|" |
 | `AWS::SSO::PermissionSet` | 2 | InstanceArn, PermissionSetArn | unverified | docs Return values: Ref returns `permission-arn\|sso-instance-arn`, the REVERSE of the identifier order; needs an Identity Center instance |
@@ -335,9 +335,9 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::SecurityAgent::Pentest` | 2 | PentestId, AgentSpaceId | compound | docs Return values: Ref returns `pt-…\|<agentSpaceId>` |
 | `AWS::SecurityLake::AwsLogSource` | 2 | SourceName, SourceVersion | unverified | docs Return values: Ref returns the source name such as `VPC_FLOW`; not measured (needs a data lake) |
 | `AWS::ServiceCatalog::PortfolioPrincipalAssociation` | 2 | PortfolioId, PrincipalARN | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PortfolioId>\|<PrincipalARN>` |
-| `AWS::ServiceCatalog::PortfolioProductAssociation` | 2 | PortfolioId, ProductId | unverified | docs Return values: Ref returns "a unique identifier for the association" |
-| `AWS::ServiceCatalog::PortfolioShare` | 2 | PortfolioId, AccountId | unverified | docs Return values: Ref returns "the identifier of the portfolio share"; needs a second account |
-| `AWS::ServiceCatalog::ServiceActionAssociation` | 2 | ProductId, ProvisioningArtifactId, ServiceActionId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::ServiceCatalog::PortfolioProductAssociation` | 2 | PortfolioId, ProductId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::ServiceCatalog::PortfolioShare` | 2 | PortfolioId, AccountId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::ServiceCatalog::ServiceActionAssociation` | 2 | ProductId, ProvisioningArtifactId, ServiceActionId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::ServiceCatalog::TagOptionAssociation` | 2 | TagOptionId, ResourceId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<TagOptionId>\|<ResourceId>` |
 | `AWS::ServiceCatalogAppRegistry::AttributeGroupAssociation` | 2 | ApplicationArn, AttributeGroupArn | unverified | docs Return values: Ref returns "the application Id"; the probe was refused: closed to new customers |
 | `AWS::ServiceCatalogAppRegistry::ResourceAssociation` | 2 | ApplicationArn, ResourceArn, ResourceType | unverified | docs Return values: Ref returns "the application Id"; closed to new customers |
@@ -345,7 +345,7 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::Signer::ProfilePermission` | 2 | StatementId, ProfileName | compound | docs Return values: Ref returns `StatementId\|ProfileName` |
 | `AWS::SupportApp::SlackChannelConfiguration` | 2 | TeamId, ChannelId | no-ref | docs: the page has no Return values section |
 | `AWS::Timestream::Table` | 2 | DatabaseName, TableName | compound | docs Return values: Ref returns `DATABASE_NAME\|TABLE_NAME` |
-| `AWS::Transfer::Agreement` | 2 | AgreementId, ServerId | unverified | docs: Return values has a Ref heading with no text |
+| `AWS::Transfer::Agreement` | 2 | AgreementId, ServerId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::VerifiedPermissions::IdentitySource` | 2 | IdentitySourceId, PolicyStoreId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<IdentitySourceId>\|<PolicyStoreId>` (the docs say the identity source id) |
 | `AWS::VerifiedPermissions::Policy` | 2 | PolicyId, PolicyStoreId | compound | measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<PolicyId>\|<PolicyStoreId>` (the docs say the policy id) |
 | `AWS::VerifiedPermissions::PolicyTemplate` | 2 | PolicyStoreId, PolicyTemplateId | compound | docs Return values: Ref returns `POLICYSTOREabcde111111\|POLICYTEMPLAT…` |
@@ -353,13 +353,13 @@ Every Cloud Control-routable type whose `primaryIdentifier` has more than one fi
 | `AWS::WAFv2::RegexPatternSet` | 2 | Name, Id, Scope | compound | docs Return values: Ref returns `name\|id\|scope` |
 | `AWS::WAFv2::RuleGroup` | 2 | Name, Id, Scope | compound | docs Return values: Ref returns `name\|id\|scope` |
 | `AWS::WAFv2::WebACL` | 1 | Name, Id, Scope | mapped | case |
-| `AWS::WAFv2::WebACLAssociation` | 2 | ResourceArn, WebACLArn | unverified | docs Return values: Ref returns text copied from WebACL (`name\|id\|scope`), which the type does not have |
-| `AWS::Wisdom::AIAgent` | 2 | AIAgentId, AssistantId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Wisdom::AIAgentVersion` | 2 | AssistantId, AIAgentId, VersionNumber | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Wisdom::AIGuardrail` | 2 | AIGuardrailId, AssistantId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Wisdom::AIGuardrailVersion` | 2 | AssistantId, AIGuardrailId, VersionNumber | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Wisdom::AIPrompt` | 2 | AIPromptId, AssistantId | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Wisdom::AIPromptVersion` | 2 | AssistantId, AIPromptId, VersionNumber | unverified | docs: Return values has a Ref heading with no text |
-| `AWS::Wisdom::AssistantAssociation` | 2 | AssistantAssociationId, AssistantId | unverified | docs Return values: Ref returns "the association ID" (a Cloud Control-native type; not measured) |
+| `AWS::WAFv2::WebACLAssociation` | 2 | ResourceArn, WebACLArn | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AIAgent` | 2 | AIAgentId, AssistantId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AIAgentVersion` | 2 | AssistantId, AIAgentId, VersionNumber | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AIGuardrail` | 2 | AIGuardrailId, AssistantId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AIGuardrailVersion` | 2 | AssistantId, AIGuardrailId, VersionNumber | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AIPrompt` | 2 | AIPromptId, AssistantId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AIPromptVersion` | 2 | AssistantId, AIPromptId, VersionNumber | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
+| `AWS::Wisdom::AssistantAssociation` | 2 | AssistantAssociationId, AssistantId | compound | measured, CloudFormation stacks cdkd-probe-6628-* (us-east-1, 2026-11-20) |
 | `AWS::WorkspacesInstances::VolumeAssociation` | 2 | WorkspaceInstanceId, VolumeId, Device | no-ref | docs: the page has no Return values section |
 

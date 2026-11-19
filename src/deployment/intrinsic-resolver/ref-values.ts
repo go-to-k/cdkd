@@ -131,8 +131,9 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * producing one. `AWS::Glue::Table` was the one this Set could fix and was
  * added here; it has since moved to {@link glueTableRefFromPhysicalId} (issue
  * #1672), because its table name may contain `|`. The types deliberately NOT in either Set, with the reason:
- *   - correct to exclude: ApiGateway::Method, EC2::NetworkAclEntry ("the ID of
- *     the network ACL entry"), EC2::Route, Lambda::EventInvokeConfig — for
+ *   - correct to exclude: ApiGateway::Method, EC2::NetworkAclEntry (its
+ *     measured `Ref` is a generated id no segment holds, issue #6628),
+ *     EC2::Route, Lambda::EventInvokeConfig — for
  *     Method / Route / EventInvokeConfig the measured `Ref` IS cdkd's
  *     composite (issue #6243). EC2::VPCGatewayAttachment was listed here
  *     too; its measured `Ref` is `<IGW|VGW>|<vpcId>`, built by
@@ -195,6 +196,10 @@ export const REF_RETURNS_SEGMENT_AFTER_PIPE = new Set<string>([
   'AWS::GuardDuty::Filter',
   'AWS::AutoScaling::LifecycleHook',
   'AWS::ServiceDiscovery::Instance',
+  // Issue #6628 (measured): `<ClientVpnEndpointId>|<AssociationId>`,
+  // `<DetectorId>|<Id>` -> the association / destination id.
+  'AWS::EC2::ClientVpnTargetNetworkAssociation',
+  'AWS::GuardDuty::PublishingDestination',
   // NOT measured (a second account / an EMR cluster): docs-verified, pre-registry
   // (GuardDuty's convention measured on Filter / IPSet): `<DetectorId>|<account>`,
   // `<ClusterId>|<InstanceFleetId>` (the SDK provider stores the bare id).
