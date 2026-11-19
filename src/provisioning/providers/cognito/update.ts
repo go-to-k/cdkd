@@ -194,8 +194,12 @@ export function warnOnKeptRemovedMembers(
  * - `{}` is NOT a reset: AWS reads it as `EnableStatus: Enabled`. So the
  *   removal sends `Disabled` explicitly, and `readCurrentState` emits no `{}`
  *   placeholder a revert could send back.
- * - `LITE` refuses any block (`FeatureUnavailableInTierException`), even a
- *   `Disabled` one; that is AWS's own refusal, surfaced as is.
+ * - `LITE` refuses only an `Enabled` block (`FeatureUnavailableInTierException`);
+ *   it accepts a `Disabled` one. A downgrade to `LITE` that drops the
+ *   property therefore NEEDS the reset in the same call: `UserPoolTier: LITE`
+ *   alone on a pool with registration on is refused
+ *   (`TierChangeNotAllowedException`), while with the `Disabled` block it
+ *   lands, as the same template edit does through CloudFormation.
  */
 export function dcrConfigurationUpdate(
   properties: Record<string, unknown>,

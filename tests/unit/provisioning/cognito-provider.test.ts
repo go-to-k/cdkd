@@ -944,6 +944,17 @@ describe('CognitoUserPoolProvider', () => {
         expect(input.DcrConfiguration).toEqual({ EnableStatus: 'Disabled' });
       });
 
+      // AWS refuses `UserPoolTier: LITE` alone on a pool with registration on
+      // and accepts it beside a `Disabled` block (measured, PR #6630).
+      it('a downgrade to LITE that drops the block sends the reset in the same call', async () => {
+        const input = await updateInput(
+          { UserPoolTier: 'LITE' },
+          { UserPoolTier: 'ESSENTIALS', DcrConfiguration: DCR }
+        );
+        expect(input.UserPoolTier).toBe('LITE');
+        expect(input.DcrConfiguration).toEqual({ EnableStatus: 'Disabled' });
+      });
+
       it('sends nothing when neither side declares it', async () => {
         const input = await updateInput({ UserPoolName: 'p' }, { UserPoolName: 'q' });
         expect(input).not.toHaveProperty('DcrConfiguration');
