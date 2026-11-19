@@ -195,8 +195,8 @@ strip_ansi() { # usage: strip_ansi <file>
 }
 
 # cdkd prints "Name = value" for each stack output.
-output_value() { # usage: output_value <log> <OutputKey>
-  sed -n "s/^ *${STACK}\.$2 = //p" "$1" | tail -n 1
+output_value() { # usage: output_value <log> <OutputKey> [stack, default ${STACK}]
+  sed -n "s/^ *${3:-${STACK}}\.$2 = //p" "$1" | tail -n 1
 }
 
 # --- Phase 0: start the emulator ---------------------------------------------
@@ -279,10 +279,10 @@ if ! node "${LOCAL_DIST}" deploy "${SSL_STACK}" --aws-emulator="${EMU}" >"${DEPL
   exit 1
 fi
 strip_ansi "${DEPLOY_LOG}"
-SSL_QUEUE_URL="$(output_value "${DEPLOY_LOG}" SslQueueUrl)"
-SSL_QUEUE_ARN="$(output_value "${DEPLOY_LOG}" SslQueueArn)"
-SSL_TOPIC_ARN="$(output_value "${DEPLOY_LOG}" SslTopicArn)"
-SSL_BUCKET="$(output_value "${DEPLOY_LOG}" SslBucketName)"
+SSL_QUEUE_URL="$(output_value "${DEPLOY_LOG}" SslQueueUrl "${SSL_STACK}")"
+SSL_QUEUE_ARN="$(output_value "${DEPLOY_LOG}" SslQueueArn "${SSL_STACK}")"
+SSL_TOPIC_ARN="$(output_value "${DEPLOY_LOG}" SslTopicArn "${SSL_STACK}")"
+SSL_BUCKET="$(output_value "${DEPLOY_LOG}" SslBucketName "${SSL_STACK}")"
 for V in "SSL_QUEUE_URL=${SSL_QUEUE_URL}" "SSL_QUEUE_ARN=${SSL_QUEUE_ARN}" "SSL_TOPIC_ARN=${SSL_TOPIC_ARN}" "SSL_BUCKET=${SSL_BUCKET}"; do
   [ -n "${V#*=}" ] || { echo "FAIL: ${V%%=*} output missing from the deploy log" >&2; exit 1; }
 done
