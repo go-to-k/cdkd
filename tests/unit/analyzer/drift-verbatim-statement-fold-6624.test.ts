@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import {
   isVerbatimStatementPath,
-  isVerbatimVersionPath,
+  isServiceFilledVersion,
   verbatimEchoDriftKeys,
 } from '../../../src/analyzer/drift-verbatim-paths.js';
 
@@ -172,10 +172,29 @@ describe('calculateResourceDrift: a Version the service fills in', () => {
   const paths = ['KeyPolicy'];
   const allow = { Effect: 'Allow', Principal: ROOT, Action: 'kms:*', Resource: '*' };
 
-  it('matches only `<key>.Version` of a listed key', () => {
-    expect(isVerbatimVersionPath('KeyPolicy.Version', paths)).toBe(true);
-    expect(isVerbatimVersionPath('KeyPolicy.Statement.Version', paths)).toBe(false);
-    expect(isVerbatimVersionPath('KeyPolicy.Version', [])).toBe(false);
+  it('matches only the 2012-10-17 fill at `<key>.Version` of a listed key', () => {
+    expect(isServiceFilledVersion('KeyPolicy.Version', '2012-10-17', paths)).toBe(true);
+    expect(isServiceFilledVersion('KeyPolicy.Version', '2008-10-17', paths)).toBe(false);
+    expect(isServiceFilledVersion('KeyPolicy.Statement.Version', '2012-10-17', paths)).toBe(false);
+    expect(isServiceFilledVersion('KeyPolicy.Version', '2012-10-17', [])).toBe(false);
+  });
+
+  it('reports a live-only 2008-10-17 (policy variables turned off)', () => {
+    const drift = calculateResourceDrift(
+      { KeyPolicy: { Statement: allow } },
+      { KeyPolicy: { Version: '2008-10-17', Statement: [allow] } },
+      { unionWalkPaths: paths }
+    );
+    expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Version']);
+  });
+
+  it('on the observed baseline, still reports a live-only Version the capture lacked', () => {
+    const drift = calculateResourceDrift(
+      { KeyPolicy: { Statement: [allow] } },
+      { KeyPolicy: { Version: '2012-10-17', Statement: [allow] } },
+      { unionWalkPaths: paths, unionWalkObjects: true }
+    );
+    expect(drift.map((d) => d.path)).toEqual(['KeyPolicy.Version']);
   });
 
   it('is clean when the template omits Version and the live document carries one', () => {

@@ -19,14 +19,14 @@
  * per top-level key.
  *
  * A type is listed only with a readback measured to add no key under the
- * property (go-to-k/cdkd#6624, the `drift-verbatim-readback` integ fixture).
+ * property other than an omitted `Version` (go-to-k/cdkd#6624, the `drift-verbatim-readback` integ fixture).
  * IAM and the Cloud Control-routed IAM inline policy types return the document
  * as submitted, key order aside. S3, SQS, SNS, KMS, Secrets Manager — and IAM's
  * role trust policy — add no key either, but return a single-OBJECT `Statement`
  * as a one-element array; the comparator reads the two spellings as one
- * ({@link isVerbatimStatementPath}), as IAM's policy grammar does. A `Version`
- * the service fills in on a document submitted without one is not drift
- * either ({@link isVerbatimVersionPath}).
+ * ({@link isVerbatimStatementPath}), as IAM's policy grammar does. KMS also
+ * fills in a `Version` the document omits, which is not drift on the
+ * template-only baseline either ({@link isServiceFilledVersion}).
  *
  * Not listed: `AWS::ECR::Repository` `RepositoryPolicyText`, which the ECR
  * readback does not carry at all (go-to-k/cdkd#6631), and every resource policy
@@ -68,12 +68,19 @@ export function isVerbatimStatementPath(path: string, verbatimKeys: readonly str
 }
 
 /**
- * True when `path` is the `Version` of a document at one of `verbatimKeys`.
- * The policy language version is optional, and a service may fill it in for a
- * document submitted without one (go-to-k/cdkd#6624), so the union walk does
- * not report a `Version` only the live side holds. One the template declares
- * is still compared.
+ * True when `value` at `path` is the `Version` a service fills in on a
+ * document at one of `verbatimKeys` submitted without one: KMS adds
+ * `2012-10-17` to such a key policy (go-to-k/cdkd#6624). The comparator does
+ * not report it on the template-only baseline. Any other live-only `Version`
+ * (`2008-10-17` turns policy variables off) is still drift, as is a declared
+ * one. The residual: a template that omits `Version` and relies on
+ * `2008-10-17` reading `${aws:...}` literally cannot tell AWS's fill from an
+ * out-of-band `2012-10-17`.
  */
-export function isVerbatimVersionPath(path: string, verbatimKeys: readonly string[]): boolean {
-  return verbatimKeys.some((key) => path === `${key}.Version`);
+export function isServiceFilledVersion(
+  path: string,
+  value: unknown,
+  verbatimKeys: readonly string[]
+): boolean {
+  return value === '2012-10-17' && verbatimKeys.some((key) => path === `${key}.Version`);
 }
