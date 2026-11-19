@@ -91,6 +91,16 @@ export function sentPolicyDocument(document: unknown): unknown {
 }
 
 /**
+ * Whether cdkd sends NO policy for a recorded `document` in this run (under
+ * `--aws-emulator`, nothing but the TLS `Deny` in it): the queue, bucket or
+ * topic then holds none, or the topic its default, and that is the declared
+ * state, not a deleted record (go-to-k/cdkd#6636).
+ */
+export function sendsNoPolicy(document: unknown): boolean {
+  return document != null && sentPolicyDocument(document) === undefined;
+}
+
+/**
  * {@link sentPolicyDocument}, warning naming the resource and how many
  * statements were left out. Called once per write call, so a retried create
  * warns again.

@@ -41,8 +41,8 @@ import {
   TOPIC_POLICY_NOT_COMPARED_LEFT_REASON,
   TOPIC_POLICY_UNREADABLE_SKIP_REASON,
   TOPIC_POLICY_UNRESOLVED_DOCUMENT_SKIP_REASON,
-  defaultTopicPolicy,
 } from '../../../src/provisioning/providers/sns-topic-policy-provider.js';
+import { defaultTopicPolicy } from '../../../src/provisioning/sns-default-topic-policy.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 

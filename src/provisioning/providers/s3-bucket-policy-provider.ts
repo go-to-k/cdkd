@@ -11,7 +11,11 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { getCurrentStackName } from '../resource-name/stack-scope.js';
 import { getStackRecords } from '../../deployment/stack-records-scope.js';
 import { getLogger } from '../../utils/logger.js';
-import { sentPolicyDocument, serializeResourcePolicy } from '../emulator-secure-transport.js';
+import {
+  sendsNoPolicy,
+  sentPolicyDocument,
+  serializeResourcePolicy,
+} from '../emulator-secure-transport.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import {
@@ -26,6 +30,7 @@ import {
   markRefusedBeforeApplying,
 } from '../../deployment/prior-attempt-scope.js';
 import { policyContentKey } from '../policy-document-content.js';
+import { isS3BucketName } from '../s3-bucket-name.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -212,11 +217,6 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const mask = context?.maskSecrets ?? ((t: string) => t);
     // Serialize policy document
     const policyDoc = serializeResourcePolicy(policyDocument, resourceType, logicalId);
-    if (policyDoc === undefined) {
-      // --aws-emulator: nothing left but the TLS Deny, so no policy is put and
-      // whatever the bucket holds is left alone.
-      return { physicalId: bucketName, attributes: {} };
-    }
 
     // go-to-k/cdkd#6109: PutBucketPolicy REPLACES whatever policy the bucket
     // holds, so a create without this look is an upsert that silently drops
@@ -238,15 +238,23 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     // The window between this read and the Put cannot be closed: S3 has no
     // conditional PutBucketPolicy, so a policy attached in between is still
     // replaced.
+    // A create that puts nothing (below) still claims the policy slot, so it
+    // is refused the same; an own earlier attempt compares the templated one.
     await this.decideOnExistingPolicy(
       logicalId,
       resourceType,
       bucketName,
-      policyDoc,
+      policyDoc ??
+        (typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument)),
       existing,
       context?.replayingState === true,
       mask
     );
+    if (policyDoc === undefined) {
+      // --aws-emulator with nothing left but the TLS Deny (go-to-k/cdkd#6636):
+      // the bucket keeps no policy.
+      return { physicalId: bucketName, attributes: {} };
+    }
 
     try {
       await this.s3Client.send(
@@ -332,7 +340,12 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       // --aws-emulator with nothing left but the TLS Deny: remove the policy
       // the previous document put rather than put an empty one.
       if (policyDoc === undefined) {
-        await this.s3Client.send(new DeleteBucketPolicyCommand({ Bucket: bucketName }));
+        try {
+          await this.s3Client.send(new DeleteBucketPolicyCommand({ Bucket: bucketName }));
+        } catch (error) {
+          // Already none (a create that put nothing): the state asked for.
+          if ((error as { name?: string }).name !== 'NoSuchBucketPolicy') throw error;
+        }
       } else {
         await this.s3Client.send(
           new PutBucketPolicyCommand({
@@ -756,7 +769,14 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       if (err instanceof NoSuchBucket) return RESOURCE_NOT_FOUND;
       // S3 throws `NoSuchBucketPolicy` (a 404) when no policy is attached.
       const e = err as { name?: string };
-      if (e.name === 'NoSuchBucketPolicy') return RESOURCE_NOT_FOUND;
+      if (e.name === 'NoSuchBucketPolicy') {
+        // --aws-emulator set no policy (go-to-k/cdkd#6636): none is the
+        // declared state, not a deleted record.
+        if (properties !== undefined && sendsNoPolicy(properties['PolicyDocument'])) {
+          return { ...properties };
+        }
+        return RESOURCE_NOT_FOUND;
+      }
       throw err;
     }
     if (!policyJson) return undefined;
@@ -960,31 +980,6 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         `(e.g. my-bucket-12345) to point cdkd at the bucket this policy is attached to.`
     );
   }
-}
-
-/**
- * Recognize an S3 bucket name. AWS rules
- * (https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html):
- *   - 3-63 characters
- *   - lowercase letters, digits, hyphens, and dots
- *   - must start and end with a letter or digit
- *   - no consecutive dots
- *   - no `xn--` prefix (reserved for IDN bucket names)
- *   - no `-s3alias` suffix (reserved for S3 Access Point aliases)
- *   - no `--ol-s3` suffix (reserved for S3 on Outposts)
- *
- * A practical pattern that excludes the obvious CFn-generated names like
- * `MyStack-MyBucketPolicy-XXXXXXXXXX` (which contain uppercase letters
- * and exceed 63 chars in common cases) while accepting every normal CDK
- * auto-generated and user-declared bucket name.
- */
-function isS3BucketName(value: string): boolean {
-  if (value.length < 3 || value.length > 63) return false;
-  if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(value)) return false;
-  if (value.includes('..')) return false;
-  if (value.startsWith('xn--')) return false;
-  if (value.endsWith('-s3alias') || value.endsWith('--ol-s3')) return false;
-  return true;
 }
 
 /**

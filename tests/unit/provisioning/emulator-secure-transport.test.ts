@@ -123,7 +123,7 @@ describe('serializeResourcePolicy', () => {
 
   it('sends the filtered document under --aws-emulator', () => {
     setAwsEndpointOverrideSource(() => EMULATOR);
-    expect(JSON.parse(serializeResourcePolicy(DOC, 'AWS::S3::BucketPolicy', 'B'))).toEqual({
+    expect(JSON.parse(serializeResourcePolicy(DOC, 'AWS::S3::BucketPolicy', 'B')!)).toEqual({
       Version: '2012-10-17',
       Statement: [ALLOW_EVENTS],
     });

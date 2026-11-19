@@ -140,14 +140,90 @@ describe('a policy of only the enforceSSL Deny under --aws-emulator', () => {
     expect(JSON.stringify(policy)).not.toContain('aws:SecureTransport');
   });
 
-  it('S3 create sends nothing, leaving the bucket without a policy', async () => {
+  it('S3 create puts nothing, after the existing-policy check', async () => {
     setAwsEndpointOverrideSource(EMULATOR);
     const result = await new S3BucketPolicyProvider().create('P', 'AWS::S3::BucketPolicy', {
       Bucket: 'b',
       PolicyDocument: SSL_ONLY,
     });
     expect(result.physicalId).toBe('b');
-    expect(mockSend).not.toHaveBeenCalled();
+    expect(sentCommands().map((c) => c.name)).toEqual(['GetBucketPolicyCommand']);
+  });
+
+  it('S3 create is refused over a policy the bucket already holds', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    mockSend.mockResolvedValue({ Policy: JSON.stringify(DOC) });
+    const provider = new S3BucketPolicyProvider();
+    provider.sleep = async () => {};
+    await expect(
+      provider.create('P', 'AWS::S3::BucketPolicy', {
+        Bucket: 'b',
+        PolicyDocument: SSL_ONLY,
+      })
+    ).rejects.toThrow(/already exists/);
+    expect(sentCommands().every((c) => c.name === 'GetBucketPolicyCommand')).toBe(true);
+  });
+
+  it('S3 update over a bucket already without a policy succeeds', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    mockSend.mockRejectedValueOnce(Object.assign(new Error('none'), { name: 'NoSuchBucketPolicy' }));
+    const props = { Bucket: 'b', PolicyDocument: SSL_ONLY };
+    await new S3BucketPolicyProvider().update('P', 'b', 'AWS::S3::BucketPolicy', props, { ...props });
+    expect(sentCommands().map((c) => c.name)).toEqual(['DeleteBucketPolicyCommand']);
+  });
+
+  // drift / deleted-outside-cdkd read the record back: holding no policy (the
+  // default on a topic) is the declared state there, not a deleted resource.
+  it('SQS readCurrentState answers the record for queues holding none', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    mockSend.mockResolvedValueOnce({ Attributes: {} });
+    const props = { Queues: [QUEUE], PolicyDocument: SSL_ONLY };
+    const read = await new SQSQueuePolicyProvider().readCurrentState(
+      QUEUE,
+      'P',
+      'AWS::SQS::QueuePolicy',
+      props
+    );
+    expect(read).toEqual(props);
+  });
+
+  it('S3 readCurrentState answers the record for a bucket holding none', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    mockSend.mockRejectedValueOnce(Object.assign(new Error('none'), { name: 'NoSuchBucketPolicy' }));
+    const props = { Bucket: 'b', PolicyDocument: SSL_ONLY };
+    const read = await new S3BucketPolicyProvider().readCurrentState(
+      'b',
+      'P',
+      'AWS::S3::BucketPolicy',
+      props
+    );
+    expect(read).toEqual(props);
+  });
+
+  it('SNS readCurrentState answers the record for a topic on its default policy', async () => {
+    setAwsEndpointOverrideSource(EMULATOR);
+    const props = { Topics: [TOPIC], PolicyDocument: SSL_ONLY };
+    await new SNSTopicPolicyProvider().create('P', 'AWS::SNS::TopicPolicy', props);
+    const written = (mockSend.mock.calls[0]![0] as { input: Record<string, unknown> }).input;
+    mockSend.mockResolvedValueOnce({ Attributes: { Policy: written['AttributeValue'] } });
+    const read = await new SNSTopicPolicyProvider().readCurrentState(
+      TOPIC,
+      'P',
+      'AWS::SNS::TopicPolicy',
+      props
+    );
+    expect(read).toEqual(props);
+  });
+
+  it('readCurrentState still reports a held policy against AWS as deleted when none', async () => {
+    mockSend.mockResolvedValueOnce({ Attributes: {} });
+    const read = await new SQSQueuePolicyProvider().readCurrentState(
+      QUEUE,
+      'P',
+      'AWS::SQS::QueuePolicy',
+      { Queues: [QUEUE], PolicyDocument: SSL_ONLY }
+    );
+    expect(typeof read).toBe('symbol');
   });
 
   it('S3 update deletes the bucket policy', async () => {

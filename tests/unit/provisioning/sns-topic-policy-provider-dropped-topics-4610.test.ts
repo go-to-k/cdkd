@@ -28,8 +28,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import {
   SNSTopicPolicyProvider,
-  defaultTopicPolicy,
 } from '../../../src/provisioning/providers/sns-topic-policy-provider.js';
+import { defaultTopicPolicy } from '../../../src/provisioning/sns-default-topic-policy.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
