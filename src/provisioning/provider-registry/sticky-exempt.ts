@@ -17,6 +17,21 @@ import type { StickyExemptEntry } from './sticky-exempt-entry.js';
 export type { StickyExemptEntry, StickyExemptMode } from './sticky-exempt-entry.js';
 
 /**
+ * Batch 12 (go-to-k/cdkd#6588): types that were Cloud Control only until their
+ * SDK provider shipped in 0.357.0, so every resource deployed before then is
+ * recorded `cc-api`. The fixture's identity witnesses: the archive CreationTime,
+ * an out-of-band tag on the source and the destination, the AWS-minted delivery
+ * id. Admission also fixes the delivery's update: Cloud Control refuses every
+ * update of a delivery to a log group (measured us-east-1, 2026-11-19).
+ */
+const batch12 = (physicalIdForm: string): StickyExemptEntry => ({
+  mode: 'sdk-coverage',
+  physicalIdForm,
+  issue: 'https://github.com/go-to-k/cdkd/issues/6588',
+  integFixture: 'cc-to-sdk-reroute-common-types-12',
+});
+
+/**
  * Types exempt from the sticky `provisionedBy: 'cc-api'` routing rule.
  *
  * The sticky rule (rule 2 in `getProviderFor`) exists to avoid physical-ID
@@ -968,64 +983,18 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
   ],
   [
     'AWS::Events::Archive',
-    {
-      // Batch 12 (go-to-k/cdkd#6588), admitted with the three CloudWatch Logs
-      // delivery types below: each was Cloud Control only until its SDK
-      // provider shipped in 0.357.0, so every resource deployed before then is
-      // recorded `cc-api`. An archive keeps its name across a recreate, so the
-      // fixture witnesses it by the CreationTime EventBridge reports.
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        "both layers store the archive name: Cloud Control's Identifier is the ArchiveName " +
-        '(the schema primaryIdentifier) and the EventBridge Archive provider records the ' +
-        'CreateArchive ArchiveName',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6588',
-      integFixture: 'cc-to-sdk-reroute-common-types-12',
-    },
+    batch12('both layers store the ArchiveName (primaryIdentifier) CreateArchive takes'),
   ],
   [
     'AWS::Logs::DeliverySource',
-    {
-      // Batch 12 (go-to-k/cdkd#6588). Witnessed by a tag set out of band
-      // before the flip, which a recreate would not carry.
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        "both layers store the source name: Cloud Control's Identifier is the Name " +
-        '(the schema primaryIdentifier) and the Logs DeliverySource provider records the ' +
-        'PutDeliverySource name',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6588',
-      integFixture: 'cc-to-sdk-reroute-common-types-12',
-    },
+    batch12('both layers store the Name (primaryIdentifier) PutDeliverySource takes'),
   ],
   [
     'AWS::Logs::DeliveryDestination',
-    {
-      // Batch 12 (go-to-k/cdkd#6588). Witnessed like the source, by an
-      // out-of-band tag.
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        "both layers store the destination name: Cloud Control's Identifier is the Name " +
-        '(the schema primaryIdentifier) and the Logs DeliveryDestination provider records ' +
-        'the PutDeliveryDestination name',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6588',
-      integFixture: 'cc-to-sdk-reroute-common-types-12',
-    },
+    batch12('both layers store the Name (primaryIdentifier) PutDeliveryDestination takes'),
   ],
   [
     'AWS::Logs::Delivery',
-    {
-      // Batch 12 (go-to-k/cdkd#6588). CloudWatch Logs mints the delivery id,
-      // so a recreate changes it and the flip keeps it: the identity witness.
-      // Admission also fixes an update: Cloud Control's handler refuses every
-      // update of a delivery to a log group, a tag-only patch included
-      // (measured us-east-1, 2026-11-19), and the flip leaves that handler.
-      mode: 'sdk-coverage' as const,
-      physicalIdForm:
-        "both layers store the AWS-minted delivery id: Cloud Control's Identifier is the " +
-        'DeliveryId (the schema primaryIdentifier) and the Logs Delivery provider records ' +
-        'the CreateDelivery id',
-      issue: 'https://github.com/go-to-k/cdkd/issues/6588',
-      integFixture: 'cc-to-sdk-reroute-common-types-12',
-    },
+    batch12('both layers store the DeliveryId (primaryIdentifier) CreateDelivery mints'),
   ],
 ]);
