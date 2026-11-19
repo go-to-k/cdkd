@@ -107,6 +107,8 @@ const accessDenied = (): Error =>
 const throttled = (): Error =>
   Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
 
+const DECLARED = { RepositoryPolicyText: POLICY };
+
 function policyCalls(): number {
   return mockSend.mock.calls.filter((c) => c[0] instanceof GetRepositoryPolicyCommand).length;
 }
@@ -211,7 +213,7 @@ describe('ECRProvider.readCurrentState', () => {
       policy: repoGone(),
       tags: { tags: [] },
     });
-    expect(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).toBe(
+    expect(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED)).toBe(
       RESOURCE_NOT_FOUND
     );
   });
@@ -263,7 +265,7 @@ describe('ECRProvider.readCurrentState', () => {
         policy: { repositoryName: 'my-repo', policyText: JSON.stringify(POLICY, null, 2) },
         tags: { tags: [] },
       });
-      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED));
       expect(policyCalls()).toBe(1);
       const call = mockSend.mock.calls.find((c) => c[0] instanceof GetRepositoryPolicyCommand);
       expect((call?.[0] as GetRepositoryPolicyCommand).input).toEqual({
@@ -279,20 +281,20 @@ describe('ECRProvider.readCurrentState', () => {
         policy: { policyText: 'not-json' },
         tags: { tags: [] },
       });
-      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED));
       expect(result?.['RepositoryPolicyText']).toBe('not-json');
     });
 
     it('omits the key when the repository has no policy (RepositoryPolicyNotFoundException)', async () => {
       route({ describe: repoWithArn, lifecycle: noLifecycle, policy: noPolicy(), tags: { tags: [] } });
-      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED));
       expect(result).toBeDefined();
       expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
     });
 
     it('omits the key when GetRepositoryPolicy answers an empty policy text', async () => {
       route({ describe: repoWithArn, lifecycle: noLifecycle, policy: {}, tags: { tags: [] } });
-      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED));
       expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
     });
 
@@ -303,9 +305,28 @@ describe('ECRProvider.readCurrentState', () => {
         policy: accessDenied(),
         tags: { tags: [] },
       });
-      await expect(provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).rejects.toThrow(
+      await expect(provider.readCurrentState('my-repo', 'RepoLogical', TYPE, DECLARED)).rejects.toThrow(
         'ecr:GetRepositoryPolicy'
       );
+    });
+
+    it('makes no GetRepositoryPolicy call on a drift read when the template declares no policy', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        // A policy the template does not declare (one Lambda wrote, say), and a
+        // caller that may not read it: neither is asked.
+        policy: accessDenied,
+        tags: { tags: [] },
+      });
+      const bags = [undefined, {}, { RepositoryName: 'my-repo' }, { RepositoryPolicyText: '' }];
+      for (const properties of bags) {
+        const result = bagOf(
+          await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, properties)
+        );
+        expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
+      }
+      expect(policyCalls()).toBe(0);
     });
 
     it('a drift read believes the first answer: no re-read when the template declares a policy', async () => {

@@ -79,11 +79,16 @@ async function readRepositoryPolicy(
  * `RepositoryPolicyText` as the read records it: `undefined` for no policy,
  * else the parsed document.
  *
+ * Read only when the template declares a policy, on every path (drift,
+ * import, `state refresh-observed`, the post-write capture): a policy the
+ * template does not declare is not compared. Lambda's `CreateFunction` can
+ * write one on a repository it pulls from, and a baseline holding it would
+ * report Lambda's next change as drift that `--revert` undoes. A template
+ * without one makes no call, so a caller without `ecr:GetRepositoryPolicy`
+ * reads such a repository as before.
+ *
  * The capture right after cdkd's own write (`afterOwnWrite`,
- * go-to-k/cdkd#6609) asks only when the template declares a policy: the
- * write just set it, or just removed it, so a template without one records
- * none without a call, and a lagging read cannot freeze the removed policy
- * into the baseline. A declared policy the read does not show yet is re-read
+ * go-to-k/cdkd#6609) re-reads a declared policy the read does not show yet
  * until it does ({@link settleDeclaredMember}); still none after the
  * schedule, the declared policy is recorded. Every other read believes the
  * first answer and throws what the call threw, so an unreadable policy fails
@@ -96,12 +101,12 @@ async function readPolicyMember(
   properties: Record<string, unknown> | undefined,
   context: ReadCurrentStateContext | undefined
 ): Promise<{ value: unknown } | undefined> {
+  const declared = declaredMemberDocument(properties?.['RepositoryPolicyText']);
+  if (declared === undefined) return undefined;
   if (context?.afterOwnWrite !== true) {
     const read = await readRepositoryPolicy.call(this, repositoryName);
     return typeof read === 'object' ? read : undefined;
   }
-  const declared = declaredMemberDocument(properties?.['RepositoryPolicyText']);
-  if (declared === undefined) return undefined;
   let firstError: unknown;
   let first: MemberRead<unknown>;
   try {
@@ -147,7 +152,8 @@ function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
  * back to the CFn member names), `ImageScanningConfiguration`,
  * `EncryptionConfiguration`, `LifecyclePolicy` (when configured —
  * `LifecyclePolicyNotFoundException` omits the key), `RepositoryPolicyText`
- * (when set — `RepositoryPolicyNotFoundException` omits the key; see
+ * (when the template declares one and it is set —
+ * `RepositoryPolicyNotFoundException` omits the key; see
  * {@link readPolicyMember} for the post-write capture), and `Tags` (CDK's
  * `aws:*` auto-tags filtered out; `[]` when AWS reports no user tags).
  *
@@ -156,7 +162,9 @@ function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
  *
  * Returns `RESOURCE_NOT_FOUND` when any read answers
  * `RepositoryNotFoundException` (the repository vanished between the reads
- * too); any other failure of the three throws, the first in the order above.
+ * too), whichever read it came from — the reads run concurrently, so a
+ * not-found wins over another read's throttle or denial; any other failure
+ * of the three throws, the first in the order above.
  */
 export async function readCurrentState(
   this: ECRProvider,
