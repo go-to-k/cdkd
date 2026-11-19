@@ -36,8 +36,10 @@
 #      3b. `cdkd drift` reports neither key on the untouched repository;
 #      3c. an action added to the policy out of band reports under
 #          `RepositoryPolicyText`;
-#      3d. `cdkd drift --revert` restores the declared actions, and drift no
-#          longer reports the key;
+#      3d. `cdkd drift --revert` restores the declared actions in place (the
+#          state physicalId and the AWS ARN + createdAt unchanged, and the
+#          revert output names no replacement), and drift no longer reports
+#          the key;
 #      3e. with the repository's observedProperties stripped (the template-only
 #          baseline), drift reports neither key;
 #      3f. the policy deleted out of band reports under `RepositoryPolicyText`
@@ -182,6 +184,23 @@ repo_logical_id() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - |
     jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ECR::Repository") | .key]
       | if length == 1 then .[0] else error("expected one repository record, got \(length)") end'
+}
+
+# The repository's identity in cdkd state (physicalId) and on AWS (ARN plus
+# creation time, which a delete + re-create under the same name changes).
+state_physical_id() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg lid "${REPO_LID}" '.resources[$lid].physicalId // empty'
+}
+aws_repo_identity() {
+  aws ecr describe-repositories --repository-names "${REPO}" --region "${REGION}" \
+    --query 'repositories[0].[repositoryArn, createdAt]' --output text
+}
+
+# True for "<ecr repository ARN><TAB><non-empty, non-None createdAt>".
+valid_identity() {
+  local arn="${1%%$'\t'*}" created="${1#*$'\t'}"
+  [[ "${arn}" == arn:aws*:ecr:*:repository/"${REPO}" ]] && [ "${created}" != "$1" ] &&
+    [ -n "${created}" ] && [ "${created}" != "None" ]
 }
 
 # `cdkd drift --json` into a file; echoes the exit code.
@@ -376,7 +395,24 @@ assert_policy_reported "Phase 3c" "${WORK_DIR}/drift3c.json" "${RC3C}"
 echo "    the out-of-band policy change reported"
 
 echo "==> Phase 3d: cdkd drift --revert restores the declared policy"
-node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+PID_BEFORE="$(state_physical_id)"
+AWSID_BEFORE="$(aws_repo_identity)"
+[ -n "${PID_BEFORE}" ] && valid_identity "${AWSID_BEFORE}" || { echo "FAIL: Phase 3d premise: empty identity before the revert (physicalId '${PID_BEFORE}', AWS '${AWSID_BEFORE}')" >&2; exit 1; }
+node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  >"${WORK_DIR}/revert3d.log" 2>&1 || { echo "FAIL: Phase 3d: drift --revert failed" >&2; cat "${WORK_DIR}/revert3d.log" >&2; exit 1; }
+cat "${WORK_DIR}/revert3d.log"
+grep -qF "/${REPO_LID} (AWS::ECR::Repository): reverted" "${WORK_DIR}/revert3d.log" || { echo "FAIL: Phase 3d: the revert output has no 'reverted' line for ${REPO_LID}" >&2; exit 1; }
+if grep -qiE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log"; then
+  echo "FAIL: Phase 3d: the revert output mentions a replacement / re-create" >&2
+  grep -iE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log" >&2
+  exit 1
+fi
+PID_AFTER="$(state_physical_id)"
+AWSID_AFTER="$(aws_repo_identity)"
+[ -n "${PID_AFTER}" ] && valid_identity "${AWSID_AFTER}" || { echo "FAIL: Phase 3d: empty identity after the revert (physicalId '${PID_AFTER}', AWS '${AWSID_AFTER}')" >&2; exit 1; }
+[ "${PID_AFTER}" = "${PID_BEFORE}" ] || { echo "FAIL: Phase 3d: the revert changed the state physicalId '${PID_BEFORE}' -> '${PID_AFTER}' (a replacement)" >&2; exit 1; }
+[ "${AWSID_AFTER}" = "${AWSID_BEFORE}" ] || { echo "FAIL: Phase 3d: the revert changed the repository's ARN / createdAt '${AWSID_BEFORE}' -> '${AWSID_AFTER}' (deleted and re-created)" >&2; exit 1; }
+echo "    revert kept the repository: physicalId ${PID_AFTER}, AWS identity unchanged"
 ACTIONS3D="$(policy_actions)"
 [ "${ACTIONS3D}" = "${DECLARED_ACTIONS}" ] || { echo "FAIL: Phase 3d: --revert left actions [${ACTIONS3D}], expected [${DECLARED_ACTIONS}] (issue #6631)" >&2; exit 1; }
 RC3D="$(run_drift "${WORK_DIR}/drift3d.json")"
