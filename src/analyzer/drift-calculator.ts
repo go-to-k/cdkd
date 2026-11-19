@@ -33,6 +33,7 @@ import {
   matchesPathPrefix,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
+import { isVerbatimStatementPath } from './drift-verbatim-paths.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -90,7 +91,9 @@ export interface PropertyDrift {
  * `options.unionWalkPaths` names subtrees walked by the key UNION even when
  * `unionWalkObjects` is off: properties whose readback echoes the template
  * verbatim (`verbatimEchoDriftKeys`, go-to-k/cdkd#6622), where a key only AWS
- * holds can only have been added out of band. Same prefix rule.
+ * holds can only have been added out of band. Same prefix rule. At
+ * `<entry>.Statement` a statement object equals a one-element list holding it
+ * (go-to-k/cdkd#6624), so entries are the verbatim TOP-LEVEL keys.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
@@ -225,8 +228,15 @@ function diffAt(
   // forever. The PUSHED values stay the originals: `--accept` serializes the
   // Date to the same ISO string, and a caller inspecting `awsValue` sees what
   // AWS returned.
-  const stateForm = jsonForm(stateValue);
-  const awsForm = jsonForm(awsValue);
+  let stateForm = jsonForm(stateValue);
+  let awsForm = jsonForm(awsValue);
+  // go-to-k/cdkd#6624: a verbatim-echo document's `Statement` object and the
+  // one-element list a service returns it as are one value. Compared as two
+  // lists from here, so a key added inside the live statement still differs.
+  if (isVerbatimStatementPath(path, unionWalkPaths)) {
+    stateForm = asStatementList(stateForm, awsForm);
+    awsForm = asStatementList(awsForm, stateForm);
+  }
   if (deepEqual(stateForm, awsForm)) return;
 
   // FALLBACK for a state leaf whose `{{resolve:...}}` dynamic reference could
@@ -513,6 +523,21 @@ function sameJson(a: unknown, b: unknown): boolean {
  */
 function definedKeys(obj: Record<string, unknown>): string[] {
   return Object.keys(obj).filter((k) => obj[k] !== undefined);
+}
+
+/**
+ * `statement` as a one-element list when it is a single statement object and
+ * `other` is a one-element list; otherwise `statement` itself. Only the
+ * one-element case folds: a list of two against one object is a statement
+ * added or removed, which stays drift.
+ */
+function asStatementList(statement: unknown, other: unknown): unknown {
+  return isPlainObject(statement) &&
+    !Array.isArray(statement) &&
+    Array.isArray(other) &&
+    other.length === 1
+    ? [statement]
+    : statement;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

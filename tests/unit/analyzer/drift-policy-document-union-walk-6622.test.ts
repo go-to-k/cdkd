@@ -26,10 +26,8 @@ describe('verbatimEchoDriftKeys', () => {
 
   it('names nothing for a type whose readback is not measured verbatim', () => {
     for (const type of [
-      'AWS::S3::BucketPolicy',
-      'AWS::SQS::QueuePolicy',
-      'AWS::SNS::TopicPolicy',
-      'AWS::KMS::Key',
+      'AWS::ECR::Repository',
+      'AWS::OpenSearchService::Domain',
       'AWS::IAM::User',
       'AWS::IAM::Group',
       'AWS::Lambda::Function',
