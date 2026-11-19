@@ -175,7 +175,7 @@ STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" AWS_REGION="${REGION}" node stri
 run_drift "${ARTIFACT_DIR}/drift-template-only.json"
 
 echo "==> Second readback via state refresh-observed"
-node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
+node "${LOCAL_DIST}" state refresh-observed "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
 show_state "${ARTIFACT_DIR}/state-show-refresh.json"
 node summarize-readback.ts "${ARTIFACT_DIR}/state-show-refresh.json" >"${ARTIFACT_DIR}/summary-refresh.json"
 
