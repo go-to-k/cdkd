@@ -392,7 +392,7 @@ rds-multiaz-cluster	2026-11-08T20:08:02Z	PASS	4107	verify.sh	3 phases ok; class 
 recreate-mixed-direction	2026-11-04T19:47:52Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-nested-logical-id-collision	2026-11-04T19:21:11Z	PASS	113	verify.sh	rc ok, orph clean
 recreate-parent-child-permission	2026-11-10T15:28:59Z	PASS	100	verify.sh	rc ok, orph clean; own bucket
-recreate-renamed-logs-delivery	2026-11-19T03:14:23Z	PASS	120	verify.sh	rc ok, orph clean
+recreate-renamed-logs-delivery	2026-11-19T04:01:09Z	PASS	115	verify.sh	rc ok, orph clean
 recreate-target-readers	2026-11-19T03:20:45Z	PASS	85	verify.sh	rc ok, orph clean
 recreate-via-cc-api	2026-11-19T03:20:45Z	PASS	141	verify.sh	rc ok, orph clean
 recreate-via-sdk-provider	2026-11-19T03:20:45Z	PASS	110	verify.sh	rc ok, orph clean
