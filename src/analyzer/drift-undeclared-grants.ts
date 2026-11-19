@@ -1,3 +1,5 @@
+import { defineOwnKey, hasOwnKey } from '../utils/own-keys.js';
+
 /**
  * Top-level IAM principal keys whose ABSENCE in the template means "none"
  * (go-to-k/cdkd#6627): a role, user or group the template gives no managed
@@ -63,9 +65,9 @@ export function undeclaredGrantDriftKeys(
   resourceType: string,
   properties: unknown
 ): readonly string[] {
-  if (!Object.hasOwn(UNDECLARED_GRANT_KEYS, resourceType)) return NONE;
+  if (!hasOwnKey(UNDECLARED_GRANT_KEYS, resourceType)) return NONE;
   if (!isPlainRecord(properties)) return NONE;
-  return UNDECLARED_GRANT_KEYS[resourceType]!.filter((key) => !Object.hasOwn(properties, key));
+  return UNDECLARED_GRANT_KEYS[resourceType]!.filter((key) => !hasOwnKey(properties, key));
 }
 
 /** Whether `key` is the table's scalar (`PermissionsBoundary`). */
@@ -114,22 +116,17 @@ export function withUndeclaredGrantBaseline(
   let out = baseline;
   const set = (key: string, value: unknown): void => {
     if (out === baseline) out = { ...baseline };
-    Object.defineProperty(out, key, {
-      value,
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
+    defineOwnKey(out, key, value);
   };
   for (const key of keys) {
-    if (!Object.hasOwn(aws, key)) continue;
+    if (!hasOwnKey(aws, key)) continue;
     if (isUndeclaredGrantScalarKey(key)) {
-      if (!Object.hasOwn(baseline, key)) set(key, '');
+      if (!hasOwnKey(baseline, key)) set(key, '');
       continue;
     }
     const live = aws[key];
     if (!Array.isArray(live)) continue;
-    const recorded = Object.hasOwn(baseline, key) ? baseline[key] : [];
+    const recorded = hasOwnKey(baseline, key) ? baseline[key] : [];
     if (!Array.isArray(recorded)) continue;
     const byId = new Map<string, unknown>();
     for (const member of recorded) {
@@ -144,7 +141,7 @@ export function withUndeclaredGrantBaseline(
       byId.delete(id);
     }
     const same =
-      Object.hasOwn(baseline, key) &&
+      hasOwnKey(baseline, key) &&
       projected.length === recorded.length &&
       projected.every((m, i) => m === recorded[i]);
     if (!same) set(key, projected);
@@ -166,9 +163,9 @@ export function undeclaredGrantIgnorePaths(
   keys: readonly string[]
 ): string[] {
   return keys.filter((key) => {
-    if (Object.hasOwn(aws, key)) return false;
+    if (hasOwnKey(aws, key)) return false;
     if (isUndeclaredGrantScalarKey(key)) {
-      return !Object.hasOwn(baseline, key) || isNoBoundary(baseline[key]);
+      return !hasOwnKey(baseline, key) || isNoBoundary(baseline[key]);
     }
     return true;
   });
