@@ -2,12 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   DescribeRepositoriesCommand,
   GetLifecyclePolicyCommand,
+  GetRepositoryPolicyCommand,
   LifecyclePolicyNotFoundException,
   ListTagsForResourceCommand,
   RepositoryNotFoundException,
+  RepositoryPolicyNotFoundException,
 } from '@aws-sdk/client-ecr';
 
 const mockSend = vi.fn();
+const warn = vi.fn();
 
 vi.mock('@aws-sdk/client-ecr', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
@@ -24,7 +27,7 @@ vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (...args: unknown[]) => warn(...args),
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -42,6 +45,19 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
 
+const TYPE = 'AWS::ECR::Repository';
+const ARN = 'arn:aws:ecr:us-east-1:123456789012:repository/my-repo';
+const POLICY = {
+  Version: '2012-10-17',
+  Statement: [
+    {
+      Effect: 'Allow',
+      Principal: { AWS: 'arn:aws:iam::123456789012:root' },
+      Action: ['ecr:BatchGetImage', 'ecr:GetDownloadUrlForLayer'],
+    },
+  ],
+};
+
 /** Narrow a `readCurrentState` result to its property bag; fails on `RESOURCE_NOT_FOUND`. */
 function bagOf(
   r: Record<string, unknown> | ResourceNotFound | undefined
@@ -50,21 +66,68 @@ function bagOf(
   return r as Record<string, unknown> | undefined;
 }
 
+type Answer = unknown | Error | (() => unknown);
+
+/**
+ * Answer each command by its class, so the concurrent sub-reads need no call
+ * order. An `Error` answer rejects; a function is called per send.
+ */
+function route(answers: {
+  describe?: Answer;
+  lifecycle?: Answer;
+  policy?: Answer;
+  tags?: Answer;
+}): void {
+  mockSend.mockImplementation((command: unknown) => {
+    const pick =
+      command instanceof DescribeRepositoriesCommand
+        ? answers.describe
+        : command instanceof GetLifecyclePolicyCommand
+          ? answers.lifecycle
+          : command instanceof GetRepositoryPolicyCommand
+            ? answers.policy
+            : command instanceof ListTagsForResourceCommand
+              ? answers.tags
+              : new Error('unexpected command');
+    const answer = typeof pick === 'function' ? (pick as () => unknown)() : pick;
+    return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+  });
+}
+
+const repoWithArn = { repositories: [{ repositoryName: 'my-repo', repositoryArn: ARN }] };
+const noLifecycle = new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} });
+const noPolicy = (): Error =>
+  new RepositoryPolicyNotFoundException({ message: 'no policy', $metadata: {} });
+const repoGone = (): Error =>
+  new RepositoryNotFoundException({ message: 'not found', $metadata: {} });
+const accessDenied = (): Error =>
+  Object.assign(new Error('not authorized to perform: ecr:GetRepositoryPolicy'), {
+    name: 'AccessDeniedException',
+  });
+const throttled = (): Error =>
+  Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' });
+
+function policyCalls(): number {
+  return mockSend.mock.calls.filter((c) => c[0] instanceof GetRepositoryPolicyCommand).length;
+}
+
 describe('ECRProvider.readCurrentState', () => {
   let provider: ECRProvider;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSend.mockReset();
     provider = new ECRProvider();
+    provider.ownWriteRereadDelaysMs = [0, 0, 0];
   });
 
   it('returns CFn-shaped repository config + lifecycle policy (happy path)', async () => {
-    mockSend
-      .mockResolvedValueOnce({
+    route({
+      describe: {
         repositories: [
           {
             repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
+            repositoryArn: ARN,
             repositoryUri: '123.dkr.ecr.us-east-1.amazonaws.com/my-repo',
             imageTagMutability: 'IMMUTABLE',
             imageScanningConfiguration: { scanOnPush: true },
@@ -74,17 +137,15 @@ describe('ECRProvider.readCurrentState', () => {
             },
           },
         ],
-      })
-      .mockResolvedValueOnce({
-        lifecyclePolicyText: '{"rules":[]}',
-      })
-      .mockResolvedValueOnce({ tags: [] });
+      },
+      lifecycle: { lifecyclePolicyText: '{"rules":[]}' },
+      policy: noPolicy(),
+      tags: { tags: [] },
+    });
 
-    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+    const result = await provider.readCurrentState('my-repo', 'RepoLogical', TYPE);
 
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeRepositoriesCommand);
-    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetLifecyclePolicyCommand);
-    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
     expect(result).toEqual({
       RepositoryName: 'my-repo',
       ImageTagMutability: 'IMMUTABLE',
@@ -99,22 +160,18 @@ describe('ECRProvider.readCurrentState', () => {
   });
 
   it('omits LifecyclePolicy when not configured (LifecyclePolicyNotFoundException) and emits ImageScanning/Encryption placeholders', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'my-repo',
-            imageTagMutability: 'MUTABLE',
-            // No repositoryArn -> Tag fetch is skipped silently.
-          },
-        ],
-      })
-      .mockRejectedValueOnce(
-        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
-      );
+    route({
+      // No repositoryArn -> Tag fetch is skipped silently.
+      describe: { repositories: [{ repositoryName: 'my-repo', imageTagMutability: 'MUTABLE' }] },
+      lifecycle: noLifecycle,
+      policy: noPolicy(),
+    });
 
-    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
+    const result = await provider.readCurrentState('my-repo', 'RepoLogical', TYPE);
 
+    expect(mockSend.mock.calls.some((c) => c[0] instanceof ListTagsForResourceCommand)).toBe(
+      false
+    );
     expect(result).toEqual({
       RepositoryName: 'my-repo',
       ImageTagMutability: 'MUTABLE',
@@ -124,100 +181,314 @@ describe('ECRProvider.readCurrentState', () => {
   });
 
   it('returns RESOURCE_NOT_FOUND when repository is gone', async () => {
-    mockSend.mockRejectedValueOnce(
-      new RepositoryNotFoundException({ message: 'not found', $metadata: {} })
-    );
-
-    const result = await provider.readCurrentState('gone', 'RepoLogical', 'AWS::ECR::Repository');
-
-    expect(result).toBe(RESOURCE_NOT_FOUND);
+    route({ describe: repoGone() });
+    expect(await provider.readCurrentState('gone', 'RepoLogical', TYPE)).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns RESOURCE_NOT_FOUND when DescribeRepositories returns an empty list', async () => {
-    mockSend.mockResolvedValueOnce({ repositories: [] });
-
-    const result = await provider.readCurrentState('gone', 'RepoLogical', 'AWS::ECR::Repository');
-
-    expect(result).toBe(RESOURCE_NOT_FOUND);
+    route({ describe: { repositories: [] } });
+    expect(await provider.readCurrentState('gone', 'RepoLogical', TYPE)).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('returns RESOURCE_NOT_FOUND when the repository vanishes before GetLifecyclePolicy', async () => {
-    mockSend
-      .mockResolvedValueOnce({ repositories: [{ repositoryName: 'my-repo' }] })
-      .mockRejectedValueOnce(
-        new RepositoryNotFoundException({ message: 'not found', $metadata: {} })
-      );
-
-    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
-
-    expect(result).toBe(RESOURCE_NOT_FOUND);
+    route({ describe: repoWithArn, lifecycle: repoGone(), policy: noPolicy(), tags: { tags: [] } });
+    expect(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).toBe(
+      RESOURCE_NOT_FOUND
+    );
   });
 
   it('returns RESOURCE_NOT_FOUND when the repository vanishes before ListTagsForResource', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(
-        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
-      )
-      .mockRejectedValueOnce(
-        new RepositoryNotFoundException({ message: 'not found', $metadata: {} })
-      );
+    route({ describe: repoWithArn, lifecycle: noLifecycle, policy: noPolicy(), tags: repoGone() });
+    expect(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).toBe(
+      RESOURCE_NOT_FOUND
+    );
+  });
 
-    const result = await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository');
-
-    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListTagsForResourceCommand);
-    expect(result).toBe(RESOURCE_NOT_FOUND);
+  it('returns RESOURCE_NOT_FOUND when the repository vanishes before GetRepositoryPolicy, even beside another failure', async () => {
+    route({
+      describe: repoWithArn,
+      lifecycle: accessDenied(),
+      policy: repoGone(),
+      tags: { tags: [] },
+    });
+    expect(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).toBe(
+      RESOURCE_NOT_FOUND
+    );
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(
-        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
-      )
-      .mockResolvedValueOnce({
+    route({
+      describe: repoWithArn,
+      lifecycle: noLifecycle,
+      policy: noPolicy(),
+      tags: {
         tags: [
           { Key: 'Foo', Value: 'Bar' },
           { Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' },
         ],
-      });
-
-    const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository'));
+      },
+    });
+    const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
     expect(result?.Tags).toEqual([{ Key: 'Foo', Value: 'Bar' }]);
   });
 
   it('omits Tags when ListTagsForResource returns no user tags', async () => {
-    mockSend
-      .mockResolvedValueOnce({
-        repositories: [
-          {
-            repositoryName: 'my-repo',
-            repositoryArn: 'arn:aws:ecr:us-east-1:123:repository/my-repo',
-          },
-        ],
-      })
-      .mockRejectedValueOnce(
-        new LifecyclePolicyNotFoundException({ message: 'not found', $metadata: {} })
-      )
-      .mockResolvedValueOnce({
-        tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' }],
-      });
-
-    const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', 'AWS::ECR::Repository'));
+    route({
+      describe: repoWithArn,
+      lifecycle: noLifecycle,
+      policy: noPolicy(),
+      tags: { tags: [{ Key: 'aws:cdk:path', Value: 'MyStack/MyRepo/Resource' }] },
+    });
+    const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
     expect(result?.Tags).toEqual([]);
+  });
+
+  describe('RepositoryPolicyText (go-to-k/cdkd#6631)', () => {
+    it('surfaces the policy GetRepositoryPolicy returns, JSON-parsed', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: { repositoryName: 'my-repo', policyText: JSON.stringify(POLICY, null, 2) },
+        tags: { tags: [] },
+      });
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      expect(policyCalls()).toBe(1);
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof GetRepositoryPolicyCommand);
+      expect((call?.[0] as GetRepositoryPolicyCommand).input).toEqual({
+        repositoryName: 'my-repo',
+      });
+      expect(result?.['RepositoryPolicyText']).toEqual(POLICY);
+    });
+
+    it('keeps a policy text that does not parse as the string AWS returned', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: { policyText: 'not-json' },
+        tags: { tags: [] },
+      });
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      expect(result?.['RepositoryPolicyText']).toBe('not-json');
+    });
+
+    it('omits the key when the repository has no policy (RepositoryPolicyNotFoundException)', async () => {
+      route({ describe: repoWithArn, lifecycle: noLifecycle, policy: noPolicy(), tags: { tags: [] } });
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      expect(result).toBeDefined();
+      expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
+    });
+
+    it('omits the key when GetRepositoryPolicy answers an empty policy text', async () => {
+      route({ describe: repoWithArn, lifecycle: noLifecycle, policy: {}, tags: { tags: [] } });
+      const result = bagOf(await provider.readCurrentState('my-repo', 'RepoLogical', TYPE));
+      expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
+    });
+
+    it('fails the read on an access denied, never reading it as "no policy"', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: accessDenied(),
+        tags: { tags: [] },
+      });
+      await expect(provider.readCurrentState('my-repo', 'RepoLogical', TYPE)).rejects.toThrow(
+        'ecr:GetRepositoryPolicy'
+      );
+    });
+
+    it('a drift read believes the first answer: no re-read when the template declares a policy', async () => {
+      route({ describe: repoWithArn, lifecycle: noLifecycle, policy: noPolicy(), tags: { tags: [] } });
+      const result = bagOf(
+        await provider.readCurrentState('my-repo', 'RepoLogical', TYPE, {
+          RepositoryPolicyText: POLICY,
+        })
+      );
+      expect(policyCalls()).toBe(1);
+      expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
+    });
+  });
+
+  describe('post-write capture (afterOwnWrite)', () => {
+    it('makes no GetRepositoryPolicy call when the template declares no policy', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        // A lagging read still showing a policy the write just removed.
+        policy: { policyText: JSON.stringify(POLICY) },
+        tags: { tags: [] },
+      });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryName: 'my-repo' },
+          { afterOwnWrite: true }
+        )
+      );
+      expect(policyCalls()).toBe(0);
+      expect(Object.hasOwn(result!, 'RepositoryPolicyText')).toBe(false);
+    });
+
+    it('records the declared policy on the first read that shows it, with no extra call', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: { policyText: JSON.stringify(POLICY) },
+        tags: { tags: [] },
+      });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: POLICY },
+          { afterOwnWrite: true }
+        )
+      );
+      expect(policyCalls()).toBe(1);
+      expect(result?.['RepositoryPolicyText']).toEqual(POLICY);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('re-reads a lagging answer until it shows the declared policy', async () => {
+      const stale = { ...POLICY, Statement: [{ ...POLICY.Statement[0], Action: 'ecr:*' }] };
+      const answers = [{ policyText: JSON.stringify(stale) }, { policyText: JSON.stringify(POLICY) }];
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: () => answers.shift() ?? { policyText: JSON.stringify(POLICY) },
+        tags: { tags: [] },
+      });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: POLICY },
+          { afterOwnWrite: true }
+        )
+      );
+      expect(policyCalls()).toBe(2);
+      expect(result?.['RepositoryPolicyText']).toEqual(POLICY);
+    });
+
+    it('records the declared policy when every read still shows none, and warns', async () => {
+      route({ describe: repoWithArn, lifecycle: noLifecycle, policy: noPolicy, tags: { tags: [] } });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: JSON.stringify(POLICY) },
+          { afterOwnWrite: true }
+        )
+      );
+      expect(policyCalls()).toBe(4);
+      expect(result?.['RepositoryPolicyText']).toEqual(POLICY);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('RepositoryPolicyText');
+      expect(String(warn.mock.calls[0]?.[0])).not.toContain('ecr:BatchGetImage');
+    });
+
+    it('re-reads a throttled first answer', async () => {
+      const answers: Answer[] = [throttled(), { policyText: JSON.stringify(POLICY) }];
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: () => answers.shift(),
+        tags: { tags: [] },
+      });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: POLICY },
+          { afterOwnWrite: true }
+        )
+      );
+      expect(result?.['RepositoryPolicyText']).toEqual(POLICY);
+    });
+
+    it('fails the capture on an access denied, with no re-read', async () => {
+      route({
+        describe: repoWithArn,
+        lifecycle: noLifecycle,
+        policy: accessDenied,
+        tags: { tags: [] },
+      });
+      await expect(
+        provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: POLICY },
+          { afterOwnWrite: true }
+        )
+      ).rejects.toThrow('ecr:GetRepositoryPolicy');
+      expect(policyCalls()).toBe(1);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when the repository is gone at the policy read', async () => {
+      route({ describe: repoWithArn, lifecycle: noLifecycle, policy: repoGone, tags: { tags: [] } });
+      expect(
+        await provider.readCurrentState(
+          'my-repo',
+          'RepoLogical',
+          TYPE,
+          { RepositoryPolicyText: POLICY },
+          { afterOwnWrite: true }
+        )
+      ).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+});
+
+describe('ECRProvider drift hooks (go-to-k/cdkd#6631)', () => {
+  const provider = new ECRProvider();
+
+  it('declares EmptyOnDelete unknown to drift, for the repository type only', () => {
+    expect(provider.getDriftUnknownPaths(TYPE)).toEqual(['EmptyOnDelete']);
+    expect(provider.getDriftUnknownPaths('AWS::ECR::PublicRepository')).toEqual([]);
+  });
+
+  it('compares an absent RepositoryPolicyText only when the template declares no policy', () => {
+    expect(provider.getDriftAbsentMeansDefaultKeys(TYPE, { RepositoryName: 'r' })).toEqual([
+      'RepositoryPolicyText',
+    ]);
+    expect(
+      provider.getDriftAbsentMeansDefaultKeys(TYPE, { RepositoryName: 'r', RepositoryPolicyText: '' })
+    ).toEqual(['RepositoryPolicyText']);
+    expect(
+      provider.getDriftAbsentMeansDefaultKeys(TYPE, { RepositoryPolicyText: POLICY })
+    ).toEqual([]);
+    expect(
+      provider.getDriftAbsentMeansDefaultKeys(TYPE, {
+        RepositoryPolicyText: JSON.stringify(POLICY),
+      })
+    ).toEqual([]);
+    expect(provider.getDriftAbsentMeansDefaultKeys(TYPE, {})).toEqual([]);
+    expect(provider.getDriftAbsentMeansDefaultKeys('AWS::S3::Bucket', { A: 1 })).toEqual([]);
+  });
+
+  it('canonicalizes a string RepositoryPolicyText to its parsed document', () => {
+    const bag = { RepositoryName: 'r', RepositoryPolicyText: JSON.stringify(POLICY) };
+    expect(provider.canonicalizeDriftProperties(TYPE, bag)).toEqual({
+      RepositoryName: 'r',
+      RepositoryPolicyText: POLICY,
+    });
+    expect(bag.RepositoryPolicyText).toBe(JSON.stringify(POLICY));
+  });
+
+  it('returns every other bag by identity', () => {
+    const objectForm = { RepositoryPolicyText: POLICY };
+    const unparsable = { RepositoryPolicyText: 'not-json' };
+    const none = { RepositoryName: 'r' };
+    const otherType = { RepositoryPolicyText: JSON.stringify(POLICY) };
+    expect(provider.canonicalizeDriftProperties(TYPE, objectForm)).toBe(objectForm);
+    expect(provider.canonicalizeDriftProperties(TYPE, unparsable)).toBe(unparsable);
+    expect(provider.canonicalizeDriftProperties(TYPE, none)).toBe(none);
+    expect(provider.canonicalizeDriftProperties('AWS::S3::Bucket', otherType)).toBe(otherType);
   });
 });

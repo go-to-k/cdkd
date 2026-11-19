@@ -5,14 +5,12 @@ import {
   DeleteRepositoryCommand,
   DeleteRepositoryPolicyCommand,
   DescribeRepositoriesCommand,
-  GetLifecyclePolicyCommand,
   PutLifecyclePolicyCommand,
   SetRepositoryPolicyCommand,
   PutImageScanningConfigurationCommand,
   PutImageTagMutabilityCommand,
   TagResourceCommand,
   UntagResourceCommand,
-  ListTagsForResourceCommand,
   LifecyclePolicyNotFoundException,
   RepositoryNotEmptyException,
   RepositoryNotFoundException,
@@ -22,7 +20,7 @@ import {
   type ImageTagMutabilityExclusionFilter,
   type Tag,
 } from '@aws-sdk/client-ecr';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -31,7 +29,7 @@ import {
   hasCdkAutoDeleteTag,
   isTruthyCfnBoolean,
 } from '../data-delete-intent.js';
-import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
+import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
@@ -42,8 +40,8 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -62,6 +60,8 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { markNotGone } from '../not-gone.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { declaredMemberDocument, OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
+import { readCurrentState } from './ecr/read-state.js';
 
 /**
  * AWS ECR Repository Provider
@@ -78,7 +78,9 @@ export class ECRProvider implements ResourceProvider {
   private client?: ECRClient;
   private createClient?: ECRClient;
   private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('ECRProvider');
+  readonly logger: ConsoleLogger = getLogger().child('ECRProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::ECR::Repository',
@@ -96,7 +98,7 @@ export class ECRProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): ECRClient {
+  getClient(): ECRClient {
     if (!this.client) {
       this.client = new ECRClient({
         ...ambientClientDefaults(),
@@ -189,31 +191,6 @@ export class ECRProvider implements ResourceProvider {
         filter: e['ImageTagMutabilityExclusionFilterValue'] as string | undefined,
       };
     });
-  }
-
-  /**
-   * Inverse of {@link toSdkTagMutabilityExclusionFilters}: SDK
-   * `[{ filterType, filter }]` back to the CFn property shape, so
-   * `cdkd drift` compares the AWS-current exclusions against the
-   * template-shaped baseline instead of a guaranteed false positive.
-   * Returns `undefined` for an absent / empty list so `readCurrentState`
-   * omits the key (a repository with no exclusions).
-   */
-  private toCfnTagMutabilityExclusionFilters(
-    sdk: Array<{ filterType?: string; filter?: string }> | undefined
-  ): Array<Record<string, unknown>> | undefined {
-    if (!sdk || sdk.length === 0) return undefined;
-    // Undefined-valued keys are omitted rather than emitted: S3 drops them when
-    // `observedProperties` is serialized, so a later drift read that DID carry
-    // them would differ by key count and report phantom drift. Both members are
-    // required in the SDK model, so this is defense against a shape AWS should
-    // never return.
-    return sdk.map((f) => ({
-      ...(f.filterType !== undefined && {
-        ImageTagMutabilityExclusionFilterType: f.filterType,
-      }),
-      ...(f.filter !== undefined && { ImageTagMutabilityExclusionFilterValue: f.filter }),
-    }));
   }
 
   /**
@@ -696,122 +673,61 @@ export class ECRProvider implements ResourceProvider {
   }
 
   /**
-   * Read the AWS-current ECR repository configuration in CFn-property shape.
-   *
-   * Issues `DescribeRepositories(filtered=[name])` for the repository's
-   * configuration, then a separate `GetLifecyclePolicy` for `LifecyclePolicy`
-   * (which `DescribeRepositories` doesn't return).
-   *
-   * Surfaced keys: `RepositoryName`, `ImageTagMutability`,
-   * `ImageTagMutabilityExclusionFilters` (when the repository has any —
-   * `DescribeRepositories` returns them on the `Repository` shape, mapped back
-   * to the CFn member names), `ImageScanningConfiguration`,
-   * `EncryptionConfiguration`, `LifecyclePolicy` (when configured —
-   * `LifecyclePolicyNotFoundException` is caught and the key omitted, NOT
-   * propagated as repo-gone).
-   *
-   * Intentionally omitted:
-   *   - `RepositoryPolicyText`: requires a separate `GetRepositoryPolicy`
-   *     round-trip; cdkd state holds the policy as either a string or an
-   *     object (depending on user input), and the comparator round-trip
-   *     is not yet handled here.
-   *   - `EmptyOnDelete`: a cdkd/CDK delete-time intent flag, not part of the
-   *     persisted AWS state visible via standard Describe.
-   *
-   * `Tags` is surfaced via a follow-up `ListTagsForResource(arn)` call
-   * (using the repository ARN that `DescribeRepositories` returns). CDK's
-   * `aws:*` auto-tags are filtered out; the result key is omitted entirely
-   * when AWS reports no user tags.
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the repository is gone (`RepositoryNotFoundException`).
+   * Read the AWS-current repository in CFn-property shape, `RepositoryPolicyText`
+   * included (go-to-k/cdkd#6631). Lives in `./ecr/read-state.ts`.
    */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string
+    logicalId: string,
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let repo: {
-      repositories?: Array<{
-        repositoryName?: string;
-        repositoryArn?: string;
-        imageTagMutability?: string;
-        imageTagMutabilityExclusionFilters?: Array<{ filterType?: string; filter?: string }>;
-        imageScanningConfiguration?: { scanOnPush?: boolean };
-        encryptionConfiguration?: { encryptionType?: string; kmsKey?: string };
-      }>;
-    };
-    try {
-      repo = (await this.getClient().send(
-        new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
-      )) as unknown as typeof repo;
-    } catch (err) {
-      if (err instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    const r = repo.repositories?.[0];
-    if (!r) return RESOURCE_NOT_FOUND;
+    return readCurrentState.call(this, physicalId, logicalId, properties, context);
+  }
 
-    const result: Record<string, unknown> = {};
-    if (r.repositoryName !== undefined) result['RepositoryName'] = r.repositoryName;
-    if (r.imageTagMutability !== undefined) result['ImageTagMutability'] = r.imageTagMutability;
-    const cfnExclusionFilters = this.toCfnTagMutabilityExclusionFilters(
-      r.imageTagMutabilityExclusionFilters
-    );
-    if (cfnExclusionFilters) {
-      result['ImageTagMutabilityExclusionFilters'] = cfnExclusionFilters;
-    }
-    result['ImageScanningConfiguration'] = {
-      ScanOnPush: r.imageScanningConfiguration?.scanOnPush ?? false,
-    };
-    {
-      // Class 1 guard — `KmsKey` is only valid on `EncryptionType=KMS`.
-      // AWS rejects `KmsKey` (including the empty string) on AES256
-      // repositories, and `EncryptionConfiguration` is immutable so the
-      // round-trip path doesn't actually re-submit it; even so, we don't
-      // want to leak `KmsKey: ''` into observedProperties because the
-      // drift comparator would surface a false positive against any
-      // template that omits the field.
-      const encType = r.encryptionConfiguration?.encryptionType ?? 'AES256';
-      const enc: Record<string, unknown> = { EncryptionType: encType };
-      if (encType === 'KMS' && r.encryptionConfiguration?.kmsKey) {
-        enc['KmsKey'] = r.encryptionConfiguration.kmsKey;
-      }
-      result['EncryptionConfiguration'] = enc;
-    }
+  /**
+   * `EmptyOnDelete` is a delete-time intent flag (the `force` of
+   * `DeleteRepository`): AWS stores no value to read back, so drift never
+   * compares it (go-to-k/cdkd#6631).
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::ECR::Repository' ? ['EmptyOnDelete'] : [];
+  }
 
-    // LifecyclePolicy: separate API call. "Not configured" omits the key;
-    // do NOT treat as repo-gone.
-    try {
-      const lp = await this.getClient().send(
-        new GetLifecyclePolicyCommand({ repositoryName: physicalId })
-      );
-      if (lp.lifecyclePolicyText) {
-        result['LifecyclePolicy'] = { LifecyclePolicyText: lp.lifecyclePolicyText };
-      }
-    } catch (err) {
-      // The repository vanished between DescribeRepositories and this read.
-      if (err instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
-      if (!(err instanceof LifecyclePolicyNotFoundException)) {
-        throw err;
-      }
-    }
+  /**
+   * `RepositoryPolicyText` when the template declares no policy: the read omits
+   * the key for a repository with none, so a baseline without it records "no
+   * policy", and a policy added out of band reports. `drift --revert` sends it
+   * absent, and `update()` deletes the live policy (`DeleteRepositoryPolicy`),
+   * as CloudFormation does for a template that drops the property. An empty
+   * bag (nothing recorded) names nothing.
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    if (resourceType !== 'AWS::ECR::Repository' || Object.keys(properties).length === 0) return [];
+    return declaredMemberDocument(properties['RepositoryPolicyText']) === undefined
+      ? ['RepositoryPolicyText']
+      : [];
+  }
 
-    // Tags via ListTagsForResource (uses the repository ARN from
-    // DescribeRepositories).
-    if (r.repositoryArn) {
-      try {
-        const tagsResp = await this.getClient().send(
-          new ListTagsForResourceCommand({ resourceArn: r.repositoryArn })
-        );
-        const tags = normalizeAwsTagsToCfn(tagsResp.tags);
-        result['Tags'] = tags;
-      } catch (err) {
-        if (err instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
-        throw err;
-      }
-    }
-
-    return result;
+  /**
+   * A string `RepositoryPolicyText` (an L1 template may pass the JSON text) as
+   * the document it parses to, the shape the read records, on both drift sides.
+   * Anything else is returned by identity.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::ECR::Repository') return properties;
+    const policy = properties['RepositoryPolicyText'];
+    if (typeof policy !== 'string') return properties;
+    const parsed = declaredMemberDocument(policy);
+    if (typeof parsed !== 'object' || parsed === null) return properties;
+    return { ...properties, RepositoryPolicyText: parsed };
   }
 
   /**
