@@ -152,6 +152,20 @@ the delete since. The deferred delete of a custom resource or nested stack
 that needs a NoEcho value is never in state, so when its read cannot answer,
 a later `cdkd rollback` refuses it.
 
+A deferred `AWS::S3::Bucket` is re-adopted only when the bucket under the old
+name is still the stack's. Bucket names are global, so after an out-of-band
+delete another party can take the name. Before it replays any operation, the
+rollback reads who holds the name. A bucket that is not in this account's
+`ListBuckets`, or that is in another region, is refused. When the deploy
+deferred the delete, it journaled the bucket's `CreationDate`, and the live
+date must match it. In us-east-1 only a re-create moves that date, so a
+different date is refused as another bucket. Outside us-east-1 a versioning,
+tagging, encryption or policy write also moves it, so a different date is
+refused with a message saying the bucket may have been re-created or modified.
+A journal written by an older cdkd carries no date, and this account's bucket
+is re-adopted as before. Each refusal sends nothing, keeps the journal, and
+prints the `--orphan` command, which keeps the new bucket in its place.
+
 On a stack with an instance id, a resource the template does not name is
 re-created under the generated name its OLD record held (that record's name
 generation), not the next-generation name the replacement created, so the two
