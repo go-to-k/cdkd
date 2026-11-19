@@ -23,6 +23,7 @@ import {
   maskRewrittenSentName,
   replacementSentNameMoves,
   replacementGeneratedNameMoves,
+  replacementNameKeyMoves,
 } from '../../replacement-name-holder.js';
 import { markNonRetryable, markRedactedCause } from '../../retryable-errors.js';
 import {
@@ -91,6 +92,12 @@ export async function checkedReplacementNameChange(
     createdVia: ProvisionedBy | undefined;
     createProps: Record<string, unknown>;
     secrets: RecordedSecretValues;
+    /**
+     * go-to-k/cdkd#6589: the answer orders a `--recreate-via-*` replacement,
+     * so a name only the reverse-replacement name keys read counts too
+     * ({@link replacementNameKeyMoves}).
+     */
+    recreate?: boolean;
   }
 ): Promise<ReplacementNameChange | undefined> {
   const { logicalId, resourceType, currentResource, secrets } = input;
@@ -131,6 +138,9 @@ export async function checkedReplacementNameChange(
       logicalId,
     }) ??
     (adopts && typeChanged ? typeChangeNameQuestion(resourceType, input) : undefined) ??
+    (input.recreate === true && !typeChanged
+      ? replacementNameKeyMoves({ ...question, resourceType })
+      : undefined) ??
     // go-to-k/cdkd#5064 phase 2: a generated name at the next generation.
     generatedMove;
   if (change === undefined) return undefined;

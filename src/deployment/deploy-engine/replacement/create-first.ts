@@ -88,8 +88,8 @@ export async function createFirstThenDeleteOld(
   // Before the create, so a refusal changes nothing. A PRE_DELETE_SNAPSHOT
   // type takes no snapshot here: its delete takes it, right before it is
   // sent (go-to-k/cdkd#6463). None of them has a name
-  // `replacementRequestsDifferentName` reads, so none reaches this method
-  // today.
+  // `replacementRequestsDifferentName` or `replacementNameKeyMoves` reads,
+  // so none reaches this method today.
   const finalSnapshotIdentifier = retainOld
     ? undefined
     : await prepareCreateFirstFinalSnapshot(

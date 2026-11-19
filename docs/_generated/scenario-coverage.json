@@ -2571,6 +2571,11 @@
       "scenarios": []
     },
     {
+      "name": "recreate-renamed-logs-delivery",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "recreate-target-readers",
       "annotated": false,
       "scenarios": []
@@ -4308,6 +4313,7 @@
     "recreate-mixed-direction",
     "recreate-nested-logical-id-collision",
     "recreate-parent-child-permission",
+    "recreate-renamed-logs-delivery",
     "recreate-target-readers",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",

@@ -268,6 +268,7 @@ export async function updateByReplacement(
     createdVia: replaceDecision.provisionedBy,
     createProps: replaceProps,
     secrets: updateSecrets,
+    recreate: recreateFlagged,
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
@@ -334,6 +335,17 @@ export async function updateByReplacement(
       updateSecrets,
       recreateViaCcApi,
       typedPayloadLeaves,
+      // go-to-k/cdkd#6589: the records that still depend on the old resource,
+      // named if AWS refuses its delete because something uses it.
+      sameStackDependents: Object.entries(stateResources)
+        .filter(
+          ([id, record]) =>
+            id !== logicalId &&
+            Array.isArray(record?.dependencies) &&
+            record.dependencies.includes(logicalId)
+        )
+        .map(([id]) => id)
+        .sort(),
     });
   } else {
     createResult = await replaceCreateFirst(engine, {

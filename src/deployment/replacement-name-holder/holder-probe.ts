@@ -7,7 +7,12 @@ import {
   REVERSE_REPLACEMENT_NAME_KEYS,
   flat,
 } from './name-keys.js';
-import { nameValue, physicalIdNames } from './deploy-name.js';
+import {
+  type ReplacementNameChange,
+  nameValue,
+  physicalIdNames,
+  replacementOrderIsCaseSensitive,
+} from './deploy-name.js';
 
 /**
  * Groups of DIFFERENT types that share one name space, so across a `Type`
@@ -44,6 +49,56 @@ export function nameKeyFor(resourceType: string): NameKey | undefined {
   const property = explicitNamePropertyFor(resourceType);
   // That table is read by plain indexing: an inherited member is no name.
   return typeof property === 'string' ? flat(property) : undefined;
+}
+
+/**
+ * go-to-k/cdkd#6589: a same-type replacement whose name, read through
+ * {@link nameKeyFor}, is KNOWN to move off the one the old resource holds —
+ * for a type whose name `replacementRequestsDifferentName` cannot read (one
+ * absent from the adoption tables, such as a CloudWatch Logs delivery source,
+ * or a nested name). Read only to ORDER a `--recreate-via-*` replacement:
+ * a positive answer makes it create the new resource first, and a create
+ * that collides after all is refused with nothing deleted, so a wrong
+ * positive costs a refusal, never a resource.
+ *
+ * `undefined` unless both names are readable plain strings (the old one from
+ * the record, then the observed properties) and differ — compared exactly
+ * unless the type's name space folds case — and the physical id does not
+ * name the desired one. A scope move alone is not read: a scope can be
+ * spelled as a name or an ARN, and that guess would only change the order.
+ */
+export function replacementNameKeyMoves(input: {
+  resourceType: string;
+  desiredProperties: Record<string, unknown> | undefined;
+  recorded: Record<string, unknown> | undefined;
+  observed: Record<string, unknown> | undefined;
+  physicalId: string;
+}): ReplacementNameChange | undefined {
+  const key = nameKeyFor(input.resourceType);
+  if (key === undefined) return undefined;
+  const fold = replacementOrderIsCaseSensitive(input.resourceType)
+    ? (v: string): string => v
+    : (v: string): string => v.toLowerCase();
+  for (const path of key.name) {
+    const desiredName = valueAt(input.desiredProperties, path);
+    if (desiredName === undefined) continue;
+    const held = heldAt(input.recorded, input.observed, path);
+    if (held.unreadable || held.value === undefined) return undefined;
+    const desired = fold(desiredName);
+    if (fold(held.value) === desired) return undefined;
+    if (input.physicalId === '' || physicalIdNames(fold(input.physicalId), desired)) {
+      return undefined;
+    }
+    const property = path.join('.');
+    return {
+      property,
+      desiredName,
+      heldName: held.value,
+      heldProperty: property,
+      physicalId: input.physicalId,
+    };
+  }
+  return undefined;
 }
 
 export function valueAt(

@@ -6,6 +6,8 @@ import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { green } from '../../../utils/colors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
+import { reverseReplacementNameKeyKind } from '../../replacement-name-holder.js';
+import { isInUseOrConflictRefusal } from '../../superseded-resources.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../../delete-outcome.js';
 import { reportDeleteGuards } from '../../delete-guard-scope.js';
@@ -49,7 +51,12 @@ export async function recreateDestroyThenCreate(
     updateSecrets,
     recreateViaCcApi,
     typedPayloadLeaves,
-  }: ReplacementArmInput & { recreateViaCcApi: boolean }
+    sameStackDependents = [],
+  }: ReplacementArmInput & {
+    recreateViaCcApi: boolean;
+    /** go-to-k/cdkd#6589: the logical ids whose records depend on this one. */
+    sameStackDependents?: readonly string[];
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
 ): Promise<any> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- shape varies by ResourceProvider impl
@@ -163,6 +170,26 @@ export async function recreateDestroyThenCreate(
         updateSecrets,
         printingSecretsFor(engine.secretsRun, logicalId),
       ]);
+      // go-to-k/cdkd#6589: a replacement not known to take a new name deletes
+      // the old resource before the new one exists, while the same-stack
+      // resources that use it still point at it, and AWS can refuse that
+      // delete. Name them and the ways round it, on a line of its own after
+      // any remedy lines the wrapped message carries.
+      const dependentHint =
+        sameStackDependents.length > 0 && isInUseOrConflictRefusal(deleteError)
+          ? '\n' +
+            safeMsg`  ${maskSecretsInText(logicalId, shownSecrets)}'s replacement is not known to take a new name, so ` +
+            safeMsg`${recreateFlagName} deletes the old resource before it creates the new ` +
+            safeMsg`one, while resources of this stack still depend on it ` +
+            safeMsg`(${sameStackDependents.map((id) => maskSecretsInText(id, shownSecrets)).join(', ')}); ` +
+            `AWS refuses that delete while one of them uses it. ` +
+            (reverseReplacementNameKeyKind(resourceType) === 'keyed'
+              ? `Give it a new name in the template, so that the recreate creates the new ` +
+                `resource first and deletes the old one once its dependents have moved, or ` +
+                `remove`
+              : `Remove`) +
+            ` those dependents from the template, deploy, recreate it, and add them back.`
+          : '';
       // go-to-k/cdkd#2319: this message is persisted, and an AWS-authored
       // delete failure (a raw SDK or Cloud Control error) names the caller
       // on a denial. It is named by its class plus the `--verbose` pointer,
@@ -175,8 +202,10 @@ export async function recreateDestroyThenCreate(
         safeMsg`Failed to destroy old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
         safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) during ${recreateFlagName}: ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is
-        // embedded as-is and LAST: it can end in cdkd's own remedy lines.
-        safeMsg`${asIsMessage(maskSecretsInText(text, shownSecrets))}`;
+        // embedded as-is and last but for the #6589 line, which starts its
+        // own: it can end in cdkd's own remedy lines.
+        safeMsg`${asIsMessage(maskSecretsInText(text, shownSecrets))}` +
+        dependentHint;
       if (deleteFailure.redacted) {
         engine.logger.debug(destroyFailureText(deleteFailure.detail));
       }
