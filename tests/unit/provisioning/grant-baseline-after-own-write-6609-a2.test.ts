@@ -458,6 +458,7 @@ describe('AWS::Logs::LogGroup DataProtectionPolicy', () => {
     answer(GET, none);
     expect(bag(await read(AFTER))['DataProtectionPolicy']).toEqual(declared);
     expect(callsOf(GET)).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
   });
 
   it('records another policy as read when it outlives the schedule', async () => {
@@ -566,6 +567,7 @@ describe('AWS::ApiGateway::RestApi Policy', () => {
     answer(GET, api(undefined));
     expect(bag(await read(AFTER))['Policy']).toEqual(declared);
     expect(callsOf(GET)).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
   });
 
   it('a declared policy string is kept in the read (object) shape', async () => {
@@ -689,6 +691,7 @@ describe('AWS::EFS::FileSystem FileSystemPolicy', () => {
     answer(GET, none);
     expect(bag(await read(AFTER))['FileSystemPolicy']).toEqual(declared);
     expect(callsOf(GET)).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
   });
 
   it('records another policy as read when it outlives the schedule', async () => {
@@ -846,6 +849,7 @@ describe('AWS::CodeBuild::Project Visibility', () => {
     answer(GET, project('PRIVATE'));
     expect(bag(await read(AFTER))['Visibility']).toBe('PRIVATE');
     expect(callsOf(GET)).toBe(4);
+    expect(unsettledWarnings()).toHaveLength(1);
   });
 
   it('a failed re-read keeps the newest answer', async () => {
