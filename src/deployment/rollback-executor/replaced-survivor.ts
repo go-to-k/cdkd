@@ -319,16 +319,25 @@ async function holderVerdict(
     withReplayDeletePrinting(s, () => liveSurvivorRead(s.ctx, oldType, physicalId));
   const snapshot = s.ctx.survivorIdentities?.get(survivorKey(oldType, physicalId));
   const verdict = judgeHolder(s, oldType, existence, snapshot ?? (await live()), snapshot);
-  if (verdict !== 'exists' || snapshot === undefined) return verdict;
-  // A confirmation read at the probe, in every region: the holder may have
-  // changed since the snapshot. Who holds it (account, region) and whether
-  // anything does are compared everywhere; the generation only where the
-  // stack's own writes leave it alone.
+  // A confirmation read at the probe, in every region, before any verdict the
+  // deferred arm may re-adopt on (`'unknown'` / `'unreadable'` too, while
+  // state lists the old bucket): the holder may have changed since the
+  // snapshot, and another account's 403 leaves existence unanswered. Who
+  // holds it (account, region) and whether anything does are compared
+  // everywhere; the generation only where the stack's own writes leave it
+  // alone, and only for a verdict that read existence.
+  if (
+    snapshot === undefined ||
+    (verdict !== 'exists' && verdict !== 'unknown' && verdict !== 'unreadable')
+  ) {
+    return verdict;
+  }
   const now = await live();
   if (now.kind === 'foreign') return foreignHolder(now);
-  // The name went free since the existence read: re-adopting would delete
-  // the new bucket for nothing.
+  // The name went free since the snapshot: re-adopting would delete the new
+  // bucket for nothing.
   if (now.kind === 'gone') return 'vacated';
+  if (verdict !== 'exists') return verdict;
   const journaled = s.op.oldResourceIdentity;
   const stable = journaled?.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldType];
   if (stable && now.kind === 'owned' && now.identity !== undefined && now.identity !== journaled) {

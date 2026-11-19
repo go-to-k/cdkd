@@ -690,12 +690,19 @@ function survivorUnprovenRefusal(
     markNonRetryable(
       new CdkdError(
         `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
-          `(${refusalResourceType(oldType)}): the deploy did not confirm that it deleted the old ` +
-          `resource (${oldShown}), so it may still exist, and ${why}. Nothing was sent and the ` +
-          `journal is kept.` +
+          `(${refusalResourceType(oldType)}): ` +
+          // go-to-k/cdkd#6621: these two read the old id, so "may still
+          // exist" is not their premise.
+          (verdict === 'vacated' || verdict === 'free-unreadable'
+            ? `the old resource (${oldShown}) cannot be proven the stack's: ${why}.`
+            : `the deploy did not confirm that it deleted the old resource (${oldShown}), so ` +
+              `it may still exist, and ${why}.`) +
+          ` Nothing was sent and the journal is kept.` +
           (remedy.offered
             ? ` To keep the new resource in its place instead, re-run with the command below, ` +
-              `then delete the old resource by hand if it still exists.`
+              (verdict === 'vacated' || verdict === 'free-unreadable'
+                ? `and leave anything under the old id alone unless it is this stack's.`
+                : `then delete the old resource by hand if it still exists.`)
             : '') +
           `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
           remedy.line,

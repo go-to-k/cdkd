@@ -381,6 +381,40 @@ describe('re-adopting a replaced S3 bucket (go-to-k/cdkd#6621)', () => {
       expectRefused(await replay(o), 'the name went free while this rollback read it');
     });
 
+    // Review round 3: an owned, equal snapshot whose existence read then
+    // fails would take the #6399 arm (re-adopt while state lists it); the
+    // confirmation read runs for that verdict too.
+    it.each([
+      ['another account took the name', { kind: 'foreign', seen: 'other-account' }, 'belongs to another account'],
+      ['the name went free', { kind: 'gone' }, 'the name went free while this rollback read it'],
+    ] as const)(
+      'refuses an unanswered existence read when the confirmation read finds %s',
+      async (_l, now, needle) => {
+        const o = op({ oldResourceIdentity: `us-east-1|${D1}` });
+        await snapshotSurvivorIdentities(ctx, [o]);
+        existence = async () => {
+          throw Object.assign(new Error('Forbidden'), { name: '403' });
+        };
+        ctx.supersededResources = [{ logicalId: 'Bucket', supersededAt: 1, state: rec('bucket-old') }];
+        holder = async () => now as SurvivorIdentityRead;
+        const r = await replay(o);
+        expectRefused(r, needle);
+        expect(identityReads).toBe(2);
+        expect(r.text).not.toContain('so it may still exist, and the name went free');
+      }
+    );
+
+    it('keeps the #6399 re-adopt for an unanswered existence read the confirmation read backs', async () => {
+      const o = op({ oldResourceIdentity: `us-east-1|${D1}` });
+      await snapshotSurvivorIdentities(ctx, [o]);
+      existence = async () => {
+        throw new Error('ThrottlingException');
+      };
+      ctx.supersededResources = [{ logicalId: 'Bucket', supersededAt: 1, state: rec('bucket-old') }];
+      expectReadopted(await replay(o));
+      expect(identityReads).toBe(2);
+    });
+
     it.each([
       ['another account', { kind: 'foreign', seen: 'other-account' }, 'belongs to another account'],
       ['another region', { kind: 'foreign', seen: 'other-region' }, 'a bucket never moves region'],
