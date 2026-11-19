@@ -831,3 +831,39 @@ describe('t2: --revert through the ASG provider keeps a sibling hook', () => {
     expect(sent.filter((n) => n === 'PutLifecycleHookCommand')).toEqual([]);
   });
 });
+
+describe('the helper pairs on a Cloud Control readback: --revert re-adds their live members', () => {
+  const GROUP = 'sg-0aaaaaaaaaaaaaaaa';
+  const PEER = 'sg-0bbbbbbbbbbbbbbbb';
+  const inline = { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, CidrIp: '10.0.0.0/16' };
+  const sibRule = { IpProtocol: 'tcp', FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: PEER };
+  const stranger = { IpProtocol: 'tcp', FromPort: 9999, ToPort: 9999, CidrIp: '10.9.0.0/16' };
+  const sgCtx = ctx({ Rule: { resourceType: 'AWS::EC2::SecurityGroupIngress', properties: { GroupId: GROUP, ...sibRule } } });
+
+  it('a security group keeps the sibling rule a Cloud Control readback holds', () => {
+    const desired = siblingOwnedRevertDesired(
+      'AWS::EC2::SecurityGroup',
+      GROUP,
+      { SecurityGroupIngress: [inline] },
+      { SecurityGroupIngress: [inline, { ...sibRule, SourceSecurityGroupOwnerId: '123456789012' }, stranger] },
+      { SecurityGroupIngress: [inline] },
+      sgCtx
+    );
+    expect(desired).toEqual({ SecurityGroupIngress: [inline, { ...sibRule, SourceSecurityGroupOwnerId: '123456789012' }] });
+  });
+
+  it('the SDK readback (which already dropped the rule) leaves the desired bag as it was', () => {
+    const before = { SecurityGroupIngress: [inline] };
+    expect(siblingOwnedRevertDesired('AWS::EC2::SecurityGroup', GROUP, before, { SecurityGroupIngress: [inline, stranger] }, { SecurityGroupIngress: [inline] }, sgCtx)).toEqual(before);
+  });
+
+  it('a role keeps a sibling managed policy ARN, and a user a sibling group in any case', () => {
+    const ARN = 'arn:aws:iam::123456789012:policy/Mp';
+    expect(
+      siblingOwnedRevertDesired('AWS::IAM::Role', ROLE, { ManagedPolicyArns: ['own'] }, { ManagedPolicyArns: ['own', ARN, 'stranger'] }, { ManagedPolicyArns: ['own'] }, ctx({ Mp: { resourceType: 'AWS::IAM::ManagedPolicy', physicalId: ARN, properties: { Roles: [ROLE] } } }))
+    ).toEqual({ ManagedPolicyArns: ['own', ARN] });
+    expect(
+      siblingOwnedRevertDesired('AWS::IAM::User', 'u', { Groups: [] }, { Groups: ['Admins'] }, { Groups: [] }, ctx({ Add: { resourceType: 'AWS::IAM::UserToGroupAddition', properties: { GroupName: 'admins', Users: ['U'] } } }))
+    ).toEqual({ Groups: ['Admins'] });
+  });
+});

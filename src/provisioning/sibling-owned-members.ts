@@ -60,6 +60,8 @@ import {
   type SiblingWrite,
 } from './sibling-owned-members/rows.js';
 
+import { withLiveHelperOwnedMembers } from './sibling-owned-members/helper-readd.js';
+
 export { SIBLING_OWNED_ROWS } from './sibling-owned-members/rows.js';
 export { SIBLING_WRITE_PAIRS, type SiblingWritePair } from './sibling-owned-members/pairs.js';
 
@@ -310,8 +312,8 @@ export function stripSiblingOwnedParentMembers(
  * {@link SIBLING_OWNED_ROWS} row the LIVE sibling-owned members of `aws` (the
  * raw readback, `update()`'s previous side) come back in. A provider then
  * finds each such member on both sides and neither removes nor re-adds it,
- * whether or not its own readback filtered it. The two older helpers' members
- * need no re-add: their providers' readbacks never carry them.
+ * whether or not its own readback filtered it. The two older helpers'
+ * members come back the same way (`sibling-owned-members/helper-readd.ts`).
  */
 export function siblingOwnedRevertDesired(
   resourceType: string,
@@ -330,6 +332,9 @@ export function siblingOwnedRevertDesired(
     context
   ).baseline;
   out = stripSiblingOwnedSgRules(resourceType, physicalId, out, aws, properties, context).baseline;
+  // Their live members come back too: a Cloud Control readback (the previous
+  // side) holds them, where the helpers' SDK readbacks drop them.
+  out = withLiveHelperOwnedMembers(resourceType, physicalId, out, aws, properties, context);
   for (const [row, owned] of ownedByRow(resourceType, physicalId, context)) {
     const path = pathOf(row);
     const stripped = withoutOwned(out, row, owned, properties, aws);
