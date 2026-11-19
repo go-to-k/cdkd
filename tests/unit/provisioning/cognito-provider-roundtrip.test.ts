@@ -126,17 +126,14 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
     expect(input.UserPoolAddOns).toEqual({ AdvancedSecurityMode: 'ENFORCED' });
   });
 
-  // Mechanical guard for the truthy-gate failure mode on string fields
-  // where empty-string is a legal AWS-clear value. See
-  // docs/provider-rules.md#update-must-gate-optional-fields-on-undefined-not-truthy.
-  //
-  // When state has `EmailVerificationMessage: ''` (placeholder for "no
-  // override") and AWS-side has a real message, `cdkd drift --revert`
-  // pushes `''` back through update(). A truthy gate would silently
-  // drop the empty string, the AWS update succeeds without clearing
-  // the message, `--revert` reports `✓ reverted`, and the next drift
-  // re-detects the same drift.
-  it('truthy-gate — empty-string message placeholders DO reach UpdateUserPool input', async () => {
+  // Issue #6645. When state has `EmailVerificationMessage: ''` (the
+  // placeholder for "unset") and AWS has a message added out of band,
+  // `cdkd drift --revert` pushes `''` back through update(). AWS REFUSES
+  // `''` for all four members (minimum length + pattern, measured), and an
+  // `UpdateUserPool` OMITTING a member clears it (measured, and what
+  // CloudFormation does on removal), so the placeholder is left off the wire
+  // and the omission is the clear.
+  it('empty-string message placeholders are left off UpdateUserPool, omission clears them', async () => {
     mockSend.mockResolvedValueOnce({}); // UpdateUserPool
     mockSend.mockResolvedValueOnce({
       UserPool: { Arn: `arn:aws:cognito-idp:us-east-1:0:userpool/${PHYS_ID}` },
@@ -158,12 +155,37 @@ describe('CognitoUserPoolProvider read-update round-trip', () => {
     expect(updateCall).toBeDefined();
     const input = updateCall![0].input as Record<string, unknown>;
 
-    // The empty-string placeholders MUST reach AWS (it's the documented
-    // way to clear these fields). A truthy gate would drop them.
-    expect(input.EmailVerificationMessage).toBe('');
-    expect(input.EmailVerificationSubject).toBe('');
-    expect(input.SmsAuthenticationMessage).toBe('');
-    expect(input.SmsVerificationMessage).toBe('');
+    for (const member of [
+      'EmailVerificationMessage',
+      'EmailVerificationSubject',
+      'SmsAuthenticationMessage',
+      'SmsVerificationMessage',
+    ]) {
+      expect(input, member).not.toHaveProperty(member);
+    }
+  });
+
+  it('a non-empty message (an out-of-band change being reverted) still reaches UpdateUserPool', async () => {
+    mockSend.mockResolvedValueOnce({});
+    mockSend.mockResolvedValueOnce({
+      UserPool: { Arn: `arn:aws:cognito-idp:us-east-1:0:userpool/${PHYS_ID}` },
+    });
+    const desired = {
+      UserPoolName: 'p',
+      EmailVerificationMessage: 'code {####}',
+      EmailVerificationSubject: 'subject',
+      SmsAuthenticationMessage: 'auth {####}',
+      SmsVerificationMessage: 'sms {####}',
+    };
+    await provider.update('L', PHYS_ID, 'AWS::Cognito::UserPool', desired, desired);
+    const input = mockSend.mock.calls.find((c) => c[0] instanceof UpdateUserPoolCommand)![0]
+      .input as Record<string, unknown>;
+    expect(input).toMatchObject({
+      EmailVerificationMessage: 'code {####}',
+      EmailVerificationSubject: 'subject',
+      SmsAuthenticationMessage: 'auth {####}',
+      SmsVerificationMessage: 'sms {####}',
+    });
   });
 
   // Full no-drift round-trip: every always-emit placeholder from
