@@ -13,6 +13,18 @@ import { unchangedBehindSecretReference } from '../../secret-reference-immutable
 import { withRemovalDefaults } from '../../update-removal.js';
 import { replacedDeleteFailureVerdict } from '../../../deployment/rollback-executor/replaced-survivor.js';
 import { certificateInUseByName, isCertificateInUseError } from './shared.js';
+import { isDriftRevert, revertReplacementRefusal } from '../../revert-no-replace.js';
+
+/**
+ * The certificate's names as ACM holds them: the SubjectAlternativeNames plus
+ * the DomainName, deduplicated and sorted, as one comparable string.
+ */
+function sameNamesWithDomain(properties: Record<string, unknown>): string {
+  const sans = properties['SubjectAlternativeNames'];
+  const names = new Set<unknown>(Array.isArray(sans) ? sans : sans === undefined ? [] : [sans]);
+  names.add(properties['DomainName']);
+  return JSON.stringify([...names].map((n) => JSON.stringify(n)).sort());
+}
 
 export async function update(
   this: ACMCertificateProvider,
@@ -61,6 +73,17 @@ export async function update(
   let changedImmutable: (typeof immutableFields)[number] | undefined;
   for (const k of immutableFields) {
     if (JSON.stringify(properties[k]) === JSON.stringify(previousProperties[k])) continue;
+    // go-to-k/cdkd#6638: ACM lists the DomainName among the
+    // SubjectAlternativeNames it reports, so a record with no observed
+    // baseline (SANs without it, or none) differs from the readback only by
+    // that echo. A revert reads the pair as no change; a deploy is unchanged.
+    if (
+      k === 'SubjectAlternativeNames' &&
+      isDriftRevert(context) &&
+      sameNamesWithDomain(properties) === sameNamesWithDomain(previousProperties)
+    ) {
+      continue;
+    }
     // An absent CertificateExport IS `DISABLED` (CloudFormation's default),
     // and a readback can omit `Options.Export`: the pair is no change, so it
     // must not replace the certificate (a `drift --revert` reaches here).
@@ -85,6 +108,16 @@ export async function update(
     break;
   }
   if (changedImmutable) {
+    // go-to-k/cdkd#6638: a revert never requests a new certificate and
+    // deletes the recorded one (a new ARN, and a consumer such as a CloudFront
+    // distribution keeps pointing at the deleted one).
+    if (isDriftRevert(context)) {
+      throw revertReplacementRefusal(
+        resourceType,
+        logicalId,
+        `its ${changedImmutable} differs from the live certificate's and cannot change in place`
+      );
+    }
     this.logger.debug(`${changedImmutable} changed, replacing ACM certificate: ${physicalId}`);
     // Issue #2169 covers this call too, for free: if the new certificate's
     // ISSUED wait fails, `create()`'s own catch retires it before the error

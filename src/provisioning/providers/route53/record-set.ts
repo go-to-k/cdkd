@@ -262,7 +262,11 @@ export async function updateRecordSet(
     this.logger.debug(`Successfully updated record set ${logicalId}`);
 
     return {
-      physicalId: compositeId,
+      // go-to-k/cdkd#6638: a revert UPSERTs the recorded record and never
+      // moves its identity, so it keeps the recorded id: a pre-#1658 scalar
+      // id (the record name) would otherwise read as a replacement to the
+      // revert's backstop. A deploy re-builds the composite as before.
+      physicalId: context?.desiredFromAwsReadback === true ? physicalId : compositeId,
       // A renamed record IS a new physical record, whatever the composite id
       // (which omits SetIdentifier) says. For a SetIdentifier-only rename the
       // id is unchanged, so the engine logs "replaced: X -> X".

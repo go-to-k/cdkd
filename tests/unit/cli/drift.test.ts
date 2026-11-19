@@ -3018,7 +3018,7 @@ describe('cdkd drift', () => {
     });
 
     // Issue #1819: the revert landed, but the provider left something behind
-    // (a replacement whose old resource survives). The revert still SUCCEEDS --
+    // (since go-to-k/cdkd#6638 an in-place partial: a revert never replaces). The revert still SUCCEEDS --
     // the resource is at the desired state -- so this annotates the line rather
     // than failing it. Without a test the whole arm was deletable.
     it('--revert annotates the succeeded line when the provider reports a partial', async () => {
@@ -3036,7 +3036,7 @@ describe('cdkd drift', () => {
         readCurrentState: async () => ({ ValidationMethod: 'EMAIL' }),
         update: vi.fn(async () => ({
           physicalId: 'arn:aws:acm:us-east-1:0:certificate/new',
-          wasReplaced: true,
+          wasReplaced: false,
           outcome: 'partial' as const,
           reason: 'old certificate arn:aws:acm:us-east-1:0:certificate/old is still in use',
         })),
@@ -3852,11 +3852,11 @@ describe('cdkd drift', () => {
           }),
           update: async (
             _l: string,
-            _p: string,
+            physicalId: string,
             _t: string,
             newProperties: Record<string, unknown>
           ) => ({
-            physicalId: 'phys',
+            physicalId,
             wasReplaced: false,
             effectiveProperties: { ...newProperties, GatewayId: 'igw-NARROWED' },
           }),
@@ -3950,7 +3950,14 @@ describe('cdkd drift', () => {
 
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
-        expect(error).toBeUndefined();
+        // go-to-k/cdkd#6638: a revert that REPLACED the resource is a named
+        // failure, never "reverted"; the record still takes what AWS holds.
+        expect(error).toBeDefined();
+        // A partly failed revert: PartialFailureError's exit 2.
+        expect(exitSpy).toHaveBeenCalledWith(2);
+        expect(errorSpy.mock.calls.flat().join('\n')).toContain(
+          'REPLACED the resource or changed its identity instead of reverting it in place'
+        );
         expect(mockSaveState).toHaveBeenCalledTimes(1);
         const [, , savedState, saveOptions] = mockSaveState.mock.calls[0]!;
         const saved = savedState.resources['Ingress1']!;
@@ -4002,7 +4009,14 @@ describe('cdkd drift', () => {
 
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
-        expect(error).toBeUndefined();
+        // go-to-k/cdkd#6638: a revert that REPLACED the resource is a named
+        // failure, never "reverted"; the record still takes what AWS holds.
+        expect(error).toBeDefined();
+        // A partly failed revert: PartialFailureError's exit 2.
+        expect(exitSpy).toHaveBeenCalledWith(2);
+        expect(errorSpy.mock.calls.flat().join('\n')).toContain(
+          'REPLACED the resource or changed its identity instead of reverting it in place'
+        );
         const [, , savedState] = mockSaveState.mock.calls[0]!;
         const saved = savedState.resources['Ingress1']!;
         expect(saved.physicalId).toBe('sg-2|tcp|443|443|10.0.0.0/8');
@@ -4027,7 +4041,11 @@ describe('cdkd drift', () => {
 
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
-        expect(error).toBeUndefined();
+        // go-to-k/cdkd#6638: a `wasReplaced` answer fails the revert, and
+        // still writes nothing when it names the recorded identity.
+        expect(error === undefined).toBe(!answer.wasReplaced);
+        if (answer.wasReplaced) expect(exitSpy).toHaveBeenCalledWith(2);
+        else expect(exitSpy).not.toHaveBeenCalled();
         // Positive control: the revert really ran, so the absence is the answer.
         expect(updateMock).toHaveBeenCalledTimes(1);
         expect(mockSaveState).not.toHaveBeenCalled();
@@ -4088,7 +4106,7 @@ describe('cdkd drift', () => {
           readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
           update: async () => ({
             physicalId: 'sgr-1',
-            wasReplaced: true,
+            wasReplaced: false,
             attributes: { Id: 'sgr-new' },
             effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
           }),
@@ -4122,7 +4140,14 @@ describe('cdkd drift', () => {
 
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
-        expect(error).toBeUndefined();
+        // go-to-k/cdkd#6638: a revert that REPLACED the resource is a named
+        // failure, never "reverted"; the record still takes what AWS holds.
+        expect(error).toBeDefined();
+        // A partly failed revert: PartialFailureError's exit 2.
+        expect(exitSpy).toHaveBeenCalledWith(2);
+        expect(errorSpy.mock.calls.flat().join('\n')).toContain(
+          'REPLACED the resource or changed its identity instead of reverting it in place'
+        );
         expect(mockSaveState).toHaveBeenCalledTimes(1);
         const [, , savedState] = mockSaveState.mock.calls[0]!;
         expect(savedState.resources['Ingress1']!.physicalId).toBe('sg-2|tcp|443|443|10.0.0.0/8');
@@ -4324,7 +4349,14 @@ describe('cdkd drift', () => {
 
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
-        expect(error).toBeUndefined();
+        // go-to-k/cdkd#6638: a revert that REPLACED the resource is a named
+        // failure, never "reverted"; the record still takes what AWS holds.
+        expect(error).toBeDefined();
+        // A partly failed revert: PartialFailureError's exit 2.
+        expect(exitSpy).toHaveBeenCalledWith(2);
+        expect(errorSpy.mock.calls.flat().join('\n')).toContain(
+          'REPLACED the resource or changed its identity instead of reverting it in place'
+        );
         expect(updateMock).toHaveBeenCalledTimes(1);
         expect(mockSaveState).not.toHaveBeenCalled();
       });
@@ -4344,7 +4376,14 @@ describe('cdkd drift', () => {
 
         const { error } = await runDrift(['TestStack', '--revert', '--yes']);
 
-        expect(error).toBeUndefined();
+        // go-to-k/cdkd#6638: a revert that REPLACED the resource is a named
+        // failure, never "reverted"; the record still takes what AWS holds.
+        expect(error).toBeDefined();
+        // A partly failed revert: PartialFailureError's exit 2.
+        expect(exitSpy).toHaveBeenCalledWith(2);
+        expect(errorSpy.mock.calls.flat().join('\n')).toContain(
+          'REPLACED the resource or changed its identity instead of reverting it in place'
+        );
         const [, , savedState] = mockSaveState.mock.calls[0]!;
         expect(savedState.resources['Ingress1']!.physicalId).toBe('sg-1|tcp|443|443|10.0.0.0/8');
         expect(savedState.resources['Ingress1']!.attributes).toEqual({ Id: 'sgr-new' });
@@ -4425,7 +4464,7 @@ describe('cdkd drift', () => {
           ...driftedIngress,
           update: async () => ({
             physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
-            wasReplaced: true,
+            wasReplaced: false,
             attributes,
           }),
         });
@@ -4460,7 +4499,7 @@ describe('cdkd drift', () => {
           readCurrentState: async () => ({ IpProtocol: 6, FromPort: 8080 }),
           update: async () => ({
             physicalId: 'sgr-1',
-            wasReplaced: true,
+            wasReplaced: false,
             attributes: { Id: 'sgr-new' },
             effectiveProperties: { IpProtocol: 'tcp', FromPort: 443 },
           }),
@@ -4488,7 +4527,7 @@ describe('cdkd drift', () => {
           ...driftedIngress,
           update: async () => ({
             physicalId: 'sg-1|tcp|443|443|10.0.0.0/8',
-            wasReplaced: true,
+            wasReplaced: false,
             attributes: { Id: 'sgr-new' },
           }),
         });

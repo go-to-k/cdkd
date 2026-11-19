@@ -128,7 +128,8 @@ export async function applyUpdate(
         previousProperties,
         context?.maskSecrets,
         context?.replayingState === true,
-        context?.recordedAttributes
+        context?.recordedAttributes,
+        context?.desiredFromAwsReadback === true
       );
     case 'AWS::EC2::Instance':
       return this.updateInstance(

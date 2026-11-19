@@ -10,7 +10,9 @@
 # template diffs to no changes -> recreate the function on Cloud Control ->
 # premise: the function really was re-created (its LastModified moved) ->
 # THE ARM: `get-policy` holds the statement again, and state records the
-# permission -> destroy + gone-probes.
+# permission -> go-to-k/cdkd#6638: the statement re-added out of band with
+# another principal, `cdkd drift --revert -y` exits 2 refusing to remove and
+# re-add it -> destroy + gone-probes.
 #
 # Before the fix the permission was skipped as unchanged: `get-policy`
 # answered ResourceNotFoundException after a green deploy.
@@ -185,6 +187,50 @@ grep -q 'No changes detected' <<<"${RECREATE_OUT}" && {
   exit 1
 }
 echo "    OK: function recreated on Cloud Control under ${P1}; its permission re-created"
+
+echo "==> Phase 3b: drift --revert refuses to re-create the permission (go-to-k/cdkd#6638)"
+# A permission has no update API: its SDK update() removes the statement and
+# adds it again, so the function's policy lacks it in between. A revert must
+# refuse that. The statement is re-added OUT OF BAND under the same id with
+# another principal, so the record's Principal differs from AWS's.
+PERM_SID="${PERM_ID##*|}"
+[ -n "${PERM_SID}" ] || { echo "FAIL: phase 3b premise: no statement id in '${PERM_ID}'" >&2; exit 1; }
+[ "$(record "ChildPermission" '.provisionedBy // "sdk"')" = "sdk" ] || {
+  echo "FAIL: phase 3b premise: the permission is not on the SDK route; the arm would not reach its provider" >&2; exit 1; }
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+aws lambda remove-permission --function-name "${FN_NAME}" --statement-id "${PERM_SID}" --region "${REGION}"
+aws lambda add-permission --function-name "${FN_NAME}" --statement-id "${PERM_SID}" --region "${REGION}" \
+  --action lambda:InvokeFunction --principal s3.amazonaws.com --source-account "${ACCOUNT_ID}" >/dev/null
+# The statement's principal service, or a hard failure when it is gone.
+statement_principal() {
+  aws lambda get-policy --function-name "${FN_NAME}" --region "${REGION}" --query Policy --output text \
+    | jq -r --arg s "${PERM_SID}" '[.Statement[] | select(.Sid == $s) | .Principal.Service] | if length == 1 then .[0] else "MISSING" end'
+}
+[ "$(statement_principal)" = "s3.amazonaws.com" ] || { echo "FAIL: phase 3b premise: the out-of-band statement is not in the policy" >&2; exit 1; }
+set +e
+DRIFT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
+DRIFT_RC=$?
+set -e
+printf '%s\n' "${DRIFT_OUT}" | sed 's/^/    | /'
+[ "${DRIFT_RC}" -eq 1 ] || { echo "FAIL: phase 3b premise: cdkd drift exited ${DRIFT_RC}, want 1" >&2; exit 1; }
+grep -q 'ChildPermission' <<<"${DRIFT_OUT}" || { echo "FAIL: phase 3b premise: the drift report does not name ChildPermission" >&2; exit 1; }
+set +e
+REVERT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y 2>&1)
+REVERT_RC=$?
+set -e
+printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
+[ "${REVERT_RC}" -eq 2 ] || { echo "FAIL: phase 3b: cdkd drift --revert exited ${REVERT_RC}, want 2 (the permission refused)" >&2; exit 1; }
+REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}" | grep -E 'ChildPermission[^ ]* \(AWS::Lambda::Permission\): could not revert' || true)"
+[ -n "${REFUSAL}" ] || { echo "FAIL: phase 3b: no 'could not revert' line for ChildPermission" >&2; exit 1; }
+grep -q 'a drift revert never replaces a resource' <<<"${REFUSAL}" || {
+  echo "FAIL: phase 3b: the refusal does not say a revert never replaces: ${REFUSAL}" >&2; exit 1; }
+# THE ARM: the statement was never removed and re-added, so it still carries
+# the out-of-band principal, and the record still names it.
+[ "$(statement_principal)" = "s3.amazonaws.com" ] || {
+  echo "FAIL: phase 3b: the statement's principal is '$(statement_principal)' — the revert removed and re-added it" >&2; exit 1; }
+[ "$(record "ChildPermission" '.physicalId')" = "${PERM_ID}" ] || {
+  echo "FAIL: phase 3b: the permission's physical id moved from ${PERM_ID}" >&2; exit 1; }
+echo "    OK: the revert refused; statement ${PERM_SID} untouched"
 
 echo "==> Phase 4: Destroy + gone-probes"
 ROLE_NAME=$(record "FnRole" '.physicalId')

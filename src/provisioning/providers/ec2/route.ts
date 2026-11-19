@@ -31,6 +31,7 @@ import {
   routeTargetParams,
 } from './network-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { isDriftRevert, revertReplacementRefusal } from '../../revert-no-replace.js';
 
 // ─── AWS::EC2::RouteTable ─────────────────────────────────────────
 
@@ -419,6 +420,17 @@ export async function updateRoute(
   // The bag names a different route than the physical id (a destination or
   // route table change that did not take the replacement path): delete the
   // recorded route and create the desired one.
+  //
+  // go-to-k/cdkd#6638: never on a revert, which would delete the recorded
+  // route (traffic through it drops until the create lands) and record a
+  // new id.
+  if (isDriftRevert(context)) {
+    throw revertReplacementRefusal(
+      resourceType,
+      logicalId,
+      'its route table or destination differs from the route its physical id names'
+    );
+  }
   try {
     await this.deleteRoute(
       logicalId,

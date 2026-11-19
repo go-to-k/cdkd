@@ -185,7 +185,8 @@ describe('EC2Provider AWS::EC2::Route effectiveProperties (#1591)', () => {
         RESOURCE_TYPE,
         multiDestination(),
         { RouteTableId: ROUTE_TABLE, DestinationCidrBlock: '10.9.0.0/16' },
-        { desiredFromAwsReadback: true }
+        // A rollback replay: a drift revert refuses this arm (go-to-k/cdkd#6638).
+        { replayingState: true }
       );
 
       expect(result.effectiveProperties).toEqual({

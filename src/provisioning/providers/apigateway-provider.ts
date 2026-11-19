@@ -390,7 +390,8 @@ export class ApiGatewayProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    driftRevert = false
   ): Promise<ResourceUpdateResult> {
     return updateResource.call(
       this,
@@ -399,7 +400,8 @@ export class ApiGatewayProvider implements ResourceProvider {
       resourceType,
       properties,
       previousProperties,
-      log
+      log,
+      driftRevert
     );
   }
 

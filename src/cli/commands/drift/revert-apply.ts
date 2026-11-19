@@ -34,6 +34,7 @@ import {
   sameRecordedJson,
 } from './revert-payload.js';
 import type { ApplyRevertUpdateArgs } from './revert-outcome.js';
+import type { ResourceUpdateResult } from '../../../types/resource.js';
 
 /**
  * The `provider.update` half of {@link revertDriftedOutcome}: send the revert
@@ -45,7 +46,6 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
     tally,
     report,
     narrowedByLogicalId,
-    reRecordedByLogicalId,
     settledByRevert,
     outcome,
     stateResource,
@@ -163,6 +163,22 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
       // was one of three byte-identical eager copies (issue #2038).
       { logger: maskingRetryLogger(logger, secrets) }
     );
+    // go-to-k/cdkd#6638: a revert never replaces a resource. Each provider
+    // whose update() can re-create the resource refuses on a revert before any
+    // call (`provisioning/revert-no-replace.ts`); this is the backstop for one
+    // that does not. The replacement has already happened, so it fails LOUDLY
+    // (counted failed, exit non-zero) and the record still takes the identity
+    // AWS now holds: keeping the old id would name a resource that is gone and
+    // orphan the new one.
+    const replacedBy = revertReplacementOf(stateResource.physicalId, updateResult);
+    if (replacedBy !== undefined) {
+      tally.totalFailed++;
+      logger.error(
+        safeMsg`  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): the provider REPLACED the resource or changed its identity instead of reverting it in place (${maskSecretsInText(replacedBy, secrets)}). A drift revert must never replace a resource — this is a cdkd bug, please report it. State records the identity the provider returned for a replacement, so it is not orphaned; check its consumers.`
+      );
+      recordReturnedIdentity(args, updateResult, 'replaced');
+      return;
+    }
     tally.totalSucceeded++;
     // go-to-k/cdkd#5380: AWS now holds the baseline, so what a
     // failed deploy left unsettled here is settled.
@@ -374,73 +390,7 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
           `${maskSecretsInText(describeAwsFailure(captureErr).detail, secrets)}`
       );
     }
-    // go-to-k/cdkd#4476: the record takes the identity `update()`
-    // returned, as the rollback replay's does (go-to-k/cdkd#4434) — a
-    // provider that re-creates on update (`SecurityGroupIngress`
-    // revokes and re-authorizes, minting a new `sgr-` id) otherwise
-    // leaves the record naming what it removed, which `cdkd export` and
-    // a later `Fn::GetAtt` read. `recordAfterRollbackUpdate` owns the
-    // merge (wholesale on `wasReplaced`, key-wise in place, untouched
-    // when none is returned, and the replaced physical id). Only its
-    // `physicalId` and `attributes` are taken: this command records a
-    // narrowing per key above, never the `properties` bag wholesale.
-    //
-    // In its own try for the same reason as the capture above: AWS has
-    // already been reverted.
-    try {
-      if (updateResult !== undefined) {
-        // A `NoEcho` declaration becomes mask-only needles BEFORE the
-        // redaction below, as the deploy engine and the rollback
-        // replay register it, or a custom resource's masked `Data`
-        // lands in `state.json` in the clear.
-        const noEchoDeclared = recordNoEchoAttributeValues(updateResult, secrets, newProperties);
-        const next = recordAfterRollbackUpdate(stateResource, updateResult);
-        // The attributes alone are scrubbed, by value, with the
-        // revert's resolved secrets — `scrubResourceRecord`'s
-        // `attributes` arm. The rest of the record is the one state
-        // already holds, redacted when it was written.
-        const keptAttributes =
-          next.attributes === undefined
-            ? undefined
-            : keepRecordedAttributesOverMask(
-                redactForState(next.attributes, {
-                  provenance: 'value-scan',
-                  secrets: secrets,
-                }),
-                next.attributes,
-                stateResource.attributes,
-                noEchoDeclared
-              );
-        // go-to-k/cdkd#4043 (review LOW-7): an attribute the record
-        // declares `NoEcho` (`noEchoAttributeNames`) is kept `***`
-        // whatever its type or length, as the deploy's save keeps
-        // it; the value scan above cannot key a number or a short
-        // value.
-        const declaredNames = noEchoAttributeNamesOf(stateResource) ?? [];
-        const attributes =
-          keptAttributes === undefined || declaredNames.length === 0
-            ? keptAttributes
-            : Object.fromEntries(
-                Object.entries(keptAttributes).map(([name, value]) => [
-                  name,
-                  declaredNames.includes(name) ? maskWholeValue(value) : value,
-                ])
-              );
-        if (
-          next.physicalId !== stateResource.physicalId ||
-          !sameRecordedJson(attributes, stateResource.attributes)
-        ) {
-          reRecordedByLogicalId.set(outcome.logicalId, {
-            physicalId: next.physicalId,
-            attributes,
-          });
-        }
-      }
-    } catch (recordErr) {
-      logger.warn(
-        safeMsg`  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): reverted, but the attributes the provider returned could not be recorded — ${maskSecretsInText(describeAwsFailure(recordErr).detail, secrets)}`
-      );
-    }
+    recordReturnedIdentity(args, updateResult, 'reverted');
   } catch (err) {
     // Distinguish "the AWS update failed" from "this resource type
     // does not support in-place update at all". The latter cannot be
@@ -458,6 +408,104 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
     const msg = maskSecretsInText(describeAwsFailure(err).detail, secrets);
     logger.error(
       `  ✗ ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): AWS update failed — ${msg}`
+    );
+  }
+}
+
+/**
+ * What a revert's `update()` result says about a REPLACEMENT, or `undefined`
+ * when the resource kept its identity: `wasReplaced`, or a physical id other
+ * than the recorded one (go-to-k/cdkd#6638). Exported for the unit test.
+ */
+export function revertReplacementOf(
+  recordedPhysicalId: string,
+  updateResult: ResourceUpdateResult | undefined
+): string | undefined {
+  if (updateResult === undefined) return undefined;
+  const idChanged =
+    typeof updateResult.physicalId === 'string' &&
+    updateResult.physicalId !== '' &&
+    updateResult.physicalId !== recordedPhysicalId;
+  if (idChanged) {
+    return `physical id ${recordedPhysicalId} became ${updateResult.physicalId}`;
+  }
+  return updateResult.wasReplaced === true
+    ? `reported a replacement under the same physical id ${recordedPhysicalId}`
+    : undefined;
+}
+
+/** Record the identity and attributes a revert's `update()` returned. */
+function recordReturnedIdentity(
+  args: ApplyRevertUpdateArgs,
+  updateResult: ResourceUpdateResult | undefined,
+  verdict: 'reverted' | 'replaced'
+): void {
+  const { logger, report, reRecordedByLogicalId, outcome, stateResource, secrets, newProperties } =
+    args;
+  // go-to-k/cdkd#4476: the record takes the identity `update()`
+  // returned, as the rollback replay's does (go-to-k/cdkd#4434): an
+  // in-place update can return new attributes, and the #6638 backstop's
+  // replacement a new physical id, which the record must name or
+  // `cdkd export` and a later `Fn::GetAtt` read what AWS no longer has. `recordAfterRollbackUpdate` owns the
+  // merge (wholesale on `wasReplaced`, key-wise in place, untouched
+  // when none is returned, and the replaced physical id). Only its
+  // `physicalId` and `attributes` are taken: this command records a
+  // narrowing per key above, never the `properties` bag wholesale.
+  //
+  // In its own try: AWS has already been written, so a throw here must not
+  // be re-reported as `AWS update failed`.
+  try {
+    if (updateResult !== undefined) {
+      // A `NoEcho` declaration becomes mask-only needles BEFORE the
+      // redaction below, as the deploy engine and the rollback
+      // replay register it, or a custom resource's masked `Data`
+      // lands in `state.json` in the clear.
+      const noEchoDeclared = recordNoEchoAttributeValues(updateResult, secrets, newProperties);
+      const next = recordAfterRollbackUpdate(stateResource, updateResult);
+      // The attributes alone are scrubbed, by value, with the
+      // revert's resolved secrets — `scrubResourceRecord`'s
+      // `attributes` arm. The rest of the record is the one state
+      // already holds, redacted when it was written.
+      const keptAttributes =
+        next.attributes === undefined
+          ? undefined
+          : keepRecordedAttributesOverMask(
+              redactForState(next.attributes, {
+                provenance: 'value-scan',
+                secrets: secrets,
+              }),
+              next.attributes,
+              stateResource.attributes,
+              noEchoDeclared
+            );
+      // go-to-k/cdkd#4043 (review LOW-7): an attribute the record
+      // declares `NoEcho` (`noEchoAttributeNames`) is kept `***`
+      // whatever its type or length, as the deploy's save keeps
+      // it; the value scan above cannot key a number or a short
+      // value.
+      const declaredNames = noEchoAttributeNamesOf(stateResource) ?? [];
+      const attributes =
+        keptAttributes === undefined || declaredNames.length === 0
+          ? keptAttributes
+          : Object.fromEntries(
+              Object.entries(keptAttributes).map(([name, value]) => [
+                name,
+                declaredNames.includes(name) ? maskWholeValue(value) : value,
+              ])
+            );
+      if (
+        next.physicalId !== stateResource.physicalId ||
+        !sameRecordedJson(attributes, stateResource.attributes)
+      ) {
+        reRecordedByLogicalId.set(outcome.logicalId, {
+          physicalId: next.physicalId,
+          attributes,
+        });
+      }
+    }
+  } catch (recordErr) {
+    logger.warn(
+      safeMsg`  ${report.stackName}/${outcome.logicalId} (${outcome.resourceType}): ${verdict}, but the attributes the provider returned could not be recorded — ${maskSecretsInText(describeAwsFailure(recordErr).detail, secrets)}`
     );
   }
 }
