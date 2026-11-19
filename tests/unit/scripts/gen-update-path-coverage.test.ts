@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { beforeAll, describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -17,6 +17,7 @@ import {
   type SourceHost,
   type TypeRow,
 } from '../../../scripts/gen-update-path-coverage.ts';
+import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 const ROOT = '/virtual/src/provisioning/providers';
 const PROVIDER = `${ROOT}/fake-provider.ts`;
@@ -154,7 +155,7 @@ describe('gen-update-path-coverage: what counts as a read on the update path', (
   });
 
   it('does not walk a generated module, whose tables name every type\'s properties', () => {
-    const generated = `${ROOT}/../coverage.generated.ts`;
+    const generated = '/virtual/src/provisioning/coverage.generated.ts';
     const rows = classify({
       handled: ['A'],
       prelude: `import { TABLE } from '../coverage.generated.js';`,
@@ -399,8 +400,13 @@ describe('parseReplacementRules', () => {
   });
 });
 
-describe('gen-update-path-coverage on the real tree', () => {
-  const report = loadReport();
+// Each case walks every provider file of the real tree (seconds, more on a
+// loaded CI runner), so the in-process 5 s default does not fit.
+describe('gen-update-path-coverage on the real tree', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
+  let report: ReturnType<typeof loadReport>;
+  beforeAll(() => {
+    report = loadReport();
+  }, CONTENDED_CASE_TIMEOUT_MS);
 
   it('has no gap, no unresolved call and no stale allow-list entry', () => {
     expect(findGaps(report)).toEqual([]);
