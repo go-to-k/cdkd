@@ -1,0 +1,998 @@
+/**
+ * Codegen + CI critic: does every SDK provider's `update()` path reach each
+ * property it handles? (issue #6611)
+ *
+ * THE GAP THIS CLOSES
+ * -------------------
+ * The most common `severity:high` class of late 2026-10 was an update that
+ * silently never reaches AWS: the provider writes a property on create, the
+ * diff shows the change, the deploy reports success, and AWS keeps the old
+ * value (#5140, #5299, #5313, #5354, #5357, #5365, #5438, #5446). The property
+ * coverage (`gen-property-coverage.ts`) records what create OR update writes,
+ * so it cannot tell the update path apart.
+ *
+ * CLASSIFICATION (per SDK provider type x handled top-level property)
+ * -------------------------------------------------------------------
+ *   - update        — the code reachable from `update()` READS the property:
+ *                     it sends it, refuses its change
+ *                     (`ResourceUpdateNotSupportedError`, which the deploy
+ *                     engine turns into a replacement), or warns about it.
+ *                     All three mean the change is not dropped silently, and
+ *                     telling them apart statically would be a guess.
+ *   - replacement   — the diff replaces the resource for any change of it:
+ *                     `replacementProperties` in cdkd's replacement rules
+ *                     (`src/analyzer/replacement-rules/rules.ts`), or
+ *                     create-only in the committed CFn schema while the rules
+ *                     neither mark it updateable nor give it a conditional
+ *                     predicate (`DiffCalculator`'s fallback order). A
+ *                     CONDITIONAL replacement is not one: its in-place branch
+ *                     still needs the update path.
+ *   - allow-listed  — an {@link UPDATE_PATH_ALLOW_LIST} entry with its reason.
+ *   - gap           — none of the above: a change would be dropped silently.
+ *                     BLOCKS CI.
+ *
+ * HOW "READS" IS DECIDED (offline, TypeScript AST)
+ * ------------------------------------------------
+ * Per provider class, walk from `update()` and follow, transitively:
+ *   - `this.x(...)` / `this.x` to the class member `x` (method, arrow or field);
+ *   - `fn.call(this, ...)` to a companion-file function
+ *     (`scripts/provider-companion-files.ts`);
+ *   - any identifier that resolves to a module-level function or variable of
+ *     the file it appears in, or to an `import` of one from a relative module
+ *     under `src/` (a shared converter, a constant table of property names).
+ * A property counts as read when the walked code holds `<expr>.Prop`,
+ * `<expr>['Prop']`, a destructuring `{ Prop }`, or the string `'Prop'` in any
+ * position other than an object-literal key (an SDK request field named like
+ * the CFn property says nothing about where its value came from).
+ *
+ * A class handling several types is narrowed per type: an `if` / `switch` /
+ * `?:` comparing an expression with an `'AWS::X::Y'` literal walks only the
+ * branch the type under classification can take.
+ *
+ * BOUNDS (the direction is "a read is assumed to be a write")
+ * -----------------------------------------------------------
+ * A read is not proof of a send: a property read only for a log line, a
+ * same-named field of an AWS response, or a name in a list the update walks
+ * for another purpose, counts as `update`. Only TOP-LEVEL properties are
+ * classified: a nested member an update drops (#5365's replica settings) is
+ * out of reach. The check catches
+ * the shape every listed incident had — the update path never looks at the
+ * property at all — and reports nothing about a read that goes nowhere; the
+ * sdk-wire harness (`tests/unit/provisioning/sdk-wire-*.ts`) is the layer
+ * that pins what a call carries.
+ *
+ * Writes `docs/_generated/update-path-coverage.{json,md}`; `--check` fails on
+ * any `gap` and on a stale allow-list entry (one whose property is no longer a
+ * gap), so a fix has to delete its entry and the critic then pins it.
+ *
+ * Usage:
+ *   node --experimental-strip-types scripts/gen-update-path-coverage.ts          # write the matrix
+ *   node --experimental-strip-types scripts/gen-update-path-coverage.ts --check  # fail on a gap
+ */
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+// `typescript-v6` is an npm alias of typescript@6 — TS7 no longer ships the
+// stable JS compiler API (see the note in gen-property-coverage.ts).
+import ts from 'typescript-v6';
+import { parseProviderSource } from './gen-property-coverage.ts';
+import { escapeCell } from './markdown-table.ts';
+import { companionFiles } from './provider-companion-files.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const repoRoot = resolve(__dirname, '..');
+const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
+const FIXTURE_DIR = resolve(repoRoot, 'tests/fixtures/cfn-schemas');
+const RULES_FILE = resolve(repoRoot, 'src/analyzer/replacement-rules/rules.ts');
+const OUT_JSON = resolve(repoRoot, 'docs/_generated/update-path-coverage.json');
+const OUT_MD = resolve(repoRoot, 'docs/_generated/update-path-coverage.md');
+
+export interface AllowListEntry {
+  readonly rationale: string;
+}
+
+/**
+ * `AWS::X::Y#Prop` -> why the update path deliberately does not read it.
+ * Every entry must still be a gap: `--check` refuses a stale one.
+ *
+ * Three kinds, each a change that has nothing to send:
+ *   - DELETE-TIME input: read by `delete()` from the record, which the update
+ *     rewrites, so the next delete honours the new value — as CloudFormation's
+ *     delete handler reads its model.
+ *   - CREATE-TIME input with no update member, where CloudFormation's update
+ *     also leaves the resource as it is (measured where the reason says so).
+ *   - REFUSED by a shape this walk cannot attribute to one property.
+ */
+const DELETE_TIME = (reader: string): AllowListEntry => ({
+  rationale: `delete-time input: ${reader} reads it from the record the update rewrites`,
+});
+export const UPDATE_PATH_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
+  string,
+  AllowListEntry
+>([
+  ['AWS::AppConfig::Environment#DeletionProtectionCheck', DELETE_TIME('DeleteEnvironment (#5875)')],
+  ['AWS::ECR::Repository#EmptyOnDelete', DELETE_TIME("DeleteRepository's force flag (#1340)")],
+  ['AWS::KMS::Key#PendingWindowInDays', DELETE_TIME('ScheduleKeyDeletion')],
+  [
+    'AWS::ApiGateway::RestApi#CloneFrom',
+    {
+      rationale:
+        'create-time input: CreateRestApi clones from it and no UpdateRestApi patch path takes it; ' +
+        'CloudFormation documents No interruption (unmeasured)',
+    },
+  ],
+  [
+    'AWS::CodeCommit::Repository#Code',
+    {
+      rationale:
+        'create-time seed commit: CloudFormation documents that Code is used only at creation and ' +
+        'ignored on update',
+    },
+  ],
+  ...['RestoreToTime', 'RestoreType', 'UseLatestRestorableTime'].map(
+    (p): [string, AllowListEntry] => [
+      `AWS::DocDB::DBCluster#${p}`,
+      {
+        rationale:
+          "restore-time input read by the create alone; CloudFormation's update sends nothing for it " +
+          '(measured, #5628)',
+      },
+    ]
+  ),
+  ...['Domain', 'PublicIpv4Pool'].map((p): [string, AllowListEntry] => [
+    `AWS::EC2::EIP#${p}`,
+    {
+      rationale:
+        'no EC2 call moves an allocated address; CloudFormation neither replaces nor changes it ' +
+        '(measured, #5449)',
+    },
+  ]),
+  ...['AdditionalInfo', 'PropagateTagsToVolumeOnCreation'].map((p): [string, AllowListEntry] => [
+    `AWS::EC2::Instance#${p}`,
+    {
+      rationale: 'applied at launch only; a change to a running instance changes nothing (measured, #5630)',
+    },
+  ]),
+  [
+    'AWS::Events::EventBus#EventSourceName',
+    {
+      rationale:
+        'create-time partner-source binding: UpdateEventBus has no such member; CloudFormation ' +
+        'documents No interruption (unmeasured)',
+    },
+  ],
+  [
+    'AWS::Glue::Trigger#StartOnCreation',
+    {
+      rationale:
+        'create-time action: TriggerUpdate has no such member; CloudFormation documents No ' +
+        'interruption (unmeasured)',
+    },
+  ],
+  [
+    'AWS::RDS::DBCluster#MasterUsername',
+    {
+      rationale:
+        'ModifyDBCluster has no such member; CloudFormation completes the update in place and keeps ' +
+        'the old user (measured, #5467)',
+    },
+  ],
+  [
+    'AWS::ECS::TaskDefinition#TrustedExecutionConfiguration',
+    {
+      rationale:
+        "refused: updateTaskDefinition refuses every changed key but Tags through a loop over the bag's " +
+        'keys, which names no property (#6301)',
+    },
+  ],
+  [
+    'AWS::Glue::SecurityConfiguration#EncryptionConfiguration',
+    {
+      rationale:
+        'refused: the update refuses every change with ResourceUpdateNotSupportedError, as Glue has no ' +
+        'UpdateSecurityConfiguration',
+    },
+  ],
+]);
+
+export const allowKey = (resourceType: string, prop: string): string => `${resourceType}#${prop}`;
+
+// ---------------------------------------------------------------------------
+// Module index: the declarations an identifier in walked code can resolve to.
+// ---------------------------------------------------------------------------
+
+interface ModuleInfo {
+  readonly file: string;
+  readonly sf: ts.SourceFile;
+  /** Module-level function / variable declarations by name. */
+  readonly decls: Map<string, ts.Node>;
+  /** Local import name -> the resolved module file and the imported name. */
+  readonly imports: Map<string, { file: string; name: string }>;
+}
+
+/** A source loader, injectable so unit tests run on in-memory files. */
+export interface SourceHost {
+  read(file: string): string | null;
+}
+
+const diskHost: SourceHost = {
+  read: (file) => (existsSync(file) ? readFileSync(file, 'utf8') : null),
+};
+
+/** `./x.js` from `from` -> the `.ts` file it names, or null outside the host. */
+function resolveImport(from: string, spec: string, host: SourceHost): string | null {
+  if (!spec.startsWith('.')) return null;
+  const base = resolve(dirname(from), spec);
+  const candidates = [
+    base.replace(/\.js$/, '.ts'),
+    `${base}.ts`,
+    join(base.replace(/\.js$/, ''), 'index.ts'),
+  ];
+  for (const c of candidates) if (host.read(c) !== null) return c;
+  return null;
+}
+
+export class ModuleIndex {
+  private readonly cache = new Map<string, ModuleInfo | null>();
+  private readonly host: SourceHost;
+  constructor(host: SourceHost = diskHost) {
+    this.host = host;
+  }
+
+  get(file: string): ModuleInfo | null {
+    if (this.cache.has(file)) return this.cache.get(file)!;
+    const text = this.host.read(file);
+    if (text === null) {
+      this.cache.set(file, null);
+      return null;
+    }
+    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+    const decls = new Map<string, ts.Node>();
+    const imports = new Map<string, { file: string; name: string }>();
+    for (const stmt of sf.statements) {
+      if (ts.isFunctionDeclaration(stmt) && stmt.name) decls.set(stmt.name.text, stmt);
+      else if (ts.isVariableStatement(stmt)) {
+        for (const d of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(d.name)) decls.set(d.name.text, d);
+        }
+      } else if (ts.isClassDeclaration(stmt) && stmt.name) decls.set(stmt.name.text, stmt);
+      else if (
+        ts.isImportDeclaration(stmt) &&
+        ts.isStringLiteral(stmt.moduleSpecifier) &&
+        stmt.importClause &&
+        !stmt.importClause.isTypeOnly
+      ) {
+        const target = resolveImport(file, stmt.moduleSpecifier.text, this.host);
+        if (target === null) continue;
+        const bindings = stmt.importClause.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const el of bindings.elements) {
+            if (el.isTypeOnly) continue;
+            imports.set(el.name.text, {
+              file: target,
+              name: (el.propertyName ?? el.name).text,
+            });
+          }
+        }
+      } else if (
+        ts.isExportDeclaration(stmt) &&
+        stmt.moduleSpecifier &&
+        ts.isStringLiteral(stmt.moduleSpecifier) &&
+        stmt.exportClause &&
+        ts.isNamedExports(stmt.exportClause)
+      ) {
+        // `export { a as b } from './x.js'`: a re-export is resolvable through.
+        const target = resolveImport(file, stmt.moduleSpecifier.text, this.host);
+        if (target === null) continue;
+        for (const el of stmt.exportClause.elements) {
+          imports.set(el.name.text, { file: target, name: (el.propertyName ?? el.name).text });
+        }
+      }
+    }
+    const info: ModuleInfo = { file, sf, decls, imports };
+    this.cache.set(file, info);
+    return info;
+  }
+
+  /** The declaration `name` resolves to in `file`, following imports. */
+  resolve(file: string, name: string, depth = 0): { file: string; node: ts.Node } | null {
+    if (depth > 8) return null;
+    const mod = this.get(file);
+    if (!mod) return null;
+    const local = mod.decls.get(name);
+    if (local) return { file, node: local };
+    const imp = mod.imports.get(name);
+    if (imp) return this.resolve(imp.file, imp.name, depth + 1);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The update-path walk.
+// ---------------------------------------------------------------------------
+
+/**
+ * Is `e` the resource type under update — the `resourceType` parameter (or a
+ * `type` alias)? Narrowing keys on this name only: an `'AWS::X::Y'` compared
+ * with anything else (a referenced resource's `Type`) says nothing about which
+ * type this update serves, and narrowing on it would skip a live branch.
+ */
+function isResourceTypeOperand(e: ts.Expression): boolean {
+  const name = ts.isIdentifier(e) ? e.text : ts.isPropertyAccessExpression(e) ? e.name.text : null;
+  return name === 'resourceType' || name === 'type';
+}
+
+/** The `'AWS::X::Y'` literal the resource type is compared against, with polarity. */
+function typeComparison(expr: ts.Expression): { literal: string; equal: boolean } | null {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isBinaryExpression(e)) return null;
+  const op = e.operatorToken.kind;
+  const equal =
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken;
+  const notEqual =
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken;
+  if (!equal && !notEqual) return null;
+  for (const [lit, other] of [
+    [e.left, e.right],
+    [e.right, e.left],
+  ] as const) {
+    if (
+      ts.isStringLiteralLike(lit) &&
+      /^AWS::[\w]+::[\w]+$/.test(lit.text) &&
+      isResourceTypeOperand(other)
+    ) {
+      return { literal: lit.text, equal };
+    }
+  }
+  return null;
+}
+
+/** Is `node` an object-literal KEY (a name, not a read)? */
+function isObjectLiteralKey(node: ts.Node): boolean {
+  const p = node.parent;
+  if (!p) return false;
+  if ((ts.isPropertyAssignment(p) || ts.isMethodDeclaration(p)) && p.name === node) return true;
+  if (ts.isPropertyDeclaration(p) && p.name === node) return true;
+  return false;
+}
+
+export interface WalkInput {
+  readonly cls: ts.ClassDeclaration;
+  readonly file: string;
+  /** `this:`-typed companion functions by name, with their file. */
+  readonly companions: ReadonlyMap<string, { file: string; fn: ts.FunctionDeclaration }>;
+  readonly index: ModuleIndex;
+}
+
+export interface WalkOutput {
+  /** Every name the update path reads (see the file header). */
+  readonly reads: ReadonlySet<string>;
+  /** False when neither the class nor a resolvable base declares `update`. */
+  readonly hasUpdate: boolean;
+  /**
+   * `this.x(...)` calls reached from `update()` that resolve to no member, no
+   * base-class member and no companion function. What runs behind one is
+   * invisible, so a property read only there would be a false gap — and, the
+   * other way, a confident classification would rest on code never seen.
+   */
+  readonly unresolved: ReadonlySet<string>;
+}
+
+/**
+ * Provider fields that DECLARE property names rather than act on them: the
+ * coverage tables (`handledProperties` lists every property, and two update
+ * paths iterate it for a no-op check) and the removal tables, which assert
+ * what update() does on a removal. Walking one would count every name it
+ * lists as read, so a claim would stand in for the code it describes.
+ */
+const DECLARATIVE_FIELDS: ReadonlySet<string> = new Set([
+  'handledProperties',
+  'unhandledByDesign',
+  'removalDefaults',
+  'removalHandledInUpdate',
+]);
+
+/**
+ * The callable / initialised members of `cls` and of every base class it
+ * `extends` that resolves through the module index, nearest declaration
+ * first, each with the file its body must resolve identifiers in.
+ */
+function classMembers(
+  cls: ts.ClassDeclaration,
+  file: string,
+  index: ModuleIndex
+): Map<string, { node: ts.Node; file: string }> {
+  const out = new Map<string, { node: ts.Node; file: string }>();
+  let current: { cls: ts.ClassDeclaration; file: string } | null = { cls, file };
+  for (let depth = 0; current && depth < 8; depth++) {
+    for (const m of current.cls.members) {
+      if (!m.name || !ts.isIdentifier(m.name) || out.has(m.name.text)) continue;
+      if (DECLARATIVE_FIELDS.has(m.name.text)) continue;
+      const body =
+        ts.isMethodDeclaration(m) || ts.isGetAccessorDeclaration(m)
+          ? m.body
+          : ts.isPropertyDeclaration(m)
+            ? m.initializer
+            : undefined;
+      if (body) out.set(m.name.text, { node: body, file: current.file });
+    }
+    const ext: ts.HeritageClause | undefined = current.cls.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword);
+    const base: ts.Expression | undefined = ext?.types[0]?.expression;
+    const hit: { file: string; node: ts.Node } | null =
+      base && ts.isIdentifier(base) ? index.resolve(current.file, base.text) : null;
+    current = hit && ts.isClassDeclaration(hit.node) ? { cls: hit.node, file: hit.file } : null;
+  }
+  return out;
+}
+
+/** Walk `update()` of one class for one resource type. */
+export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutput {
+  const { cls, file, companions, index } = input;
+  const members = classMembers(cls, file, index);
+  const update = members.get('update');
+  const unresolved = new Set<string>();
+  if (!update) return { reads: new Set(), hasUpdate: false, unresolved };
+
+  const reads = new Set<string>();
+  const visited = new Set<ts.Node>();
+
+  const walkNode = (root: ts.Node, rootFile: string): void => {
+    if (visited.has(root)) return;
+    visited.add(root);
+    const visit = (n: ts.Node): void => {
+      // Per-type narrowing.
+      if (ts.isIfStatement(n)) {
+        const cmp = typeComparison(n.expression);
+        if (cmp) {
+          const takesThen = (cmp.literal === resourceType) === cmp.equal;
+          if (takesThen) visit(n.thenStatement);
+          else if (n.elseStatement) visit(n.elseStatement);
+          return;
+        }
+      }
+      if (ts.isConditionalExpression(n)) {
+        const cmp = typeComparison(n.condition);
+        if (cmp) {
+          const takesThen = (cmp.literal === resourceType) === cmp.equal;
+          visit(takesThen ? n.whenTrue : n.whenFalse);
+          return;
+        }
+      }
+      if (ts.isSwitchStatement(n)) {
+        const clauses = n.caseBlock.clauses;
+        const literalOf = (c: ts.CaseOrDefaultClause): string | null =>
+          ts.isCaseClause(c) && ts.isStringLiteralLike(c.expression) && /^AWS::/.test(c.expression.text)
+            ? c.expression.text
+            : null;
+        if (isResourceTypeOperand(n.expression) && clauses.some((c) => literalOf(c) !== null)) {
+          visit(n.expression);
+          // Enter at the matching label (or `default` when none matches) and
+          // fall through until a clause ends in break / return / throw.
+          let start = clauses.findIndex((c) => literalOf(c) === resourceType);
+          if (start < 0) start = clauses.findIndex((c) => ts.isDefaultClause(c));
+          if (start >= 0) {
+            for (let i = start; i < clauses.length; i++) {
+              const c = clauses[i]!;
+              for (const s of c.statements) visit(s);
+              const last = c.statements[c.statements.length - 1];
+              if (
+                last &&
+                (ts.isBreakStatement(last) || ts.isReturnStatement(last) || ts.isThrowStatement(last))
+              ) {
+                break;
+              }
+            }
+          }
+          return;
+        }
+      }
+
+      // Reads.
+      if (ts.isPropertyAccessExpression(n)) {
+        reads.add(n.name.text);
+        if (n.expression.kind === ts.SyntaxKind.ThisKeyword) {
+          const target = members.get(n.name.text);
+          // A companion `this:` function installed on the prototype (the
+          // mixin shape of ec2-provider.ts) is reached as `this.x()` too.
+          const comp = target ? undefined : companions.get(n.name.text);
+          if (target) walkNode(target.node, target.file);
+          else if (comp?.fn.body) walkNode(comp.fn.body, comp.file);
+          else if (ts.isCallExpression(n.parent) && n.parent.expression === n) {
+            unresolved.add(n.name.text);
+          }
+        }
+      } else if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression)) {
+        reads.add(n.argumentExpression.text);
+      } else if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent)) {
+        const key = n.propertyName ?? n.name;
+        if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) reads.add(key.text);
+      } else if (ts.isShorthandPropertyAssignment(n)) {
+        reads.add(n.name.text);
+      } else if (ts.isStringLiteralLike(n) && !isObjectLiteralKey(n)) {
+        reads.add(n.text);
+      }
+
+      // Edges.
+      if (
+        ts.isCallExpression(n) &&
+        ts.isPropertyAccessExpression(n.expression) &&
+        n.expression.name.text === 'call' &&
+        n.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword
+      ) {
+        let target: ts.Expression = n.expression.expression;
+        while (ts.isParenthesizedExpression(target)) target = target.expression;
+        if (ts.isExpressionWithTypeArguments(target)) target = target.expression;
+        if (ts.isIdentifier(target)) {
+          const comp = companions.get(target.text);
+          if (comp?.fn.body) walkNode(comp.fn.body, comp.file);
+        }
+      }
+      if (ts.isIdentifier(n) && !isDeclarationName(n)) {
+        const hit = index.resolve(rootFile, n.text);
+        // Another CLASS is not followed: those are the infrastructure an
+        // update uses (SDK clients, the logger, `ReplacementRulesRegistry`,
+        // whose rules table names nearly every property), and a `this` in one
+        // is not the provider's.
+        if (hit && !ts.isClassDeclaration(hit.node)) walkNode(hit.node, hit.file);
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(root);
+  };
+
+  walkNode(update.node, update.file);
+  return { reads, hasUpdate: true, unresolved };
+}
+
+function isDeclarationName(n: ts.Identifier): boolean {
+  const p = n.parent;
+  if (!p) return false;
+  if (ts.isPropertyAccessExpression(p) && p.name === n) return true;
+  if (
+    (ts.isFunctionDeclaration(p) ||
+      ts.isVariableDeclaration(p) ||
+      ts.isParameter(p) ||
+      ts.isClassDeclaration(p) ||
+      ts.isMethodDeclaration(p) ||
+      ts.isPropertyDeclaration(p) ||
+      ts.isPropertyAssignment(p) ||
+      ts.isBindingElement(p)) &&
+    (p as { name?: ts.Node }).name === n
+  ) {
+    return true;
+  }
+  return ts.isImportSpecifier(p) || ts.isImportClause(p);
+}
+
+// ---------------------------------------------------------------------------
+// Replacement rules (parsed, not imported: the script stays bootstrap-free).
+// ---------------------------------------------------------------------------
+
+export interface RuleSets {
+  readonly replacement: ReadonlySet<string>;
+  readonly updateable: ReadonlySet<string>;
+  readonly conditional: ReadonlySet<string>;
+}
+
+/**
+ * `this.rules.set('AWS::X::Y', { replacementProperties: new Set([...]),
+ * updateableProperties: new Set([...]), conditionalReplacements: new Map([[...]]) })`
+ * per type. A `rules.set` this cannot read REFUSES: a silently missed
+ * `replacementProperties` would only hide gaps, but a missed `updateable`
+ * entry would invent replacements and hide real gaps too.
+ */
+export function parseReplacementRules(source: string): Map<string, RuleSets> {
+  const sf = ts.createSourceFile('rules.ts', source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const out = new Map<string, RuleSets>();
+  const strings = (e: ts.Expression | undefined, kind: 'Set' | 'Map'): Set<string> => {
+    const s = new Set<string>();
+    if (!e) return s;
+    if (!ts.isNewExpression(e) || !ts.isIdentifier(e.expression) || e.expression.text !== kind) {
+      throw new Error(`replacement rules: expected new ${kind}(...) at ${e.getText().slice(0, 60)}`);
+    }
+    const arr = e.arguments?.[0];
+    if (arr === undefined) return s;
+    // `new Map(['A', 'B'].map((p) => [p, predicate]))`: the keys are the array's.
+    if (
+      kind === 'Map' &&
+      ts.isCallExpression(arr) &&
+      ts.isPropertyAccessExpression(arr.expression) &&
+      arr.expression.name.text === 'map' &&
+      ts.isArrayLiteralExpression(arr.expression.expression)
+    ) {
+      for (const el of arr.expression.expression.elements) {
+        if (!ts.isStringLiteralLike(el)) {
+          throw new Error(`replacement rules: non-literal entry ${el.getText().slice(0, 60)}`);
+        }
+        s.add(el.text);
+      }
+      return s;
+    }
+    if (!ts.isArrayLiteralExpression(arr)) {
+      throw new Error(`replacement rules: non-literal ${kind} at ${e.getText().slice(0, 60)}`);
+    }
+    for (const el of arr.elements) {
+      const key = kind === 'Map' && ts.isArrayLiteralExpression(el) ? el.elements[0] : el;
+      if (!key || !ts.isStringLiteralLike(key)) {
+        throw new Error(`replacement rules: non-literal entry ${el.getText().slice(0, 60)}`);
+      }
+      s.add(key.text);
+    }
+    return s;
+  };
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isCallExpression(n) &&
+      ts.isPropertyAccessExpression(n.expression) &&
+      n.expression.name.text === 'set' &&
+      n.expression.expression.getText() === 'this.rules'
+    ) {
+      const [typeArg, ruleArg] = n.arguments;
+      if (!typeArg || !ts.isStringLiteralLike(typeArg) || !ruleArg || !ts.isObjectLiteralExpression(ruleArg)) {
+        throw new Error(`replacement rules: unreadable rules.set at ${n.getText().slice(0, 80)}`);
+      }
+      const prop = (name: string): ts.Expression | undefined => {
+        for (const p of ruleArg.properties) {
+          if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === name) {
+            return p.initializer;
+          }
+        }
+        return undefined;
+      };
+      for (const p of ruleArg.properties) {
+        if (
+          !ts.isPropertyAssignment(p) ||
+          !ts.isIdentifier(p.name) ||
+          !['replacementProperties', 'updateableProperties', 'conditionalReplacements'].includes(
+            p.name.text
+          )
+        ) {
+          throw new Error(`replacement rules: unmodelled member in ${typeArg.text}: ${p.getText().slice(0, 60)}`);
+        }
+      }
+      out.set(typeArg.text, {
+        replacement: strings(prop('replacementProperties'), 'Set'),
+        updateable: strings(prop('updateableProperties'), 'Set'),
+        conditional: strings(prop('conditionalReplacements'), 'Map'),
+      });
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  if (out.size === 0) throw new Error('replacement rules: parsed zero rules.set calls');
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Classification.
+// ---------------------------------------------------------------------------
+
+export type Status = 'update' | 'replacement' | 'allow-listed' | 'gap';
+
+export interface PropertyRow {
+  readonly property: string;
+  readonly status: Status;
+  /** For `replacement`: `rule` (replacementProperties) or `create-only` (schema). */
+  readonly via?: 'rule' | 'create-only';
+  readonly rationale?: string;
+}
+
+export interface TypeRow {
+  readonly resourceType: string;
+  readonly file: string;
+  readonly className: string;
+  readonly properties: readonly PropertyRow[];
+  /** See {@link WalkOutput.unresolved}. A non-empty list BLOCKS CI. */
+  readonly unresolved: readonly string[];
+}
+
+export interface SchemaFacts {
+  readonly properties: ReadonlySet<string>;
+  readonly readOnly: ReadonlySet<string>;
+  readonly createOnly: ReadonlySet<string>;
+}
+
+export function classifyProperty(
+  resourceType: string,
+  prop: string,
+  reads: ReadonlySet<string>,
+  rules: RuleSets | undefined,
+  schema: SchemaFacts,
+  allowList: ReadonlyMap<string, AllowListEntry>
+): PropertyRow {
+  // The diff decides a replacement before update() runs, so it is checked first.
+  if (rules?.replacement.has(prop)) return { property: prop, status: 'replacement', via: 'rule' };
+  if (
+    schema.createOnly.has(prop) &&
+    !(rules?.updateable.has(prop) ?? false) &&
+    !(rules?.conditional.has(prop) ?? false)
+  ) {
+    return { property: prop, status: 'replacement', via: 'create-only' };
+  }
+  if (reads.has(prop)) return { property: prop, status: 'update' };
+  const allow = allowList.get(allowKey(resourceType, prop));
+  if (allow) return { property: prop, status: 'allow-listed', rationale: allow.rationale };
+  return { property: prop, status: 'gap' };
+}
+
+export interface ClassifyInput {
+  readonly file: string;
+  /** The provider's companion files (`scripts/provider-companion-files.ts`). */
+  readonly companions: readonly string[];
+  readonly index: ModuleIndex;
+  readonly rules: ReadonlyMap<string, RuleSets>;
+  readonly schema: (resourceType: string) => SchemaFacts | null;
+  readonly allowList?: ReadonlyMap<string, AllowListEntry>;
+  /** The repo-relative name rows carry. */
+  readonly displayFile?: string;
+}
+
+/** Classify every (type, handled property) of every class in one provider file. */
+export function classifyFile(input: ClassifyInput): TypeRow[] {
+  const { file, index, rules, schema } = input;
+  const allowList = input.allowList ?? UPDATE_PATH_ALLOW_LIST;
+  const sf = index.get(file)?.sf;
+  if (!sf) throw new Error(`cannot read provider file ${input.displayFile ?? file}`);
+  const companions = new Map<string, { file: string; fn: ts.FunctionDeclaration }>();
+  for (const c of input.companions) {
+    const mod = index.get(c);
+    if (!mod) continue;
+    for (const stmt of mod.sf.statements) {
+      const first = ts.isFunctionDeclaration(stmt) ? stmt.parameters[0] : undefined;
+      if (
+        ts.isFunctionDeclaration(stmt) &&
+        stmt.name &&
+        stmt.body &&
+        first !== undefined &&
+        ts.isIdentifier(first.name) &&
+        first.name.text === 'this'
+      ) {
+        companions.set(stmt.name.text, { file: c, fn: stmt });
+      }
+    }
+  }
+  const rows: TypeRow[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isClassDeclaration(n) && n.name) {
+      const handled = parseProviderSource(n.getText(), file).handled;
+      for (const [resourceType, props] of handled) {
+        const facts = schema(resourceType);
+        if (!facts) continue;
+        const walk = walkUpdatePath({ cls: n, file, companions, index }, resourceType);
+        // Fail closed: a provider class whose update() cannot be found would
+        // otherwise drop out of the matrix, and its gaps with it.
+        if (!walk.hasUpdate) {
+          throw new Error(
+            `${n.name.text} (${input.displayFile ?? file}) handles ${resourceType} but no update() ` +
+              'is declared on it or on a base class this script can resolve'
+          );
+        }
+        const typeRules = rules.get(resourceType);
+        const properties = [...props]
+          .filter((p) => facts.properties.has(p) && !facts.readOnly.has(p))
+          .sort((a, b) => a.localeCompare(b))
+          .map((p) => classifyProperty(resourceType, p, walk.reads, typeRules, facts, allowList));
+        rows.push({
+          resourceType,
+          file: input.displayFile ?? file,
+          className: n.name.text,
+          properties,
+          unresolved: [...walk.unresolved].sort((a, b) => a.localeCompare(b)),
+        });
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return rows;
+}
+
+export interface UpdatePathCoverageReport {
+  readonly summary: {
+    readonly types: number;
+    readonly properties: number;
+    readonly update: number;
+    readonly replacement: number;
+    readonly allowListed: number;
+    readonly gap: number;
+  };
+  readonly types: readonly TypeRow[];
+}
+
+export function buildReport(rows: readonly TypeRow[]): UpdatePathCoverageReport {
+  const sorted = [...rows].sort((a, b) => a.resourceType.localeCompare(b.resourceType));
+  const all = sorted.flatMap((r) => r.properties);
+  const count = (s: Status): number => all.filter((p) => p.status === s).length;
+  return {
+    summary: {
+      types: sorted.length,
+      properties: all.length,
+      update: count('update'),
+      replacement: count('replacement'),
+      allowListed: count('allow-listed'),
+      gap: count('gap'),
+    },
+    types: sorted,
+  };
+}
+
+export function findGaps(report: UpdatePathCoverageReport): string[] {
+  return report.types.flatMap((t) =>
+    t.properties.filter((p) => p.status === 'gap').map((p) => allowKey(t.resourceType, p.property))
+  );
+}
+
+/** Allow-list keys that no longer name an `allow-listed` row. */
+export function findStaleAllowEntries(
+  report: UpdatePathCoverageReport,
+  allowList: ReadonlyMap<string, AllowListEntry> = UPDATE_PATH_ALLOW_LIST
+): string[] {
+  const live = new Set(
+    report.types.flatMap((t) =>
+      t.properties
+        .filter((p) => p.status === 'allow-listed')
+        .map((p) => allowKey(t.resourceType, p.property))
+    )
+  );
+  return [...allowList.keys()].filter((k) => !live.has(k)).sort();
+}
+
+function loadSchema(resourceType: string): SchemaFacts | null {
+  const path = join(FIXTURE_DIR, `${resourceType.replace(/::/g, '-')}.json`);
+  if (!existsSync(path)) return null;
+  const f = JSON.parse(readFileSync(path, 'utf8')) as {
+    properties: string[];
+    readOnlyProperties: string[];
+    createOnlyProperties?: string[];
+  };
+  return {
+    properties: new Set(f.properties),
+    readOnly: new Set(f.readOnlyProperties),
+    createOnly: new Set(f.createOnlyProperties ?? []),
+  };
+}
+
+/** The matrix as `gen:update-path-coverage` builds it from the real tree. */
+export function loadReport(host: SourceHost = diskHost): UpdatePathCoverageReport {
+  const index = new ModuleIndex(host);
+  const rules = parseReplacementRules(readFileSync(RULES_FILE, 'utf8'));
+  const rows: TypeRow[] = [];
+  for (const name of readdirSync(PROVIDERS_DIR).sort()) {
+    if (!name.endsWith('.ts') || name.endsWith('.d.ts') || name.endsWith('.test.ts')) continue;
+    const file = join(PROVIDERS_DIR, name);
+    rows.push(
+      ...classifyFile({
+        file,
+        companions: companionFiles(file),
+        index,
+        rules,
+        schema: loadSchema,
+        displayFile: relative(repoRoot, file),
+      })
+    );
+  }
+  return buildReport(rows);
+}
+
+function renderMarkdown(report: UpdatePathCoverageReport): string {
+  const s = report.summary;
+  const lines: string[] = [
+    '---',
+    'title: "Update-path property coverage matrix"',
+    'unlisted: true',
+    '---',
+    '',
+    '# SDK-provider update-path property coverage matrix',
+    '',
+    '<!-- AUTO-GENERATED by scripts/gen-update-path-coverage.ts — DO NOT EDIT BY HAND. -->',
+    '<!-- Regenerate: `vp run gen:update-path-coverage`. -->',
+    '',
+    'For every SDK provider type and every top-level property its `handledProperties` ' +
+      'declares, whether a change of that property reaches AWS on an update: the code ' +
+      'reachable from `update()` reads it (`update` — sent, refused into a replacement, ' +
+      'or warned), or the diff replaces the resource for it (`replacement`). A property ' +
+      'in neither is a change the deploy would report applied while AWS keeps the old ' +
+      'value (issue #6611).',
+    '',
+    '## Summary',
+    '',
+    `- SDK provider types: **${s.types}**`,
+    `- Handled properties classified: **${s.properties}**`,
+    `- Read on the update path: **${s.update}**`,
+    `- Replacement: **${s.replacement}**`,
+    `- Allow-listed (does NOT block CI): **${s.allowListed}**`,
+    `- **Gaps (blocks CI): ${s.gap}**`,
+    '',
+  ];
+  const flagged = report.types.flatMap((t) =>
+    t.properties
+      .filter((p) => p.status === 'gap' || p.status === 'allow-listed')
+      .map((p) => ({ t, p }))
+  );
+  lines.push('## Gaps and allow-listed properties', '');
+  if (flagged.length === 0) {
+    lines.push('None. Every handled property is read on the update path or replaces.', '');
+  } else {
+    lines.push('| Type | Property | Status | Provider | Rationale |', '| --- | --- | --- | --- | --- |');
+    for (const { t, p } of flagged) {
+      lines.push(
+        `| \`${t.resourceType}\` | \`${p.property}\` | ${p.status} | \`${t.className}\` | ${escapeCell(p.rationale ?? '')} |`
+      );
+    }
+    lines.push('');
+  }
+  lines.push('## Full classification', '', '| Type | Provider | Update | Replacement |', '| --- | --- | --- | --- |');
+  for (const t of report.types) {
+    const names = (pred: (p: PropertyRow) => boolean): string =>
+      t.properties
+        .filter(pred)
+        .map((p) => p.property)
+        .join(', ');
+    lines.push(
+      `| \`${t.resourceType}\` | \`${t.className}\` | ${escapeCell(names((p) => p.status === 'update'))} | ${escapeCell(
+        names((p) => p.status === 'replacement')
+      )} |`
+    );
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function atomicWrite(path: string, content: string): void {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, content);
+  renameSync(tmp, path);
+}
+
+function main(): void {
+  const report = loadReport();
+  if (process.argv.includes('--check')) {
+    const gaps = findGaps(report);
+    const stale = findStaleAllowEntries(report);
+    if (gaps.length > 0 || stale.length > 0) {
+      process.stderr.write(
+        'update-path-coverage: FAIL\n' +
+          (gaps.length > 0
+            ? 'A handled property that update() never reads and that does not replace is a\n' +
+              'change the deploy reports applied while AWS keeps the old value (#6611).\n' +
+              'Send it from update() only when it changed, refuse it with\n' +
+              'ResourceUpdateNotSupportedError, add a replacement rule, OR add an\n' +
+              'UPDATE_PATH_ALLOW_LIST entry with a reason in scripts/gen-update-path-coverage.ts.\n' +
+              gaps.map((g) => `  gap: ${g}\n`).join('')
+            : '') +
+          (stale.length > 0
+            ? 'UPDATE_PATH_ALLOW_LIST entries that are no longer gaps — delete them:\n' +
+              stale.map((g) => `  stale: ${g}\n`).join('')
+            : '')
+      );
+      process.exit(1);
+    }
+    process.stderr.write(
+      `update-path-coverage: OK — ${report.summary.properties} handled properties over ` +
+        `${report.summary.types} types, 0 gaps (${report.summary.allowListed} allow-listed).\n`
+    );
+    return;
+  }
+  mkdirSync(dirname(OUT_JSON), { recursive: true });
+  atomicWrite(OUT_JSON, JSON.stringify(report, null, 2) + '\n');
+  atomicWrite(OUT_MD, renderMarkdown(report) + '\n');
+  process.stderr.write(
+    `update-path-coverage: wrote update-path-coverage.{json,md} — ${report.summary.properties} ` +
+      `properties, ${report.summary.update} update, ${report.summary.replacement} replacement, ` +
+      `${report.summary.allowListed} allow-listed, ${report.summary.gap} gap(s).\n`
+  );
+}
+
+const isMainModule = (): boolean =>
+  Boolean(process.argv[1]) && resolve(process.argv[1]!) === __filename;
+
+if (isMainModule()) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`update-path-coverage: failed — ${(err as Error).message}\n`);
+    process.exit(1);
+  }
+}

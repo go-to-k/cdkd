@@ -99,6 +99,7 @@ describe('CI regenerates through gen:all-matrices (#1417)', () => {
         'gen:property-coverage',
         'gen:sdk-attr-coverage',
         'gen:unsupported-types',
+        'gen:update-path-coverage',
         'gen:update-wrap-coverage',
         'integ-coverage',
         'integ-ledger-normalize',

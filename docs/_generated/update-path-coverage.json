@@ -1,0 +1,7747 @@
+{
+  "summary": {
+    "types": 145,
+    "properties": 1541,
+    "update": 1127,
+    "replacement": 397,
+    "allowListed": 17,
+    "gap": 0
+  },
+  "types": [
+    {
+      "resourceType": "AWS::ApiGateway::Account",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "CloudWatchRoleArn",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Authorizer",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "AuthorizerCredentials",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerResultTtlInSeconds",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerUri",
+          "status": "update"
+        },
+        {
+          "property": "AuthType",
+          "status": "update"
+        },
+        {
+          "property": "IdentitySource",
+          "status": "update"
+        },
+        {
+          "property": "IdentityValidationExpression",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        },
+        {
+          "property": "ProviderARNs",
+          "status": "update"
+        },
+        {
+          "property": "RestApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Type",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Deployment",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "RestApiId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Method",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "ApiKeyRequired",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizationScopes",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizationType",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerId",
+          "status": "update"
+        },
+        {
+          "property": "HttpMethod",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Integration",
+          "status": "update"
+        },
+        {
+          "property": "MethodResponses",
+          "status": "update"
+        },
+        {
+          "property": "OperationName",
+          "status": "update"
+        },
+        {
+          "property": "RequestModels",
+          "status": "update"
+        },
+        {
+          "property": "RequestParameters",
+          "status": "update"
+        },
+        {
+          "property": "RequestValidatorId",
+          "status": "update"
+        },
+        {
+          "property": "ResourceId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RestApiId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Resource",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "ParentId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PathPart",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RestApiId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::RestApi",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "ApiKeySourceType",
+          "status": "update"
+        },
+        {
+          "property": "BinaryMediaTypes",
+          "status": "update"
+        },
+        {
+          "property": "Body",
+          "status": "update"
+        },
+        {
+          "property": "BodyS3Location",
+          "status": "update"
+        },
+        {
+          "property": "CloneFrom",
+          "status": "allow-listed",
+          "rationale": "create-time input: CreateRestApi clones from it and no UpdateRestApi patch path takes it; CloudFormation documents No interruption (unmeasured)"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DisableExecuteApiEndpoint",
+          "status": "update"
+        },
+        {
+          "property": "EndpointAccessMode",
+          "status": "update"
+        },
+        {
+          "property": "EndpointConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "FailOnWarnings",
+          "status": "update"
+        },
+        {
+          "property": "MinimumCompressionSize",
+          "status": "update"
+        },
+        {
+          "property": "Mode",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        },
+        {
+          "property": "Parameters",
+          "status": "update"
+        },
+        {
+          "property": "Policy",
+          "status": "update"
+        },
+        {
+          "property": "SecurityPolicy",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Version",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Stage",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "properties": [
+        {
+          "property": "AccessLogSetting",
+          "status": "update"
+        },
+        {
+          "property": "CacheClusterEnabled",
+          "status": "update"
+        },
+        {
+          "property": "CacheClusterSize",
+          "status": "update"
+        },
+        {
+          "property": "CanarySetting",
+          "status": "update"
+        },
+        {
+          "property": "ClientCertificateId",
+          "status": "update"
+        },
+        {
+          "property": "DeploymentId",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DocumentationVersion",
+          "status": "update"
+        },
+        {
+          "property": "MethodSettings",
+          "status": "update"
+        },
+        {
+          "property": "RestApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StageName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TracingEnabled",
+          "status": "update"
+        },
+        {
+          "property": "Variables",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "properties": [
+        {
+          "property": "ApiKeySelectionExpression",
+          "status": "update"
+        },
+        {
+          "property": "CorsConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DisableExecuteApiEndpoint",
+          "status": "update"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        },
+        {
+          "property": "ProtocolType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RouteSelectionExpression",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Version",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AuthorizerCredentialsArn",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerPayloadFormatVersion",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerResultTtlInSeconds",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerType",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerUri",
+          "status": "update"
+        },
+        {
+          "property": "EnableSimpleResponses",
+          "status": "update"
+        },
+        {
+          "property": "IdentitySource",
+          "status": "update"
+        },
+        {
+          "property": "IdentityValidationExpression",
+          "status": "update"
+        },
+        {
+          "property": "JwtConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ConnectionId",
+          "status": "update"
+        },
+        {
+          "property": "ConnectionType",
+          "status": "update"
+        },
+        {
+          "property": "ContentHandlingStrategy",
+          "status": "update"
+        },
+        {
+          "property": "CredentialsArn",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "IntegrationMethod",
+          "status": "update"
+        },
+        {
+          "property": "IntegrationSubtype",
+          "status": "update"
+        },
+        {
+          "property": "IntegrationType",
+          "status": "update"
+        },
+        {
+          "property": "IntegrationUri",
+          "status": "update"
+        },
+        {
+          "property": "PassthroughBehavior",
+          "status": "update"
+        },
+        {
+          "property": "PayloadFormatVersion",
+          "status": "update"
+        },
+        {
+          "property": "RequestParameters",
+          "status": "update"
+        },
+        {
+          "property": "RequestTemplates",
+          "status": "update"
+        },
+        {
+          "property": "ResponseParameters",
+          "status": "update"
+        },
+        {
+          "property": "TemplateSelectionExpression",
+          "status": "update"
+        },
+        {
+          "property": "TimeoutInMillis",
+          "status": "update"
+        },
+        {
+          "property": "TlsConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ApiKeyRequired",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizationScopes",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizationType",
+          "status": "update"
+        },
+        {
+          "property": "AuthorizerId",
+          "status": "update"
+        },
+        {
+          "property": "ModelSelectionExpression",
+          "status": "update"
+        },
+        {
+          "property": "OperationName",
+          "status": "update"
+        },
+        {
+          "property": "RequestModels",
+          "status": "update"
+        },
+        {
+          "property": "RequestParameters",
+          "status": "update"
+        },
+        {
+          "property": "RouteKey",
+          "status": "update"
+        },
+        {
+          "property": "RouteResponseSelectionExpression",
+          "status": "update"
+        },
+        {
+          "property": "Target",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "properties": [
+        {
+          "property": "AccessLogSettings",
+          "status": "update"
+        },
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AutoDeploy",
+          "status": "update"
+        },
+        {
+          "property": "ClientCertificateId",
+          "status": "update"
+        },
+        {
+          "property": "DefaultRouteSettings",
+          "status": "update"
+        },
+        {
+          "property": "DeploymentId",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "RouteSettings",
+          "status": "update"
+        },
+        {
+          "property": "StageName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StageVariables",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppConfig::Environment",
+      "file": "src/provisioning/providers/appconfig-environment-provider.ts",
+      "className": "AppConfigEnvironmentProvider",
+      "properties": [
+        {
+          "property": "ApplicationId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeletionProtectionCheck",
+          "status": "allow-listed",
+          "rationale": "delete-time input: DeleteEnvironment (#5875) reads it from the record the update rewrites"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Monitors",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::ApiKey",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Expires",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DynamoDBConfig",
+          "status": "update"
+        },
+        {
+          "property": "ElasticsearchConfig",
+          "status": "update"
+        },
+        {
+          "property": "EventBridgeConfig",
+          "status": "update"
+        },
+        {
+          "property": "HttpConfig",
+          "status": "update"
+        },
+        {
+          "property": "LambdaConfig",
+          "status": "update"
+        },
+        {
+          "property": "MetricsConfig",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "OpenSearchServiceConfig",
+          "status": "update"
+        },
+        {
+          "property": "RelationalDatabaseConfig",
+          "status": "update"
+        },
+        {
+          "property": "ServiceRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "properties": [
+        {
+          "property": "AdditionalAuthenticationProviders",
+          "status": "update"
+        },
+        {
+          "property": "ApiType",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "AuthenticationType",
+          "status": "update"
+        },
+        {
+          "property": "EnhancedMetricsConfig",
+          "status": "update"
+        },
+        {
+          "property": "EnvironmentVariables",
+          "status": "update"
+        },
+        {
+          "property": "IntrospectionConfig",
+          "status": "update"
+        },
+        {
+          "property": "LambdaAuthorizerConfig",
+          "status": "update"
+        },
+        {
+          "property": "LogConfig",
+          "status": "update"
+        },
+        {
+          "property": "MergedApiExecutionRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        },
+        {
+          "property": "OpenIDConnectConfig",
+          "status": "update"
+        },
+        {
+          "property": "OwnerContact",
+          "status": "update"
+        },
+        {
+          "property": "QueryDepthLimit",
+          "status": "update"
+        },
+        {
+          "property": "ResolverCountLimit",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "UserPoolConfig",
+          "status": "update"
+        },
+        {
+          "property": "Visibility",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "XrayEnabled",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLSchema",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "update"
+        },
+        {
+          "property": "Definition",
+          "status": "update"
+        },
+        {
+          "property": "DefinitionS3Location",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CachingConfig",
+          "status": "update"
+        },
+        {
+          "property": "Code",
+          "status": "update"
+        },
+        {
+          "property": "CodeS3Location",
+          "status": "update"
+        },
+        {
+          "property": "DataSourceName",
+          "status": "update"
+        },
+        {
+          "property": "FieldName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Kind",
+          "status": "update"
+        },
+        {
+          "property": "MaxBatchSize",
+          "status": "update"
+        },
+        {
+          "property": "MetricsConfig",
+          "status": "update"
+        },
+        {
+          "property": "PipelineConfig",
+          "status": "update"
+        },
+        {
+          "property": "RequestMappingTemplate",
+          "status": "update"
+        },
+        {
+          "property": "RequestMappingTemplateS3Location",
+          "status": "update"
+        },
+        {
+          "property": "ResponseMappingTemplate",
+          "status": "update"
+        },
+        {
+          "property": "ResponseMappingTemplateS3Location",
+          "status": "update"
+        },
+        {
+          "property": "Runtime",
+          "status": "update"
+        },
+        {
+          "property": "SyncConfig",
+          "status": "update"
+        },
+        {
+          "property": "TypeName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AutoScaling::AutoScalingGroup",
+      "file": "src/provisioning/providers/asg-provider.ts",
+      "className": "ASGProvider",
+      "properties": [
+        {
+          "property": "AutoScalingGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AvailabilityZoneDistribution",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZoneIds",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZoneImpairmentPolicy",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZones",
+          "status": "update"
+        },
+        {
+          "property": "CapacityRebalance",
+          "status": "update"
+        },
+        {
+          "property": "CapacityReservationSpecification",
+          "status": "update"
+        },
+        {
+          "property": "Context",
+          "status": "update"
+        },
+        {
+          "property": "Cooldown",
+          "status": "update"
+        },
+        {
+          "property": "DefaultInstanceWarmup",
+          "status": "update"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "update"
+        },
+        {
+          "property": "DesiredCapacity",
+          "status": "update"
+        },
+        {
+          "property": "DesiredCapacityType",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckGracePeriod",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckType",
+          "status": "update"
+        },
+        {
+          "property": "InstanceLifecyclePolicy",
+          "status": "update"
+        },
+        {
+          "property": "InstanceMaintenancePolicy",
+          "status": "update"
+        },
+        {
+          "property": "LaunchTemplate",
+          "status": "update"
+        },
+        {
+          "property": "LifecycleHookSpecificationList",
+          "status": "update"
+        },
+        {
+          "property": "LoadBalancerNames",
+          "status": "update"
+        },
+        {
+          "property": "MaxInstanceLifetime",
+          "status": "update"
+        },
+        {
+          "property": "MaxSize",
+          "status": "update"
+        },
+        {
+          "property": "MetricsCollection",
+          "status": "update"
+        },
+        {
+          "property": "MinSize",
+          "status": "update"
+        },
+        {
+          "property": "MixedInstancesPolicy",
+          "status": "update"
+        },
+        {
+          "property": "NewInstancesProtectedFromScaleIn",
+          "status": "update"
+        },
+        {
+          "property": "NotificationConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "PlacementGroup",
+          "status": "update"
+        },
+        {
+          "property": "ServiceLinkedRoleARN",
+          "status": "update"
+        },
+        {
+          "property": "SkipZonalShiftValidation",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TargetGroupARNs",
+          "status": "update"
+        },
+        {
+          "property": "TerminationPolicies",
+          "status": "update"
+        },
+        {
+          "property": "TrafficSources",
+          "status": "update"
+        },
+        {
+          "property": "VPCZoneIdentifier",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Browser",
+      "file": "src/provisioning/providers/agentcore-browser-provider.ts",
+      "className": "AgentCoreBrowserProvider",
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
+      "file": "src/provisioning/providers/agentcore-code-interpreter-provider.ts",
+      "className": "AgentCoreCodeInterpreterProvider",
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Evaluator",
+      "file": "src/provisioning/providers/agentcore-evaluator-provider.ts",
+      "className": "AgentCoreEvaluatorProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EvaluatorConfig",
+          "status": "update"
+        },
+        {
+          "property": "EvaluatorName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "update"
+        },
+        {
+          "property": "Level",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Runtime",
+      "file": "src/provisioning/providers/agentcore-runtime-provider.ts",
+      "className": "AgentCoreRuntimeProvider",
+      "properties": [
+        {
+          "property": "AgentRuntimeArtifact",
+          "status": "update"
+        },
+        {
+          "property": "AgentRuntimeName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AuthorizerConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "CapacityProviderConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EnvironmentVariables",
+          "status": "update"
+        },
+        {
+          "property": "FilesystemConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "LifecycleConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "NetworkConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "PlatformVersion",
+          "status": "update"
+        },
+        {
+          "property": "ProtocolConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "RequestHeaderConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "RoleArn",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Budgets::Budget",
+      "file": "src/provisioning/providers/budgets-budget-provider.ts",
+      "className": "BudgetsBudgetProvider",
+      "properties": [
+        {
+          "property": "Budget",
+          "status": "update"
+        },
+        {
+          "property": "NotificationsWithSubscribers",
+          "status": "update"
+        },
+        {
+          "property": "ResourceTags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CertificateManager::Certificate",
+      "file": "src/provisioning/providers/acm-certificate-provider.ts",
+      "className": "ACMCertificateProvider",
+      "properties": [
+        {
+          "property": "CertificateAuthorityArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CertificateExport",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CertificateTransparencyLoggingPreference",
+          "status": "update"
+        },
+        {
+          "property": "DomainName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DomainValidationOptions",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KeyAlgorithm",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubjectAlternativeNames",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "ValidationMethod",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::Stack",
+      "file": "src/provisioning/providers/nested-stack-provider.ts",
+      "className": "NestedStackProvider",
+      "properties": [
+        {
+          "property": "Parameters",
+          "status": "update"
+        },
+        {
+          "property": "TemplateURL",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "file": "src/provisioning/providers/wait-condition-handle-provider.ts",
+      "className": "WaitConditionHandleProvider",
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+      "file": "src/provisioning/providers/cloudfront-oai-provider.ts",
+      "className": "CloudFrontOAIProvider",
+      "properties": [
+        {
+          "property": "CloudFrontOriginAccessIdentityConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::Distribution",
+      "file": "src/provisioning/providers/cloudfront-distribution-provider.ts",
+      "className": "CloudFrontDistributionProvider",
+      "properties": [
+        {
+          "property": "DistributionConfig",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::OriginAccessControl",
+      "file": "src/provisioning/providers/cloudfront-oac-provider.ts",
+      "className": "CloudFrontOACProvider",
+      "properties": [
+        {
+          "property": "OriginAccessControlConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudTrail::Trail",
+      "file": "src/provisioning/providers/cloudtrail-provider.ts",
+      "className": "CloudTrailProvider",
+      "properties": [
+        {
+          "property": "AdvancedEventSelectors",
+          "status": "update"
+        },
+        {
+          "property": "AggregationConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "CloudWatchLogsLogGroupArn",
+          "status": "update"
+        },
+        {
+          "property": "CloudWatchLogsRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "EnableLogFileValidation",
+          "status": "update"
+        },
+        {
+          "property": "EventSelectors",
+          "status": "update"
+        },
+        {
+          "property": "IncludeGlobalServiceEvents",
+          "status": "update"
+        },
+        {
+          "property": "InsightSelectors",
+          "status": "update"
+        },
+        {
+          "property": "IsLogging",
+          "status": "update"
+        },
+        {
+          "property": "IsMultiRegionTrail",
+          "status": "update"
+        },
+        {
+          "property": "IsOrganizationTrail",
+          "status": "update"
+        },
+        {
+          "property": "KMSKeyId",
+          "status": "update"
+        },
+        {
+          "property": "RecursiveLogging",
+          "status": "update"
+        },
+        {
+          "property": "S3BucketName",
+          "status": "update"
+        },
+        {
+          "property": "S3KeyPrefix",
+          "status": "update"
+        },
+        {
+          "property": "SnsTopicName",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TrailName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudWatch::Alarm",
+      "file": "src/provisioning/providers/cloudwatch-alarm-provider.ts",
+      "className": "CloudWatchAlarmProvider",
+      "properties": [
+        {
+          "property": "ActionConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ActionsEnabled",
+          "status": "update"
+        },
+        {
+          "property": "AlarmActions",
+          "status": "update"
+        },
+        {
+          "property": "AlarmDescription",
+          "status": "update"
+        },
+        {
+          "property": "AlarmName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "ComparisonOperator",
+          "status": "update"
+        },
+        {
+          "property": "DatapointsToAlarm",
+          "status": "update"
+        },
+        {
+          "property": "Dimensions",
+          "status": "update"
+        },
+        {
+          "property": "EvaluateLowSampleCountPercentile",
+          "status": "update"
+        },
+        {
+          "property": "EvaluationCriteria",
+          "status": "update"
+        },
+        {
+          "property": "EvaluationInterval",
+          "status": "update"
+        },
+        {
+          "property": "EvaluationPeriods",
+          "status": "update"
+        },
+        {
+          "property": "EvaluationWindow",
+          "status": "update"
+        },
+        {
+          "property": "ExtendedStatistic",
+          "status": "update"
+        },
+        {
+          "property": "InsufficientDataActions",
+          "status": "update"
+        },
+        {
+          "property": "MetricName",
+          "status": "update"
+        },
+        {
+          "property": "Metrics",
+          "status": "update"
+        },
+        {
+          "property": "Namespace",
+          "status": "update"
+        },
+        {
+          "property": "OKActions",
+          "status": "update"
+        },
+        {
+          "property": "Period",
+          "status": "update"
+        },
+        {
+          "property": "Statistic",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Threshold",
+          "status": "update"
+        },
+        {
+          "property": "ThresholdMetricId",
+          "status": "update"
+        },
+        {
+          "property": "TreatMissingData",
+          "status": "update"
+        },
+        {
+          "property": "Unit",
+          "status": "update"
+        },
+        {
+          "property": "WarmUpConfiguration",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AnomalyDetector",
+      "file": "src/provisioning/providers/cloudwatch-anomaly-detector-provider.ts",
+      "className": "CloudWatchAnomalyDetectorProvider",
+      "properties": [
+        {
+          "property": "Configuration",
+          "status": "update"
+        },
+        {
+          "property": "Dimensions",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MetricCharacteristics",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MetricMathAnomalyDetector",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MetricName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Namespace",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SingleMetricAnomalyDetector",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Stat",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CodeBuild::Project",
+      "file": "src/provisioning/providers/codebuild-provider.ts",
+      "className": "CodeBuildProvider",
+      "properties": [
+        {
+          "property": "Artifacts",
+          "status": "update"
+        },
+        {
+          "property": "AutoRetryLimit",
+          "status": "update"
+        },
+        {
+          "property": "BadgeEnabled",
+          "status": "update"
+        },
+        {
+          "property": "BuildBatchConfig",
+          "status": "update"
+        },
+        {
+          "property": "Cache",
+          "status": "update"
+        },
+        {
+          "property": "ConcurrentBuildLimit",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EncryptionKey",
+          "status": "update"
+        },
+        {
+          "property": "Environment",
+          "status": "update"
+        },
+        {
+          "property": "FileSystemLocations",
+          "status": "update"
+        },
+        {
+          "property": "LogsConfig",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "QueuedTimeoutInMinutes",
+          "status": "update"
+        },
+        {
+          "property": "ResourceAccessRole",
+          "status": "update"
+        },
+        {
+          "property": "SecondaryArtifacts",
+          "status": "update"
+        },
+        {
+          "property": "SecondarySources",
+          "status": "update"
+        },
+        {
+          "property": "SecondarySourceVersions",
+          "status": "update"
+        },
+        {
+          "property": "ServiceRole",
+          "status": "update"
+        },
+        {
+          "property": "Source",
+          "status": "update"
+        },
+        {
+          "property": "SourceVersion",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TimeoutInMinutes",
+          "status": "update"
+        },
+        {
+          "property": "Triggers",
+          "status": "update"
+        },
+        {
+          "property": "Visibility",
+          "status": "update"
+        },
+        {
+          "property": "VpcConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CodeCommit::Repository",
+      "file": "src/provisioning/providers/codecommit-repository-provider.ts",
+      "className": "CodeCommitRepositoryProvider",
+      "properties": [
+        {
+          "property": "Code",
+          "status": "allow-listed",
+          "rationale": "create-time seed commit: CloudFormation documents that Code is used only at creation and ignored on update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "update"
+        },
+        {
+          "property": "RepositoryDescription",
+          "status": "update"
+        },
+        {
+          "property": "RepositoryName",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Triggers",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPool",
+      "file": "src/provisioning/providers/cognito-provider.ts",
+      "className": "CognitoUserPoolProvider",
+      "properties": [
+        {
+          "property": "AccountRecoverySetting",
+          "status": "update"
+        },
+        {
+          "property": "AdminCreateUserConfig",
+          "status": "update"
+        },
+        {
+          "property": "AliasAttributes",
+          "status": "update"
+        },
+        {
+          "property": "AutoVerifiedAttributes",
+          "status": "update"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "update"
+        },
+        {
+          "property": "DeviceConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "EmailAuthenticationMessage",
+          "status": "update"
+        },
+        {
+          "property": "EmailAuthenticationSubject",
+          "status": "update"
+        },
+        {
+          "property": "EmailConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "EmailVerificationMessage",
+          "status": "update"
+        },
+        {
+          "property": "EmailVerificationSubject",
+          "status": "update"
+        },
+        {
+          "property": "EnabledMfas",
+          "status": "update"
+        },
+        {
+          "property": "IssuerConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "KeyConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "LambdaConfig",
+          "status": "update"
+        },
+        {
+          "property": "MfaConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Policies",
+          "status": "update"
+        },
+        {
+          "property": "Schema",
+          "status": "update"
+        },
+        {
+          "property": "SmsAuthenticationMessage",
+          "status": "update"
+        },
+        {
+          "property": "SmsConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "SmsVerificationMessage",
+          "status": "update"
+        },
+        {
+          "property": "UserAttributeUpdateSettings",
+          "status": "update"
+        },
+        {
+          "property": "UsernameAttributes",
+          "status": "update"
+        },
+        {
+          "property": "UsernameConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "UserPoolAddOns",
+          "status": "update"
+        },
+        {
+          "property": "UserPoolName",
+          "status": "update"
+        },
+        {
+          "property": "UserPoolTags",
+          "status": "update"
+        },
+        {
+          "property": "UserPoolTier",
+          "status": "update"
+        },
+        {
+          "property": "VerificationMessageTemplate",
+          "status": "update"
+        },
+        {
+          "property": "WebAuthnFactorConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "WebAuthnRelyingPartyID",
+          "status": "update"
+        },
+        {
+          "property": "WebAuthnUserVerification",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DLM::LifecyclePolicy",
+      "file": "src/provisioning/providers/dlm-lifecycle-policy-provider.ts",
+      "className": "DLMLifecyclePolicyProvider",
+      "properties": [
+        {
+          "property": "CopyTags",
+          "status": "update"
+        },
+        {
+          "property": "CreateInterval",
+          "status": "update"
+        },
+        {
+          "property": "CrossRegionCopyTargets",
+          "status": "update"
+        },
+        {
+          "property": "DefaultPolicy",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Exclusions",
+          "status": "update"
+        },
+        {
+          "property": "ExecutionRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "ExtendDeletion",
+          "status": "update"
+        },
+        {
+          "property": "PolicyDetails",
+          "status": "update"
+        },
+        {
+          "property": "RetainInterval",
+          "status": "update"
+        },
+        {
+          "property": "State",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBCluster",
+      "file": "src/provisioning/providers/docdb-provider.ts",
+      "className": "DocDBProvider",
+      "properties": [
+        {
+          "property": "AvailabilityZones",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "update"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBClusterParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "update"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "update"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "update"
+        },
+        {
+          "property": "GlobalClusterIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ManageMasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "MasterUsername",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "MasterUserSecretKmsKeyId",
+          "status": "update"
+        },
+        {
+          "property": "NetworkType",
+          "status": "update"
+        },
+        {
+          "property": "Port",
+          "status": "update"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "update"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "RestoreToTime",
+          "status": "allow-listed",
+          "rationale": "restore-time input read by the create alone; CloudFormation's update sends nothing for it (measured, #5628)"
+        },
+        {
+          "property": "RestoreType",
+          "status": "allow-listed",
+          "rationale": "restore-time input read by the create alone; CloudFormation's update sends nothing for it (measured, #5628)"
+        },
+        {
+          "property": "RotateMasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "ServerlessV2ScalingConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "SnapshotIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageType",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "allow-listed",
+          "rationale": "restore-time input read by the create alone; CloudFormation's update sends nothing for it (measured, #5628)"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBInstance",
+      "file": "src/provisioning/providers/docdb-provider.ts",
+      "className": "DocDBProvider",
+      "properties": [
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CACertificateIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "CertificateRotationRestart",
+          "status": "update"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBInstanceClass",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EnablePerformanceInsights",
+          "status": "update"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBSubnetGroup",
+      "file": "src/provisioning/providers/docdb-subnet-group-provider.ts",
+      "className": "DocDBSubnetGroupProvider",
+      "properties": [
+        {
+          "property": "DBSubnetGroupDescription",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DynamoDB::GlobalTable",
+      "file": "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+      "className": "DynamoDBGlobalTableProvider",
+      "properties": [
+        {
+          "property": "AttributeDefinitions",
+          "status": "update"
+        },
+        {
+          "property": "BillingMode",
+          "status": "update"
+        },
+        {
+          "property": "GlobalSecondaryIndexes",
+          "status": "update"
+        },
+        {
+          "property": "KeySchema",
+          "status": "update"
+        },
+        {
+          "property": "LocalSecondaryIndexes",
+          "status": "update"
+        },
+        {
+          "property": "ReadOnDemandThroughputSettings",
+          "status": "update"
+        },
+        {
+          "property": "ReadProvisionedThroughputSettings",
+          "status": "update"
+        },
+        {
+          "property": "Replicas",
+          "status": "update"
+        },
+        {
+          "property": "SSESpecification",
+          "status": "update"
+        },
+        {
+          "property": "StreamSpecification",
+          "status": "update"
+        },
+        {
+          "property": "TableName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "TableType",
+          "status": "update"
+        },
+        {
+          "property": "TimeToLiveSpecification",
+          "status": "update"
+        },
+        {
+          "property": "VectorIndexes",
+          "status": "update"
+        },
+        {
+          "property": "WarmThroughput",
+          "status": "update"
+        },
+        {
+          "property": "WriteOnDemandThroughputSettings",
+          "status": "update"
+        },
+        {
+          "property": "WriteProvisionedThroughputSettings",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DynamoDB::Table",
+      "file": "src/provisioning/providers/dynamodb-table-provider.ts",
+      "className": "DynamoDBTableProvider",
+      "properties": [
+        {
+          "property": "AttributeDefinitions",
+          "status": "update"
+        },
+        {
+          "property": "BillingMode",
+          "status": "update"
+        },
+        {
+          "property": "ContributorInsightsSpecification",
+          "status": "update"
+        },
+        {
+          "property": "DeletionProtectionEnabled",
+          "status": "update"
+        },
+        {
+          "property": "GlobalSecondaryIndexes",
+          "status": "update"
+        },
+        {
+          "property": "KeySchema",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "KinesisStreamSpecification",
+          "status": "update"
+        },
+        {
+          "property": "LocalSecondaryIndexes",
+          "status": "update"
+        },
+        {
+          "property": "OnDemandThroughput",
+          "status": "update"
+        },
+        {
+          "property": "PointInTimeRecoverySpecification",
+          "status": "update"
+        },
+        {
+          "property": "ProvisionedThroughput",
+          "status": "update"
+        },
+        {
+          "property": "ResourcePolicy",
+          "status": "update"
+        },
+        {
+          "property": "SSESpecification",
+          "status": "update"
+        },
+        {
+          "property": "StreamSpecification",
+          "status": "update"
+        },
+        {
+          "property": "TableClass",
+          "status": "update"
+        },
+        {
+          "property": "TableName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TimeToLiveSpecification",
+          "status": "update"
+        },
+        {
+          "property": "VectorIndexes",
+          "status": "update"
+        },
+        {
+          "property": "WarmThroughput",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::EIP",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "Domain",
+          "status": "allow-listed",
+          "rationale": "no EC2 call moves an allocated address; CloudFormation neither replaces nor changes it (measured, #5449)"
+        },
+        {
+          "property": "InstanceId",
+          "status": "update"
+        },
+        {
+          "property": "NetworkBorderGroup",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PublicIpv4Pool",
+          "status": "allow-listed",
+          "rationale": "no EC2 call moves an allocated address; CloudFormation neither replaces nor changes it (measured, #5449)"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::Instance",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "AdditionalInfo",
+          "status": "allow-listed",
+          "rationale": "applied at launch only; a change to a running instance changes nothing (measured, #5630)"
+        },
+        {
+          "property": "Affinity",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "BlockDeviceMappings",
+          "status": "update"
+        },
+        {
+          "property": "CpuOptions",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "CreditSpecification",
+          "status": "update"
+        },
+        {
+          "property": "DisableApiTermination",
+          "status": "update"
+        },
+        {
+          "property": "EbsOptimized",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EnclaveOptions",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "HibernationOptions",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "HostId",
+          "status": "update"
+        },
+        {
+          "property": "HostResourceGroupArn",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "IamInstanceProfile",
+          "status": "update"
+        },
+        {
+          "property": "ImageId",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "InstanceInitiatedShutdownBehavior",
+          "status": "update"
+        },
+        {
+          "property": "InstanceType",
+          "status": "update"
+        },
+        {
+          "property": "Ipv6AddressCount",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Ipv6Addresses",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "KernelId",
+          "status": "update"
+        },
+        {
+          "property": "KeyName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "LaunchTemplate",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "LicenseSpecifications",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MetadataOptions",
+          "status": "update"
+        },
+        {
+          "property": "Monitoring",
+          "status": "update"
+        },
+        {
+          "property": "NetworkInterfaces",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "PlacementGroupName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "PrivateDnsNameOptions",
+          "status": "update"
+        },
+        {
+          "property": "PrivateIpAddress",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "PropagateTagsToVolumeOnCreation",
+          "status": "allow-listed",
+          "rationale": "applied at launch only; a change to a running instance changes nothing (measured, #5630)"
+        },
+        {
+          "property": "RamdiskId",
+          "status": "update"
+        },
+        {
+          "property": "SecurityGroupIds",
+          "status": "update"
+        },
+        {
+          "property": "SecurityGroups",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceDestCheck",
+          "status": "update"
+        },
+        {
+          "property": "SsmAssociations",
+          "status": "update"
+        },
+        {
+          "property": "SubnetId",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Tenancy",
+          "status": "update"
+        },
+        {
+          "property": "UserData",
+          "status": "update"
+        },
+        {
+          "property": "Volumes",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::InternetGateway",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::NatGateway",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "AllocationId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AvailabilityMode",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AvailabilityZoneAddresses",
+          "status": "update"
+        },
+        {
+          "property": "ConnectivityType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PrivateIpAddress",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SecondaryAllocationIds",
+          "status": "update"
+        },
+        {
+          "property": "SecondaryPrivateIpAddressCount",
+          "status": "update"
+        },
+        {
+          "property": "SecondaryPrivateIpAddresses",
+          "status": "update"
+        },
+        {
+          "property": "SubnetId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAcl",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAclEntry",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "CidrBlock",
+          "status": "update"
+        },
+        {
+          "property": "Egress",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Icmp",
+          "status": "update"
+        },
+        {
+          "property": "Ipv6CidrBlock",
+          "status": "update"
+        },
+        {
+          "property": "NetworkAclId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PortRange",
+          "status": "update"
+        },
+        {
+          "property": "Protocol",
+          "status": "update"
+        },
+        {
+          "property": "RuleAction",
+          "status": "update"
+        },
+        {
+          "property": "RuleNumber",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::Route",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "CarrierGatewayId",
+          "status": "update"
+        },
+        {
+          "property": "CoreNetworkArn",
+          "status": "update"
+        },
+        {
+          "property": "DestinationCidrBlock",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationIpv6CidrBlock",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationPrefixListId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EgressOnlyInternetGatewayId",
+          "status": "update"
+        },
+        {
+          "property": "GatewayId",
+          "status": "update"
+        },
+        {
+          "property": "InstanceId",
+          "status": "update"
+        },
+        {
+          "property": "LocalGatewayId",
+          "status": "update"
+        },
+        {
+          "property": "NatGatewayId",
+          "status": "update"
+        },
+        {
+          "property": "NetworkInterfaceId",
+          "status": "update"
+        },
+        {
+          "property": "OdbNetworkArn",
+          "status": "update"
+        },
+        {
+          "property": "RouteTableId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "TransitGatewayId",
+          "status": "update"
+        },
+        {
+          "property": "VpcEndpointId",
+          "status": "update"
+        },
+        {
+          "property": "VpcPeeringConnectionId",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::RouteTable",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "GroupDescription",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "GroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SecurityGroupEgress",
+          "status": "update"
+        },
+        {
+          "property": "SecurityGroupIngress",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "CidrIp",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CidrIpv6",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "FromPort",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "GroupId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "IpProtocol",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourcePrefixListId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupOwnerId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ToPort",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::Subnet",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "AssignIpv6AddressOnCreation",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "AvailabilityZoneId",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "CidrBlock",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EnableDns64",
+          "status": "update"
+        },
+        {
+          "property": "Ipv4IpamPoolId",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Ipv4NetmaskLength",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Ipv6CidrBlock",
+          "status": "update"
+        },
+        {
+          "property": "Ipv6IpamPoolId",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Ipv6Native",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Ipv6NetmaskLength",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "MapPublicIpOnLaunch",
+          "status": "update"
+        },
+        {
+          "property": "PrivateDnsNameOptionsOnLaunch",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "NetworkAclId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubnetId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "RouteTableId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubnetId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPC",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "CidrBlock",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EnableDnsHostnames",
+          "status": "update"
+        },
+        {
+          "property": "EnableDnsSupport",
+          "status": "update"
+        },
+        {
+          "property": "InstanceTenancy",
+          "status": "update"
+        },
+        {
+          "property": "Ipv4IpamPoolId",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Ipv4NetmaskLength",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VpcEncryptionControl",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPCGatewayAttachment",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "properties": [
+        {
+          "property": "InternetGatewayId",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "VpnGatewayId",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECR::Repository",
+      "file": "src/provisioning/providers/ecr-provider.ts",
+      "className": "ECRProvider",
+      "properties": [
+        {
+          "property": "EmptyOnDelete",
+          "status": "allow-listed",
+          "rationale": "delete-time input: DeleteRepository's force flag (#1340) reads it from the record the update rewrites"
+        },
+        {
+          "property": "EncryptionConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ImageScanningConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ImageTagMutability",
+          "status": "update"
+        },
+        {
+          "property": "ImageTagMutabilityExclusionFilters",
+          "status": "update"
+        },
+        {
+          "property": "LifecyclePolicy",
+          "status": "update"
+        },
+        {
+          "property": "RepositoryName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "RepositoryPolicyText",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECS::Cluster",
+      "file": "src/provisioning/providers/ecs-provider.ts",
+      "className": "ECSProvider",
+      "properties": [
+        {
+          "property": "CapacityProviders",
+          "status": "update"
+        },
+        {
+          "property": "ClusterName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ClusterSettings",
+          "status": "update"
+        },
+        {
+          "property": "Configuration",
+          "status": "update"
+        },
+        {
+          "property": "DefaultCapacityProviderStrategy",
+          "status": "update"
+        },
+        {
+          "property": "ServiceConnectDefaults",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "file": "src/provisioning/providers/ecs-provider.ts",
+      "className": "ECSProvider",
+      "properties": [
+        {
+          "property": "AvailabilityZoneRebalancing",
+          "status": "update"
+        },
+        {
+          "property": "CapacityProviderStrategy",
+          "status": "update"
+        },
+        {
+          "property": "Cluster",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeploymentConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "DeploymentController",
+          "status": "update"
+        },
+        {
+          "property": "DesiredCount",
+          "status": "update"
+        },
+        {
+          "property": "EnableECSManagedTags",
+          "status": "update"
+        },
+        {
+          "property": "EnableExecuteCommand",
+          "status": "update"
+        },
+        {
+          "property": "ForceNewDeployment",
+          "status": "update"
+        },
+        {
+          "property": "GatewayConnectors",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckGracePeriodSeconds",
+          "status": "update"
+        },
+        {
+          "property": "LaunchType",
+          "status": "update"
+        },
+        {
+          "property": "LoadBalancers",
+          "status": "update"
+        },
+        {
+          "property": "Monitoring",
+          "status": "update"
+        },
+        {
+          "property": "NetworkConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "PlacementConstraints",
+          "status": "update"
+        },
+        {
+          "property": "PlacementStrategies",
+          "status": "update"
+        },
+        {
+          "property": "PlatformVersion",
+          "status": "update"
+        },
+        {
+          "property": "PropagateTags",
+          "status": "update"
+        },
+        {
+          "property": "Role",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SchedulingStrategy",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceConnectConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ServiceName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceRegistries",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TaskDefinition",
+          "status": "update"
+        },
+        {
+          "property": "VolumeConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "VpcLatticeConfigurations",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECS::TaskDefinition",
+      "file": "src/provisioning/providers/ecs-provider.ts",
+      "className": "ECSProvider",
+      "properties": [
+        {
+          "property": "ContainerDefinitions",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Cpu",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EnableFaultInjection",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EphemeralStorage",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ExecutionRoleArn",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Family",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "IpcMode",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Memory",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "NetworkMode",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "PidMode",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PlacementConstraints",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ProxyConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RequiresCompatibilities",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "RuntimePlatform",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TaskRoleArn",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "TrustedExecutionConfiguration",
+          "status": "allow-listed",
+          "rationale": "refused: updateTaskDefinition refuses every changed key but Tags through a loop over the bag's keys, which names no property (#6301)"
+        },
+        {
+          "property": "Volumes",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EFS::AccessPoint",
+      "file": "src/provisioning/providers/efs-provider.ts",
+      "className": "EFSProvider",
+      "properties": [
+        {
+          "property": "AccessPointTags",
+          "status": "update"
+        },
+        {
+          "property": "FileSystemId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PosixUser",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RootDirectory",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EFS::FileSystem",
+      "file": "src/provisioning/providers/efs-provider.ts",
+      "className": "EFSProvider",
+      "properties": [
+        {
+          "property": "AvailabilityZoneName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "BackupPolicy",
+          "status": "update"
+        },
+        {
+          "property": "BypassPolicyLockoutSafetyCheck",
+          "status": "update"
+        },
+        {
+          "property": "Encrypted",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FileSystemPolicy",
+          "status": "update"
+        },
+        {
+          "property": "FileSystemProtection",
+          "status": "update"
+        },
+        {
+          "property": "FileSystemTags",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "LifecyclePolicies",
+          "status": "update"
+        },
+        {
+          "property": "PerformanceMode",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ProvisionedThroughputInMibps",
+          "status": "update"
+        },
+        {
+          "property": "ThroughputMode",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EFS::MountTarget",
+      "file": "src/provisioning/providers/efs-provider.ts",
+      "className": "EFSProvider",
+      "properties": [
+        {
+          "property": "FileSystemId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "IpAddress",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Ipv6Address",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SecurityGroups",
+          "status": "update"
+        },
+        {
+          "property": "SubnetId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElastiCache::CacheCluster",
+      "file": "src/provisioning/providers/elasticache-provider.ts",
+      "className": "ElastiCacheProvider",
+      "properties": [
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AZMode",
+          "status": "update"
+        },
+        {
+          "property": "CacheNodeType",
+          "status": "update"
+        },
+        {
+          "property": "CacheParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "CacheSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ClusterName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Engine",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "update"
+        },
+        {
+          "property": "IpDiscovery",
+          "status": "update"
+        },
+        {
+          "property": "LogDeliveryConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "NetworkType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "NotificationTopicArn",
+          "status": "update"
+        },
+        {
+          "property": "NumCacheNodes",
+          "status": "update"
+        },
+        {
+          "property": "Port",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PreferredAvailabilityZone",
+          "status": "update"
+        },
+        {
+          "property": "PreferredAvailabilityZones",
+          "status": "update"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "SnapshotArns",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SnapshotName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SnapshotRetentionLimit",
+          "status": "update"
+        },
+        {
+          "property": "SnapshotWindow",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TransitEncryptionEnabled",
+          "status": "update"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElastiCache::SubnetGroup",
+      "file": "src/provisioning/providers/elasticache-provider.ts",
+      "className": "ElastiCacheProvider",
+      "properties": [
+        {
+          "property": "CacheSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
+      "file": "src/provisioning/providers/elbv2-provider.ts",
+      "className": "ELBv2Provider",
+      "properties": [
+        {
+          "property": "AlpnPolicy",
+          "status": "update"
+        },
+        {
+          "property": "Certificates",
+          "status": "update"
+        },
+        {
+          "property": "DefaultActions",
+          "status": "update"
+        },
+        {
+          "property": "ListenerAttributes",
+          "status": "update"
+        },
+        {
+          "property": "LoadBalancerArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MutualAuthentication",
+          "status": "update"
+        },
+        {
+          "property": "Port",
+          "status": "update"
+        },
+        {
+          "property": "Protocol",
+          "status": "update"
+        },
+        {
+          "property": "SslPolicy",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "file": "src/provisioning/providers/elbv2-provider.ts",
+      "className": "ELBv2Provider",
+      "properties": [
+        {
+          "property": "EnableCapacityReservationProvisionStabilize",
+          "status": "update"
+        },
+        {
+          "property": "EnablePrefixForIpv6SourceNat",
+          "status": "update"
+        },
+        {
+          "property": "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
+          "status": "update"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "update"
+        },
+        {
+          "property": "Ipv4IpamPoolId",
+          "status": "update"
+        },
+        {
+          "property": "LoadBalancerAttributes",
+          "status": "update"
+        },
+        {
+          "property": "MinimumLoadBalancerCapacity",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Scheme",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SecurityGroups",
+          "status": "update"
+        },
+        {
+          "property": "SubnetMappings",
+          "status": "update"
+        },
+        {
+          "property": "Subnets",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "file": "src/provisioning/providers/elbv2-provider.ts",
+      "className": "ELBv2Provider",
+      "properties": [
+        {
+          "property": "HealthCheckEnabled",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckIntervalSeconds",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckPath",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckPort",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckProtocol",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckTimeoutSeconds",
+          "status": "update"
+        },
+        {
+          "property": "HealthyThresholdCount",
+          "status": "update"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Matcher",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Port",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Protocol",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ProtocolVersion",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TargetControlPort",
+          "status": "update"
+        },
+        {
+          "property": "TargetGroupAttributes",
+          "status": "update"
+        },
+        {
+          "property": "Targets",
+          "status": "update"
+        },
+        {
+          "property": "TargetType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "UnhealthyThresholdCount",
+          "status": "update"
+        },
+        {
+          "property": "VpcId",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EMR::Cluster",
+      "file": "src/provisioning/providers/emr-cluster-provider.ts",
+      "className": "EMRClusterProvider",
+      "properties": [
+        {
+          "property": "AdditionalInfo",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Applications",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AutoScalingRole",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "AutoTerminationPolicy",
+          "status": "update"
+        },
+        {
+          "property": "BootstrapActions",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Configurations",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CustomAmiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EbsRootVolumeIops",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EbsRootVolumeSize",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EbsRootVolumeThroughput",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Instances",
+          "status": "update"
+        },
+        {
+          "property": "JobFlowRole",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KerberosAttributes",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "LogEncryptionKmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "LogUri",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ManagedScalingPolicy",
+          "status": "update"
+        },
+        {
+          "property": "MonitoringConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "OSReleaseLabel",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PlacementGroupConfigs",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ReleaseLabel",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ScaleDownBehavior",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SecurityConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceRole",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SessionEnabled",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StepConcurrencyLevel",
+          "status": "update"
+        },
+        {
+          "property": "Steps",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VisibleToAllUsers",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceFleetConfig",
+      "file": "src/provisioning/providers/emr-instance-fleet-config-provider.ts",
+      "className": "EMRInstanceFleetConfigProvider",
+      "properties": [
+        {
+          "property": "ClusterId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InstanceFleetType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InstanceTypeConfigs",
+          "status": "update"
+        },
+        {
+          "property": "LaunchSpecifications",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ResizeSpecifications",
+          "status": "update"
+        },
+        {
+          "property": "TargetOnDemandCapacity",
+          "status": "update"
+        },
+        {
+          "property": "TargetSpotCapacity",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceGroupConfig",
+      "file": "src/provisioning/providers/emr-instance-group-config-provider.ts",
+      "className": "EMRInstanceGroupConfigProvider",
+      "properties": [
+        {
+          "property": "AutoScalingPolicy",
+          "status": "update"
+        },
+        {
+          "property": "BidPrice",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Configurations",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CustomAmiId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EbsConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InstanceCount",
+          "status": "update"
+        },
+        {
+          "property": "InstanceRole",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InstanceType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "JobFlowId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Market",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Events::Archive",
+      "file": "src/provisioning/providers/eventbridge-archive-provider.ts",
+      "className": "EventBridgeArchiveProvider",
+      "properties": [
+        {
+          "property": "ArchiveName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EventPattern",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "RetentionDays",
+          "status": "update"
+        },
+        {
+          "property": "SourceArn",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Events::EventBus",
+      "file": "src/provisioning/providers/eventbridge-bus-provider.ts",
+      "className": "EventBridgeBusProvider",
+      "properties": [
+        {
+          "property": "DeadLetterConfig",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EventSourceName",
+          "status": "allow-listed",
+          "rationale": "create-time partner-source binding: UpdateEventBus has no such member; CloudFormation documents No interruption (unmeasured)"
+        },
+        {
+          "property": "KmsKeyIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "LogConfig",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Policy",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Events::Rule",
+      "file": "src/provisioning/providers/eventbridge-rule-provider.ts",
+      "className": "EventBridgeRuleProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EventBusName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EventPattern",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "RoleArn",
+          "status": "update"
+        },
+        {
+          "property": "ScheduleExpression",
+          "status": "update"
+        },
+        {
+          "property": "State",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Targets",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::FSx::FileSystem",
+      "file": "src/provisioning/providers/fsx-filesystem-provider.ts",
+      "className": "FSxFileSystemProvider",
+      "properties": [
+        {
+          "property": "BackupId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FileSystemType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FileSystemTypeVersion",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "LustreConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "NetworkType",
+          "status": "update"
+        },
+        {
+          "property": "OntapConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "OpenZFSConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "SecurityGroupIds",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageCapacity",
+          "status": "update"
+        },
+        {
+          "property": "StorageType",
+          "status": "update"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "WindowsConfiguration",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueConnectionProvider",
+      "properties": [
+        {
+          "property": "CatalogId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ConnectionInput",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Crawler",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueCrawlerProvider",
+      "properties": [
+        {
+          "property": "Classifiers",
+          "status": "update"
+        },
+        {
+          "property": "Configuration",
+          "status": "update"
+        },
+        {
+          "property": "CrawlerSecurityConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "LakeFormationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RecrawlPolicy",
+          "status": "update"
+        },
+        {
+          "property": "Role",
+          "status": "update"
+        },
+        {
+          "property": "Schedule",
+          "status": "update"
+        },
+        {
+          "property": "SchemaChangePolicy",
+          "status": "update"
+        },
+        {
+          "property": "TablePrefix",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Targets",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Database",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueProvider",
+      "properties": [
+        {
+          "property": "CatalogId",
+          "status": "update"
+        },
+        {
+          "property": "DatabaseInput",
+          "status": "update"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Job",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueJobProvider",
+      "properties": [
+        {
+          "property": "AllocatedCapacity",
+          "status": "update"
+        },
+        {
+          "property": "Command",
+          "status": "update"
+        },
+        {
+          "property": "Connections",
+          "status": "update"
+        },
+        {
+          "property": "DefaultArguments",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "ExecutionClass",
+          "status": "update"
+        },
+        {
+          "property": "ExecutionProperty",
+          "status": "update"
+        },
+        {
+          "property": "GlueVersion",
+          "status": "update"
+        },
+        {
+          "property": "JobMode",
+          "status": "update"
+        },
+        {
+          "property": "JobRunQueuingEnabled",
+          "status": "update"
+        },
+        {
+          "property": "LogUri",
+          "status": "update"
+        },
+        {
+          "property": "MaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "MaxCapacity",
+          "status": "update"
+        },
+        {
+          "property": "MaxRetries",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "NonOverridableArguments",
+          "status": "update"
+        },
+        {
+          "property": "NotificationProperty",
+          "status": "update"
+        },
+        {
+          "property": "NumberOfWorkers",
+          "status": "update"
+        },
+        {
+          "property": "Role",
+          "status": "update"
+        },
+        {
+          "property": "SecurityConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Timeout",
+          "status": "update"
+        },
+        {
+          "property": "WorkerType",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueSecurityConfigurationProvider",
+      "properties": [
+        {
+          "property": "EncryptionConfiguration",
+          "status": "allow-listed",
+          "rationale": "refused: the update refuses every change with ResourceUpdateNotSupportedError, as Glue has no UpdateSecurityConfiguration"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueProvider",
+      "properties": [
+        {
+          "property": "CatalogId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "OpenTableFormatInput",
+          "status": "update"
+        },
+        {
+          "property": "TableInput",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueTriggerProvider",
+      "properties": [
+        {
+          "property": "Actions",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EventBatchingCondition",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Predicate",
+          "status": "update"
+        },
+        {
+          "property": "Schedule",
+          "status": "update"
+        },
+        {
+          "property": "StartOnCreation",
+          "status": "allow-listed",
+          "rationale": "create-time action: TriggerUpdate has no such member; CloudFormation documents No interruption (unmeasured)"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "WorkflowName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Workflow",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueWorkflowProvider",
+      "properties": [
+        {
+          "property": "DefaultRunProperties",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "MaxConcurrentRuns",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::AccessKey",
+      "file": "src/provisioning/providers/iam-access-key-provider.ts",
+      "className": "IAMAccessKeyProvider",
+      "properties": [
+        {
+          "property": "Serial",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Status",
+          "status": "update"
+        },
+        {
+          "property": "UserName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::Group",
+      "file": "src/provisioning/providers/iam-user-group-provider.ts",
+      "className": "IAMUserGroupProvider",
+      "properties": [
+        {
+          "property": "GroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ManagedPolicyArns",
+          "status": "update"
+        },
+        {
+          "property": "Path",
+          "status": "update"
+        },
+        {
+          "property": "Policies",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::InstanceProfile",
+      "file": "src/provisioning/providers/iam-instance-profile-provider.ts",
+      "className": "IAMInstanceProfileProvider",
+      "properties": [
+        {
+          "property": "InstanceProfileName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Path",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Roles",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "file": "src/provisioning/providers/iam-managed-policy-provider.ts",
+      "className": "IAMManagedPolicyProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Groups",
+          "status": "update"
+        },
+        {
+          "property": "ManagedPolicyName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Path",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "update"
+        },
+        {
+          "property": "Roles",
+          "status": "update"
+        },
+        {
+          "property": "Users",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::Policy",
+      "file": "src/provisioning/providers/iam-policy-provider.ts",
+      "className": "IAMPolicyProvider",
+      "properties": [
+        {
+          "property": "Groups",
+          "status": "update"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "update"
+        },
+        {
+          "property": "PolicyName",
+          "status": "update"
+        },
+        {
+          "property": "Roles",
+          "status": "update"
+        },
+        {
+          "property": "Users",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::Role",
+      "file": "src/provisioning/providers/iam-role-provider.ts",
+      "className": "IAMRoleProvider",
+      "properties": [
+        {
+          "property": "AssumeRolePolicyDocument",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "ManagedPolicyArns",
+          "status": "update"
+        },
+        {
+          "property": "MaxSessionDuration",
+          "status": "update"
+        },
+        {
+          "property": "Path",
+          "status": "update"
+        },
+        {
+          "property": "PermissionsBoundary",
+          "status": "update"
+        },
+        {
+          "property": "Policies",
+          "status": "update"
+        },
+        {
+          "property": "RoleName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::User",
+      "file": "src/provisioning/providers/iam-user-group-provider.ts",
+      "className": "IAMUserGroupProvider",
+      "properties": [
+        {
+          "property": "Groups",
+          "status": "update"
+        },
+        {
+          "property": "LoginProfile",
+          "status": "update"
+        },
+        {
+          "property": "ManagedPolicyArns",
+          "status": "update"
+        },
+        {
+          "property": "Path",
+          "status": "update"
+        },
+        {
+          "property": "PermissionsBoundary",
+          "status": "update"
+        },
+        {
+          "property": "Policies",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "UserName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::UserToGroupAddition",
+      "file": "src/provisioning/providers/iam-user-group-provider.ts",
+      "className": "IAMUserGroupProvider",
+      "properties": [
+        {
+          "property": "GroupName",
+          "status": "update"
+        },
+        {
+          "property": "Users",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Kinesis::Stream",
+      "file": "src/provisioning/providers/kinesis-provider.ts",
+      "className": "KinesisStreamProvider",
+      "properties": [
+        {
+          "property": "DesiredShardLevelMetrics",
+          "status": "update"
+        },
+        {
+          "property": "MaxRecordSizeInKiB",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "RecordDistributionStrategy",
+          "status": "update"
+        },
+        {
+          "property": "RetentionPeriodHours",
+          "status": "update"
+        },
+        {
+          "property": "ShardCount",
+          "status": "update"
+        },
+        {
+          "property": "StreamEncryption",
+          "status": "update"
+        },
+        {
+          "property": "StreamModeDetails",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Kinesis::StreamConsumer",
+      "file": "src/provisioning/providers/kinesis-streamconsumer-provider.ts",
+      "className": "KinesisStreamConsumerProvider",
+      "properties": [
+        {
+          "property": "ConsumerName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StreamARN",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::KinesisFirehose::DeliveryStream",
+      "file": "src/provisioning/providers/firehose-provider.ts",
+      "className": "FirehoseProvider",
+      "properties": [
+        {
+          "property": "AmazonOpenSearchServerlessDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "AmazonopensearchserviceDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "DeliveryStreamEncryptionConfigurationInput",
+          "status": "update"
+        },
+        {
+          "property": "DeliveryStreamName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeliveryStreamType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DirectPutSourceConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ElasticsearchDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ExtendedS3DestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "HttpEndpointDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "IcebergDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "KinesisStreamSourceConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MSKSourceConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RedshiftDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "S3DestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "SplunkDestinationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::KMS::Alias",
+      "file": "src/provisioning/providers/kms-provider.ts",
+      "className": "KMSProvider",
+      "properties": [
+        {
+          "property": "AliasName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "TargetKeyId",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::KMS::Key",
+      "file": "src/provisioning/providers/kms-provider.ts",
+      "className": "KMSProvider",
+      "properties": [
+        {
+          "property": "BypassPolicyLockoutSafetyCheck",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Enabled",
+          "status": "update"
+        },
+        {
+          "property": "EnableKeyRotation",
+          "status": "update"
+        },
+        {
+          "property": "KeyPolicy",
+          "status": "update"
+        },
+        {
+          "property": "KeySpec",
+          "status": "update"
+        },
+        {
+          "property": "KeyUsage",
+          "status": "update"
+        },
+        {
+          "property": "MultiRegion",
+          "status": "update"
+        },
+        {
+          "property": "Origin",
+          "status": "update"
+        },
+        {
+          "property": "PendingWindowInDays",
+          "status": "allow-listed",
+          "rationale": "delete-time input: ScheduleKeyDeletion reads it from the record the update rewrites"
+        },
+        {
+          "property": "RotationPeriodInDays",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "file": "src/provisioning/providers/lambda-event-invoke-config-provider.ts",
+      "className": "LambdaEventInvokeConfigProvider",
+      "properties": [
+        {
+          "property": "DestinationConfig",
+          "status": "update"
+        },
+        {
+          "property": "FunctionName",
+          "status": "update"
+        },
+        {
+          "property": "MaximumEventAgeInSeconds",
+          "status": "update"
+        },
+        {
+          "property": "MaximumRetryAttempts",
+          "status": "update"
+        },
+        {
+          "property": "Qualifier",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventSourceMapping",
+      "file": "src/provisioning/providers/lambda-eventsource-provider.ts",
+      "className": "LambdaEventSourceMappingProvider",
+      "properties": [
+        {
+          "property": "AmazonManagedKafkaEventSourceConfig",
+          "status": "update"
+        },
+        {
+          "property": "BatchSize",
+          "status": "update"
+        },
+        {
+          "property": "BisectBatchOnFunctionError",
+          "status": "update"
+        },
+        {
+          "property": "DestinationConfig",
+          "status": "update"
+        },
+        {
+          "property": "DocumentDBEventSourceConfig",
+          "status": "update"
+        },
+        {
+          "property": "Enabled",
+          "status": "update"
+        },
+        {
+          "property": "EventSourceArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FilterCriteria",
+          "status": "update"
+        },
+        {
+          "property": "FunctionName",
+          "status": "update"
+        },
+        {
+          "property": "FunctionResponseTypes",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "update"
+        },
+        {
+          "property": "LoggingConfig",
+          "status": "update"
+        },
+        {
+          "property": "MaximumBatchingWindowInSeconds",
+          "status": "update"
+        },
+        {
+          "property": "MaximumRecordAgeInSeconds",
+          "status": "update"
+        },
+        {
+          "property": "MaximumRetryAttempts",
+          "status": "update"
+        },
+        {
+          "property": "MetricsConfig",
+          "status": "update"
+        },
+        {
+          "property": "ParallelizationFactor",
+          "status": "update"
+        },
+        {
+          "property": "ProvisionedPollerConfig",
+          "status": "update"
+        },
+        {
+          "property": "Queues",
+          "status": "update"
+        },
+        {
+          "property": "ScalingConfig",
+          "status": "update"
+        },
+        {
+          "property": "SelfManagedEventSource",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SelfManagedKafkaEventSourceConfig",
+          "status": "update"
+        },
+        {
+          "property": "SourceAccessConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "StartingPosition",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StartingPositionTimestamp",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Topics",
+          "status": "update"
+        },
+        {
+          "property": "TumblingWindowInSeconds",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Function",
+      "file": "src/provisioning/providers/lambda-function-provider.ts",
+      "className": "LambdaFunctionProvider",
+      "properties": [
+        {
+          "property": "Architectures",
+          "status": "update"
+        },
+        {
+          "property": "CapacityProviderConfig",
+          "status": "update"
+        },
+        {
+          "property": "Code",
+          "status": "update"
+        },
+        {
+          "property": "CodeSigningConfigArn",
+          "status": "update"
+        },
+        {
+          "property": "DeadLetterConfig",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DurableConfig",
+          "status": "update"
+        },
+        {
+          "property": "Environment",
+          "status": "update"
+        },
+        {
+          "property": "EphemeralStorage",
+          "status": "update"
+        },
+        {
+          "property": "FileSystemConfigs",
+          "status": "update"
+        },
+        {
+          "property": "FunctionName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "FunctionScalingConfig",
+          "status": "update"
+        },
+        {
+          "property": "Handler",
+          "status": "update"
+        },
+        {
+          "property": "ImageConfig",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "update"
+        },
+        {
+          "property": "Layers",
+          "status": "update"
+        },
+        {
+          "property": "LoggingConfig",
+          "status": "update"
+        },
+        {
+          "property": "MemorySize",
+          "status": "update"
+        },
+        {
+          "property": "PackageType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PublishToLatestPublished",
+          "status": "update"
+        },
+        {
+          "property": "RecursiveLoop",
+          "status": "update"
+        },
+        {
+          "property": "ReservedConcurrentExecutions",
+          "status": "update"
+        },
+        {
+          "property": "Role",
+          "status": "update"
+        },
+        {
+          "property": "Runtime",
+          "status": "update"
+        },
+        {
+          "property": "RuntimeConfig",
+          "status": "update"
+        },
+        {
+          "property": "RuntimeManagementConfig",
+          "status": "update"
+        },
+        {
+          "property": "SnapStart",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TenancyConfig",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Timeout",
+          "status": "update"
+        },
+        {
+          "property": "TracingConfig",
+          "status": "update"
+        },
+        {
+          "property": "VpcConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::LayerVersion",
+      "file": "src/provisioning/providers/lambda-layer-provider.ts",
+      "className": "LambdaLayerVersionProvider",
+      "properties": [
+        {
+          "property": "CompatibleArchitectures",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "CompatibleRuntimes",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Content",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Description",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "LayerName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "LicenseInfo",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::MicrovmImage",
+      "file": "src/provisioning/providers/lambda-microvm-image-provider.ts",
+      "className": "LambdaMicrovmImageProvider",
+      "properties": [
+        {
+          "property": "AdditionalOsCapabilities",
+          "status": "update"
+        },
+        {
+          "property": "BaseImageArn",
+          "status": "update"
+        },
+        {
+          "property": "BaseImageVersion",
+          "status": "update"
+        },
+        {
+          "property": "BuildRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "CodeArtifact",
+          "status": "update"
+        },
+        {
+          "property": "CpuConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EgressNetworkConnectors",
+          "status": "update"
+        },
+        {
+          "property": "EnvironmentVariables",
+          "status": "update"
+        },
+        {
+          "property": "Hooks",
+          "status": "update"
+        },
+        {
+          "property": "Logging",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Resources",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::NetworkConnector",
+      "file": "src/provisioning/providers/lambda-network-connector-provider.ts",
+      "className": "LambdaNetworkConnectorProvider",
+      "properties": [
+        {
+          "property": "Configuration",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "OperatorRole",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Permission",
+      "file": "src/provisioning/providers/lambda-permission-provider.ts",
+      "className": "LambdaPermissionProvider",
+      "properties": [
+        {
+          "property": "Action",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EventSourceToken",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FunctionName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FunctionUrlAuthType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InvokedViaFunctionUrl",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Principal",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PrincipalOrgID",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceAccount",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceArn",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Url",
+      "file": "src/provisioning/providers/lambda-url-provider.ts",
+      "className": "LambdaUrlProvider",
+      "properties": [
+        {
+          "property": "AuthType",
+          "status": "update"
+        },
+        {
+          "property": "Cors",
+          "status": "update"
+        },
+        {
+          "property": "InvokeMode",
+          "status": "update"
+        },
+        {
+          "property": "Qualifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "TargetFunctionArn",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+      "file": "src/provisioning/providers/lambda-web-function-endpoint-provider.ts",
+      "className": "LambdaWebFunctionEndpointProvider",
+      "properties": [
+        {
+          "property": "AuthType",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EndpointName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EndpointType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FunctionName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Regions",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RevisionWeights",
+          "status": "update"
+        },
+        {
+          "property": "ScalingConfig",
+          "status": "update"
+        },
+        {
+          "property": "ThrottleConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionRevision",
+      "file": "src/provisioning/providers/lambda-web-function-revision-provider.ts",
+      "className": "LambdaWebFunctionRevisionProvider",
+      "properties": [
+        {
+          "property": "BuildConfig",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FunctionName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceConfig",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::Delivery",
+      "file": "src/provisioning/providers/logs-delivery-provider.ts",
+      "className": "LogsDeliveryProvider",
+      "properties": [
+        {
+          "property": "DeliveryDestinationArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeliverySourceName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FieldDelimiter",
+          "status": "update"
+        },
+        {
+          "property": "RecordFields",
+          "status": "update"
+        },
+        {
+          "property": "S3EnableHiveCompatiblePath",
+          "status": "update"
+        },
+        {
+          "property": "S3SuffixPath",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::DeliveryDestination",
+      "file": "src/provisioning/providers/logs-delivery-destination-provider.ts",
+      "className": "LogsDeliveryDestinationProvider",
+      "properties": [
+        {
+          "property": "DeliveryDestinationPolicy",
+          "status": "update"
+        },
+        {
+          "property": "DeliveryDestinationType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationResourceArn",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "OutputFormat",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::DeliverySource",
+      "file": "src/provisioning/providers/logs-delivery-source-provider.ts",
+      "className": "LogsDeliverySourceProvider",
+      "properties": [
+        {
+          "property": "DeliverySourceConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "LogType",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ResourceArn",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::LogGroup",
+      "file": "src/provisioning/providers/logs-loggroup-provider.ts",
+      "className": "LogsLogGroupProvider",
+      "properties": [
+        {
+          "property": "BearerTokenAuthenticationEnabled",
+          "status": "update"
+        },
+        {
+          "property": "DataProtectionPolicy",
+          "status": "update"
+        },
+        {
+          "property": "DeletionProtectionEnabled",
+          "status": "update"
+        },
+        {
+          "property": "FieldIndexPolicies",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "update"
+        },
+        {
+          "property": "LogGroupClass",
+          "status": "update"
+        },
+        {
+          "property": "LogGroupName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "RetentionInDays",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBCluster",
+      "file": "src/provisioning/providers/neptune-provider.ts",
+      "className": "NeptuneProvider",
+      "properties": [
+        {
+          "property": "AssociatedRoles",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZones",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "update"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBClusterParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBPort",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "update"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "update"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "update"
+        },
+        {
+          "property": "IamAuthEnabled",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "NetworkType",
+          "status": "update"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "update"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "RestoreToTime",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RestoreType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServerlessScalingConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "SnapshotIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBInstance",
+      "file": "src/provisioning/providers/neptune-provider.ts",
+      "className": "NeptuneProvider",
+      "properties": [
+        {
+          "property": "AllowMajorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBInstanceClass",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "PubliclyAccessible",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBSubnetGroup",
+      "file": "src/provisioning/providers/neptune-provider.ts",
+      "className": "NeptuneProvider",
+      "properties": [
+        {
+          "property": "DBSubnetGroupDescription",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Pipes::Pipe",
+      "file": "src/provisioning/providers/pipes-provider.ts",
+      "className": "PipesPipeProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DesiredState",
+          "status": "update"
+        },
+        {
+          "property": "Enrichment",
+          "status": "update"
+        },
+        {
+          "property": "EnrichmentParameters",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "LogConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RoleArn",
+          "status": "update"
+        },
+        {
+          "property": "Source",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceParameters",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Target",
+          "status": "update"
+        },
+        {
+          "property": "TargetParameters",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBCluster",
+      "file": "src/provisioning/providers/rds-provider.ts",
+      "className": "RDSProvider",
+      "properties": [
+        {
+          "property": "AllocatedStorage",
+          "status": "update"
+        },
+        {
+          "property": "AssociatedRoles",
+          "status": "update"
+        },
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZones",
+          "status": "update"
+        },
+        {
+          "property": "BacktrackWindow",
+          "status": "update"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "ClusterScalabilityType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "update"
+        },
+        {
+          "property": "DatabaseInsightsMode",
+          "status": "update"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBClusterInstanceClass",
+          "status": "update"
+        },
+        {
+          "property": "DBClusterParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "update"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "update"
+        },
+        {
+          "property": "EnableGlobalWriteForwarding",
+          "status": "update"
+        },
+        {
+          "property": "EnableHttpEndpoint",
+          "status": "update"
+        },
+        {
+          "property": "EnableIAMDatabaseAuthentication",
+          "status": "update"
+        },
+        {
+          "property": "EnableLocalWriteForwarding",
+          "status": "update"
+        },
+        {
+          "property": "Engine",
+          "status": "update"
+        },
+        {
+          "property": "EngineLifecycleSupport",
+          "status": "update"
+        },
+        {
+          "property": "EngineMode",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "update"
+        },
+        {
+          "property": "GlobalClusterIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "Iops",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ManageMasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "MasterUserAuthenticationType",
+          "status": "update"
+        },
+        {
+          "property": "MasterUsername",
+          "status": "allow-listed",
+          "rationale": "ModifyDBCluster has no such member; CloudFormation completes the update in place and keeps the old user (measured, #5467)"
+        },
+        {
+          "property": "MasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "MasterUserSecret",
+          "status": "update"
+        },
+        {
+          "property": "MonitoringInterval",
+          "status": "update"
+        },
+        {
+          "property": "MonitoringRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "NetworkType",
+          "status": "update"
+        },
+        {
+          "property": "PerformanceInsightsEnabled",
+          "status": "update"
+        },
+        {
+          "property": "PerformanceInsightsKmsKeyId",
+          "status": "update"
+        },
+        {
+          "property": "PerformanceInsightsRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "Port",
+          "status": "update"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "update"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "PubliclyAccessible",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ReplicationSourceIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "RestoreToTime",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RestoreType",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServerlessV2ScalingConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "SnapshotIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceDbClusterResourceId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceRegion",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageType",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "update"
+        },
+        {
+          "property": "WithExpressConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBInstance",
+      "file": "src/provisioning/providers/rds-provider.ts",
+      "className": "RDSProvider",
+      "properties": [
+        {
+          "property": "AdditionalStorageVolumes",
+          "status": "update"
+        },
+        {
+          "property": "AllocatedStorage",
+          "status": "update"
+        },
+        {
+          "property": "AllowMajorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AssociatedRoles",
+          "status": "update"
+        },
+        {
+          "property": "AutomaticBackupReplicationKmsKeyId",
+          "status": "update"
+        },
+        {
+          "property": "AutomaticBackupReplicationRegion",
+          "status": "update"
+        },
+        {
+          "property": "AutomaticBackupReplicationRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "update"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "update"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "CACertificateIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "CertificateRotationRestart",
+          "status": "update"
+        },
+        {
+          "property": "CharacterSetName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "update"
+        },
+        {
+          "property": "DatabaseInsightsMode",
+          "status": "update"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBClusterSnapshotIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceClass",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceIdentifier",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DBParameterGroupName",
+          "status": "update"
+        },
+        {
+          "property": "DBSnapshotIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DedicatedLogVolume",
+          "status": "update"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "update"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "update"
+        },
+        {
+          "property": "EnableIAMDatabaseAuthentication",
+          "status": "update"
+        },
+        {
+          "property": "EnablePerformanceInsights",
+          "status": "update"
+        },
+        {
+          "property": "Engine",
+          "status": "update"
+        },
+        {
+          "property": "EngineLifecycleSupport",
+          "status": "update"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "update"
+        },
+        {
+          "property": "Iops",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "LicenseModel",
+          "status": "update"
+        },
+        {
+          "property": "ManageMasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "MasterUserAuthenticationType",
+          "status": "update"
+        },
+        {
+          "property": "MasterUsername",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MasterUserPassword",
+          "status": "update"
+        },
+        {
+          "property": "MasterUserSecret",
+          "status": "update"
+        },
+        {
+          "property": "MaxAllocatedStorage",
+          "status": "update"
+        },
+        {
+          "property": "MonitoringInterval",
+          "status": "update"
+        },
+        {
+          "property": "MonitoringRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "MultiAZ",
+          "status": "update"
+        },
+        {
+          "property": "NcharCharacterSetName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "NetworkType",
+          "status": "update"
+        },
+        {
+          "property": "OptionGroupName",
+          "status": "update"
+        },
+        {
+          "property": "PerformanceInsightsKMSKeyId",
+          "status": "update"
+        },
+        {
+          "property": "PerformanceInsightsRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "Port",
+          "status": "update"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "update"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "update"
+        },
+        {
+          "property": "ProcessorFeatures",
+          "status": "update"
+        },
+        {
+          "property": "PromotionTier",
+          "status": "update"
+        },
+        {
+          "property": "PubliclyAccessible",
+          "status": "update"
+        },
+        {
+          "property": "RestoreTime",
+          "status": "update"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "SourceDBInstanceAutomatedBackupsArn",
+          "status": "update"
+        },
+        {
+          "property": "SourceDBInstanceIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "SourceDbiResourceId",
+          "status": "update"
+        },
+        {
+          "property": "SourceRegion",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "StorageThroughput",
+          "status": "update"
+        },
+        {
+          "property": "StorageType",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Timezone",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "UseDefaultProcessorFeatures",
+          "status": "update"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "update"
+        },
+        {
+          "property": "VPCSecurityGroups",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxy",
+      "file": "src/provisioning/providers/rds-dbproxy-provider.ts",
+      "className": "RDSDBProxyProvider",
+      "properties": [
+        {
+          "property": "Auth",
+          "status": "update"
+        },
+        {
+          "property": "DBProxyName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "DebugLogging",
+          "status": "update"
+        },
+        {
+          "property": "DefaultAuthScheme",
+          "status": "update"
+        },
+        {
+          "property": "EndpointNetworkType",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EngineFamily",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "IdleClientTimeout",
+          "status": "update"
+        },
+        {
+          "property": "RequireTLS",
+          "status": "update"
+        },
+        {
+          "property": "RoleArn",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TargetConnectionNetworkType",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "update"
+        },
+        {
+          "property": "VpcSubnetIds",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyEndpoint",
+      "file": "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts",
+      "className": "RDSDBProxyEndpointProvider",
+      "properties": [
+        {
+          "property": "DBProxyEndpointName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "DBProxyName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "EndpointNetworkType",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TargetRole",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "update"
+        },
+        {
+          "property": "VpcSubnetIds",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyTargetGroup",
+      "file": "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts",
+      "className": "RDSDBProxyTargetGroupProvider",
+      "properties": [
+        {
+          "property": "ConnectionPoolConfigurationInfo",
+          "status": "update"
+        },
+        {
+          "property": "DBClusterIdentifiers",
+          "status": "update"
+        },
+        {
+          "property": "DBInstanceIdentifiers",
+          "status": "update"
+        },
+        {
+          "property": "DBProxyName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TargetGroupName",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBSubnetGroup",
+      "file": "src/provisioning/providers/rds-provider.ts",
+      "className": "RDSProvider",
+      "properties": [
+        {
+          "property": "DBSubnetGroupDescription",
+          "status": "update"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Route53::HostedZone",
+      "file": "src/provisioning/providers/route53-provider.ts",
+      "className": "Route53Provider",
+      "properties": [
+        {
+          "property": "DelegationSetId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "HostedZoneConfig",
+          "status": "update"
+        },
+        {
+          "property": "HostedZoneFeatures",
+          "status": "update"
+        },
+        {
+          "property": "HostedZoneTags",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "QueryLoggingConfig",
+          "status": "update"
+        },
+        {
+          "property": "VPCs",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSet",
+      "file": "src/provisioning/providers/route53-provider.ts",
+      "className": "Route53Provider",
+      "properties": [
+        {
+          "property": "AliasTarget",
+          "status": "update"
+        },
+        {
+          "property": "CidrRoutingConfig",
+          "status": "update"
+        },
+        {
+          "property": "Comment",
+          "status": "update"
+        },
+        {
+          "property": "Failover",
+          "status": "update"
+        },
+        {
+          "property": "GeoLocation",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckId",
+          "status": "update"
+        },
+        {
+          "property": "HostedZoneId",
+          "status": "update"
+        },
+        {
+          "property": "HostedZoneName",
+          "status": "update"
+        },
+        {
+          "property": "MultiValueAnswer",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "update"
+        },
+        {
+          "property": "Region",
+          "status": "update"
+        },
+        {
+          "property": "ResourceRecords",
+          "status": "update"
+        },
+        {
+          "property": "SetIdentifier",
+          "status": "update"
+        },
+        {
+          "property": "TTL",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "update"
+        },
+        {
+          "property": "Weight",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetGroup",
+      "file": "src/provisioning/providers/route53-provider.ts",
+      "className": "Route53Provider",
+      "properties": [
+        {
+          "property": "Comment",
+          "status": "update"
+        },
+        {
+          "property": "HostedZoneId",
+          "status": "update"
+        },
+        {
+          "property": "HostedZoneName",
+          "status": "update"
+        },
+        {
+          "property": "RecordSets",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3::Bucket",
+      "file": "src/provisioning/providers/s3-bucket-provider.ts",
+      "className": "S3BucketProvider",
+      "properties": [
+        {
+          "property": "AbacStatus",
+          "status": "update"
+        },
+        {
+          "property": "AccelerateConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "AnalyticsConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "BucketEncryption",
+          "status": "update"
+        },
+        {
+          "property": "BucketName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "BucketNamePrefix",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "BucketNamespace",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "CorsConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "IntelligentTieringConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "InventoryConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "LifecycleConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "LoggingConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "MetadataConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "MetricsConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "NotificationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ObjectLockConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ObjectLockEnabled",
+          "status": "update"
+        },
+        {
+          "property": "OwnershipControls",
+          "status": "update"
+        },
+        {
+          "property": "PublicAccessBlockConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ReplicationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VersioningConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "WebsiteConfiguration",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3::BucketPolicy",
+      "file": "src/provisioning/providers/s3-bucket-policy-provider.ts",
+      "className": "S3BucketPolicyProvider",
+      "properties": [
+        {
+          "property": "Bucket",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Express::DirectoryBucket",
+      "file": "src/provisioning/providers/s3-directory-bucket-provider.ts",
+      "className": "S3DirectoryBucketProvider",
+      "properties": [
+        {
+          "property": "BucketEncryption",
+          "status": "update"
+        },
+        {
+          "property": "BucketName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DataRedundancy",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InventoryConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "LifecycleConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "LocationName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MetricsConfigurations",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "file": "src/provisioning/providers/s3-tables-provider.ts",
+      "className": "S3TablesProvider",
+      "properties": [
+        {
+          "property": "Namespace",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "TableBucketARN",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "file": "src/provisioning/providers/s3-tables-provider.ts",
+      "className": "S3TablesProvider",
+      "properties": [
+        {
+          "property": "Compaction",
+          "status": "update"
+        },
+        {
+          "property": "IcebergMetadata",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Namespace",
+          "status": "update"
+        },
+        {
+          "property": "OpenTableFormat",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "SnapshotManagement",
+          "status": "update"
+        },
+        {
+          "property": "StorageClassConfiguration",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "TableBucketARN",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "TableName",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "WithoutMetadata",
+          "status": "replacement",
+          "via": "rule"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::TableBucket",
+      "file": "src/provisioning/providers/s3-tables-provider.ts",
+      "className": "S3TablesProvider",
+      "properties": [
+        {
+          "property": "EncryptionConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "LoggingConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "MetricsConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "ReplicationConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "StorageClassConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "TableBucketName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "UnreferencedFileRemoval",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Vectors::VectorBucket",
+      "file": "src/provisioning/providers/s3-vectors-provider.ts",
+      "className": "S3VectorsProvider",
+      "properties": [
+        {
+          "property": "EncryptionConfiguration",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VectorBucketName",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Scheduler::Schedule",
+      "file": "src/provisioning/providers/scheduler-schedule-provider.ts",
+      "className": "SchedulerScheduleProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "EndDate",
+          "status": "update"
+        },
+        {
+          "property": "FlexibleTimeWindow",
+          "status": "update"
+        },
+        {
+          "property": "GroupName",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ScheduleExpression",
+          "status": "update"
+        },
+        {
+          "property": "ScheduleExpressionTimezone",
+          "status": "update"
+        },
+        {
+          "property": "StartDate",
+          "status": "update"
+        },
+        {
+          "property": "State",
+          "status": "update"
+        },
+        {
+          "property": "Target",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SecretsManager::Secret",
+      "file": "src/provisioning/providers/secretsmanager-secret-provider.ts",
+      "className": "SecretsManagerSecretProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "GenerateSecretString",
+          "status": "update"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "ReplicaRegions",
+          "status": "update"
+        },
+        {
+          "property": "SecretString",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Properties",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Vpc",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Properties",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::Service",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "properties": [
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "DnsConfig",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckConfig",
+          "status": "update"
+        },
+        {
+          "property": "HealthCheckCustomConfig",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "NamespaceId",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ServiceAttributes",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SNS::Subscription",
+      "file": "src/provisioning/providers/sns-subscription-provider.ts",
+      "className": "SNSSubscriptionProvider",
+      "properties": [
+        {
+          "property": "DeliveryPolicy",
+          "status": "update"
+        },
+        {
+          "property": "Endpoint",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FilterPolicy",
+          "status": "update"
+        },
+        {
+          "property": "FilterPolicyScope",
+          "status": "update"
+        },
+        {
+          "property": "Protocol",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RawMessageDelivery",
+          "status": "update"
+        },
+        {
+          "property": "RedrivePolicy",
+          "status": "update"
+        },
+        {
+          "property": "ReplayPolicy",
+          "status": "update"
+        },
+        {
+          "property": "SubscriptionRoleArn",
+          "status": "update"
+        },
+        {
+          "property": "TopicArn",
+          "status": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SNS::Topic",
+      "file": "src/provisioning/providers/sns-topic-provider.ts",
+      "className": "SNSTopicProvider",
+      "properties": [
+        {
+          "property": "ArchivePolicy",
+          "status": "update"
+        },
+        {
+          "property": "ContentBasedDeduplication",
+          "status": "update"
+        },
+        {
+          "property": "DataProtectionPolicy",
+          "status": "update"
+        },
+        {
+          "property": "DeliveryStatusLogging",
+          "status": "update"
+        },
+        {
+          "property": "DisplayName",
+          "status": "update"
+        },
+        {
+          "property": "FifoThroughputScope",
+          "status": "update"
+        },
+        {
+          "property": "FifoTopic",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KmsMasterKeyId",
+          "status": "update"
+        },
+        {
+          "property": "MaximumMessageSize",
+          "status": "update"
+        },
+        {
+          "property": "SignatureVersion",
+          "status": "update"
+        },
+        {
+          "property": "Subscription",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TopicName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "TracingConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SNS::TopicPolicy",
+      "file": "src/provisioning/providers/sns-topic-policy-provider.ts",
+      "className": "SNSTopicPolicyProvider",
+      "properties": [
+        {
+          "property": "PolicyDocument",
+          "status": "update"
+        },
+        {
+          "property": "Topics",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SQS::Queue",
+      "file": "src/provisioning/providers/sqs-queue-provider.ts",
+      "className": "SQSQueueProvider",
+      "properties": [
+        {
+          "property": "ContentBasedDeduplication",
+          "status": "update"
+        },
+        {
+          "property": "DeduplicationScope",
+          "status": "update"
+        },
+        {
+          "property": "DelaySeconds",
+          "status": "update"
+        },
+        {
+          "property": "FifoQueue",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "FifoThroughputLimit",
+          "status": "update"
+        },
+        {
+          "property": "KmsDataKeyReusePeriodSeconds",
+          "status": "update"
+        },
+        {
+          "property": "KmsMasterKeyId",
+          "status": "update"
+        },
+        {
+          "property": "MaximumMessageSize",
+          "status": "update"
+        },
+        {
+          "property": "MessageRetentionPeriod",
+          "status": "update"
+        },
+        {
+          "property": "QueueName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "ReceiveMessageWaitTimeSeconds",
+          "status": "update"
+        },
+        {
+          "property": "RedriveAllowPolicy",
+          "status": "update"
+        },
+        {
+          "property": "RedrivePolicy",
+          "status": "update"
+        },
+        {
+          "property": "SqsManagedSseEnabled",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "VisibilityTimeout",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SQS::QueuePolicy",
+      "file": "src/provisioning/providers/sqs-queue-policy-provider.ts",
+      "className": "SQSQueuePolicyProvider",
+      "properties": [
+        {
+          "property": "PolicyDocument",
+          "status": "update"
+        },
+        {
+          "property": "Queues",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SSM::Parameter",
+      "file": "src/provisioning/providers/ssm-parameter-provider.ts",
+      "className": "SSMParameterProvider",
+      "properties": [
+        {
+          "property": "AllowedPattern",
+          "status": "update"
+        },
+        {
+          "property": "DataType",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Policies",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "Tier",
+          "status": "update"
+        },
+        {
+          "property": "Type",
+          "status": "update"
+        },
+        {
+          "property": "Value",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::StepFunctions::StateMachine",
+      "file": "src/provisioning/providers/stepfunctions-provider.ts",
+      "className": "StepFunctionsProvider",
+      "properties": [
+        {
+          "property": "Definition",
+          "status": "update"
+        },
+        {
+          "property": "DefinitionS3Location",
+          "status": "update"
+        },
+        {
+          "property": "DefinitionString",
+          "status": "update"
+        },
+        {
+          "property": "DefinitionSubstitutions",
+          "status": "update"
+        },
+        {
+          "property": "EncryptionConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "LoggingConfiguration",
+          "status": "update"
+        },
+        {
+          "property": "RoleArn",
+          "status": "update"
+        },
+        {
+          "property": "StateMachineName",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "StateMachineType",
+          "status": "replacement",
+          "via": "rule"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TracingConfiguration",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "file": "src/provisioning/providers/wafv2-provider.ts",
+      "className": "WAFv2WebACLProvider",
+      "properties": [
+        {
+          "property": "ApplicationConfig",
+          "status": "update"
+        },
+        {
+          "property": "AssociationConfig",
+          "status": "update"
+        },
+        {
+          "property": "CaptchaConfig",
+          "status": "update"
+        },
+        {
+          "property": "ChallengeConfig",
+          "status": "update"
+        },
+        {
+          "property": "CustomResponseBodies",
+          "status": "update"
+        },
+        {
+          "property": "DataProtectionConfig",
+          "status": "update"
+        },
+        {
+          "property": "DefaultAction",
+          "status": "update"
+        },
+        {
+          "property": "Description",
+          "status": "update"
+        },
+        {
+          "property": "MonetizationConfig",
+          "status": "update"
+        },
+        {
+          "property": "Name",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "OnSourceDDoSProtectionConfig",
+          "status": "update"
+        },
+        {
+          "property": "Rules",
+          "status": "update"
+        },
+        {
+          "property": "Scope",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Tags",
+          "status": "update"
+        },
+        {
+          "property": "TokenDomains",
+          "status": "update"
+        },
+        {
+          "property": "VisibilityConfig",
+          "status": "update"
+        }
+      ],
+      "unresolved": []
+    }
+  ]
+}
