@@ -83,7 +83,7 @@ holds there, such as a `Condition` added to a single-object `Statement`, is
 reported as drift. Some of these services return a single-object `Statement`
 as a one-element list, and drift treats the two forms as the same value. KMS fills in
 `Version: 2012-10-17` when a key policy omits it, and drift does not report
-that either. You
+that either. On the other types, a `Version` added out of band is reported. You
 can record a snapshot without redeploying:
 
 ```bash
