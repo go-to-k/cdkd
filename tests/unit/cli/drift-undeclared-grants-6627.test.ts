@@ -277,6 +277,12 @@ function siblings(k: Kind): Record<string, ResourceState> {
       properties: { PolicyName: 'SibInline', PolicyDocument: DOC('sqs:*'), [field]: [NAME[k]] },
     },
   };
+  // A standalone RolePolicy / UserPolicy / GroupPolicy names its one principal.
+  out['SibStandalone'] = {
+    physicalId: `SibStandalone|${NAME[k]}`,
+    resourceType: `AWS::IAM::${k}Policy`,
+    properties: { PolicyName: 'SibStandalone', PolicyDocument: DOC('sns:*'), [`${k}Name`]: NAME[k] },
+  };
   if (k === 'User') {
     out['SibAdd'] = {
       physicalId: `sib-group|${NAME.User}`,
@@ -427,6 +433,7 @@ describe.each(['Role', 'User', 'Group'] as const)(
         // The siblings' members are live before any capture, as after a deploy.
         live.managed.push(SIB_ARN);
         live.inline.set('SibInline', DOC('sqs:*'));
+        live.inline.set('SibStandalone', DOC('sns:*'));
         if (k === 'User') live.groups.push('sib-group');
         resources = {
           Subject: principalRecord(k, observed ? await captureObserved(k) : undefined),
@@ -457,16 +464,19 @@ describe.each(['Role', 'User', 'Group'] as const)(
         // principal (name + IAM unique id) is still there.
         expect(writes.some((w) => /^(Create|Delete(Role|User|Group)$)/.test(w))).toBe(false);
         expect(live.managed).toEqual([SIB_ARN]);
-        expect([...live.inline.keys()]).toEqual(['SibInline']);
+        expect([...live.inline.keys()]).toEqual(['SibInline', 'SibStandalone']);
         expect(live.boundary).toBeUndefined();
         if (k === 'User') expect(live.groups).toEqual(['sib-group']);
         expect(stdout).toContain(`- detaches managed policy ${OOB_ARN}`);
         expect(stdout).toContain('- deletes inline policy oob-inline');
         if (k !== 'Group') expect(stdout).toContain(`- deletes permissions boundary ${BOUNDARY_ARN}`);
         if (k === 'User') expect(stdout).toContain('- removes the user from group oob-group');
-        expect(stdout).toContain("run 'cdkd drift --accept' instead");
+        expect(stdout).toContain(
+          "run 'cdkd drift --accept' for this stack instead: it records everything AWS holds on every drifted resource of the stack"
+        );
         expect(stdout).not.toContain(SIB_ARN);
         expect(stdout).not.toContain('SibInline');
+        expect(stdout).not.toContain('SibStandalone');
         expect(stdout).not.toMatch(/replac/i);
         writes.length = 0;
         expect(await runDrift([])).toBe(0);
@@ -479,7 +489,8 @@ describe.each(['Role', 'User', 'Group'] as const)(
         const saved = mockSaveState.mock.calls.at(-1)![2] as StackState;
         resources = saved.resources;
         expect(await runDrift([])).toBe(0);
-        await runDrift(['--revert', '--yes']);
+        // Clean, so the revert has nothing to do and exits 0 without a write.
+        expect(await runDrift(['--revert', '--yes'])).toBe(0);
         expect(writes).toEqual([]);
       });
     });
@@ -500,7 +511,7 @@ describe('the observed baseline\'s recorded members (go-to-k/cdkd#6627)', () => 
       }),
     };
     expect(await runDrift([])).toBe(0);
-    await runDrift(['--revert', '--yes']);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
     expect(writes).toEqual([]);
   });
 
@@ -555,6 +566,16 @@ describe('the observed baseline\'s recorded members (go-to-k/cdkd#6627)', () => 
     expect(stdout).not.toContain('- deletes inline policy');
   });
 
+  it("matches a sibling addition's group case-insensitively at compare and revert", async () => {
+    live.groups.push('Sib-Group');
+    resources = { Subject: principalRecord('User'), ...siblings('User') };
+    expect(await runDrift([])).toBe(0);
+    live.groups.push('oob-group');
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual(['RemoveUserFromGroup oob-group']);
+    expect(live.groups).toEqual(['Sib-Group']);
+  });
+
   it('a recorded boundary removed out of band (a widening) is drift, and --revert puts it back', async () => {
     live.boundary = BOUNDARY_ARN;
     resources = { Subject: principalRecord('Role', await captureObserved('Role')) };
@@ -577,34 +598,38 @@ describe('a template that DECLARES the key keeps the ordinary comparison (go-to-
       },
     };
     expect(await runDrift([])).toBe(1);
-    await runDrift(['--revert', '--yes']);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
     expect(writes).toEqual([`AttachRolePolicy ${ACCEPTED_ARN}`]);
   });
 });
 
-describe('the revert bag on a route whose readback is not filtered (Cloud Control, go-to-k/cdkd#6627)', () => {
+describe('a route whose readback is not filtered (Cloud Control, go-to-k/cdkd#6627)', () => {
   beforeEach(setUp);
   afterEach(() => exitSpy.mockRestore());
 
-  it("keeps each live sibling member, drops each out-of-band one, and sends no boundary", async () => {
-    // A Cloud Control read of the role: every live member, siblings' included,
-    // an empty list omitted, no boundary omitted.
-    const readback = (): Record<string, unknown> => ({
-      RoleName: NAME.Role,
-      Path: '/',
-      AssumeRolePolicyDocument: TRUST,
-      ManagedPolicyArns: [SIB_ARN, OOB_ARN],
-      Policies: [
-        { PolicyName: 'SibInline', PolicyDocument: DOC('sqs:*') },
-        { PolicyName: 'oob-inline', PolicyDocument: DOC('*') },
-      ],
-      PermissionsBoundary: BOUNDARY_ARN,
-    });
-    const sent: Array<{ desired: Record<string, unknown>; previous: Record<string, unknown> }> = [];
+  // A Cloud Control read of the role: every live member, siblings' included;
+  // an empty list and no boundary are omitted.
+  let ccRead: Record<string, unknown> = {};
+  const sent: Array<{ desired: Record<string, unknown>; previous: Record<string, unknown> }> = [];
+  const SIB_POLICIES = [
+    { PolicyName: 'SibInline', PolicyDocument: DOC('sqs:*') },
+    { PolicyName: 'SibStandalone', PolicyDocument: DOC('sns:*') },
+  ];
+  const OOB_POLICY = { PolicyName: 'oob-inline', PolicyDocument: DOC('*') };
+  const base = { RoleName: NAME.Role, Path: '/', AssumeRolePolicyDocument: TRUST };
+  const withSiblings = (extra: { managed?: string[]; policies?: unknown[]; boundary?: string } = {}) => ({
+    ...base,
+    ManagedPolicyArns: [SIB_ARN, ...(extra.managed ?? [])],
+    Policies: [...SIB_POLICIES, ...(extra.policies ?? [])],
+    ...(extra.boundary ? { PermissionsBoundary: extra.boundary } : {}),
+  });
+
+  function routeCc(): void {
+    sent.length = 0;
     mockRegistryGetProvider.mockImplementation((type) =>
       type === 'AWS::IAM::Role'
         ? {
-            readCurrentState: async () => readback(),
+            readCurrentState: async () => structuredClone(ccRead),
             update: async (
               _l: string,
               physicalId: string,
@@ -625,17 +650,72 @@ describe('the revert bag on a route whose readback is not filtered (Cloud Contro
             ) => recorded,
           }
     );
-    for (const observed of [undefined, { RoleName: NAME.Role, AssumeRolePolicyDocument: TRUST }]) {
-      sent.length = 0;
-      resources = { Subject: principalRecord('Role', observed), ...siblings('Role') };
-      expect(await runDrift(['--revert', '--yes'])).toBe(0);
-      expect(sent).toHaveLength(1);
-      const { desired, previous } = sent[0]!;
-      expect(previous['ManagedPolicyArns']).toEqual([SIB_ARN, OOB_ARN]);
-      expect(desired['ManagedPolicyArns']).toEqual([SIB_ARN]);
-      expect(desired['Policies']).toEqual([{ PolicyName: 'SibInline', PolicyDocument: DOC('sqs:*') }]);
-      expect(Object.hasOwn(desired, 'PermissionsBoundary')).toBe(false);
-      expect(desired['RoleName']).toBe(NAME.Role);
-    }
+  }
+
+  const BASELINES: Array<[string, Record<string, unknown> | undefined]> = [
+    ['template-only', undefined],
+    ['observed, captured empty', { ...base, ManagedPolicyArns: [], Policies: [] }],
+  ];
+
+  it.each(BASELINES)('%s: only the siblings\' members live is clean', async (_l, observed) => {
+    routeCc();
+    ccRead = withSiblings();
+    resources = { Subject: principalRecord('Role', observed), ...siblings('Role') };
+    expect(await runDrift([])).toBe(0);
+  });
+
+  it.each(BASELINES)('%s: no member live (the read omits both lists and the boundary) is clean', async (_l, observed) => {
+    routeCc();
+    ccRead = { ...base };
+    resources = { Subject: principalRecord('Role', observed) };
+    expect(await runDrift([])).toBe(0);
+  });
+
+  it.each(BASELINES)('%s: an out-of-band grant is drift by its key, and the plan names no sibling member', async (_l, observed) => {
+    routeCc();
+    ccRead = withSiblings({ managed: [OOB_ARN], policies: [OOB_POLICY], boundary: BOUNDARY_ARN });
+    resources = { Subject: principalRecord('Role', observed), ...siblings('Role') };
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes().map((c) => c.path).sort()).toEqual(KEYS.Role);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(stdout).toContain(`- detaches managed policy ${OOB_ARN}`);
+    expect(stdout).toContain('- deletes inline policy oob-inline');
+    expect(stdout).toContain(`- deletes permissions boundary ${BOUNDARY_ARN}`);
+    expect(stdout).not.toContain(SIB_ARN);
+    expect(stdout).not.toContain('SibInline');
+    expect(stdout).not.toContain('SibStandalone');
+  });
+
+  it.each(BASELINES)('%s: the revert bag keeps each live sibling member, drops each out-of-band one, sends no boundary, and changes no create-only key', async (_l, observed) => {
+    routeCc();
+    ccRead = withSiblings({ managed: [OOB_ARN], policies: [OOB_POLICY], boundary: BOUNDARY_ARN });
+    resources = { Subject: principalRecord('Role', observed), ...siblings('Role') };
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(sent).toHaveLength(1);
+    const { desired, previous } = sent[0]!;
+    expect(previous['ManagedPolicyArns']).toEqual([SIB_ARN, OOB_ARN]);
+    expect(desired['ManagedPolicyArns']).toEqual([SIB_ARN]);
+    expect(desired['Policies']).toEqual(SIB_POLICIES);
+    expect(Object.hasOwn(desired, 'PermissionsBoundary')).toBe(false);
+    // AWS::IAM::Role's create-only keys.
+    expect(desired['RoleName']).toBe(previous['RoleName']);
+    expect(desired['Path']).toBe(previous['Path']);
+  });
+
+  it("a recorded copy of a sibling's inline policy under an older document does not ride along beside the live one", async () => {
+    routeCc();
+    ccRead = withSiblings({ policies: [OOB_POLICY] });
+    resources = {
+      Subject: principalRecord('Role', {
+        ...base,
+        ManagedPolicyArns: [],
+        // The sibling's policy as an earlier capture recorded it.
+        Policies: [{ PolicyName: 'SibInline', PolicyDocument: DOC('*') }],
+      }),
+      ...siblings('Role'),
+    };
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.desired['Policies']).toEqual(SIB_POLICIES);
   });
 });

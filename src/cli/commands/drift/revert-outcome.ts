@@ -36,7 +36,10 @@ import { getSettledWriteOnlyPropertyPaths } from '../../../provisioning/write-on
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
-import { siblingOwnedRevertDesired } from '../../../provisioning/sibling-owned-members.js';
+import {
+  siblingOwnedRevertDesired,
+  stripSiblingOwnedParentMembers,
+} from '../../../provisioning/sibling-owned-members.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import {
   undeclaredGrantDriftKeys,
@@ -404,11 +407,25 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // go-to-k/cdkd#6627: an IAM principal's undeclared grant key goes back as
     // "none" plus the recorded members AWS still holds, the baseline detection
     // compared, so the provider removes each other live member one by one and
-    // adds none. Before the sibling pass, which then keeps a live sibling's
-    // member in each list.
+    // adds none. Projected against the readback WITHOUT the siblings'
+    // members, as detection is: a Cloud Control read is not filtered, and a
+    // recorded copy of a sibling's member (an `AWS::IAM::Policy` under an
+    // older document) must not ride along beside the live one. The sibling
+    // pass below then puts each live sibling member back.
     const grantKeys = undeclaredGrantDriftKeys(outcome.resourceType, stateResource.properties);
+    const grantLive =
+      grantKeys.length === 0
+        ? outcome.awsProperties
+        : stripSiblingOwnedParentMembers(
+            outcome.resourceType,
+            stateResource.physicalId,
+            desiredProperties,
+            outcome.awsProperties,
+            stateResource.properties,
+            siblingContext
+          ).aws;
     const noBoundary = withoutUndeclaredNoBoundary(
-      withUndeclaredGrantBaseline(desiredProperties, outcome.awsProperties, grantKeys),
+      withUndeclaredGrantBaseline(desiredProperties, grantLive, grantKeys),
       grantKeys
     );
     desiredProperties = noBoundary.desired;
@@ -441,9 +458,7 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
       stateResource.observedProperties === undefined
         ? {
             preserveUntemplated: true,
-            // go-to-k/cdkd#6627: a grant key's list goes whole too, the
-            // untemplated live members being the out-of-band ones.
-            verbatimKeys: [...verbatimEchoDriftKeys(outcome.resourceType), ...grantKeys],
+            verbatimKeys: verbatimEchoDriftKeys(outcome.resourceType),
             absentMeansDefault: noBoundary.absent,
           }
         : {

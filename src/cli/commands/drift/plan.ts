@@ -14,6 +14,7 @@ import { acceptRefusalReason } from './redaction.js';
 import { findRevertPreservedTagKeys, findRevertUnbaselinedAwsKeys } from './revert-merge.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import {
+  isUndeclaredGrantScalarKey,
   removedGrantMembers,
   undeclaredGrantDriftKeys,
 } from '../../../analyzer/drift-undeclared-grants.js';
@@ -52,6 +53,19 @@ function printRemovedGrantMembers(
   let printed = 0;
   for (const change of o.changes) {
     if (!keys.includes(change.path)) continue;
+    // A list the redaction replaced with a mask (`***`) names no member; the
+    // revert still removes the unrecorded ones, so the plan says so.
+    if (
+      !isUndeclaredGrantScalarKey(change.path) &&
+      change.awsValue !== undefined &&
+      !Array.isArray(change.awsValue)
+    ) {
+      out.write(
+        safeMsg`    - removes each ${change.path} member no record holds (the live list is withheld)\n`
+      );
+      printed++;
+      continue;
+    }
     for (const { key, member } of removedGrantMembers(
       change.path,
       change.awsValue,
@@ -66,9 +80,12 @@ function printRemovedGrantMembers(
   if (printed > 0) {
     out.write(
       `      The template does not declare ${printed === 1 ? 'this' : 'these'}, so the revert ` +
-        `removes ${printed === 1 ? 'it' : 'each one'} and no other member. If one was granted ` +
-        `on purpose (by another stack or tool), run ${proseQuoted(cdkdRemedy('cdkd drift', '--accept'))} instead: it records ` +
-        `what AWS holds, and a later revert keeps it.\n`
+        `removes ${printed === 1 ? 'it' : 'each one'} and no other member. If ${printed === 1 ? 'it was' : 'they were'} ` +
+        `granted on purpose (by another stack or tool), run ` +
+        `${proseQuoted(cdkdRemedy('cdkd drift', '--accept'))} for this stack instead: it records ` +
+        `everything AWS holds on every drifted resource of the stack, so drift stops reporting ` +
+        `${printed === 1 ? 'it' : 'them'} and a later revert keeps ${printed === 1 ? 'it' : 'them'}. ` +
+        `To keep only some, revert, grant those again, then accept.\n`
     );
   }
 }

@@ -18,7 +18,9 @@
 # permissions boundary and a group membership granted out of band to IAM
 # principals whose template declares none are drift, each by its key;
 # `drift --revert` removes exactly those members, keeps every member a
-# sibling record of the stack writes, and replaces nothing.
+# sibling record of the stack writes, and replaces nothing. Then `--accept`
+# adopts a grant (and a removed accepted boundary is put back), and the grant
+# phase runs once more with every principal routed through Cloud Control.
 
 set -euo pipefail
 
@@ -291,8 +293,9 @@ GRANT_DRIFT=$(printf '%s\n' \
   "BareGroup ManagedPolicyArns" "BareGroup Policies" \
   "BareRole ManagedPolicyArns" "BareRole PermissionsBoundary" "BareRole Policies" \
   "BareUser Groups" "BareUser ManagedPolicyArns" "BareUser PermissionsBoundary" "BareUser Policies" \
-  "SiblingGroup ManagedPolicyArns" "SiblingRole ManagedPolicyArns" \
-  "SiblingUser Groups" "SiblingUser ManagedPolicyArns" | LC_ALL=C sort)
+  "SiblingGroup ManagedPolicyArns" "SiblingGroup Policies" \
+  "SiblingRole ManagedPolicyArns" "SiblingRole Policies" \
+  "SiblingUser Groups" "SiblingUser ManagedPolicyArns" "SiblingUser Policies" | LC_ALL=C sort)
 
 # One line per principal: its attached policies, inline policies, boundary
 # and (a user) groups, each sorted.
@@ -343,6 +346,10 @@ grant_phase() { # $1 = baseline label (observed | template-only)
   aws iam put-role-policy --role-name "${BARE_ROLE}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
   aws iam put-user-policy --user-name "${BARE_USER}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
   aws iam put-group-policy --group-name "${BARE_GROUP}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
+  # Beside the siblings' inline policies on the same list.
+  aws iam put-role-policy --role-name "${SIB_ROLE}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
+  aws iam put-user-policy --user-name "${SIB_USER}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
+  aws iam put-group-policy --group-name "${SIB_GROUP}" --policy-name "${OOB_INLINE}" --policy-document "${deny}"
   aws iam put-role-permissions-boundary --role-name "${BARE_ROLE}" --permissions-boundary "${OOB_POLICY_ARN}"
   aws iam put-user-permissions-boundary --user-name "${BARE_USER}" --permissions-boundary "${OOB_POLICY_ARN}"
   aws iam add-user-to-group --user-name "${BARE_USER}" --group-name "${SIB_GROUP}"
@@ -357,7 +364,7 @@ grant_phase() { # $1 = baseline label (observed | template-only)
     diff <(echo "${GRANT_DRIFT}") <(echo "${got}") >&2 || true
     exit 1
   fi
-  echo "    OK: all 13 grants reported"
+  echo "    OK: all 16 grants reported"
 
   identities "${ARTIFACT_DIR}/identity-grants-${label}-before.tsv" || exit 1
   echo "==> #6627 (${label}): drift --revert"
@@ -366,7 +373,7 @@ grant_phase() { # $1 = baseline label (observed | template-only)
   sleep 15
   # The plan names each member it removes, and only those.
   local count line
-  for line in "6|- detaches managed policy ${OOB_POLICY_ARN}" "3|- deletes inline policy ${OOB_INLINE}" \
+  for line in "6|- detaches managed policy ${OOB_POLICY_ARN}" "6|- deletes inline policy ${OOB_INLINE}" \
     "2|- deletes permissions boundary ${OOB_POLICY_ARN}" "1|- removes the user from group ${SIB_GROUP}" \
     "1|- removes the user from group ${BARE_GROUP}"; do
     count=$(grep -cF -- "${line#*|}" "${ARTIFACT_DIR}/revert-grants-${label}.log" || true)
@@ -402,6 +409,63 @@ grant_phase() { # $1 = baseline label (observed | template-only)
   run_drift "${ARTIFACT_DIR}/drift-grants-${label}-after.json"
   got=$(drift_paths "${ARTIFACT_DIR}/drift-grants-${label}-after.json")
   [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 (${label}): drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
+  echo "    OK: clean"
+}
+
+# go-to-k/cdkd#6627: `drift --accept` adopts an out-of-band grant, after which
+# drift is clean and a revert removes nothing; a recorded boundary removed out
+# of band is drift and `--revert` puts it back. On BareRole, from the
+# template-only baseline. Leaves BareRole with no member and no boundary, and
+# its accepted baseline recording neither.
+accept_phase() {
+  local got
+  echo "==> #6627 accept: grant a managed policy and a boundary to ${BARE_ROLE}, then accept"
+  aws iam attach-role-policy --role-name "${BARE_ROLE}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam put-role-permissions-boundary --role-name "${BARE_ROLE}" --permissions-boundary "${OOB_POLICY_ARN}"
+  sleep 15
+  run_drift "${ARTIFACT_DIR}/drift-accept-before.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-before.json" | LC_ALL=C sort | tr '\n' ' ')
+  [ "${got}" = "BareRole ManagedPolicyArns BareRole PermissionsBoundary " ] && [ "${DRIFT_RC}" = 1 ] ||
+    { echo "FAIL: #6627 accept: drift before --accept is '${got}' (rc=${DRIFT_RC})" >&2; exit 1; }
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --accept --yes
+  run_drift "${ARTIFACT_DIR}/drift-accept-after.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-after.json")
+  [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 accept: drift after --accept:" >&2; echo "${got}" >&2; exit 1; }
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
+    2>&1 | tee "${ARTIFACT_DIR}/revert-accepted.log"
+  sleep 15
+  got=$(live_principal role "${BARE_ROLE}") || exit 1
+  grep -qF "managed=[${OOB_POLICY_ARN}] inline=[] boundary=${OOB_POLICY_ARN}" <<<"${got}" ||
+    { echo "FAIL: #6627 accept: a revert after --accept changed the accepted members: ${got}" >&2; exit 1; }
+  echo "    OK: accepted members kept by drift and --revert"
+
+  echo "==> #6627 accept: remove the accepted boundary out of band; drift reports it and --revert puts it back"
+  aws iam delete-role-permissions-boundary --role-name "${BARE_ROLE}"
+  sleep 15
+  run_drift "${ARTIFACT_DIR}/drift-boundary-removed.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-boundary-removed.json")
+  [ "${got}" = "BareRole PermissionsBoundary" ] && [ "${DRIFT_RC}" = 1 ] ||
+    { echo "FAIL: #6627 accept: drift after removing the accepted boundary is '${got}' (rc=${DRIFT_RC})" >&2; exit 1; }
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
+    2>&1 | tee "${ARTIFACT_DIR}/revert-boundary.log"
+  sleep 15
+  got=$(live_principal role "${BARE_ROLE}") || exit 1
+  grep -qF "boundary=${OOB_POLICY_ARN}" <<<"${got}" ||
+    { echo "FAIL: #6627 accept: --revert did not put the recorded boundary back: ${got}" >&2; exit 1; }
+  echo "    OK: the recorded boundary is back"
+
+  echo "==> #6627 accept: clear ${BARE_ROLE} again (an accepted member AWS lost is not drift)"
+  aws iam detach-role-policy --role-name "${BARE_ROLE}" --policy-arn "${OOB_POLICY_ARN}"
+  aws iam delete-role-permissions-boundary --role-name "${BARE_ROLE}"
+  sleep 15
+  run_drift "${ARTIFACT_DIR}/drift-accept-cleared.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-cleared.json")
+  [ "${got}" = "BareRole PermissionsBoundary" ] && [ "${DRIFT_RC}" = 1 ] ||
+    { echo "FAIL: #6627 accept: after clearing, drift is '${got}' (rc=${DRIFT_RC}); expected only the boundary" >&2; exit 1; }
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --accept --yes
+  run_drift "${ARTIFACT_DIR}/drift-accept-final.json"
+  got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-final.json")
+  [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 accept: drift after the final --accept:" >&2; echo "${got}" >&2; exit 1; }
   echo "    OK: clean"
 }
 
@@ -533,6 +597,18 @@ got=$(drift_paths "${ARTIFACT_DIR}/drift-after-revert.json")
 echo "    OK: clean after the revert"
 
 grant_phase template-only
+
+accept_phase
+# Back to the template-only baseline (the accept above recorded one for BareRole).
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET:-}" AWS_REGION="${REGION}" node strip-all-observed.ts
+
+# go-to-k/cdkd#6627 on the Cloud Control route: its read is not filtered by
+# sibling ownership, so the Sibling* principals' lists hold the siblings'
+# members and the revert must keep them while removing the out-of-band ones.
+echo "==> Route every principal through Cloud Control"
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET:-}" AWS_REGION="${REGION}" node route-cc-api.ts \
+  BareRole BareUser BareGroup SiblingRole SiblingUser SiblingGroup
+grant_phase cc-api
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force

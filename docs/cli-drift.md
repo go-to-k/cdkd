@@ -151,9 +151,9 @@ itself when a function pulls its image from the repository, so drift does not
 read a policy your template does not declare, and `--revert` and `--accept`
 leave it alone.
 
-A role, user or group whose template does not set `ManagedPolicyArns`,
-`Policies` or `PermissionsBoundary` (or, on a user, `Groups`) holds none in
-AWS either, so drift compares each of them anyway, on either baseline. A
+A role, user or group whose template does not set `ManagedPolicyArns` or
+`Policies` (or, on a role or user, `PermissionsBoundary`; on a user,
+`Groups`) holds none in AWS either, so drift compares each of them anyway, on either baseline. A
 managed policy, inline policy, boundary or group membership added outside
 the stack is reported, and `--revert` removes that one member (one detach,
 inline-policy delete, group removal or boundary delete each) without

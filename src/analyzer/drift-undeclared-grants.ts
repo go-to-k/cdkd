@@ -86,6 +86,9 @@ export function grantMemberIdentity(key: string, member: unknown): string | unde
     return typeof name === 'string' ? name : undefined;
   }
   if (typeof member !== 'string') return undefined;
+  // Both sides of a comparison come from `ListGroupsForUser`, so they spell a
+  // group alike; the fold matters for a hand-edited or `--accept`ed spelling
+  // and for matching the sibling helpers' own case-insensitive group match.
   return key === 'Groups' ? member.toLowerCase() : member;
 }
 
@@ -220,7 +223,10 @@ export function removedGrantMembers(
   for (const m of awsValue) {
     const id = grantMemberIdentity(key, m);
     if (id !== undefined && kept.has(id)) continue;
-    out.push({ key, member: key === 'Policies' && isPlainRecord(m) ? m['PolicyName'] : m });
+    // An inline policy is named by its `PolicyName`; one without a string
+    // name is printed whole.
+    const name = key === 'Policies' && isPlainRecord(m) ? m['PolicyName'] : undefined;
+    out.push({ key, member: typeof name === 'string' ? name : m });
   }
   return out;
 }
