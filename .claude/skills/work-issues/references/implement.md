@@ -158,7 +158,9 @@ continue — this is not a handback" (#6282), and relay that to the user
 unasked. A lane reporting "CI pending": read
 `gh pr view <N> --json mergeStateStatus` yourself, as at `DIRTY` no CI fires
 (#6110). Read
-a completion when it arrives, and check the PR and tree before believing it; a
+a completion when it arrives, and check the PR and tree before believing it —
+a per-item table's counts and verdicts come from its ROWS, never its headline
+(3 of 6 probe lanes' summaries contradicted their rows, #6628); a
 completion still waiting on a reply you already sent crossed it: resend the
 reply (#6512).
 A subagent's Bash bypasses the PreToolUse hooks.
@@ -181,7 +183,9 @@ A subagent's Bash bypasses the PreToolUse hooks.
   tree next (#5114).
 - **Every ad hoc `aws` call, a throwaway probe included, carries
   `AWS_CLI_AUTO_PROMPT=off AWS_PAGER=`**: the profile's auto-prompt hangs on a
-  rejected command, and `/run-integ` sets them on `verify.sh` alone.
+  rejected command, and `/run-integ` sets them on `verify.sh` alone. No
+  account-level or out-of-stack change, a CLEANUP workaround included: STOP and
+  report (#6628: a lane registered a Notifications hub to unwedge a delete).
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.
 - **A reviewer's mutation probe never touches the lane tree**.
