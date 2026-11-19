@@ -33,6 +33,7 @@ import {
   isTransientServerError,
 } from '../deployment/retryable-errors.js';
 import { safeMsg } from '../utils/display-safe.js';
+import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { accountKey, policyContentKey } from './policy-document-content.js';
 
 /**
@@ -140,7 +141,7 @@ export function warnUnsettledMember(
   memberKey: string
 ): void {
   logger.warn(
-    safeMsg`${resourceType} ${logicalId}: the read right after the write never showed the declared ${memberKey}, so its drift baseline may not match the live resource; run \`cdkd state refresh-observed\` on the stack to re-capture it`
+    safeMsg`${resourceType} ${logicalId}: the read right after the write never showed the declared ${memberKey}, so its drift baseline may not match the live resource; run ${proseQuoted(cdkdRemedy('cdkd state refresh-observed'))} on the stack to re-capture it`
   );
 }
 
