@@ -10,6 +10,7 @@
  */
 import type { ResourceState } from '../../../types/state.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
+import { journaledOrphanPrintingBag } from '../../../deployment/secret-name-needles.js';
 import {
   replayFailedOperations,
   type CompletedOperation,
@@ -104,6 +105,8 @@ export function splitDeferredReaders(
   const deferred = failedToReplay.filter(
     (op) =>
       op.changeType === 'UPDATE' &&
+      // A delete-first replacement keeps its place and its #4690 journal entry.
+      !seedsDeleteFirstGuard(op) &&
       readsRegeneratingSecret(op.logicalId, stateResources, completedOps) &&
       !attemptUsesCompletedCreate(op.attemptedProperties, completedOps)
   );
@@ -126,14 +129,18 @@ export async function replayDeferredReaders(
   },
   options: NonNullable<Parameters<typeof replayFailedOperations>[4]>
 ): Promise<{ failures: number; warnings: number; interrupted: boolean }> {
+  // Nested as the first pass nests it (go-to-k/cdkd#3869): judged NOW,
+  // after the completed replay put the old records back.
   const result = await withPrintingSecrets(scope.printing, () =>
-    replayFailedOperations([...deferred], scope.stateResources, scope.stackName, scope.ctx, {
-      ...options,
-      emitEnvelope: false,
-      regeneratedSecrets: new Set(
-        [...(completed.regeneratedSecrets?.values() ?? [])].flatMap((a) => [...a])
-      ),
-    })
+    withPrintingSecrets(journaledOrphanPrintingBag([...deferred], scope.stateResources), () =>
+      replayFailedOperations([...deferred], scope.stateResources, scope.stackName, scope.ctx, {
+        ...options,
+        emitEnvelope: false,
+        regeneratedSecrets: new Set(
+          [...(completed.regeneratedSecrets?.values() ?? [])].flatMap((a) => [...a])
+        ),
+      })
+    )
   );
   const handled = deferred.filter((op) => !result.remainingFailedOps.includes(op));
   await stripFailedOpsJournal(

@@ -150,7 +150,7 @@ const fnRecord = rec('fn', FN, fnProps('one'), {
 let calls: string[];
 let sent: Record<string, Record<string, unknown>>;
 
-function install(): void {
+function install(extraFailed: Record<string, unknown> = {}): void {
   const record: StackState = {
     version: 15,
     stackName: STACK,
@@ -199,6 +199,7 @@ function install(): void {
               physicalId: 'fn',
               previousState: structuredClone(fnRecord),
               attemptedProperties: { ...fnProps('two'), MemorySize: 20000 },
+              ...extraFailed,
             },
           ],
         },
@@ -258,5 +259,17 @@ describe('cdkd rollback --revert-failed: a failed reader of a regenerated secret
     expect(calls).toEqual(['update Sec', 'update Fn']);
     const env = sent['Fn']?.['Environment'] as { Variables: { PW: unknown } } | undefined;
     expect(env?.Variables.PW).toBe('rollback-pw');
+  });
+
+  it('keeps a delete-first failed reader in its place (#4690 journal entry)', async () => {
+    install({ oldDeletedBeforeCreate: true });
+    await rollbackCommand(STACK, {
+      yes: true,
+      stateBucket: 'b',
+      region: REGION,
+      revertFailed: true,
+    } as unknown as Parameters<typeof rollbackCommand>[1]);
+    // Not deferred: whatever the first pass does with it happens before the secret.
+    expect(calls.indexOf('update Sec')).toBe(calls.length - 1);
   });
 });

@@ -7,6 +7,7 @@ import {
   attemptUsesCompletedCreate,
   readsRegeneratingSecret,
 } from '../../rollback-executor/regenerated-secrets.js';
+import { seedsDeleteFirstGuard } from '../../rollback-executor/plan.js';
 import type { RolledBackCreate } from '../../../state/name-generation.js';
 import type {
   ResourceState,
@@ -211,6 +212,7 @@ export async function performRollback(
       if (
         op.changeType === 'UPDATE' &&
         !orphanIndexes.includes(i) &&
+        !seedsDeleteFirstGuard(op) &&
         readsRegeneratingSecret(op.logicalId, stateResources, completedOperations) &&
         !attemptUsesCompletedCreate(op.attemptedProperties, completedOperations)
       ) {
