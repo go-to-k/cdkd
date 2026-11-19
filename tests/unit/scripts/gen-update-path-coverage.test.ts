@@ -261,16 +261,19 @@ describe('gen-update-path-coverage: per-type narrowing', () => {
   it('a braced case body that returns does not fall through into the next case', () => {
     const rows = classify({
       types,
-      handled: ['A', 'B'],
+      handled: ['A', 'B', 'C'],
       classBody: `
         async update(id, pid, resourceType, properties) {
           switch (resourceType) {
             case 'AWS::Fake::One': { const a = properties.A; return a; }
-            case 'AWS::Fake::Two': { return properties.B; }
+            case 'AWS::Fake::Two': if (properties.A) return properties.B; else return;
+            case 'AWS::Fake::Three': return properties.C;
           }
         }`,
     });
     expect(statusOf(rows, 'B', 'AWS::Fake::One')).toBe('gap');
+    // An if / else whose arms both return ends the clause too.
+    expect(statusOf(rows, 'C', 'AWS::Fake::Two')).toBe('gap');
   });
 
   it('narrows through && and ||, and still reads the condition', () => {

@@ -394,6 +394,14 @@ function endsClause(statements: ts.NodeArray<ts.Statement> | readonly ts.Stateme
   const last = statements[statements.length - 1];
   if (!last) return false;
   if (ts.isBlock(last)) return endsClause(last.statements);
+  // `if (...) return a; else return b;`: ends only when BOTH arms do.
+  if (ts.isIfStatement(last)) {
+    return (
+      last.elseStatement !== undefined &&
+      endsClause([last.thenStatement]) &&
+      endsClause([last.elseStatement])
+    );
+  }
   return ts.isBreakStatement(last) || ts.isReturnStatement(last) || ts.isThrowStatement(last);
 }
 
