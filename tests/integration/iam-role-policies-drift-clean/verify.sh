@@ -22,6 +22,8 @@
 #      standalone role with a declared inline policy AND an addToPolicy()
 #      Default Policy sibling.
 #   2. Run `cdkd drift` (twice) and assert NO drift on any AWS::IAM::Role.
+#   2s. Widen a two-role inline policy's copy on its SECOND role out of band:
+#       drift must report it and `--revert` restore it (go-to-k/cdkd#6616).
 #   2b. Rename an inline policy in place (go-to-k/cdkd#4152).
 #   2c-rollback. The 2c hand-off with a failing queue after it: the rollback
 #       must leave every name with its FIRST owner (go-to-k/cdkd#4225), the
@@ -194,6 +196,84 @@ assert_no_role_drift() { # usage: assert_no_role_drift <label> [rename:true|fals
 echo "==> Phase 2: assert no phantom drift on any AWS::IAM::Role"
 assert_no_role_drift "immediately after deploy"
 assert_no_role_drift "second pass"
+
+# --- Phase 2s: an out-of-band edit of a shared policy's SECOND copy (go-to-k/cdkd#6616)
+# SharedPolicy is one inline policy on two roles, so each role holds its own
+# copy. Before the fix the policy's drift read fetched the FIRST role's copy
+# only, so a widened document on the second role read clean and `--revert`
+# left it in place.
+SHARED_POLICY="cdkd-iam-drift-clean-shared"
+SHARED_ACTION="sqs:ListQueues"
+WIDENED_ACTION="sqs:*"
+shared_action() { # usage: shared_action <role> -> the copy's first statement's action
+  aws iam get-role-policy --role-name "$1" --policy-name "${SHARED_POLICY}" \
+    --region "${REGION}" --query 'PolicyDocument.Statement[0].Action' --output text
+}
+wait_shared_action() { # usage: wait_shared_action <role> <action> -> 0 once the copy reads it
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    [ "$(shared_action "$1")" = "$2" ] && return 0
+    sleep 5
+  done
+  return 1
+}
+echo "==> Phase 2s: widen SharedPolicy's copy on its second role out of band; drift must report it"
+for rn in "${ROLE_NAME}" "${MIXED_ROLE_NAME}"; do
+  if ! wait_shared_action "${rn}" "${SHARED_ACTION}"; then
+    echo "FAIL: premise: ${rn} does not hold ${SHARED_POLICY} with ${SHARED_ACTION} after the first deploy (got: $(shared_action "${rn}"))" >&2
+    exit 1
+  fi
+done
+aws iam put-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${SHARED_POLICY}" \
+  --region "${REGION}" \
+  --policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"${WIDENED_ACTION}\",\"Resource\":\"*\"}]}"
+if ! wait_shared_action "${MIXED_ROLE_NAME}" "${WIDENED_ACTION}"; then
+  echo "FAIL: premise: the out-of-band put on ${MIXED_ROLE_NAME} never read back (got: $(shared_action "${MIXED_ROLE_NAME}"))" >&2
+  exit 1
+fi
+# The first role's copy is untouched: the edit is on the SECOND target only.
+if [ "$(shared_action "${ROLE_NAME}")" != "${SHARED_ACTION}" ]; then
+  echo "FAIL: premise: ${ROLE_NAME}'s copy of ${SHARED_POLICY} changed too (got: $(shared_action "${ROLE_NAME}"))" >&2
+  exit 1
+fi
+set +e
+SHARED_DRIFT="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+shared_rc=$?
+set -e
+printf '%s\n' "${SHARED_DRIFT}" | sed 's/^/    | /'
+if ! grep -qF '~ SharedPolicy (AWS::IAM::Policy)' <<<"${SHARED_DRIFT}"; then
+  echo "FAIL: cdkd drift did not report the widened copy of ${SHARED_POLICY} on its second role (go-to-k/cdkd#6616)" >&2
+  exit 1
+fi
+if [ "${shared_rc}" -ne 1 ]; then
+  echo "FAIL: drift exited ${shared_rc} on a drifted stack, expected 1 (go-to-k/cdkd#6616)" >&2
+  exit 1
+fi
+echo "    drift reported SharedPolicy"
+env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+if ! wait_shared_action "${MIXED_ROLE_NAME}" "${SHARED_ACTION}"; then
+  echo "FAIL: drift --revert left ${MIXED_ROLE_NAME}'s copy of ${SHARED_POLICY} widened (got: $(shared_action "${MIXED_ROLE_NAME}")) (go-to-k/cdkd#6616)" >&2
+  exit 1
+fi
+if [ "$(shared_action "${ROLE_NAME}")" != "${SHARED_ACTION}" ]; then
+  echo "FAIL: drift --revert changed ${ROLE_NAME}'s copy of ${SHARED_POLICY} (got: $(shared_action "${ROLE_NAME}"))" >&2
+  exit 1
+fi
+echo "    --revert restored ${SHARED_ACTION} on ${MIXED_ROLE_NAME}"
+set +e
+SHARED_DRIFT="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+shared_rc=$?
+set -e
+# Only this resource: the fixture asserts no stack-wide drift-clean elsewhere.
+if grep -qF 'SharedPolicy' <<<"${SHARED_DRIFT}"; then
+  printf '%s\n' "${SHARED_DRIFT}" | sed 's/^/    | /' >&2
+  echo "FAIL: drift after --revert still reports SharedPolicy (rc=${shared_rc}) (go-to-k/cdkd#6616)" >&2
+  exit 1
+fi
+echo "    drift clean after --revert"
 
 # --- Phase 2b: rename an inline policy in place (go-to-k/cdkd#4152) ------
 # The role stays listed across the rename. Before the fix the update put the

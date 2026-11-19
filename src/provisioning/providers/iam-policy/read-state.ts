@@ -86,7 +86,9 @@ export async function readCurrentState(
     })
   );
 
-  const present = reads.filter((r): r is { target: PolicyTarget; document: unknown } => 'document' in r);
+  const present = reads.filter(
+    (r): r is { target: PolicyTarget; document: unknown } => 'document' in r
+  );
   if (present.length === 0) return RESOURCE_NOT_FOUND;
   const documents = present.map((r) => r.document);
   if (documents.some((d) => d === undefined)) return undefined;
