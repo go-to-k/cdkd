@@ -51,33 +51,17 @@ import {
   type TemplatePolicies,
   type WriterRecord,
 } from './iam-sibling-managed-policies.js';
-import { isRedactedRecordedValue } from './redacted-delete-address.js';
 import { stripSiblingOwnedSgRules } from './sg-sibling-rules.js';
+import {
+  isPlainRecord,
+  SIBLING_OWNED_ROWS,
+  type MemberCounts,
+  type SiblingOwnedRow,
+  type SiblingWrite,
+} from './sibling-owned-members/rows.js';
 
-/** One write a child record makes onto a parent: the parent's physical id, and the member's identity (absent: the whole key). */
-interface SiblingWrite {
-  parent: string;
-  member?: string;
-}
-
-/** One colliding (child, parent, key) pair handled by this module. */
-interface SiblingOwnedRow {
-  child: string;
-  parent: string;
-  /** The parent property, a `.`-separated path for a nested one (`Instances.TaskInstanceGroups`). */
-  key: string;
-  /** What the child record writes, from its recorded `properties` and physical id. */
-  writes: (properties: Record<string, unknown>, physicalId: string | undefined) => SiblingWrite[];
-  /** A list element's identity on the parent; absent for a whole-key row. */
-  identity?: (element: unknown) => string | undefined;
-  /** The ids a child may name the parent by; absent: its physical id alone. */
-  parentIds?: (physicalId: string) => string[];
-  /**
-   * The parent's read OMITS the list when it is empty (rather than emitting
-   * `[]`), so a list the strip empties leaves the bag, both sides alike.
-   */
-  emptyMeansAbsent?: boolean;
-}
+export { SIBLING_OWNED_ROWS } from './sibling-owned-members/rows.js';
+export { SIBLING_WRITE_PAIRS, type SiblingWritePair } from './sibling-owned-members/pairs.js';
 
 /** Marker for {@link setAt}: remove the key. */
 const REMOVE: unique symbol = Symbol('remove');
@@ -126,479 +110,25 @@ function parentIdsOf(row: SiblingOwnedRow, physicalId: string): string[] {
   return row.parentIds ? row.parentIds(physicalId) : [physicalId];
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** A non-empty plain string that is not a redaction mask or a `{{resolve:...}}` reference. */
-function plainString(value: unknown): string | undefined {
-  return typeof value === 'string' && value !== '' && !isRedactedRecordedValue(value)
-    ? value
-    : undefined;
-}
-
-/**
- * An association's `Cluster`: the cluster name, or its ARN, which names the
- * cluster after `cluster/`. The cluster's physical id is its name.
- */
-function clusterWrites(properties: Record<string, unknown>): SiblingWrite[] {
-  const cluster = plainString(properties['Cluster']);
-  if (cluster === undefined) return [];
-  const arn = /^arn:[^:]+:ecs:[^:]*:[^:]*:cluster\/(.+)$/.exec(cluster);
-  return [{ parent: arn ? arn[1]! : cluster }];
-}
-
-/** An SNS subscription's identity, `(Protocol, Endpoint)`: what the topic's read and `update()` match on. */
-function snsSubscriptionIdentity(element: unknown): string | undefined {
-  if (!isPlainRecord(element)) return undefined;
-  const protocol = plainString(element['Protocol']);
-  const endpoint = plainString(element['Endpoint']);
-  return protocol === undefined || endpoint === undefined
-    ? undefined
-    : JSON.stringify([protocol, endpoint]);
-}
-
-function snsSubscriptionWrites(properties: Record<string, unknown>): SiblingWrite[] {
-  const topic = plainString(properties['TopicArn']);
-  const member = snsSubscriptionIdentity(properties);
-  return topic === undefined || member === undefined ? [] : [{ parent: topic, member }];
-}
-
-/** `value` as key-sorted JSON, or `undefined` when it holds a mask or a `{{resolve:...}}` reference. */
-function canonicalJson(value: unknown): string | undefined {
-  let doc = value;
-  if (typeof doc === 'string') {
-    try {
-      doc = JSON.parse(doc) as unknown;
-    } catch {
-      return undefined;
-    }
-  }
-  if (doc === undefined || isRedactedRecordedValue(doc)) return undefined;
-  const sort = (v: unknown): unknown =>
-    Array.isArray(v)
-      ? v.map(sort)
-      : isPlainRecord(v)
-        ? Object.fromEntries(
-            Object.keys(v)
-              .sort()
-              .map((k) => [k, sort(v[k])])
-          )
-        : v;
-  return JSON.stringify(sort(doc));
-}
-
-/**
- * An inline policy's identity on a principal: its `PolicyName` AND its
- * document. A sibling owns only the document it RECORDED: an `AWS::IAM::Policy`
- * naming several principals reads back its first only, so a document edited
- * on another one must stay this principal's drift rather than leave it.
- */
-function inlinePolicyIdentity(element: unknown): string | undefined {
-  if (!isPlainRecord(element)) return undefined;
-  const name = plainString(element['PolicyName']);
-  const doc = canonicalJson(element['PolicyDocument']);
-  return name === undefined || doc === undefined ? undefined : JSON.stringify([name, doc]);
-}
-
-/** An `AWS::IAM::Policy`'s writes onto each principal its `field` list names. */
-function iamPolicyWrites(field: 'Roles' | 'Users' | 'Groups') {
-  return (properties: Record<string, unknown>): SiblingWrite[] => {
-    const member = inlinePolicyIdentity(properties);
-    const names = properties[field];
-    if (member === undefined || !Array.isArray(names)) return [];
-    return names.flatMap((n) => {
-      const parent = plainString(n);
-      return parent === undefined ? [] : [{ parent, member }];
-    });
-  };
-}
-
-/** A standalone `RolePolicy` / `UserPolicy` / `GroupPolicy`'s write onto the principal its `field` names. */
-function standalonePolicyWrites(field: 'RoleName' | 'UserName' | 'GroupName') {
-  return (properties: Record<string, unknown>): SiblingWrite[] => {
-    const member = inlinePolicyIdentity(properties);
-    const parent = plainString(properties[field]);
-    return member === undefined || parent === undefined ? [] : [{ parent, member }];
-  };
-}
-
-/**
- * An `EIPAssociation`'s address: its `AllocationId`, or its `EIP` (the public
- * IP) for an address with none. The EIP's physical id is `PublicIp|AllocationId`.
- */
-function eipAssociationWrites(properties: Record<string, unknown>): SiblingWrite[] {
-  const parent = plainString(properties['AllocationId']) ?? plainString(properties['EIP']);
-  return parent === undefined ? [] : [{ parent }];
-}
-
-/**
- * A standalone lifecycle hook's write onto its group: the hook's name, from
- * `LifecycleHookName` or, for a generated one, the second segment of its
- * Cloud Control id `<group>|<hook>`.
- */
-function lifecycleHookWrites(
-  properties: Record<string, unknown>,
-  physicalId: string | undefined
-): SiblingWrite[] {
-  const group = plainString(properties['AutoScalingGroupName']);
-  const fromId = typeof physicalId === 'string' ? physicalId.split('|') : [];
-  const name =
-    plainString(properties['LifecycleHookName']) ??
-    (fromId.length === 2 && fromId[0] === group ? plainString(fromId[1]) : undefined);
-  return group === undefined || name === undefined ? [] : [{ parent: group, member: name }];
-}
-
-function lifecycleHookIdentity(element: unknown): string | undefined {
-  return isPlainRecord(element) ? plainString(element['LifecycleHookName']) : undefined;
-}
-
-/**
- * A TASK instance group's identity in the cluster's `Instances`: its `Name` and
- * `InstanceType`. A group with no name owns nothing (it stays compared), since
- * two unnamed groups of one type cannot be told apart.
- */
-function emrGroupIdentity(element: unknown): string | undefined {
-  if (!isPlainRecord(element)) return undefined;
-  const name = plainString(element['Name']);
-  const type = plainString(element['InstanceType']);
-  return name === undefined || type === undefined ? undefined : JSON.stringify([name, type]);
-}
-
-function emrGroupWrites(properties: Record<string, unknown>): SiblingWrite[] {
-  const cluster = plainString(properties['JobFlowId']);
-  const member = properties['InstanceRole'] === 'TASK' ? emrGroupIdentity(properties) : undefined;
-  return cluster === undefined || member === undefined ? [] : [{ parent: cluster, member }];
-}
-
-/** A TASK instance fleet's identity in the cluster's `Instances`: its `Name`. */
-function emrFleetIdentity(element: unknown): string | undefined {
-  return isPlainRecord(element) ? plainString(element['Name']) : undefined;
-}
-
-function emrFleetWrites(properties: Record<string, unknown>): SiblingWrite[] {
-  const cluster = plainString(properties['ClusterId']);
-  const member =
-    properties['InstanceFleetType'] === 'TASK' ? emrFleetIdentity(properties) : undefined;
-  return cluster === undefined || member === undefined ? [] : [{ parent: cluster, member }];
-}
-
-const PRINCIPALS = [
-  ['AWS::IAM::Role', 'Roles', 'AWS::IAM::RolePolicy', 'RoleName'],
-  ['AWS::IAM::User', 'Users', 'AWS::IAM::UserPolicy', 'UserName'],
-  ['AWS::IAM::Group', 'Groups', 'AWS::IAM::GroupPolicy', 'GroupName'],
-] as const;
-
-/** The colliding pairs this module handles. */
-export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
-  {
-    child: 'AWS::ECS::ClusterCapacityProviderAssociations',
-    parent: 'AWS::ECS::Cluster',
-    key: 'CapacityProviders',
-    writes: clusterWrites,
-  },
-  {
-    child: 'AWS::ECS::ClusterCapacityProviderAssociations',
-    parent: 'AWS::ECS::Cluster',
-    key: 'DefaultCapacityProviderStrategy',
-    writes: clusterWrites,
-  },
-  {
-    child: 'AWS::SNS::Subscription',
-    parent: 'AWS::SNS::Topic',
-    key: 'Subscription',
-    writes: snsSubscriptionWrites,
-    identity: snsSubscriptionIdentity,
-  },
-  // The group's read emits every live hook (`DescribeLifecycleHooks`), and
-  // `update()` deletes a previous hook the desired side lacks.
-  {
-    child: 'AWS::AutoScaling::LifecycleHook',
-    parent: 'AWS::AutoScaling::AutoScalingGroup',
-    key: 'LifecycleHookSpecificationList',
-    writes: lifecycleHookWrites,
-    identity: lifecycleHookIdentity,
-  },
-  // The cluster's read lists every TASK group / fleet under `Instances`, and
-  // omits a list that is empty.
-  {
-    child: 'AWS::EMR::InstanceGroupConfig',
-    parent: 'AWS::EMR::Cluster',
-    key: 'Instances.TaskInstanceGroups',
-    writes: emrGroupWrites,
-    identity: emrGroupIdentity,
-    emptyMeansAbsent: true,
-  },
-  {
-    child: 'AWS::EMR::InstanceFleetConfig',
-    parent: 'AWS::EMR::Cluster',
-    key: 'Instances.TaskInstanceFleets',
-    writes: emrFleetWrites,
-    identity: emrFleetIdentity,
-    emptyMeansAbsent: true,
-  },
-  // The EIP's SDK read emits `InstanceId` only when the EIP declares it; a
-  // Cloud Control read returns the association's instance on every address.
-  {
-    child: 'AWS::EC2::EIPAssociation',
-    parent: 'AWS::EC2::EIP',
-    key: 'InstanceId',
-    writes: eipAssociationWrites,
-    parentIds: (physicalId) => physicalId.split('|').filter((part) => part !== ''),
-  },
-  // The IAM providers' own readback already drops these by name
-  // (`collectInlinePolicyNamesManagedBySiblings`, #323 / #4821); the rows add
-  // the baseline side, a Cloud Control readback, and the deploy-time prune,
-  // and own a policy only under the document the sibling recorded.
-  ...PRINCIPALS.flatMap(([parent, field, standalone, nameField]) => [
-    {
-      child: 'AWS::IAM::Policy',
-      parent,
-      key: 'Policies',
-      writes: iamPolicyWrites(field),
-      identity: inlinePolicyIdentity,
-    },
-    {
-      child: standalone,
-      parent,
-      key: 'Policies',
-      writes: standalonePolicyWrites(nameField),
-      identity: inlinePolicyIdentity,
-    },
-  ]),
-];
-
-/** A recorded verdict for one (child, parent, key) pair; see the module comment. */
-export interface SiblingWritePair {
-  child: string;
-  parent: string;
-  key: string;
-  verdict: 'table' | 'helper' | 'none';
-  /** Where it is handled, or which read shows it does not collide. */
-  evidence: string;
-}
-
-/**
- * Every child -> parent property pair the go-to-k/cdkd#6610 audit examined.
- * The `table` entries are derived from {@link SIBLING_OWNED_ROWS}, so the two
- * cannot disagree. A `none` verdict's evidence is the parent's SDK provider
- * read, the route every listed parent takes unless its record is pinned to
- * Cloud Control; a Cloud Control read returns every schema property the model
- * holds, so a pair whose parent schema carries the child's members collides
- * there and needs a row, not a `none` entry.
- */
-export const SIBLING_WRITE_PAIRS: readonly SiblingWritePair[] = [
-  ...SIBLING_OWNED_ROWS.map((row): SiblingWritePair => ({
-    child: row.child,
-    parent: row.parent,
-    key: row.key,
-    verdict: 'table',
-    evidence: 'SIBLING_OWNED_ROWS',
-  })),
-  ...(['AWS::IAM::Role', 'AWS::IAM::User', 'AWS::IAM::Group'] as const).map(
-    (parent): SiblingWritePair => ({
-      child: 'AWS::IAM::ManagedPolicy',
-      parent,
-      key: 'ManagedPolicyArns',
-      verdict: 'helper',
-      evidence: 'iam-sibling-managed-policies.ts (#6324)',
-    })
-  ),
-  ...(['Roles', 'Users', 'Groups'] as const).map((key): SiblingWritePair => ({
-    child: 'AWS::IAM::Role / User / Group',
-    parent: 'AWS::IAM::ManagedPolicy',
-    key,
-    verdict: 'helper',
-    evidence: 'iam-sibling-managed-policies.ts (#6328)',
-  })),
-  {
-    child: 'AWS::IAM::UserToGroupAddition',
-    parent: 'AWS::IAM::User',
-    key: 'Groups',
-    verdict: 'helper',
-    evidence: 'iam-sibling-managed-policies.ts (#6328)',
-  },
-  ...(['SecurityGroupIngress', 'SecurityGroupEgress'] as const).map((key): SiblingWritePair => ({
-    child: `AWS::EC2::${key}`,
-    parent: 'AWS::EC2::SecurityGroup',
-    key,
-    verdict: 'helper',
-    evidence: 'sg-sibling-rules.ts (#6418)',
-  })),
-  {
-    child: 'Custom::S3BucketNotifications',
-    parent: 'AWS::S3::Bucket',
-    key: 'NotificationConfiguration',
-    verdict: 'helper',
-    evidence: 'undeclaredUncomparedDriftKeys (#5736): any writer, any stack',
-  },
-  {
-    child: 'AWS::Events::EventBusPolicy',
-    parent: 'AWS::Events::EventBus',
-    key: 'Policy',
-    verdict: 'helper',
-    evidence: 'undeclaredUncomparedDriftKeys (#6323): any writer, any stack',
-  },
-  {
-    child: 'AWS::EC2::VolumeAttachment',
-    parent: 'AWS::EC2::Instance',
-    key: 'BlockDeviceMappings',
-    verdict: 'helper',
-    evidence: 'undeclaredUncomparedDriftKeys + declared-devices readback (#6384)',
-  },
-  ...(
-    [
-      [
-        'AWS::IAM::UserToGroupAddition',
-        'AWS::IAM::Group',
-        'members',
-        'the group read has no member list',
-      ],
-      [
-        'AWS::Lambda::Permission',
-        'AWS::Lambda::Function',
-        'policy',
-        'lambda-function read-state emits no Policy',
-      ],
-      [
-        'AWS::Lambda::EventSourceMapping / EventInvokeConfig / Url',
-        'AWS::Lambda::Function',
-        '-',
-        'lambda-function read-state emits none of their keys',
-      ],
-      [
-        'AWS::S3::BucketPolicy',
-        'AWS::S3::Bucket',
-        'policy',
-        's3-bucket read-state emits no Policy',
-      ],
-      [
-        'AWS::SNS::TopicPolicy',
-        'AWS::SNS::Topic',
-        'policy',
-        'sns-topic read-state emits no Policy',
-      ],
-      ['AWS::SQS::QueuePolicy', 'AWS::SQS::Queue', 'policy', 'the SQS queue read emits no Policy'],
-      [
-        'AWS::SNS::TopicInlinePolicy',
-        'AWS::SNS::Topic',
-        'policy',
-        'sns-topic read-state emits no Policy',
-      ],
-      [
-        'AWS::SQS::QueueInlinePolicy',
-        'AWS::SQS::Queue',
-        'policy',
-        'the SQS queue read emits no Policy',
-      ],
-      [
-        'AWS::Logs::SubscriptionFilter',
-        'AWS::Logs::LogGroup',
-        'filters',
-        'logs-loggroup read-state emits no filter key',
-      ],
-      [
-        'AWS::ElasticLoadBalancingV2::ListenerRule',
-        'AWS::ElasticLoadBalancingV2::Listener',
-        'rules',
-        "the listener read has no rule list; DefaultActions is the listener's own",
-      ],
-      [
-        'AWS::ElasticLoadBalancingV2::ListenerCertificate',
-        'AWS::ElasticLoadBalancingV2::Listener',
-        'Certificates',
-        'DescribeListeners returns the default certificate only',
-      ],
-      [
-        'AWS::EC2::NetworkAclEntry',
-        'AWS::EC2::NetworkAcl',
-        'entries',
-        'the network ACL read emits VpcId only',
-      ],
-      [
-        'AWS::EC2::Route',
-        'AWS::EC2::RouteTable',
-        'routes',
-        'the route table read emits VpcId only',
-      ],
-      [
-        'AWS::EC2::SubnetRouteTableAssociation / SubnetNetworkAclAssociation',
-        'AWS::EC2::Subnet / RouteTable / NetworkAcl',
-        'associations',
-        'none of the three reads emits an association',
-      ],
-      [
-        'AWS::EC2::VPCGatewayAttachment',
-        'AWS::EC2::VPC / InternetGateway',
-        'attachments',
-        'neither read emits an attachment',
-      ],
-      [
-        'AWS::EC2::VPCCidrBlock',
-        'AWS::EC2::VPC',
-        'CidrBlockAssociations',
-        'the VPC read emits the primary CidrBlock only; on Cloud Control the list is read-only (#6485)',
-      ],
-      [
-        'AWS::EC2::NetworkInterfaceAttachment',
-        'AWS::EC2::Instance',
-        'NetworkInterfaces',
-        'the instance read emits no NetworkInterfaces',
-      ],
-      ['AWS::KMS::Alias', 'AWS::KMS::Key', 'aliases', 'the key read emits no alias'],
-      [
-        'AWS::SecretsManager::ResourcePolicy / RotationSchedule',
-        'AWS::SecretsManager::Secret',
-        '-',
-        'the secret read emits neither',
-      ],
-      [
-        'AWS::Cognito::UserPoolClient / UserPoolDomain',
-        'AWS::Cognito::UserPool',
-        '-',
-        'the user pool read emits neither',
-      ],
-      [
-        'AWS::Route53::RecordSet',
-        'AWS::Route53::HostedZone',
-        'records',
-        'the hosted zone read emits no records',
-      ],
-      [
-        'AWS::ApiGateway::Method / Resource',
-        'AWS::ApiGateway::Resource / RestApi',
-        '-',
-        'the resource read emits ParentId and PathPart only',
-      ],
-    ] as const
-  ).map(([child, parent, key, evidence]): SiblingWritePair => ({
-    child,
-    parent,
-    key,
-    verdict: 'none',
-    evidence,
-  })),
-];
-
 /** For one parent, each row with sibling writes onto it and the members they write (`undefined`: the whole key). */
 function ownedByRow(
   resourceType: string,
   physicalId: string | undefined,
   context: ReadCurrentStateContext | undefined
-): Array<[SiblingOwnedRow, Set<string> | undefined]> {
+): Array<[SiblingOwnedRow, MemberCounts | undefined]> {
   if (typeof physicalId !== 'string' || physicalId === '') return [];
-  const out: Array<[SiblingOwnedRow, Set<string> | undefined]> = [];
+  const out: Array<[SiblingOwnedRow, MemberCounts | undefined]> = [];
   for (const row of SIBLING_OWNED_ROWS) {
     if (row.parent !== resourceType) continue;
     const ids = new Set(parentIdsOf(row, physicalId));
-    const members = new Set<string>();
+    const members = new Map<string, number>();
     let any = false;
     for (const sibling of Object.values(context?.siblings ?? {})) {
       if (sibling.resourceType !== row.child || !isPlainRecord(sibling.properties)) continue;
       for (const w of row.writes(sibling.properties, sibling.physicalId)) {
         if (!ids.has(w.parent)) continue;
         any = true;
-        if (w.member !== undefined) members.add(w.member);
+        if (w.member !== undefined) members.set(w.member, (members.get(w.member) ?? 0) + 1);
       }
     }
     if (any) out.push([row, row.identity ? members : undefined]);
@@ -608,22 +138,59 @@ function ownedByRow(
 
 /**
  * `owned` minus the members the parent's own `properties` declare under
- * `row.key`: those the parent owns as well, so they stay compared.
+ * `row.key` (one declared copy cancels one written copy): those the parent
+ * owns as well, so they stay compared.
  */
 function effectiveDrop(
   row: SiblingOwnedRow,
-  owned: ReadonlySet<string> | undefined,
+  owned: MemberCounts | undefined,
   properties: Record<string, unknown> | undefined
-): Set<string> {
-  const drop = new Set(owned ?? []);
+): Map<string, number> {
+  const drop = new Map(owned ?? []);
   const identity = row.identity;
   const own = getAt(properties, pathOf(row));
   if (identity === undefined || drop.size === 0 || !Array.isArray(own)) return drop;
   for (const entry of own) {
     const id = identity(entry);
-    if (id !== undefined) drop.delete(id);
+    const n = id === undefined ? undefined : drop.get(id);
+    if (n === undefined) continue;
+    if (n <= 1) drop.delete(id!);
+    else drop.set(id!, n - 1);
   }
   return drop;
+}
+
+/**
+ * For a {@link SiblingOwnedRow.nameOf} row and a BASELINE bag (`readback`
+ * given): the names a sibling writes that the readback holds no member of and
+ * the parent's template does not declare. The parent's own readback dropped
+ * such a member by name (the IAM readers'
+ * `collectInlinePolicyNamesManagedBySiblings`), so a baseline copy of it under
+ * any document is the sibling's.
+ */
+function namesDroppedFromBaseline(
+  row: SiblingOwnedRow,
+  drop: MemberCounts,
+  properties: Record<string, unknown> | undefined,
+  readback: Record<string, unknown> | undefined
+): Set<string> {
+  const nameOf = row.nameOf;
+  if (nameOf === undefined || readback === undefined) return new Set();
+  const liveList = getAt(readback, pathOf(row));
+  const live = new Set(Array.isArray(liveList) ? liveList.map((m) => nameOf(m)) : []);
+  const own = getAt(properties, pathOf(row));
+  const declared = new Set(Array.isArray(own) ? own.map((m) => nameOf(m)) : []);
+  const names = new Set<string>();
+  for (const id of drop.keys()) {
+    let name: unknown;
+    try {
+      name = (JSON.parse(id) as unknown[])[0];
+    } catch {
+      continue;
+    }
+    if (typeof name === 'string' && !live.has(name) && !declared.has(name)) names.add(name);
+  }
+  return names;
 }
 
 /**
@@ -634,8 +201,9 @@ function effectiveDrop(
 function withoutOwned(
   bag: Record<string, unknown>,
   row: SiblingOwnedRow,
-  owned: ReadonlySet<string> | undefined,
-  properties: Record<string, unknown> | undefined
+  owned: MemberCounts | undefined,
+  properties: Record<string, unknown> | undefined,
+  readback?: Record<string, unknown>
 ): Record<string, unknown> {
   const path = pathOf(row);
   if (!hasAt(bag, path)) return bag;
@@ -646,9 +214,19 @@ function withoutOwned(
   const identity = row.identity;
   const drop = effectiveDrop(row, owned, properties);
   if (drop.size === 0) return bag;
+  const byName = namesDroppedFromBaseline(row, drop, properties, readback);
+  // Each written copy drops ONE matching member: a second member of the same
+  // identity (two same-named EMR groups) is nobody's, so it stays compared.
+  const left = new Map(drop);
   const kept = list.filter((m) => {
     const id = identity(m);
-    return id === undefined || !drop.has(id);
+    const n = id === undefined ? undefined : left.get(id);
+    if (n !== undefined && n > 0) {
+      left.set(id!, n - 1);
+      return false;
+    }
+    const name = row.nameOf?.(m);
+    return name === undefined || !byName.has(name);
   });
   if (kept.length === list.length) return bag;
   return setAt(bag, path, kept.length === 0 && row.emptyMeansAbsent && !declared ? REMOVE : kept);
@@ -688,7 +266,7 @@ export function stripSiblingOwnedParentMembers(
   );
   for (const [row, owned] of ownedByRow(resourceType, physicalId, context)) {
     out = {
-      baseline: withoutOwned(out.baseline, row, owned, properties),
+      baseline: withoutOwned(out.baseline, row, owned, properties, out.aws),
       aws: withoutOwned(out.aws, row, owned, properties),
     };
   }
@@ -723,7 +301,7 @@ export function siblingOwnedRevertDesired(
   out = stripSiblingOwnedSgRules(resourceType, physicalId, out, aws, properties, context).baseline;
   for (const [row, owned] of ownedByRow(resourceType, physicalId, context)) {
     const path = pathOf(row);
-    const stripped = withoutOwned(out, row, owned, properties);
+    const stripped = withoutOwned(out, row, owned, properties, aws);
     const live = getAt(aws, path);
     if (row.identity === undefined) {
       // Whole key: it never drifts (both sides drop it), so the overlay sends
@@ -754,12 +332,19 @@ export function siblingOwnedRevertDesired(
     // Each live sibling-owned member goes back at its live position, so a
     // provider that pairs list items by position sees them where they are.
     const result = [...kept];
-    const present = new Set(result.map((m) => identity(m)));
+    // Up to the written count of each identity, less the copies already there.
+    const room = new Map(drop);
+    for (const m of result) {
+      const id = identity(m);
+      const n = id === undefined ? undefined : room.get(id);
+      if (n !== undefined) room.set(id!, n - 1);
+    }
     live.forEach((m, index) => {
       const id = identity(m);
-      if (id === undefined || !drop.has(id) || present.has(id)) return;
+      const n = id === undefined ? undefined : room.get(id);
+      if (n === undefined || n <= 0) return;
       result.splice(Math.min(index, result.length), 0, m);
-      present.add(id);
+      room.set(id!, n - 1);
     });
     out =
       result.length === kept.length && Array.isArray(strippedList)
@@ -772,7 +357,7 @@ export function siblingOwnedRevertDesired(
 /** A {@link SIBLING_OWNED_ROWS} key of one record and what to drop from its baseline (`undefined`: the whole key). */
 export interface StoppedTableMembers {
   row: SiblingOwnedRow;
-  members: Set<string> | undefined;
+  members: MemberCounts | undefined;
 }
 
 /**
@@ -809,7 +394,7 @@ export function tableMembersSiblingsStoppedWriting(
     for (const [i, w] of writesOf(record)) stillWritten.add(encode(i, w.parent, w.member));
   }
   // injectiveKey(row index, parent id) -> members (undefined: whole key)
-  const stopped = new Map<string, { row: number; members: Set<string> | undefined }>();
+  const stopped = new Map<string, { row: number; members: Map<string, number> | undefined }>();
   for (const [logicalId, record] of Object.entries(previous)) {
     const writes = writesOf(record);
     if (writes.length === 0) continue;
@@ -819,10 +404,12 @@ export function tableMembersSiblingsStoppedWriting(
       const target = injectiveKey(i, w.parent);
       let entry = stopped.get(target);
       if (entry === undefined) {
-        entry = { row: i, members: w.member === undefined ? undefined : new Set() };
+        entry = { row: i, members: w.member === undefined ? undefined : new Map() };
         stopped.set(target, entry);
       }
-      if (w.member !== undefined) entry.members?.add(w.member);
+      if (w.member !== undefined) {
+        entry.members?.set(w.member, (entry.members.get(w.member) ?? 0) + 1);
+      }
     }
   }
   const result = new Map<string, StoppedTableMembers[]>();
@@ -848,10 +435,11 @@ export function tableMembersSiblingsStoppedWriting(
           continue;
         }
         if (merged !== undefined && merged.members === undefined) continue;
-        for (const m of entry.members) {
+        for (const [m, n] of entry.members) {
           if (written(m)) continue;
-          merged ??= { row, members: new Set() };
-          merged.members!.add(m);
+          const members = new Map(merged?.members ?? []);
+          members.set(m, (members.get(m) ?? 0) + n);
+          merged = { row, members };
         }
       }
       if (merged !== undefined) entries.push(merged);

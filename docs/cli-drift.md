@@ -177,7 +177,7 @@ property:
 | --- | --- | --- |
 | `AWS::SNS::Subscription` | `AWS::SNS::Topic` `Subscription` | that subscription (matched by protocol and endpoint) |
 | `AWS::ECS::ClusterCapacityProviderAssociations` | `AWS::ECS::Cluster` `CapacityProviders`, `DefaultCapacityProviderStrategy` | both lists, unless the cluster's template sets them |
-| `AWS::IAM::Policy`, `RolePolicy`, `UserPolicy`, `GroupPolicy` | a role's, user's or group's inline `Policies` | that policy, while its document is the one the stack recorded |
+| `AWS::IAM::Policy`, `RolePolicy`, `UserPolicy`, `GroupPolicy` | a role's, user's or group's inline `Policies` | that policy (matched by name; where cdkd reads the principal through Cloud Control, also by the document the stack recorded) |
 | `AWS::EC2::EIPAssociation` | `AWS::EC2::EIP` `InstanceId` | the instance, unless the address's template sets it |
 | `AWS::AutoScaling::LifecycleHook` | `AWS::AutoScaling::AutoScalingGroup` `LifecycleHookSpecificationList` | that hook (matched by name) |
 | `AWS::EMR::InstanceGroupConfig`, `InstanceFleetConfig` | `AWS::EMR::Cluster` `Instances` task groups and fleets | that group (matched by name and instance type) or fleet (by name) |
