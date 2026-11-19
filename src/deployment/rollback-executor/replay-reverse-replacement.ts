@@ -43,7 +43,12 @@ import { refuseMarkedNoEchoRecreate } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
 import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
-import { SURVIVOR_IDENTITY_ATTRIBUTES, probeReplacedSurvivor } from './replaced-survivor.js';
+import {
+  SURVIVOR_IDENTITY_ATTRIBUTES,
+  isForeignSurvivor,
+  probeReplacedSurvivor,
+  type ForeignSurvivorVerdict,
+} from './replaced-survivor.js';
 import type { MarkedRecreateScope } from './replay-reverse-replacement/failures.js';
 import { recreateOldResource } from './replay-reverse-replacement/recreate.js';
 import { finishReverseReplacement } from './replay-reverse-replacement/finish.js';
@@ -177,7 +182,10 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // re-adopting it would delete the new copy for a resource about to go.
     // go-to-k/cdkd#6393: someone else's resource holds the old id now;
     // re-adopting it would make it the stack's, re-creating would collide.
-    if (survivor === 'foreign') throw foreignSurvivorRefusal(s, oldType);
+    if (isForeignSurvivor(survivor)) throw foreignSurvivorRefusal(s, oldType, survivor);
+    // go-to-k/cdkd#6621: modified or re-created, undecidable; re-adopting
+    // would delete the new copy for what may be someone else's.
+    if (survivor === 'modified') throw modifiedSurvivorRefusal(s, oldType);
     if (survivor === 'exists' && op.oldResourceMaySurvive === 'unconfirmed') {
       throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
     }
@@ -666,6 +674,55 @@ function survivorUnprovenRefusal(
  */
 function foreignSurvivorRefusal(
   s: Pick<ReplayOpScope, 'op' | 'ctx' | 'mask'>,
+  oldType: string,
+  verdict: ForeignSurvivorVerdict
+): Error {
+  const { op, ctx, mask } = s;
+  const remedy = orphanRemedy(op.logicalId, ctx);
+  const oldShown = refusalPhysicalId(mask(String(op.previousState?.physicalId)));
+  const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
+  // go-to-k/cdkd#6621: each arm says what it saw.
+  const seen =
+    verdict === 'foreign-account'
+      ? `it is not in this account's bucket list, so it belongs to another account`
+      : verdict === 'foreign-region'
+        ? `it is in another region than this stack's, and a bucket never moves region`
+        : verdict === 'foreign-recreated'
+          ? `its creation date differs from the one read when the deploy deferred the old ` +
+            `bucket's delete, and in us-east-1 only a re-create changes it`
+          : verdict === 'foreign-appeared'
+            ? `nothing held that id when this rollback started`
+            : `its ${SURVIVOR_IDENTITY_ATTRIBUTES[oldType] ?? 'identity'} differs`;
+  return ownRemedyError(
+    markNonRetryable(
+      new CdkdError(
+        `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
+          `(${refusalResourceType(oldType)}): AWS reports a resource under the old physical id ` +
+          `(${oldShown}), but not the one this stack recorded (${seen}), so another resource ` +
+          `took that name after the stack's was deleted. Re-adopting it would make it this ` +
+          `stack's, and re-creating the old one would collide with it. Nothing was sent and the ` +
+          `journal is kept. If that resource is not meant to be there, remove it, then re-run ` +
+          `${rerun}, which re-creates the old one.` +
+          (remedy.offered
+            ? ` To keep the new resource in its place instead, re-run with the command below; ` +
+              `leave the other resource alone.`
+            : '') +
+          `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
+          remedy.line,
+        'REPLACED_SURVIVOR_UNPROVEN'
+      )
+    )
+  );
+}
+
+/**
+ * go-to-k/cdkd#6621: the refusal for this account's bucket under the old
+ * name whose creation date differs from the one journaled at the deferral,
+ * outside us-east-1 (`'modified'`): a configuration write and a re-create
+ * both move it there. Re-adopting deletes the new bucket, so it refuses.
+ */
+function modifiedSurvivorRefusal(
+  s: Pick<ReplayOpScope, 'op' | 'ctx' | 'mask'>,
   oldType: string
 ): Error {
   const { op, ctx, mask } = s;
@@ -676,16 +733,19 @@ function foreignSurvivorRefusal(
     markNonRetryable(
       new CdkdError(
         `Cannot reverse the replacement of ${refusalLogicalId(op.logicalId)} ` +
-          `(${refusalResourceType(oldType)}): AWS reports a resource under the old physical id ` +
-          `(${oldShown}), but not the one this stack recorded (its ` +
-          `${SURVIVOR_IDENTITY_ATTRIBUTES[oldType] ?? 'identity'} differs), so another resource ` +
-          `took that name after the stack's was deleted. Re-adopting it would make it this ` +
-          `stack's, and re-creating the old one would collide with it. Nothing was sent and the ` +
-          `journal is kept. If that resource is not meant to be there, remove it, then re-run ` +
-          `${rerun}, which re-creates the old one.` +
+          `(${refusalResourceType(oldType)}): the bucket under the old name (${oldShown}) ` +
+          `may have been re-created or modified since the failed deploy: its creation date ` +
+          `differs from the one read when the deploy deferred its delete, and outside ` +
+          `us-east-1 S3 moves that date on a configuration write (tags, versioning, ` +
+          `encryption, policy) as well as on a re-create, so cdkd cannot tell which. ` +
+          `Re-adopting it would delete the new resource for what may be another owner's ` +
+          `bucket. Nothing was sent and the journal is kept. Re-running ${rerun} refuses ` +
+          `again while that bucket is there.` +
           (remedy.offered
             ? ` To keep the new resource in its place instead, re-run with the command below; ` +
-              `leave the other resource alone.`
+              `the bucket under the old name is then outside the stack: if it is this stack's ` +
+              `old bucket, delete it by hand once its contents are no longer needed, and ` +
+              `otherwise leave it alone.`
             : '') +
           `${remedy.clause}${describedPhysicalIdPointer(oldShown)}` +
           remedy.line,

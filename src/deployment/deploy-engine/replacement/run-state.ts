@@ -86,6 +86,13 @@ export class ReplacementRunState {
   replacedOldMaySurvive = new Map<string, 'kept' | 'unconfirmed' | 'deferred'>();
 
   /**
+   * go-to-k/cdkd#6621: a `'deferred'` old resource's generation read at the
+   * deferral, stamped as `CompletedOperation.oldResourceIdentity`. Cleared
+   * per `deploy()`.
+   */
+  replacedOldIdentity = new Map<string, string>();
+
+  /**
    * go-to-k/cdkd#4411: logical ids this deploy destroyed and re-created under
    * the SAME physical id (a fixed-name recreate, a delete-first `--replace`).
    * What AWS stored inside the old resource went with it, so the UPDATE arm

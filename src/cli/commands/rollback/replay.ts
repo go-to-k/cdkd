@@ -59,6 +59,7 @@ import {
 } from '../../../deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../deployment/inline-policy-claims.js';
 import { makeForeignHolderScan } from '../../../deployment/rollback-executor/journaled-orphans.js';
+import { snapshotSegmentSurvivors } from '../../../deployment/rollback-executor/replaced-survivor.js';
 import { segmentCleanupOptions } from '../../../deployment/rollback-executor/replay-moved-id-cleanup.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
@@ -646,6 +647,7 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
       journal.segments.flatMap((s) => s.failedOperations ?? []),
       stateResources
     );
+    await snapshotSegmentSurvivors(ctx, journal.segments);
     try {
       while (journal.segments.length > 0) {
         if (interrupted) break;

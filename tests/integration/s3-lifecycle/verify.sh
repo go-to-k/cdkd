@@ -1920,16 +1920,19 @@ if [ "${RN_RECORD}" != "${RN_NEW_BUCKET}" ]; then
   exit 1
 fi
 # Exactly one journaled UPDATE of RenameArmBucket, new -> old, its old bucket
-# marked deferred (`oldResourceMaySurvive`, src/types/rollback-journal.ts).
+# marked deferred (`oldResourceMaySurvive`) with the generation read at the
+# deferral (`oldResourceIdentity`, `<region>|<CreationDate>`; both in
+# src/deployment/rollback-executor/types.ts).
 rn_deferred_ops() {
-  aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq --arg b "${RN_NEW_BUCKET}" --arg o "${RN_OLD_BUCKET}" \
+  aws s3 cp "s3://${STATE_BUCKET}/${JOURNAL_KEY}" - | jq --arg b "${RN_NEW_BUCKET}" --arg o "${RN_OLD_BUCKET}" --arg r "${REGION}" \
     '[.segments[].operations[] | select(.logicalId == "RenameArmBucket" and .changeType == "UPDATE"
       and .physicalId == $b and .previousState.physicalId == $o
-      and .oldResourceMaySurvive == "deferred")] | length'
+      and .oldResourceMaySurvive == "deferred"
+      and ((.oldResourceIdentity // "") | startswith($r + "|")))] | length'
 }
 RN_OPS="$(rn_deferred_ops)"
 if [ "${RN_OPS}" != "1" ]; then
-  echo "FAIL [phase 2d] premise: expected exactly one journaled UPDATE of RenameArmBucket ${RN_OLD_BUCKET} -> ${RN_NEW_BUCKET} with oldResourceMaySurvive 'deferred', got ${RN_OPS}" >&2
+  echo "FAIL [phase 2d] premise: expected exactly one journaled UPDATE of RenameArmBucket ${RN_OLD_BUCKET} -> ${RN_NEW_BUCKET} with oldResourceMaySurvive 'deferred' and an oldResourceIdentity in ${REGION}, got ${RN_OPS}" >&2
   exit 1
 fi
 
@@ -1966,11 +1969,20 @@ if [ "${RN_RC}" -eq 0 ]; then
   echo "FAIL [phase 2d]: cdkd rollback SUCCEEDED, so it reverted onto ${RN_OLD_BUCKET}, which it did not make" >&2
   exit 1
 fi
-# Literals of the executor's 'foreign' refusal (foreignSurvivorRefusal,
-# rollback-executor/replay-reverse-replacement.ts).
-for needle in 'Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket): AWS reports a resource under the old physical id' \
-  'another resource took that name after the stack'"'"'s was deleted' \
-  'Nothing was sent and the journal is kept.'; do
+# Literals of the executor's refusals (rollback-executor/replay-reverse-replacement.ts).
+# The stranger is this account's, created after the deferral, so its
+# CreationDate differs from the journaled one. In us-east-1 only a re-create
+# moves it (foreignSurvivorRefusal); elsewhere a configuration write does too,
+# so the refusal says it cannot tell (modifiedSurvivorRefusal).
+if [ "${REGION}" = "us-east-1" ]; then
+  RN_NEEDLES=('Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket): AWS reports a resource under the old physical id'
+    "its creation date differs from the one read when the deploy deferred the old bucket's delete, and in us-east-1 only a re-create changes it"
+    "so another resource took that name after the stack's was deleted")
+else
+  RN_NEEDLES=('Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket): the bucket under the old name'
+    'may have been re-created or modified since the failed deploy')
+fi
+for needle in "${RN_NEEDLES[@]}" 'Nothing was sent and the journal is kept.'; do
   if ! grep -qF -- "${needle}" <<<"${RN_FLAT}"; then
     echo "FAIL [phase 2d]: rollback output lacks message fragment: ${needle}" >&2
     exit 1

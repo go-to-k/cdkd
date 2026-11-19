@@ -319,6 +319,76 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     expect(saves[rowSave]!).toBeLessThan(order.indexOf('delete rev-old'));
   });
 
+  // go-to-k/cdkd#6621: a global-name type journals the generation it read at
+  // the deferral, and the automatic rollback re-adopts only that generation.
+  describe('a deferred bucket journals its generation (go-to-k/cdkd#6621)', () => {
+    const BUCKET = 'AWS::S3::Bucket';
+    const bucketEngine = (o: Record<string, unknown> = {}) =>
+      makeEngine({ forceStatefulRecreation: true, ...o });
+    let generation: string | undefined;
+    let identityReads: string[];
+    beforeEach(() => {
+      generation = 'us-east-1|2026-11-01T00:00:00.000Z';
+      identityReads = [];
+      (provider as { replacedSurvivorIdentity?: unknown }).replacedSurvivorIdentity = vi.fn(
+        async (physicalId: string) => {
+          identityReads.push(physicalId);
+          return live.has(physicalId)
+            ? { kind: 'owned', identity: generation }
+            : { kind: 'gone' };
+        }
+      );
+    });
+
+    it('stamps the read beside the deferred verdict', async () => {
+      endpointFails = true;
+      await expect(deploy({ engine: bucketEngine(), revisionType: BUCKET })).rejects.toThrow();
+      const op = revisionOp(journaled[0]!);
+      expect(op.oldResourceMaySurvive).toBe('deferred');
+      expect(op.oldResourceIdentity).toBe('us-east-1|2026-11-01T00:00:00.000Z');
+      expect(identityReads).toEqual(['rev-old']);
+    });
+
+    it('stamps nothing when the read cannot name a generation', async () => {
+      endpointFails = true;
+      generation = undefined;
+      await expect(deploy({ engine: bucketEngine(), revisionType: BUCKET })).rejects.toThrow();
+      expect('oldResourceIdentity' in revisionOp(journaled[0]!)).toBe(false);
+    });
+
+    it('never reads for a type outside the table', async () => {
+      endpointFails = true;
+      await expect(deploy()).rejects.toThrow();
+      expect('oldResourceIdentity' in revisionOp(journaled[0]!)).toBe(false);
+      expect(identityReads).toEqual([]);
+    });
+
+    it('the automatic rollback re-adopts the same generation', async () => {
+      endpointFails = true;
+      const engine = bucketEngine({ noRollback: false });
+      await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
+      expect(provider.create).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+      expect([...live]).toEqual(['rev-old']);
+      expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+    });
+
+    it('the automatic rollback refuses another generation, deleting nothing', async () => {
+      endpointFails = true;
+      const engine = bucketEngine({ noRollback: false });
+      // Re-created between the deferral and the rollback's read.
+      const update = provider.update;
+      provider.update = vi.fn(async (...args: Parameters<ResourceProvider['update']>) => {
+        generation = 'us-east-1|2026-11-02T00:00:00.000Z';
+        return update(...args);
+      }) as unknown as ResourceProvider['update'];
+      await expect(deploy({ engine, revisionType: BUCKET })).rejects.toThrow();
+      expect(oldDeletes()).toBe(0);
+      expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).not.toContain('rev-new');
+      expect(live.has('rev-new')).toBe(true);
+    });
+  });
+
   it('a deploy failing after the replacement sends no old delete, journals deferred, and the rollback re-adopts it', async () => {
     endpointFails = true;
     const engine = makeEngine({ noRollback: false });
