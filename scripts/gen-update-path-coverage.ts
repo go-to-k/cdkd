@@ -55,8 +55,12 @@
  *     PARAMETER, from the callee's own body), or any argument of a call that
  *     is a sink, takes a callback holding one, or is the value of an effect;
  *   - in the condition of an `if` / loop / `?:` / `&&` guarding a branch the
- *     type can take that sends or refuses — or warns, unless that branch is an
- *     early `return` (a "nothing to do" path);
+ *     type can take that REFUSES, or warns unless that branch is an early
+ *     `return` (a "nothing to do" path). A branch that only SENDS does not
+ *     count its guard: that is change detection, and the property counts only
+ *     if the send (or a local it consumes) carries it — unless both arms send,
+ *     so the value picks the call (`if (on) Enable else Disable`, or a switch
+ *     with two sending cases);
  *   - in the value of a local that reaches an effect position (grown to a
  *     fixpoint), including a request local a helper fills: the parameter it
  *     binds is seeded as consumed in that helper;
@@ -64,8 +68,8 @@
  * A table under a negation in a guard (`!MUTABLE.has(key)`) and a string
  * compared with `!==` there name what the guarded refusal EXEMPTS: not reads.
  * So a property read only by change detection or validation (a `changed('X')`
- * flag that guards nothing that sends, a `typeof` refusal of a malformed
- * value) is a gap.
+ * flag guarding a send that does not carry it, a `typeof` refusal of a
+ * malformed value) is a gap.
  *
  * A class handling several types is narrowed per type: an `if` / `switch` /
  * `?:` (through `&&` / `||`) comparing `resourceType` with an `'AWS::X::Y'`
@@ -79,7 +83,10 @@
  * effect carries (a same-named field of an AWS response, a property only
  * interpolated into a warning). A call whose result an effect consumes walks
  * its callee whole. A callee's parameters are judged per call site but not
- * per path inside it. Only TOP-LEVEL properties are classified: a nested
+ * per path inside it. A change refused with any error but
+ * `ResourceUpdateNotSupportedError` is not a refusal here (a `ProvisioningError`
+ * is also what a validation throws), so it would read as a gap. Only
+ * TOP-LEVEL properties are classified: a nested
  * member an update drops (#5365's replica settings) is out of reach; the
  * sdk-wire harness (`tests/unit/provisioning/sdk-wire-*.ts`) pins what a call
  * carries.
@@ -522,19 +529,24 @@ function classMembers(
 interface Effect {
   /** Sends to AWS (`new XCommand`, `.send`, `waitUntil*`) or refuses (`ResourceUpdateNotSupportedError`). */
   readonly hard: boolean;
+  /** Refuses the change (`ResourceUpdateNotSupportedError`). */
+  readonly refuse: boolean;
   /** Warns (`.warn(...)`, `replayWarn(...)`, a local `warn(...)`). */
   readonly warn: boolean;
 }
-const NO_EFFECT: Effect = { hard: false, warn: false };
-const orEffect = (a: Effect, b: Effect): Effect => ({ hard: a.hard || b.hard, warn: a.warn || b.warn });
+const NO_EFFECT: Effect = { hard: false, refuse: false, warn: false };
+const orEffect = (a: Effect, b: Effect): Effect => ({
+  hard: a.hard || b.hard,
+  refuse: a.refuse || b.refuse,
+  warn: a.warn || b.warn,
+});
 
 /** The sink a call or `new` is, if any. */
 function sinkOf(n: ts.Node): Effect | null {
   if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) {
     const name = n.expression.text;
-    if (/Command$/.test(name) || name === 'ResourceUpdateNotSupportedError') {
-      return { hard: true, warn: false };
-    }
+    if (name === 'ResourceUpdateNotSupportedError') return { hard: true, refuse: true, warn: false };
+    if (/Command$/.test(name)) return { hard: true, refuse: false, warn: false };
   }
   if (ts.isCallExpression(n)) {
     const callee = n.expression;
@@ -543,9 +555,9 @@ function sinkOf(n: ts.Node): Effect | null {
       : ts.isIdentifier(callee)
         ? callee.text
         : null;
-    if (name === 'send' && ts.isPropertyAccessExpression(callee)) return { hard: true, warn: false };
-    if (name !== null && /^waitUntil[A-Z]/.test(name)) return { hard: true, warn: false };
-    if (name === 'warn' || name === 'replayWarn') return { hard: false, warn: true };
+    if (name === 'send' && ts.isPropertyAccessExpression(callee)) return { hard: true, refuse: false, warn: false };
+    if (name !== null && /^waitUntil[A-Z]/.test(name)) return { hard: true, refuse: false, warn: false };
+    if (name === 'warn' || name === 'replayWarn') return { hard: false, refuse: false, warn: true };
   }
   return null;
 }
@@ -645,7 +657,37 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     let acc = NO_EFFECT;
     const seen = new Set<ts.Node>();
     const visitE = (n: ts.Node, f: string, loc: Map<string, ts.Node> | undefined): void => {
-      if (acc.hard && acc.warn) return;
+      if (acc.hard && acc.refuse && acc.warn) return;
+      // Per-type narrowing, as in the reading walk.
+      if (ts.isIfStatement(n) || ts.isConditionalExpression(n)) {
+        const condition = ts.isIfStatement(n) ? n.expression : n.condition;
+        const reach = branchReach(condition, resourceType);
+        if (reach) {
+          visitE(condition, f, loc);
+          const [whenTrue, whenFalse] = ts.isIfStatement(n)
+            ? [n.thenStatement, n.elseStatement]
+            : [n.whenTrue, n.whenFalse];
+          if (reach.then) visitE(whenTrue, f, loc);
+          if (reach.else && whenFalse) visitE(whenFalse, f, loc);
+          return;
+        }
+      }
+      if (ts.isSwitchStatement(n) && isResourceTypeOperand(n.expression)) {
+        const clauses = n.caseBlock.clauses;
+        const literalOf = (c: ts.CaseOrDefaultClause): string | null =>
+          ts.isCaseClause(c) && ts.isStringLiteralLike(c.expression) && /^AWS::/.test(c.expression.text)
+            ? c.expression.text
+            : null;
+        if (clauses.some((c) => literalOf(c) !== null)) {
+          let start = clauses.findIndex((c) => literalOf(c) === resourceType);
+          if (start < 0) start = clauses.findIndex((c) => ts.isDefaultClause(c));
+          for (let i = Math.max(start, 0); start >= 0 && i < clauses.length; i++) {
+            for (const st of clauses[i]!.statements) visitE(st, f, loc);
+            if (endsClause(clauses[i]!.statements)) break;
+          }
+          return;
+        }
+      }
       const sink = sinkOf(n);
       if (sink) acc = orEffect(acc, sink);
       const follow = (target: ts.Node, tf: string): void => {
@@ -664,12 +706,24 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     visitE(node, nodeFile, locals);
     return acc;
   };
+  // A declaration reached again while it is still being computed (a cycle)
+  // answers NO_EFFECT for now; every frame that saw such a provisional answer
+  // is left uncached, so a later question recomputes it in full.
+  const inProgress: ts.Node[] = [];
+  const provisional = new Set<ts.Node>();
   const declEffect = (decl: ts.Node, declFile: string): Effect => {
     const cached = effectMemo.get(decl);
     if (cached) return cached;
-    effectMemo.set(decl, NO_EFFECT); // cycle guard
+    const at = inProgress.indexOf(decl);
+    if (at >= 0) {
+      for (const frame of inProgress.slice(at + 1)) provisional.add(frame);
+      return NO_EFFECT;
+    }
+    inProgress.push(decl);
     const e = effectOf(decl, declFile, localDeclarations(decl));
-    effectMemo.set(decl, e);
+    inProgress.pop();
+    if (provisional.has(decl)) provisional.delete(decl);
+    else effectMemo.set(decl, e);
     return e;
   };
 
@@ -722,10 +776,16 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
     const subtreeEffect = (n: ts.Node): Effect => effectOf(n, rootFile, locals);
     // A guarded block counts when it sends or refuses, or warns without being
     // an early-exit "nothing to do" path.
+    // A guarded branch makes its condition a read when it REFUSES or WARNS
+    // about the change (a warning on an early-exit skip path does not). A
+    // branch that only SENDS does not: the guard is change detection, and the
+    // property counts only if the send (or a local it consumes) carries it.
+    const dispatches = (a: ts.Node, b: ts.Node | undefined): boolean =>
+      b !== undefined && subtreeEffect(a).hard && subtreeEffect(b).hard;
     const guards = (n: ts.Node | undefined): boolean => {
       if (!n) return false;
       const e = subtreeEffect(n);
-      return e.hard || (e.warn && !exitsEarly(n));
+      return e.refuse || (e.warn && !exitsEarly(n));
     };
 
     // Locals whose value reaches an effect, grown to a fixpoint.
@@ -736,11 +796,14 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
         // Per-type narrowing.
         if (ts.isIfStatement(n)) {
           const reach = branchReach(n.expression, resourceType);
-          // The condition counts when a branch this type can take has an effect.
+          // The condition counts when a branch this type can take refuses or
+          // warns, or when it DISPATCHES: both arms send, so the value picks
+          // the call (`if (on) Enable else Disable`).
           const condEff =
             eff ||
             ((!reach || reach.then) && guards(n.thenStatement)) ||
-            ((!reach || reach.else) && guards(n.elseStatement));
+            ((!reach || reach.else) && guards(n.elseStatement)) ||
+            (!reach && dispatches(n.thenStatement, n.elseStatement));
           visit(n.expression, condEff, true, false);
           if (!reach || reach.then) visit(n.thenStatement, eff, false, false);
           if ((!reach || reach.else) && n.elseStatement) visit(n.elseStatement, eff, false, false);
@@ -748,7 +811,12 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
         }
         if (ts.isConditionalExpression(n)) {
           const reach = branchReach(n.condition, resourceType);
-          visit(n.condition, eff || guards(n.whenTrue) || guards(n.whenFalse), true, false);
+          visit(
+            n.condition,
+            eff || guards(n.whenTrue) || guards(n.whenFalse) || (!reach && dispatches(n.whenTrue, n.whenFalse)),
+            true,
+            false
+          );
           if (!reach || reach.then) visit(n.whenTrue, eff, false, false);
           if (!reach || reach.else) visit(n.whenFalse, eff, false, false);
           return;
@@ -773,7 +841,9 @@ export function walkUpdatePath(input: WalkInput, resourceType: string): WalkOutp
             }
             return;
           }
-          const anyEffect = clauses.some((c) => guards(ts.factory.createBlock(c.statements)));
+          const anyEffect =
+            clauses.some((c) => guards(ts.factory.createBlock(c.statements))) ||
+            clauses.filter((c) => subtreeEffect(ts.factory.createBlock(c.statements)).hard).length >= 2;
           visit(n.expression, eff || anyEffect, true, false);
           for (const c of clauses) {
             if (ts.isCaseClause(c)) visit(c.expression, eff || guards(ts.factory.createBlock(c.statements)), true, false);

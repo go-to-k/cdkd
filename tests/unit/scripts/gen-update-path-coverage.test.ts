@@ -344,6 +344,67 @@ describe('gen-update-path-coverage: what a helper does with what it is handed', 
   });
 });
 
+describe('gen-update-path-coverage: guards, dispatch and helper effects', () => {
+  it('a change guard of a send that omits the property is no read (the ECR shape)', () => {
+    const rows = classify({
+      handled: ['Scan', 'Filters'],
+      classBody: `
+        async update(id, pid, type, properties, previous) {
+          if (JSON.stringify(properties.Scan) !== JSON.stringify(previous.Scan)) {
+            await this.c.send(new PutScanCommand({ scanOnPush: false }));
+          }
+          if (properties.Filters !== previous.Filters) {
+            await this.c.send(new PutMutabilityCommand({ filters: properties.Filters }));
+          }
+        }`,
+    });
+    expect(statusOf(rows, 'Scan')).toBe('gap');
+    expect(statusOf(rows, 'Filters')).toBe('update');
+  });
+
+  it('a value that picks between two sends is read (if / else and switch)', () => {
+    const rows = classify({
+      handled: ['Monitoring', 'Mode'],
+      classBody: `
+        async update(id, pid, type, properties) {
+          if (properties.Monitoring) await this.c.send(new MonitorCommand({ id }));
+          else await this.c.send(new UnmonitorCommand({ id }));
+          switch (properties.Mode) {
+            case 'on': await this.c.send(new OnCommand({ id })); break;
+            case 'off': await this.c.send(new OffCommand({ id })); break;
+          }
+        }`,
+    });
+    expect(statusOf(rows, 'Monitoring')).toBe('update');
+    expect(statusOf(rows, 'Mode')).toBe('update');
+  });
+
+  it("a helper's effect is narrowed by type, and a call cycle does not cache a partial answer", () => {
+    const rows = classify({
+      types: ['AWS::Fake::One', 'AWS::Fake::Two'],
+      handled: ['X', 'Y', 'Z'],
+      prelude: `
+        function refuseForOne(resourceType) {
+          if (resourceType === 'AWS::Fake::One') throw new ResourceUpdateNotSupportedError(resourceType, 'id', 'X');
+        }
+        function ping(n) { if (n > 0) return pong(n - 1); throw new ResourceUpdateNotSupportedError('t', 'id', 'Y'); }
+        function pong(n) { return ping(n); }`,
+      classBody: `
+        async update(id, pid, resourceType, properties, previous) {
+          if (properties.X !== previous.X) refuseForOne(resourceType);
+          if (properties.Y !== previous.Y) ping(3);
+          if (properties.Z !== previous.Z) pong(3);
+        }`,
+    });
+    expect(statusOf(rows, 'X', 'AWS::Fake::One')).toBe('update');
+    expect(statusOf(rows, 'X', 'AWS::Fake::Two')).toBe('gap');
+    // ping -> pong -> ping, ping refuses. Asking about ping first sees pong
+    // mid-cycle; pong must not be cached as effect-free, or Z's guard misses it.
+    expect(statusOf(rows, 'Y', 'AWS::Fake::One')).toBe('update');
+    expect(statusOf(rows, 'Z', 'AWS::Fake::One')).toBe('update');
+  });
+});
+
 describe('gen-update-path-coverage: resourceType-keyed tables', () => {
   const types = ['AWS::Fake::One', 'AWS::Fake::Two'];
 
@@ -435,14 +496,14 @@ describe('gen-update-path-coverage: per-type narrowing', () => {
       handled: ['A', 'B', 'C'],
       classBody: `
         async update(id, pid, resourceType, properties) {
-          if (resourceType === 'AWS::Fake::One' && properties.C) return send(new ACommand(properties.A));
+          if (resourceType === 'AWS::Fake::One' && properties.C) throw new ResourceUpdateNotSupportedError(resourceType, id, properties.A);
           if (resourceType === 'AWS::Fake::One' || resourceType === 'AWS::Fake::Three') return;
           return send(new BCommand(properties.B));
         }`,
     });
     expect(statusOf(rows, 'A', 'AWS::Fake::One')).toBe('update');
     expect(statusOf(rows, 'A', 'AWS::Fake::Two')).toBe('gap');
-    // The guard reads C for type One only: for Two it short-circuits.
+    // The refusal's guard reads C for type One only: for Two it short-circuits.
     expect(statusOf(rows, 'C', 'AWS::Fake::One')).toBe('update');
     expect(statusOf(rows, 'C', 'AWS::Fake::Two')).toBe('gap');
     // Early return: after `if (type is One or Three) return;` the rest of the
