@@ -2416,6 +2416,7 @@
         "drift-revert",
         "drift-revert-arrays",
         "drift-revert-vpc",
+        "drift-verbatim-readback",
         "dynamodb-globaltable",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-gsi-update",

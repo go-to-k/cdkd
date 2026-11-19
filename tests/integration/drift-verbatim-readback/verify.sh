@@ -368,8 +368,20 @@ grant_phase() { # $1 = baseline label (observed | template-only)
 
   identities "${ARTIFACT_DIR}/identity-grants-${label}-before.tsv" || exit 1
   echo "==> #6627 (${label}): drift --revert"
+  # On the Cloud Control route, --verbose so the log proves each principal's
+  # update went through Cloud Control (its `Update request submitted` line).
+  local verbose=()
+  [ "${label}" = cc-api ] && verbose=(--verbose)
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
-    2>&1 | tee "${ARTIFACT_DIR}/revert-grants-${label}.log"
+    "${verbose[@]+"${verbose[@]}"}" 2>&1 | tee "${ARTIFACT_DIR}/revert-grants-${label}.log"
+  if [ "${label}" = cc-api ]; then
+    local id
+    for id in BareRole BareUser BareGroup SiblingRole SiblingUser SiblingGroup; do
+      grep -qF "Update request submitted for ${id}," "${ARTIFACT_DIR}/revert-grants-${label}.log" ||
+        { echo "FAIL: #6627 (cc-api): ${id} was not reverted through Cloud Control (no 'Update request submitted' line)" >&2; exit 1; }
+    done
+    echo "    OK: every principal reverted through Cloud Control"
+  fi
   sleep 15
   # The plan names each member it removes, and only those.
   local count line
@@ -383,9 +395,11 @@ grant_phase() { # $1 = baseline label (observed | template-only)
     echo "FAIL: #6627 (${label}): the revert plan names a sibling's member for removal" >&2
     exit 1
   fi
-  if grep -qiE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log"; then
+  # A Cloud Control patch's own `"op":"replace"` (the verbose debug line
+  # listing it) is a JSON Patch verb, not a resource replacement.
+  if grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -qvF 'patch operations for'; then
     echo "FAIL: #6627 (${label}): drift --revert output names a replacement:" >&2
-    grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" >&2
+    grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert-grants-${label}.log" | grep -vF 'patch operations for' >&2
     exit 1
   fi
   identities "${ARTIFACT_DIR}/identity-grants-${label}-after.tsv" || exit 1
