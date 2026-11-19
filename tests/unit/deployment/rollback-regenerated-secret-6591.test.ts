@@ -293,6 +293,23 @@ describe('rollback of a regenerated secret (#6591)', () => {
     expect(warned.some((m) => m.includes('before secret'))).toBe(false);
   });
 
+  it('a resumed rollback restores the reader at the current value after the secret already reverted (#6597)', async () => {
+    const s = state();
+    // An earlier replay already restored the secret (AWS regenerated it), then
+    // stopped before the reader: the secret's record is its old one again.
+    s['Sec'] = rec(ARN, SECRET, { Name: 'hunt-sec', GenerateSecretString: gen(20) });
+    secret.history[RB] = pw('rollback-pw');
+    secret.value = pw('rollback-pw');
+    secret.version = RB;
+    const op = secretOp();
+    op.properties = { Name: 'hunt-sec', GenerateSecretString: gen(24) };
+    const result = await replayRollback([op, fnOp()], s, 'S', ctx);
+    expect(result.failures).toBe(0);
+    // The secret's revert is a no-op now; the reader still follows it.
+    expect(calls).not.toContain('update Sec');
+    expect(fnPw()).toBe('rollback-pw');
+  });
+
   it('the dry-run plan lists the same order', () => {
     const plan = planRollback([secretOp(), fnOp()], state());
     expect(plan.map((item) => item.op.logicalId)).toEqual(['Sec', 'Fn']);

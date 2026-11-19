@@ -655,6 +655,12 @@ export interface RollbackReplayResult {
    * name. Always an array, as {@link orphaned}.
    */
   rolledBackCreates: RolledBackCreate[];
+  /**
+   * go-to-k/cdkd#6597: logical id -> addresses (ARN, recorded `Name`) of each
+   * secret whose revert in this replay regenerated its value. A failed op
+   * reading one is reverted after this replay, at the secret's current value.
+   */
+  regeneratedSecrets?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 /** Spelled locally: importing the CLI's copy would invert the layer direction. */

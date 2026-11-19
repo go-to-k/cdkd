@@ -106,7 +106,7 @@ export async function replayFailedOperationsUnbound(
   const rolledBack = { result, onRolledBackCreate: options.onRolledBackCreate };
   // Re-resolves redacted `{{resolve:secretsmanager:...}}` expressions to the
   // concrete secret for the failed-op provider replay (GHSA fix).
-  const resolver = new ReplayResolvers(ctx.region);
+  const resolver = new ReplayResolvers(ctx.region, options.regeneratedSecrets);
   const emitEnvelope = options.emitEnvelope === true && failedOps.length > 0;
   if (emitEnvelope) ctx.recordEvent?.({ eventType: 'ROLLBACK_STARTED', stackName });
 

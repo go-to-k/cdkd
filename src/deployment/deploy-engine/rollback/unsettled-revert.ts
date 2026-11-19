@@ -99,6 +99,8 @@ export async function revertUnsettledFailedUpdates(
      * a new id) only after that replay's last op.
      */
     cleanup?: Partial<ReturnType<typeof segmentCleanupOptions>>;
+    /** go-to-k/cdkd#6597: secrets the completed-op replay regenerated. */
+    regeneratedSecrets?: ReadonlySet<string>;
   }
 ): Promise<{ handled: number[]; warnings: number; interrupted: boolean }> {
   const out = { handled: [] as number[], warnings: 0, interrupted: false };
@@ -251,6 +253,7 @@ export async function revertUnsettledFailedUpdates(
         inlinePolicyWriters: options.inlinePolicyWriters,
         isInterrupted,
         previousFromRecord: own,
+        regeneratedSecrets: options.regeneratedSecrets,
         ...options.cleanup,
       })
   );

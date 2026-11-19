@@ -31,7 +31,8 @@ used. One exception: when restoring a Secrets Manager secret makes AWS
 generate a new value (the deploy had changed its `GenerateSecretString`), the
 secret is restored before the resources that read it through a
 `{{resolve:secretsmanager:...}}` reference, and they get its new value, as in
-CloudFormation's rollback. When another restored resource depends on such a
+CloudFormation's rollback. That includes the resource whose own update failed,
+and a reader a `cdkd rollback` re-run restores after the secret already was. When another restored resource depends on such a
 reader and so keeps it first, cdkd warns and names `cdkd drift <stack>
 --revert`, which restores the reader from the secret's current value.
 
