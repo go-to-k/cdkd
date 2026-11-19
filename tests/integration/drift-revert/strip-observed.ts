@@ -31,7 +31,8 @@
  * property>]`. With no arguments it targets the #1626 bucket (`DriftBucket`,
  * `AWS::S3::Bucket`, `Tags`); step 6e passes the issue #4023 named IAM role and
  * managed policy, whose required property is the template NAME the revert
- * must not re-derive.
+ * must not re-derive; step 6g passes the issue #6622 object-form `Deny`
+ * policy and its `PolicyDocument`.
  */
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 

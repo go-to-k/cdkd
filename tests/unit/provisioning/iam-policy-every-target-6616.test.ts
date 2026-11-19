@@ -443,3 +443,36 @@ describe('IAMPolicyProvider.readCurrentState reads every recorded target (#6616)
     expect(result).toMatchObject({ PolicyDocument: WIDENED });
   });
 });
+
+describe('IAMPolicyProvider.readCurrentState over an object-form Statement (go-to-k/cdkd#6622)', () => {
+  const DENY_DOC = {
+    Version: '2012-10-17',
+    Statement: { Effect: 'Deny', Action: 's3:DeleteBucket', Resource: '*' },
+  };
+  const NARROWED = {
+    ...DENY_DOC,
+    Statement: { ...DENY_DOC.Statement, Condition: { Bool: { 'aws:SecureTransport': 'false' } } },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('a Condition on the SECOND copy is the reported document on the template-only baseline', async () => {
+    liveCopies({ 'role:R1': DENY_DOC, 'role:R2': NARROWED });
+    const result = await new IAMPolicyProvider().readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: DENY_DOC,
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toMatchObject({ PolicyDocument: NARROWED });
+  });
+
+  it('every copy unchanged reports the recorded document', async () => {
+    liveCopies({ 'role:R1': DENY_DOC, 'role:R2': DENY_DOC });
+    const result = await new IAMPolicyProvider().readCurrentState('pol', 'P', TYPE, {
+      PolicyDocument: DENY_DOC,
+      Roles: ['R1', 'R2'],
+    });
+    expect(result).toMatchObject({ PolicyDocument: DENY_DOC });
+  });
+});

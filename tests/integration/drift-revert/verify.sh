@@ -24,7 +24,9 @@
 #      bare template name
 #  6f. issue #4081: plain `cdkd drift --json` reports no name drift on those
 #      two records (still template-only, bare names)
-#  6g. issue #4283: delete the Glue database out of band -> drift exits 1 and
+#  6g. issue #6622: a Condition added out of band to an object-form Deny on a
+#      template-only baseline -> drift names it, --revert removes it
+#  6h. issue #4283: delete the Glue database out of band -> drift exits 1 and
 #      lists it under `deleted`; --revert / --accept refuse it (exit 2)
 #   7. cdkd destroy --force
 #
@@ -126,7 +128,7 @@ sweep_bare_iam_names() { (
 
 cleanup() {
   rc=$?
-  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP4_LOG:-}" "${STEP6E_ERR:-}" "${STEP6F_JSON:-}" "${STEP6G_OUT:-}"
+  rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP4_LOG:-}" "${STEP6E_ERR:-}" "${STEP6F_JSON:-}" "${STEP6G_JSON:-}" "${STEP6H_OUT:-}"
   if [ "${PEER_HOLDS_STACK}" = 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: this run deployed nothing to ${STACK}"
     exit "${rc}"
@@ -525,6 +527,82 @@ node -e 'const fs=require("fs");const [s]=JSON.parse(fs.readFileSync(process.arg
 rm -f "${STEP6F_JSON}"
 echo "[verify] step 6f ok: no name drift for the legacy-prefixed role / policy"
 
+# Issue #6622: on a template-only baseline the comparator walked only the
+# template's keys inside an object, so a `Condition` added to an object-form
+# `Statement` -- narrowing a `Deny` -- read clean, and `--revert` merged it back
+# into the document it sent. The baseline is manufactured as in step 6d. Four
+# assertions: clean before the edit (no phantom drift from the wider walk),
+# drift naming `PolicyDocument.Statement.Condition` after it, a live default
+# version without the Condition after `--revert`, and clean again.
+echo "[verify] step 6g: issue #6622 — a Condition added to an object-form Deny is drift and reverts"
+DENY_POLICY_ARN="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=(JSON.parse(b).state??JSON.parse(b)).resources;const ids=Object.keys(r).filter(k=>k.startsWith("DriftDenyPolicy")&&r[k].resourceType==="AWS::IAM::ManagedPolicy");if(ids.length!==1)throw new Error(`expected one DriftDenyPolicy, found ${ids.length}`);const st=r[ids[0]].properties?.PolicyDocument?.Statement;if(st===null||typeof st!=="object"||Array.isArray(st))throw new Error(`DriftDenyPolicy records Statement ${JSON.stringify(st)}, expected one object: the step would be vacuous`);process.stdout.write(r[ids[0]].physicalId);})')"
+STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET}" node strip-observed.ts DriftDenyPolicy AWS::IAM::ManagedPolicy PolicyDocument
+STEP6G_JSON="$(mktemp)"
+# Prints DriftDenyPolicy's verdict and its change paths, comma-joined.
+deny_policy_verdict() {
+  set +e
+  ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --json >"${STEP6G_JSON}"
+  local rc=$?
+  set -e
+  case "${rc}" in
+    0 | 1 | 2) ;;
+    *)
+      echo "[verify] FAIL step 6g: cdkd drift --json exited ${rc}" >&2
+      exit 1
+      ;;
+  esac
+  node -e 'const fs=require("fs");const [s]=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const all=[...s.drifted.map(d=>({...d,kind:"drifted"})),...s.clean.map(c=>({...c,changes:[],kind:"clean"}))];const hits=all.filter(o=>o.logicalId.startsWith("DriftDenyPolicy")&&o.type==="AWS::IAM::ManagedPolicy");if(hits.length!==1)throw new Error(`expected DriftDenyPolicy compared exactly once, found ${hits.length}: ${JSON.stringify(s)}`);process.stdout.write(hits[0].kind+" "+hits[0].changes.map(c=>c.path).join(","));' \
+    "${STEP6G_JSON}"
+}
+VERDICT="$(deny_policy_verdict)"
+if [ "${VERDICT}" != "clean " ]; then
+  echo "[verify] FAIL step 6g: before the edit DriftDenyPolicy is '${VERDICT}', expected clean" >&2
+  exit 1
+fi
+NARROWED_DOC='{"Version":"2012-10-17","Statement":{"Effect":"Deny","Action":"s3:DeleteBucket","Resource":"arn:aws:s3:::cdkd-drift-revert-placeholder","Condition":{"StringEquals":{"aws:PrincipalTag/cdkd-integ":"exempt"}}}}'
+NARROWED_VERSION="$(aws iam create-policy-version --query PolicyVersion.VersionId --output text --cli-input-json "$(node -e \
+  'process.stdout.write(JSON.stringify({PolicyArn:process.argv[1],PolicyDocument:process.argv[2],SetAsDefault:true}))' \
+  "${DENY_POLICY_ARN}" "${NARROWED_DOC}")")"
+[ -n "${NARROWED_VERSION}" ] || { echo "[verify] FAIL step 6g: create-policy-version returned no VersionId" >&2; exit 1; }
+# IAM reads lag writes: wait until the drift read reports the edit.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  VERDICT="$(deny_policy_verdict)"
+  [ "${VERDICT}" != "clean " ] && break
+  sleep 2
+done
+if [ "${VERDICT}" != "drifted PolicyDocument.Statement.Condition" ]; then
+  echo "[verify] FAIL step 6g: after adding a Condition DriftDenyPolicy is '${VERDICT}', expected 'drifted PolicyDocument.Statement.Condition'" >&2
+  exit 1
+fi
+
+${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+
+DENY_VERSION="${NARROWED_VERSION}"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  DENY_VERSION="$(aws iam get-policy --policy-arn "${DENY_POLICY_ARN}" --query Policy.DefaultVersionId --output text)"
+  [ "${DENY_VERSION}" != "${NARROWED_VERSION}" ] && break
+  sleep 2
+done
+if [ "${DENY_VERSION}" = "${NARROWED_VERSION}" ]; then
+  echo "[verify] FAIL step 6g: --revert left the narrowed version ${NARROWED_VERSION} as the default" >&2
+  exit 1
+fi
+aws iam get-policy-version --policy-arn "${DENY_POLICY_ARN}" --version-id "${DENY_VERSION}" \
+  --query PolicyVersion.Document --output json \
+  | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const st=JSON.parse(b).Statement;if(st===null||typeof st!=="object"||Array.isArray(st))throw new Error(`reverted Statement is ${JSON.stringify(st)}, expected the template object`);if("Condition" in st)throw new Error(`--revert kept the Condition: ${JSON.stringify(st)}`);if(st.Effect!=="Deny"||st.Action!=="s3:DeleteBucket")throw new Error(`reverted Statement is not the template Deny: ${JSON.stringify(st)}`);})'
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  VERDICT="$(deny_policy_verdict)"
+  [ "${VERDICT}" = "clean " ] && break
+  sleep 2
+done
+if [ "${VERDICT}" != "clean " ]; then
+  echo "[verify] FAIL step 6g: after --revert DriftDenyPolicy is '${VERDICT}', expected clean" >&2
+  exit 1
+fi
+rm -f "${STEP6G_JSON}"
+echo "[verify] step 6g ok: the added Condition was reported and reverted"
+
 # Issue #4283: a resource deleted OUTSIDE cdkd is drift. It used to read back
 # as `undefined` and land in `notSupported` ("provider does not support drift
 # detection yet") with exit 0, so a CI gate stayed green over a missing
@@ -533,22 +611,22 @@ echo "[verify] step 6f ok: no name drift for the legacy-prefixed role / policy"
 # and exit 2, and neither recreates it nor drops its state record. Last before
 # the destroy, which tolerates the missing database (the Glue delete is
 # not-found idempotent).
-echo "[verify] step 6g: issue #4283 — a resource deleted out of band is reported as deleted"
+echo "[verify] step 6h: issue #4283 — a resource deleted out of band is reported as deleted"
 aws glue delete-database --name "${GLUE_DB}"
 assert_gone "out-of-band delete of Glue database ${GLUE_DB} did not take" \
   aws glue get-database --name "${GLUE_DB}"
-STEP6G_OUT="$(mktemp)"
+STEP6H_OUT="$(mktemp)"
 set +e
-${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --json >"${STEP6G_OUT}"
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --json >"${STEP6H_OUT}"
 rc=$?
 set -e
 if [ "${rc}" -ne 1 ]; then
-  echo "[verify] FAIL step 6g: cdkd drift over a deleted resource exited ${rc}, expected 1" >&2
-  cat "${STEP6G_OUT}" >&2
+  echo "[verify] FAIL step 6h: cdkd drift over a deleted resource exited ${rc}, expected 1" >&2
+  cat "${STEP6H_OUT}" >&2
   exit 1
 fi
-node -e 'const fs=require("fs");const [s]=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const t="AWS::Glue::Database";const del=(s.deleted??[]).filter(o=>o.type===t&&o.logicalId.startsWith("DriftGlueDatabase"));if(del.length!==1)throw new Error(`expected DriftGlueDatabase under deleted, found ${JSON.stringify(s.deleted)}: ${JSON.stringify(s)}`);if(s.notSupported.some(o=>o.type===t))throw new Error(`the deleted Glue database is still reported notSupported: ${JSON.stringify(s.notSupported)}`);console.log(`[verify] step 6g: ${del[0].logicalId} reported deleted`);' \
-  "${STEP6G_OUT}"
+node -e 'const fs=require("fs");const [s]=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const t="AWS::Glue::Database";const del=(s.deleted??[]).filter(o=>o.type===t&&o.logicalId.startsWith("DriftGlueDatabase"));if(del.length!==1)throw new Error(`expected DriftGlueDatabase under deleted, found ${JSON.stringify(s.deleted)}: ${JSON.stringify(s)}`);if(s.notSupported.some(o=>o.type===t))throw new Error(`the deleted Glue database is still reported notSupported: ${JSON.stringify(s.notSupported)}`);console.log(`[verify] step 6h: ${del[0].logicalId} reported deleted`);' \
+  "${STEP6H_OUT}"
 glue_db_record() { # prints the deleted Glue database's state record, key-sorted
   ${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
     | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=(JSON.parse(b).state??JSON.parse(b)).resources;const ids=Object.keys(r).filter(id=>id.startsWith("DriftGlueDatabase")&&r[id].resourceType==="AWS::Glue::Database");if(ids.length!==1)throw new Error(`expected one DriftGlueDatabase record, found ${ids.length}`);const sort=(v)=>Array.isArray(v)?v.map(sort):v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;process.stdout.write(JSON.stringify(sort(r[ids[0]])));})'
@@ -556,31 +634,31 @@ glue_db_record() { # prints the deleted Glue database's state record, key-sorted
 GLUE_RECORD_BEFORE="$(glue_db_record)"
 for mode in revert accept; do
   set +e
-  ${CLI} drift "${STACK}" "--${mode}" -y --state-bucket "${STATE_BUCKET}" >"${STEP6G_OUT}" 2>&1
+  ${CLI} drift "${STACK}" "--${mode}" -y --state-bucket "${STATE_BUCKET}" >"${STEP6H_OUT}" 2>&1
   rc=$?
   set -e
-  cat "${STEP6G_OUT}"
+  cat "${STEP6H_OUT}"
   if [ "${rc}" -ne 2 ]; then
-    echo "[verify] FAIL step 6g: cdkd drift --${mode} over a deleted resource exited ${rc}, expected 2" >&2
+    echo "[verify] FAIL step 6h: cdkd drift --${mode} over a deleted resource exited ${rc}, expected 2" >&2
     exit 1
   fi
-  if ! grep -qE "DriftGlueDatabase[^ ]* \(AWS::Glue::Database\): NOT ${mode}ed" "${STEP6G_OUT}"; then
-    echo "[verify] FAIL step 6g: --${mode} did not refuse the deleted Glue database by name" >&2
+  if ! grep -qE "DriftGlueDatabase[^ ]* \(AWS::Glue::Database\): NOT ${mode}ed" "${STEP6H_OUT}"; then
+    echo "[verify] FAIL step 6h: --${mode} did not refuse the deleted Glue database by name" >&2
     exit 1
   fi
   assert_gone "--${mode} recreated the out-of-band-deleted Glue database ${GLUE_DB}" \
     aws glue get-database --name "${GLUE_DB}"
 done
 if [ "$(glue_db_record)" != "${GLUE_RECORD_BEFORE}" ]; then
-  echo "[verify] FAIL step 6g: --revert / --accept changed the deleted Glue database's state record" >&2
+  echo "[verify] FAIL step 6h: --revert / --accept changed the deleted Glue database's state record" >&2
   exit 1
 fi
 # Both runs released their locks (the refusal path takes none for this
 # resource, and the writes for the other resources release theirs).
 assert_gone "a drift --revert / --accept run left the stack lock behind" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/lock.json"
-rm -f "${STEP6G_OUT}"
-echo "[verify] step 6g ok: deleted -> exit 1; --revert / --accept refuse it (exit 2) and change nothing"
+rm -f "${STEP6H_OUT}"
+echo "[verify] step 6h ok: deleted -> exit 1; --revert / --accept refuse it (exit 2) and change nothing"
 
 echo "[verify] step 7: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

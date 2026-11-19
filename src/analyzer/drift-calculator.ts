@@ -263,8 +263,8 @@ function diffAt(
     // except under a declared verbatim-echo path (go-to-k/cdkd#6622).
     const keys =
       unionWalkObjects || matchesPathPrefix(path, unionWalkPaths)
-      ? new Set([...Object.keys(stateForm), ...Object.keys(awsForm)])
-      : Object.keys(stateForm);
+        ? new Set([...Object.keys(stateForm), ...Object.keys(awsForm)])
+        : Object.keys(stateForm);
     for (const key of keys) {
       const childPath = `${path}.${key}`;
       if (isIgnoredPath(childPath, ignorePaths)) continue;
