@@ -37,6 +37,7 @@ import {
   nestedCreateOnlyGaps,
   nestedReadOnlyGaps,
   withCarriedCreateOnlyMembers,
+  withRemovedBlockDefaults,
   writesTopLevelObject,
 } from '../cc-nested-create-only-patch.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../types/resource.js';
@@ -274,6 +275,11 @@ export async function updateInIdLogScope(
     // member, so such an op always reads the live model, even where AWS
     // holds no such member (a puppeteer 11.0+ canary's `Code`); one
     // `GetResource` on a Cloud Control update, against a refused deploy.
+    // go-to-k/cdkd#6561: an object above such a member that neither side
+    // declares (an Athena workgroup's `EngineVersion`) is carried whole from
+    // the live model; under one the previous side holds (removed), only a
+    // measured leaf is carried, inside its measured writable defaults
+    // (`REMOVED_BLOCK_LEAF_CARRY`).
     if (writesTopLevelObject(patch)) {
       const [createOnlyPaths, readOnlyPaths] = await Promise.all([
         getCreateOnlyPropertyPaths(resourceType),
@@ -283,10 +289,13 @@ export async function updateInIdLogScope(
         ...nestedCreateOnlyGaps(patch, createOnlyPaths),
         ...nestedReadOnlyGaps(
           patch,
-          (readOnlyPaths ?? []).map((path) => path.split('.'))
+          (readOnlyPaths ?? []).map((path) => path.split('.')),
+          cleanPreviousProperties,
+          resourceType
         ),
       ];
       if (gaps.length > 0) {
+        patch = withRemovedBlockDefaults(patch, cleanPreviousProperties, resourceType);
         const liveModel = await this.readCcResourceModel(resourceType, physicalId, idLog);
         if (liveModel !== undefined) {
           patch = withCarriedCreateOnlyMembers(patch, gaps, liveModel);

@@ -8837,6 +8837,7 @@
       "resourceType": "AWS::S3::Bucket",
       "integs": [
         "asset-migration",
+        "athena-workgroup-update",
         "basic",
         "bench-sdk",
         "bucket-deployment",
@@ -8917,6 +8918,10 @@
       "signals": {
         "asset-migration": [
           "l2"
+        ],
+        "athena-workgroup-update": [
+          "l2",
+          "literal"
         ],
         "basic": [
           "l2"

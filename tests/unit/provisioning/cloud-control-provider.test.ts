@@ -3659,7 +3659,8 @@ describe('CloudControlProvider update: a nested read-only member (go-to-k/cdkd#6
 
   it('never re-creates an object the template removed to carry a read-only leaf under it', async () => {
     // AWS::MWAA::Environment: `LoggingConfiguration.TaskLogs.CloudWatchLogGroupArn`
-    // is read-only. Removing `TaskLogs` must not send it back holding only that leaf.
+    // is read-only. Removing `TaskLogs` must not send it back holding only that
+    // leaf: the path is not in the measured `REMOVED_BLOCK_LEAF_CARRY` list.
     mockCloudFormationSend.mockResolvedValue({
       Schema: JSON.stringify({
         readOnlyProperties: ['/properties/LoggingConfiguration/TaskLogs/CloudWatchLogGroupArn'],

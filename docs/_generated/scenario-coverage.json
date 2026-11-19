@@ -522,6 +522,11 @@
       ]
     },
     {
+      "name": "athena-workgroup-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "aws-custom-resource",
       "annotated": false,
       "scenarios": []
@@ -4092,6 +4097,7 @@
     "appconfig-environment-delete-protection",
     "asg-destroy-running-instances",
     "asg-update-policy",
+    "athena-workgroup-update",
     "aws-custom-resource",
     "backup",
     "bootstrap-free-region",
