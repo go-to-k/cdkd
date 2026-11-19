@@ -66,6 +66,14 @@ copies left under those bare names. Step 6f (issue
 `cdkd drift --json` on the same records and requires neither to report a name
 drift, since the live name is the prefixed form of the recorded one.
 
+Step 6g (issue [#6622](https://github.com/go-to-k/cdkd/issues/6622)) covers an
+`AWS::IAM::ManagedPolicy` whose `Statement` is a single object, a `Deny`. Its
+observed baseline is stripped, so drift compares against the template, and
+the step requires the policy clean, then adds a `Condition` out of band with
+`create-policy-version`. Drift must name `PolicyDocument.Statement.Condition`,
+and after `--revert` the live default version must hold the template's
+`Deny` with no `Condition`, and drift must read clean again.
+
 Steps 3b and 5c (issue [#4884](https://github.com/go-to-k/cdkd/issues/4884))
 cover an Advanced-tier `AWS::SSM::Parameter` that declares `Policies: '[]'`.
 A `NoChangeNotification` policy is attached out of band; step 4 must report the

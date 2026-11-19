@@ -140,7 +140,9 @@ names each key the revert keeps.
 
 **A resource with no snapshot.** Without a snapshot, cdkd cannot tell a value
 AWS set on its own from a value someone added, so it leaves every value your
-template never declared. The plan prints a
+template never declared. An IAM policy document is the exception: IAM adds
+nothing to it, so a key only AWS holds there was added out of band, and the
+revert sends your template's document whole. The plan prints a
 `! this resource has no observed-capture baseline ... LEAVES N AWS-authored
 values untouched` line that names each path. To have those values reverted
 too, record a snapshot first with `cdkd state refresh-observed MyStack`, or

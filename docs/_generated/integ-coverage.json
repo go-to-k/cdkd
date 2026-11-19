@@ -6363,6 +6363,7 @@
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
         "cc-to-sdk-reroute-common-types",
+        "drift-revert",
         "generated-name-lifecycle",
         "getatt-iam-waf-s3vectors-evaluator",
         "getatt-vpc-managed-policy",
@@ -6380,6 +6381,9 @@
         "cc-to-sdk-reroute-common-types": [
           "l1",
           "literal"
+        ],
+        "drift-revert": [
+          "l1"
         ],
         "generated-name-lifecycle": [
           "literal"

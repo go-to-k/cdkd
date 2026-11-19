@@ -200,13 +200,16 @@ export function findRevertPreservedTagKeys(
  *   change, and reporting it would be noise on every run.
  * - **Only keys that vanish.** A key present on both sides with a different
  *   VALUE is the drift the user asked to revert, and it reverts normally.
+ * - **Not under `verbatimKeys`** (go-to-k/cdkd#6622): the revert sends the
+ *   template's value whole there, so an AWS-only key is removed, not kept.
  *
  * @returns dotted paths, sorted, e.g. `['Parameters.metadata_location']`.
  */
 export function findRevertUnbaselinedAwsKeys(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
-  awsProperties: Record<string, unknown>
+  awsProperties: Record<string, unknown>,
+  verbatimKeys: readonly string[] = []
 ): string[] {
   const missing = new Set<string>();
   const driftedTopLevelKeys = new Set<string>();
@@ -219,6 +222,7 @@ export function findRevertUnbaselinedAwsKeys(
     // `buildRevertNewProperties` only overwrites a key the desired side
     // actually OWNS; otherwise the AWS-current value survives untouched.
     if (!hasOwnKey(desiredProperties, key)) continue;
+    if (verbatimKeys.includes(key)) continue;
     // A top-level TAG LIST is reverted through `mergeTagListForRevert`, which
     // PRESERVES service-authored entries (issue #1501) — so those are not
     // at stake and must not be reported here, while an ordinary console-added

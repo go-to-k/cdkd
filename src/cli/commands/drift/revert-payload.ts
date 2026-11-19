@@ -71,15 +71,25 @@ import {
  * {@link driftAbsentMeansDefaultKeys}). Such a key is sent ABSENT instead of
  * keeping the AWS value, so the provider's `update()` resets it the way it
  * resets a property a template removed.
+ *
+ * `verbatimKeys` (go-to-k/cdkd#6622, `verbatimEchoDriftKeys`) names top-level
+ * keys whose readback echoes the template verbatim, so a key only AWS holds
+ * under one was added out of band. `preserveUntemplated` does not merge those:
+ * the template's value goes WHOLE, as on the observed baseline.
  */
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
-  options: { preserveUntemplated?: boolean; absentMeansDefault?: readonly string[] } = {}
+  options: {
+    preserveUntemplated?: boolean;
+    absentMeansDefault?: readonly string[];
+    verbatimKeys?: readonly string[];
+  } = {}
 ): Record<string, unknown> {
   const preserveUntemplated = options.preserveUntemplated === true;
   const absentMeansDefault = options.absentMeansDefault ?? [];
+  const verbatimKeys = options.verbatimKeys ?? [];
   // A plain spread on purpose (every provider receives this bag, and spread
   // defines an own `__proto__` key correctly); the overlays below go through
   // `defineOwnKey` because a top-level drift at a key literally named
@@ -105,7 +115,7 @@ export function buildRevertNewProperties(
       // failure this carve-out exists to prevent. (The #1498 rule covers the
       // commoner UNDECLARED + captured-empty shape by ignoring the key
       // outright, so it never reaches here.)
-      if (preserveUntemplated) {
+      if (preserveUntemplated && !verbatimKeys.includes(topLevelKey)) {
         // Issue #1626: on a raw-TEMPLATE baseline every untemplated path is
         // kept, which is a strict SUPERSET of the #1501 tag carve-out (that
         // one keeps only service-authored entries), so it subsumes the branch
