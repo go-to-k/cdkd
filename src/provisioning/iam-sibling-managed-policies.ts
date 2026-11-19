@@ -285,7 +285,7 @@ export type TemplatePolicies = (
  * `previous` holds the PERSISTED form and `next` the in-memory plaintext, so a
  * member or target spelled this way cannot be compared across the two.
  */
-function isStoredExpression(value: string): boolean {
+export function isStoredExpression(value: string): boolean {
   return value.includes('{{resolve:') || value.includes('***');
 }
 

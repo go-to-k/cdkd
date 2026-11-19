@@ -66,6 +66,13 @@ failed. The usual cause is a missing IAM permission or a throttled request.
 
 Grant the missing permission, or run the command again if AWS was throttling.
 
+cdkd can also refuse a read itself. An `AWS::IAM::Policy` attached to several
+roles, users or groups holds one copy of its document per principal. When the
+copies differ and the recorded document holds a secret reference, cdkd cannot
+tell which copy was edited. It then lists the policy here and asks you to
+inspect each principal's copy by hand. Such a refusal does not count toward
+the five failures below.
+
 ### `readAborted`: cdkd stopped reading the stack
 
 Five reads in a row failed in the same stack, so cdkd stopped trying and

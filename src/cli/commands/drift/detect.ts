@@ -33,7 +33,11 @@ import {
   maskSecretsInText,
   maskSecretsInError,
 } from '../../../deployment/secret-redaction.js';
-import { type ResourceNotFound, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import {
+  type ResourceNotFound,
+  DriftReadRefusedError,
+  RESOURCE_NOT_FOUND,
+} from '../../../types/resource.js';
 import type { StackState } from '../../../types/state.js';
 import { nameScopeOf } from '../../../state/name-generation.js';
 import {
@@ -681,9 +685,13 @@ export async function runDriftForStack(
             notComparedCause: 'readFailed',
           });
           // go-to-k/cdkd#2207: only a READ that threw counts toward the breaker;
-          // a comparison that threw after a good read was reset above.
+          // a comparison that threw after a good read was reset above. A
+          // provider's own refusal (go-to-k/cdkd#6616) is no AWS failure: its
+          // AWS calls all answered, so it resets the run like a good read.
           let breakerTripped = false;
-          if (!readReturned) {
+          if (err instanceof DriftReadRefusedError) {
+            noteReadReturned();
+          } else if (!readReturned) {
             consecutiveReadFailures[readPath]++;
             if (consecutiveReadFailures[readPath] === DRIFT_READ_FAILURE_BREAKER_THRESHOLD) {
               trippedReadPaths.add(readPath);

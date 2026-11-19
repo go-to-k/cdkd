@@ -30,7 +30,7 @@ export type {
   InlinePolicyClaimed,
   CreateContext,
 } from './resource/contexts.js';
-export { RESOURCE_NOT_FOUND } from './resource/read-state.js';
+export { RESOURCE_NOT_FOUND, DriftReadRefusedError } from './resource/read-state.js';
 export type {
   ResourceNotFound,
   ResourceIdentityVerdict,

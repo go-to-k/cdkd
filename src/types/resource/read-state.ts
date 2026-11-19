@@ -21,6 +21,17 @@ export const RESOURCE_NOT_FOUND: unique symbol = Symbol('cdkd.resourceNotFound')
 /** The type of {@link RESOURCE_NOT_FOUND}. */
 export type ResourceNotFound = typeof RESOURCE_NOT_FOUND;
 
+/**
+ * A provider's own refusal to answer a drift read (go-to-k/cdkd#6616), as
+ * opposed to an AWS call that failed. `cdkd drift` reports the resource as
+ * not fully compared, as for any failed read, but does not count it toward
+ * the read-failure breaker: AWS answered, so the next read is no likelier to
+ * fail. Its message must name no property value.
+ */
+export class DriftReadRefusedError extends Error {
+  override readonly name = 'DriftReadRefusedError';
+}
+
 /** `ResourceProvider.isSameResource`'s answer (go-to-k/cdkd#4606). */
 export type ResourceIdentityVerdict = 'same' | 'different' | 'unknown';
 
@@ -105,4 +116,13 @@ export interface ReadCurrentStateContext {
    * Absent on the deploy capture and on records that carry none.
    */
   attributes?: Readonly<Record<string, unknown>>;
+  /**
+   * The read resource's OWN recorded `observedProperties` (the drift
+   * baseline), set by `buildReadCurrentStateContext` beside `attributes`. A
+   * provider that must pick ONE of several live copies to report may compare
+   * them against it, since it is what the drift comparator compares against
+   * when present (`AWS::IAM::Policy`, go-to-k/cdkd#6616). Only for that
+   * comparison: never returned, logged, or persisted from here.
+   */
+  driftBaseline?: Readonly<Record<string, unknown>>;
 }

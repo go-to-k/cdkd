@@ -20,6 +20,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import type { AttachedPrincipals } from './iam-policy/shared.js';
 import { create, detachPartialPolicy } from './iam-policy/create.js';
@@ -150,9 +151,10 @@ export class IAMPolicyProvider implements ResourceProvider {
     physicalId: string,
     logicalId: string,
     resourceType: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties, context);
   }
 
   /** See {@link decodePolicyDocument} in `iam-policy/read-state.ts`. */

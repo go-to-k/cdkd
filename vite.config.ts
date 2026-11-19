@@ -532,6 +532,16 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-update-wrap-coverage.ts --check',
         cache: false,
       },
+      // Issue #6611: every handled property of an SDK provider is read on its
+      // update() path or replaces, so a change cannot be dropped silently.
+      'gen:update-path-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-update-path-coverage.ts',
+        cache: false,
+      },
+      'audit:update-path-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-update-path-coverage.ts --check',
+        cache: false,
+      },
       // Re-captures the AWS CLI's removed-command table into
       // tests/fixtures/aws-cli-removed-commands.json (issue #1402). Needs a
       // locally installed AWS CLI v2, so it is deliberately NOT wired into CI:
@@ -680,6 +690,7 @@ export default defineConfig({
           'vp run gen:enrichment-coverage',
           'vp run gen:sdk-attr-coverage',
           'vp run gen:update-wrap-coverage',
+          'vp run gen:update-path-coverage',
           'vp run gen:nested-key-coverage',
           'vp run gen:getatt-attributes',
           // Not a matrix, but the same class of CI guard: a rebase can

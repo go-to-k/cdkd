@@ -53,7 +53,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['detachPartialPolicy', create, 'detachPartialPolicy', 5],
   ['update', update, 'update', 6],
   ['delete', del, 'deleteImpl', 5],
-  ['readCurrentState', readState, 'readCurrentState', 4],
+  ['readCurrentState', readState, 'readCurrentState', 5],
   ['decodePolicyDocument', readState, 'decodePolicyDocument', 1],
   ['import', readState, 'importImpl', 1],
 ];
