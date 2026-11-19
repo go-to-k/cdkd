@@ -546,7 +546,13 @@ deny_policy_verdict() {
   local rc=$?
   set -e
   case "${rc}" in
-    0 | 1 | 2) ;;
+    0 | 1) ;;
+    2)
+      # Another resource's comparison was incomplete; this step's verdict
+      # below still reads DriftDenyPolicy alone, but show why.
+      echo "[verify] NOTE step 6g: cdkd drift --json exited 2 (incomplete elsewhere):" >&2
+      cat "${STEP6G_JSON}" >&2
+      ;;
     *)
       echo "[verify] FAIL step 6g: cdkd drift --json exited ${rc}" >&2
       exit 1
