@@ -19,7 +19,8 @@
  * per top-level key.
  *
  * A type is listed only with a readback measured to add no key under the
- * property other than an omitted `Version` (go-to-k/cdkd#6624, the `drift-verbatim-readback` integ fixture).
+ * property other than an omitted `Version` (go-to-k/cdkd#6624, the
+ * `drift-verbatim-readback` integ fixture).
  * IAM and the Cloud Control-routed IAM inline policy types return the document
  * as submitted, key order aside. S3, SQS, SNS, KMS, Secrets Manager — and IAM's
  * role trust policy — add no key either, but return a single-OBJECT `Statement`
