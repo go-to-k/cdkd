@@ -65,10 +65,18 @@ const REGION = 'us-east-1';
 const MAPPED =
   'Network vpc-1 has some mapped public address(es). Please unmap those public address(es) before detaching the gateway.';
 
+/**
+ * AWS-shaped: the `$fault` / `$metadata` make the provider's wrap name the
+ * error by its class (`DependencyViolation`), which is what the outer
+ * classifiers match. Without them the wrap keeps AWS's wording, which carries
+ * no retryable needle, and the regression these tests pin cannot show.
+ */
 function dependencyViolation(): Error {
   return Object.assign(new Error(MAPPED), {
     name: 'DependencyViolation',
     Code: 'DependencyViolation',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 400 },
   });
 }
 
@@ -171,14 +179,16 @@ describe('destroy runner after an exhausted detach (go-to-k/cdkd#6592)', () => {
   }
 
   it('calls provider.delete once, not once per outer attempt', async () => {
+    mockSend.mockImplementation(() => Promise.reject(dependencyViolation()));
+    vi.useFakeTimers();
     const provider = new EC2Provider();
-    // A zero budget is exhausted at the first DependencyViolation, so each
-    // provider.delete is one helper run that gives up at once.
-    const providerDelete = vi.fn(() =>
-      (provider as unknown as Helper).withDependencyViolationRetry(
-        () => Promise.reject(dependencyViolation()),
-        { description: 'DetachInternetGateway Attach', totalBudgetMs: 0 }
-      )
+    // The helper's sleep moves the faked clock without firing any timer, so
+    // each provider.delete is one full 10-minute run that gives up.
+    (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+      vi.setSystemTime(Date.now() + ms);
+    };
+    const providerDelete = vi.fn((logicalId: string, physicalId: string, type: string) =>
+      provider.delete(logicalId, physicalId, type, {})
     );
     const ctx = {
       stateBackend: {
@@ -199,7 +209,6 @@ describe('destroy runner after an exhausted detach (go-to-k/cdkd#6592)', () => {
       stateBucket: 'test-bucket',
       skipConfirmation: true,
     };
-    vi.useFakeTimers();
 
     const pending = runDestroyForStack('TestStack', makeState(), ctx);
     // Lets the pre-fix loop's 5s / 10s / 20s backoffs elapse, so a
