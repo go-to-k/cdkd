@@ -264,6 +264,9 @@ export function reportMfaConfigurationOff(
  * - `KeyConfiguration` — a customer-managed key DOES reset to `AWS_OWNED_KEY`;
  *   `IssuerConfiguration` does NOT (2026-11-01, issue #2762). Both are
  *   writable in either direction on `UpdateUserPool`.
+ * - `DcrConfiguration` — does NOT reset when omitted, but CloudFormation
+ *   turns it off on removal, so cdkd sends `Disabled` (2026-11-20, PR #6630;
+ *   see `dcrConfigurationUpdate`).
  * - `DeletionProtection` — does NOT reset when omitted (2026-09-23, issue
  *   #2675): a pool created `ACTIVE` stayed `ACTIVE` through an
  *   `UpdateUserPool` omitting it, whose co-sent `AutoVerifiedAttributes`

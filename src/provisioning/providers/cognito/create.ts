@@ -22,6 +22,7 @@ import {
   type UserPoolTierType,
   type KeyConfigurationType,
   type IssuerConfigurationType,
+  type DcrConfigurationType,
   type CreateUserPoolCommandOutput,
   CreateUserPoolCommand,
   type UserPoolType,
@@ -333,6 +334,11 @@ export async function create(
       createParams.IssuerConfiguration = properties[
         'IssuerConfiguration'
       ] as IssuerConfigurationType;
+    }
+    // Truthy, not non-empty: AWS reads `{}` as dynamic client registration
+    // turned ON (measured, `dcrConfigurationUpdate` in update.ts).
+    if (properties['DcrConfiguration']) {
+      createParams.DcrConfiguration = properties['DcrConfiguration'] as DcrConfigurationType;
     }
 
     // Issue #2080: when an earlier attempt at this create ended ambiguous,

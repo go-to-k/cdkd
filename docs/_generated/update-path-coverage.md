@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **145**
-- Handled properties classified: **1541**
-- Read on the update path: **1126**
+- Handled properties classified: **1542**
+- Read on the update path: **1127**
 - Replacement: **397**
 - Allow-listed (does NOT block CI): **18**
 - Handled names outside the schema's writable properties (not classified): **13**
@@ -82,7 +82,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::CloudWatch::AnomalyDetector` | `CloudWatchAnomalyDetectorProvider` | Configuration | Dimensions, MetricCharacteristics, MetricMathAnomalyDetector, MetricName, Namespace, SingleMetricAnomalyDetector, Stat |
 | `AWS::CodeBuild::Project` | `CodeBuildProvider` | Artifacts, AutoRetryLimit, BadgeEnabled, BuildBatchConfig, Cache, ConcurrentBuildLimit, Description, EncryptionKey, Environment, FileSystemLocations, LogsConfig, QueuedTimeoutInMinutes, ResourceAccessRole, SecondaryArtifacts, SecondarySources, SecondarySourceVersions, ServiceRole, Source, SourceVersion, Tags, TimeoutInMinutes, Triggers, Visibility, VpcConfig | Name |
 | `AWS::CodeCommit::Repository` | `CodeCommitRepositoryProvider` | KmsKeyId, RepositoryDescription, RepositoryName, Tags, Triggers |  |
-| `AWS::Cognito::UserPool` | `CognitoUserPoolProvider` | AccountRecoverySetting, AdminCreateUserConfig, AliasAttributes, AutoVerifiedAttributes, DeletionProtection, DeviceConfiguration, EmailAuthenticationMessage, EmailAuthenticationSubject, EmailConfiguration, EmailVerificationMessage, EmailVerificationSubject, EnabledMfas, IssuerConfiguration, KeyConfiguration, LambdaConfig, MfaConfiguration, Policies, Schema, SmsAuthenticationMessage, SmsConfiguration, SmsVerificationMessage, UserAttributeUpdateSettings, UsernameAttributes, UsernameConfiguration, UserPoolAddOns, UserPoolName, UserPoolTags, UserPoolTier, VerificationMessageTemplate, WebAuthnFactorConfiguration, WebAuthnRelyingPartyID, WebAuthnUserVerification |  |
+| `AWS::Cognito::UserPool` | `CognitoUserPoolProvider` | AccountRecoverySetting, AdminCreateUserConfig, AliasAttributes, AutoVerifiedAttributes, DcrConfiguration, DeletionProtection, DeviceConfiguration, EmailAuthenticationMessage, EmailAuthenticationSubject, EmailConfiguration, EmailVerificationMessage, EmailVerificationSubject, EnabledMfas, IssuerConfiguration, KeyConfiguration, LambdaConfig, MfaConfiguration, Policies, Schema, SmsAuthenticationMessage, SmsConfiguration, SmsVerificationMessage, UserAttributeUpdateSettings, UsernameAttributes, UsernameConfiguration, UserPoolAddOns, UserPoolName, UserPoolTags, UserPoolTier, VerificationMessageTemplate, WebAuthnFactorConfiguration, WebAuthnRelyingPartyID, WebAuthnUserVerification |  |
 | `AWS::DLM::LifecyclePolicy` | `DLMLifecyclePolicyProvider` | CopyTags, CreateInterval, CrossRegionCopyTargets, DefaultPolicy, Description, Exclusions, ExecutionRoleArn, ExtendDeletion, PolicyDetails, RetainInterval, State, Tags |  |
 | `AWS::DocDB::DBCluster` | `DocDBProvider` | BackupRetentionPeriod, CopyTagsToSnapshot, DBClusterParameterGroupName, DeletionProtection, EnableCloudwatchLogsExports, EngineVersion, GlobalClusterIdentifier, ManageMasterUserPassword, MasterUserPassword, MasterUserSecretKmsKeyId, NetworkType, Port, PreferredBackupWindow, PreferredMaintenanceWindow, RotateMasterUserPassword, ServerlessV2ScalingConfiguration, StorageType, Tags, VpcSecurityGroupIds | AvailabilityZones, DBClusterIdentifier, DBSubnetGroupName, KmsKeyId, MasterUsername, SnapshotIdentifier, SourceDBClusterIdentifier, StorageEncrypted |
 | `AWS::DocDB::DBInstance` | `DocDBProvider` | AutoMinorVersionUpgrade, CACertificateIdentifier, CertificateRotationRestart, DBInstanceClass, EnablePerformanceInsights, PreferredMaintenanceWindow, Tags | AvailabilityZone, DBClusterIdentifier, DBInstanceIdentifier |

@@ -737,6 +737,13 @@ const COGNITO_FULL: Bag = {
     KmsKeyArn: `arn:aws:kms:us-east-1:${ACCOUNT}:key/k2`,
   },
   IssuerConfiguration: { Type: 'UPDATED' },
+  DcrConfiguration: {
+    EnableStatus: 'Enabled',
+    OpenDcrEnabled: true,
+    AuthenticatedGrantTypes: ['client_credentials'],
+    OpenDcrGrantTypes: ['code'],
+    AllowedScopes: ['openid', 'email'],
+  },
 };
 
 const COGNITO_VARIANTS = {
@@ -746,6 +753,8 @@ const COGNITO_VARIANTS = {
   WebAuthnFactorConfiguration: 'MULTI_FACTOR_WITH_USER_VERIFICATION',
   'KeyConfiguration.KeyType': 'AWS_OWNED_KEY',
   'IssuerConfiguration.Type': 'ORIGINAL',
+  'DcrConfiguration.EnableStatus': 'Disabled',
+  'DcrConfiguration.OpenDcrEnabled': false,
 };
 
 /**
@@ -812,6 +821,23 @@ const cognitoKept = (member: string): string =>
 const COGNITO_ISSUER_KEPT =
   `left in place on removal: UpdateUserPool keeps an omitted IssuerConfiguration and CloudFormation keeps it on the same edit (real CloudFormation A/B, #2762), so update() only warns (${COGNITO_SRC}shared.ts KEPT_ON_REMOVAL_MEMBERS, ${COGNITO_SRC}update.ts warnOnKeptRemovedMembers)`;
 
+/**
+ * A member dropped from a still-declared `DcrConfiguration`: the block goes
+ * whole from `next`, and `UpdateUserPool` REPLACES the live block with it, so
+ * the dropped member returns to its default (measured, PR #6630).
+ */
+function cognitoDcrMemberRemovals(): Record<string, string> {
+  const why = `the block is re-sent whole from next and UpdateUserPool replaces the live DcrConfiguration with it, so a dropped member returns to its default (measured, ${COGNITO_SRC}update.ts dcrConfigurationUpdate)`;
+  const out: Record<string, string> = {};
+  for (const [member, value] of Object.entries(COGNITO_FULL['DcrConfiguration'] as Bag)) {
+    out[`update-remove:DcrConfiguration.${member}`] = why;
+    if (Array.isArray(value)) {
+      value.forEach((_, i) => (out[`update-remove:DcrConfiguration.${member}.${i}`] = why));
+    }
+  }
+  return out;
+}
+
 const COGNITO_POLICIES_KEPT =
   `left in place on removal: UpdateUserPool keeps an omitted Policies sub-key and CloudFormation keeps it on the same edit (real CloudFormation A/B, #1979), so update() only warns (${COGNITO_SRC}create.ts toSdkUserPoolPolicies, ${COGNITO_SRC}update.ts warnOnUnremovablePoliciesSubKeys)`;
 
@@ -827,9 +853,13 @@ const USER_POOL_CASE: TypeCase = {
   physicalId: COGNITO_POOL_ID,
   createOnly: new Set([...createOnlyOf('AWS::Cognito::UserPool'), ...COGNITO_CREATE_TIME_ONLY]),
   wholeFromNext: {
-    keys: (key) => key !== 'UserPoolTags' && key !== 'MfaConfiguration' && key !== 'Schema',
+    keys: (key) =>
+      key !== 'UserPoolTags' &&
+      key !== 'MfaConfiguration' &&
+      key !== 'Schema' &&
+      key !== 'DcrConfiguration',
     reason:
-      `UpdateUserPool and SetUserPoolMfaConfig are built from the desired bag alone (${COGNITO_SRC}update.ts update, ${COGNITO_SRC}mfa-request.ts buildMfaConfigRequest); the previous side is read only to warn about a kept removal (${COGNITO_SRC}update.ts warnOnKeptRemovedMembers / warnOnUnremovablePoliciesSubKeys). So an omitted member is simply not sent. What AWS does on that omission is measured only for the members the provider's ledgers name (UpdateUserPool: AutoVerifiedAttributes, LambdaConfig, UserPoolAddOns, VerificationMessageTemplate, SmsAuthenticationMessage, DeviceConfiguration and AdminCreateUserConfig.AllowAdminCreateUserOnly reset, ${COGNITO_SRC}mfa-apply.ts readLiveMfaConfiguration, a DEVELOPER EmailConfiguration resets to COGNITO_DEFAULT, ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS, and a customer-managed KeyConfiguration resets to AWS_OWNED_KEY, which CloudFormation does on removal too, ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS; SetUserPoolMfaConfig: MfaConfiguration and WebAuthnConfiguration.FactorConfiguration, ${COGNITO_SRC}mfa-apply.ts readLiveMfaConfiguration), and a member CloudFormation keeps on removal is named in the bag's expectedSilent; for every other member (EnabledMfas, the WebAuthn relying party and verification, the email-OTP message and subject, AdminCreateUserConfig.InviteMessageTemplate / UnusedAccountValidityDays, the email / SMS verification messages, UserAttributeUpdateSettings: ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS) both the omission and CloudFormation's removal are unmeasured`,
+      `UpdateUserPool and SetUserPoolMfaConfig are built from the desired bag alone (${COGNITO_SRC}update.ts update, ${COGNITO_SRC}mfa-request.ts buildMfaConfigRequest); the previous side is read only to warn about a kept removal (${COGNITO_SRC}update.ts warnOnKeptRemovedMembers / warnOnUnremovablePoliciesSubKeys) and to turn a removed DcrConfiguration off, which CloudFormation does on removal while UpdateUserPool keeps an omitted one (${COGNITO_SRC}update.ts dcrConfigurationUpdate). So an omitted member is simply not sent. What AWS does on that omission is measured only for the members the provider's ledgers name (UpdateUserPool: AutoVerifiedAttributes, LambdaConfig, UserPoolAddOns, VerificationMessageTemplate, SmsAuthenticationMessage, DeviceConfiguration and AdminCreateUserConfig.AllowAdminCreateUserOnly reset, ${COGNITO_SRC}mfa-apply.ts readLiveMfaConfiguration, a DEVELOPER EmailConfiguration resets to COGNITO_DEFAULT, ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS, and a customer-managed KeyConfiguration resets to AWS_OWNED_KEY, which CloudFormation does on removal too, ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS; SetUserPoolMfaConfig: MfaConfiguration and WebAuthnConfiguration.FactorConfiguration, ${COGNITO_SRC}mfa-apply.ts readLiveMfaConfiguration), and a member CloudFormation keeps on removal is named in the bag's expectedSilent; for every other member (EnabledMfas, the WebAuthn relying party and verification, the email-OTP message and subject, AdminCreateUserConfig.InviteMessageTemplate / UnusedAccountValidityDays, the email / SMS verification messages, UserAttributeUpdateSettings: ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS) both the omission and CloudFormation's removal are unmeasured`,
   },
   exempt: {},
   targets: [
@@ -862,6 +892,7 @@ const USER_POOL_CASE: TypeCase = {
         'update-remove:Policies.SignInPolicy': COGNITO_POLICIES_KEPT,
         'update-remove:UserPoolName': COGNITO_NAME_KEPT,
         'update-remove:MfaConfiguration': COGNITO_MFA_WITH_FACTOR,
+        ...cognitoDcrMemberRemovals(),
         ...cognitoSchemaVarySilent(),
       },
       expectedRemovalThrows: cognitoSchemaThrows(),

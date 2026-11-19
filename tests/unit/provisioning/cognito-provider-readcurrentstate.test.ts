@@ -60,6 +60,22 @@ describe('KeyConfiguration / IssuerConfiguration drift (#2762)', () => {
   });
 });
 
+describe('DcrConfiguration drift (PR #6630)', () => {
+  it('the OpenDcrEnabled AWS fills in is no drift against a template-only baseline', () => {
+    const declared = { DcrConfiguration: { EnableStatus: 'Enabled' } };
+    const readback = { DcrConfiguration: { EnableStatus: 'Enabled', OpenDcrEnabled: false } };
+    expect(calculateResourceDrift(declared, readback)).toEqual([]);
+  });
+
+  it('a console switch-off is drift', () => {
+    const changes = calculateResourceDrift(
+      { DcrConfiguration: { EnableStatus: 'Enabled', OpenDcrEnabled: false } },
+      { DcrConfiguration: { EnableStatus: 'Disabled', OpenDcrEnabled: false } }
+    );
+    expect(changes.map((c) => c.path)).toEqual(['DcrConfiguration.EnableStatus']);
+  });
+});
+
 describe('CognitoUserPoolProvider.readCurrentState', () => {
   let provider: CognitoUserPoolProvider;
 
@@ -145,6 +161,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
           KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
         },
         IssuerConfiguration: { Type: 'UPDATED' },
+        DcrConfiguration: { EnableStatus: 'Disabled', OpenDcrEnabled: false },
       },
     });
     mockSend.mockResolvedValueOnce({
@@ -170,6 +187,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
     });
     expect(result['IssuerConfiguration']).toEqual({ Type: 'UPDATED' });
+    expect(result['DcrConfiguration']).toEqual({ EnableStatus: 'Disabled', OpenDcrEnabled: false });
     expect(result['EnabledMfas']).toEqual(['SMS_MFA', 'SOFTWARE_TOKEN_MFA', 'EMAIL_OTP']);
     expect(result['EmailAuthenticationMessage']).toBe('code {####}');
     expect(result['EmailAuthenticationSubject']).toBe('Your code');
@@ -337,6 +355,7 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
 
     // No `{}` placeholder for KeyConfiguration / IssuerConfiguration (#2762):
     // UpdateUserPool refuses an empty block, so a revert could not send one.
+    // Nor for DcrConfiguration (PR #6630): AWS reads `{}` as registration ON.
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
         'AccountRecoverySetting',

@@ -909,6 +909,47 @@ describe('CognitoUserPoolProvider', () => {
       });
     });
 
+    // PR #6630: dynamic client registration. UpdateUserPool keeps an omitted
+    // block, CloudFormation turns it off on removal, `{}` turns it ON.
+    describe('DcrConfiguration', () => {
+      const DCR = {
+        EnableStatus: 'Enabled',
+        OpenDcrEnabled: true,
+        AuthenticatedGrantTypes: ['client_credentials'],
+        AllowedScopes: ['openid'],
+      };
+      const updateInput = async (
+        properties: Record<string, unknown>,
+        previous: Record<string, unknown>
+      ): Promise<Record<string, unknown>> => {
+        mockSend.mockResolvedValueOnce({}).mockResolvedValueOnce({ UserPool: { Arn: 'arn' } });
+        await provider.update('Pool', 'us-east-1_dcr', 'AWS::Cognito::UserPool', properties, previous);
+        return mockSend.mock.calls[0]![0].input;
+      };
+
+      it('forwards the block to CreateUserPool', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_dcr', Arn: 'arn' } });
+        await provider.create('Pool', 'AWS::Cognito::UserPool', { DcrConfiguration: DCR });
+        expect(mockSend.mock.calls[0]![0].input.DcrConfiguration).toEqual(DCR);
+      });
+
+      it('forwards a declared block to UpdateUserPool, empty included', async () => {
+        expect((await updateInput({ DcrConfiguration: DCR }, {})).DcrConfiguration).toEqual(DCR);
+        mockSend.mockClear();
+        expect((await updateInput({ DcrConfiguration: {} }, { DcrConfiguration: DCR })).DcrConfiguration).toEqual({});
+      });
+
+      it('turns registration off when the template drops a declared block', async () => {
+        const input = await updateInput({ UserPoolName: 'p' }, { UserPoolName: 'p', DcrConfiguration: DCR });
+        expect(input.DcrConfiguration).toEqual({ EnableStatus: 'Disabled' });
+      });
+
+      it('sends nothing when neither side declares it', async () => {
+        const input = await updateInput({ UserPoolName: 'p' }, { UserPoolName: 'q' });
+        expect(input).not.toHaveProperty('DcrConfiguration');
+      });
+    });
+
     describe('UserPoolTier', () => {
       it('rides on CreateUserPool', async () => {
         mockSend.mockResolvedValueOnce({

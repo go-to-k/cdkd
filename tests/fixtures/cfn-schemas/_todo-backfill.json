@@ -27,9 +27,6 @@
       "HooksConfiguration",
       "ResourceConfigurations"
     ],
-    "AWS::Cognito::UserPool": [
-      "DcrConfiguration"
-    ],
     "AWS::Lambda::Function": [
       "AcceleratorConfig"
     ],

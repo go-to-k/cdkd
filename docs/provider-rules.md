@@ -1641,6 +1641,9 @@ Checklist when writing or reviewing an `update()`:
   disabled. Measured the same way (issue #2762): removal KEEPS
   `IssuerConfiguration`, which warns too, and RESETS a customer-managed
   `KeyConfiguration` to `AWS_OWNED_KEY`, so omitting it is the removal.
+  Removal of `DcrConfiguration` turns registration OFF in CloudFormation
+  (`EnableStatus: Disabled`) while an omitting `UpdateUserPool` keeps it, so
+  `update()` sends that `Disabled` block itself (PR #6630).
   `AWS::AutoScaling::AutoScalingGroup` is the per-type split (real
   CloudFormation A/B, issue #5004): removal RESETS `InstanceMaintenancePolicy`,
   `MaxInstanceLifetime`, `CapacityReservationSpecification`,
