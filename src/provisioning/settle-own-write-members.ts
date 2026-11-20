@@ -225,6 +225,50 @@ export function inlinePoliciesMember(
   };
 }
 
+/**
+ * The drift heal's STRICT test for a string list (go-to-k/cdkd#6609): the
+ * live list holds exactly the declared entries, as a set. A superset (an
+ * out-of-band attach) or a subset (an out-of-band detach) is not.
+ */
+export function stringListIsDeclared(live: unknown, declared: readonly string[]): boolean {
+  if (!Array.isArray(live) || !live.every((entry) => typeof entry === 'string')) return false;
+  const have = new Set(live as string[]);
+  const want = new Set(declared);
+  return have.size === want.size && [...want].every((entry) => have.has(entry));
+}
+
+/**
+ * The drift heal's STRICT test for inline `Policies`: the live policy names
+ * are exactly the declared ones, each with its declared document (IAM
+ * spellings folded, as the settle compares).
+ */
+export function inlinePoliciesAreDeclared(
+  live: unknown,
+  declared: readonly DeclaredInlinePolicy[]
+): boolean {
+  if (!Array.isArray(live)) return false;
+  const names = (live as unknown[]).map((entry) =>
+    typeof entry === 'object' && entry !== null
+      ? (entry as Record<string, unknown>)['PolicyName']
+      : undefined
+  );
+  if (!names.every((name): name is string => typeof name === 'string')) return false;
+  if (
+    !stringListIsDeclared(
+      names,
+      declared.map((policy) => policy.PolicyName)
+    )
+  )
+    return false;
+  return declared.every((policy) =>
+    (live as Array<Record<string, unknown>>).some(
+      (entry) =>
+        entry['PolicyName'] === policy.PolicyName &&
+        policyDocumentMatchesDeclared(entry['PolicyDocument'], policy.PolicyDocument)
+    )
+  );
+}
+
 /** The member re-reads {@link principalOwnWriteMembers} settles with, each the member's own call. */
 export interface PrincipalMemberReads {
   boundary?: () => Promise<MemberRead<unknown>>;

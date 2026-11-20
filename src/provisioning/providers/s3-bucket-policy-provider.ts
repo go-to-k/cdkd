@@ -833,20 +833,16 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    *     `S3CanonicalUserId`, preferring the sibling OAI resource's already-read
    *     state attributes (zero AWS call — the OAI's `S3CanonicalUserId` is a
    *     readOnly attribute cdkd already resolved at deploy time) and falling
-   *     back to `GetCloudFrontOriginAccessIdentity` only when the OAI is not a
-   *     same-stack sibling (e.g. an imported / external OAI). This is the SAFE
-   *     path: a genuinely-different OAI resolves to a different canonical id, so
-   *     real drift is still detected.
+   *     back to `GetCloudFrontOriginAccessIdentity` for a non-sibling OAI. A
+   *     different OAI resolves to a different canonical id, so it still drifts.
    *   - `{ AWS: <bare-IAM-unique-id> }` -> the transient post-PutBucketPolicy
    *     rendering, which carries no recoverable link to the OAI. Canonicalize
    *     it only by matching the corresponding template statement (same Effect /
    *     Action / Resource) carrying a `{ CanonicalUser }` principal. A user
    *     cannot author a bare IAM unique id as a bucket-policy principal, so
    *     adopting the template form here only fires for AWS's transient
-   *     rendering. NOTE: once the principal settles to the ARN form (seconds
-   *     to minutes), a genuine out-of-band OAI repoint IS detected via the ARN
-   *     path above; the only masking window is a repoint observed during the
-   *     transient bare-id phase, which the next drift run (ARN form) reports.
+   *     rendering; a repoint seen only during that transient phase is
+   *     reported by the next drift run, once the ARN form shows.
    * Statements whose principal is not a single-string `AWS` OAI form (e.g. a
    * wildcard, a service principal, a normal role ARN, or an `AWS` ARRAY of
    * principals) are left untouched — skipping is safe (it can only leave a

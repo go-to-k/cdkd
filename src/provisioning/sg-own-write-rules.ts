@@ -81,6 +81,40 @@ export function declaredSgRulesRead(
 }
 
 /**
+ * The drift heal's STRICT test (go-to-k/cdkd#6609): the live rules are
+ * exactly the declared ones, as a set of settle keys, whatever their order.
+ * A superset or a subset is not, nor is any list with a rule declared by
+ * `SourceSecurityGroupName` alone (its key cannot be matched).
+ */
+export function sgRulesAreDeclared(
+  live: unknown,
+  declared: unknown,
+  direction: SgDirection
+): boolean {
+  if (!Array.isArray(live) || !Array.isArray(declared)) return false;
+  const keys = (rules: unknown[]): Set<string> | undefined => {
+    const out = new Set<string>();
+    for (const rule of rules) {
+      const key =
+        typeof rule === 'object' && rule !== null
+          ? sgSettleRuleKey(rule as Record<string, unknown>, direction)
+          : undefined;
+      if (key === undefined) return undefined;
+      out.add(key);
+    }
+    return out;
+  };
+  const have = keys(live as unknown[]);
+  const want = keys(declared as unknown[]);
+  return (
+    have !== undefined &&
+    want !== undefined &&
+    have.size === want.size &&
+    [...want].every((key) => have.has(key))
+  );
+}
+
+/**
  * A declared rule in the shape `DescribeSecurityGroups` reads it back: no
  * ports for all-traffic (`-1`), numeric ports otherwise, and no empty value
  * (a `Description: ''`). `undefined` for a rule the settle key cannot match.

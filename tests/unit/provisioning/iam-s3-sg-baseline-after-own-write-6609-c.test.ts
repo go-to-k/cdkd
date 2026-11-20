@@ -61,6 +61,7 @@ import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js
 import type { ReadCurrentStateContext } from '../../../src/types/resource.js';
 import { ResourceNotFoundException } from '@aws-sdk/client-eventbridge';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
 
 const AFTER: ReadCurrentStateContext = { afterOwnWrite: true };
 const ACCT = '111111111111';
@@ -1071,5 +1072,221 @@ describe('review round 1 (#6629)', () => {
       unorderedPaths: provider.getDriftUnorderedPaths('AWS::IAM::User'),
     });
     expect(drifts).toEqual([]);
+  });
+});
+
+// ─── The drift heal (fourth rule of preFixBaselineUncomparedDriftKeys) ─────
+describe('heal: a member is skipped only while the live value is exactly the declared one', () => {
+  // A baseline frozen before the write showed: the heal ignores what it holds.
+  const STALE = { Stale: true };
+  const heal = (type: string, properties: Record<string, unknown>, aws: Record<string, unknown>) =>
+    preFixBaselineUncomparedDriftKeys(type, STALE, properties, aws);
+  const DOC_C = {
+    Version: '2012-10-17',
+    Statement: [{ Action: 's3:ListBucket', Effect: 'Allow', Resource: 'arn:aws:s3:::c' }],
+  };
+  // The same document as IAM stores it: a one-element Action list folds to its scalar.
+  const DOC_STORED = {
+    Version: '2012-10-17',
+    Statement: [{ Action: ['s3:GetObject'], Effect: 'Allow', Resource: 'arn:aws:s3:::b/*' }],
+  };
+  const pol = (PolicyName: string, PolicyDocument: unknown) => ({ PolicyName, PolicyDocument });
+
+  interface HealCase {
+    type: string;
+    key: string;
+    declared: unknown;
+    /** Live values equal to the declared one (spelling and order aside). */
+    same: unknown[];
+    /** Live values that are not: superset, subset, swapped entry, other document. */
+    differ: Array<[string, unknown]>;
+  }
+  const list = (a: string, b: string, c: string): Omit<HealCase, 'type' | 'key'> => ({
+    declared: [a, b],
+    same: [[a, b], [b, a]],
+    differ: [
+      ['superset', [a, b, c]],
+      ['subset', [a]],
+      ['swapped entry', [a, c]],
+      ['empty', []],
+    ],
+  });
+  const inline: Omit<HealCase, 'type' | 'key'> = {
+    declared: [pol('p1', DOC), pol('p2', DOC_C)],
+    same: [
+      [pol('p1', DOC_STORED), pol('p2', DOC_C)],
+      [pol('p2', DOC_C), pol('p1', DOC)],
+    ],
+    differ: [
+      ['superset', [pol('p1', DOC), pol('p2', DOC_C), pol('p3', DOC)]],
+      ['subset', [pol('p1', DOC)]],
+      ['swapped entry', [pol('p1', DOC), pol('p3', DOC_C)]],
+      ['other document', [pol('p1', DOC), pol('p2', OLD_DOC)]],
+    ],
+  };
+  const doc: Omit<HealCase, 'type' | 'key'> = {
+    declared: DOC,
+    same: [DOC_STORED, JSON.stringify(DOC)],
+    differ: [
+      ['other document', OLD_DOC],
+      ['extra statement', { ...DOC, Statement: [...DOC.Statement, ...DOC_C.Statement] }],
+      ['none', undefined],
+    ],
+  };
+  const boundary: Omit<HealCase, 'type' | 'key'> = {
+    declared: BOUNDARY,
+    same: [BOUNDARY],
+    differ: [
+      ['other boundary', `arn:aws:iam::${ACCT}:policy/other`],
+      ['none set', ''],
+    ],
+  };
+  const sgIn = (port: number, extra: Record<string, unknown> = {}) => ({
+    CidrIp: '10.0.0.0/8',
+    FromPort: port,
+    IpProtocol: 'tcp',
+    ToPort: port,
+    ...extra,
+  });
+  const cases: HealCase[] = [
+    { type: 'AWS::IAM::Role', key: 'AssumeRolePolicyDocument', ...doc },
+    { type: 'AWS::IAM::Role', key: 'PermissionsBoundary', ...boundary },
+    { type: 'AWS::IAM::Role', key: 'ManagedPolicyArns', ...list(ARN_A, ARN_B, ARN_OLD) },
+    { type: 'AWS::IAM::Role', key: 'Policies', ...inline },
+    { type: 'AWS::IAM::User', key: 'PermissionsBoundary', ...boundary },
+    { type: 'AWS::IAM::User', key: 'ManagedPolicyArns', ...list(ARN_A, ARN_B, ARN_OLD) },
+    { type: 'AWS::IAM::User', key: 'Groups', ...list('g1', 'g2', 'g3') },
+    { type: 'AWS::IAM::User', key: 'Policies', ...inline },
+    { type: 'AWS::IAM::Group', key: 'ManagedPolicyArns', ...list(ARN_A, ARN_B, ARN_OLD) },
+    { type: 'AWS::IAM::Group', key: 'Policies', ...inline },
+    { type: 'AWS::IAM::ManagedPolicy', key: 'PolicyDocument', ...doc },
+    { type: 'AWS::IAM::ManagedPolicy', key: 'Roles', ...list('r1', 'r2', 'r3') },
+    { type: 'AWS::IAM::ManagedPolicy', key: 'Users', ...list('u1', 'u2', 'u3') },
+    { type: 'AWS::IAM::ManagedPolicy', key: 'Groups', ...list('g1', 'g2', 'g3') },
+    { type: 'AWS::IAM::InstanceProfile', key: 'Roles', ...list('r1', 'r2', 'r3') },
+    { type: 'AWS::S3::BucketPolicy', key: 'PolicyDocument', ...doc },
+    { type: 'AWS::Events::EventBus', key: 'Policy', ...doc },
+    {
+      type: 'AWS::EC2::SecurityGroup',
+      key: 'SecurityGroupIngress',
+      // Declared as CFn accepts it; read back as EC2 answers (numeric ports, peer owner id).
+      declared: [
+        { ...sgIn(443), FromPort: '443', ToPort: '443', Description: '' },
+        { IpProtocol: '6', FromPort: 80, ToPort: 80, SourceSecurityGroupId: 'sg-peer' },
+      ],
+      same: [
+        [
+          sgIn(443),
+          {
+            IpProtocol: 'tcp',
+            FromPort: 80,
+            ToPort: 80,
+            SourceSecurityGroupId: 'sg-peer',
+            SourceSecurityGroupOwnerId: ACCT,
+          },
+        ],
+        [
+          { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupId: 'sg-peer' },
+          sgIn(443),
+        ],
+      ],
+      differ: [
+        [
+          'superset',
+          [
+            sgIn(443),
+            { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupId: 'sg-peer' },
+            sgIn(22),
+          ],
+        ],
+        ['subset', [sgIn(443)]],
+        [
+          'swapped entry',
+          [sgIn(443), { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupId: 'sg-x' }],
+        ],
+        [
+          'other description',
+          [
+            sgIn(443, { Description: 'changed' }),
+            { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupId: 'sg-peer' },
+          ],
+        ],
+      ],
+    },
+    {
+      type: 'AWS::EC2::SecurityGroup',
+      key: 'SecurityGroupEgress',
+      declared: [{ ...EGRESS, FromPort: 0, ToPort: 65535 }],
+      same: [[EGRESS]],
+      differ: [
+        ['superset', [EGRESS, { CidrIp: '10.0.0.0/8', IpProtocol: 'tcp', FromPort: 1, ToPort: 1 }]],
+        ['subset', []],
+        ['swapped entry', [{ ...EGRESS, CidrIp: '10.0.0.0/8' }]],
+      ],
+    },
+  ];
+
+  describe.each(cases)('$type $key', (c) => {
+    const properties = { [c.key]: c.declared };
+    it.each(c.same.map((v, i) => [i, v] as const))('live #%s equal to the declared value: skipped', (_i, live) => {
+      expect(heal(c.type, properties, { [c.key]: live })).toEqual([c.key]);
+    });
+    it.each(c.differ)('live %s: compared', (_label, live) => {
+      expect(heal(c.type, properties, { [c.key]: live })).toEqual([]);
+    });
+    it('undeclared: compared', () => {
+      expect(heal(c.type, {}, { [c.key]: c.same[0] })).toEqual([]);
+    });
+  });
+
+  it('each member of one resource heals on its own', () => {
+    const properties = { AssumeRolePolicyDocument: DOC, ManagedPolicyArns: [ARN_A] };
+    expect(
+      heal('AWS::IAM::Role', properties, {
+        AssumeRolePolicyDocument: DOC_STORED,
+        ManagedPolicyArns: [ARN_A, ARN_OLD],
+      })
+    ).toEqual(['AssumeRolePolicyDocument']);
+  });
+
+  it('a rule declared by SourceSecurityGroupName alone keeps its list compared', () => {
+    const declared = [
+      sgIn(443),
+      { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupName: 'peer' },
+    ];
+    const live = [
+      sgIn(443),
+      { IpProtocol: 'tcp', FromPort: 80, ToPort: 80, SourceSecurityGroupId: 'sg-peer' },
+    ];
+    expect(
+      heal('AWS::EC2::SecurityGroup', { SecurityGroupIngress: declared }, { SecurityGroupIngress: live })
+    ).toEqual([]);
+  });
+
+  it('a security group read through the provider heals against its declaration', async () => {
+    answer('DescribeSecurityGroupsCommand', sgAnswer([ingressPermission], [cdkEgressPermission]));
+    const properties = { SecurityGroupIngress: [INGRESS], SecurityGroupEgress: [EGRESS] };
+    const live = bag(await readSg(properties));
+    expect(heal('AWS::EC2::SecurityGroup', properties, live)).toEqual([
+      'SecurityGroupIngress',
+      'SecurityGroupEgress',
+    ]);
+    answer(
+      'DescribeSecurityGroupsCommand',
+      sgAnswer([ingressPermission, oldPermission], [cdkEgressPermission])
+    );
+    const added = bag(await readSg(properties));
+    expect(heal('AWS::EC2::SecurityGroup', properties, added)).toEqual(['SecurityGroupEgress']);
+  });
+
+  it('residual: a managed policy whose live Roles hold a sibling attacher is compared', () => {
+    expect(
+      heal('AWS::IAM::ManagedPolicy', { Roles: ['declared'] }, { Roles: ['declared', 'attacher'] })
+    ).toEqual([]);
+  });
+
+  it('residual: an event bus Policy holding a sibling EventBusPolicy statement is compared', () => {
+    const sibling = { ...DOC, Statement: [...DOC.Statement, ...DOC_C.Statement] };
+    expect(heal('AWS::Events::EventBus', { Policy: DOC }, { Policy: sibling })).toEqual([]);
   });
 });
