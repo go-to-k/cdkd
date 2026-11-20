@@ -168,6 +168,35 @@ export function collectPrincipalForms(value: unknown): {
 }
 
 /**
+ * Whether a `Principal` / `NotPrincipal` position anywhere in the value holds
+ * an IAM unique id, a policy document carried as a JSON string included
+ * (go-to-k/cdkd#6680). Such a value is AWS's rendering of a principal, which
+ * only {@link canonicalizePrincipalUniqueIds} may prove equal to an ARN.
+ */
+export function holdsPrincipalUniqueId(value: unknown): boolean {
+  if (typeof value === 'string') {
+    if (!value.trimStart().startsWith('{')) return false;
+    try {
+      return holdsPrincipalUniqueId(JSON.parse(value) as unknown);
+    } catch {
+      return false;
+    }
+  }
+  if (collectPrincipalForms(value).uniqueIds.size > 0) return true;
+  if (Array.isArray(value)) return value.some((element) => holdsEmbeddedUniqueId(element));
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(holdsEmbeddedUniqueId);
+}
+
+/** A nested JSON-string document, or a container that may hold one. */
+function holdsEmbeddedUniqueId(value: unknown): boolean {
+  return (
+    (typeof value === 'string' || (typeof value === 'object' && value !== null)) &&
+    holdsPrincipalUniqueId(value)
+  );
+}
+
+/**
  * Replace every principal string that is a KNOWN unique id with the ARN it was
  * proven to stand for. Only `Principal` / `NotPrincipal` positions are touched
  * — a unique id appearing in, say, a `Condition` value is left alone, where the
