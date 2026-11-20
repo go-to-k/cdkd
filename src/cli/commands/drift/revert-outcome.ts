@@ -36,8 +36,17 @@ import { getSettledWriteOnlyPropertyPaths } from '../../../provisioning/write-on
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
-import { siblingOwnedRevertDesired } from '../../../provisioning/sibling-owned-members.js';
+import {
+  siblingOwnedRevertDesired,
+  undeclaredGrantSiblingMembers,
+  stripSiblingOwnedParentMembers,
+} from '../../../provisioning/sibling-owned-members.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
+import {
+  undeclaredGrantDriftKeys,
+  withUndeclaredGrantBaseline,
+  withoutUndeclaredNoBoundary,
+} from '../../../analyzer/drift-undeclared-grants.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
@@ -396,6 +405,42 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     // the desired bag the same way, then takes its LIVE members back from the
     // readback (the previous side), which a Cloud Control read never filtered.
     const siblingContext = buildReadCurrentStateContext(report.state, outcome.logicalId);
+    // go-to-k/cdkd#6627: an IAM principal's undeclared grant key goes back as
+    // "none" plus the recorded members AWS still holds, the baseline detection
+    // compared, so the provider removes each other live member one by one and
+    // adds none. Projected against the readback WITHOUT the siblings'
+    // members, as detection is: a Cloud Control read is not filtered, and a
+    // recorded copy of a sibling's member (an `AWS::IAM::Policy` under an
+    // older document) must not ride along beside the live one. The sibling
+    // pass below then puts each live sibling member back.
+    const grantKeys = undeclaredGrantDriftKeys(outcome.resourceType, stateResource.properties);
+    const grantLive =
+      grantKeys.length === 0
+        ? outcome.awsProperties
+        : stripSiblingOwnedParentMembers(
+            outcome.resourceType,
+            stateResource.physicalId,
+            desiredProperties,
+            outcome.awsProperties,
+            stateResource.properties,
+            siblingContext
+          ).aws;
+    const noBoundary = withoutUndeclaredNoBoundary(
+      withUndeclaredGrantBaseline(
+        desiredProperties,
+        grantLive,
+        grantKeys,
+        undeclaredGrantSiblingMembers(
+          outcome.resourceType,
+          stateResource.physicalId,
+          grantKeys,
+          stateResource.properties,
+          siblingContext
+        )
+      ),
+      grantKeys
+    );
+    desiredProperties = noBoundary.desired;
     desiredProperties = siblingOwnedRevertDesired(
       outcome.resourceType,
       stateResource.physicalId,
@@ -426,15 +471,19 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
         ? {
             preserveUntemplated: true,
             verbatimKeys: verbatimEchoDriftKeys(outcome.resourceType),
+            absentMeansDefault: noBoundary.absent,
           }
         : {
             // go-to-k/cdkd#5399: the keys detection compared while
             // the observed baseline lacked them.
-            absentMeansDefault: driftAbsentMeansDefaultKeys(
-              provider,
-              outcome.resourceType,
-              stateResource.properties
-            ),
+            absentMeansDefault: [
+              ...driftAbsentMeansDefaultKeys(
+                provider,
+                outcome.resourceType,
+                stateResource.properties
+              ),
+              ...noBoundary.absent,
+            ],
           }
     );
     // Issue #3595: nothing is reverted at an uncertified-baseline

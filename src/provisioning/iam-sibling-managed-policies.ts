@@ -65,6 +65,48 @@ export function collectManagedPolicyArnsAttachedBySiblings(
 }
 
 /**
+ * go-to-k/cdkd#6627: the ARNs of every sibling `AWS::IAM::ManagedPolicy` whose
+ * template DECLARES the list a principal of `resourceType` is attached through
+ * (`Roles` / `Users` / `Groups`). Such a policy's own drift compares that list,
+ * so an attachment of it to this principal, the policy's list naming the
+ * principal or not, is that resource's to report and revert: the principal's
+ * undeclared `ManagedPolicyArns` does not report it too, or one out-of-band
+ * attach would be reverted twice (the second detach finds nothing to detach).
+ * Empty without a context or for another type.
+ *
+ * KNOWN LIMIT (go-to-k/cdkd#6697): the policy's own comparison can still fail
+ * in that run (a refused baseline, a failed read, an unresolved token); the
+ * attachment is then reported on neither resource for that run.
+ */
+export function managedPoliciesDeclaringAttachments(
+  resourceType: string,
+  context: ReadCurrentStateContext | undefined
+): string[] {
+  const field = ATTACHMENT_FIELD[resourceType];
+  if (field === undefined) return [];
+  const out: string[] = [];
+  for (const sibling of Object.values(context?.siblings ?? {})) {
+    if (sibling.resourceType !== 'AWS::IAM::ManagedPolicy') continue;
+    const arn = sibling.physicalId;
+    if (typeof arn !== 'string' || arn === '') continue;
+    // Only a list the policy's own drift can compare and revert: names as
+    // plain strings. A stored expression or mask (`{{resolve:...}}`, `***`)
+    // makes that policy's update ADD-only, and an unresolved intrinsic is no
+    // name, so then the principal keeps reporting the attachment.
+    const list = Object.prototype.hasOwnProperty.call(sibling.properties, field)
+      ? sibling.properties[field]
+      : undefined;
+    if (
+      Array.isArray(list) &&
+      list.every((m) => typeof m === 'string' && m !== '' && !isStoredExpression(m))
+    ) {
+      out.push(arn);
+    }
+  }
+  return out;
+}
+
+/**
  * `arns` without the sibling-attached ones the principal's own `properties`
  * (its template) do not declare in `ManagedPolicyArns`. Order is kept.
  */

@@ -46,6 +46,7 @@ import type { ReadCurrentStateContext } from '../types/resource.js';
 import { hasOwnKey } from '../utils/own-keys.js';
 import { injectiveKey } from '../state/record-keys.js';
 import {
+  managedPoliciesDeclaringAttachments,
   previousMaySurvive,
   stripSiblingOwnedMembers,
   type TemplatePolicies,
@@ -302,6 +303,64 @@ export function stripSiblingOwnedParentMembers(
       baseline: withoutOwned(out.baseline, row, owned, properties, out.aws),
       aws: withoutOwned(out.aws, row, owned, properties),
     };
+  }
+  return out;
+}
+
+/**
+ * go-to-k/cdkd#6627: the members SIBLING records of the stack write under
+ * top-level `key` of this resource, as each sibling recorded them (rows with a
+ * `memberValue`; today an IAM principal's inline `Policies`), minus those the
+ * resource's own template declares. Lets a comparison that treats an
+ * undeclared list as "none" read a sibling's member whose live document was
+ * changed out of band as a CHANGE of that member, which `--revert` restores,
+ * rather than as an addition it would delete.
+ */
+export function siblingRecordedMembers(
+  resourceType: string,
+  physicalId: string | undefined,
+  key: string,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): unknown[] {
+  const out: unknown[] = [];
+  for (const [row, owned] of ownedByRow(resourceType, physicalId, context)) {
+    if (row.key !== key || row.memberValue === undefined) continue;
+    for (const [member, n] of effectiveDrop(row, owned, properties)) {
+      const value = row.memberValue(member);
+      for (let i = 0; i < n && value !== undefined; i++) out.push(value);
+    }
+  }
+  return out;
+}
+
+/**
+ * go-to-k/cdkd#6627: per undeclared grant key of an IAM principal, the members
+ * the stack's OTHER records own there, which its comparison and revert treat as
+ * recorded: a sibling's inline policy as the sibling recorded it
+ * ({@link siblingRecordedMembers}), and the ARN of a sibling managed policy
+ * whose own template declares the attachment list
+ * (`managedPoliciesDeclaringAttachments`).
+ */
+export function undeclaredGrantSiblingMembers(
+  resourceType: string,
+  physicalId: string | undefined,
+  grantKeys: readonly string[],
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): Record<string, unknown[]> {
+  const out: Record<string, unknown[]> = {};
+  if (grantKeys.includes('Policies')) {
+    out['Policies'] = siblingRecordedMembers(
+      resourceType,
+      physicalId,
+      'Policies',
+      properties,
+      context
+    );
+  }
+  if (grantKeys.includes('ManagedPolicyArns')) {
+    out['ManagedPolicyArns'] = managedPoliciesDeclaringAttachments(resourceType, context);
   }
   return out;
 }
