@@ -1390,7 +1390,15 @@ if [ "${GT6609_DRIFTED}" != "[\"${GT6609_LID}\"]" ]; then
   printf '%s\n' "${GT6609_DRIFT}" >&2
   exit 1
 fi
-if ! jq -e --arg id "${GT6609_LID}" '[.[].drifted[] | select(.logicalId == $id) | .changes[].path | select(test("Tags"))] | length > 0' \
+# A replica's Tags drift is reported on the `Replicas` path (the replica list is
+# compared as a whole), so accept that path when the replicas' Tags differ
+# between the baseline and the live read, or any path naming Tags.
+if ! jq -e --arg id "${GT6609_LID}" '
+  [.[].drifted[] | select(.logicalId == $id) | .changes[]
+    | select((.path | test("Tags"))
+      or ((.path | test("^Replicas")) and
+          (([.stateValue[]? | .Tags] | tojson) != ([.awsValue[]? | .Tags] | tojson))))]
+  | length > 0' \
   <<<"${GT6609_DRIFT}" >/dev/null; then
   echo "[verify] FAIL (#6609): drift on ${GT6609_LID} does not name a Tags path" >&2
   printf '%s\n' "${GT6609_DRIFT}" >&2
