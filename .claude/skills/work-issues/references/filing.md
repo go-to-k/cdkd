@@ -17,7 +17,9 @@ probe still to run (#6532), "a different shape", a scope-creep trip, or a file s
 path — each is a SEPARATE PR, still `now`. Lines an open PR this session did not open
 holds (triage.md §2) ARE (a), and are not this PR's to edit: before a sweep
 touches a file the claim did not name, ask LIVE, then read the hit's
-`gh pr diff` (#4273):
+`gh pr diff` (#4273), and post the claim addendum naming it BEFORE the edit,
+not at hand-back: a peer opening later reads only the claim (#6673's unnamed
+`route53/shared.ts`, PR'd by a peer 40 min on):
 
 ```bash
 # <file> is the REPO-RELATIVE path (exact match). `files` stops at 100 per PR,
