@@ -74,9 +74,22 @@ queue_created() {
 
 # Whether the topic lists a subscription delivering to the queue ARN.
 topic_lists_queue() {
-  aws sqs list-queues --region "${REGION}" --queue-name-prefix "${STACK}" >/dev/null
-  aws sns list-subscriptions-by-topic --topic-arn "$1" --region "${REGION}" \
-    --query "length(Subscriptions[?Endpoint=='$2'])" --output text
+  local rows
+  rows=$(aws sns list-subscriptions-by-topic --topic-arn "$1" --region "${REGION}" \
+    --query "Subscriptions[?Endpoint=='$2'].SubscriptionArn" --output text) || return 1
+  printf '%s\n' "${rows}" | grep -c '^arn:' || true
+}
+
+# A queue deleted moments ago can still answer get-queue-url for about a
+# minute: poll until it reports not-found, then assert it.
+wait_queue_gone() { # usage: wait_queue_gone "<leak description>" <queue-name>
+  local i
+  for i in $(seq 1 18); do
+    gone_probe aws sqs get-queue-url --queue-name "$2" --region "${REGION}" && return 0
+    sleep 5
+  done
+  echo "FAIL: $1" >&2
+  exit 1
 }
 
 # Receive one message whose body is $2 from queue $1, waiting up to ~60 s.
@@ -131,10 +144,13 @@ echo "==> Phase 1: Deploy"
 env -u CDKD_TEST_PHASE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 QUEUE_KEY=$(state_json | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SQS::Queue") | .key')
+TOPIC_KEY=$(state_json | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SNS::Topic") | .key')
 POLICY_ID=$(state_json | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SQS::QueuePolicy") | .value.physicalId')
+TOPIC_POLICY_ID=$(state_json | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::SNS::TopicPolicy") | .value.physicalId')
 # PREMISE: the queue policy's record holds the queue URL, the shape that took
 # the immediate delete before the fix.
 [ "${POLICY_ID}" = "${QUEUE_A_URL}" ] || { echo "FAIL: premise: the QueuePolicy is recorded as '${POLICY_ID}', not the queue URL; this run would not reach issue #6712" >&2; exit 1; }
+[ "${TOPIC_POLICY_ID}" = "${TOPIC_A_ARN}" ] || { echo "FAIL: premise: the TopicPolicy is recorded as '${TOPIC_POLICY_ID}', not the topic ARN; this run would not reach issue #6712 for the topic" >&2; exit 1; }
 CREATED0=$(queue_created "${QUEUE_A_URL}")
 [ "$(topic_lists_queue "${TOPIC_A_ARN}" "${QUEUE_A_ARN}")" = "1" ] || { echo "FAIL: phase 1: topic ${TOPIC_A_ARN} does not list the queue's subscription" >&2; exit 1; }
 aws sqs send-message --queue-url "${QUEUE_A_URL}" --region "${REGION}" --message-body "kept-before-6712" >/dev/null
@@ -152,11 +168,14 @@ grep -q 'Breaker: ParameterPatternMismatchException\|Failed to create SSM parame
   exit 1
 }
 # PREMISE: both replacements ran before the failure.
-grep -q "Old ${QUEUE_KEY} (${QUEUE_A_URL}) is deleted after the rest of the deploy succeeds" <<<"${FAIL_OUT}" || {
-  grep -q "Old ${QUEUE_KEY}" <<<"${FAIL_OUT}" && { echo "FAIL: the queue's old copy was handled by another branch than the cleanup-phase deferral (issue #6712)" >&2; exit 1; }
-  echo "FAIL: premise: no replacement line for ${QUEUE_KEY} in the phase 2 output (wording drift?)" >&2
+for pair in "${QUEUE_KEY}|${QUEUE_A_URL}" "${TOPIC_KEY}|${TOPIC_A_ARN}"; do
+  key="${pair%%|*}"; old="${pair#*|}"
+  grep -qF "Old ${key} (${old}) is deleted after the rest of the deploy succeeds" <<<"${FAIL_OUT}" && continue
+  # Sentinel: a replacement line for the key that is not the deferral.
+  grep -qF "Replacing ${key} " <<<"${FAIL_OUT}" && { echo "FAIL: ${key}'s old copy was replaced but not deferred to the cleanup phase (issue #6712)" >&2; exit 1; }
+  echo "FAIL: premise: ${key} was not replaced before the failure in the phase 2 output (wording drift?)" >&2
   exit 1
-}
+done
 
 echo "==> Phase 3: THE ARM -- the old queue and topic survived whole"
 CREATED1=$(queue_created "${QUEUE_A_URL}")
@@ -170,14 +189,12 @@ STATE_Q=$(state_json | jq -r --arg k "${QUEUE_KEY}" '.resources[$k].physicalId')
 # The new copies were deleted by the rollback.
 assert_gone "the new topic ${TOPIC_B_ARN} survived the rollback" \
   aws sns get-topic-attributes --topic-arn "${TOPIC_B_ARN}" --region "${REGION}"
-assert_gone "the new queue ${QUEUE_B_NAME} survived the rollback" \
-  aws sqs get-queue-url --queue-name "${QUEUE_B_NAME}" --region "${REGION}"
+wait_queue_gone "the new queue ${QUEUE_B_NAME} survived the rollback" "${QUEUE_B_NAME}"
 echo "    OK: same queue (created ${CREATED1}), message kept, subscription delivering, new copies deleted"
 
 echo "==> Phase 4: Destroy + gone-probes"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_gone "queue ${QUEUE_A_URL} survived destroy" \
-  aws sqs get-queue-url --queue-name "${STACK}-q-a" --region "${REGION}"
+wait_queue_gone "queue ${QUEUE_A_URL} survived destroy" "${STACK}-q-a"
 assert_gone "topic ${TOPIC_A_ARN} survived destroy" \
   aws sns get-topic-attributes --topic-arn "${TOPIC_A_ARN}" --region "${REGION}"
 assert_gone "SSM parameter ${BREAKER_NAME} exists" \

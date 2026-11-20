@@ -57,7 +57,9 @@ delete. Two cases wait in memory only, and are never written to state:
 
 A deploy killed before its end (SIGKILL, a power loss) leaves such an old
 resource in AWS, untracked; a deploy that fails or is stopped with Ctrl-C says
-so in its output.
+so in its output. After a failed deploy run with `--no-rollback`, `cdkd rollback`
+adopts the old resource again; a later `cdkd deploy` does not track it, so
+delete it by hand if you deploy forward instead.
 
 Under `UpdateReplacePolicy: Snapshot`, that later delete takes the promised
 snapshot first:
