@@ -225,6 +225,9 @@ STACK="CdkdDynamoDBGlobalTableExample"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/dynamodb-globaltable"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+# shellcheck source=../revert-identity.sh
+. "${REPO_ROOT}/tests/integration/revert-identity.sh"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
@@ -1372,8 +1375,6 @@ if [ "${GT6609_BASE}" != "${GT6609_LIVE}" ]; then
 fi
 echo "[verify] step 12g-6609 ok: baseline Tags = live Tags = ${GT6609_BASE}"
 
-GT6609_CREATED="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
-  --query 'Table.CreationDateTime' --output text)"
 aws dynamodb untag-resource --resource-arn "${TABLE_ARN}" --region "${REGION}" --tag-keys UpdateTest >/dev/null
 gt6609_await_live "${GT6609_HAS_PROBE} | not" "after the out-of-band untag"
 set +e
@@ -1404,15 +1405,21 @@ if ! jq -e --arg id "${GT6609_LID}" '
   printf '%s\n' "${GT6609_DRIFT}" >&2
   exit 1
 fi
-${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
-gt6609_await_live "${GT6609_HAS_PROBE}" "after drift --revert"
-GT6609_ARN_AFTER="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.TableArn' --output text)"
-GT6609_CREATED_AFTER="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" --query 'Table.CreationDateTime' --output text)"
-GT6609_PHYS_AFTER="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg id "${GT6609_LID}" '.resources[$id].physicalId')"
-if [ "${GT6609_ARN_AFTER}" != "${TABLE_ARN}" ] || [ "${GT6609_CREATED_AFTER}" != "${GT6609_CREATED}" ] || [ "${GT6609_PHYS_AFTER}" != "${TABLE_NAME}" ]; then
-  echo "[verify] FAIL (#6609): --revert replaced the table (ARN ${TABLE_ARN} -> ${GT6609_ARN_AFTER}, CreationDateTime ${GT6609_CREATED} -> ${GT6609_CREATED_AFTER}, physicalId ${TABLE_NAME} -> ${GT6609_PHYS_AFTER})" >&2
+# The global table's identity: the state physical id plus the TableId of every
+# replica region the record lists (revert-identity.sh's GlobalTable probe).
+GT6609_DIR="$(mktemp -d)"
+revert_identity_snapshot "${GT6609_DIR}/ids-before" "${STACK}" "${GT6609_LID}" || exit 1
+GT6609_RC=0
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes \
+  >"${GT6609_DIR}/revert.log" 2>&1 || GT6609_RC=$?
+revert_identity_verify "${GT6609_DIR}/ids-before" "${GT6609_DIR}/ids-after" 1 "${GT6609_DIR}/revert.log" || exit 1
+if [ "${GT6609_RC}" -ne 0 ]; then
+  echo "[verify] FAIL (#6609): cdkd drift --revert exited ${GT6609_RC}" >&2
+  cat "${GT6609_DIR}/revert.log" >&2
   exit 1
 fi
+rm -rf "${GT6609_DIR}"
+gt6609_await_live "${GT6609_HAS_PROBE}" "after drift --revert"
 set +e
 GT6609_AFTER="$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)"
 set -e

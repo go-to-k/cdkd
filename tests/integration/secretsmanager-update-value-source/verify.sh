@@ -19,8 +19,8 @@
 #      both got a second version and AWSCURRENT moved.
 #      Also (#6609) the observed baseline Tags of both secrets must hold the
 #      added tag. 2r: untag the literal secret out of band; drift must report
-#      Tags, `drift --revert` must restore the tag on the same secret (ARN,
-#      state physicalId, AWSCURRENT kept), and a follow-up drift is clean.
+#      Tags, `drift --revert` must restore the tag on the same secret
+#      (revert-identity.sh's proof, AWSCURRENT kept), and a follow-up drift is clean.
 #   3. UPDATE (CDKD_TEST_UPDATE=regen), the positive control: the
 #      `GenerateSecretString` block changes (PasswordLength 32 -> 40) and the
 #      literal changes. Assert BOTH values moved — a new AWSCURRENT, the old
@@ -79,6 +79,9 @@ cd "$(dirname "$0")"
 # the state bucket is versioned, so teardown must sweep object VERSIONS (issue
 # #2096) — `aws s3 rm` alone leaves every version readable.
 . ../s3-versions.sh
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdSecretsmanagerUpdateValueSourceExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -278,9 +281,6 @@ echo "    the observed baseline Tags of both secrets hold the tag this deploy ad
 
 # --- Phase 2r: an out-of-band tag change, drift --revert restores it in place ---
 echo "==> Phase 2r: untag the literal secret out of band; drift reports Tags, drift --revert restores them (#6609)"
-LIT_ARN_2="$(secret_field "${LITERAL_NAME}" ARN)"
-assert_nonempty "Phase 2r literal ARN" "${LIT_ARN_2}"
-LIT_PHYS_2="$(state_json | jq -r --arg id "${LIT_ID}" '.resources[$id].physicalId')"
 aws secretsmanager untag-resource --secret-id "${LITERAL_NAME}" --region "${REGION}" \
   --tag-keys cdkd-update-probe >/dev/null
 await_live_user_tags "${LITERAL_NAME}" '[]' "after the out-of-band untag"
@@ -299,11 +299,15 @@ case "${P2R_PATHS}" in
   *Tags*) echo "    drift reports the out-of-band untag (${P2R_PATHS})" ;;
   *) echo "FAIL: Phase 2r: drift did not report Tags on ${LIT_ID} (paths: ${P2R_PATHS})" >&2; printf '%s\n' "${P2R_DRIFT}" >&2; exit 1 ;;
 esac
+P2R_DIR="$(mktemp -d)"
+revert_identity_snapshot "${P2R_DIR}/ids-before" "${STACK}" "${LIT_ID}" || exit 1
+P2R_RC=0
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes || { echo "FAIL: Phase 2r: cdkd drift --revert failed" >&2; exit 1; }
+  --revert --yes >"${P2R_DIR}/revert.log" 2>&1 || P2R_RC=$?
+revert_identity_verify "${P2R_DIR}/ids-before" "${P2R_DIR}/ids-after" 1 "${P2R_DIR}/revert.log" || exit 1
+[ "${P2R_RC}" -eq 0 ] || { echo "FAIL: Phase 2r: cdkd drift --revert exited ${P2R_RC}" >&2; cat "${P2R_DIR}/revert.log" >&2; exit 1; }
+rm -rf "${P2R_DIR}"
 await_live_user_tags "${LITERAL_NAME}" "${PROBE_TAGS}" "after drift --revert"
-assert_eq "Phase 2r literal ARN (--revert must not replace the secret)" "${LIT_ARN_2}" "$(secret_field "${LITERAL_NAME}" ARN)"
-assert_eq "Phase 2r literal state physicalId" "${LIT_PHYS_2}" "$(state_json | jq -r --arg id "${LIT_ID}" '.resources[$id].physicalId')"
 # The value did not move either (Phase 3 also requires AWSPREVIOUS to be LIT_V2).
 assert_eq "Phase 2r literal AWSCURRENT" "${LIT_V2}" "$(current_version_id "${LITERAL_NAME}")"
 set +e
@@ -317,7 +321,7 @@ if ! jq -e --arg id "${LIT_ID}" '
   printf '%s\n' "${P2R_AFTER}" >&2
   exit 1
 fi
-echo "    --revert restored the tag on the same secret (ARN, physicalId and AWSCURRENT kept); drift clean"
+echo "    --revert restored the tag on the same secret (identity proven, AWSCURRENT kept); drift clean"
 
 # --- Phase 3: source CHANGED — the value MUST move (positive control) --------
 echo "==> Phase 3: re-deploy with GenerateSecretString changed (PasswordLength 40) and a new literal"

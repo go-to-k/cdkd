@@ -19,8 +19,9 @@ for seconds after `TagResource`, and before the fix the deploy recorded that
 answer, so the run requires the observed baseline `Tags` to equal the new
 value. It then tags the table out of band, requires `cdkd drift --json` to
 report `Tags`, runs `cdkd drift --revert --yes`, and requires the declared tag
-live again on the same table (ARN, `CreationDateTime` and the state physical
-id unchanged) and a clean follow-up drift. It then destroys the stack and checks that the table and
+live again on the same table (`revert-identity.sh`'s identity proof, plus
+`CreationDateTime` and the state physical id unchanged since before the tag
+change) and a clean follow-up drift. It then destroys the stack and checks that the table and
 state are gone.
 
 Build the repository first. The maintainer runs this fixture via `/run-integ

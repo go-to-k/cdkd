@@ -37,6 +37,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 STACK="CdkdDynamoDBTablePolicyBaselineExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -226,16 +229,21 @@ case "${REVERT_PATHS}" in
   *Tags*) echo "    OK: drift reports the out-of-band tag (${REVERT_PATHS})" ;;
   *) echo "FAIL: drift did not report Tags on the table (paths: ${REVERT_PATHS})" >&2; printf '%s\n' "${REVERT_DRIFT}" >&2; exit 1 ;;
 esac
+REVERT_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_DIR}/ids-before" "${STACK}" "$(table_id)" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes || { echo "FAIL: cdkd drift --revert failed" >&2; exit 1; }
+  --revert --yes >"${REVERT_DIR}/revert.log" 2>&1 || REVERT_RC=$?
+revert_identity_verify "${REVERT_DIR}/ids-before" "${REVERT_DIR}/ids-after" 1 "${REVERT_DIR}/revert.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC}" >&2; cat "${REVERT_DIR}/revert.log" >&2; exit 1; }
+rm -rf "${REVERT_DIR}"
 await_live_tags "${TAGS_V2}" "after drift --revert"
-ARN_AFTER=$(aws dynamodb describe-table --region "${REGION}" --table-name "${TABLE_NAME}" --query 'Table.TableArn' --output text)
-[ "${ARN_AFTER}" = "${TABLE_ARN}" ] || { echo "FAIL: the table ARN changed ${TABLE_ARN} -> ${ARN_AFTER}" >&2; exit 1; }
+# The identity proof covers the revert; these also cover the tag-change deploy.
 CREATED_AFTER=$(table_created)
-[ "${CREATED_AFTER}" = "${CREATED_BEFORE}" ] || { echo "FAIL: CreationDateTime ${CREATED_BEFORE} -> ${CREATED_AFTER}: --revert replaced the table" >&2; exit 1; }
+[ "${CREATED_AFTER}" = "${CREATED_BEFORE}" ] || { echo "FAIL: CreationDateTime ${CREATED_BEFORE} -> ${CREATED_AFTER}: the tag change or --revert replaced the table" >&2; exit 1; }
 PHYS_AFTER=$(state_json | jq -r --arg id "$(table_id)" '.resources[$id].physicalId')
 [ "${PHYS_AFTER}" = "${PHYS_BEFORE}" ] || { echo "FAIL: state physicalId ${PHYS_BEFORE} -> ${PHYS_AFTER}" >&2; exit 1; }
-echo "    OK: --revert restored the tag on the same table (ARN, CreationDateTime and physicalId kept)"
+echo "    OK: --revert restored the tag on the same table (identity proven, CreationDateTime and physicalId kept since before the tag change)"
 check_drift "drift --revert"
 
 echo "==> Destroy and verify resources and state are gone"
