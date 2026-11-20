@@ -164,6 +164,9 @@ assert_gone_eventually() { # usage: assert_gone_eventually "<desc>" aws s3api he
 }
 
 cd "$(dirname "$0")"
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
 
 STACK="CdkdS3LifecycleExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -211,6 +214,10 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  if [ -n "${REVERT_DIR:-}" ]; then
+    rm -f "${REVERT_DIR}"/revert-ids-2r-before "${REVERT_DIR}"/revert-ids-2r-after "${REVERT_DIR}"/revert-2r.log
+    rmdir "${REVERT_DIR}" 2>/dev/null
+  fi
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -1871,8 +1878,19 @@ case "${P2R_PATHS}" in
 esac
 echo "    drift reports the out-of-band lifecycle (${P2R_PATHS})"
 
+# The bucket is a no-id row (its CreationDate can move on a policy edit); the
+# CreationDate / marker-version check below is this phase's identity proof.
+REVERT_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2r-before" "${STACK}" "${P2R_LOGICAL}" || exit 1
+P2R_REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes || p2r_fail "FAIL phase 2r: cdkd drift --revert failed"
+  --revert --yes >"${REVERT_DIR}/revert-2r.log" 2>&1 || P2R_REVERT_RC=$?
+cat "${REVERT_DIR}/revert-2r.log"
+[ "${P2R_REVERT_RC}" -eq 0 ] || p2r_fail "FAIL phase 2r: cdkd drift --revert failed (rc=${P2R_REVERT_RC})"
+# DepArmReplaceBucket: a logical id of this stack that carries the needle.
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-2r.log" ignore=DepArmReplaceBucket || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2r-after" "${STACK}" "${P2R_LOGICAL}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2r-before" "${REVERT_DIR}/revert-ids-2r-after" 1 || exit 1
 p2r_await_live rules "after drift --revert"
 P2R_EXP="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --query "Rules[?ID=='archive'].Expiration.Days | [0]" --output text)"

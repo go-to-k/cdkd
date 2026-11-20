@@ -74,7 +74,8 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 INFRA_LOGICAL="Infra"
 INFRA_NAME="${STACK}-infra"
 DRIFT_OUT="${TMPDIR:-/tmp}/cdkd-6569-drift.$$.log"
-REVERT_PFX="${TMPDIR:-/tmp}/cdkd-6639-revert.$$"
+REVERT_DIR="$(mktemp -d)"
+REVERT_PFX="${REVERT_DIR}/revert"
 
 CLEANED_UP=0
 PRE_RUN=0
@@ -85,7 +86,11 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DRIFT_OUT}" "${REVERT_PFX}".*
+  rm -f "${DRIFT_OUT}"
+  if [ -n "${REVERT_DIR:-}" ]; then
+    rm -f "${REVERT_DIR}"/revert.*
+    rmdir "${REVERT_DIR}" 2>/dev/null
+  fi
   # `state destroy` throws when there is no state, as before any run and after a
   # PASS, so its failure means something only for a state that exists. Anything
   # but a clean not-found counts as existing: keeping a record costs nothing.

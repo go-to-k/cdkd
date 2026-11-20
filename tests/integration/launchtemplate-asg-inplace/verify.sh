@@ -593,7 +593,7 @@ if ! node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_B
 fi
 cat "${DRIFT_ERR}" >>"${REVERT_DIR}/revert-1.log"
 cat "${REVERT_DIR}/revert-1.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" ignore=ReplaceUnhealthy || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" Asg || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
 wait_enabled_metrics "GroupDesiredCapacity GroupMinSize" "Phase 3 (after drift --revert, issue #4013)"

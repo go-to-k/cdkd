@@ -497,6 +497,52 @@ describe('revert_output_assert_no_replacement', () => {
     expect(check('').status).toBe(1);
   });
 
+  describe('ignore=<literal>: a fixture name carrying the needle', () => {
+    const out = [
+      'CdkdRecreateParentChildPermissionExample (us-east-1)',
+      '  ✗ CdkdRecreateParentChildPermissionExample/ChildPermission (AWS::Lambda::Permission): could not revert: a drift revert never replaces a resource',
+      '  ✓ CdkdRecreateParentChildPermissionExample/Asg (AWS::AutoScaling::AutoScalingGroup): SuspendedProcesses [ReplaceUnhealthy]',
+      '',
+    ].join('\n');
+
+    it('FAILS a correct refused revert whose stack name carries the needle when nothing is ignored', () => {
+      const r = check(out, 'expect-refusal');
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('CdkdRecreateParentChildPermissionExample (us-east-1)');
+    });
+
+    it('passes it once the stack name and the property name are ignored', () => {
+      const r = check(
+        out,
+        'expect-refusal ignore=CdkdRecreateParentChildPermissionExample ignore=ReplaceUnhealthy'
+      );
+      expect(r.stderr).toBe('');
+      expect(r.status).toBe(0);
+    });
+
+    it('still FAILS a replacement line beside an ignored name', () => {
+      const r = check(
+        `${out}Replacing CdkdRecreateParentChildPermissionExample/Other1\n`,
+        'expect-refusal ignore=CdkdRecreateParentChildPermissionExample ignore=ReplaceUnhealthy'
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('Replacing <ignored>/Other1');
+    });
+
+    it('ignores the literal only, never as a pattern', () => {
+      const r = check('the Re.create step\nRecreate\n', 'ignore=Re.create');
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('Recreate');
+      expect(r.stderr).not.toContain('Re.create');
+    });
+
+    it('FAILS an empty ignore=', () => {
+      const r = check('ok\n', 'ignore=');
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('unknown option');
+    });
+  });
+
   it('FAILS on an unknown option', () => {
     const r = check('ok\n', 'expect-refusals');
     expect(r.status).toBe(1);

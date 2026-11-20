@@ -228,7 +228,7 @@ set -e
 printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
 [ "${REVERT_RC}" -eq 2 ] || { echo "FAIL: phase 3b: cdkd drift --revert exited ${REVERT_RC}, want 2 (the permission refused)" >&2; exit 1; }
 printf '%s\n' "${REVERT_OUT}" >"${REVERT_DIR}/revert-1.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" expect-refusal || exit 1
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" expect-refusal ignore="${STACK}" || exit 1
 REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}" | grep -E 'ChildPermission[^ ]* \(AWS::Lambda::Permission\): could not revert' || true)"
 [ -n "${REFUSAL}" ] || { echo "FAIL: phase 3b: no 'could not revert' line for ChildPermission" >&2; exit 1; }
 grep -q 'a drift revert never replaces a resource' <<<"${REFUSAL}" || {

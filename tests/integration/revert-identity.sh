@@ -51,7 +51,7 @@
 #   (> 0) rows, no row has an empty field or a no-probe marker, and the two
 #   files are identical row for row.
 #
-# revert_output_assert_no_replacement <log-file> [expect-refusal]
+# revert_output_assert_no_replacement <log-file> [expect-refusal] [ignore=<literal>]...
 #   Returns 1 when cdkd's revert output (ANSI stripped) reports a replacement:
 #   any line matching `replac|re-?creat` (case-insensitive), aws-cdk-lib's own
 #   synth WARNING lines and the IAM providers' "keeps its name" line aside.
@@ -61,6 +61,9 @@
 #   drifted, and the check fails rather than pass on nothing. The provider-
 #   REPLACED backstop line (src/cli/commands/drift/revert-apply.ts) FAILs in
 #   both modes.
+#   Each ignore=<literal> (a stack name, logical id or property name of the
+#   fixture's own that contains the needle) is removed from the output first.
+#   Re-check a fixture's names against the needle when wiring it.
 #
 # AWS IDENTITY CLASSES (the probe table)
 #   unique   an AWS-assigned value a delete + create always changes: an IAM
@@ -368,16 +371,29 @@ _REVERT_IDENTITY_REFUSAL_RE='never replaces|cannot be (reverted|updated) in plac
 _REVERT_IDENTITY_KEEPS_NAME_RE='is not reverted — the (role|policy) .* keeps its name'
 
 revert_output_assert_no_replacement() {
-  local log="${1:-}" mode="${2:-}" plain hits backstop refusals
+  local log="${1:-}" mode="" arg lit plain hits backstop refusals
+  local -a ignores=()
   if [ -z "${log}" ] || [ ! -s "${log}" ]; then
     echo "FAIL: revert_output_assert_no_replacement: revert log '${log}' is missing or empty" >&2
     return 1
   fi
-  case "${mode}" in
-    '' | expect-refusal) ;;
-    *) echo "FAIL: revert_output_assert_no_replacement: unknown option '${mode}'" >&2; return 1 ;;
-  esac
+  shift
+  for arg in "$@"; do
+    case "${arg}" in
+      expect-refusal) mode=expect-refusal ;;
+      ignore=?*) ignores+=("${arg#ignore=}") ;;
+      *) echo "FAIL: revert_output_assert_no_replacement: unknown option '${arg}'" >&2; return 1 ;;
+    esac
+  done
   plain="$(sed $'s/\x1b\\[[0-9;]*m//g' "${log}")" || return 1
+  # A fixture's own identifier that carries the needle (a stack name such as
+  # `CdkdRecreate...`, a property such as `ReplaceUnhealthy`) is cut out
+  # literally before matching, so only cdkd's wording is judged.
+  if [ "${#ignores[@]}" -gt 0 ]; then
+    for lit in "${ignores[@]}"; do
+      plain="$(REVERT_IDENTITY_LIT="${lit}" perl -pe 's/\Q$ENV{REVERT_IDENTITY_LIT}\E/<ignored>/g' <<<"${plain}")" || return 1
+    done
+  fi
   backstop="$(grep -E 'the provider REPLACED the resource' <<<"${plain}" || true)"
   if [ -n "${backstop}" ]; then
     echo "FAIL: cdkd's revert backstop reports a provider REPLACED a resource (go-to-k/cdkd#6638):" >&2
