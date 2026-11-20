@@ -14,9 +14,11 @@ import { displaySafe } from '../../utils/display-safe.js';
 import { withGuardDutyDetectorReadBackOps } from '../guardduty-detector-patch.js';
 import { withListenerRuleConditionOps } from '../elbv2-listener-rule-patch.js';
 import {
+  CC_READ_BACK_EMPTY_KEYS,
   hasCcReadBackEmptyKeys,
   withCcReadBackEmptyKeyRemovals,
 } from '../cc-read-back-empty-keys.js';
+import { withDeclaredKeysResent } from '../cc-declared-key-resend.js';
 import {
   apiGatewayV2DefinitionObject,
   isApiGatewayV2Import,
@@ -26,6 +28,7 @@ import {
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import {
+  getSettledDeclaredResendExclusions,
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
 } from '../write-only-properties.js';
@@ -134,6 +137,9 @@ export async function updateInIdLogScope(
     // already decided this is no change, and an op there asks Cloud Control
     // to update what it cannot (after a rotation, to a value the resource
     // does not have): take the desired value as the previous one.
+    // Keys this update deliberately leaves out of the patch, which the #6676
+    // re-send below must not put back.
+    const leftOut = new Set<string>();
     for (const key of Object.keys(cleanPreviousProperties)) {
       if (!Object.prototype.hasOwnProperty.call(cleanProperties, key)) continue;
       const previous = cleanPreviousProperties[key];
@@ -149,6 +155,7 @@ export async function updateInIdLogScope(
         })
       ) {
         cleanPreviousProperties[key] = desired;
+        leftOut.add(key);
       }
     }
 
@@ -165,7 +172,10 @@ export async function updateInIdLogScope(
         context,
         mask: maskerOrIdentity(context?.maskSecrets),
       })) === 'shifted';
-    if (shifted) cleanPreviousProperties['FunctionVersion'] = cleanProperties['FunctionVersion'];
+    if (shifted) {
+      cleanPreviousProperties['FunctionVersion'] = cleanProperties['FunctionVersion'];
+      leftOut.add('FunctionVersion');
+    }
     // CodeDeploy wrote the alias, so an empty patch did send something.
     const sentNothing = shifted ? {} : { sentNothing: true as const };
 
@@ -329,6 +339,23 @@ export async function updateInIdLogScope(
         return { physicalId, wasReplaced: false, sentNothing: true };
       }
     }
+
+    // go-to-k/cdkd#6676: every other declared key goes as declared, so the
+    // read model's spelling of an untouched key never reaches the update API.
+    // Last, so the steps above never see (or read the live model for) these
+    // ops; the #6569 keys stay with that step, and a key left out above
+    // (#4275, a CodeDeploy-shifted `FunctionVersion`) stays out.
+    const resendExclusions = getSettledDeclaredResendExclusions(resourceType);
+    patch = withDeclaredKeysResent(
+      patch,
+      cleanProperties,
+      resendExclusions &&
+        new Set([
+          ...resendExclusions,
+          ...leftOut,
+          ...(hasCcReadBackEmptyKeys(resourceType) ? CC_READ_BACK_EMPTY_KEYS[resourceType]! : []),
+        ])
+    );
 
     // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
     // patch value can be a resolved secret (a Cloud-Control-routed

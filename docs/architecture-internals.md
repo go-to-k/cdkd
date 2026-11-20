@@ -455,6 +455,26 @@ previous side and sends no op (issue #4416). If `DescribeType` is
 unavailable (missing permission, throttling), cdkd warns and falls back to
 the minimal patch.
 
+### Declared keys go as declared
+
+Because Cloud Control applies the patch on top of the model its read handler
+returns, a key the patch does not touch reaches the update API in the read
+handler's spelling, and some services refuse that spelling (an ELBv2 listener
+rule's conditions read back as both `Values` and `PathPatternConfig`). So when
+an update changes anything, every other top-level key the template declares is
+added to the patch with its declared value, as CloudFormation hands its update
+handler the template's model (issue #6676). Left out:
+
+| Key | Why |
+| --- | --- |
+| Holds a create-only, read-only or write-only path, at any depth | Each has its own handling above |
+| Left out of the patch on purpose (an unchanged secret-derived create-only value, a `FunctionVersion` CodeDeploy shifted) | Re-sending it would undo that decision |
+| Not declared by the template | Never touched; a measured few are removed (#6569) |
+
+The exclusions come from the same `DescribeType` response as the write-only
+lookup, so no call is added. When that lookup failed or returned no schema,
+nothing is re-sent.
+
 ## Asset storage
 
 ### cdkd-owned asset storage and the template rewrite

@@ -121,7 +121,8 @@ describe('CloudControlProvider create-path DesiredState log redaction (GHSA sibl
       .map((c) => String(c[0]))
       .find((m) => m.includes('patch operations for MaskedPatchRes'));
     expect(patchLog).toBe(
-      'Generated 1 patch operations for MaskedPatchRes: [{"op":"replace","path":"/***"}]'
+      // `PublicId` is re-sent as declared (go-to-k/cdkd#6676); the secret key stays masked.
+      'Generated 2 patch operations for MaskedPatchRes: [{"op":"replace","path":"/***"},{"op":"add","path":"/PublicId"}]'
     );
   });
 });

@@ -76,6 +76,13 @@ const settledUnreadableCreateOnlyPaths = new Map<string, ReadonlyArray<readonly 
 const settledWriteOnlyPaths = new Map<string, ReadonlyArray<readonly string[]>>();
 
 /**
+ * Per settled success, the top-level keys holding a create-only (also
+ * conditionally), read-only or write-only path at any depth, read from the
+ * same DescribeType schema, for {@link getSettledDeclaredResendExclusions}.
+ */
+const settledDeclaredResendExclusions = new Map<string, ReadonlySet<string>>();
+
+/**
  * Clear the per-type cache. Test-only helper.
  */
 export function clearWriteOnlyPropertiesCache(): void {
@@ -83,6 +90,23 @@ export function clearWriteOnlyPropertiesCache(): void {
   settledWriteOnlyProperties.clear();
   settledUnreadableCreateOnlyPaths.clear();
   settledWriteOnlyPaths.clear();
+  settledDeclaredResendExclusions.clear();
+}
+
+/**
+ * The top-level keys a Cloud Control update must NOT re-send as declared
+ * (go-to-k/cdkd#6676): each holds a create-only, read-only or write-only path,
+ * at the top or nested, and keeps its own handling (#4416, #6294, #6553, #809).
+ * `undefined` when the schema {@link getTopLevelWriteOnlyProperties} fetched is
+ * not settled (a failed lookup, a response without a schema, or a type with no
+ * registry schema): the caller
+ * then re-sends nothing. Adds no `DescribeType` call; call it after that lookup
+ * resolved.
+ */
+export function getSettledDeclaredResendExclusions(
+  resourceType: string
+): ReadonlySet<string> | undefined {
+  return settledDeclaredResendExclusions.get(resourceType);
 }
 
 /**
@@ -186,6 +210,7 @@ async function fetchTopLevelWriteOnlyProperties(
   const result = new Set<string>();
   const paths: string[][] = [];
   const unreadableCreateOnlyPaths: string[][] = [];
+  const resendExclusions = new Set<string>();
   // A response without a Schema (e.g. a still-registering / publisher type)
   // carries no writeOnlyProperties to extract; treat it as "none" without a
   // warning — it is a successful, cacheable lookup, not a failure.
@@ -193,7 +218,21 @@ async function fetchTopLevelWriteOnlyProperties(
     const parsed = parseRegistrySchema(resourceType, response.Schema) as {
       writeOnlyProperties?: unknown;
       createOnlyProperties?: unknown;
+      conditionalCreateOnlyProperties?: unknown;
+      readOnlyProperties?: unknown;
     };
+    for (const list of [
+      parsed.writeOnlyProperties,
+      parsed.createOnlyProperties,
+      parsed.conditionalCreateOnlyProperties,
+      parsed.readOnlyProperties,
+    ]) {
+      if (!Array.isArray(list)) continue;
+      for (const pointer of list) {
+        const match = typeof pointer === 'string' ? /^\/properties\/([^/]+)/.exec(pointer) : null;
+        if (match?.[1]) resendExclusions.add(unescapeJsonPointerSegment(match[1]));
+      }
+    }
     const writeOnly = parsed.writeOnlyProperties;
     if (Array.isArray(writeOnly)) {
       for (const path of writeOnly) {
@@ -227,6 +266,8 @@ async function fetchTopLevelWriteOnlyProperties(
 
   settledUnreadableCreateOnlyPaths.set(resourceType, unreadableCreateOnlyPaths);
   settledWriteOnlyPaths.set(resourceType, paths);
+  // No schema: the create-only keys are not known, so nothing is re-sent.
+  if (response.Schema) settledDeclaredResendExclusions.set(resourceType, resendExclusions);
   logger.debug(
     `Resolved ${result.size} top-level write-only properties for ${resourceType}` +
       (result.size > 0 ? `: ${[...result].join(', ')}` : '')

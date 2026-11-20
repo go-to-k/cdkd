@@ -54,6 +54,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 const mockWriteOnlyLookup = vi.fn(() => Promise.resolve(new Set<string>()));
 vi.mock('../../../src/provisioning/write-only-properties.js', () => ({
   getTopLevelWriteOnlyProperties: () => mockWriteOnlyLookup(),
+  getSettledDeclaredResendExclusions: () => undefined,
 }));
 
 vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({

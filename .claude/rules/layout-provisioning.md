@@ -90,6 +90,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **guardduty-detector-patch.ts** (#4910), **apigwv2-body-import-patch.ts** (#5260), **cc-read-back-empty-keys.ts** (#6569), **elbv2-listener-rule-patch.ts** (#6663) - CC update patch fixes; `cc-read-back-empty-keys.ts` reads only a listed type live.
 
+- **cc-declared-key-resend.ts** - The LAST patch step (#6676): every other declared top-level key is `add`ed as declared, minus `getSettledDeclaredResendExclusions` (a key holding a create-only, read-only or write-only path at any depth, from the write-only lookup's own `DescribeType`; `undefined` re-sends nothing) and the keys `update()` left out on purpose. Placed after the gap carry so it never triggers a live-model read.
+
 - **delete-gone-wait.ts** - The wait after an accepted delete whose resource holds its NAME while deleting (Kinesis, Firehose, #3872; DynamoDB `Table`, #5514; RDS DBProxy, endpoint, #6522). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, record kept) — never on a first read alone.
 
 - **unsupported-types.ts** + **.generated.ts** - Pre-flight unsupported-type rejection. The generated half ships the Tier 3 set (`NON_PROVISIONABLE`), codegen'd from the provider-coverage JSON. `--allow-unsupported-types` routes named types through CC. Hand-written `SDK_PROVIDER_NON_PROVISIONABLE_TYPES` lists the REGISTERED `NON_PROVISIONABLE` types the audit drops from Tier 3; the CC auto-route reads both, per TYPE, via `hasNoCloudControlHandlers` (#3871).

@@ -843,6 +843,7 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     mockCloudFormationSend.mockResolvedValue({
       Schema: JSON.stringify({
         createOnlyProperties: [
+          '/properties/Name',
           '/properties/SourceParameters/KinesisStreamParameters/StartingPosition',
         ],
         writeOnlyProperties: ['/properties/SourceParameters'],
@@ -1004,7 +1005,7 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
     }
   );
 
-  it('keeps the minimal patch for types without write-only properties', async () => {
+  it('adds no write-only re-add for types without write-only properties', async () => {
     wireUpdateSuccess();
     mockCloudFormationSend.mockResolvedValue({
       Schema: JSON.stringify({ primaryIdentifier: ['/properties/Id'] }),
@@ -1018,7 +1019,11 @@ describe('CloudControlProvider update: write-only property re-inclusion (issue #
       { Name: 'old', Description: 'same' }
     );
 
-    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Name', value: 'new' }]);
+    // The unchanged `Description` is re-sent as declared (go-to-k/cdkd#6676).
+    expect(sentPatch()).toEqual([
+      { op: 'replace', path: '/Name', value: 'new' },
+      { op: 'add', path: '/Description', value: 'same' },
+    ]);
   });
 
   it('falls back to the minimal patch with a warning when DescribeType fails', async () => {
@@ -2443,7 +2448,13 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
       maskSecrets: masker,
     });
 
-    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: 'b' }]]);
+    expect(updateCalls()).toEqual([
+      [
+        { op: 'replace', path: '/FilterPattern', value: 'b' },
+        // Re-sent as declared (go-to-k/cdkd#6676); the create-only names are not.
+        { op: 'add', path: '/MetricTransformations', value: TRANSFORMS },
+      ],
+    ]);
     // The substitution works on a copy: the caller's recorded bag is untouched.
     expect(previous.FilterName).toBe(REF);
   });
@@ -2463,7 +2474,13 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
       maskSecrets: masker,
     });
 
-    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: 'b' }]]);
+    expect(updateCalls()).toEqual([
+      [
+        { op: 'replace', path: '/FilterPattern', value: 'b' },
+        // Re-sent as declared (go-to-k/cdkd#6676); the create-only names are not.
+        { op: 'add', path: '/MetricTransformations', value: TRANSFORMS },
+      ],
+    ]);
   });
 
   it('sends nothing when the secret-derived create-only name is the only difference', async () => {
@@ -2514,7 +2531,12 @@ describe('CloudControlProvider update: a recorded secret reference on a create-o
       maskSecrets: masker,
     });
 
-    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/FilterPattern', value: NAME }]]);
+    expect(updateCalls()).toEqual([
+      [
+        { op: 'replace', path: '/FilterPattern', value: NAME },
+        { op: 'add', path: '/MetricTransformations', value: TRANSFORMS },
+      ],
+    ]);
   });
 });
 
@@ -2577,6 +2599,8 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
         { op: 'add', path: '/FindingPublishingFrequency', value: 'ONE_HOUR' },
         { op: 'add', path: '/Features', value: FEATURES },
         { op: 'remove', path: '/DataSources' },
+        // Re-sent as declared (go-to-k/cdkd#6676).
+        { op: 'add', path: '/Enable', value: true },
       ],
     ]);
   });
@@ -2595,6 +2619,7 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
       [
         { op: 'replace', path: '/Features', value: next },
         { op: 'remove', path: '/DataSources' },
+        { op: 'add', path: '/Enable', value: true },
       ],
     ]);
   });
@@ -2652,6 +2677,8 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
       [
         { op: 'replace', path: '/Features', value: [{ Name: 'RDS_LOGIN_EVENTS', Status: 'ENABLED' }] },
         { op: 'remove', path: '/DataSources' },
+        // The read-back value, which the model already holds (go-to-k/cdkd#6676).
+        { op: 'add', path: '/Enable', value: true },
       ],
     ]);
   });
@@ -2677,6 +2704,7 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
         { op: 'replace', path: '/FindingPublishingFrequency', value: 'SIX_HOURS' },
         { op: 'remove', path: '/Features' },
         { op: 'remove', path: '/DataSources' },
+        { op: 'add', path: '/Enable', value: true },
       ],
     ]);
   });
@@ -2749,6 +2777,8 @@ describe('CloudControlProvider update: listener rule conditions (go-to-k/cdkd#66
       [
         { op: 'replace', path: '/Actions', value: action('A3') },
         { op: 'add', path: '/Conditions', value: CONDITIONS },
+        // Re-sent as declared (go-to-k/cdkd#6676).
+        { op: 'add', path: '/Priority', value: 10 },
       ],
     ]);
   });
@@ -2767,6 +2797,7 @@ describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (g
   // The live schema declares the import keys write-only, so every update
   // re-adds them; the split must drop those re-adds too.
   const SCHEMA = {
+    createOnlyProperties: ['/properties/ProtocolType'],
     writeOnlyProperties: [
       '/properties/Body',
       '/properties/BodyS3Location',
@@ -3363,7 +3394,13 @@ describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (g
     );
 
     expect(reimports()).toEqual([]);
-    expect(sentPatches()).toEqual([[{ op: 'add', path: '/Description', value: 'edited' }]]);
+    // `Name` is re-sent as declared (go-to-k/cdkd#6676); `ProtocolType` is create-only.
+    expect(sentPatches()).toEqual([
+      [
+        { op: 'add', path: '/Description', value: 'edited' },
+        { op: 'add', path: '/Name', value: 'probe' },
+      ],
+    ]);
   });
 });
 
@@ -3722,6 +3759,7 @@ describe('CloudControlProvider update: a nested read-only member (go-to-k/cdkd#6
     // leaf: the path is not in the measured `REMOVED_BLOCK_LEAF_CARRY` list.
     mockCloudFormationSend.mockResolvedValue({
       Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Name'],
         readOnlyProperties: ['/properties/LoggingConfiguration/TaskLogs/CloudWatchLogGroupArn'],
       }),
     });
@@ -3773,5 +3811,126 @@ describe('CloudControlProvider update: a nested read-only member (go-to-k/cdkd#6
 
     const codeOps = updatePatches()[0]!.filter((op) => op.path === '/Code');
     expect(codeOps.map((op) => op.value)).toEqual([{ Handler: 'index.handler', Script: 'two' }]);
+  });
+});
+
+describe('CloudControlProvider update: declared keys re-sent as declared (go-to-k/cdkd#6676)', () => {
+  // Cloud Control applies the patch to its read model, so an untouched key
+  // reached the update API in the read handler's spelling. Every declared key
+  // now goes as declared, except one holding a create-only, read-only or
+  // write-only path at any depth, or one the update leaves out on purpose.
+  const TYPE = 'AWS::Some::Type';
+
+  function updateCalls(): Array<Array<{ op: string; path: string; value?: unknown }>> {
+    return mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'UpdateResourceCommand')
+      .map(
+        (c) =>
+          JSON.parse((c[0] as { input: { PatchDocument: string } }).input.PatchDocument) as Array<{
+            op: string;
+            path: string;
+            value?: unknown;
+          }>
+      );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'r' } });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('re-sends declared keys, never one holding a create-only, read-only or write-only path', async () => {
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Name', '/properties/Source/Kind'],
+        conditionalCreateOnlyProperties: ['/properties/Mode'],
+        readOnlyProperties: ['/properties/Config/Arn', '/properties/Id'],
+        writeOnlyProperties: ['/properties/Secret'],
+      }),
+    });
+    const common = {
+      Name: 'n',
+      Source: { Kind: 'k', Size: 1 },
+      Mode: 'm',
+      Config: { Level: 'INFO' },
+      Settings: { A: 1 },
+      Tags: [{ Key: 'k', Value: 'v' }],
+    };
+
+    await new CloudControlProvider().update(
+      'Res',
+      'r',
+      TYPE,
+      { ...common, Description: 'new' },
+      { ...common, Description: 'old' }
+    );
+
+    expect(updateCalls()).toEqual([
+      [
+        { op: 'replace', path: '/Description', value: 'new' },
+        { op: 'add', path: '/Settings', value: { A: 1 } },
+        { op: 'add', path: '/Tags', value: [{ Key: 'k', Value: 'v' }] },
+      ],
+    ]);
+  });
+
+  it('re-sends nothing when the schema is unknown, or when nothing changed', async () => {
+    mockCloudFormationSend.mockRejectedValue(new Error('AccessDenied'));
+    await new CloudControlProvider().update(
+      'Res',
+      'r',
+      TYPE,
+      { Name: 'n', Description: 'new' },
+      { Name: 'n', Description: 'old' }
+    );
+    expect(updateCalls()).toEqual([[{ op: 'replace', path: '/Description', value: 'new' }]]);
+
+    mockCloudControlSend.mockClear();
+    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+    const result = await new CloudControlProvider().update(
+      'Res',
+      'r',
+      TYPE,
+      { Name: 'n', Description: 'same' },
+      { Name: 'n', Description: 'same' }
+    );
+    expect(result.sentNothing).toBe(true);
+    expect(updateCalls()).toEqual([]);
+  });
+
+  it('adds no DescribeType or GetResource call for object-valued re-sends', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+
+    await new CloudControlProvider().update(
+      'Res',
+      'r',
+      TYPE,
+      { Settings: { A: 1 }, Logging: { Level: 'INFO' }, Description: 'new' },
+      { Settings: { A: 1 }, Logging: { Level: 'INFO' }, Description: 'old' }
+    );
+
+    expect(updateCalls()[0]).toContainEqual({ op: 'add', path: '/Logging', value: { Level: 'INFO' } });
+    // The one write-only lookup the update always made, nothing more.
+    expect(mockCloudFormationSend).toHaveBeenCalledTimes(1);
+    // No live-model read before the update (the #6294 / #6553 gap carry
+    // never sees these ops); a GetResource after it is the attribute read-back.
+    const names = mockCloudControlSend.mock.calls.map(
+      (c) => (c[0] as { constructor: { name: string } }).constructor.name
+    );
+    expect(names.slice(0, names.indexOf('UpdateResourceCommand'))).not.toContain(
+      'GetResourceCommand'
+    );
   });
 });

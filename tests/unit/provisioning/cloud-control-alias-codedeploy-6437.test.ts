@@ -61,7 +61,12 @@ describe('CloudControlProvider.update and CodeDeployLambdaAliasUpdate (go-to-k/c
   beforeEach(() => {
     vi.clearAllMocks();
     mockCloudFormationSend.mockReset();
-    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+    // The registry schema's create-only keys, which the #6676 re-send leaves out.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: JSON.stringify({
+        createOnlyProperties: ['/properties/Name', '/properties/FunctionName'],
+      }),
+    });
     clearWriteOnlyPropertiesCache();
     clearReadOnlyPropertiesCache();
     mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
