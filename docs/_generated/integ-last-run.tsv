@@ -472,7 +472,7 @@ sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 erro
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
 secret-derived-immutable-names	2026-11-10T16:28:07Z	PASS	1072	verify.sh	rc ok, orph clean
 secret-substring-literal	2026-11-14T17:45:48Z	PASS	100	verify.sh	rc ok, orph clean, versions swept
-secrets-array-nested	2026-11-04T22:25:18Z	PASS	296	verify.sh	own state bucket, rc ok, orph clean
+secrets-array-nested	2026-11-20T06:16:07Z	PASS	456	verify.sh	PR6667 c073d21e5, rc ok, orph clean
 secrets-dynamic-ref	2026-11-04T21:52:37Z	PASS	727	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
 secrets-rotation-schedule	2026-11-04T22:20:19Z	PASS	60	verify.sh	own state bucket, rc ok, orph clean
 secretsmanager-replica-rekey	2026-11-10T16:00:58Z	PASS	110	verify.sh	rc ok, orph clean
