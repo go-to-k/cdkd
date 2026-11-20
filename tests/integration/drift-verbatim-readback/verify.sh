@@ -186,12 +186,21 @@ KEY_ID=$(node -e '
   process.stdout.write(id ? String(s[id].physicalId) : "");
 ' "${ARTIFACT_DIR}/state-show-deploy.json")
 [ -n "${KEY_ID}" ] || { echo "FAIL: no AWS::KMS::Key physical id in state" >&2; exit 1; }
+# AWS::IAM::UserToGroupAddition has no readback by design (its provider's
+# readCurrentState returns undefined: the membership is read on the user, as
+# its `Groups`), so it alone records none; drift reports it unsupported (exit 0).
 missing=$(node -e '
   const s = require(process.argv[1]);
-  process.stdout.write(Object.keys(s).filter((k) => !s[k].hasObserved).join(" "));
+  const noRead = new Set(["AWS::IAM::UserToGroupAddition"]);
+  process.stdout.write(Object.keys(s).filter((k) => !s[k].hasObserved && !noRead.has(s[k].resourceType)).join(" "));
 ' "${ARTIFACT_DIR}/summary-deploy.json")
 [ -z "${missing}" ] || { echo "FAIL: no deploy-time readback for: ${missing}" >&2; exit 1; }
-echo "    OK: every resource recorded a deploy-time readback"
+unexpected=$(node -e '
+  const s = require(process.argv[1]);
+  process.stdout.write(Object.keys(s).filter((k) => s[k].resourceType === "AWS::IAM::UserToGroupAddition" && s[k].hasObserved).join(" "));
+' "${ARTIFACT_DIR}/summary-deploy.json")
+[ -z "${unexpected}" ] || { echo "FAIL: ${unexpected} recorded a readback; the UserToGroupAddition exemption above is stale" >&2; exit 1; }
+echo "    OK: every resource recorded a deploy-time readback (UserToGroupAddition has none by design)"
 
 # go-to-k/cdkd#6624: what the drift comparator relies on. These services write
 # `Version: 2008-10-17` (what an omitted Version means) into a document the
