@@ -254,10 +254,11 @@ assert_code_sha "post-update" "${CODE_SHA_2B}"
 echo "    Post-update CodeSha256: ${CODE_SHA_2B}  Timeout: ${TIMEOUT_2B}"
 
 # The patch cdkd generated for the function, read off the provider's debug
-# line. A missing line fails here rather than reading as "no /Code".
-PATCH_LINE=$(grep -F 'patch operations for RecreateProbe:' "${CONFIG_ONLY_LOG}" | tail -n 1 || true)
-if [ -z "${PATCH_LINE}" ]; then
-  echo "FAIL: no 'patch operations for RecreateProbe:' line in the --verbose log (was the function updated through Cloud Control?)" >&2
+# line. A missing line, or a read that failed, fails here rather than reading
+# as "no /Code".
+if ! PATCH_LINE=$(grep -F 'patch operations for RecreateProbe:' "${CONFIG_ONLY_LOG}" | tail -n 1) ||
+  [[ -z "${PATCH_LINE}" ]]; then
+  echo "FAIL: could not read a 'patch operations for RecreateProbe:' line from the --verbose log (was the function updated through Cloud Control?)" >&2
   tail -n 60 "${CONFIG_ONLY_LOG}" >&2
   exit 1
 fi
