@@ -620,6 +620,7 @@
       "flag": "--no-capture-observed-state",
       "integs": [
         "loggroup-never-expire-guard",
+        "s3-object-lock",
         "secrets-array-nested"
       ]
     },
