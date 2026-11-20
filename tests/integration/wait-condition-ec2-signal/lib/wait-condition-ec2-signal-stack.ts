@@ -43,12 +43,15 @@ export class WaitConditionEc2SignalStack extends cdk.Stack {
       requireImdsv2: true,
     });
 
+    // Deliberately NO `wait.node.addDependency(instance)` (issue #6704):
+    // verify.sh deploys with `--concurrency 1`, so only cdkd's implicit
+    // signaller edge keeps the wait from taking the one slot before the
+    // instance that signals it exists.
     const wait = new cloudformation.CfnWaitCondition(this, 'Wait', {
       handle: handle.ref,
       timeout: '900',
       count: 2,
     });
-    wait.node.addDependency(instance);
 
     new cdk.CfnOutput(this, 'WaitData', { value: wait.attrData });
     new cdk.CfnOutput(this, 'InstanceId', { value: instance.instanceId });

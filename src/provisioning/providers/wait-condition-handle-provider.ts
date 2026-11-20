@@ -4,11 +4,8 @@ import { ProvisioningError } from '../../utils/error-handler.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { safeStringify } from '../../utils/aws-failure-text.js';
 import { markNonRetryable } from '../../deployment/retryable-errors/marks.js';
-import {
-  classifyHandleUrl,
-  LEGACY_HANDLE_ID_PREFIX,
-  WaitConditionSignalStore,
-} from '../wait-condition-signal-store.js';
+import { classifyHandleUrl, WaitConditionSignalStore } from '../wait-condition-signal-store.js';
+import { isLegacyHandleId, LEGACY_HANDLE_ID_PREFIX } from '../wait-condition-handle-id.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -89,7 +86,10 @@ export class WaitConditionHandleProvider implements ResourceProvider {
 
   /**
    * The type has no properties, so there is nothing to update — keep the
-   * existing physical id (and its URL).
+   * existing physical id (and its URL). The one exception (go-to-k/cdkd#6704):
+   * a placeholder id an earlier cdkd recorded, which the diff routes here when
+   * something references the handle, is replaced by a signal URL. Nothing
+   * exists behind the placeholder, so there is nothing to retire.
    *
    * go-to-k/cdkd#2613: `context` is accepted but no region guard runs: the
    * handle addresses the state bucket, not a resource in the deploy region.
@@ -97,11 +97,18 @@ export class WaitConditionHandleProvider implements ResourceProvider {
   async update(
     logicalId: string,
     physicalId: string,
-    _resourceType: string,
-    _properties: Record<string, unknown>,
+    resourceType: string,
+    properties: Record<string, unknown>,
     _previousProperties: Record<string, unknown>,
     _context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    if (isLegacyHandleId(physicalId)) {
+      const created = await this.create(logicalId, resourceType, properties);
+      this.logger.info(
+        safeMsg`WaitConditionHandle ${logicalId}: issued a signal URL in place of its placeholder id`
+      );
+      return { physicalId: created.physicalId, wasReplaced: true, attributes: {} };
+    }
     this.logger.debug(`No-op update for WaitConditionHandle ${logicalId}`);
     return { physicalId, wasReplaced: false, attributes: {} };
   }

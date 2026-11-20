@@ -145,7 +145,75 @@ HANDLE_ID2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | node 
   || { echo "FAIL: handle physical id changed on update (${HANDLE_ID} -> ${HANDLE_ID2})" >&2; exit 1; }
 echo "    OK: handle physical id stable across update"
 
-echo "==> Phase 3: Destroy"
+echo "==> Phase 3: a handle recorded before #6694 (placeholder id) gets a URL (#6704)"
+# A pre-#6694 handle had no signal object: remove phase 1's versions first.
+VERS_JSON=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "${SIGNAL_KEY}" \
+  --region "${REGION}" --output json)
+VERSION_IDS=$(printf '%s' "${VERS_JSON}" | KEY="${SIGNAL_KEY}" node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const r = d.trim() === "" ? {} : JSON.parse(d);
+    const all = (r.Versions ?? []).concat(r.DeleteMarkers ?? []);
+    for (const v of all) if (v.Key === process.env.KEY) process.stdout.write(v.VersionId + "\n");
+  });')
+for VID in ${VERSION_IDS}; do
+  aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${SIGNAL_KEY}" --version-id "${VID}" \
+    --region "${REGION}" >/dev/null
+done
+LEGACY_ID="cdkd-wait-condition-handle-Placeholder-00000000-0000-4000-8000-000000000000"
+STATE_TMP=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | LEGACY_ID="${LEGACY_ID}" node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const s = JSON.parse(d);
+    const id = Object.keys(s.resources).find(
+      (k) => s.resources[k].resourceType === "AWS::CloudFormation::WaitConditionHandle"
+    );
+    s.resources[id].physicalId = process.env.LEGACY_ID;
+    s.outputs.HandleRef = process.env.LEGACY_ID;
+    process.stdout.write(JSON.stringify(s));
+  });' > "${STATE_TMP}"
+aws s3 cp "${STATE_TMP}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+rm -f "${STATE_TMP}"
+echo "    seeded the record with a placeholder id"
+
+CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+HANDLE_ID3=$(printf '%s' "${STATE_JSON}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const s = JSON.parse(d);
+    const r = Object.values(s.resources).find(
+      (x) => x.resourceType === "AWS::CloudFormation::WaitConditionHandle"
+    );
+    process.stdout.write(r ? r.physicalId : "");
+  });')
+case "${HANDLE_ID3}" in
+  https://*X-Amz-Signature=*) echo "    OK: the placeholder was replaced by a signal URL" ;;
+  *) echo "FAIL: handle physical id after the heal is not a pre-signed URL" >&2; exit 1 ;;
+esac
+[ "${HANDLE_ID3}" != "${HANDLE_ID}" ] || { echo "FAIL: the heal reused the phase 1 URL" >&2; exit 1; }
+OUTPUT_REF3=$(printf '%s' "${STATE_JSON}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => process.stdout.write(JSON.parse(d).outputs?.HandleRef ?? ""));')
+[ "${OUTPUT_REF3}" = "${HANDLE_ID3}" ] \
+  || { echo "FAIL: HandleRef output was not re-resolved to the new URL" >&2; exit 1; }
+echo "    OK: the output that exposes the handle carries the new URL"
+SIGNAL_KEY=$(printf '%s' "${HANDLE_ID3}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const p = decodeURIComponent(new URL(d).pathname);
+    const at = p.indexOf("/wait-condition-signals/");
+    process.stdout.write(at < 0 ? "" : p.slice(at + 1));
+  });')
+curl -sSf -X PUT -H 'Content-Type:' \
+  --data-binary '{"Status":"SUCCESS","UniqueId":"host","Data":"d","Reason":"r"}' "${HANDLE_ID3}" >/dev/null \
+  || { echo "FAIL: PUT to the re-issued handle URL was refused" >&2; exit 1; }
+echo "    OK: the re-issued URL accepts a signal"
+
+echo "==> Phase 4: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "SSM param still exists after destroy" aws ssm get-parameter --name "${PARAM}" --region "${REGION}"

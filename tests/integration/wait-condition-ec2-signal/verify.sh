@@ -74,8 +74,11 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
-echo "==> Phase 1: Deploy (user data signals the handle; WaitCondition Count 2)"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+echo "==> Phase 1: Deploy (user data signals the handle; WaitCondition Count 2; --concurrency 1)"
+# --concurrency 1 (issue #6704): the template has no DependsOn from the wait to
+# the instance, so only the implicit signaller edge stops the wait from taking
+# the one slot first and timing out.
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --concurrency 1 --yes
 
 STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 read_state() { # usage: read_state <js expression over s>

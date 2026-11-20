@@ -97,6 +97,25 @@ describe('WaitConditionHandleProvider', () => {
     });
   });
 
+  describe('update of a pre-#6694 placeholder (#6704)', () => {
+    it('issues a signal URL and reports the replacement', async () => {
+      const { store, issueSignalUrl } = fakeStore({ bucket: BUCKET });
+      const result = await new WaitConditionHandleProvider(store).update(
+        'Placeholder',
+        `cdkd-wait-condition-handle-Placeholder-${UUID}`,
+        TYPE,
+        {},
+        {}
+      );
+      expect(issueSignalUrl).toHaveBeenCalledWith('Placeholder');
+      expect(result).toEqual({
+        physicalId: `https://${BUCKET}.s3.amazonaws.com/${KEY}?X-Amz-Signature=s`,
+        wasReplaced: true,
+        attributes: {},
+      });
+    });
+  });
+
   describe('delete', () => {
     it('removes the signals behind a URL cdkd issued', async () => {
       const { store, deleteSignals } = fakeStore({ bucket: BUCKET });

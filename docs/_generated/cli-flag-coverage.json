@@ -82,6 +82,7 @@
       "flag": "--concurrency",
       "integs": [
         "throttle-wide-dag",
+        "wait-condition-ec2-signal",
         "wide-independent",
         "wide-web-functions"
       ]

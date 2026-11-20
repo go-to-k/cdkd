@@ -26,6 +26,7 @@ import { isPlainReferenceTo } from '../../deployment/recreate-target-readers.js'
 import { unsettledPropertiesOf } from '../../state/unsettled-properties.js';
 import type { ReadProvenanceSources } from '../read-provenance-promotion.js';
 import { DiffCalculator } from '../diff-calculator.js';
+import { markLegacyHandleHeals } from './legacy-handle-heal.js';
 import {
   type IntrinsicResolveFn,
   type CanonicalizePropertiesFn,
@@ -597,6 +598,13 @@ export async function calculateDiff(
   for (const logicalId of recreateTargets ?? []) {
     const changeType = changes.get(logicalId)?.changeType;
     if (changeType === 'NO_CHANGE' || changeType === 'UPDATE') forcedReplacements.add(logicalId);
+  }
+  // go-to-k/cdkd#6704: a referenced pre-#6694 wait condition handle gets its
+  // signal URL, and its readers re-resolve the new id in the same deploy.
+  for (const logicalId of markLegacyHandleHeals(changes, currentResources, desiredTemplate, (v) =>
+    this.parser.extractReferences(v)
+  )) {
+    forcedReplacements.add(logicalId);
   }
 
   // Propagate replacements to dependents (issue #807): a dependent whose
