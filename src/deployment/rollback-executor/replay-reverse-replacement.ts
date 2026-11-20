@@ -17,6 +17,7 @@ import {
   unroutableReplacementError,
 } from './plan.js';
 import { mayBeStoredIn } from '../child-of-recreated-parent.js';
+import { earlyDeleteWhen, earlyDeletedOld } from './early-deleted-old.js';
 import {
   requireRestorableBaseline,
   replayPrefixScope,
@@ -455,6 +456,22 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         `resource's data was destroyed by the replacement and is NOT recovered by this ` +
         `rollback; the re-created resource starts empty.`
     );
+  } else {
+    // go-to-k/cdkd#6713: any other type the deploy deleted early comes back
+    // from its record alone, which CloudFormation's rollback never needs (it
+    // deletes the old copy only after the deploy succeeded). Advisory as the
+    // line above, through the op's masker like every replay line.
+    const early = earlyDeletedOld(op, oldType);
+    if (early !== undefined) {
+      logger.warn(
+        mask(
+          `  ⚠ ${safe(op.logicalId)} (${safe(oldType)}): the deploy ${earlyDeleteWhen(early)}, ` +
+            `so this rollback re-creates it from its recorded properties — anything AWS held ` +
+            `for it that the template does not declare (such as queued messages, or ` +
+            `subscriptions made outside the stack) does not come back.`
+        )
+      );
+    }
   }
   // Route the re-create via the OLD resource's recorded layer AND TYPE,
   // and the new resource's delete via ITS layer and type (the layers can
