@@ -137,7 +137,7 @@ docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split
 docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #6160
 drift-cc-read-only-props	2026-11-17T06:05:19Z	PASS	95	verify.sh	rc ok, orph clean
 drift-ecs-capacity-association	2026-11-19T10:36:45Z	PASS	203	verify.sh	#6614 batch1 HEAD ba72216f9: rc ok, destroy 0 errors, orph clean
-drift-revert	2026-11-19T18:50:43Z	PASS	467	verify.sh	#6640 regression 84223153c: rc ok, orph clean
+drift-revert	2026-11-20T11:34:30Z	PASS	457	verify.sh	PR6683 8da73033f; step 6b/6c ok; rc 0, orph clean
 drift-revert-arrays	2026-11-19T18:50:43Z	PASS	306	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 drift-revert-nested-write-only	2026-11-17T15:14:38Z	PASS	236	verify.sh	rc ok, orph clean, versions swept
 drift-revert-vpc	2026-11-19T18:50:43Z	PASS	372	verify.sh	#6640 regression 84223153c: rc ok, orph clean
@@ -443,7 +443,7 @@ route53-drift-import	2026-11-20T08:30:09Z	PASS	155	verify.sh	#6682 group revert 
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
-s3-bucket-policy-existing	2026-11-20T04:51:06Z	PASS	125	verify.sh	PR6629 081a25a9c run A2; rc 0, orph clean
+s3-bucket-policy-existing	2026-11-20T11:34:30Z	PASS	130	verify.sh	PR6683 8da73033f; own state bucket; rc 0, orph clean
 s3-cloudfront	2026-11-06T21:05:12Z	PASS	278	verify.sh	#5917 cloudfront-distribution split head; rc ok, orph clean
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean
 s3-event-notification	2026-11-04T08:38:33Z	PASS	231	verify.sh	us-east-1; PR #5751 776b0358d; cross-stack fromBucketName notification arm; drift clean (1b), revert keeps notifications (1c/1d), destroy 0 errors; rc ok, orph clean
