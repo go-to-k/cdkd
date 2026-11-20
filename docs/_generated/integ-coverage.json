@@ -8953,7 +8953,8 @@
       "integs": [
         "cc-to-sdk-reroute-hosted-zone",
         "ec2-vpc",
-        "route53"
+        "route53",
+        "route53-drift-import"
       ],
       "signals": {
         "cc-to-sdk-reroute-hosted-zone": [
@@ -8966,31 +8967,42 @@
         ],
         "route53": [
           "l2"
+        ],
+        "route53-drift-import": [
+          "l2"
         ]
       }
     },
     {
       "resourceType": "AWS::Route53::RecordSet",
       "integs": [
-        "route53"
+        "route53",
+        "route53-drift-import"
       ],
       "signals": {
         "route53": [
           "l1",
           "l2",
           "literal"
+        ],
+        "route53-drift-import": [
+          "l2"
         ]
       }
     },
     {
       "resourceType": "AWS::Route53::RecordSetGroup",
       "integs": [
-        "route53"
+        "route53",
+        "route53-drift-import"
       ],
       "signals": {
         "route53": [
           "l1",
           "literal"
+        ],
+        "route53-drift-import": [
+          "l1"
         ]
       }
     },

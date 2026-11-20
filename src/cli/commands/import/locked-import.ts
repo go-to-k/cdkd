@@ -28,6 +28,7 @@ import {
 import { importNestedStackChildrenRecursive, synthesizeNestedStackArn } from './nested.js';
 import { captureObservedForImportedResources } from './observed-capture.js';
 import { writeRecordedMapping } from './overrides.js';
+import { dispatchInRefOrder } from './sibling-refs.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
   buildStackState,
@@ -123,20 +124,20 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // The dispatch over every template resource. A closure so the Retain
   // update below can re-run it when CloudFormation REPLACED a resource and
   // the ids it read are stale (issue #4873).
-  const collectRows = async (): Promise<ImportRow[]> => {
-    const collected: ImportRow[] = [];
-    for (const { logicalId, resource } of resources) {
+  const collectRows = (): Promise<ImportRow[]> =>
+    // go-to-k/cdkd#6662: `Ref` targets first, each adopted target's `Ref`
+    // value substituted into the rows after it; see `dispatchInRefOrder`.
+    dispatchInRefOrder(resources, overrides, async ({ logicalId, resource }, refValues) => {
       // Selective mode: skip resources not in overrides up front. They
       // never hit the provider, so the summary correctly distinguishes
       // "out of scope" from "AWS not found".
       if (selectiveMode && !overrides.has(logicalId)) {
-        collected.push({
+        return {
           logicalId,
           resourceType: resource.Type,
           outcome: 'skipped-out-of-scope',
           reason: 'not in --resource / --resource-mapping (use --auto to include)',
-        });
-        continue;
+        };
       }
 
       // Nested-stack short-circuit (issue #464): adopt each
@@ -156,7 +157,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
         migrationTree.nested.has(logicalId) &&
         accountIdForNestedSynth
       ) {
-        collected.push({
+        return {
           logicalId,
           resourceType: resource.Type,
           outcome: 'imported',
@@ -166,23 +167,19 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
             stackInfo.stackName,
             logicalId
           ),
-        });
-        continue;
+        };
       }
 
-      const outcome = await importOne({
+      return importOne({
         logicalId,
         resource,
         stackName: stackInfo.stackName,
         region: targetRegion,
         providerRegistry,
         override: overrides.get(logicalId),
-        overrides,
+        overrides: refValues,
       });
-      collected.push(outcome);
-    }
-    return collected;
-  };
+    });
   let rows = await collectRows();
 
   printSummary(rows);
