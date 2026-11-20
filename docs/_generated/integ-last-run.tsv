@@ -149,7 +149,7 @@ dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
 dynamodb-fix-forward-orphan	2026-11-04T22:06:17Z	PASS	181	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
-dynamodb-globaltable	2026-11-20T11:51:09Z	PASS	1620	verify.sh	rc 0, orph clean; #6669 fc3e61ea3 slice E 12g-6609 tag baseline + drift --revert arm
+dynamodb-globaltable	2026-11-20T12:21:51Z	PASS	1712	verify.sh	rc ok, orph clean; #6669 rebased on main 101a3594d
 dynamodb-globaltable-implied-stream	2026-11-06T16:08:16Z	PASS	335	verify.sh	post-hoc on main after #5839 split; rc ok, orph clean
 dynamodb-globaltable-replica-settings	2026-11-20T11:50:48Z	PASS	3875	verify.sh	PR6652 be63cc056, us-west-2 (second us-east-1); rc 0, revert-identity kept identity x2, orph clean
 dynamodb-gsi-update	2026-11-20T11:50:48Z	PASS	4442	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
@@ -159,7 +159,7 @@ dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
 dynamodb-table-policy-baseline	2026-11-19T07:33:52Z	PASS	100	verify.sh	rc ok, orph clean; pre-fix main FAILs the removal phase
 dynamodb-streams	2026-11-04T18:01:46Z	PASS	233	verify.sh	rc ok, M3 delete-resource-policy cooldown retry passed, M4/M5 passed, orph clean, own temp state bucket deleted; sweep batch 19 re-run
-dynamodb-table-policy-baseline	2026-11-20T10:44:33Z	PASS	171	verify.sh	rc ok, orph clean; #6669 b6e09a620 slice E tag baseline + drift --revert arms
+dynamodb-table-policy-baseline	2026-11-20T12:21:51Z	PASS	191	verify.sh	rc ok, orph clean; #6669 rebased on main 101a3594d
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 ec2-instance	2026-11-19T06:17:01Z	PASS	837	verify.sh	rc ok, orph clean
@@ -480,7 +480,7 @@ secrets-array-nested	2026-11-20T11:22:10Z	PASS	300	verify.sh	PR6652 be63cc056, u
 secrets-dynamic-ref	2026-11-20T11:22:10Z	PASS	721	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 secrets-rotation-schedule	2026-11-04T22:20:19Z	PASS	60	verify.sh	own state bucket, rc ok, orph clean
 secretsmanager-replica-rekey	2026-11-10T16:00:58Z	PASS	110	verify.sh	rc ok, orph clean
-secretsmanager-update-value-source	2026-11-20T10:44:33Z	PASS	130	verify.sh	rc ok, orph clean; #6669 b6e09a620 slice E tag baseline + drift --revert arms (2r)
+secretsmanager-update-value-source	2026-11-20T12:21:51Z	PASS	134	verify.sh	rc ok, orph clean; #6669 rebased on main 101a3594d
 select-out-of-bounds	2026-11-13T04:16:36Z	PASS	36	verify.sh	rc ok, orph clean
 serverless-api	2026-11-19T18:50:43Z	PASS	75	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 servicediscovery	2026-11-17T05:50:34Z	PASS	265	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
