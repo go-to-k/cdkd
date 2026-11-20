@@ -38,6 +38,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
+import { compareDriftReadback } from '../../../src/cli/commands/drift/compare.js';
+import { buildReadCurrentStateContext } from '../../../src/deployment/read-current-state-context.js';
 
 const TYPE = 'AWS::IAM::Policy';
 const AFTER = { afterOwnWrite: true } as const;
@@ -383,7 +385,7 @@ describe('heal: an AWS::IAM::Policy member is skipped only while every live copy
     const { aws, healed } = await readThenHeal({ PolicyDocument: DECLARED, Roles: ['R1', 'R2'] });
     // The read surfaces R1's copy (the first differing from the stale baseline) ...
     expect(aws['PolicyDocument']).toEqual(DECLARED);
-    // ... so only the differing-copies marker keeps R2's edit reported.
+    // ... so only the agreeing-copies mark, absent here, keeps R2's edit reported.
     expect(healed).not.toContain('PolicyDocument');
     expect(healed).toContain('Roles');
   });
@@ -438,5 +440,80 @@ describe('heal: an AWS::IAM::Policy member is skipped only while every live copy
         Roles: ['R1'],
       })
     ).toEqual([]);
+  });
+});
+
+// ─── The heal through drift's own comparison (detect → compare) ───────────
+describe('heal through compareDriftReadback: PolicyDocument skips only on a read whose every copy agreed (#6609 C2)', () => {
+  const STALE = { PolicyName: 'pol', PolicyDocument: PREVIOUS, Roles: ['R1'], Users: ['U1'] };
+  const DECLARED_PROPS = { PolicyName: 'pol', PolicyDocument: DECLARED, Roles: ['R1'], Users: ['U1'] };
+  /** Wider than the declaration: an out-of-band edit on U1's copy. */
+  const WIDER_RAW = encodeURIComponent(
+    JSON.stringify({ Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }] })
+  );
+  const compareOnce = async (clone: boolean) => {
+    const state = {
+      resources: {
+        PolicyP: {
+          resourceType: TYPE,
+          physicalId: 'pol',
+          properties: DECLARED_PROPS,
+          observedProperties: STALE,
+          attributes: {},
+        },
+      },
+    };
+    const readContext = buildReadCurrentStateContext(state as never, 'PolicyP');
+    const read = (await provider.readCurrentState(
+      'pol',
+      'PolicyP',
+      TYPE,
+      DECLARED_PROPS,
+      readContext
+    )) as Record<string, unknown>;
+    const outcomes: Array<{ kind: string; changes?: Array<{ path: string }> }> = [];
+    await compareDriftReadback({
+      region: 'us-east-1',
+      resolvePrincipalUniqueId: () => Promise.resolve(undefined),
+      outcomes: outcomes as never,
+      logger: childLogger as never,
+      secretResolvers: {} as never,
+      producerRegions: { regions: [], complete: true },
+      stackSecretNames: new Map(),
+      resource: state.resources.PolicyP as never,
+      logicalId: 'PolicyP',
+      provider,
+      secrets: new Map(),
+      printing: new Map(),
+      aws: clone ? { ...read } : read,
+      readContext,
+    });
+    expect(outcomes).toHaveLength(1);
+    return (outcomes[0]!.changes ?? []).map((c) => c.path);
+  };
+  const documentReported = (paths: string[]) => paths.some((p) => p.startsWith('PolicyDocument'));
+
+  it('compares PolicyDocument when R1 holds the declared copy and U1 a wider one', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('user:U1', doc(WIDER_RAW));
+    expect(documentReported(await compareOnce(false))).toBe(true);
+  });
+
+  it('still compares it when the bag is shallow-cloned on the way to the heal', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('user:U1', doc(WIDER_RAW));
+    expect(documentReported(await compareOnce(true))).toBe(true);
+  });
+
+  it('skips it when every copy agrees on the declared document', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('user:U1', doc(DECLARED_RAW));
+    expect(await compareOnce(false)).toEqual([]);
+  });
+
+  it('a cloned bag of agreeing copies loses the mark and stays compared (the stale baseline reports)', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('user:U1', doc(DECLARED_RAW));
+    expect(documentReported(await compareOnce(true))).toBe(true);
   });
 });

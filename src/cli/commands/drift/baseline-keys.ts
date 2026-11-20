@@ -29,7 +29,7 @@ import {
   stringListIsDeclared,
 } from '../../../provisioning/settle-own-write-members.js';
 import { sgRulesAreDeclared } from '../../../provisioning/sg-own-write-rules.js';
-import { readHadDifferingCopies } from '../../../provisioning/providers/iam-policy/differing-copies.js';
+import { readHadAgreeingCopies } from '../../../provisioning/providers/iam-policy/agreeing-copies.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -246,8 +246,9 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  *
  * `AWS::IAM::Policy` (slice C2), same blind spot: `PolicyDocument` is skipped
  * only while EVERY principal's copy is the declared document — a read whose
- * copies differ surfaces one of them (go-to-k/cdkd#6616) and is marked
- * (`readHadDifferingCopies`), so it never heals. `PolicyName` heals on the
+ * copies differ surfaces one of them (go-to-k/cdkd#6616), so it heals only on a
+ * bag the read marked as every copy agreeing (`readHadAgreeingCopies`): a bag
+ * that lost the mark stays compared. `PolicyName` heals on the
  * exact declared name; `Roles` / `Users` / `Groups` on the exact declared set
  * (the read echoes the recorded list less a principal lacking the policy, so a
  * detached principal is a subset and stays compared). A principal that gained
@@ -453,12 +454,12 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
       stringListHeal('Groups'),
     ],
     'AWS::IAM::InstanceProfile': [stringListHeal('Roles')],
-    // The read surfaces one copy; differing copies keep the document compared.
+    // Only a read whose every copy agreed may skip it; an unmarked bag is compared.
     'AWS::IAM::Policy': [
       {
         key: 'PolicyDocument',
         liveIsDeclared: (properties, aws) =>
-          !readHadDifferingCopies(aws) &&
+          readHadAgreeingCopies(aws) &&
           documentHeal('PolicyDocument').liveIsDeclared(properties, aws),
       },
       {

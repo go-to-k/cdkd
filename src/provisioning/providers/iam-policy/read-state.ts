@@ -15,7 +15,7 @@ import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resour
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import { readPolicyTargetLists } from './shared.js';
-import { markDifferingCopies } from './differing-copies.js';
+import { markCopiesAgreed } from './agreeing-copies.js';
 import { isStoredExpression } from '../../iam-sibling-managed-policies.js';
 import {
   type MemberRead,
@@ -212,8 +212,9 @@ export async function readCurrentState(
   if (roles) result['Roles'] = echo('role', roles);
   if (groups) result['Groups'] = echo('group', groups);
   if (users) result['Users'] = echo('user', users);
-  // The drift heal must not skip a document only ONE differing copy shows.
-  if (copiesDiffer) markDifferingCopies(result);
+  // A drift read of EVERY principal whose copies all agree: the only bag the
+  // drift heal may skip PolicyDocument on (a lost mark keeps it compared).
+  if (!copiesDiffer && readTargets.length === allTargets.length) markCopiesAgreed(result);
   return result;
 }
 
