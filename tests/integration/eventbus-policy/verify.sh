@@ -114,6 +114,58 @@ fi
 echo "==> Pre-run cleanup"
 cleanup
 
+# go-to-k/cdkd#6609 (slice C): the baseline captured right after cdkd's own
+# write must hold the member the deploy just wrote. `cdkd drift` alone cannot
+# see a stale baseline while the live member is the declared one (the drift
+# heal rule skips the key then), so this reads the baseline itself: the state
+# record's observed member must be exactly what AWS holds now, key order
+# aside ('<absent>' when neither holds one).
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+state_lids() { # usage: state_lids <resourceType> -- every logical id of that type
+  state_json | jq -r --arg t "$1" '.resources | to_entries[] | select(.value.resourceType == $t) | .key'
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON, '' for none> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  if [ -z "$3" ]; then live='"<absent>"'; else live=$(jq -cS . <<<"$3"); fi
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+
+# go-to-k/cdkd#6609: `cdkd drift --json` compares at least one resource of the
+# type, none is left uncompared, and no drifted change sits on the member's
+# path. The phase's env goes after the label, as `env` arguments.
+check_member_baseline() { # usage: check_member_baseline <type> <key> <phase label> [env args...]
+  local type="$1" key="$2" label="$3" report rc=0
+  shift 3
+  report=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${report}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report after ${label}" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  if ! jq -e --arg stack "${STACK}" --arg type "${type}" --arg key "${key}" '
+    def member: .path == $key or (.path | startswith($key + ".")) or (.path | startswith($key + "["));
+    [.[] | select(.stack == $stack)] as $reports |
+    ($reports | length) == 1 and
+    ([$reports[0].clean[], ($reports[0].drifted // [])[] | select(.type == $type)] | length) >= 1 and
+    ([($reports[0].drifted // [])[] | select(.type == $type) | .changes[] | select(member)] | length) == 0 and
+    ([($reports[0].notCompared // [])[] | select(.type == $type)] | length) == 0
+  ' <<<"${report}" >/dev/null; then
+    echo "FAIL: ${type} ${key} is drifted, or a ${type} is not compared, after ${label} (#6609)" >&2
+    printf '%s\n' "${report}" >&2
+    exit 1
+  fi
+  echo "    OK: every ${type} ${key} is drift-clean after ${label} (#6609)"
+}
+
 # --- Phase 1: deploy baseline (statement without Condition) ---------------
 echo "==> Phase 1: deploy custom bus + bus policy"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -143,6 +195,8 @@ if ! grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v1"' <<<"${PROP_POLICY_P1}"; the
   exit 1
 fi
 echo "    EventBus Policy property applied on create"
+assert_observed_member PolicyPropBus .Policy "${PROP_POLICY_P1}" "Phase 1 (create)"
+check_member_baseline AWS::Events::EventBus Policy "Phase 1 (create)" -u CDKD_TEST_UPDATE -u CDKD_TEST_BUS_POLICY_UPDATE
 
 # --- Phase 2: diff for the Condition addition must render symmetrically ---
 echo "==> Phase 2: cdkd diff for the pure key addition (#1608 shape)"
@@ -236,6 +290,72 @@ if grep -qF 'cdkd-integ-buspolicy-prop-v1' <<<"${PROP_POLICY_P3B}"; then
   exit 1
 fi
 echo "    EventBus Policy property replaced with the new document"
+assert_observed_member PolicyPropBus .Policy "${PROP_POLICY_P3B}" "Phase 3b (replace)"
+check_member_baseline AWS::Events::EventBus Policy "Phase 3b (replace)" CDKD_TEST_UPDATE=true CDKD_TEST_BUS_POLICY_UPDATE=true
+
+# go-to-k/cdkd#6609: `cdkd drift --revert` acts on what the capture recorded,
+# so an out-of-band change of a member must report, revert to the template in
+# place (same physical id, no delete / create), and leave drift clean.
+revert_drift_json() { # usage: revert_drift_json [env args...] -- prints `cdkd drift --json`; exit 0..2 is a report
+  local out rc=0
+  out=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${out}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report (#6609 revert arm)" >&2
+    printf '%s\n' "${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}"
+}
+assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <member key> <label>
+  jq -e --arg t "$2" --arg k "$3" '
+    def member: .path == $k or (.path | startswith($k + ".")) or (.path | startswith($k + "["));
+    [.[] | (.drifted // [])[] | select(.type == $t) | .changes[] | select(member)] | length > 0
+  ' <<<"$1" >/dev/null || {
+    echo "FAIL: cdkd drift does not report the out-of-band $2 $3 after $4 (#6609)" >&2
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
+}
+assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
+  local rc=0 label="$1"
+  shift
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || rc=$?
+  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0 (#6609)" >&2; exit 1; }
+  echo "    OK: cdkd drift is clean after ${label} (#6609)"
+}
+run_revert() { # usage: run_revert [env args...]
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+}
+assert_same() { # usage: assert_same <label> <before> <after>
+  [ -n "$2" ] && [ "$2" = "$3" ] || { echo "FAIL: $1 changed across the revert: '$2' -> '$3' (#6609: a delete / create)" >&2; exit 1; }
+  echo "    OK: $1 unchanged across the revert ($2)"
+}
+
+echo "==> Phase 3c: an out-of-band bus Policy is reverted in place (#6609)"
+P3C_ENV=(CDKD_TEST_UPDATE=true CDKD_TEST_BUS_POLICY_UPDATE=true)
+BUS_ID_BEFORE="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
+  --query '[Arn, CreationTime]' --output text)"
+PID_BEFORE="$(state_json | jq -r '.resources.PolicyPropBus.physicalId')"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+OOB_POLICY="$(jq -cn --arg a "${ACCOUNT_ID}" --arg r "${REGION}" --arg b "${POLICY_BUS_NAME}" '{
+  Version: "2012-10-17",
+  Statement: [{ Sid: "cdkd-6609-oob", Effect: "Allow", Principal: { AWS: ("arn:aws:iam::" + $a + ":root") },
+    Action: "events:PutRule", Resource: ("arn:aws:events:" + $r + ":" + $a + ":event-bus/" + $b) }]
+}')"
+aws events put-permission --event-bus-name "${POLICY_BUS_NAME}" --region "${REGION}" --policy "${OOB_POLICY}"
+DRIFT_3C="$(revert_drift_json "${P3C_ENV[@]}")" || exit 1
+assert_member_drifted "${DRIFT_3C}" AWS::Events::EventBus Policy "an out-of-band put-permission"
+run_revert "${P3C_ENV[@]}"
+PROP_POLICY_P3C="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
+  --query 'Policy' --output text)"
+[ "$(jq -cS . <<<"${PROP_POLICY_P3C}")" = "$(jq -cS . <<<"${PROP_POLICY_P3B}")" ] \
+  || { echo "FAIL: the reverted bus Policy is not the template's: ${PROP_POLICY_P3C}" >&2; exit 1; }
+echo "    OK: the revert put the template's bus Policy back"
+assert_same "${POLICY_BUS_NAME}'s ARN and CreationTime" "${BUS_ID_BEFORE}" \
+  "$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" --query '[Arn, CreationTime]' --output text)"
+assert_same "PolicyPropBus's state physical id" "${PID_BEFORE}" "$(state_json | jq -r '.resources.PolicyPropBus.physicalId')"
+assert_drift_clean "the phase 3c revert" "${P3C_ENV[@]}"
 
 # --- Phase 4: destroy -----------------------------------------------------
 echo "==> Phase 4: destroy"

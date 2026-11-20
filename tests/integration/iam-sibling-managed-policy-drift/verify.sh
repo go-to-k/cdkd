@@ -121,6 +121,9 @@ cleanup() {
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
     aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${arn}" >/dev/null 2>&1
   done
+  aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-inline >/dev/null 2>&1
+  aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-oob >/dev/null 2>&1
+  aws iam delete-role-permissions-boundary --role-name "${ROLE_NAME}" >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
   for arn in $(aws iam list-attached-role-policies --role-name "${ATTACHER_NAME}" \
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
@@ -130,6 +133,8 @@ cleanup() {
   for u in "${ADD_U1}" "${ADD_U2}" "${ADD_U3}"; do
     aws iam remove-user-from-group --group-name "${ADD_GROUP}" --user-name "${u}" >/dev/null 2>&1
     aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${u}" >/dev/null 2>&1
+    aws iam delete-user-policy --user-name "${u}" --policy-name cdkd-6609-u3-inline >/dev/null 2>&1
+    aws iam delete-user-permissions-boundary --user-name "${u}" >/dev/null 2>&1
     aws iam delete-user --user-name "${u}" >/dev/null 2>&1
   done
   for arn in $(aws iam list-attached-group-policies --group-name "${ADD_GROUP}" \
@@ -270,6 +275,65 @@ assert_block_names_deny() { # usage: assert_block_names_deny <type>
   fi
 }
 
+# go-to-k/cdkd#6609: the baseline captured right after cdkd's own write must
+# hold the member the deploy just wrote. `cdkd drift` alone cannot see a stale
+# baseline while the live member is the declared one (the drift heal rule
+# skips the key then), so this reads the record itself: its observed member
+# must be exactly what AWS holds now, key order aside.
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+lid_of() { # usage: lid_of <resourceType> <physicalId>
+  state_json | jq -r --arg t "$1" --arg p "$2" \
+    '.resources | to_entries[] | select(.value.resourceType == $t and .value.physicalId == $p) | .key'
+}
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON> <label>
+  local recorded live
+  [ -n "$1" ] || { echo "FAIL: no state record to check $2 on after $4" >&2; exit 1; }
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  live=$(jq -cS . <<<"$3") || { echo "FAIL: the live value of $1 $2 is not JSON after $4: $3" >&2; exit 1; }
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+# Attached ARNs of a principal, sorted, minus the sibling ManagedPolicy's own
+# attachment (that resource's, which the principal's capture strips, #6324).
+attached_own_json() { # usage: attached_own_json role|user|group <name>
+  aws iam "list-attached-$1-policies" "--$1-name" "$2" --query 'sort(AttachedPolicies[].PolicyArn)' --output json \
+    | jq -c --arg m "${MP_ARN}" 'map(select(. != $m))'
+}
+inline_json() { # usage: inline_json role|user <name> <policy name>
+  local doc
+  doc=$(aws iam "get-$1-policy" "--$1-name" "$2" --policy-name "$3" --query PolicyDocument --output json) || return 1
+  jq -cn --arg n "$3" --argjson d "${doc}" '[{PolicyName: $n, PolicyDocument: $d}]'
+}
+check_6609_baselines() { # usage: check_6609_baselines <phase label>
+  local role_lid u3_lid mp_lid version
+  role_lid=$(lid_of AWS::IAM::Role "${ROLE_NAME}")
+  u3_lid=$(lid_of AWS::IAM::User "${ADD_U3}")
+  mp_lid=$(lid_of AWS::IAM::ManagedPolicy "${MP_ARN}")
+  assert_observed_member "${role_lid}" .AssumeRolePolicyDocument \
+    "$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.AssumeRolePolicyDocument --output json)" "$1"
+  assert_observed_member "${role_lid}" .PermissionsBoundary \
+    "$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output json)" "$1"
+  assert_observed_member "${role_lid}" .Policies "$(inline_json role "${ROLE_NAME}" cdkd-6609-inline)" "$1"
+  assert_observed_member "${role_lid}" '.ManagedPolicyArns | sort' "$(attached_own_json role "${ROLE_NAME}")" "$1"
+  assert_observed_member "$(lid_of AWS::IAM::User "${USER_NAME}")" '.ManagedPolicyArns | sort' \
+    "$(attached_own_json user "${USER_NAME}")" "$1"
+  assert_observed_member "$(lid_of AWS::IAM::Group "${GROUP_NAME}")" '.ManagedPolicyArns | sort' \
+    "$(attached_own_json group "${GROUP_NAME}")" "$1"
+  version=$(aws iam get-policy --policy-arn "${MP_ARN}" --query Policy.DefaultVersionId --output text) || return 1
+  assert_observed_member "${mp_lid}" .PolicyDocument "$(aws iam get-policy-version --policy-arn "${MP_ARN}" \
+    --version-id "${version}" --query PolicyVersion.Document --output json)" "$1"
+  assert_observed_member "${u3_lid}" .Policies "$(inline_json user "${ADD_U3}" cdkd-6609-u3-inline)" "$1"
+  assert_observed_member "${u3_lid}" .PermissionsBoundary \
+    "$(aws iam get-user --user-name "${ADD_U3}" --query 'User.PermissionsBoundary.PermissionsBoundaryArn || `""`' --output json)" "$1"
+}
+
 WANT_ROLE="$(sorted "${BASIC_ARN}" "${MP_ARN}")"
 WANT_OTHER="$(sorted "${OWN_ARN}" "${MP_ARN}")"
 
@@ -305,6 +369,7 @@ if [ "${premise_ok}" -ne 1 ]; then
   exit 1
 fi
 echo "    the sibling policy is attached to the role, the user, the group and the attacher role; all three addition users are in ${ADD_GROUP}"
+check_6609_baselines "Phase 1b"
 
 # --- Phase 2: no drift on a fresh stack ----------------------------------
 echo "==> Phase 2: cdkd drift on the fresh stack (expect exit 0)"
@@ -518,6 +583,96 @@ if [ "${GOT_BASELINES}" != "${WANT_PLANTED}" ]; then
   exit 1
 fi
 echo "    each baseline holds its sibling's member: ${GOT_BASELINES}"
+check_6609_baselines "Phase 9 (touch)"
+U3_BOUNDARY="$(aws iam get-user --user-name "${ADD_U3}" --query 'User.PermissionsBoundary.PermissionsBoundaryArn' --output text)"
+[ "${U3_BOUNDARY}" = "arn:${PARTITION}:iam::aws:policy/PowerUserAccess" ] \
+  || { echo "FAIL: the touch deploy did not put ${ADD_U3}'s permissions boundary: ${U3_BOUNDARY}" >&2; exit 1; }
+
+# go-to-k/cdkd#6609: `cdkd drift --revert` acts on what the capture recorded,
+# so an out-of-band change of a member must report, revert to the template in
+# place (same physical id, no delete / create), and leave drift clean.
+revert_drift_json() { # usage: revert_drift_json [env args...] -- prints `cdkd drift --json`; exit 0..2 is a report
+  local out rc=0
+  out=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${out}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report (#6609 revert arm)" >&2
+    printf '%s\n' "${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}"
+}
+assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <member key> <label>
+  jq -e --arg t "$2" --arg k "$3" '
+    def member: .path == $k or (.path | startswith($k + ".")) or (.path | startswith($k + "["));
+    [.[] | (.drifted // [])[] | select(.type == $t) | .changes[] | select(member)] | length > 0
+  ' <<<"$1" >/dev/null || {
+    echo "FAIL: cdkd drift does not report the out-of-band $2 $3 after $4 (#6609)" >&2
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
+}
+assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
+  local rc=0 label="$1"
+  shift
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || rc=$?
+  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0 (#6609)" >&2; exit 1; }
+  echo "    OK: cdkd drift is clean after ${label} (#6609)"
+}
+run_revert() { # usage: run_revert [env args...]
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+}
+assert_same() { # usage: assert_same <label> <before> <after>
+  [ -n "$2" ] && [ "$2" = "$3" ] || { echo "FAIL: $1 changed across the revert: '$2' -> '$3' (#6609: a delete / create)" >&2; exit 1; }
+  echo "    OK: $1 unchanged across the revert ($2)"
+}
+
+echo "==> Phase 9b: out-of-band changes to four IAM members are reverted in place (#6609)"
+ids_of() { # the role / user / group / policy ids and their state physical ids, one line
+  local role user group policy
+  role=$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.RoleId --output text) || return 1
+  user=$(aws iam get-user --user-name "${ADD_U3}" --query User.UserId --output text) || return 1
+  group=$(aws iam get-group --group-name "${GROUP_NAME}" --query Group.GroupId --output text) || return 1
+  policy=$(aws iam get-policy --policy-arn "${MP_ARN}" --query Policy.PolicyId --output text) || return 1
+  printf '%s %s %s %s %s %s %s %s' "${role}" "${user}" "${group}" "${policy}" \
+    "$(lid_of AWS::IAM::Role "${ROLE_NAME}")" "$(lid_of AWS::IAM::User "${ADD_U3}")" \
+    "$(lid_of AWS::IAM::Group "${GROUP_NAME}")" "$(lid_of AWS::IAM::ManagedPolicy "${MP_ARN}")"
+}
+mp_default_doc() {
+  local version
+  version=$(aws iam get-policy --policy-arn "${MP_ARN}" --query Policy.DefaultVersionId --output text) || return 1
+  aws iam get-policy-version --policy-arn "${MP_ARN}" --version-id "${version}" --query PolicyVersion.Document --output json | jq -cS .
+}
+IDS_BEFORE="$(ids_of)" || { echo "FAIL: could not read the IAM ids before phase 9b" >&2; exit 1; }
+MP_DOC_BEFORE="$(mp_default_doc)" || { echo "FAIL: could not read ${MP_ARN} before phase 9b" >&2; exit 1; }
+GROUP_ATTACHED_BEFORE="$(attached group "${GROUP_NAME}")" || { echo "FAIL: list-attached-group-policies ${GROUP_NAME}" >&2; exit 1; }
+aws iam put-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-oob \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sqs:GetQueueUrl","Resource":"*"}]}'
+aws iam create-policy-version --policy-arn "${MP_ARN}" --set-as-default \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sqs:ListQueueTags","Resource":"*"}]}' >/dev/null
+aws iam delete-user-permissions-boundary --user-name "${ADD_U3}"
+aws iam attach-group-policy --group-name "${GROUP_NAME}" --policy-arn "${DENY_ARN}"
+DRIFT_9B="$(revert_drift_json)" || exit 1
+assert_member_drifted "${DRIFT_9B}" AWS::IAM::Role Policies "an out-of-band put-role-policy"
+assert_member_drifted "${DRIFT_9B}" AWS::IAM::ManagedPolicy PolicyDocument "an out-of-band default policy version"
+assert_member_drifted "${DRIFT_9B}" AWS::IAM::User PermissionsBoundary "an out-of-band boundary removal"
+assert_member_drifted "${DRIFT_9B}" AWS::IAM::Group ManagedPolicyArns "an out-of-band attach"
+run_revert
+GOT_INLINE="$(aws iam list-role-policies --role-name "${ROLE_NAME}" --query "join(' ', sort(PolicyNames || \`[]\`))" --output text)"
+[ "${GOT_INLINE}" = "cdkd-6609-inline" ] || { echo "FAIL: ${ROLE_NAME}'s inline policies after the revert: '${GOT_INLINE}'" >&2; exit 1; }
+[ "$(mp_default_doc)" = "${MP_DOC_BEFORE}" ] || { echo "FAIL: ${MP_ARN}'s default document is not the template's after the revert" >&2; exit 1; }
+[ "$(aws iam get-user --user-name "${ADD_U3}" --query 'User.PermissionsBoundary.PermissionsBoundaryArn' --output text)" = "arn:${PARTITION}:iam::aws:policy/PowerUserAccess" ] \
+  || { echo "FAIL: ${ADD_U3}'s permissions boundary is not back after the revert" >&2; exit 1; }
+[ "$(attached group "${GROUP_NAME}")" = "${GROUP_ATTACHED_BEFORE}" ] \
+  || { echo "FAIL: ${GROUP_NAME}'s attached policies are not the template's after the revert" >&2; exit 1; }
+echo "    OK: the revert put the inline policies, the default document, the boundary and the attachments back"
+assert_same "the role / user / group / policy ids and their state physical ids" "${IDS_BEFORE}" "$(ids_of)"
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 9b (after the revert): cdkd drift exited ${DRIFT_RC}, want 0" >&2
+  exit 1
+fi
+echo "    OK: cdkd drift is clean after the phase 9b revert (#6609)"
 
 export CDKD_TEST_UPDATE=late,shrink,touch,drop
 echo "==> Phase 9: the Attacher role drops the policy; the addition drops ${ADD_U3}"

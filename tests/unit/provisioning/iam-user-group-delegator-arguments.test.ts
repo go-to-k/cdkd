@@ -116,8 +116,8 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['resourceIdentity', 'read-state', 'resourceIdentity', 3],
   ['readIdIfExists', 'read-state', 'readIdIfExists', 2],
   ['readCurrentState', 'read-state', 'readCurrentState', 5],
-  ['readUserCurrentState', 'read-state', 'readUserCurrentState', 3],
-  ['readGroupCurrentState', 'read-state', 'readGroupCurrentState', 3],
+  ['readUserCurrentState', 'read-state', 'readUserCurrentState', 4],
+  ['readGroupCurrentState', 'read-state', 'readGroupCurrentState', 4],
   ['collectInlinePolicies', 'read-state', 'collectInlinePolicies', 4],
   ['import', 'import', 'importImpl', 1],
   ['importUser', 'import', 'importUser', 1],
@@ -126,7 +126,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
 ];
 
 /** Methods whose bodies stay on the class. */
-const KEPT_ON_CLASS = new Set(['constructor']);
+const KEPT_ON_CLASS = new Set(['constructor', 'getDriftUnorderedPaths']);
 
 type Callable = (...args: unknown[]) => unknown;
 type Spy = ReturnType<typeof vi.fn>;
