@@ -96,6 +96,7 @@ vi.mock('../../../src/provisioning/read-only-properties.js', () => ({
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
 
 const ACCOUNT = '123456789012';
 const OOB_ARN = 'arn:aws:iam::aws:policy/AdministratorAccess';
@@ -238,6 +239,23 @@ function routeIam(cmd: { constructor: { name: string }; input: Record<string, un
       writes.push(`${name} ${i['GroupName'] as string}`);
       live.groups = live.groups.filter((g) => g !== i['GroupName']);
       return {};
+    // The managed policy SIB_ARN (IAMManagedPolicyProvider's read): attached
+    // to the Subject group when the group's live list holds it.
+    case 'GetPolicy':
+      return {
+        Policy: { PolicyName: 'TestStack-SiblingMp-ABC', Path: '/', Arn: SIB_ARN, DefaultVersionId: 'v1' },
+      };
+    case 'GetPolicyVersion':
+      return { PolicyVersion: { Document: enc(DOC('s3:GetObject')), VersionId: 'v1', IsDefaultVersion: true } };
+    case 'ListEntitiesForPolicy':
+      return {
+        PolicyRoles: [],
+        PolicyUsers: [],
+        PolicyGroups: live.managed.includes(SIB_ARN) ? [{ GroupName: NAME.Group }] : [],
+        IsTruncated: false,
+      };
+    case 'ListPolicyTags':
+      return { Tags: [], IsTruncated: false };
     case 'UpdateRole':
       // Description / MaxSessionDuration, sent on every role update unchanged.
       return {};
@@ -632,6 +650,8 @@ describe("an attachment a same-stack ManagedPolicy's own declared list owns (iam
     ['a {{resolve:}} reference', ['{{resolve:ssm:/team/group}}']],
     ['a masked name', ['***']],
     ['an unresolved intrinsic', [{ Ref: 'Other' }]],
+    ['a plain name beside a {{resolve:}} reference', ['other-group', '{{resolve:ssm:/team/group}}']],
+    ['a single string, not a list', 'other-group'],
   ])("a declared Groups holding %s does not take the attachment from the group", async (_l, groups) => {
     resources = { Subject: principalRecord('Group'), Mp: mp({ Groups: groups }) };
     live.managed.push(SIB_ARN);
@@ -639,6 +659,21 @@ describe("an attachment a same-stack ManagedPolicy's own declared list owns (iam
     expect(changes()).toEqual([{ logicalId: 'Subject', path: 'ManagedPolicyArns' }]);
     expect(await runDrift(['--revert', '--yes'])).toBe(0);
     expect(writes).toEqual([`DetachGroupPolicy ${SIB_ARN}`]);
+  });
+
+  it('a declared EMPTY Groups takes the attachment: the policy reports it, and the revert detaches it exactly once', async () => {
+    const policyProvider = new IAMManagedPolicyProvider();
+    const groupProvider = new IAMUserGroupProvider();
+    mockRegistryGetProvider.mockImplementation((type) =>
+      type === 'AWS::IAM::ManagedPolicy' ? policyProvider : groupProvider
+    );
+    resources = { Subject: principalRecord('Group'), Mp: mp({ Groups: [] }) };
+    live.managed.push(SIB_ARN);
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes()).toEqual([{ logicalId: 'Mp', path: 'Groups' }]);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual([`DetachGroupPolicy ${SIB_ARN}`]);
+    expect(live.managed).toEqual([]);
   });
 
   it("the same attach of a policy that declares no Groups list is the group's drift, and its revert detaches it", async () => {
