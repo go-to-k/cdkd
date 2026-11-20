@@ -442,6 +442,27 @@ const specs: Spec[] = [
   },
 ];
 
+describe('AWS::IAM::User Groups: a removed group noted in another case than AWS spells it', () => {
+  const spec = specs.find((s) => s.name === 'AWS::IAM::User Groups')!;
+
+  it('still read in AWS spelling: re-read until gone, recorded without it', async () => {
+    note(spec.type, spec.id, spec.key, 'Admins');
+    answer('GetUserCommand', spec.base!['GetUserCommand']!);
+    answer(spec.command, spec.stale, spec.clean);
+    const read = bag(await spec.read(spec.properties, AFTER));
+    expect(read[spec.key]).toEqual(spec.cleanValue);
+    expect(callsOf(spec.command)).toBe(2);
+  });
+
+  it('declared again in another case: never waited on', async () => {
+    note(spec.type, spec.id, spec.key, 'admins');
+    answer('GetUserCommand', spec.base!['GetUserCommand']!);
+    answer(spec.command, spec.stale);
+    await spec.read({ Groups: ['g1', 'ADMINS'] }, AFTER);
+    expect(callsOf(spec.command)).toBe(1);
+  });
+});
+
 describe.each(specs)('$name: a removed entry on the capture', (spec) => {
   const setup = (...answers: Array<() => unknown>) => {
     for (const [command, base] of Object.entries(spec.base ?? {})) answer(command, base);

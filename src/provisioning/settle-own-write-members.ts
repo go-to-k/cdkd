@@ -138,27 +138,36 @@ export function mergeDeclaredEntries<D>(
  */
 export function removedNotDeclared(
   removed: ReadonlySet<string> | undefined,
-  declared: readonly string[]
+  declared: readonly string[],
+  fold: (entry: string) => string = (entry) => entry
 ): Set<string> {
-  const keep = new Set(declared);
-  return new Set([...(removed ?? [])].filter((entry) => !keep.has(entry)));
+  const keep = new Set(declared.map(fold));
+  return new Set([...(removed ?? [])].map(fold).filter((entry) => !keep.has(entry)));
 }
 
 /**
  * A list of strings as a member: settled once every declared entry reads back
  * and no entry in `removed` (what the write removed) does (the module comment
- * has the unsettled outcomes).
+ * has the unsettled outcomes). `fold` spells a declared or removed entry and a
+ * read one alike (IAM group names are case-insensitive, and the template's
+ * spelling, which the note holds too, can differ from AWS's).
  */
 export function stringListMember(
   key: string,
   declared: readonly string[],
   read: () => Promise<MemberRead<unknown>>,
-  removed?: ReadonlySet<string>
+  removed?: ReadonlySet<string>,
+  fold: (entry: string) => string = (entry) => entry
 ): OwnWriteMember<unknown> {
-  const gone = removedNotDeclared(removed, declared);
+  const folded = removedNotDeclared(removed, declared, fold);
+  const gone = { has: (entry: string): boolean => folded.has(fold(entry)) };
   const missing = (value: unknown): string[] => {
-    const have = new Set(Array.isArray(value) ? (value as unknown[]) : []);
-    return declared.filter((entry) => !have.has(entry));
+    const have = new Set(
+      (Array.isArray(value) ? (value as unknown[]) : []).map((entry) =>
+        typeof entry === 'string' ? fold(entry) : entry
+      )
+    );
+    return declared.filter((entry) => !have.has(fold(entry)));
   };
   return {
     key,
@@ -171,7 +180,7 @@ export function stringListMember(
       mergeDeclaredEntries(
         newest,
         declared,
-        (entry, want) => entry === want,
+        (entry, want) => typeof entry === 'string' && fold(entry) === fold(want),
         (want) => want
       ).filter((entry) => !(typeof entry === 'string' && gone.has(entry))),
     read,
@@ -356,7 +365,15 @@ export function principalOwnWriteMembers(
     const declared = declaredStringList(properties[key]);
     const gone = removed?.get(key);
     if (declared !== undefined || (gone?.size ?? 0) > 0) {
-      members.push(stringListMember(key, declared ?? [], read, gone));
+      members.push(
+        stringListMember(
+          key,
+          declared ?? [],
+          read,
+          gone,
+          key === 'Groups' ? (entry) => entry.toLowerCase() : undefined
+        )
+      );
     }
   }
   const policies = declaredInlinePolicies(properties['Policies']);
