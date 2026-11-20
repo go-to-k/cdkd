@@ -12,6 +12,7 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
  */
 
 const mockIamSend = vi.hoisted(() => vi.fn());
+const mockWarn = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   reserveStdoutForPayload: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockWarn,
     error: vi.fn(),
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -769,6 +770,45 @@ describe('a same-stack ManagedPolicy this run did not compare (go-to-k/cdkd#6697
     expect(changes()).toEqual([{ logicalId: 'Subject', path: 'ManagedPolicyArns' }]);
     expect(notCompared().every((n) => n.cause === 'readFailed')).toBe(true);
     expect(notCompared().map((n) => n.logicalId)).not.toContain('Subject');
+  });
+
+  const warnings = (): string[] => mockWarn.mock.calls.map((c) => String(c[0]));
+  const breakerLines = (): string[] =>
+    warnings().filter((w) => w.includes('reads in a row in this stack failed'));
+
+  it("a policy's failed read does not promise that cdkd goes on: the replay may trip on it", async () => {
+    failPolicyRead();
+    resources = { Subject: principalRecord('Group'), ZMp: mp(['other-group']) };
+    mockWarn.mockClear();
+    await runDrift(['--json']);
+    const own = warnings().filter((w) => w.startsWith('ZMp '));
+    expect(own).toHaveLength(1);
+    expect(own[0]).toContain('could not be compared');
+    expect(own[0]).not.toContain('cdkd goes on');
+  });
+
+  it('the breaker warns once although replayed policy failures past the trip reach the threshold again', async () => {
+    // P00-P04 fail, P05 reads, P06-P10 fail: replayed in template order that
+    // trips at P04; P06-P10 would reach the threshold a second time.
+    mockRegistryGetProvider.mockImplementation((type) =>
+      type === 'AWS::IAM::ManagedPolicy'
+        ? {
+            readCurrentState: async (p: string, _l: string, _t: string, r: unknown) => {
+              if (p.endsWith('#5')) return r;
+              throw new Error('AccessDenied: iam:GetPolicy');
+            },
+          }
+        : new IAMUserGroupProvider()
+    );
+    resources = { Subject: principalRecord('Group') };
+    for (let i = 0; i <= 10; i++) {
+      resources[`P${String(i).padStart(2, '0')}`] = mp(['other-group'], {
+        physicalId: `${SIB_ARN}#${i}`,
+      });
+    }
+    mockWarn.mockClear();
+    await runDrift(['--json']);
+    expect(breakerLines()).toHaveLength(1);
   });
 
   it('a policy read that returned still splits the failures around it in template order, so the breaker does not trip', async () => {

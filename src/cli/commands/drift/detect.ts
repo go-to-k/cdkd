@@ -304,6 +304,9 @@ export async function runDriftForStack(
     };
     /** Counts one failed read; true when it trips its path. */
     const countReadFailure = (path: DriftReadPath): boolean => {
+      // A replayed policy failure can follow the trip (policies are read
+      // whatever trips later): the path trips, and warns, once.
+      if (trippedReadPaths.has(path)) return false;
       consecutiveReadFailures[path]++;
       if (consecutiveReadFailures[path] !== DRIFT_READ_FAILURE_BREAKER_THRESHOLD) return false;
       trippedReadPaths.add(path);
@@ -766,7 +769,12 @@ export async function runDriftForStack(
               // breaker, so the clause speaks only for what happens next.
               // Said only while NO path has tripped: after one has, part of the
               // rest of the stack is not read, whichever path this failure took.
-              (trippedReadPaths.size > 0 ? '' : `cdkd goes on with the rest of this stack. `) +
+              // Nor for a managed policy (go-to-k/cdkd#6697): its failure is
+              // counted later, at its template position, and may be the one
+              // that trips.
+              (trippedReadPaths.size > 0 || inPolicyBlock
+                ? ''
+                : `cdkd goes on with the rest of this stack. `) +
               `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
           );
           if (breakerTripped) warnBreakerTripped(readPath);
