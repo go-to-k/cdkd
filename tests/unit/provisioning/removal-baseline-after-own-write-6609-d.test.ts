@@ -850,6 +850,16 @@ describe('a declared ingress rule naming its peer by SourceSecurityGroupName alo
     expect(read['SecurityGroupIngress']).toEqual([expect.objectContaining({ SourceSecurityGroupId: 'sg-peer' })]);
   });
 
+  it('a revoked peer-group rule on the same ports but another protocol (udp 443) is still waited on, and dropped when still read', async () => {
+    const udpKey = sgRemovalRuleKey({ IpProtocol: 'udp', FromPort: 443, ToPort: 443, SourceSecurityGroupId: 'sg-2' }, 'ingress')!;
+    const udp = { IpProtocol: 'udp', FromPort: 443, ToPort: 443, UserIdGroupPairs: [{ GroupId: 'sg-2', UserId: ACCT }] };
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', udpKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission, udp], []));
+    const read = bag(await readSg({ GroupDescription: 'd', SecurityGroupIngress: [NAMED] }, AFTER));
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(4);
+    expect(read['SecurityGroupIngress']).toEqual([expect.objectContaining({ SourceSecurityGroupId: 'sg-peer' })]);
+  });
+
   it("a revoked peer-group rule on the same ports in a string-port spelling ('443') is not waited on", async () => {
     // The same peer the read shows, so only the exemption keeps it from being waited on.
     const stringKey = sgRemovalRuleKey({ IpProtocol: '6', FromPort: '443', ToPort: '443', SourceSecurityGroupId: 'sg-peer' }, 'ingress')!;

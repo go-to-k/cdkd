@@ -83,7 +83,8 @@ export function sgRemovalRuleKey(
  * baseline (phantom drift, and `drift --revert` revoking it). So a revoked
  * PEER-GROUP rule whose protocol and ports (folded as the settle key folds
  * them) are those of a declared name-only rule is not waited on; any other
- * revoked rule still is. A key that does not parse is not waited on either.
+ * revoked rule still is. With such a rule declared, a key that does not parse
+ * is not waited on either.
  */
 export function sgRemovedNotDeclared(
   removed: ReadonlySet<string> | undefined,
