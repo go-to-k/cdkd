@@ -4,6 +4,9 @@ import type { EC2Client } from '@aws-sdk/client-ec2';
 import { isAmbiguousCcHandlerErrorCode } from '../../deployment/retryable-errors.js';
 import { isWaitAbandonedError } from '../wait-abandoned.js';
 import { CloudControlOperationFailedError } from './shared.js';
+import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../../deployment/recorded-identity-attributes.js';
+import { recordedIdentityId } from '../recorded-identity.js';
+import type { DeleteContext } from '../region-check.js';
 
 /**
  * Resource types whose Cloud-Control-routed DELETE gets a pre-flight
@@ -130,6 +133,47 @@ export function bucketLocationToRegion(constraint: string | null | undefined): s
  */
 export function isNoSuchBucketError(error: unknown): boolean {
   return (error as { name?: string } | undefined)?.name === 'NoSuchBucket';
+}
+
+/**
+ * go-to-k/cdkd#6666: the types in `SURVIVOR_IDENTITY_ATTRIBUTES` whose Cloud
+ * Control model does NOT return the AWS-minted id (the registry schema's
+ * `readOnlyProperties` lack it), so a Cloud Control-routed record of them
+ * never carries the key and no `GetResource` could compare it:
+ * `AWS::DynamoDB::Table` (`TableId`; the schema's read-only set is `Arn` /
+ * `StreamArn`).
+ */
+const CC_MODEL_OMITS_IDENTITY: ReadonlySet<string> = new Set(['AWS::DynamoDB::Table']);
+
+/**
+ * go-to-k/cdkd#6666: per type, the attribute a Cloud Control-routed delete
+ * compares before it is issued. Derived from the shared
+ * `SURVIVOR_IDENTITY_ATTRIBUTES` (the SDK deletes and the update carry read
+ * the same table), minus {@link CC_MODEL_OMITS_IDENTITY}. Each key is the
+ * Cloud Control model's read-only property of the same name, recorded from the
+ * create's model because it is an `Fn::GetAtt` attribute of the type, so a
+ * record keeps the key whichever route wrote it.
+ */
+export const CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES: ReadonlyMap<string, string> = new Map(
+  Object.entries(SURVIVOR_IDENTITY_ATTRIBUTES).filter(
+    ([resourceType]) => !CC_MODEL_OMITS_IDENTITY.has(resourceType)
+  )
+);
+
+/**
+ * The recorded AWS-minted id a Cloud Control-routed delete compares
+ * (go-to-k/cdkd#6666), read from the record at delete time: the shared
+ * `recordedIdentityId` (one predicate, `isUsableIdentityValue`, for masked,
+ * secret-reference and empty values), for a type in
+ * {@link CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES} only. `undefined` -- no
+ * read, today's by-name delete -- for every other record.
+ */
+export function recordedCcDeleteIdentity(
+  resourceType: string,
+  context: DeleteContext | undefined
+): { key: string; value: string } | undefined {
+  if (!CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES.has(resourceType)) return undefined;
+  return recordedIdentityId(resourceType, context);
 }
 
 /**
