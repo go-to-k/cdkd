@@ -165,8 +165,7 @@ policy, not a second time on the principal. This holds only when that list
 holds plain names; a list holding a `{{resolve:...}}` reference leaves the
 attachment to the principal. In a run where the policy itself is not
 compared (its read failed, or its baseline was refused), such an attachment
-is reported on neither resource until a later run compares the policy
-([#6697](https://github.com/go-to-k/cdkd/issues/6697)).
+is reported on neither resource until a later run compares the policy.
 If a member was granted on purpose, by another stack or by your
 organization's automation, run `cdkd drift --accept` instead: it records the
 member, and drift stops reporting it. An inline policy recorded this way is pinned to the document it
