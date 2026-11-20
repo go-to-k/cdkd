@@ -20,7 +20,8 @@ verified gone ("Cleanup is non-negotiable" below).
    `AwsCustomResource`, `LambdaRestApi`, adding a GSI / changing a property on
    redeploy, `grant*` IAM, cross-stack refs) over exotic edge cases.
 2. **UPDATE and DESTROY are where bugs hide** (replacement classification,
-   silent drops, delete ordering, state cleanup): always test both.
+   silent drops, custom-resource hangs, delete ordering, state cleanup):
+   always test both.
 3. **Check coverage first** — hunt in genuinely-uncovered territory:
    ```bash
    grep -rln "BucketDeployment\|addEventNotification\|logRetention\|AwsCustomResource\|LambdaRestApi\|NodejsFunction" tests/integration/
