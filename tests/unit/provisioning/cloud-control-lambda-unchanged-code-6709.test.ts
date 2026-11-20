@@ -127,7 +127,8 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
 
     const patch = sentPatch();
     expect(patch).toContainEqual({ op: 'add', path: '/FunctionScalingConfig', value: SCALING });
-    // `PublishToLatestPublished` still gets the re-add required by go-to-k/cdkd#809.
+    // Preserve the existing go-to-k/cdkd#809 re-add behavior for
+    // `PublishToLatestPublished`.
     expect(patch).toContainEqual({ op: 'add', path: '/PublishToLatestPublished', value: true });
     expect(paths(patch)).toEqual(['/FunctionScalingConfig', '/PublishToLatestPublished']);
   });
