@@ -8,6 +8,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import type { ResourceState } from '../../types/state.js';
 import { StaleAttributeMissSignal } from '../stale-attribute-heal.js';
 import { getPropertyCoverage } from '../../provisioning/property-coverage.js';
+import { isUnexposedRecordedIdentity } from '../unexposed-identity-attribute.js';
 import {
   healWithheld,
   staleRecordRemedy,
@@ -540,6 +541,46 @@ export function refuseEndpointTheEngineLacks(
         `${displayMasked(resolver, engine, context)}, which has no ${lacking}. CloudFormation answers an ` +
         `empty Address and Port for it; cdkd refuses instead of passing an empty endpoint on. ` +
         `Reference ${other} instead.`
+    )
+  );
+}
+
+/**
+ * go-to-k/cdkd#6655: the AWS-minted identity id cdkd records for its own
+ * delete and re-adopt checks (`SURVIVOR_IDENTITY_ATTRIBUTES`) is NOT
+ * always a CloudFormation attribute. `AWS::DynamoDB::Table` exposes only `Arn`
+ * and `StreamArn`, so CloudFormation rejects `Fn::GetAtt [Table, TableId]`;
+ * served from the record, the same template deployed under cdkd, and a missing
+ * record fell through to the physical-id fallback instead. Refused here, BEFORE
+ * the record is read and whatever `--strict-getatt` says, so a template cdkd
+ * accepts is one CloudFormation accepts. An id the type does expose (`RoleId`,
+ * `PolicyId`, `DbiResourceId`, `DBClusterResourceId`) is untouched, and so is
+ * every other recorded attribute: the committed schema's list is short of the
+ * resource specification's for a few types, so it can certify an identity key
+ * as unexposed but not refuse an arbitrary one.
+ *
+ * `cdkd orphan`'s attribute fetcher takes the same check
+ * (`analyzer/orphan-rewriter/attribute-fetcher.ts`). cdkd's own identity
+ * readers (`recorded-identity.ts`, the rollback re-adopt check) read
+ * `attributes` directly and never come through either.
+ */
+export function refuseUnexposedRecordedIdentity(
+  resolver: IntrinsicFunctionResolver,
+  resourceType: string,
+  logicalId: string,
+  attributeName: string,
+  context: ResolverContext | undefined
+): void {
+  if (!isUnexposedRecordedIdentity(resourceType, attributeName)) return;
+  // `markNonRetryable`: the verdict is the template's own spelling, which no
+  // retry changes, and the message interpolates template text.
+  throw markNonRetryable(
+    new IntrinsicResolutionRefusalError(
+      `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ` +
+        `${displayMasked(resolver, attributeName, context)}] for ${displayMasked(resolver, resourceType, context)}: ` +
+        `CloudFormation does not expose ${displayMasked(resolver, attributeName, context)} as an attribute ` +
+        `of this type and rejects the template. cdkd records it for its own identity checks only. ` +
+        `Read an attribute the type exposes, or use Ref.`
     )
   );
 }

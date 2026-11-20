@@ -742,6 +742,18 @@ if ! grep -qF "(${REPLACE_A_NAME}) was not deleted yet — re-adopting it" "${LO
   echo "[verify] FAIL: the rollback did not say it re-adopted the untouched old ${REPLACE_A_NAME} (output above)"
   exit 1
 fi
+# go-to-k/cdkd#6655 (D5): an SSM parameter records no AWS-assigned id, so the
+# re-adopt says cdkd could not prove it is the one it created, once, with the
+# single-record `cdkd state orphan` way out; uncounted, so the exit above stays 0.
+R2_UNVERIFIED="$(grep -cF 'cdkd could not prove that the resource AWS reports under the old id of ReplaceParam' "${LOG_DIR}/rollback-cmd-replace-rb.log" || true)"
+if [ "${R2_UNVERIFIED}" != "1" ]; then
+  echo "[verify] FAIL: the re-adopt printed ${R2_UNVERIFIED} unverified-identity warning line(s) for ReplaceParam (expected 1, go-to-k/cdkd#6655)"
+  exit 1
+fi
+if ! grep -F 'cdkd could not prove' "${LOG_DIR}/rollback-cmd-replace-rb.log" | grep -qF 'cdkd state orphan'; then
+  echo "[verify] FAIL: the unverified-identity warning does not name cdkd state orphan (go-to-k/cdkd#6655)"
+  exit 1
+fi
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}"; then
   echo "[verify] FAIL: rollback journal still present after the reverse-replacement rollback"
   exit 1

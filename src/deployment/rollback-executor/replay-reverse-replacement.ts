@@ -47,8 +47,10 @@ import {
   SURVIVOR_IDENTITY_ATTRIBUTES,
   isForeignSurvivor,
   probeReplacedSurvivor,
+  unverifiedIdentityCause,
   type ForeignSurvivorVerdict,
 } from './replaced-survivor.js';
+import { stateOrphanRecordRemedy } from '../../provisioning/state-orphan-remedy.js';
 import type { MarkedRecreateScope } from './replay-reverse-replacement/failures.js';
 import { recreateOldResource } from './replay-reverse-replacement/recreate.js';
 import { finishReverseReplacement } from './replay-reverse-replacement/finish.js';
@@ -204,6 +206,13 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       result.warnings++;
       survivor = 'exists';
     }
+    // go-to-k/cdkd#6655 (D5): re-adopted as `'exists'`, warned about only on
+    // the two arms below that re-adopt it.
+    let identityUnverified = false;
+    if (survivor === 'identity-unverified') {
+      identityUnverified = true;
+      survivor = 'exists';
+    }
     if (survivor === 'exists' && op.oldResourceMaySurvive === 'unconfirmed') {
       throw survivorUnprovenRefusal(s, oldType, 'maybe-deleting');
     }
@@ -224,7 +233,16 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       logger.info(
         safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) was not deleted yet — re-adopting it`
       );
-      return replayReadopt(s, {});
+      await replayReadopt(s, {});
+      // A re-adopt that throws fails the op with its own error, and no line
+      // then claims it was re-adopted.
+      if (identityUnverified) warnUnverifiedSurvivor(s, oldType);
+      // go-to-k/cdkd#6655: re-adopted on the superseded listing alone, with
+      // an identity id that could not be compared: said, as the weaker case is.
+      if (survivor === 'identity-uncompared' || survivor === 'identity-unread') {
+        warnUnverifiedSurvivor(s, oldType, survivor);
+      }
+      return;
     }
     if (survivor === 'exists') {
       // As a retained one: delete the new copy, point state back at the old.
@@ -239,12 +257,14 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
           safeMsg`with ${cdkdRemedy('cdkd drift')} after the rollback.${describedPhysicalIdPointer(oldShown)}`
       );
       result.warnings++;
-      return replayReadopt(s, {
+      await replayReadopt(s, {
         reason:
           `the old resource survived a delete that was refused or never sent during the ` +
           `deploy and was re-adopted instead of re-created; the provider may have run part of ` +
           `that delete, so check it with ${cdkdRemedy('cdkd drift')}`,
       });
+      if (identityUnverified) warnUnverifiedSurvivor(s, oldType);
+      return;
     }
     if (survivor !== 'gone') throw survivorUnprovenRefusal(s, oldType, survivor);
     logger.info(
@@ -628,6 +648,49 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
 }
 
 /**
+ * go-to-k/cdkd#6655 (D5): the re-adopt of a survivor nothing could prove the
+ * stack's (`'identity-unverified'`), said out loud with the way out once the
+ * re-adopt has succeeded. One line per op, NOT counted in `result.warnings`: it fires on every re-adopt of
+ * such a type, the ordinary deferred one included, and a count would turn
+ * each of those rollbacks into exit 2. Value-free: the logical id (described
+ * when not plain), the type and attribute, no physical id, no AWS text.
+ */
+function warnUnverifiedSurvivor(
+  s: Pick<ReplayOpScope, 'op' | 'logger' | 'mask'>,
+  oldType: string,
+  /** Set when an identity id was recorded but could not be compared. */
+  uncompared?: 'identity-uncompared' | 'identity-unread'
+): void {
+  const { op, logger, mask } = s;
+  const cause =
+    uncompared === undefined
+      ? unverifiedIdentityCause(oldType, op.previousState?.attributes, refusalResourceType(oldType))
+      : uncomparedIdentityCause(oldType, uncompared);
+  logger.warn(
+    mask(
+      safeMsg`  ⚠ Rollback: cdkd could not prove that the resource AWS reports under the old id of ` +
+        safeMsg`${shownLogicalId(op.logicalId)} is the one cdkd created ` +
+        safeMsg`(${cause}), so it was re-adopted because AWS reports it` +
+        (uncompared === undefined ? '' : ` and state still lists it as awaiting its delete`) +
+        `. If it is not this stack's, leave it alone and drop ` +
+        safeMsg`its record after the rollback with ${stateOrphanRecordRemedy(undefined, String(op.logicalId))}.`
+    )
+  );
+}
+
+/** Why a recorded identity id could not be compared: attribute named, no value. */
+function uncomparedIdentityCause(
+  oldType: string,
+  verdict: 'identity-uncompared' | 'identity-unread'
+): string {
+  const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType] ?? 'identity';
+  return verdict === 'identity-unread'
+    ? `the read of its ${key} failed, so cdkd could not compare it with the recorded one`
+    : `cdkd could not compare it with the recorded ${key}: the recorded value is redacted, or ` +
+        `the read could not name the resource`;
+}
+
+/**
  * go-to-k/cdkd#2631: the old resource of a replacement whose delete was not
  * confirmed may still exist, and the read could not tell. Re-creating it blind
  * duplicates it (auto-named) or collides with it (named), so the op is
@@ -646,6 +709,8 @@ function survivorUnprovenRefusal(
     | 'owner-unverified'
     | 'free-unreadable'
     | 'vacated'
+    | 'identity-uncompared'
+    | 'identity-unread'
 ): Error {
   const { op, ctx, mask } = s;
   const remedy = orphanRemedy(op.logicalId, ctx);
@@ -654,38 +719,48 @@ function survivorUnprovenRefusal(
     ? refusalPhysicalId(mask(String(oldId)))
     : 'no recorded id';
   const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
+  // go-to-k/cdkd#6655: AWS reports it; only the identity compare is missing.
+  const identity = verdict === 'identity-uncompared' || verdict === 'identity-unread';
   const why =
-    verdict === 'free-unreadable'
-      ? // go-to-k/cdkd#6621: absent at the start, unreadable now.
-        `nothing held that name when this rollback started, and its current state could not ` +
-        `be read; re-running ${rerun} reads it again`
-      : verdict === 'vacated'
-        ? `the name went free while this rollback read it (AWS reported it, then a second read ` +
-          `found no bucket under it), so re-adopting it would delete the new resource for ` +
-          `nothing; re-running ${rerun} reads it again`
-        : verdict === 'owner-unverified'
-          ? // go-to-k/cdkd#6621: re-adopting another owner's bucket deletes the new one.
-            `cdkd could not read whether it does, nor whether it belongs to this account (this ` +
-            `account's bucket list could not be read; it needs s3:ListAllMyBuckets). Re-adopting ` +
-            `another owner's bucket would delete the new one; re-running ${rerun} reads both again`
-          : verdict === 'unreadable'
-            ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
-              `it could duplicate it or collide with it`
-            : verdict === 'interrupted'
-              ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
-                `${rerun} reads it`
-              : verdict === 'unknown'
-                ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
-                  `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
-                  `with it`
-                : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
-                  // the resource before AWS refused it, so "accepted" is not the only cause.
-                  `AWS still reports it, but its failed delete may have been accepted and still be ` +
-                  `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
-                  `running delete finishes, or one that delete already stripped; once ` +
-                  `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
-                  `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
-                  `then re-run ${rerun}`;
+    verdict === 'identity-uncompared'
+      ? `AWS reports a resource under that id, but ${uncomparedIdentityCause(oldType, verdict)}, ` +
+        `so cdkd cannot tell whether it is the one this stack created; a re-run meets the same ` +
+        `answer. Re-adopting another owner's resource would delete the new one`
+      : verdict === 'identity-unread'
+        ? `AWS reports a resource under that id, but ${uncomparedIdentityCause(oldType, verdict)}; ` +
+          `re-running ${rerun} reads it again. Re-adopting another owner's resource would delete ` +
+          `the new one`
+        : verdict === 'free-unreadable'
+          ? // go-to-k/cdkd#6621: absent at the start, unreadable now.
+            `nothing held that name when this rollback started, and its current state could not ` +
+            `be read; re-running ${rerun} reads it again`
+          : verdict === 'vacated'
+            ? `the name went free while this rollback read it (AWS reported it, then a second read ` +
+              `found no bucket under it), so re-adopting it would delete the new resource for ` +
+              `nothing; re-running ${rerun} reads it again`
+            : verdict === 'owner-unverified'
+              ? // go-to-k/cdkd#6621: re-adopting another owner's bucket deletes the new one.
+                `cdkd could not read whether it does, nor whether it belongs to this account (this ` +
+                `account's bucket list could not be read; it needs s3:ListAllMyBuckets). Re-adopting ` +
+                `another owner's bucket would delete the new one; re-running ${rerun} reads both again`
+              : verdict === 'unreadable'
+                ? `cdkd has no read for this resource type that can tell whether it does. Re-creating ` +
+                  `it could duplicate it or collide with it`
+                : verdict === 'interrupted'
+                  ? `the rollback was interrupted before cdkd could read whether it does; re-running ` +
+                    `${rerun} reads it`
+                  : verdict === 'unknown'
+                    ? `cdkd could not read whether it does (the read failed or did not answer in time); ` +
+                      `re-running ${rerun} reads it again. Re-creating it could duplicate it or collide ` +
+                      `with it`
+                    : // go-to-k/cdkd#4911 / go-to-k/cdkd#4946: also a delete that stripped
+                      // the resource before AWS refused it, so "accepted" is not the only cause.
+                      `AWS still reports it, but its failed delete may have been accepted and still be ` +
+                      `running, or only partly ran. Re-adopting it could leave neither resource once a ` +
+                      `running delete finishes, or one that delete already stripped; once ` +
+                      `AWS reports it gone, re-running ${rerun} re-creates it. A refused delete is not ` +
+                      `running, so waiting does not help: if its delete was refused, delete it by hand, ` +
+                      `then re-run ${rerun}`;
   return ownRemedyError(
     markNonRetryable(
       new CdkdError(
@@ -693,14 +768,14 @@ function survivorUnprovenRefusal(
           `(${refusalResourceType(oldType)}): ` +
           // go-to-k/cdkd#6621: these two read the old id, so "may still
           // exist" is not their premise.
-          (verdict === 'vacated' || verdict === 'free-unreadable'
+          (identity || verdict === 'vacated' || verdict === 'free-unreadable'
             ? `the old resource (${oldShown}) cannot be proven the stack's: ${why}.`
             : `the deploy did not confirm that it deleted the old resource (${oldShown}), so ` +
               `it may still exist, and ${why}.`) +
           ` Nothing was sent and the journal is kept.` +
           (remedy.offered
             ? ` To keep the new resource in its place instead, re-run with the command below, ` +
-              (verdict === 'vacated' || verdict === 'free-unreadable'
+              (identity || verdict === 'vacated' || verdict === 'free-unreadable'
                 ? `and leave anything under the old id alone unless it is this stack's.`
                 : `then delete the old resource by hand if it still exists.`)
             : '') +
