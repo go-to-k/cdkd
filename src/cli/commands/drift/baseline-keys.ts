@@ -72,6 +72,50 @@ const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = 
 };
 
 /**
+ * Per resource type, the undeclared top-level keys drift DOES compare even when
+ * the observed baseline captured them empty (`{}`, `[]`, `null`) — the reverse
+ * of {@link UNDECLARED_UNCOMPARED_KEYS} (go-to-k/cdkd#6651).
+ *
+ * `undeclaredEmptyObservedKeys` skips every undeclared captured-empty key
+ * (go-to-k/cdkd#1498), because a sibling resource or AWS fills many of them
+ * after the baseline is read (ECS `CapacityProviders`, an ASG's lifecycle
+ * hooks); comparing those reported drift forever and `--revert` stripped the
+ * sibling's configuration. The skip also hid an out-of-band add to a key
+ * nothing else writes. A key listed here is compared, so that add is reported
+ * and `--revert` sends the empty baseline back.
+ *
+ * A key joins only by measurement, never by default: no other resource type
+ * and no AWS-side process may write it, and a revert from the empty baseline
+ * must be measured to clear it on AWS. A wrong entry brings back the #1498
+ * phantom drift and a revert that deletes another writer's configuration.
+ *
+ * `AWS::BedrockAgentCore::Runtime`: only the runtime's own
+ * `CreateAgentRuntime` / `UpdateAgentRuntime` write these four, and
+ * `UpdateAgentRuntime` is full-replace, so the provider omitting an empty one
+ * clears it (measured us-east-1, PR #6630 and #6651).
+ * `CapacityProviderConfiguration` is not listed: it is unmeasured.
+ */
+const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::BedrockAgentCore::Runtime': [
+    'FilesystemConfigurations',
+    'HooksConfiguration',
+    'RequestHeaderConfiguration',
+    'ResourceConfigurations',
+  ],
+};
+
+/**
+ * The undeclared top-level keys of `resourceType` drift compares even when the
+ * observed baseline captured them empty ({@link UNDECLARED_EMPTY_COMPARED_KEYS},
+ * go-to-k/cdkd#6651). Fed to `undeclaredEmptyObservedKeys`.
+ */
+export function undeclaredEmptyComparedDriftKeys(resourceType: string): readonly string[] {
+  return hasOwnKey(UNDECLARED_EMPTY_COMPARED_KEYS, resourceType)
+    ? UNDECLARED_EMPTY_COMPARED_KEYS[resourceType]!
+    : [];
+}
+
+/**
  * The top-level keys drift must NOT compare on one resource: its type's
  * {@link UNDECLARED_UNCOMPARED_KEYS} entries that its state `properties` (the
  * template) does not declare (go-to-k/cdkd#5741).
