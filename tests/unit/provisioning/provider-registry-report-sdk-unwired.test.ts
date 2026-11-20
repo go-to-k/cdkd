@@ -10,11 +10,16 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import { existsSync } from 'node:fs';
-import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import {
+  ProviderRegistry,
+  STICKY_CC_MIGRATION_EXEMPT,
+} from '../../../src/provisioning/provider-registry.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 
 function pickSdkUnwiredFixture(): { resourceType: string; property: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
+    // A sticky-exempt type leaves a cc-api record, which the sticky cases read.
+    if (STICKY_CC_MIGRATION_EXEMPT.has(resourceType)) continue;
     const first = cov.sdkUnwired.entries().next();
     if (!first.done) {
       const [property] = first.value;
