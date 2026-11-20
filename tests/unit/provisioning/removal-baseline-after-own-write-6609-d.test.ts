@@ -840,6 +840,38 @@ describe('a declared ingress rule naming its peer by SourceSecurityGroupName alo
     expect(unsettledWarnings()).toHaveLength(1);
   });
 
+  it('a revoked peer-group rule on OTHER ports is still waited on, and dropped when still read', async () => {
+    const otherKey = sgRemovalRuleKey({ IpProtocol: 'tcp', FromPort: 22, ToPort: 22, SourceSecurityGroupId: 'sg-2' }, 'ingress')!;
+    const other = { IpProtocol: 'tcp', FromPort: 22, ToPort: 22, UserIdGroupPairs: [{ GroupId: 'sg-2', UserId: ACCT }] };
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', otherKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission, other], []));
+    const read = bag(await readSg({ GroupDescription: 'd', SecurityGroupIngress: [NAMED] }, AFTER));
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(4);
+    expect(read['SecurityGroupIngress']).toEqual([expect.objectContaining({ SourceSecurityGroupId: 'sg-peer' })]);
+  });
+
+  it("a revoked peer-group rule on the same ports in a string-port spelling ('443') is not waited on", async () => {
+    // The same peer the read shows, so only the exemption keeps it from being waited on.
+    const stringKey = sgRemovalRuleKey({ IpProtocol: '6', FromPort: '443', ToPort: '443', SourceSecurityGroupId: 'sg-peer' }, 'ingress')!;
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', stringKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission], []));
+    // Declared in a spelling of its own too ('6', string ports): both sides fold.
+    const declared = { ...NAMED, IpProtocol: '6', FromPort: '443', ToPort: '443' };
+    const read = bag(await readSg({ GroupDescription: 'd', SecurityGroupIngress: [declared] }, AFTER));
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(1);
+    expect(read['SecurityGroupIngress']).toHaveLength(1);
+  });
+
+  it('an all-traffic name-only rule exempts a revoked all-traffic peer-group rule', async () => {
+    // CFn accepts ports on an all-traffic rule; AWS drops them, and so does the key.
+    const all = { IpProtocol: '-1', FromPort: -1, ToPort: -1, SourceSecurityGroupName: 'peer' };
+    const allKey = sgRemovalRuleKey({ IpProtocol: '-1', SourceSecurityGroupId: 'sg-peer' }, 'ingress')!;
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', allKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([{ IpProtocol: '-1', UserIdGroupPairs: [{ GroupId: 'sg-peer', UserId: ACCT }] }], []));
+    await readSg({ GroupDescription: 'd', SecurityGroupIngress: [all] }, AFTER);
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(1);
+  });
+
   it('with no name-only rule declared, a revoked peer-group rule is still waited on', async () => {
     note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', idKey);
     answer('DescribeSecurityGroupsCommand', sgAnswer([ingressPermission, peerPermission], []), sgAnswer([ingressPermission], []));

@@ -75,41 +75,62 @@ export function sgRemovalRuleKey(
  * declared rule has (a declared rule with the key was put back by the write).
  *
  * A declared ingress rule naming its peer by `SourceSecurityGroupName` alone
- * has no key, so it cannot be told apart from a revoked peer-group rule: the
- * same update may have revoked that peer's rule in another spelling (by id,
- * `'443'` for `443`, with an owner id) and put it back by name, and the read
- * then still shows it. Waiting for it to go would never settle, and dropping
- * it would leave a declared live grant out of the baseline (phantom drift,
- * and `drift --revert` revoking it). So with such a rule declared, no revoked
- * PEER-GROUP rule is waited on; a revoked CIDR or prefix-list rule still is.
+ * has no key, so it cannot be told apart from a revoked peer-group rule on the
+ * same protocol and ports: the same update may have revoked that peer's rule
+ * in another spelling (by id, `'443'` for `443`, with an owner id) and put it
+ * back by name, and the read then still shows it. Waiting for it would never
+ * settle, and dropping it would leave a declared live grant out of the
+ * baseline (phantom drift, and `drift --revert` revoking it). So a revoked
+ * PEER-GROUP rule whose protocol and ports (folded as the settle key folds
+ * them) are those of a declared name-only rule is not waited on; any other
+ * revoked rule still is. A key that does not parse is not waited on either.
  */
 export function sgRemovedNotDeclared(
   removed: ReadonlySet<string> | undefined,
   declared: readonly unknown[],
   direction: SgDirection
 ): Set<string> {
-  const keys = declared.map((rule) =>
-    typeof rule === 'object' && rule !== null
-      ? sgRemovalRuleKey(rule as Record<string, unknown>, direction)
-      : undefined
-  );
-  const keep = new Set(keys);
-  const namedPeerDeclared = declared.some(
-    (rule, index) => typeof rule === 'object' && rule !== null && keys[index] === undefined
-  );
+  const keep = new Set<string | undefined>();
+  const namedPeerPorts = new Set<string>();
+  for (const rule of declared) {
+    if (typeof rule !== 'object' || rule === null) continue;
+    const key = sgRemovalRuleKey(rule as Record<string, unknown>, direction);
+    keep.add(key);
+    if (key !== undefined) continue;
+    // A name-only rule: its protocol and ports, folded through the same key.
+    const asPeer = sgRemovalRuleKey(
+      {
+        ...(rule as Record<string, unknown>),
+        SourceSecurityGroupName: undefined,
+        SourceSecurityGroupId: 'named',
+      },
+      direction
+    );
+    const ports = asPeer === undefined ? undefined : protocolAndPorts(asPeer);
+    if (ports !== undefined) namedPeerPorts.add(ports);
+  }
   return new Set(
-    [...(removed ?? [])].filter(
-      (key) => !keep.has(key) && !(namedPeerDeclared && removalKeyHasPeer(key))
-    )
+    [...(removed ?? [])].filter((key) => {
+      if (keep.has(key)) return false;
+      if (namedPeerPorts.size === 0) return true;
+      let parsed: { peer?: unknown };
+      try {
+        parsed = JSON.parse(key) as { peer?: unknown };
+      } catch {
+        return false;
+      }
+      return !(parsed.peer !== null && namedPeerPorts.has(protocolAndPorts(key) ?? ''));
+    })
   );
 }
 
-/** Whether a removal key names a peer security group. */
-function removalKeyHasPeer(key: string): boolean {
+/** A removal key's protocol and ports, as one comparable string. */
+function protocolAndPorts(key: string): string | undefined {
   try {
-    return (JSON.parse(key) as { peer?: unknown }).peer !== null;
+    const { p, f, t } = JSON.parse(key) as { p?: unknown; f?: unknown; t?: unknown };
+    return JSON.stringify([p, f, t]);
   } catch {
-    return true;
+    return undefined;
   }
 }
 
