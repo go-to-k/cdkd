@@ -264,7 +264,7 @@ revert_ids_before() { # usage: revert_ids_before <tag>
 # assertion on it). A Cloud Control patch's own `"op":"replace"` (the --verbose
 # line listing it) is a JSON Patch verb, not a resource replacement.
 revert_ids_after() { # usage: revert_ids_after <tag> <revert log>
-  revert_identity_verify "${ARTIFACT_DIR}/revert-ids-$1-before" "${ARTIFACT_DIR}/revert-ids-$1-after" 22 "$2" \
+  revert_identity_verify "${ARTIFACT_DIR}/revert-ids-$1-before" "${ARTIFACT_DIR}/revert-ids-$1-after" "${REVERT_IDS}" "$2" \
     'ignore="op":"replace"' || exit 1
 }
 

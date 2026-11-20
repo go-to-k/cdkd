@@ -38,6 +38,10 @@ function writeState(resources: Record<string, { resourceType: string; physicalId
   writeFileSync(statePath, JSON.stringify({ state: { resources } }));
 }
 
+function setAwsByMatch(rows: ReadonlyArray<readonly [string, string]>): void {
+  writeFileSync(`${awsValuePath}.by-match`, rows.map(([n, v]) => `${n}\t${v}`).join('\n') + '\n');
+}
+
 function setAwsValue(value: string): void {
   writeFileSync(awsValuePath, value);
 }
@@ -59,6 +63,9 @@ beforeEach(() => {
       // A read whose argv contains the text in `.fail-match` fails, as AWS
       // answers NoSuchEntity for one principal and not another.
       `if [ -f "${awsValuePath}.fail-match" ]; then case "$*" in *"$(cat "${awsValuePath}.fail-match")"*) echo NoSuchEntity >&2; exit 254 ;; esac; fi`,
+      // A read whose argv contains a `<needle>\t<value>` line's needle of `.by-match`
+      // prints that value (`\n` escapes expanded), first line first.
+      `if [ -f "${awsValuePath}.by-match" ]; then while IFS="$(printf '\\t')" read -r n v; do case "$*" in *"$n"*) printf '%b\\n' "$v"; exit 0 ;; esac; done < "${awsValuePath}.by-match"; fi`,
       `cat "${awsValuePath}"`,
       '',
     ].join('\n')
@@ -364,6 +371,11 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
       })
     );
     setAwsValue('usr\tother\n');
+    setAwsByMatch([
+      ['--attribute-names CreatedTimestamp', '1700000000'],
+      ['kms describe-key', 'key-123'],
+      ['kms list-aliases', '2026-01-01T00:00:00Z'],
+    ]);
     const r = run(`revert_identity_snapshot "${before()}" Stack Q QP TP AL SP RP UP GP UG`);
     expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
@@ -380,6 +392,10 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(calls).toContain('iam get-group-policy --group-name grp --policy-name pol');
     expect(calls).toContain('iam get-group --group-name grp --query Users[].UserName');
     const rows = readFileSync(before(), 'utf8');
+    expect(rows).toContain('Q\tAWS::SQS::Queue\thttps://sqs.us-east-1.amazonaws.com/1/q\tunique:1700000000\n');
+    expect(rows).toContain('\tunique:2026-01-01T00:00:00Z\n');
+    // describe-key's KeyId reaches list-aliases.
+    expect(calls).toContain('kms list-aliases --region us-east-1 --key-id key-123 --query');
     expect(rows).toContain('\tno-id:policy-on-queue\n');
     expect(rows).toContain('\tno-id:policy-on-topic\n');
     expect(rows).toContain('\tno-id:policy-on-secret\n');
@@ -422,6 +438,69 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     const r = run(`revert_identity_snapshot "${before()}" Stack P || exit 1`);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain(`${type} probe`);
+  });
+
+  it.each([
+    ['AWS::Logs::LogGroup', '/lg', {}, 'creationTime'],
+    ['AWS::KMS::Alias', 'alias/x', { AliasName: 'alias/x' }, 'kms list-aliases'],
+  ])('%s: a None page line and a date line read as the date, all-None FAILS', (type, pid, properties, needle) => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({ state: { resources: { P: { resourceType: type, physicalId: pid, properties } } } })
+    );
+    setAwsValue('x\n');
+    setAwsByMatch([
+      ['kms describe-key', 'key-1'],
+      [needle, 'None\\n2026-02-02T00:00:00Z'],
+    ]);
+    const ok = run(`revert_identity_snapshot "${before()}" Stack P`);
+    expect(ok.stderr).toBe('');
+    expect(ok.status).toBe(0);
+    expect(readFileSync(before(), 'utf8')).toContain('\tunique:2026-02-02T00:00:00Z\n');
+    setAwsByMatch([
+      ['kms describe-key', 'key-1'],
+      [needle, 'None\\nNone'],
+    ]);
+    const none = run(`revert_identity_snapshot "${after()}" Stack P || exit 1`);
+    expect(none.status).toBe(1);
+    expect(none.stderr).toContain(`${type} probe`);
+  });
+
+  it.each([
+    ['AWS::KMS::Alias', {}],
+    ['AWS::SQS::QueuePolicy', {}],
+    ['AWS::SNS::TopicPolicy', {}],
+    ['AWS::SecretsManager::ResourcePolicy', {}],
+    ['AWS::IAM::UserToGroupAddition', { GroupName: 'grp', Users: [] }],
+    ['AWS::IAM::UserToGroupAddition', { Users: ['usr'] }],
+  ])('FAILS for %s when the record lacks what its probe reads (%j)', (type, properties) => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({ state: { resources: { P: { resourceType: type, physicalId: 'p', properties } } } })
+    );
+    const r = run(`revert_identity_snapshot "${before()}" Stack P || exit 1`);
+    expect(r.status).toBe(1);
+  });
+
+  it.each(['a,b', 'a b', 'a|b'])('FAILS naming a UserToGroupAddition user %j the probe cannot carry', (user) => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        state: {
+          resources: {
+            UG: {
+              resourceType: 'AWS::IAM::UserToGroupAddition',
+              physicalId: 'UG',
+              properties: { GroupName: 'grp', Users: ['ok', user] },
+            },
+          },
+        },
+      })
+    );
+    const r = run(`revert_identity_snapshot "${before()}" Stack UG || exit 1`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('lists a user the probe cannot carry');
+    expect(r.stderr).toContain(JSON.stringify(user));
   });
 
   it('FAILS when a type needing an extra read value has none recorded', () => {

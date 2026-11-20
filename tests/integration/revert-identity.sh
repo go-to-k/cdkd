@@ -424,9 +424,16 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
       "AWS::IAM::RolePolicy": props.PolicyName && props.RoleName ? props.PolicyName + "|" + props.RoleName : undefined,
       "AWS::IAM::UserPolicy": props.PolicyName && props.UserName ? props.PolicyName + "|" + props.UserName : undefined,
       "AWS::IAM::GroupPolicy": props.PolicyName && props.GroupName ? props.PolicyName + "|" + props.GroupName : undefined,
-      "AWS::IAM::UserToGroupAddition": props.GroupName && Array.isArray(props.Users)
-        ? props.GroupName + "|" + props.Users.filter((x) => typeof x === "string" && x !== "" && !/[,\s|]/.test(x)).join(",")
-        : undefined,
+      "AWS::IAM::UserToGroupAddition": (() => {
+        if (r.resourceType !== "AWS::IAM::UserToGroupAddition" || !props.GroupName || !Array.isArray(props.Users)) return undefined;
+        for (const u of props.Users) {
+          if (typeof u !== "string" || u === "" || /[,\s|]/.test(u)) {
+            process.stderr.write("FAIL: revert_identity_snapshot: " + lid + " lists a user the probe cannot carry (" + JSON.stringify(u) + "): a name with a comma, whitespace or | is unsupported\n");
+            process.exit(1);
+          }
+        }
+        return props.GroupName + "|" + props.Users.join(",");
+      })(),
       "AWS::IAM::Policy": ["Roles", "Users", "Groups"]
         .flatMap((k) => (Array.isArray(props[k]) ? props[k] : [])
           .filter((x) => typeof x === "string" && x !== "" && !/[,\s]/.test(x))
