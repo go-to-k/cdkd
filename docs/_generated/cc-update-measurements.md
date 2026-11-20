@@ -57,7 +57,7 @@ Cloud Control-routed types measured against real AWS: one property served by the
 | AWS::Cognito::UserPoolUserToGroupAttachment | no-mutable-property | none: all properties createOnly |  | #6676 | 2026-11-20 |  |
 | AWS::DSQL::Cluster | clean | DeletionProtectionEnabled (UpdateCluster); PolicyDocument (PutClusterPolicy) |  | #6676 | 2026-11-20 |  |
 | AWS::DataSync::LocationS3 | clean | S3StorageClass (UpdateLocationS3) |  | #6676 | 2026-11-20 |  |
-| AWS::DataSync::Task | refuses | Options.VerifyMode (UpdateTask) | `cc-read-back-empty-keys` | #6676 | 2026-11-20 | Read-back `Schedule: {}` is sent as a null schedule.scheduleExpression and refused |
+| AWS::DataSync::Task | refuses | Options.VerifyMode (UpdateTask) | `cc-read-back-empty-keys` | #6676 | 2026-11-20 | Read-back `Schedule: {}` is sent as a null schedule.scheduleExpression and refused; an unnamed task reads back `Name: ""`, refused by Cloud Control model validation (minLength 1) |
 | AWS::DocDB::DBClusterParameterGroup | clean | Parameters.audit_logs (ModifyDBClusterParameterGroup) |  | #6676 | 2026-11-20 |  |
 | AWS::EC2::FlowLog | no-mutable-property | none: every property createOnly except Tags |  | #6676 | 2026-11-20 |  |
 | AWS::EC2::LaunchTemplate | clean | LaunchTemplateData.InstanceType (CreateLaunchTemplateVersion) |  | #6676 | 2026-11-20 | update only: LaunchTemplateData is write-only, so drift cannot see it |

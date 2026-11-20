@@ -307,7 +307,7 @@ export const CC_UPDATE_MEASUREMENTS: readonly CcUpdateMeasurement[] = [
     fix: 'cc-read-back-empty-keys',
     issue: 6676,
     measured: '2026-11-20',
-    note: 'Read-back `Schedule: {}` is sent as a null schedule.scheduleExpression and refused',
+    note: 'Read-back `Schedule: {}` is sent as a null schedule.scheduleExpression and refused; an unnamed task reads back `Name: ""`, refused by Cloud Control model validation (minLength 1)',
   },
   {
     type: 'AWS::DocDB::DBClusterParameterGroup',

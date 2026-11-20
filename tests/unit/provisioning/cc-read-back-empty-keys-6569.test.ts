@@ -142,6 +142,22 @@ describe('withCcReadBackEmptyKeyRemovals: DataSync task (go-to-k/cdkd#6676)', ()
     ).toEqual([...VERIFY, { op: 'remove', path: '/Schedule' }]);
   });
 
+  it('removes the read-back empty Name of a task created without one', () => {
+    expect(
+      withCcReadBackEmptyKeyRemovals(TASK, VERIFY, {}, { Name: '', Schedule: {} })
+    ).toEqual([
+      ...VERIFY,
+      { op: 'remove', path: '/Name' },
+      { op: 'remove', path: '/Schedule' },
+    ]);
+  });
+
+  it('keeps a named task\'s Name', () => {
+    expect(withCcReadBackEmptyKeyRemovals(TASK, VERIFY, { Name: 't' }, { Name: 't' })).toBe(
+      VERIFY
+    );
+  });
+
   it('keeps a scheduled task as it is', () => {
     const live = { Schedule: { ScheduleExpression: 'rate(1 day)' } };
     expect(withCcReadBackEmptyKeyRemovals(TASK, VERIFY, live, live)).toBe(VERIFY);
