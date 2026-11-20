@@ -233,7 +233,7 @@ iam-profile-policy-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	137	verify.sh	rc
 iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
 iam-recreate-reattach	2026-11-20T04:34:33Z	PASS	280	verify.sh	PR6629 7f5015fdd run A; rc 0, orph clean
 iam-role-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	102	verify.sh	rc ok, orph clean, own bucket, #5665 31f909459
-iam-role-policies-drift-clean	2026-11-19T18:50:43Z	PASS	413	verify.sh	#6640 regression 84223153c: rc ok, orph clean
+iam-role-policies-drift-clean	2026-11-20T07:39:20Z	PASS	456	verify.sh	#6643 e5fb6988b phases 2o+2r: rc ok, orph clean
 iam-role-prefixed-name-update	2026-11-06T22:51:07Z	PASS	170	verify.sh	#5926 iam-policy split head; rc ok, orph clean
 iam-secret-derived-principals	2026-11-19T11:29:42Z	PASS	161	verify.sh	#6618 HEAD b0fb33e8f: rc ok, destroy 0 errors, orph clean
 iam-sibling-managed-policy-drift	2026-11-20T04:51:06Z	PASS	476	verify.sh	PR6629 081a25a9c run A2; rc 0, orph clean
