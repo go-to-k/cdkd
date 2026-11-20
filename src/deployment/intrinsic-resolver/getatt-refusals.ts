@@ -8,6 +8,8 @@ import { markNonRetryable } from '../retryable-errors.js';
 import type { ResourceState } from '../../types/state.js';
 import { StaleAttributeMissSignal } from '../stale-attribute-heal.js';
 import { getPropertyCoverage } from '../../provisioning/property-coverage.js';
+import { WRITABLE_GETATT_ATTRIBUTES } from '../../provisioning/getatt-attributes.generated.js';
+import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../recorded-identity-attributes.js';
 import {
   healWithheld,
   staleRecordRemedy,
@@ -540,6 +542,73 @@ export function refuseEndpointTheEngineLacks(
         `${displayMasked(resolver, engine, context)}, which has no ${lacking}. CloudFormation answers an ` +
         `empty Address and Port for it; cdkd refuses instead of passing an empty endpoint on. ` +
         `Reference ${other} instead.`
+    )
+  );
+}
+
+/**
+ * Whether the type's committed schema lists `attributeName` as a
+ * `Fn::GetAtt` attribute: its read-only properties (the CFn schema fixture,
+ * via {@link getPropertyCoverage}) union the writable ones the resource
+ * specification also lists ({@link WRITABLE_GETATT_ATTRIBUTES}). `undefined`
+ * for a type with no committed schema: cdkd cannot tell, so it does not refuse.
+ * Offline on purpose: the live `getTopLevelAttributeNames` would add a
+ * `DescribeType` call to every deploy that reads one of these attributes.
+ */
+function committedGetAttListsAttribute(
+  resourceType: string,
+  attributeName: string
+): boolean | undefined {
+  const coverage = getPropertyCoverage(resourceType);
+  if (coverage === undefined) return undefined;
+  if (coverage.readOnly.has(attributeName)) return true;
+  return (
+    Object.hasOwn(WRITABLE_GETATT_ATTRIBUTES, resourceType) &&
+    WRITABLE_GETATT_ATTRIBUTES[resourceType]!.includes(attributeName)
+  );
+}
+
+/**
+ * go-to-k/cdkd#6655: the AWS-minted identity id cdkd records for its own
+ * delete and re-adopt checks ({@link SURVIVOR_IDENTITY_ATTRIBUTES}) is NOT
+ * always a CloudFormation attribute. `AWS::DynamoDB::Table` exposes only `Arn`
+ * and `StreamArn`, so CloudFormation rejects `Fn::GetAtt [Table, TableId]`;
+ * served from the record, the same template deployed under cdkd, and a missing
+ * record fell through to the physical-id fallback instead. Refused here, BEFORE
+ * the record is read and whatever `--strict-getatt` says, so a template cdkd
+ * accepts is one CloudFormation accepts. An id the type does expose (`RoleId`,
+ * `PolicyId`, `DbiResourceId`, `DBClusterResourceId`) is untouched, and so is
+ * every other recorded attribute: the committed schema's list is short of the
+ * resource specification's for a few types, so it can certify an identity key
+ * as unexposed but not refuse an arbitrary one.
+ *
+ * Template `Fn::GetAtt` only: cdkd's own readers of the record
+ * (`recorded-identity.ts`, the rollback re-adopt check) read `attributes`
+ * directly and never come through here.
+ */
+export function refuseUnexposedRecordedIdentity(
+  resolver: IntrinsicFunctionResolver,
+  resourceType: string,
+  logicalId: string,
+  attributeName: string,
+  context: ResolverContext | undefined
+): void {
+  if (
+    !Object.hasOwn(SURVIVOR_IDENTITY_ATTRIBUTES, resourceType) ||
+    SURVIVOR_IDENTITY_ATTRIBUTES[resourceType] !== attributeName ||
+    committedGetAttListsAttribute(resourceType, attributeName) !== false
+  ) {
+    return;
+  }
+  // `markNonRetryable`: the verdict is the template's own spelling, which no
+  // retry changes, and the message interpolates template text.
+  throw markNonRetryable(
+    new IntrinsicResolutionRefusalError(
+      `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ` +
+        `${displayMasked(resolver, attributeName, context)}] for ${displayMasked(resolver, resourceType, context)}: ` +
+        `CloudFormation does not expose ${displayMasked(resolver, attributeName, context)} as an attribute ` +
+        `of this type and rejects the template. cdkd records it for its own identity checks only. ` +
+        `Read an attribute the type exposes, or use Ref.`
     )
   );
 }
