@@ -23,9 +23,12 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../../delete-outcome.js';
 import {
+  DEFERRAL_IDENTITY_TIMEOUT_MS,
+  SURVIVOR_LIVE_READ_TYPES,
   readDeferralIdentity,
   replacedDeleteFailureVerdict,
 } from '../../rollback-executor/replaced-survivor.js';
+import type { SurvivorIdentityRead } from '../../../types/resource.js';
 import { reportDeleteGuards } from '../../delete-guard-scope.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { isStandaloneInlinePolicyType } from '../../inline-policy-claims.js';
@@ -151,6 +154,10 @@ export async function deleteReplacedAfterCreate(
     deps.logger.info(
       safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
     );
+  } else if (
+    !(await journaledHolderIsOurs(run, deps, logicalId, oldResourceType, currentResource))
+  ) {
+    return;
   }
   // go-to-k/cdkd#6463: a pre-delete-snapshot type's snapshot is taken here,
   // right before the delete is sent, inline or in the cleanup phase; the
@@ -334,6 +341,158 @@ export async function deleteReplacedAfterCreate(
         ? safeMsg`  ${green('✓')} Old ${logicalId} (${currentResource.physicalId}) deleted`
         : safeMsg`  ${green('✓')} Old resource deleted`
     );
+  }
+}
+
+/**
+ * go-to-k/cdkd#6655: how often the cleanup pass reads a journaled holder that
+ * did not answer, and the wait between reads. Exported for tests.
+ */
+export const journaledHolderRead = { attempts: 3, delayMs: 2_000 };
+
+/** What the holder read proves about the name the delete addresses. */
+type HolderJudgement = 'ours' | 'gone' | 'unreadable' | { notOurs: string };
+
+/**
+ * go-to-k/cdkd#6655: before the cleanup pass deletes a replaced resource BY
+ * NAME, confirm the name still holds the resource this deploy deferred. Only
+ * where the deferral journaled its generation (`run.replacedOldIdentity`,
+ * go-to-k/cdkd#6621: a `SURVIVOR_LIVE_READ_TYPES` type, an S3 bucket); with
+ * none journaled the delete is sent as before. Its read
+ * (`replacedSurvivorIdentity`) runs on this retry only, never on an ordinary
+ * deploy or destroy. Answers whether the delete may be sent.
+ *
+ * - A holder of another account or region, or another generation where only
+ *   a re-create moves it, is PROVEN not the stack's: nothing is sent, and the
+ *   superseded entry goes, since the resource it recorded is gone and a later
+ *   run would delete the holder by name. For S3 that region is us-east-1,
+ *   where versioning, tagging, encryption and policy writes (#4606 / #6621)
+ *   and, measured for #6671 (2026-11-20), a policy's delete and an object's
+ *   put and delete leave CreationDate alone. Elsewhere configuration writes
+ *   move it, so it is not compared: a same-account re-create there gets the
+ *   by-name delete of every release before this one.
+ * - A holder that cannot be read is read again, up to
+ *   `journaledHolderRead.attempts` reads (fewer once the deploy is
+ *   interrupted); then nothing is sent and the entry is kept for the next
+ *   run. An unanswered read never falls back to a by-name delete. One that
+ *   no state tracks (an in-memory deferral, go-to-k/cdkd#6445) makes the row
+ *   partial, as a provider skip does (the #1819 survivor contract).
+ * - A name nothing holds needs no delete: none is sent (one would only race
+ *   whoever takes the name next), and the old resource counts as deleted.
+ */
+async function journaledHolderIsOurs(
+  run: ReplacementRunState,
+  deps: ReplacementDeps,
+  logicalId: string,
+  oldResourceType: string,
+  oldResource: ResourceState
+): Promise<boolean> {
+  const journaled = run.replacedOldIdentity.get(logicalId);
+  if (journaled === undefined) return true;
+  let judged: HolderJudgement = 'unreadable';
+  let interrupted = false;
+  for (let attempt = 0; attempt < journaledHolderRead.attempts; attempt++) {
+    if (attempt > 0) {
+      if (deps.interrupted()) {
+        interrupted = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, journaledHolderRead.delayMs));
+    }
+    judged = judgeHolder(
+      await readHolder(deps, oldResourceType, oldResource.physicalId),
+      journaled,
+      oldResourceType
+    );
+    if (judged !== 'unreadable') break;
+  }
+  if (judged === 'ours') return true;
+  const shown = displayPhysicalId(oldResource.resourceType, oldResource.physicalId);
+  const recorded = run.supersededEntries.get(logicalId);
+  if (judged === 'unreadable') {
+    const why = interrupted
+      ? 'the deploy was interrupted before cdkd could read what holds that name now'
+      : 'cdkd could not read what holds that name now';
+    if (recorded === undefined) {
+      run.replacedOldMaySurvive.set(logicalId, 'unconfirmed');
+      run.replacedDeleteSkips.set(
+        logicalId,
+        `the replaced ${oldResourceType} (${oldResource.physicalId}) was not deleted (${why}) and is no longer tracked by cdkd`
+      );
+    }
+    deps.logger.warn(
+      safeMsg`  ⚠ Old ${logicalId} (${shown}) was not deleted: ${why} to confirm it is the resource this deploy replaced, so no delete was sent. ` +
+        (recorded !== undefined
+          ? safeMsg`${SUPERSEDED_KEPT_REMEDY}.`
+          : "It is no longer tracked in state: delete it manually once you confirm it is the stack's.")
+    );
+    return false;
+  }
+  if (recorded !== undefined && run.supersededHost !== undefined) {
+    removeSuperseded(run.supersededHost, recorded);
+    run.supersededEntries.delete(logicalId);
+  }
+  // The old resource is gone either way (a proven other holder means the
+  // stack's left the name), so its rollback mark goes as after a delete. The
+  // kept arm above leaves it: the old resource may still be whole.
+  run.replacedOldMaySurvive.delete(logicalId);
+  if (judged === 'gone') {
+    deps.logger.info(
+      safeMsg`  ${green('✓')} Old ${logicalId} (${shown}) is already gone; no delete was sent`
+    );
+    return false;
+  }
+  deps.logger.warn(
+    safeMsg`  ⚠ Old ${logicalId} (${shown}) was not deleted: the ${oldResourceType} now under that name is not the one this deploy replaced (its ${judged.notOurs} differs from what cdkd read when it deferred the delete), so no delete was sent and that resource was left alone. The replaced resource is gone, and cdkd no longer tracks it in state.`
+  );
+  return false;
+}
+
+/** One bounded `replacedSurvivorIdentity` read. Never throws. */
+async function readHolder(
+  deps: ReplacementDeps,
+  oldResourceType: string,
+  physicalId: string
+): Promise<SurvivorIdentityRead> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const provider = deps.providerRegistry().getProvider(oldResourceType);
+    if (typeof provider.replacedSurvivorIdentity !== 'function') return { kind: 'unknown' };
+    return await Promise.race([
+      provider.replacedSurvivorIdentity(physicalId, oldResourceType, {
+        expectedRegion: deps.stackRegion,
+      }),
+      new Promise<SurvivorIdentityRead>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: 'unknown' }), DEFERRAL_IDENTITY_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    return { kind: 'unknown' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function judgeHolder(
+  read: SurvivorIdentityRead,
+  journaled: string,
+  oldResourceType: string
+): HolderJudgement {
+  switch (read.kind) {
+    case 'gone':
+      return 'gone';
+    case 'foreign':
+      return { notOurs: read.seen === 'other-account' ? 'owning account' : 'region' };
+    case 'unknown':
+      return 'unreadable';
+    case 'owned': {
+      if (read.identity === undefined) return 'unreadable';
+      if (read.identity === journaled) return 'ours';
+      // The token is `<region>|<generation>`; only where a re-create alone
+      // moves the generation does a difference prove another resource.
+      const stable = journaled.split('|')[0] === SURVIVOR_LIVE_READ_TYPES[oldResourceType];
+      return stable ? { notOurs: 'creation time' } : 'ours';
+    }
   }
 }
 
