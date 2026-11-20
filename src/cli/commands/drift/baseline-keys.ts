@@ -3,6 +3,7 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { hasOwnKey } from '../../../utils/own-keys.js';
+import { holdsPrincipalForm } from '../../../analyzer/drift-principal-normalize.js';
 import type { ResourceState } from '../../../types/state.js';
 import { coerceCfnBoolean } from '../../../provisioning/config-shape.js';
 import {
@@ -261,6 +262,29 @@ export function preFixBaselineUncomparedDriftKeys(
   aws: Record<string, unknown>
 ): string[] {
   if (observed === undefined) return [];
+  // go-to-k/cdkd#6680: no rule skips a key whose recorded value holds an IAM
+  // unique-id principal (`AROA…` / `AIDA…`, the form AWS renders for a
+  // principal it could not resolve) while the live value holds an IAM ARN
+  // principal: the pair the issue #1515 canonicalization decides, so the key
+  // stays compared and a unique id that is not the live principal's is drift.
+  // A live value with no IAM ARN gives #1515 nothing to prove, so the heal
+  // stands. Wrapped under its key, so a top-level `Principal` (a Lambda
+  // permission) counts.
+  return preFixBaselineKeys(resourceType, observed, properties, aws).filter(
+    (key) =>
+      !(
+        holdsPrincipalForm({ [key]: observed[key] }, 'uniqueIds') &&
+        holdsPrincipalForm({ [key]: aws[key] }, 'arns')
+      )
+  );
+}
+
+function preFixBaselineKeys(
+  resourceType: string,
+  observed: Record<string, unknown>,
+  properties: unknown,
+  aws: Record<string, unknown>
+): string[] {
   if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
     return [];
   }
