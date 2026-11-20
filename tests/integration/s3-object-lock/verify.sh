@@ -223,6 +223,15 @@ if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
 fi
 echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 
+# No phantom drift after the in-place update, including LateFlagBucket's
+# top-level ObjectLockEnabled, which the bucket cannot take (#5395, #6664).
+DRIFT_P2="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
+  echo "FAIL: cdkd drift exited non-zero after the Phase 2 update:" >&2
+  echo "${DRIFT_P2}" >&2
+  exit 1
+}
+echo "    drift clean after the Phase 2 update"
+
 # go-to-k/cdkd#5395: the top-level flag on an existing bucket is not applied
 # (CloudFormation does not apply it either), and the deploy says so.
 if ! sed $'s/\x1b\\[[0-9;]*m//g' "${PHASE2_LOG}" | grep -qF "Object Lock was NOT enabled on the existing bucket ${LATE_BUCKET_NAME}"; then
