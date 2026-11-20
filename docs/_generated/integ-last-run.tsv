@@ -149,7 +149,7 @@ dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
 dynamodb-fix-forward-orphan	2026-11-04T22:06:17Z	PASS	181	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
-dynamodb-globaltable	2026-11-20T14:06:50Z	PASS	2225	verify.sh	rc ok, orph clean; #6669 rebased on main 4a61344db
+dynamodb-globaltable	2026-11-20T15:08:45Z	PASS	1784	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 dynamodb-globaltable-implied-stream	2026-11-06T16:08:16Z	PASS	335	verify.sh	post-hoc on main after #5839 split; rc ok, orph clean
 dynamodb-globaltable-replica-settings	2026-11-20T11:50:48Z	PASS	3875	verify.sh	PR6652 be63cc056, us-west-2 (second us-east-1); rc 0, revert-identity kept identity x2, orph clean
 dynamodb-gsi-update	2026-11-20T11:50:48Z	PASS	4442	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
@@ -157,7 +157,7 @@ dynamodb-ondemand	2026-11-10T16:35:53Z	PASS	446	verify.sh	rc ok, orph clean
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-dynamodb-table-policy-baseline	2026-11-20T14:06:50Z	PASS	172	verify.sh	rc ok, orph clean; #6669 rebased on main 4a61344db
+dynamodb-table-policy-baseline	2026-11-20T15:08:45Z	PASS	187	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 ec2-instance	2026-11-19T06:17:01Z	PASS	837	verify.sh	rc ok, orph clean
@@ -478,7 +478,7 @@ secrets-array-nested	2026-11-20T11:22:10Z	PASS	300	verify.sh	PR6652 be63cc056, u
 secrets-dynamic-ref	2026-11-20T11:22:10Z	PASS	721	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 secrets-rotation-schedule	2026-11-04T22:20:19Z	PASS	60	verify.sh	own state bucket, rc ok, orph clean
 secretsmanager-replica-rekey	2026-11-10T16:00:58Z	PASS	110	verify.sh	rc ok, orph clean
-secretsmanager-update-value-source	2026-11-20T14:06:50Z	PASS	136	verify.sh	rc ok, orph clean; #6669 rebased on main 4a61344db
+secretsmanager-update-value-source	2026-11-20T15:08:45Z	PASS	146	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 select-out-of-bounds	2026-11-13T04:16:36Z	PASS	36	verify.sh	rc ok, orph clean
 serverless-api	2026-11-19T18:50:43Z	PASS	75	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 servicediscovery	2026-11-17T05:50:34Z	PASS	265	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
