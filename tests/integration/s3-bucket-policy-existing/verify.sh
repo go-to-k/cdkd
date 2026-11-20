@@ -52,6 +52,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+. ../revert-identity.sh
+REVERT_WORK=""
 
 STACK="CdkdS3BucketPolicyExistingExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -73,6 +75,10 @@ cleanup() {
   aws s3api delete-bucket-policy --bucket "${BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
   aws s3api delete-object --bucket "${BUCKET}" --key cdkd-6609-marker >/dev/null 2>&1 || true
   aws s3api delete-bucket --bucket "${BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-3c-before" "${REVERT_WORK}/revert-ids-3c-after" "${REVERT_WORK}/revert-3c.log"
+    rmdir "${REVERT_WORK}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -88,6 +94,7 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ ! -f "${LOCAL_DIST}" ] && { echo "FAIL: build dist first" >&2; exit 1; }
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
+REVERT_WORK="$(mktemp -d)"
 
 # go-to-k/cdkd#6609 (slice C): the baseline captured right after cdkd's own
 # write must hold the member the deploy just wrote. `cdkd drift` alone cannot
@@ -276,7 +283,15 @@ POLICY_PID_BEFORE="$(state_json | jq -r --arg l "${POLICY_LID}" '.resources[$l].
 aws s3api put-bucket-policy --bucket "${BUCKET}" --region "${REGION}" --policy "${FOREIGN_POLICY}"
 DRIFT_3C="$(revert_drift_json CDKD_TEST_UPDATE=policy,policy2)" || exit 1
 assert_member_drifted "${DRIFT_3C}" AWS::S3::BucketPolicy PolicyDocument "an out-of-band put-bucket-policy"
-run_revert CDKD_TEST_UPDATE=policy,policy2
+# go-to-k/cdkd#6639: the helpers run right after the revert returns, before any
+# assertion on its result; the revert's rc is captured, not acted on, first.
+BUCKET_LID="$(state_lids AWS::S3::Bucket)"
+[ -n "${BUCKET_LID}" ] || { echo "FAIL: no AWS::S3::Bucket in state before the phase 3c revert" >&2; exit 1; }
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-3c-before" "${STACK}" "${BUCKET_LID}" "${POLICY_LID}" || exit 1
+REVERT_RC=0
+run_revert CDKD_TEST_UPDATE=policy,policy2 2>&1 | tee "${REVERT_WORK}/revert-3c.log" || REVERT_RC=$?
+revert_identity_verify "${REVERT_WORK}/revert-ids-3c-before" "${REVERT_WORK}/revert-ids-3c-after" 2 "${REVERT_WORK}/revert-3c.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 3c)" >&2; exit 1; }
 P3C="$(bucket_policy)" || exit 1
 [ "$(jq -cS . <<<"${P3C}")" = "$(jq -cS . <<<"${P3B}")" ] \
   || { echo "FAIL: the reverted bucket policy is not the template's: ${P3C:-<no policy>}" >&2; exit 1; }
@@ -296,6 +311,8 @@ echo "    OK: bucket gone"
 assert_gone "state ${STATE_KEY} remains after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
 
+rm -f "${REVERT_WORK}/revert-ids-3c-before" "${REVERT_WORK}/revert-ids-3c-after" "${REVERT_WORK}/revert-3c.log"
+rmdir "${REVERT_WORK}"
 trap - EXIT INT TERM
 echo ""
 echo "[verify] PASS — s3-bucket-policy-existing: a BucketPolicy create refuses an existing policy and leaves it intact"

@@ -66,9 +66,11 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
 
 STACK="CdkdBudgetsExample"
 REGION="${AWS_REGION:-us-east-1}"
+REVERT_WORK=""
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 BUDGET_NAME="cdkd-budgets-integ-budget"
 QUEUE_NAME="cdkd-budgets-drift-sibling"
@@ -86,6 +88,10 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   rm -f "${DRIFT_OUT:-}" "${OOB_BUDGET:-}"
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-2d-before" "${REVERT_WORK}/revert-ids-2d-after" "${REVERT_WORK}/revert-2d.log"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   aws budgets delete-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" >/dev/null 2>&1 || true
   local qurl
   qurl=$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
@@ -329,10 +335,21 @@ echo "    OK: exit 1"
 # must return to 2 USD, the notification and both subscribers must survive,
 # and the stack must then drift clean.
 echo "==> Phase 2d: drift --revert restores BudgetLimit 2 USD"
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-2d-before" "${STACK}" CostBudget || exit 1
+set +e
 node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --revert --yes
+  --revert --yes > "${REVERT_WORK}/revert-2d.log" 2>&1
+REVERT_RC=$?
+set -e
+cat "${REVERT_WORK}/revert-2d.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-2d-before" "${REVERT_WORK}/revert-ids-2d-after" 1 "${REVERT_WORK}/revert-2d.log" || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0 (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
 LIMIT_REVERT="$(aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
   --query 'Budget.BudgetLimit.Amount' --output text)"
 case "${LIMIT_REVERT}" in

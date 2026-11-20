@@ -87,6 +87,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 STACK="LaunchTemplateAsgInplaceStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -108,6 +112,7 @@ cleanup() {
   for tmp in "${STATE_ORIG:-}" "${STATE_LEGACY:-}" "${DRIFT_JSON:-}" "${DRIFT_ERR:-}"; do
     [ -n "${tmp}" ] && rm -f "${tmp}"
   done
+  rm -rf "${REVERT_DIR:-}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -578,8 +583,15 @@ if [ "${OOB_CHANGES}" = "0" ]; then
   exit 1
 fi
 echo "    OK: Phase 3: cdkd drift reports the out-of-band MetricsCollection change"
-if ! node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" 2>"${DRIFT_ERR}"; then
+REVERT_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" Asg || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" >"${REVERT_DIR}/revert-1.log" 2>"${DRIFT_ERR}" || REVERT_RC=$?
+cat "${DRIFT_ERR}" >>"${REVERT_DIR}/revert-1.log"
+cat "${REVERT_DIR}/revert-1.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_DIR}/revert-1.log" ignore=ReplaceUnhealthy || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: Phase 3: cdkd drift --revert failed:" >&2
   tail -30 "${DRIFT_ERR}" >&2
   exit 1

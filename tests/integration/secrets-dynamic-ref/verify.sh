@@ -106,6 +106,7 @@ cd "$(dirname "$0")"
 # green run. See the file header for the three traps that make a sweep
 # silently partial.
 . ../s3-versions.sh
+. ../revert-identity.sh
 
 STACK="CdkdSecretsDynamicRefExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -3493,11 +3494,30 @@ esac
 # (c) --revert must RE-RESOLVE the expression before handing it to the provider.
 # Shipping the literal token is the live-breakage half of issue #1914.
 echo "==> Reverting the injected drift"
+# Prove the revert updated the Lambda in place (go-to-k/cdkd#6639). The L2's
+# state logical id carries an 8 hex suffix; the scratch files are removed by
+# `cleanup` through SCRATCH_FILES.
+REVERT_FN_LID=$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json \
+  | jq -r '[.state.resources | to_entries[]
+            | select(.value.resourceType=="AWS::Lambda::Function" and (.key | test("^ConsumerFn[0-9A-F]{8}$")))
+            | .key] | .[0] // empty')
+if [ -z "${REVERT_FN_LID}" ]; then
+  echo "FAIL: no ConsumerFn Lambda record in state for the revert-identity snapshot" >&2
+  exit 1
+fi
+REVERT_IDS_BEFORE=$(mktemp)
+REVERT_IDS_AFTER=$(mktemp)
+REVERT_OUT_FILE=$(mktemp)
+SCRATCH_FILES+=("${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" "${REVERT_OUT_FILE}")
+revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${STACK}" "${REVERT_FN_LID}" || exit 1
 set +e
 REVERT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes 2>&1)
 REVERT_RC=$?
 set -e
+printf '%s\n' "${REVERT_OUT}" > "${REVERT_OUT_FILE}"
+revert_identity_verify "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 "${REVERT_OUT_FILE}" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --revert' failed (rc=${REVERT_RC})" >&2
   diag_output "${REVERT_OUT}"

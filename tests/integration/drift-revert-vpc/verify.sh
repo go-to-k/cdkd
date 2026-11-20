@@ -49,6 +49,9 @@ cd "${TEST_DIR}"
 if [ ! -d node_modules ]; then
   vp install
 fi
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
+REVERT_DIR="$(mktemp -d)"
 
 cleanup() {
   rc=$?
@@ -56,6 +59,8 @@ cleanup() {
   if [ "${STATE_PLANTED:-0}" = 1 ] && [ -s "${STATE_ORIG:-}" ]; then
     aws s3 cp "${STATE_ORIG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  rm -f "${REVERT_DIR:-/nonexistent}"/revert-ids-* "${REVERT_DIR:-/nonexistent}"/revert-*.log 2>/dev/null || true
+  rmdir "${REVERT_DIR:-/nonexistent}" 2>/dev/null || true
   rm -f "${STATE_TMP:-}" "${DEPLOY_LOG:-}" "${STATE_ORIG:-}" "${STATE_PLANT:-}" "${DRIFT_JSON:-}"
   [ -n "${DRIFT_JSON:-}" ] && rm -f "${DRIFT_JSON}.err"
   if [ "${TG2_ATTACHED:-0}" = 1 ]; then
@@ -164,7 +169,30 @@ fi
 echo "[verify] step 4 ok: exit ${rc}"
 
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
-${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+# Logical ids of the resources inject-drift.ts drifted. The L1s carry their
+# construct id; the L2s (namespace, ALB, subnet) get a hash suffix, so they
+# are resolved from state (the only one of their type, or by physical id).
+state_lid() { # $1 = resource type, $2 = physical id ("" = the type must be unique)
+  ${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json | python3 -c "
+import json, sys
+t, pid = sys.argv[1], sys.argv[2]
+rs = json.load(sys.stdin)['state']['resources']
+ids = [k for k, r in rs.items() if r.get('resourceType') == t and (not pid or r.get('physicalId') == pid)]
+if len(ids) != 1:
+    sys.exit('[verify] FAIL: step 5: expected exactly one ' + t + ' record' + (' for ' + pid if pid else '') + ', got ' + repr(ids))
+print(ids[0])" "$1" "$2"
+}
+PUBLIC_SUBNET1_ID="$(${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --json \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)['state']['outputs']['PublicSubnet1Id'])")"
+NS_LID="$(state_lid AWS::ServiceDiscovery::PrivateDnsNamespace "")"
+LB_LID="$(state_lid AWS::ElasticLoadBalancingV2::LoadBalancer "")"
+SUBNET_LID="$(state_lid AWS::EC2::Subnet "${PUBLIC_SUBNET1_ID}")"
+REVERT_LIDS=(DriftFileSystem DriftMountTarget "${NS_LID}" "${LB_LID}" "${SUBNET_LID}" DriftAsg DriftSgIngress)
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
+REVERT_RC=0
+${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" 2>&1 | tee "${REVERT_DIR}/revert-1.log" || REVERT_RC=$?
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 7 "${REVERT_DIR}/revert-1.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "[verify] FAIL: step 5: cdkd drift --revert -y exited ${REVERT_RC}, expected 0"; exit 1; }
 
 # go-to-k/cdkd#6514: reverting the description updates the rule in place
 # (`UpdateSecurityGroupRuleDescriptionsIngress`, as CloudFormation does), so
@@ -391,9 +419,14 @@ echo "[verify] step 6c ok: an out-of-band disable under ALL is reported as drift
 
 # ...and reverted, still on the legacy ALL record: the revert must re-enable
 # GroupMinSize (sent as AWS's ALL) and disable nothing.
-if ! ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" 2>"${DRIFT_JSON}.err"; then
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" DriftAsg || exit 1
+REVERT_RC=0
+${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${REVERT_DIR}/revert-2.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_DIR}/revert-2.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 "${REVERT_DIR}/revert-2.log" || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
   echo "[verify] FAIL: step 6c: cdkd drift --revert of the legacy ALL record failed:"
-  tail -30 "${DRIFT_JSON}.err"
+  tail -30 "${REVERT_DIR}/revert-2.log"
   exit 1
 fi
 rm -f "${DRIFT_JSON}.err"

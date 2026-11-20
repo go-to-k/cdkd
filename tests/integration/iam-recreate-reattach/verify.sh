@@ -50,6 +50,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+. ../revert-identity.sh
+REVERT_WORK=""
 
 STACK="CdkdIamRecreateReattachExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -156,6 +158,10 @@ cleanup() {
   aws iam delete-user --user-name "${RUSER}" >/dev/null 2>&1
   aws iam delete-group --group-name "${GROUP}" >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE}" >/dev/null 2>&1
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" "${REVERT_WORK}/revert-1b.log"
+    rmdir "${REVERT_WORK}" >/dev/null 2>&1
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1 || true
@@ -177,6 +183,7 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 POLICY_ARN="arn:aws:iam::${ACCOUNT}:policy/${MANAGED}"
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
+REVERT_WORK="$(mktemp -d)"
 
 node "${LOCAL_DIST}" synth --region "${REGION}" >/dev/null 2>&1
 TEMPLATE="cdk.out/${STACK}.template.json"
@@ -236,7 +243,13 @@ PROFILE_PID_BEFORE="$(state_json | jq -r '.resources.Profile.physicalId')"
 aws iam remove-role-from-instance-profile --instance-profile-name "${PROFILE}" --role-name "${ROLE}"
 DRIFT_1B="$(revert_drift_json)" || exit 1
 assert_member_drifted "${DRIFT_1B}" AWS::IAM::InstanceProfile Roles "an out-of-band remove-role-from-instance-profile"
-run_revert
+# go-to-k/cdkd#6639: the helpers run right after the revert returns, before any
+# assertion on its result; the revert's rc is captured, not acted on, first.
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-1b-before" "${STACK}" Profile || exit 1
+REVERT_RC=0
+run_revert 2>&1 | tee "${REVERT_WORK}/revert-1b.log" || REVERT_RC=$?
+revert_identity_verify "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" 1 "${REVERT_WORK}/revert-1b.log" ignore=CdkdIamRecreateReattachExample || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 1b)" >&2; exit 1; }
 [ "$(profile_roles)" = "1" ] || { echo "FAIL: ${ROLE} is not back in ${PROFILE} after the revert" >&2; exit 1; }
 echo "    OK: the revert put ${ROLE} back in ${PROFILE}"
 assert_same "${PROFILE}'s InstanceProfileId" "${PROFILE_ID_BEFORE}" \

@@ -94,6 +94,7 @@ fi
 # Its service resolves nothing, but the S3 version-sweep convention keys on the
 # literal, and a sweep costs nothing next to a disclosure that outlives the run.
 . ../s3-versions.sh
+. ../revert-identity.sh
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 # Set to 1 only when step 2's deploy failed acquiring the lock (a peer's, or an
@@ -101,6 +102,27 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # ${STACK} may be a PEER's, and a destroy from `cleanup` would delete it once
 # the peer releases its lock.
 PEER_HOLDS_STACK=0
+REVERT_WORK=""
+
+# The state logical id of the one resource of <type> whose id starts with <prefix>
+# (an L2 gets a hash suffix; the revert-identity snapshots name exact ids).
+lid_of() { # usage: lid_of <type> <logical-id prefix>
+  ${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+    | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=(JSON.parse(b).state??JSON.parse(b)).resources;const ids=Object.keys(r).filter(k=>k.startsWith(process.argv[2])&&r[k].resourceType===process.argv[1]);if(ids.length!==1)throw new Error(`expected one ${process.argv[1]} ${process.argv[2]}, found ${ids.length}`);process.stdout.write(ids[0]);})' "$1" "$2"
+}
+
+# One checked drift --revert: <tag> names the files under ${REVERT_WORK}.
+revert_run() { # usage: revert_run <tag> -> runs `drift --revert -y`, log in ${REVERT_WORK}/revert-<tag>.log; only CAPTURES the rc (REVERT_RUN_RC), the caller asserts it via revert_run_assert AFTER the revert-identity helpers
+  REVERT_RUN_RC=0
+  ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${REVERT_WORK}/revert-$1.log" 2>&1 || REVERT_RUN_RC=$?
+  cat "${REVERT_WORK}/revert-$1.log"
+}
+revert_run_assert() { # usage: revert_run_assert <tag> -> fails unless the last revert_run exited 0
+  if [ "${REVERT_RUN_RC}" -ne 0 ]; then
+    echo "[verify] FAIL: cdkd drift --revert -y exited ${REVERT_RUN_RC} (${1}), expected 0" >&2
+    return 1
+  fi
+}
 
 # Issue #4023: the template names of step 6e's role and managed policy. A
 # revert that re-derives the name (the pre-fix behaviour) creates copies under
@@ -128,6 +150,10 @@ sweep_bare_iam_names() { (
 
 cleanup() {
   rc=$?
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}"/revert-ids-*-before "${REVERT_WORK}"/revert-ids-*-after "${REVERT_WORK}"/revert-*.log
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   rm -f "${BOGUS_DRIFT_LOG:-}" "${DEPLOY_LOG:-}" "${STEP4_LOG:-}" "${STEP6E_ERR:-}" "${STEP6F_JSON:-}" "${STEP6G_JSON:-}" "${STEP6H_OUT:-}"
   if [ "${PEER_HOLDS_STACK}" = 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — destroy and log-group sweep SKIPPED: this run deployed nothing to ${STACK}"
@@ -253,7 +279,21 @@ if [ "${CONN_BEFORE}" != "${GLUE_CONN_LIVE}" ]; then
 fi
 
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
-${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+REVERT_WORK="$(mktemp -d)"
+LID_BUCKET="$(lid_of AWS::S3::Bucket DriftBucket)" || exit 1
+LID_TOPIC="$(lid_of AWS::SNS::Topic DriftTopic)" || exit 1
+LID_ROLE="$(lid_of AWS::IAM::Role DriftRole)" || exit 1
+LID_KEY="$(lid_of AWS::KMS::Key DriftKey)" || exit 1
+LID_LOGGROUP="$(lid_of AWS::Logs::LogGroup DriftLogGroup)" || exit 1
+LID_CLUSTER="$(lid_of AWS::ECS::Cluster DriftCluster)" || exit 1
+LID_GLUE="$(lid_of AWS::Glue::Database DriftGlueDatabase)" || exit 1
+LID_HTTPAPI="$(lid_of AWS::ApiGatewayV2::Api DriftHttpApi)" || exit 1
+LID_HTTPSTAGE="$(lid_of AWS::ApiGatewayV2::Stage DriftHttpStage)" || exit 1
+LID_SSMPARAM="$(lid_of AWS::SSM::Parameter DriftPoliciesParameter)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" "${LID_BUCKET}" "${LID_TOPIC}" "${LID_ROLE}" "${LID_KEY}" "${LID_LOGGROUP}" "${LID_CLUSTER}" "${LID_GLUE}" "${LID_HTTPAPI}" "${LID_HTTPSTAGE}" "${LID_SSMPARAM}" || exit 1
+revert_run 5
+revert_identity_verify "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 10 "${REVERT_WORK}/revert-5.log" || exit 1
+revert_run_assert 5 || exit 1
 
 # Issue #2102: `--revert` overlays the Glue database's whole `DatabaseInput`
 # (its Description drifted), and `Parameters.conn` EMBEDS a token cdkd cannot
@@ -357,7 +397,11 @@ NEW_TAGGING="$(aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --region "
   | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const t=JSON.parse(b).TagSet.filter(e=>e.Key!=="IntegInjected");const o=t.find(e=>e.Key==="Owner");if(!o)throw new Error("template tag Owner missing — the revert-direction assertion would be vacuous");o.Value="DRIFTED-BY-INTEG";t.push({Key:"IntegInjected",Value:"yes"});process.stdout.write(JSON.stringify({TagSet:t}));})')"
 aws s3api put-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" --tagging "${NEW_TAGGING}"
 
-${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+LID_6D_BUCKET="$(lid_of AWS::S3::Bucket DriftBucket)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-6d-before" "${STACK}" "${LID_6D_BUCKET}" || exit 1
+revert_run 6d
+revert_identity_verify "${REVERT_WORK}/revert-ids-6d-before" "${REVERT_WORK}/revert-ids-6d-after" 1 "${REVERT_WORK}/revert-6d.log" || exit 1
+revert_run_assert 6d || exit 1
 
 # Bucket subresources are eventually consistent, so retry briefly. stderr is
 # CAPTURED rather than discarded: an empty tag set legitimately raises
@@ -461,7 +505,12 @@ wait_iam "injected role description" "DRIFTED-BY-INTEG" \
 wait_iam "injected policy default version" "${DRIFTED_VERSION}" \
   aws iam get-policy --policy-arn "${NAMED_POLICY_ARN}" --query Policy.DefaultVersionId --output text
 
-${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+LID_6E_ROLE="$(lid_of AWS::IAM::Role DriftNamedRole)" || exit 1
+LID_6E_POLICY="$(lid_of AWS::IAM::ManagedPolicy DriftNamedPolicy)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-6e-before" "${STACK}" "${LID_6E_ROLE}" "${LID_6E_POLICY}" || exit 1
+revert_run 6e
+revert_identity_verify "${REVERT_WORK}/revert-ids-6e-before" "${REVERT_WORK}/revert-ids-6e-after" 2 "${REVERT_WORK}/revert-6e.log" || exit 1
+revert_run_assert 6e || exit 1
 
 STEP6E_ERR="$(mktemp)"
 ROLE_ID_AFTER="$(aws iam get-role --role-name "${NAMED_ROLE}" --query Role.RoleId --output text 2>"${STEP6E_ERR}")" || {
@@ -582,7 +631,11 @@ if [ "${VERDICT}" != "drifted PolicyDocument.Statement.Condition" ]; then
   exit 1
 fi
 
-${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+LID_6G_DENY="$(lid_of AWS::IAM::ManagedPolicy DriftDenyPolicy)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-6g-before" "${STACK}" "${LID_6G_DENY}" || exit 1
+revert_run 6g
+revert_identity_verify "${REVERT_WORK}/revert-ids-6g-before" "${REVERT_WORK}/revert-ids-6g-after" 1 "${REVERT_WORK}/revert-6g.log" || exit 1
+revert_run_assert 6g || exit 1
 
 DENY_VERSION="${NARROWED_VERSION}"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -644,6 +697,13 @@ for mode in revert accept; do
   rc=$?
   set -e
   cat "${STEP6H_OUT}"
+  # No identity snapshot here: the one resource the revert addresses is gone
+  # (the assert_gone below and the record compare after the loop are its
+  # identity proof). The output must still report no replacement, its
+  # "cannot recreate one" refusal aside (go-to-k/cdkd#6639).
+  if [ "${mode}" = revert ]; then
+    revert_output_assert_no_replacement "${STEP6H_OUT}" expect-refusal || exit 1
+  fi
   if [ "${rc}" -ne 2 ]; then
     echo "[verify] FAIL step 6h: cdkd drift --${mode} over a deleted resource exited ${rc}, expected 2" >&2
     exit 1

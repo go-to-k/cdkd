@@ -74,11 +74,13 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
 
 STACK="CdkdCloudTrailTrailExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 P2_LOG=""
+REVERT_WORK=""
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 TRAIL_NAME="cdkd-integ-ct-${ACCOUNT_ID}"
@@ -102,6 +104,11 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion -- best-effort cleanup
   # should run as much as it can with the env it has.
   set +eu
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" "${REVERT_WORK}/revert-2b.log" \
+      "${REVERT_WORK}/revert-ids-2d-before" "${REVERT_WORK}/revert-ids-2d-after" "${REVERT_WORK}/revert-2d.log"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   state_destroy_rc=1
   if [ -x "${LOCAL_DIST}" ]; then
     # `--state-bucket` is REQUIRED here: without it the command resolves
@@ -400,10 +407,21 @@ echo "==> Phase 2b: drift --revert MUST actually undo the enable"
 # baseline's `''` pair as "absent", so --revert issued an UpdateTrail without
 # the fields, AWS's merge semantics kept the console wiring, and cdkd still
 # printed the resource as reverted -- a silent no-op with a success message.
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-2b-before" "${STACK}" Trail || exit 1
+set +e
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --revert --yes
+  --revert --yes > "${REVERT_WORK}/revert-2b.log" 2>&1
+REVERT_RC=$?
+set -e
+cat "${REVERT_WORK}/revert-2b.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" 1 "${REVERT_WORK}/revert-2b.log" || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2
+  exit 1
+fi
 assert_field "CloudWatchLogsLogGroupArn re-cleared by --revert" '.CloudWatchLogsLogGroupArn' 'null'
 assert_field "CloudWatchLogsRoleArn re-cleared by --revert" '.CloudWatchLogsRoleArn' 'null'
 
@@ -512,10 +530,20 @@ rm -f "${DRIFT_OUT}"
 echo "    ok: out-of-band selector switch reported as drift on AdvancedEventSelectors"
 
 echo "==> Phase 2d: drift --revert MUST restore the advanced selectors"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-2d-before" "${STACK}" Trail || exit 1
+set +e
 CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --revert --yes
+  --revert --yes > "${REVERT_WORK}/revert-2d.log" 2>&1
+REVERT_RC=$?
+set -e
+cat "${REVERT_WORK}/revert-2d.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-2d-before" "${REVERT_WORK}/revert-ids-2d-after" 1 "${REVERT_WORK}/revert-2d.log" || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2
+  exit 1
+fi
 assert_event_selector "AdvancedEventSelectors restored by --revert" '(.AdvancedEventSelectors | length)' '1'
 assert_event_selector "AdvancedEventSelectors name restored" '.AdvancedEventSelectors[0].Name' 'cdkd-integ-s3-data'
 assert_event_selector "AdvancedEventSelectors fields restored" '(.AdvancedEventSelectors[0].FieldSelectors | map(.Field) | sort | join(" "))' 'eventCategory resources.ARN resources.type'

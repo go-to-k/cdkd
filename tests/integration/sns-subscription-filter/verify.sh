@@ -68,6 +68,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 STACK="CdkdSnsSubscriptionFilterExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -112,6 +116,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  rm -rf "${REVERT_DIR:-}"
   set -eu
 }
 
@@ -411,6 +416,7 @@ aws sns set-subscription-attributes --subscription-arn "${SUB_ARN}" --region "${
   --attribute-name FilterPolicyScope --attribute-value MessageBody
 aws sns set-subscription-attributes --subscription-arn "${SUB_ARN}" --region "${REGION}" \
   --attribute-name FilterPolicy --attribute-value '{"color":["blue"]}'
+REVERT_DIR="$(mktemp -d)"
 REVERT_LOG="$(mktemp)"
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >"${REVERT_LOG}" 2>&1
@@ -422,12 +428,14 @@ sed 's/^/    | /' "${REVERT_LOG}"
 for needle in "${SUB_LID}" 'FilterPolicyScope' 'FilterPolicy([^S]|$)'; do
   grep -qE -- "${needle}" "${REVERT_LOG}" || { rm -f "${REVERT_LOG}"; echo "FAIL: premise: the drift report does not name ${needle}" >&2; exit 1; }
 done
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${SUB_LID}" || { rm -f "${REVERT_LOG}"; exit 1; }
 set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y >"${REVERT_LOG}" 2>&1
 REVERT_RC=$?
 set -e
 sed 's/^/    | /' "${REVERT_LOG}"
 # A refused resource is a partly failed revert: exit 2, never a success.
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_LOG}" expect-refusal || { rm -f "${REVERT_LOG}"; exit 1; }
 [ "${REVERT_RC}" = "2" ] || { rm -f "${REVERT_LOG}"; echo "FAIL: cdkd drift --revert exited ${REVERT_RC}, want 2 (the subscription refused)" >&2; exit 1; }
 REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' "${REVERT_LOG}" | grep -F "${SUB_LID} (AWS::SNS::Subscription): could not revert" || true)"
 rm -f "${REVERT_LOG}"

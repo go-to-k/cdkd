@@ -61,15 +61,20 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdEc2InstanceVolumeAttachmentDrift"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+REVERT_DIR=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${REVERT_DIR:-/nonexistent}"/revert-ids-* "${REVERT_DIR:-/nonexistent}"/revert.log 2>/dev/null
+  rmdir "${REVERT_DIR:-/nonexistent}" 2>/dev/null
   if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
@@ -101,6 +106,8 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# Created AFTER the pre-run cleanup above, which removes it (go-to-k/cdkd#6639).
+REVERT_DIR="$(mktemp -d)"
 
 # --- Phase 1: deploy ---------------------------------------------------------
 echo "==> Phase 1: deploy two instances, each with a sibling VolumeAttachment"
@@ -206,7 +213,18 @@ echo "    drift names the declared root device only"
 
 # --- Phase 5: revert ---------------------------------------------------------
 echo "==> Phase 5: cdkd drift --revert restores the root device, keeps /dev/sdf"
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+# The Declared instance (an L2: Declared<hash>) is the drifted resource; its
+# sibling-attached volume must come through the revert untouched too.
+DECLARED_LID="$(jq -r --arg id "${DECLARED_ID}" '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance" and .value.physicalId == $id) | .key] | if length == 1 then .[0] else "" end' <<<"${STATE_JSON}")"
+if [ -z "${DECLARED_LID}" ]; then
+  echo "FAIL: no single AWS::EC2::Instance state record for ${DECLARED_ID}" >&2
+  exit 1
+fi
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-before" "${STACK}" "${DECLARED_LID}" DeclaredVolume || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_DIR}/revert.log" || REVERT_RC=$?
+revert_identity_verify "${REVERT_DIR}/revert-ids-before" "${REVERT_DIR}/revert-ids-after" 2 "${REVERT_DIR}/revert.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 5: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 if [ "$(root_dot)" != "True" ]; then
   echo "FAIL: drift --revert did not restore DeleteOnTermination=true: $(root_dot)" >&2
   exit 1

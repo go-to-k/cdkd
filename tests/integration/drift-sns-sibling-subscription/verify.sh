@@ -60,6 +60,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdDriftSnsSiblingSubscriptionExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -67,6 +69,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # The phases set the mode; an inherited value would deploy one early.
 unset CDKD_TEST_UPDATE
 DRIFT_LOG=""
+REVERT_DIR=""
 TOPIC_ARN=""
 QUEUE_A=""
 QUEUE_B=""
@@ -80,6 +83,8 @@ cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
   rm -f "${DRIFT_LOG:-}"
+  rm -f "${REVERT_DIR:-/nonexistent}"/revert-ids-* 2>/dev/null
+  rmdir "${REVERT_DIR:-/nonexistent}" 2>/dev/null
   if [ -n "${STRANGER_SUB:-}" ]; then
     aws sns unsubscribe --subscription-arn "${STRANGER_SUB}" >/dev/null 2>&1
   fi
@@ -119,6 +124,8 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# Created AFTER the pre-run cleanup above, which removes it (go-to-k/cdkd#6639).
+REVERT_DIR="$(mktemp -d)"
 
 # The topic's live subscription endpoints, as the queue letters A / B / C,
 # sorted and space-joined. Any other endpoint prints as `?`.
@@ -241,7 +248,9 @@ if grep -qF "${QUEUE_B}" "${DRIFT_LOG}"; then
   echo "FAIL: Phase 3: the drift report names the sibling-owned queue B subscription" >&2
   exit 1
 fi
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" Topic SubscriptionB || exit 1
 run_drift --revert -y
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 2 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 3 (--revert)"
 expect_endpoints "Phase 3 (after --revert)" "A B"
 STRANGER_SUB=""
