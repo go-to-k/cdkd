@@ -19,19 +19,16 @@ verified gone ("Cleanup is non-negotiable" below).
    notifications, `BucketDeployment`, Lambda `logRetention`,
    `AwsCustomResource`, `LambdaRestApi`, adding a GSI / changing a property on
    redeploy, `grant*` IAM, cross-stack refs) over exotic edge cases.
-2. **UPDATE and DESTROY are where bugs hide.** CREATE usually works; the
-   high-value paths are redeploy-with-a-changed-property (replacement
-   classification, silent drops) and delete (custom-resource onDelete,
-   ordering, state cleanup). Always test an update and always run destroy.
+2. **UPDATE and DESTROY are where bugs hide** (replacement classification,
+   silent drops, custom-resource hangs, delete ordering, state cleanup):
+   always test both.
 3. **Check coverage first** — hunt in genuinely-uncovered territory:
    ```bash
    grep -rln "BucketDeployment\|addEventNotification\|logRetention\|AwsCustomResource\|LambdaRestApi\|NodejsFunction" tests/integration/
    ```
-4. **Parallelize, but cap at ~4-5 in flight.** One CDK app, several stacks.
-   **Pre-synth once, then deploy from the assembly** — parallel deploys that
-   each re-synth collide on the shared `cdk.out` lock. `npx cdk synth -q` (every
-   stack, no flag needed) once, then `node dist/cli.js deploy <Stack> -a "$HUNT_DIR/cdk.out" ...`
-   per stack. (Without `-a`, deploy serially.)
+4. **Parallelize, ~4-5 in flight, from ONE pre-synthesized assembly**:
+   parallel re-synths collide on the `cdk.out` lock. `npx cdk synth -q` once,
+   then `node dist/cli.js deploy <Stack> -a "$HUNT_DIR/cdk.out" ...` per stack.
 
 ## Workflow
 
@@ -63,16 +60,21 @@ stack per pattern, named `CdkdBughunt${RUN}<Pattern>`.
 ### 3. Deploy (parallel, capped)
 
 `node dist/cli.js deploy <Stack> -a <path-to-cdk.out> --state-bucket <bucket>`,
-each to its own log. Watch for deploy errors, wrong replacement decisions,
-silent drops, custom-resource hangs. Where cheap, add a quick **functional**
-check (put an S3 object, confirm the notification fired) — a clean deploy
-summary is not proof the feature works.
+each to its own log. Where cheap, add a **functional** check (put an S3
+object, confirm the notification fired): a clean summary proves nothing.
 
 ### 4. Test an UPDATE
 
-For at least one stack, redeploy with a changed property (env var, memory,
-GSI, tag, added resource). `cdkd diff` first, then deploy. The single richest
-bug source — verify the change reached AWS and was NOT a surprise replacement.
+For at least one stack, `cdkd diff` then redeploy a changed property; verify
+it reached AWS and was NOT a surprise replacement.
+
+**Per Cloud Control-routed type** (`provisionedBy: 'cc-api'` in state), on one
+resource: change ONE property served by the service's main update call (a
+`Description`, an action, a setting; not a tag, priority or name) with the
+rest unchanged, then change that property out of band and `drift --revert`.
+Some update calls refuse the read-model spelling Cloud Control sends for the
+untouched ones (#6676). Skip a type with no such property; compare a refusal
+with a CloudFormation A/B stack.
 
 ### 5. Destroy + verify zero orphans — non-negotiable
 
@@ -95,17 +97,12 @@ report it, never destroy or delete it.
 ### 6. On a confirmed bug: file an issue, then fix it — with a unit test
 
 **Always file a GitHub issue for every confirmed bug**, even when fixing it in
-the same session — every bug becomes a tracked, claimable unit. An issue-only
-hunt round files the issue and stops there; a fix-in-session round still files
-it, then closes it from the PR (`Closes #<n>`). The body carries the real
-repro (the CDK app / commands / the exact deploy-update-destroy sequence).
-
-**Every issue carries the four classification lines** (named in AGENTS.md ->
-Reporting; the scales are in
+the same session, and close it from the PR (`Closes #<n>`). The body carries
+the real repro (the CDK app and the exact deploy-update-destroy sequence) and
+the four classification lines (scales in
 [../../rules/session-report.md](../../rules/session-report.md), which never
-auto-loads, so open it here), with `Severity` /
-`Effort` ALSO as labels (`--label severity:<v> --label effort:<v>`), which the
-fix PR inherits — never hand-add.
+auto-loads), with `Severity` / `Effort` ALSO as labels, which the fix PR
+inherits — never hand-add.
 Filing shapes and the mint-vs-fold decision are in
 [../work-issues/references/filing.md](../work-issues/references/filing.md).
 
@@ -131,10 +128,21 @@ claims the issue BEFORE the first edit). Then fix:
    exercising the fixed path end-to-end, in the SAME PR — never defer it.
 6. Run `/verify-pr`, then open the PR.
 
-### 7. Record what you learned
+### 7. Close the class, not just the instance
 
-Save a memory for any recurring surprise — a *class* of latent bug, a
-verification gotcha — so the next sweep starts smarter.
+For every `severity:high` finding, ask whether its root cause is a *class*:
+the same mechanism reachable from other types or paths. Typical shapes: a
+hand-maintained list a type can be missing from, a fail-open default (an
+unknown case treated as safe), a per-type special case where a general rule
+belongs, a read that trusts one answer from an eventually consistent API.
+Search open and closed issues for earlier findings with the same root cause.
+
+If the class is real and no issue closes it yet (a cross-type audit, or a
+generated table with a CI gate), file one: the class, every known instance,
+the audit or gate that closes it, and its constraints (no performance or
+safety regression). Its body says it is prevention, not a finding. If one
+exists, add the new instance to it as a comment. A memory is for verification
+gotchas only: it reaches this machine, not the next session elsewhere.
 
 ## Cleanup is non-negotiable (markgate-enforced)
 
@@ -143,13 +151,9 @@ verification gotcha — so the next sweep starts smarter.
   owner).
 - The `bughunt-clean` gate (`.claude/hooks/bughunt-clean-gate.sh`) **blocks
   `gh pr create` and `gh pr merge` while ANY owner's tracked stack remains,
-  and blocks `git commit` while YOUR OWN does** (issue #1615). A commit from a
-  session owning no pending stacks gets a non-blocking notice — `clear` is
-  per-owner by design, and destroying another session's stacks is the
-  cross-session trespass the worktree rules forbid.
+  and blocks `git commit` while YOUR OWN does** (issue #1615).
 - `verify` confirms each tracked stack's `state.json` is gone; `clear` removes
-  your stacks (releasing the gate once no owner is pending), run ONLY after
-  orphan-zero.
+  your stacks, run ONLY after orphan-zero.
 
 **Concurrent hunts are safe** when each runs in its own worktree and uses its
 own run id (§2): the sentinel is per-owner (owner key: the worktree, see

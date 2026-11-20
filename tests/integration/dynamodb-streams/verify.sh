@@ -69,6 +69,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="DynamodbStreamsStack"
 REGION="${AWS_REGION:-us-east-1}"
@@ -97,6 +99,10 @@ MEMBERS_POLICY_SID="CdkdIntegStreamRead"
 # Scratch files, declared HERE so `cleanup` sweeps them on every exit path.
 DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-3458-drift.$$.json"
 MEMBERS_STATE_JSON="${TMPDIR:-/tmp}/cdkd-3458-state.$$.json"
+# Phase M3's revert log and identity snapshots (go-to-k/cdkd#6639); removed by cleanup().
+REVERT_LOG="${TMPDIR:-/tmp}/cdkd-6639-revert.$$.log"
+REVERT_IDS_BEFORE="${TMPDIR:-/tmp}/cdkd-6639-ids-before.$$.tsv"
+REVERT_IDS_AFTER="${TMPDIR:-/tmp}/cdkd-6639-ids-after.$$.tsv"
 
 # Delete the members table BY NAME. A subshell under `set +eu`, so calling it
 # from the `set +eu` trap never re-arms strict mode mid-sweep. The loop keys on
@@ -131,7 +137,7 @@ cleanup() {
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
   set +eu
-  rm -f "${DRIFT_JSON}" "${MEMBERS_STATE_JSON}" "${MEMBERS_STATE_JSON}.stripped"
+  rm -f "${DRIFT_JSON}" "${MEMBERS_STATE_JSON}" "${MEMBERS_STATE_JSON}.stripped" "${REVERT_LOG}" "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}"
   # The members table is swept BY NAME first and its state record dropped
   # second, so a `state destroy` that dies half way is never the only thing
   # between the table and a leak (`state destroy` treats a gone table as deleted).
@@ -565,8 +571,18 @@ case " $(members_drift_paths) " in
     ;;
 esac
 echo "    OK: reported as drift on: $(members_drift_paths)"
+members_state
+MEMBERS_LID="$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DynamoDB::Table") | .key] | if length == 1 then .[0] else "" end' "${MEMBERS_STATE_JSON}")"
+if [ -z "${MEMBERS_LID}" ]; then
+  echo "FAIL: the members stack's state record does not hold exactly one AWS::DynamoDB::Table resource" >&2
+  exit 1
+fi
+revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${MEMBERS_STACK}" "${MEMBERS_LID}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${MEMBERS_STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --revert --yes
+  --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}" || REVERT_RC=$?
+revert_identity_verify "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 "${REVERT_LOG}" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase M3: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_members_on "${STREAM_ARN_2}" "${EXPECTED_STATEMENT}" "${MEMBERS_TAG_VALUE}" "restored by drift --revert"
 if [ "$(members_stream_arn)" != "${STREAM_ARN_2}" ]; then
   echo "FAIL (issue #3458): drift --revert replaced the stream (arn is now '$(members_stream_arn)')" >&2

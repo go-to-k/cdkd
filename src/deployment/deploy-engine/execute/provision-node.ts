@@ -1,3 +1,4 @@
+import { replaceDeadIdentity } from '../../recorded-identity-attributes.js';
 import {
   currentNameGeneration,
   getCurrentStackInstanceId,
@@ -289,6 +290,28 @@ export async function provisionCreateUpdateNode(
     // past it however the failure is then rolled back (or left), so no
     // retry asks for that name again. A killed deploy never reaches here:
     // its re-run derives the same generation and meets its own resource.
+    // go-to-k/cdkd#6655: the delete-first replacement deleted the resource
+    // this record names, so its identity id is dead: kept, it refuses the
+    // delete of a same-name resource the failed create made. It becomes that
+    // resource's id when the create reported one, else it is dropped.
+    const deadRecord = newResources[logicalId];
+    if (
+      change.changeType === 'UPDATE' &&
+      engine.replacementRun.oldDeletedBeforeCreate.has(logicalId) &&
+      deadRecord !== undefined
+    ) {
+      const attributes = replaceDeadIdentity(
+        deadRecord.resourceType,
+        deadRecord.attributes,
+        previousState?.attributes,
+        markedCreatedId === deadRecord.physicalId
+          ? createdResourceIdentityBeforeFailure(provisionError, logicalId, change.resourceType)
+          : undefined
+      );
+      if (attributes !== deadRecord.attributes) {
+        newResources[logicalId] = { ...deadRecord, ...(attributes && { attributes }) };
+      }
+    }
     const heldNow = newResources[logicalId];
     if (attemptedGeneration !== undefined && heldNow !== undefined) {
       newResources[logicalId] = withNameGenerationReached(heldNow, logicalId, attemptedGeneration);

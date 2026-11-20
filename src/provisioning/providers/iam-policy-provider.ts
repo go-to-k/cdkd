@@ -27,6 +27,7 @@ import { create, detachPartialPolicy } from './iam-policy/create.js';
 import { update } from './iam-policy/update.js';
 import { deleteImpl } from './iam-policy/delete.js';
 import { readCurrentState, decodePolicyDocument, importImpl } from './iam-policy/read-state.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 
 export {
   POLICY_NAME_SKIP_REASON,
@@ -77,6 +78,13 @@ export class IAMPolicyProvider implements ResourceProvider {
       build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
     );
   }
+
+  /**
+   * Waits between the post-write capture's re-reads of a copy that is not yet
+   * the declared document (go-to-k/cdkd#6609). Public: the read lives in a
+   * `this:`-bound module function, which cannot reach a protected member.
+   */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::IAM::Policy', new Set(['PolicyName', 'PolicyDocument', 'Roles', 'Groups', 'Users'])],

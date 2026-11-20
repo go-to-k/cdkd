@@ -10,16 +10,18 @@ vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
 );
 
 // Logger silenced — keep test output clean.
+// One shared `warn` so a test can read what the engine warned (go-to-k/cdkd#6655).
+const loggerWarn = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: loggerWarn,
     error: vi.fn(),
     child: () => ({
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: loggerWarn,
       error: vi.fn(),
     }),
   }),
@@ -226,5 +228,95 @@ describe('DeployEngine - in-place update carries previous attributes forward', (
     const record = savedRecord();
     expect(record.physicalId).toBe('fs-2');
     expect(record.attributes).toBeUndefined();
+  });
+  // go-to-k/cdkd#6655: an in-place update cannot change an AWS-minted id, so
+  // the recorded one stands over whatever the provider's read returned.
+  it('keeps the recorded identity id over the one an in-place update read', async () => {
+    const TYPE = 'AWS::DynamoDB::Table';
+    mockStateBackend.getState.mockResolvedValue({
+      state: {
+        ...structuredClone(priorState),
+        resources: {
+          MyResource: {
+            physicalId: 'tbl',
+            resourceType: TYPE,
+            properties: { BillingMode: 'PROVISIONED' },
+            attributes: { Arn: 'arn-1', TableId: 'table-id-recorded' },
+            dependencies: [],
+          },
+        },
+      },
+      etag: 'etag-1',
+    });
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'MyResource',
+          {
+            logicalId: 'MyResource',
+            changeType: 'UPDATE',
+            resourceType: TYPE,
+            desiredProperties: { BillingMode: 'PAY_PER_REQUEST' },
+            currentProperties: { BillingMode: 'PROVISIONED' },
+          },
+        ],
+      ])
+    );
+    mockProvider.update.mockResolvedValue({
+      physicalId: 'tbl',
+      wasReplaced: false,
+      attributes: { Arn: 'arn-1', TableId: 'table-id-holder-now' },
+    });
+    await makeEngine().deploy(stackName, {
+      Resources: { MyResource: { Type: TYPE, Properties: { BillingMode: 'PAY_PER_REQUEST' } } },
+    });
+    expect(savedRecord().attributes).toEqual({ Arn: 'arn-1', TableId: 'table-id-recorded' });
+    const warned = loggerWarn.mock.calls.flat().map(String).join('\n');
+    expect(warned).toContain('the update answered with another TableId than the recorded one');
+    expect(warned).not.toContain('table-id-holder-now');
+    expect(warned).not.toContain('table-id-recorded');
+  });
+  // go-to-k/cdkd#6655: a record without the id acquires it from the update.
+  it('a legacy record acquires the identity id an in-place update returned (trust on first use)', async () => {
+    const TYPE = 'AWS::DynamoDB::Table';
+    mockStateBackend.getState.mockResolvedValue({
+      state: {
+        ...structuredClone(priorState),
+        resources: {
+          MyResource: {
+            physicalId: 'tbl',
+            resourceType: TYPE,
+            properties: { BillingMode: 'PROVISIONED' },
+            attributes: { Arn: 'arn-1' },
+            dependencies: [],
+          },
+        },
+      },
+      etag: 'etag-1',
+    });
+    mockDiffCalculator.calculateDiff.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'MyResource',
+          {
+            logicalId: 'MyResource',
+            changeType: 'UPDATE',
+            resourceType: TYPE,
+            desiredProperties: { BillingMode: 'PAY_PER_REQUEST' },
+            currentProperties: { BillingMode: 'PROVISIONED' },
+          },
+        ],
+      ])
+    );
+    mockProvider.update.mockResolvedValue({
+      physicalId: 'tbl',
+      wasReplaced: false,
+      attributes: { Arn: 'arn-1', TableId: 'table-id-holder-now' },
+    });
+    await makeEngine().deploy(stackName, {
+      Resources: { MyResource: { Type: TYPE, Properties: { BillingMode: 'PAY_PER_REQUEST' } } },
+    });
+    expect(savedRecord().attributes).toEqual({ Arn: 'arn-1', TableId: 'table-id-holder-now' });
+    expect(loggerWarn.mock.calls.flat().map(String).join('\n')).not.toContain('another TableId');
   });
 });

@@ -2695,6 +2695,65 @@ describe('CloudControlProvider update: GuardDuty detector read-back keys (go-to-
   });
 });
 
+describe('CloudControlProvider update: listener rule conditions (go-to-k/cdkd#6663)', () => {
+  // The read model spells a path condition twice (Values + PathPatternConfig),
+  // which ModifyRule refuses, so an Actions-only change must send the
+  // template's conditions too.
+  const TYPE = 'AWS::ElasticLoadBalancingV2::ListenerRule';
+  const CONDITIONS = [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/a*'] } }];
+  const action = (body: string): unknown[] => [
+    { Type: 'fixed-response', FixedResponseConfig: { StatusCode: '200', MessageBody: body } },
+  ];
+
+  function updateCalls(): Array<Array<{ op: string; path: string; value?: unknown }>> {
+    return mockCloudControlSend.mock.calls
+      .filter((c) => c[0]?.constructor?.name === 'UpdateResourceCommand')
+      .map(
+        (c) =>
+          JSON.parse((c[0] as { input: { PatchDocument: string } }).input.PatchDocument) as Array<{
+            op: string;
+            path: string;
+            value?: unknown;
+          }>
+      );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearWriteOnlyPropertiesCache();
+    clearCreateOnlyPropertiesCache();
+    mockCloudControlConfigRegion.mockResolvedValue('us-east-1');
+    mockCloudFormationSend.mockResolvedValue({ Schema: JSON.stringify({}) });
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({ ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: 'rule' } });
+      }
+      return Promise.resolve({});
+    });
+  });
+
+  it('sends the template conditions beside an Actions-only change', async () => {
+    await new CloudControlProvider().update(
+      'Rule',
+      'rule',
+      TYPE,
+      { Priority: 10, Conditions: CONDITIONS, Actions: action('A3') },
+      { Priority: 10, Conditions: CONDITIONS, Actions: action('A') }
+    );
+
+    expect(updateCalls()).toEqual([
+      [
+        { op: 'replace', path: '/Actions', value: action('A3') },
+        { op: 'add', path: '/Conditions', value: CONDITIONS },
+      ],
+    ]);
+  });
+});
+
 describe('CloudControlProvider update: an ApiGatewayV2 Api imported from Body (go-to-k/cdkd#5260)', () => {
   // No Cloud Control patch can change an imported HTTP API's definition: the
   // read model's Name / ProtocolType / ... are refused beside Body, and a

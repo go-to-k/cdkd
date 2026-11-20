@@ -19,7 +19,9 @@ It works whatever state backend the other deployment uses: another
 
 For most resource types, a create call fails when the name is taken. For the
 types below it does not fail. The call hands back the existing resource, or
-overwrites it:
+overwrites it. A log group is the exception: its create fails on a taken name,
+and it is checked so that a log group this stack's own records name is taken
+back (see [When a taken name is allowed](#when-a-taken-name-is-allowed)):
 
 | Resource type | Looked up with |
 | --- | --- |

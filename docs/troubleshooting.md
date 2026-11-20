@@ -316,8 +316,8 @@ message that prints the adoption command. See
 For two groups of types the deploy succeeds where you might expect this
 error:
 
-- `AWS::S3::Bucket`, `AWS::Logs::LogGroup` and `AWS::SNS::Topic` adopt the
-  existing resource, and cdkd re-applies your configuration to it. An S3
+- `AWS::S3::Bucket` and `AWS::SNS::Topic` adopt the existing resource, and
+  cdkd re-applies your configuration to it. An S3
   bucket you own in a different region is refused instead of adopted.
 - A type whose id AWS assigns (a VPC, an EC2 instance, an ACM certificate, a
   CloudFront distribution) gets a second resource, and nothing tracks the

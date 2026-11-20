@@ -6,6 +6,8 @@ import { markNotGone } from '../../not-gone.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
+import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
+import { policyIdentityToken } from './shared.js';
 
 export async function deleteImpl(
   this: IAMManagedPolicyProvider,
@@ -26,8 +28,18 @@ export async function deleteImpl(
   const progress: DeleteProgress = { stripped: false };
 
   try {
+    // go-to-k/cdkd#6655: the read also proves the policy is the one cdkd
+    // created. A record holding a `PolicyId` refuses a policy under the ARN
+    // with another one before any principal is detached; none recorded: the
+    // by-ARN delete as before.
+    const readPolicyId = async () =>
+      policyIdentityToken(
+        (await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }))).Policy
+          ?.PolicyId
+      );
+    let liveId;
     try {
-      await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
+      liveId = await readPolicyId();
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
         await this.goneOnDelete(logicalId, physicalId, resourceType, context, mask);
@@ -35,6 +47,15 @@ export async function deleteImpl(
       }
       throw error;
     }
+    await assertRecordedIdentity({
+      label: 'IAM managed policy',
+      resourceType,
+      logicalId,
+      physicalId,
+      liveId,
+      reread: readPolicyId,
+      context,
+    });
 
     // 1. Detach from every group / role / user (AWS refuses to delete an
     //    attached managed policy). Use ListEntitiesForPolicy as the source
@@ -51,6 +72,8 @@ export async function deleteImpl(
 
     this.logger.debug(`Successfully deleted IAM managed policy ${logicalId}`);
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     // Read back above but gone by `DeletePolicy` (a concurrent delete): the
     // same not-found arm as the read's.
     if (error instanceof NoSuchEntityException) {

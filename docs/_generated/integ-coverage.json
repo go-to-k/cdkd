@@ -1794,6 +1794,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -1888,6 +1889,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -2163,6 +2167,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -2251,6 +2256,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -2548,6 +2556,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -2639,6 +2648,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -2906,6 +2918,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -2999,6 +3012,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -3573,6 +3589,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -3677,6 +3694,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -4002,6 +4022,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -4090,6 +4111,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -4346,6 +4370,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -4458,6 +4483,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -4810,6 +4838,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -4902,6 +4931,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -5754,6 +5786,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "cc-to-sdk-reroute-common-types-4",
         "deletion-ordering-complex",
@@ -5779,6 +5812,9 @@
           "literal"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -8462,7 +8498,6 @@
         "recreate-renamed-logs-delivery",
         "ref-shape-compound-cc-ids",
         "remove-protection",
-        "retain-orphan-redeploy",
         "rollback-replacement-retain",
         "rollback-same-id-recreate",
         "route53",
@@ -8603,9 +8638,6 @@
         ],
         "remove-protection": [
           "l1",
-          "literal"
-        ],
-        "retain-orphan-redeploy": [
           "literal"
         ],
         "rollback-replacement-retain": [
@@ -8958,7 +8990,8 @@
       "integs": [
         "cc-to-sdk-reroute-hosted-zone",
         "ec2-vpc",
-        "route53"
+        "route53",
+        "route53-drift-import"
       ],
       "signals": {
         "cc-to-sdk-reroute-hosted-zone": [
@@ -8971,31 +9004,42 @@
         ],
         "route53": [
           "l2"
+        ],
+        "route53-drift-import": [
+          "l2"
         ]
       }
     },
     {
       "resourceType": "AWS::Route53::RecordSet",
       "integs": [
-        "route53"
+        "route53",
+        "route53-drift-import"
       ],
       "signals": {
         "route53": [
           "l1",
           "l2",
           "literal"
+        ],
+        "route53-drift-import": [
+          "l2"
         ]
       }
     },
     {
       "resourceType": "AWS::Route53::RecordSetGroup",
       "integs": [
-        "route53"
+        "route53",
+        "route53-drift-import"
       ],
       "signals": {
         "route53": [
           "l1",
           "literal"
+        ],
+        "route53-drift-import": [
+          "l1"
         ]
       }
     },

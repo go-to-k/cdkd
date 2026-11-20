@@ -217,6 +217,8 @@ describe('AWS::KMS::Key KeyPolicy', () => {
     answer('GetKeyPolicyCommand', fail('ThrottlingException'));
     expect(bag(await read(AFTER))).not.toHaveProperty('KeyPolicy');
     expect(callsOf('GetKeyPolicyCommand')).toBe(4);
+    // Nothing answered, so nothing to re-capture: no refresh-observed warning.
+    expect(unsettledWarnings()).toEqual([]);
   });
 
   it('an answer with no Policy text is re-read, and omitted when it never carries one', async () => {

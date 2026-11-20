@@ -46,6 +46,7 @@ cd "$(dirname "$0")"
 
 cd "$(dirname "$0")"
 . ../s3-versions.sh
+. ../revert-identity.sh
 
 STACK="CdkdApigwRestApiSpec"
 REGION="${AWS_REGION:-us-east-1}"
@@ -58,6 +59,7 @@ PLAIN_RENAMED="${STACK}-plain-renamed"
 POLICY_KEPT_NAME="${STACK}-policykept"
 CLONE_NAME="${STACK}-clone"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+REVERT_WORK=""
 
 api_ids_named() { # every id of an API with this name (names are not unique)
   aws apigateway get-rest-apis --region "${REGION}" --limit 500 \
@@ -86,6 +88,10 @@ cleanup() {
   set +eu
   [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   local n id
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-3-before" "${REVERT_WORK}/revert-ids-3-after" "${REVERT_WORK}/revert-3.log"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   for n in "${INLINE_NAME}" "${ASSET_NAME}" "${CLONE_NAME}" "${PLAIN_NAME}" "${PLAIN_RENAMED}" "${POLICY_KEPT_NAME}"; do
     for id in $(api_ids_named "${n}"); do
       # DeleteRestApi allows one call per 30 s per account.
@@ -186,11 +192,15 @@ set -e
 printf '%s\n' "${DRIFT_OUT}" | sed 's/^/    | /'
 expect_eq "phase 3 premise: cdkd drift exit code" "${DRIFT_RC}" "1"
 grep -q "${ITEMS_LID}" <<<"${DRIFT_OUT}" || { echo "FAIL: phase 3 premise: the drift report does not name ${ITEMS_LID}" >&2; exit 1; }
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-3-before" "${STACK}" "${ITEMS_LID}" || exit 1
 set +e
 REVERT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y 2>&1)"
 REVERT_RC=$?
 set -e
 printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
+printf '%s\n' "${REVERT_OUT}" > "${REVERT_WORK}/revert-3.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-3-before" "${REVERT_WORK}/revert-ids-3-after" 1 "${REVERT_WORK}/revert-3.log" expect-refusal || exit 1
 expect_eq "phase 3: cdkd drift --revert exit code (the Resource refused)" "${REVERT_RC}" "2"
 REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}" | grep -F "${ITEMS_LID} (AWS::ApiGateway::Resource): could not revert" || true)"
 [ -n "${REFUSAL}" ] || { echo "FAIL: phase 3: no 'could not revert' line for ${ITEMS_LID}" >&2; exit 1; }

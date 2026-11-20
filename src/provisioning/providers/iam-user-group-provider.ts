@@ -1,5 +1,6 @@
 import { IAMClient } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -95,6 +96,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
   /** `CreateUser` / `CreateGroup` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
   readonly createClient = new IamCreateClientCache(() => this.iamClient);
   logger: ConsoleLogger = getLogger().child('IAMUserGroupProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   wrapMaskedError(
     mask: MaskerFn,
@@ -455,6 +458,17 @@ export class IAMUserGroupProvider implements ResourceProvider {
 
   // ─── readCurrentState dispatch ───────────────────────────────────
 
+  /**
+   * A user's `Groups` is a membership SET that `ListGroupsForUser` lists in its
+   * own order, not the template's: compared order-insensitively, so a baseline
+   * captured right after the write (go-to-k/cdkd#6609), which records a
+   * still-unread declared group at its declared position, compares equal to a
+   * later read.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::IAM::User' ? ['Groups'] : [];
+  }
+
   readCurrentState(
     physicalId: string,
     logicalId: string,
@@ -468,17 +482,19 @@ export class IAMUserGroupProvider implements ResourceProvider {
   readUserCurrentState(
     physicalId: string,
     properties?: Record<string, unknown>,
-    context?: import('../../types/resource.js').ReadCurrentStateContext
+    context?: import('../../types/resource.js').ReadCurrentStateContext,
+    logicalId?: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readUserCurrentState.call(this, physicalId, properties, context);
+    return readUserCurrentState.call(this, physicalId, properties, context, logicalId);
   }
 
   readGroupCurrentState(
     physicalId: string,
     properties?: Record<string, unknown>,
-    context?: import('../../types/resource.js').ReadCurrentStateContext
+    context?: import('../../types/resource.js').ReadCurrentStateContext,
+    logicalId?: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readGroupCurrentState.call(this, physicalId, properties, context);
+    return readGroupCurrentState.call(this, physicalId, properties, context, logicalId);
   }
 
   collectInlinePolicies(

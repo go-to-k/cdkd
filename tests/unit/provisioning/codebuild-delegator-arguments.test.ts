@@ -87,7 +87,7 @@ describe('CodeBuildProvider delegators hand every argument to the moved body', (
     );
     // The class's own non-delegator methods stay in the class.
     expect(Object.getOwnPropertyNames(CodeBuildProvider.prototype).length).toBe(
-      own.length + 7 // constructor, getClient, getCreateClient, sleep, wrapCaughtError, getAttribute, getDriftUnknownPaths
+      own.length + 8 // constructor, getClient, getCreateClient, sleep, wrapCaughtError, getAttribute, canonicalizeDriftPair, getDriftUnknownPaths
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });

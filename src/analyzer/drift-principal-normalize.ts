@@ -168,6 +168,38 @@ export function collectPrincipalForms(value: unknown): {
 }
 
 /**
+ * Whether a `Principal` / `NotPrincipal` position anywhere in the value holds
+ * an IAM unique id (`uniqueIds`) or an IAM role / user ARN (`arns`), a policy
+ * document carried as a JSON string included (go-to-k/cdkd#6680).
+ */
+export function holdsPrincipalForm(value: unknown, form: 'uniqueIds' | 'arns'): boolean {
+  // One collect per document: the value itself, then each JSON-string
+  // document embedded in it (parsed, and searched the same way).
+  if (typeof value !== 'string' && collectPrincipalForms(value)[form].size > 0) return true;
+  return embeddedJsonDocuments(value).some((document) => holdsPrincipalForm(document, form));
+}
+
+/** Every JSON-object string in the value (the value itself included), parsed. */
+function embeddedJsonDocuments(value: unknown): unknown[] {
+  const out: unknown[] = [];
+  const walk = (node: unknown): void => {
+    if (typeof node === 'string') {
+      if (!node.trimStart().startsWith('{')) return;
+      try {
+        out.push(JSON.parse(node) as unknown);
+      } catch {
+        // Not JSON: no document to search.
+      }
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    for (const member of Array.isArray(node) ? node : Object.values(node)) walk(member);
+  };
+  walk(value);
+  return out;
+}
+
+/**
  * Replace every principal string that is a KNOWN unique id with the ARN it was
  * proven to stand for. Only `Principal` / `NotPrincipal` positions are touched
  * — a unique id appearing in, say, a `Condition` value is left alone, where the

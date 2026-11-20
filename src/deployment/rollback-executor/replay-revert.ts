@@ -1,3 +1,4 @@
+import { identityWarner } from '../../provisioning/recorded-identity.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
 import { withReplayDeletePrinting } from './replay-scope.js';
@@ -678,10 +679,16 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
   const restoreBase = movedIdLeftForCleanup(op)
     ? { ...previousState, physicalId: current.physicalId }
     : previousState;
+  // go-to-k/cdkd#6655: a recorded identity id is kept; another one answered is warned.
+  const revertedRecord = recordAfterRollbackUpdate(
+    restoreBase,
+    revertResult,
+    identityWarner(logger, mask, op)
+  );
   stateResources[op.logicalId] = maskRestoredNoEchoRecord(
     redactRollbackRecord(
       // go-to-k/cdkd#6526: the baseline re-read, as a deploy's update takes it.
-      await withRefreshedObservedBaseline(recordAfterRollbackUpdate(restoreBase, revertResult), {
+      await withRefreshedObservedBaseline(revertedRecord, {
         provider,
         op,
         desiredProps,

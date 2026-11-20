@@ -53,7 +53,9 @@ if (!BUCKET) {
   throw new Error('STATE_BUCKET must be set');
 }
 
-const s3 = new S3Client({ region: REGION });
+// The state bucket may live outside the stack's region (go-to-k/cdkd#6680):
+// follow S3's PermanentRedirect to the bucket's own region.
+const s3 = new S3Client({ region: REGION, followRegionRedirects: true });
 const iam = new IAMClient({ region: REGION });
 const key = `cdkd/${STACK}/${REGION}/state.json`;
 

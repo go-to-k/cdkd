@@ -1637,6 +1637,47 @@ describe('cdkd drift', () => {
       expect(aws).toEqual({ ...readback, Marked: true });
     });
 
+    it('a CodeBuild baseline without S3Logs.EncryptionDisabled is clean against a live false, and a live true still drifts (go-to-k/cdkd#6659)', async () => {
+      const { canonicalizeDriftPair } =
+        await import('../../../src/provisioning/providers/codebuild/drift.js');
+      const logs = (s3: Record<string, unknown>) => ({
+        Name: 'p',
+        LogsConfig: { CloudWatchLogs: { Status: 'ENABLED' }, S3Logs: s3 },
+      });
+      for (const [live, expectDrift] of [
+        [false, false],
+        [true, true],
+      ] as const) {
+        mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+        mockGetState.mockResolvedValueOnce(
+          makeState({
+            Project: makeResource({
+              physicalId: 'p',
+              resourceType: 'AWS::CodeBuild::Project',
+              properties: { Name: 'p' },
+              observedProperties: logs({ Status: 'DISABLED' }),
+            }),
+          })
+        );
+        mockRegistryGetProvider.mockReturnValue({
+          readCurrentState: async () => logs({ Status: 'DISABLED', EncryptionDisabled: live }),
+          canonicalizeDriftPair: async (
+            type: string,
+            baseline: Record<string, unknown>,
+            aws: Record<string, unknown>
+          ) => canonicalizeDriftPair(type, baseline, aws),
+        });
+
+        const { output } = await runDrift(['TestStack']);
+
+        if (expectDrift) {
+          expect(output).toContain('LogsConfig.S3Logs.EncryptionDisabled');
+        } else {
+          expect(output).toContain('no drift detected');
+        }
+      }
+    });
+
     it('hands the pair hook the recorded properties, on detection and on --revert (issue #3777)', async () => {
       // A rule keyed on what the template DECLARED (the Table's per-member
       // WarmThroughput trim) needs the recorded bag; a distinct marker proves

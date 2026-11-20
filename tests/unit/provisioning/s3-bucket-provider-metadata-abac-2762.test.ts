@@ -1,3 +1,4 @@
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateBucketCommand,
@@ -1135,11 +1136,24 @@ describe('drift readback (go-to-k/cdkd#2762)', () => {
     expect(new S3BucketProvider().getDriftUnknownPaths()).toEqual([
       'BucketNamePrefix',
       'BucketNamespace',
+      'ObjectLockEnabled',
       'MetadataConfiguration.JournalTableConfiguration.EncryptionConfiguration',
       'MetadataConfiguration.InventoryTableConfiguration.EncryptionConfiguration',
       'MetadataConfiguration.AnnotationTableConfiguration.EncryptionConfiguration',
     ]);
   });
+
+  it.each([true, false])(
+    'does not report a declared top-level ObjectLockEnabled=%s with no observed baseline (#6664)',
+    (declared) => {
+      const drifts = calculateResourceDrift(
+        { BucketName: 'b', ObjectLockEnabled: declared },
+        { BucketName: 'b' },
+        { ignorePaths: new S3BucketProvider().getDriftUnknownPaths() }
+      );
+      expect(drifts).toEqual([]);
+    }
+  );
 
   it('fails an attribute read it cannot answer, rather than dropping the ARN', async () => {
     readMetadata = () => {

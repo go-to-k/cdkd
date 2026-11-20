@@ -15,7 +15,16 @@ import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resour
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import { readPolicyTargetLists } from './shared.js';
+import { markCopiesAgreed } from './agreeing-copies.js';
 import { isStoredExpression } from '../../iam-sibling-managed-policies.js';
+import {
+  type MemberRead,
+  declaredMemberDocument,
+  memberReadFailure,
+  policyDocumentMatchesDeclared,
+  settleDeclaredMember,
+  warnUnsettledMember,
+} from '../../settle-after-own-write.js';
 
 type PolicyTarget = { kind: 'role' | 'group' | 'user'; name: string };
 
@@ -49,12 +58,24 @@ const TARGET_READ_CONCURRENCY = 5;
  * The deploy's own post-write capture (`context.afterOwnWrite`) reads the
  * FIRST target only, as before: cdkd has just written the same document to
  * every target, and a deploy pays no call per extra principal. A
- * single-target policy makes exactly the one call it always did.
+ * single-target policy makes exactly the one call it always did. Every other
+ * target is echoed from the declared lists, so a lagging one cannot freeze
+ * anything into the baseline.
+ *
+ * IAM can answer that read eventually consistently (go-to-k/cdkd#6609), so a
+ * copy that is not the declared document is re-read alone
+ * ({@link settleDeclaredMember}, `ownWriteRereadDelaysMs`): settled, it is
+ * recorded as read; still absent after the schedule, the DECLARED document is
+ * kept and the target stays in its list (the write just succeeded; the single
+ * read left the policy with no baseline at all); another document is
+ * recorded as read, with one value-free warning. A deterministic failure is
+ * not re-read, and a read that never answered throws what the single read
+ * threw. Every other read takes the first answer.
  */
 export async function readCurrentState(
   this: IAMPolicyProvider,
   physicalId: string,
-  _logicalId: string,
+  logicalId: string,
   _resourceType: string,
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
@@ -95,13 +116,28 @@ export async function readCurrentState(
       throw err;
     }
   };
+  const declared =
+    context?.afterOwnWrite === true ? declaredMemberDocument(policyDocument) : undefined;
   // A few at a time: a policy on many principals must not burst IAM's
   // throttle, which would fail the whole read.
   const reads: Awaited<ReturnType<typeof readOne>>[] = [];
-  for (let i = 0; i < readTargets.length; i += TARGET_READ_CONCURRENCY) {
+  if (declared !== undefined) {
+    // The capture reads one target (above), so this warns at most once.
+    const unsettled = (): void =>
+      warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::Policy', 'PolicyDocument');
     reads.push(
-      ...(await Promise.all(readTargets.slice(i, i + TARGET_READ_CONCURRENCY).map(readOne)))
+      ...(await Promise.all(
+        readTargets.map((target) =>
+          settleTargetCopy.call(this, target, policyName, declared, unsettled)
+        )
+      ))
     );
+  } else {
+    for (let i = 0; i < readTargets.length; i += TARGET_READ_CONCURRENCY) {
+      reads.push(
+        ...(await Promise.all(readTargets.slice(i, i + TARGET_READ_CONCURRENCY).map(readOne)))
+      );
+    }
   }
 
   const documents = reads.flatMap((r) => ('document' in r ? [r.document] : []));
@@ -176,7 +212,55 @@ export async function readCurrentState(
   if (roles) result['Roles'] = echo('role', roles);
   if (groups) result['Groups'] = echo('group', groups);
   if (users) result['Users'] = echo('user', users);
+  // A drift read of EVERY principal whose copies all agree: the only bag the
+  // drift heal may skip PolicyDocument on (a lost mark keeps it compared).
+  if (!copiesDiffer && readTargets.length === allTargets.length) markCopiesAgreed(result);
   return result;
+}
+
+/**
+ * One target's copy on the post-write capture, settled on the declared
+ * document (`readCurrentState`'s comment has the outcomes). A copy that
+ * matches on the first read makes no extra call.
+ */
+async function settleTargetCopy(
+  this: IAMPolicyProvider,
+  target: PolicyTarget,
+  policyName: string,
+  declared: unknown,
+  unsettled: () => void
+): Promise<{ target: PolicyTarget; document: unknown }> {
+  const read = async (): Promise<MemberRead<unknown>> => {
+    try {
+      return {
+        value: this.decodePolicyDocument(
+          await getTargetPolicyDocument.call(this, target, policyName)
+        ),
+      };
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return 'absent';
+      throw err;
+    }
+  };
+  let first: MemberRead<unknown>;
+  let firstError: unknown;
+  try {
+    first = await read();
+  } catch (err) {
+    firstError = err;
+    first = memberReadFailure(err);
+  }
+  const settled = await settleDeclaredMember(
+    first,
+    read,
+    (value) => policyDocumentMatchesDeclared(value, declared),
+    declared,
+    this.ownWriteRereadDelaysMs,
+    unsettled
+  );
+  // No read answered: what the single read always did.
+  if (typeof settled !== 'object') throw firstError;
+  return { target, document: settled.value };
 }
 
 /** One target's raw (URL-encoded) copy of the inline policy document. */

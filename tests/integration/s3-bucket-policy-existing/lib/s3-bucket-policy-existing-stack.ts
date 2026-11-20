@@ -40,5 +40,17 @@ export class S3BucketPolicyExistingStack extends cdk.Stack {
         })
       );
     }
+    // go-to-k/cdkd#6609: a second statement replaces the whole document
+    // (`PutBucketPolicy`), so the baseline captured right after it is checked.
+    if (modes.includes('policy2')) {
+      bucket.addToResourcePolicy(
+        new iam.PolicyStatement({
+          sid: 'CdkdIntegTemplateStatement2',
+          principals: [new iam.AccountRootPrincipal()],
+          actions: ['s3:ListBucket'],
+          resources: [bucket.bucketArn],
+        })
+      );
+    }
   }
 }

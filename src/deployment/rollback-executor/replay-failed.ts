@@ -1,5 +1,6 @@
 /** The failed-op replay, split out of `rollback-executor.ts` (go-to-k/cdkd#5835). */
 
+import { identityWarner } from '../../provisioning/recorded-identity.js';
 import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import {
@@ -155,6 +156,7 @@ export async function replayFailedOperationsUnbound(
     // failed deploy's bag too (go-to-k/cdkd#2007).
     const opMasker = createOpMasker(logger, secrets, ctx.logOnlyNeedlesFor?.(op.logicalId));
     const mask = opMasker.mask;
+    const warnIdentity = identityWarner(logger, mask, op); // go-to-k/cdkd#6655
     // go-to-k/cdkd#3338: what a skip arm below records its event through.
     const skipScope = { ctx, stackName, result, mask, stateResources };
     // The route a CREATE arm resolved (issue #1366), so the shared catch's
@@ -793,9 +795,7 @@ export async function replayFailedOperationsUnbound(
                 // previous-side one is LIVE: a malformed STATE record can lack `properties`.
                 desiredProps ?? {},
                 attemptedProps ?? {},
-                // As on the `revert` arm (#2301, #3141, #4051, #6104, #6457): the DESIRED bag is
-                // `prev.properties`, a cdkd state record, so the replay licence is the same one;
-                // no `desiredFromAwsReadback`, and `replayingState` describes the desired side.
+                // As on the `revert` arm (#2301, #3141, #4051, #6104, #6457): a state-record desired bag.
                 {
                   maskSecrets: createSecretMasker(secrets),
                   expectedRegion: ctx.region,
@@ -826,7 +826,7 @@ export async function replayFailedOperationsUnbound(
               withNameGenerationReached(
                 // go-to-k/cdkd#6526, the `revert` arm's twin.
                 await withRefreshedObservedBaseline(
-                  recordAfterRollbackUpdate(prev, revertFailedResult),
+                  recordAfterRollbackUpdate(prev, revertFailedResult, warnIdentity),
                   {
                     provider,
                     op,

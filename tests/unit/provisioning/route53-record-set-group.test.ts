@@ -55,6 +55,7 @@ import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-erro
 import { CNAME_CONFLICT_COLLISION_NOTE } from '../../../src/provisioning/providers/route53/shared.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { buildRevertNewProperties } from '../../../src/cli/commands/drift/revert-payload.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { markReplayMayCollide } from '../../../src/deployment/retryable-errors.js';
 
@@ -516,14 +517,99 @@ describe('Route53Provider RecordSetGroup', () => {
       expect(out.RecordSets[1]!['HostedZoneId']).toBe(ZONE);
     });
 
-    it('returns undefined when a recorded record is missing from the lookup', async () => {
-      route({ liveRecords: [] });
+    it('returns undefined when a recorded record cannot be placed by the lookup', async () => {
+      // A truncated page of OTHER names with no continuation proves nothing.
+      mockSend.mockImplementation(async (command: unknown) =>
+        command instanceof ListResourceRecordSetsCommand
+          ? { ResourceRecordSets: [], IsTruncated: true }
+          : {}
+      );
       const out = await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
         HostedZoneId: ZONE,
         RecordSets: [rec()],
       });
       expect(out).toBeUndefined();
       expect(out).not.toBe(RESOURCE_NOT_FOUND);
+    });
+
+    // go-to-k/cdkd#6660: a member deleted out of band is left out, so drift
+    // reports the change (and still compares the other members).
+    it('leaves out a member proven gone and reads the rest', async () => {
+      route({ liveRecords: [live({ Name: 'b.example.com.' })] });
+      const out = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
+        HostedZoneId: ZONE,
+        RecordSets: [rec(), rec({ Name: 'b.example.com.' })],
+      })) as { RecordSets: Array<Record<string, unknown>> };
+      expect(out.RecordSets.map((r) => r['Name'])).toEqual(['b.example.com.']);
+      expect(out.RecordSets[0]!['TTL']).toBe(900);
+    });
+
+    // go-to-k/cdkd#6681: the group's own zone key is echoed, so a drift
+    // baseline and `drift --revert`'s desired bag name the zone.
+    it('echoes the zone key the group declares, and only that one', async () => {
+      route({ liveRecords: [live()] });
+      const byId = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
+        HostedZoneId: ZONE,
+        RecordSets: [rec()],
+      })) as Record<string, unknown>;
+      expect(byId['HostedZoneId']).toBe(ZONE);
+      expect(byId).not.toHaveProperty('HostedZoneName');
+
+      const byName = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
+        HostedZoneName: ZONE_NAME,
+        RecordSets: [rec()],
+      })) as Record<string, unknown>;
+      expect(byName['HostedZoneName']).toBe(ZONE_NAME);
+      expect(byName).not.toHaveProperty('HostedZoneId');
+    });
+
+    it('lets drift --revert update from the readback without the names-no-zone warning', async () => {
+      route({ liveRecords: [live()] });
+      const recorded = { HostedZoneId: ZONE, RecordSets: [rec()] };
+      const readback = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, recorded)) as Record<
+        string,
+        unknown
+      >;
+      const warn = vi.spyOn(provider.logger, 'warn');
+      // The revert's desired bag: the readback with the recorded member overlaid.
+      await provider.update(LOGICAL, COMPOSITE, TYPE, { ...readback, RecordSets: [rec()] }, readback, {
+        desiredFromAwsReadback: true,
+      });
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+        /HostedZoneId and HostedZoneName/
+      );
+      expect(changeInputs()).toHaveLength(1);
+      expect(changeInputs()[0]!.HostedZoneId).toBe(ZONE);
+    });
+
+    it('names the zone in the real revert payload over a baseline captured without the key', async () => {
+      route({ liveRecords: [live()] });
+      const recorded = { HostedZoneId: ZONE, RecordSets: [rec()] };
+      const readback = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, recorded)) as Record<
+        string,
+        unknown
+      >;
+      const oldBaseline = { RecordSets: [rec()] };
+      const desired = buildRevertNewProperties(
+        [{ path: 'RecordSets', stateValue: oldBaseline.RecordSets, awsValue: readback['RecordSets'] }],
+        oldBaseline,
+        readback
+      );
+      expect(desired['HostedZoneId']).toBe(ZONE);
+      const warn = vi.spyOn(provider.logger, 'warn');
+      await provider.update(LOGICAL, COMPOSITE, TYPE, desired, readback, { desiredFromAwsReadback: true });
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+        /HostedZoneId and HostedZoneName/
+      );
+    });
+
+    it('returns RESOURCE_NOT_FOUND when every member is proven gone', async () => {
+      route({ liveRecords: [] });
+      const out = await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
+        HostedZoneId: ZONE,
+        RecordSets: [rec(), rec({ Name: 'b.example.com.' })],
+      });
+      expect(out).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -537,10 +623,49 @@ describe('Route53Provider RecordSetGroup', () => {
       knownPhysicalId: known,
     });
 
-    it('returns null without a knownPhysicalId', async () => {
-      route();
+    // go-to-k/cdkd#6662: with no id, the template's zone + records identify it.
+    it('auto mode adopts the group under its generated name when every record is live', async () => {
+      route({ liveRecords: [live()] });
+      const result = await provider.import(input(undefined));
+      expect(result).toEqual({ physicalId: `${ZONE}|${LOGICAL}`, attributes: {} });
+    });
+
+    it('auto mode declines when a record is missing', async () => {
+      route({ liveRecords: [] });
       expect(await provider.import(input(undefined))).toBeNull();
-      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('auto mode declines a zone it cannot resolve without any record read', async () => {
+      route();
+      const result = await provider.import({
+        ...input(undefined),
+        properties: { HostedZoneId: { Ref: 'Zone' }, RecordSets: [rec()] },
+      });
+      expect(result).toBeNull();
+      expect(
+        mockSend.mock.calls.some((c) => c[0] instanceof ListResourceRecordSetsCommand)
+      ).toBe(false);
+    });
+
+    it('auto mode declines a member whose SetIdentifier is unresolved', async () => {
+      route({ liveRecords: [live()] });
+      const result = await provider.import({
+        ...input(undefined),
+        properties: {
+          HostedZoneName: 'example.com.',
+          RecordSets: [rec({ SetIdentifier: { Ref: 'Param' }, Weight: 10 })],
+        },
+      });
+      expect(result).toBeNull();
+      // A dynamic reference is a string the read cannot match on either.
+      const dynamic = await provider.import({
+        ...input(undefined),
+        properties: {
+          HostedZoneName: 'example.com.',
+          RecordSets: [rec({ SetIdentifier: '{{resolve:ssm:/id}}', Weight: 10 })],
+        },
+      });
+      expect(dynamic).toBeNull();
     });
 
     it('records <zone>|<CFn group name> when the CFn group name is given and every record is live', async () => {

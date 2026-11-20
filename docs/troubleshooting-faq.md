@@ -69,8 +69,8 @@ depends on the type:
 
 | Types | Result of the create |
 | --- | --- |
-| Most types | Fails with an already-exists error |
-| `AWS::S3::Bucket`, `AWS::Logs::LogGroup`, `AWS::SNS::Topic` | Adopts the existing resource and re-applies your configuration over it, when the name is the same |
+| Most types, `AWS::Logs::LogGroup` included | Fails with an already-exists error |
+| `AWS::S3::Bucket`, `AWS::SNS::Topic` | Adopts the existing resource and re-applies your configuration over it, when the name is the same |
 | Types with an AWS-assigned id: VPC, EC2 instance, ACM certificate, CloudFront distribution | Creates a second resource and orphans the first, once per attempt |
 
 To recover, leave the AWS resources in place and adopt them back into

@@ -98,8 +98,9 @@ export function memberReadFailure(err: unknown): 'failed' | 'refused' {
  * "none" would let `drift --revert` delete it. Another value is recorded as
  * read (the module comment says why). `'failed'` / `'refused'` only when no
  * read answered, so the caller records what its single read always did.
- * `unsettled` runs once when the schedule ends without the declared value, so
- * the caller can say so (value-free: {@link warnUnsettledMember}).
+ * `unsettled` runs once when the schedule ends without the declared value
+ * after some read answered, so the caller can say so (value-free:
+ * {@link warnUnsettledMember}).
  */
 export async function settleDeclaredMember<T>(
   first: MemberRead<T>,
@@ -125,7 +126,9 @@ export async function settleDeclaredMember<T>(
     if (answer !== 'failed') newest = answer;
     if (settled(newest)) return newest;
   }
-  unsettled();
+  // Nothing answered: the caller records (or throws) what its single read
+  // did, and that is the message; a second one here would only repeat it.
+  if (newest !== 'failed') unsettled();
   return newest === 'absent' ? { value: declared } : newest;
 }
 

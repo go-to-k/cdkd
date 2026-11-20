@@ -24,6 +24,12 @@
 #   2. Run `cdkd drift` (twice) and assert NO drift on any AWS::IAM::Role.
 #   2s. Widen a two-role inline policy's copy on its SECOND role out of band:
 #       drift must report it and `--revert` restore it (go-to-k/cdkd#6616).
+#   2o. SharedPolicy's recorded drift baseline is the live document and the
+#       declared roles (go-to-k/cdkd#6609).
+#   2r. Delete SharedPolicy's copy on its FIRST role (the one the post-write
+#       capture reads) out of band: drift --json must report it, and
+#       --revert must put it back without re-creating anything
+#       (go-to-k/cdkd#6609).
 #   2b. Rename an inline policy in place (go-to-k/cdkd#4152).
 #   2c-rollback. The 2c hand-off with a failing queue after it: the rollback
 #       must leave every name with its FIRST owner (go-to-k/cdkd#4225), the
@@ -77,6 +83,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 STACK="CdkdIamRolePoliciesDriftCleanExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -116,6 +126,10 @@ cleanup() {
     aws sqs delete-queue --queue-url "${FAILING_URL}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   rm -f "${ROLLBACK_LOG:-}"
+  if [ -n "${REVERT_DIR:-}" ]; then
+    rm -f "${REVERT_DIR}"/revert-* 2>/dev/null
+    rmdir "${REVERT_DIR}" 2>/dev/null
+  fi
   # The standalone role keeps its inline + sibling-managed policies; delete
   # them before the role or DeleteRole 409s.
   for rn in "${ROLE_NAME}" "${MIXED_ROLE_NAME}"; do
@@ -158,6 +172,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+REVERT_DIR="$(mktemp -d)"
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy Lambda-with-grant + standalone role"
@@ -197,12 +212,43 @@ echo "==> Phase 2: assert no phantom drift on any AWS::IAM::Role"
 assert_no_role_drift "immediately after deploy"
 assert_no_role_drift "second pass"
 
+# --- Phase 2o: SharedPolicy's recorded baseline is the live value (go-to-k/cdkd#6609)
+# drift alone cannot see a stale baseline while the live document is the
+# declared one (the drift heal rule skips the key then), so this reads the
+# baseline itself. The post-write capture reads the FIRST role's copy: a
+# baseline captured before that write showed (no copy, or a replaced one)
+# fails here.
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}"; }
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON, '' for none> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  if [ -z "$3" ]; then live='"<absent>"'; else live=$(jq -cS . <<<"$3"); fi
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+SHARED_POLICY="cdkd-iam-drift-clean-shared"
+SHARED_POLICY_LID="SharedPolicy"
+shared_document() { # usage: shared_document <role> -> the role's copy, decoded JSON
+  aws iam get-role-policy --role-name "$1" --policy-name "${SHARED_POLICY}" \
+    --region "${REGION}" --query 'PolicyDocument' --output json
+}
+echo "==> Phase 2o: SharedPolicy's recorded baseline is what AWS holds"
+assert_observed_member "${SHARED_POLICY_LID}" '.PolicyDocument' "$(shared_document "${ROLE_NAME}")" "Phase 1 (first role's copy)"
+assert_observed_member "${SHARED_POLICY_LID}" '.PolicyDocument' "$(shared_document "${MIXED_ROLE_NAME}")" "Phase 1 (second role's copy)"
+assert_observed_member "${SHARED_POLICY_LID}" '.Roles' "[\"${ROLE_NAME}\",\"${MIXED_ROLE_NAME}\"]" "Phase 1"
+
 # --- Phase 2s: an out-of-band edit of a shared policy's SECOND copy (go-to-k/cdkd#6616)
 # SharedPolicy is one inline policy on two roles, so each role holds its own
 # copy. Before the fix the policy's drift read fetched the FIRST role's copy
 # only, so a widened document on the second role read clean and `--revert`
 # left it in place.
-SHARED_POLICY="cdkd-iam-drift-clean-shared"
 SHARED_ACTION="sqs:ListQueues"
 WIDENED_ACTION="sqs:*"
 shared_action() { # usage: shared_action <role> -> the copy's first statement's action
@@ -251,8 +297,13 @@ if [ "${shared_rc}" -ne 1 ]; then
   exit 1
 fi
 echo "    drift reported SharedPolicy"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2s-before" "${STACK}" "${SHARED_POLICY_LID}" || exit 1
+RC=0
 env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2s.log" 2>&1 || RC=$?
+cat "${REVERT_DIR}/revert-2s.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-2s-before" "${REVERT_DIR}/revert-ids-2s-after" 1 "${REVERT_DIR}/revert-2s.log" || exit 1
+[ "$RC" -eq 0 ] || { echo "FAIL: Phase 2s: drift --revert exited $RC"; exit 1; }
 if ! wait_shared_action "${MIXED_ROLE_NAME}" "${SHARED_ACTION}"; then
   echo "FAIL: drift --revert left ${MIXED_ROLE_NAME}'s copy of ${SHARED_POLICY} widened (got: $(shared_action "${MIXED_ROLE_NAME}")) (go-to-k/cdkd#6616)" >&2
   exit 1
@@ -274,6 +325,104 @@ if grep -qF 'SharedPolicy' <<<"${SHARED_DRIFT}"; then
   exit 1
 fi
 echo "    drift clean after --revert"
+
+# --- Phase 2r: delete SharedPolicy's FIRST copy out of band, then --revert (go-to-k/cdkd#6609)
+# The first role is the target the post-write capture reads and settles. The
+# copy is deleted (the removal direction a stale "none" baseline would freeze
+# in): drift must report it on Roles, `--revert` must put it back on that role
+# by an update, never a delete + create (same RoleIds, same record physical
+# id), and a follow-up drift must be clean.
+echo "==> Phase 2r: delete SharedPolicy's copy on its first role out of band; drift --revert must restore it"
+role_id() { aws iam get-role --role-name "$1" --region "${REGION}" --query 'Role.RoleId' --output text; }
+record_physical_id() { state_json | jq -r --arg l "$1" '.resources[$l].physicalId // "<none>"'; }
+ROLE_ID_BEFORE="$(role_id "${ROLE_NAME}")"
+MIXED_ROLE_ID_BEFORE="$(role_id "${MIXED_ROLE_NAME}")"
+SHARED_PHYSICAL_BEFORE="$(record_physical_id "${SHARED_POLICY_LID}")"
+TEMPLATE_DOCUMENT="$(state_json | jq -cS --arg l "${SHARED_POLICY_LID}" '.resources[$l].properties.PolicyDocument')"
+if [ -z "${ROLE_ID_BEFORE}" ] || [ -z "${MIXED_ROLE_ID_BEFORE}" ] || [ "${SHARED_PHYSICAL_BEFORE}" = "<none>" ] \
+    || [ "${TEMPLATE_DOCUMENT}" = "null" ]; then
+  echo "FAIL: premise: cannot read the role ids, the record's physical id or its template document before Phase 2r" >&2
+  exit 1
+fi
+aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name "${SHARED_POLICY}" --region "${REGION}"
+gone_first=false
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name "${SHARED_POLICY}" --region "${REGION}"; then
+    gone_first=true
+    break
+  fi
+  sleep 5
+done
+if [ "${gone_first}" != true ]; then
+  echo "FAIL: premise: the out-of-band delete of ${ROLE_NAME}'s copy of ${SHARED_POLICY} never read back" >&2
+  exit 1
+fi
+set +e
+REVERT_DRIFT="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>/dev/null)"
+revert_rc=$?
+set -e
+shared_paths="$(jq -c --arg l "${SHARED_POLICY_LID}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path]' <<<"${REVERT_DRIFT}")" || {
+  echo "FAIL: cdkd drift --json printed no parseable report in Phase 2r (rc=${revert_rc})" >&2
+  printf '%s\n' "${REVERT_DRIFT}" | sed 's/^/    | /' >&2
+  exit 1
+}
+if ! jq -e 'any(.[]; startswith("Roles"))' <<<"${shared_paths}" >/dev/null; then
+  echo "FAIL: cdkd drift --json did not report ${ROLE_NAME}'s deleted copy of ${SHARED_POLICY} on Roles (paths: ${shared_paths}) (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+if [ "${revert_rc}" -ne 1 ]; then
+  echo "FAIL: drift --json exited ${revert_rc} on a drifted stack, expected 1 (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+echo "    drift --json reported SharedPolicy (paths: ${shared_paths})"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2r-before" "${STACK}" "${SHARED_POLICY_LID}" || exit 1
+RC=0
+env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2r.log" 2>&1 || RC=$?
+cat "${REVERT_DIR}/revert-2r.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-2r-before" "${REVERT_DIR}/revert-ids-2r-after" 1 "${REVERT_DIR}/revert-2r.log" || exit 1
+[ "$RC" -eq 0 ] || { echo "FAIL: Phase 2r: drift --revert exited $RC"; exit 1; }
+restored=false
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  live_first="$(shared_document "${ROLE_NAME}" 2>/dev/null | jq -cS . 2>/dev/null || true)"
+  if [ "${live_first}" = "${TEMPLATE_DOCUMENT}" ]; then
+    restored=true
+    break
+  fi
+  sleep 5
+done
+if [ "${restored}" != true ]; then
+  echo "FAIL: drift --revert did not put the template's ${SHARED_POLICY} back on ${ROLE_NAME} (got: ${live_first:-<none>}; want: ${TEMPLATE_DOCUMENT}) (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+if [ "$(shared_document "${MIXED_ROLE_NAME}" | jq -cS .)" != "${TEMPLATE_DOCUMENT}" ]; then
+  echo "FAIL: drift --revert changed ${MIXED_ROLE_NAME}'s copy of ${SHARED_POLICY} (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+if [ "$(role_id "${ROLE_NAME}")" != "${ROLE_ID_BEFORE}" ] || [ "$(role_id "${MIXED_ROLE_NAME}")" != "${MIXED_ROLE_ID_BEFORE}" ]; then
+  echo "FAIL: drift --revert re-created a role (RoleId changed) restoring ${SHARED_POLICY} (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+if [ "$(record_physical_id "${SHARED_POLICY_LID}")" != "${SHARED_PHYSICAL_BEFORE}" ]; then
+  echo "FAIL: drift --revert changed ${SHARED_POLICY_LID}'s physical id ($(record_physical_id "${SHARED_POLICY_LID}") vs ${SHARED_PHYSICAL_BEFORE}) (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+echo "    --revert restored the template document on ${ROLE_NAME}; RoleIds and the physical id unchanged"
+set +e
+REVERT_DRIFT="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>/dev/null)"
+revert_rc=$?
+set -e
+# Compared AND clean: absent from `drifted` alone also holds for a read that
+# threw (notCompared) or a resource reported deleted.
+if ! jq -e --arg l "${SHARED_POLICY_LID}" '[.[].clean[] | select(.logicalId == $l)] | length == 1' <<<"${REVERT_DRIFT}" >/dev/null \
+    || [ "${revert_rc}" -ne 0 ]; then
+  printf '%s\n' "${REVERT_DRIFT}" | sed 's/^/    | /' >&2
+  echo "FAIL: drift after the Phase 2r --revert does not compare ${SHARED_POLICY_LID} clean, or exited ${revert_rc} (expected 0) (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+echo "    drift clean on SharedPolicy after --revert"
 
 # --- Phase 2b: rename an inline policy in place (go-to-k/cdkd#4152) ------
 # The role stays listed across the rename. Before the fix the update put the

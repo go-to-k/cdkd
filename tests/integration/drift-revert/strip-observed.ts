@@ -56,7 +56,9 @@ if (!BUCKET) {
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-const s3 = new S3Client({ region: REGION });
+// The state bucket may live outside the stack's region (go-to-k/cdkd#6680):
+// follow S3's PermanentRedirect to the bucket's own region.
+const s3 = new S3Client({ region: REGION, followRegionRedirects: true });
 const key = `cdkd/${STACK}/${REGION}/state.json`;
 
 const got = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));

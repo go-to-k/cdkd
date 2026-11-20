@@ -98,12 +98,25 @@ fi
 # auto-delete custom resource runs, and nothing in the stack owns it, so destroy
 # leaves it behind (#3885).
 . ../cr-log-groups.sh
+. ../revert-identity.sh
+REVERT_WORK=""
+
+# The state logical id of the one resource of <type> whose id starts with <prefix>
+# (an L2 gets a hash suffix; the revert-identity snapshots name exact ids).
+lid_of() { # usage: lid_of <type> <logical-id prefix>
+  ${CLI} state show "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+    | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const r=(JSON.parse(b).state??JSON.parse(b)).resources;const ids=Object.keys(r).filter(k=>k.startsWith(process.argv[2])&&r[k].resourceType===process.argv[1]);if(ids.length!==1)throw new Error(`expected one ${process.argv[1]} ${process.argv[2]}, found ${ids.length}`);process.stdout.write(ids[0]);})' "$1" "$2"
+}
 
 cleanup() {
   rc=$?
   # `:-` is required on STATE_TMP: it is created late (step 6b) while `set -u`
   # is active, so cleanup can fire before it exists.
   rm -f "${DRIFT_OUT}" "${STATE_TMP:-}"
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting destroy to clean up"
     ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force || true
@@ -216,7 +229,22 @@ fi
 echo "[verify] step 4 ok: real drift detected (exit ${rc}); targets = ${DRIFTED_TARGETS}"
 
 echo "[verify] step 5: cdkd drift --revert -y (expect exit 0)"
-${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}"
+REVERT_WORK="$(mktemp -d)"
+LID_BUCKET="$(lid_of AWS::S3::Bucket ArraysBucket)" || exit 1
+LID_POLICY="$(lid_of AWS::IAM::ManagedPolicy ArraysPolicy)" || exit 1
+LID_SG="$(lid_of AWS::EC2::SecurityGroup ArraysSecurityGroup)" || exit 1
+LID_TG="$(lid_of AWS::ElasticLoadBalancingV2::TargetGroup ArraysTargetGroup)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" "${LID_BUCKET}" "${LID_POLICY}" "${LID_SG}" "${LID_TG}" || exit 1
+set +e
+${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${DRIFT_OUT}" 2>&1
+REVERT_RC=$?
+set -e
+cat "${DRIFT_OUT}"
+revert_identity_verify "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 4 "${DRIFT_OUT}" || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: drift --revert -y exited ${REVERT_RC}, expected 0"
+  exit 1
+fi
 
 echo "[verify] step 6: cdkd drift again (expect exit 0)"
 set +e

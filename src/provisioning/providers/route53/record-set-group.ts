@@ -36,6 +36,7 @@ import {
   recordedZoneForSwitch,
   refuseCfnUnresolvableZoneName,
   withTemplateAliasConflicts,
+  isMatchableSetIdentifier,
 } from './shared.js';
 import {
   RECORD_SET_GROUP_TYPE,
@@ -765,9 +766,10 @@ export async function deleteRecordSetGroup(
 
 /**
  * The live state of every recorded record, in recorded order, as
- * `{ RecordSets: [...] }`. A record the bounded lookup cannot find makes the
- * whole answer "cannot tell" (`undefined`), as for `AWS::Route53::RecordSet`
- * (go-to-k/cdkd#4283); a missing zone is `RESOURCE_NOT_FOUND`.
+ * `{ RecordSets: [...] }`. A record the lookup cannot place makes the whole
+ * answer "cannot tell" (`undefined`), as for `AWS::Route53::RecordSet`
+ * (go-to-k/cdkd#4283); one proven gone is left out (go-to-k/cdkd#6660), and
+ * a group with none left, or a missing zone, is `RESOURCE_NOT_FOUND`.
  */
 export async function readRecordSetGroup(
   this: Route53Provider,
@@ -798,7 +800,13 @@ export async function readRecordSetGroup(
     const type = record['Type'];
     if (typeof name !== 'string' || typeof type !== 'string') return undefined;
     const live = await this.readRecordSetAt({ hostedZoneId, name, type }, recordBag(record));
-    if (live === undefined || live === RESOURCE_NOT_FOUND) return live;
+    if (live === undefined) return undefined;
+    // go-to-k/cdkd#6660: a member PROVEN gone is left out, so drift reports
+    // the group's `RecordSets` changed (and the other members' values with
+    // it) and `--revert` re-creates the member; only a group with no member
+    // left is gone. A missing zone answers `RESOURCE_NOT_FOUND` for every
+    // member, which lands there too.
+    if (live === RESOURCE_NOT_FOUND) continue;
     // `readRecordSetAt` answers for a standalone record; inside a group the
     // zone is the group's, so a record shows one only when it declared one.
     const { HostedZoneId: _zoneId, ...rest } = live;
@@ -810,24 +818,89 @@ export async function readRecordSetGroup(
         : {}),
     });
   }
-  return { RecordSets: observed };
+  if (observed.length === 0 && parsed.records.length > 0) return RESOURCE_NOT_FOUND;
+  // go-to-k/cdkd#6681: echo the zone key the group declares, as a member's is
+  // above. The read is the deploy's drift baseline and `drift --revert`'s
+  // desired bag; without it the revert's update sees a group naming no zone.
+  const groupZone: Record<string, unknown> = {};
+  for (const key of ['HostedZoneId', 'HostedZoneName'] as const) {
+    if (properties?.[key] !== undefined) groupZone[key] = properties[key];
+  }
+  return { ...groupZone, RecordSets: observed };
 }
 
 /**
- * Adopt an existing group (`cdkd import --resource <id>=<physicalId>`).
- * OVERRIDE-ONLY, like `AWS::Route53::RecordSet`: a group has no standalone
- * identity for auto mode to key on. The supplied id is CloudFormation's group
- * name (or a cdkd id); the zone and the records come from the template, every
- * record is verified live, and the recorded id is cdkd's composite. Anything
- * cdkd cannot verify keeps the supplied id verbatim, which delete and drift
- * resolve through the recorded properties.
+ * Auto-mode adoption of a group (go-to-k/cdkd#6662). A group is no AWS
+ * object, only its records, which the template names exactly: the zone
+ * resolves from the template (the import loop substitutes a `Ref` to a zone
+ * adopted earlier in the run), and the group is adopted only when EVERY
+ * record is live, named by its logical id. Anything less
+ * declines (`null`), a failed zone lookup included; a failed record read
+ * propagates.
+ */
+async function importRecordSetGroupFromTemplate(
+  this: Route53Provider,
+  input: ResourceImportInput
+): Promise<ResourceImportResult | null> {
+  const parsed = groupRecordSets(input.properties);
+  if ('refusal' in parsed || parsed.records.length === 0) return null;
+  const zoneProps = groupZoneProperties(input.properties, parsed.records);
+  if ('refusal' in zoneProps) return null;
+  // An unresolved SetIdentifier cannot pick one record among its siblings.
+  if (
+    parsed.records.some(
+      (r) => r['SetIdentifier'] !== undefined && !isMatchableSetIdentifier(r['SetIdentifier'])
+    )
+  ) {
+    return null;
+  }
+  let hostedZoneId: string;
+  try {
+    hostedZoneId = await this.resolveHostedZoneId(
+      zoneProps.zone,
+      input.logicalId,
+      input.resourceType,
+      input.logicalId,
+      { requireUnambiguousZoneName: true, subject: groupSubject }
+    );
+  } catch {
+    return null;
+  }
+  // The logical id names the group: a deploy's generated name needs the
+  // stack's name generations, which an import has not read, and every reader
+  // accepts the logical id (`namesThisGroup`).
+  const physicalId = recordSetGroupCompositeId(hostedZoneId, input.logicalId);
+  const observed = await readRecordSetGroup.call(
+    this,
+    physicalId,
+    input.logicalId,
+    input.properties
+  );
+  if (
+    !observed ||
+    observed === RESOURCE_NOT_FOUND ||
+    !Array.isArray(observed['RecordSets']) ||
+    observed['RecordSets'].length !== parsed.records.length
+  ) {
+    return null;
+  }
+  return { physicalId, attributes: {} };
+}
+
+/**
+ * Adopt an existing group (`cdkd import --resource <id>=<physicalId>`). The
+ * supplied id is CloudFormation's group name (or a cdkd id); the zone and the
+ * records come from the template, every record is verified live, and the
+ * recorded id is cdkd's composite. Anything cdkd cannot verify keeps the
+ * supplied id verbatim, which delete and drift resolve through the recorded
+ * properties. With no id, {@link importRecordSetGroupFromTemplate}.
  */
 export async function importRecordSetGroup(
   this: Route53Provider,
   input: ResourceImportInput
 ): Promise<ResourceImportResult | null> {
   const known = input.knownPhysicalId;
-  if (!known) return null;
+  if (!known) return importRecordSetGroupFromTemplate.call(this, input);
 
   const adoptVerbatim = (reason: string): ResourceImportResult => {
     this.logger.warn(
@@ -883,7 +956,14 @@ export async function importRecordSetGroup(
     const reason = `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`;
     return unverified(reason);
   }
-  if (!observed || observed === RESOURCE_NOT_FOUND) {
+  // A read leaves out a member proven gone (go-to-k/cdkd#6660), so a short
+  // list is a group missing a record, which adoption must not vouch for.
+  if (
+    !observed ||
+    observed === RESOURCE_NOT_FOUND ||
+    !Array.isArray(observed['RecordSets']) ||
+    observed['RecordSets'].length !== parsed.records.length
+  ) {
     const reason = 'not every record was found under the resolved hosted zone';
     return unverified(reason);
   }

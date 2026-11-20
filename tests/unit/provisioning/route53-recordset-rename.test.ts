@@ -449,7 +449,7 @@ describe('Route53Provider readCurrentState matches the recorded SetIdentifier (i
     expect(observed?.['ResourceRecords']).toEqual(['192.0.2.5']);
   });
 
-  it('a recorded SetIdentifier that is not live reads as absent', async () => {
+  it('a recorded SetIdentifier that is not live reads as gone (go-to-k/cdkd#6660)', async () => {
     routeSend([sibling]);
     const observed = await provider.readCurrentState(
       `${ZONE}|w.example.com.|A`,
@@ -457,7 +457,7 @@ describe('Route53Provider readCurrentState matches the recorded SetIdentifier (i
       TYPE,
       record({ Name: 'w.example.com.', SetIdentifier: 'id9' })
     );
-    expect(observed).toBeUndefined();
+    expect(observed).toBe(RESOURCE_NOT_FOUND);
   });
 
   it('with no recorded bag (the import verification) the name + type match stands', async () => {
