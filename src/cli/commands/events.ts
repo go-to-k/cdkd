@@ -576,6 +576,13 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
   });
 }
 
+/** An event whose `physicalId` is a bearer credential, with that id masked for display. */
+export function withDisplayedPhysicalId(event: DeploymentEvent): DeploymentEvent {
+  if (typeof event.physicalId !== 'string') return event;
+  const shown = displayPhysicalId(event.resourceType, event.physicalId);
+  return shown === event.physicalId ? event : { ...event, physicalId: shown };
+}
+
 /**
  * Human-readable run listing (newest first).
  *
@@ -586,13 +593,6 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
  * `plainOrDescribed` (go-to-k/cdkd#3760). `result` is sanitised BEFORE the colour decision so the
  * colour matches the text the user actually sees.
  */
-/** An event whose `physicalId` is a bearer credential, with that id masked for display. */
-export function withDisplayedPhysicalId(event: DeploymentEvent): DeploymentEvent {
-  if (typeof event.physicalId !== 'string') return event;
-  const shown = displayPhysicalId(event.resourceType, event.physicalId);
-  return shown === event.physicalId ? event : { ...event, physicalId: shown };
-}
-
 function printRunList(stackName: string, region: string, runs: DeploymentRunSummary[]): void {
   const logger = getLogger();
   // Named only when a plain identifier: this header sits above the labelled

@@ -145,6 +145,7 @@ describe('WaitConditionProvider', () => {
       ['a throttle', Object.assign(new Error('slow down'), { name: 'SlowDown' })],
       ['a 503', Object.assign(new Error('unavailable'), { $metadata: { httpStatusCode: 503 } })],
       ['a reset socket', Object.assign(new Error('socket'), { code: 'ECONNRESET' })],
+      ['a version deleted mid-read', Object.assign(new Error('gone'), { name: 'NoSuchVersion' })],
     ])('keeps polling through %s', async (_what, failure) => {
       const { store, readSignals } = storeAnswering([failure, [signal('SUCCESS', 'a')]]);
       const result = await new TestProvider(store).create('Wait', TYPE, props());

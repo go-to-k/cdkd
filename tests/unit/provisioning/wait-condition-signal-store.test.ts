@@ -344,6 +344,16 @@ describe('WaitConditionSignalStore', () => {
     await expect(store.readSignals(KEY, new Map(), 3)).rejects.toMatchObject({
       name: 'WaitConditionSignalFlood',
     });
+    // Exactly the limit is still a set of signals (each version GETs a body).
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'ListObjectVersionsCommand') {
+        return {
+          Versions: Array.from({ length: 3 }, (_, i) => ({ Key: KEY, VersionId: `v${i}`, Size: 9 })),
+        };
+      }
+      return { Body: { transformToString: async () => '{"Status":"SUCCESS"}' } };
+    });
+    await expect(store.readSignals(KEY, new Map(), 3)).resolves.toHaveLength(3);
   });
 
   it('skips a listed version with no version id', async () => {
