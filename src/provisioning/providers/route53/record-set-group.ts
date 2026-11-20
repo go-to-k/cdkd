@@ -818,9 +818,15 @@ export async function readRecordSetGroup(
         : {}),
     });
   }
-  return observed.length === 0 && parsed.records.length > 0
-    ? RESOURCE_NOT_FOUND
-    : { RecordSets: observed };
+  if (observed.length === 0 && parsed.records.length > 0) return RESOURCE_NOT_FOUND;
+  // go-to-k/cdkd#6681: echo the zone key the group declares, as a member's is
+  // above. The read is the deploy's drift baseline and `drift --revert`'s
+  // desired bag; without it the revert's update sees a group naming no zone.
+  const groupZone: Record<string, unknown> = {};
+  for (const key of ['HostedZoneId', 'HostedZoneName'] as const) {
+    if (properties?.[key] !== undefined) groupZone[key] = properties[key];
+  }
+  return { ...groupZone, RecordSets: observed };
 }
 
 /**
