@@ -195,6 +195,10 @@ jobs:
       # AWS keeps the old value.
       - run: vp run audit:update-path-coverage:check
 
+      # go-to-k/cdkd#6676 — a Cloud Control type measured as refusing a read-model
+      # value needs a registered per-type fix or a recorded exemption.
+      - run: vp run gen:cc-update-measurements:check
+
       # go-to-k/cdkd#6612 — a compound-id type with no Ref decision resolves Ref
       # to the whole `|`-joined id, which AWS often accepts silently.
       - run: vp run audit:ref-segment-coverage:check

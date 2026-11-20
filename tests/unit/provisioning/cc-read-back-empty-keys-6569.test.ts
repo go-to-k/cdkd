@@ -132,6 +132,52 @@ describe('withCcReadBackEmptyKeyRemovals (go-to-k/cdkd#6569)', () => {
   });
 });
 
+describe('withCcReadBackEmptyKeyRemovals: DataSync task (go-to-k/cdkd#6676)', () => {
+  const TASK = 'AWS::DataSync::Task';
+  const VERIFY: JsonPatchOp[] = [{ op: 'replace', path: '/Options/VerifyMode', value: 'NONE' }];
+
+  it('removes the read-back empty Schedule of a task created without one', () => {
+    expect(
+      withCcReadBackEmptyKeyRemovals(TASK, VERIFY, { Name: 't' }, { Name: 't', Schedule: {} })
+    ).toEqual([...VERIFY, { op: 'remove', path: '/Schedule' }]);
+  });
+
+  it('removes the read-back empty Name of a task created without one', () => {
+    expect(
+      withCcReadBackEmptyKeyRemovals(TASK, VERIFY, {}, { Name: '', Schedule: {} })
+    ).toEqual([
+      ...VERIFY,
+      { op: 'remove', path: '/Name' },
+      { op: 'remove', path: '/Schedule' },
+    ]);
+  });
+
+  it('keeps a named task\'s Name', () => {
+    expect(withCcReadBackEmptyKeyRemovals(TASK, VERIFY, { Name: 't' }, { Name: 't' })).toBe(
+      VERIFY
+    );
+  });
+
+  it('keeps a scheduled task as it is', () => {
+    const live = { Schedule: { ScheduleExpression: 'rate(1 day)' } };
+    expect(withCcReadBackEmptyKeyRemovals(TASK, VERIFY, live, live)).toBe(VERIFY);
+  });
+
+  it('sends a revert to an empty Name over a live name as written (a remove keeps the name)', () => {
+    const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Name', value: '' }];
+    expect(withCcReadBackEmptyKeyRemovals(TASK, patch, { Name: '' }, { Name: 'oob' })).toBe(
+      patch
+    );
+  });
+
+  it('turns a replace OF an empty Name into a remove while the live Name is empty too', () => {
+    const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Name', value: '' }];
+    expect(withCcReadBackEmptyKeyRemovals(TASK, patch, { Name: '' }, { Name: '' })).toEqual([
+      { op: 'remove', path: '/Name' },
+    ]);
+  });
+});
+
 describe('CloudControlProvider.update wiring (go-to-k/cdkd#6569)', () => {
   let sentPatch: JsonPatchOp[] | undefined;
 
