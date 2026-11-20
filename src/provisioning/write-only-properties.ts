@@ -274,9 +274,9 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
  * `AWS::Lambda::Function` `Code`: a patch without it left the code in place,
  * while one re-adding the same value made the handler call
  * `UpdateFunctionCode` (measured on a container image on Lambda Managed
- * Instances and on an inline zip). A CloudFormation stack update of the same
- * shape made no such call, so leaving the key out serves parity and speed
- * alike.
+ * Instances and on an inline zip). A CloudFormation stack update changing only
+ * `FunctionScalingConfig` on the Managed Instances image function made no such
+ * call, so leaving the key out in that case serves parity and speed alike.
  *
  * Require handler measurements before adding an entry. Readback omits
  * write-only values, so omitting them from a Cloud Control patch can lose them
