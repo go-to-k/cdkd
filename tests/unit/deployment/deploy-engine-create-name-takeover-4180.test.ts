@@ -461,7 +461,7 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(h.callOrder).toEqual([]);
   });
 
-  it('refuses a log group the provider would read ResourceAlreadyExists as success for', async () => {
+  it('refuses a log group whose explicit name another log group holds, before the create (#6655: the create refuses it too)', async () => {
     h.importResult = { physicalId: '/app/theirs' };
 
     const err = await create(makeEngine(h), 'AWS::Logs::LogGroup', {

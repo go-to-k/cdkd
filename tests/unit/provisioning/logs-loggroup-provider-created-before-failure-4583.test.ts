@@ -42,6 +42,7 @@ import {
   collectCreatedResources,
 } from '../../../src/provisioning/created-resource-sink.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
+import { withLicensedNameHolder } from '../../../src/provisioning/licensed-name-holder.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
 const NAME = '/cdkd/my-log-group';
@@ -94,13 +95,14 @@ describe('LogsLogGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
     expect(createdBeforeFailure(error, 'MyLG', RESOURCE_TYPE)).toBeUndefined();
   });
 
-  it('does not mark a pre-existing log group the create adopted (cleanup skipped)', async () => {
+  it('does not mark a licensed log group the create took back (cleanup skipped)', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceAlreadyExistsException({ message: 'already exists', $metadata: {} })
     );
     mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom'));
 
-    const error = await createError(provider);
+    const error = await withLicensedNameHolder(NAME, () => createError(provider));
+    expect(mockSend.mock.calls[1]![0].constructor.name).toBe('PutRetentionPolicyCommand');
     expect(error).toBeInstanceOf(Error);
     expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).not.toContain(
       'DeleteLogGroupCommand'
@@ -152,7 +154,7 @@ describe('LogsLogGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
     expect(sink.report).toBeUndefined();
   });
 
-  it('reports nothing for a pre-existing log group the create adopted (#5511)', async () => {
+  it('reports nothing for a licensed log group the create took back (#5511)', async () => {
     const sink = new CreatedResourceSink('MyLG', RESOURCE_TYPE);
     mockSend.mockRejectedValueOnce(
       new ResourceAlreadyExistsException({ message: 'already exists', $metadata: {} })
@@ -160,8 +162,10 @@ describe('LogsLogGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
     mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom'));
 
     await expect(
-      collectCreatedResources(sink, () => provider.create('MyLG', RESOURCE_TYPE, PROPS))
-    ).rejects.toThrow();
+      withLicensedNameHolder(NAME, () =>
+        collectCreatedResources(sink, () => provider.create('MyLG', RESOURCE_TYPE, PROPS))
+      )
+    ).rejects.toThrow('PutRetentionPolicy boom');
     expect(sink.report).toBeUndefined();
   });
 });

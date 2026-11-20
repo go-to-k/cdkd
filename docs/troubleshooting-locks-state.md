@@ -383,9 +383,11 @@ before it creates a queue, topic, log group, alarm, EventBridge rule, S3
 bucket, ECS cluster, load balancer, target group or state machine. Nothing
 was created for that resource.
 
-For these types, a create call under a taken name does not fail. It hands
-back the existing resource, or overwrites it. A resource already holds the
-name cdkd generated, and nothing this stack records names that resource.
+For these types except log groups, a create call under a taken name does not
+fail. It hands back the existing resource, or overwrites it. A log group's
+create fails on a taken name; it is checked so that one this stack's own
+records name is taken back. A resource already holds the name cdkd generated,
+and nothing this stack records names that resource.
 
 Most often, the same stack name is also deployed under another state backend:
 another `--state-prefix`, another `--state-bucket` or another account's

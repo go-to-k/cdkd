@@ -22,9 +22,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *     Since the orphan's generation is retired, the redeploy derives the NEXT
  *     generation's name; verify.sh plants a holder on that name.
  *   - `AWS::IAM::Role`, because it answers a duplicate name with
- *     `EntityAlreadyExists`. Several types do NOT: `AWS::S3::Bucket`,
- *     `AWS::Logs::LogGroup` and `AWS::SNS::Topic` silently ADOPT an existing
- *     resource, so a fixture built on one of those would redeploy green and
+ *     `EntityAlreadyExists`. Several types do NOT: `AWS::S3::Bucket` and
+ *     `AWS::SNS::Topic` silently ADOPT an existing resource, so a fixture built on one of those would redeploy green and
  *     assert nothing — the failure mode this fixture exists to catch.
  *
  * The role is deliberately trivial (an assumable principal, no policies): the
