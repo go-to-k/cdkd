@@ -56,6 +56,9 @@ beforeEach(() => {
       '#!/bin/sh',
       `echo "$@" >> "${awsLog}"`,
       `if [ -f "${awsValuePath}.rc" ]; then cat "${awsValuePath}.rc" >&2; exit 254; fi`,
+      // A read whose argv contains the text in `.fail-match` fails, as AWS
+      // answers NoSuchEntity for one principal and not another.
+      `if [ -f "${awsValuePath}.fail-match" ]; then case "$*" in *"$(cat "${awsValuePath}.fail-match")"*) echo NoSuchEntity >&2; exit 254 ;; esac; fi`,
       `cat "${awsValuePath}"`,
       '',
     ].join('\n')
@@ -445,6 +448,47 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(readFileSync(awsLog, 'utf8')).toContain(
       'iam get-role-policy --role-name RoleA --policy-name SharedPolicy'
     );
+  });
+
+  it('keeps an inline IAM policy row stable while ONE principal lost its copy, and FAILS once every principal did', () => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        state: {
+          resources: {
+            Pol1: {
+              resourceType: 'AWS::IAM::Policy',
+              physicalId: 'SharedPolicy',
+              properties: { Roles: ['RoleA', 'RoleB'], Users: ['UserC'] },
+            },
+          },
+        },
+      })
+    );
+    setAwsValue('SharedPolicy\n');
+    // Before the revert: the copy on RoleA was removed out of band.
+    writeFileSync(`${awsValuePath}.fail-match`, '--role-name RoleA ');
+    const b = run(`revert_identity_snapshot "${before()}" Stack Pol1`);
+    expect(b.stderr).toBe('');
+    expect(b.status).toBe(0);
+    const calls = readFileSync(awsLog, 'utf8');
+    expect(calls).toContain('iam get-role-policy --role-name RoleB --policy-name SharedPolicy');
+    expect(calls).toContain('iam get-user-policy --user-name UserC --policy-name SharedPolicy');
+    // After it: restored on RoleA. The row must be unchanged.
+    rmSync(`${awsValuePath}.fail-match`);
+    const a = run(
+      [
+        `revert_identity_snapshot "${after()}" Stack Pol1`,
+        `revert_identity_assert_unchanged "${before()}" "${after()}" 1`,
+      ].join('\n')
+    );
+    expect(a.stderr).toBe('');
+    expect(a.status).toBe(0);
+    // Gone from every principal: the probe fails.
+    writeFileSync(`${awsValuePath}.fail-match`, '--policy-name SharedPolicy');
+    const gone = run(`revert_identity_snapshot "${after()}" Stack Pol1 || exit 1`);
+    expect(gone.status).toBe(1);
+    expect(gone.stderr).toContain('AWS::IAM::Policy probe');
   });
 
   it('FAILS a snapshot with no logical ids', () => {

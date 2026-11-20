@@ -206,17 +206,26 @@ _revert_identity_probe() {
       cls=no-id; val="$(_revert_identity_aws events describe-event-bus --region "${region}" --name "${pid%%|*}" --query 'Policy' \
         | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const sid=process.argv[1].split("|").pop();const st=(JSON.parse(s).Statement||[]).find(x=>x.Sid===sid);if(st)process.stdout.write(st.Sid);});' "${pid}")" || rc=$? ;;
     AWS::IAM::Policy)
-      # An inline policy: physicalId is its PolicyName, ctx `role:` / `user:` /
-      # `group:` + the first principal it is attached to. It has no id, and its
+      # An inline policy: physicalId is its PolicyName, ctx every principal it
+      # is recorded on (`role:A,user:B,group:C`). It has no id, and its
       # document is what a revert rewrites, so the probe proves only that the
-      # named policy is still on that principal.
-      case "${ctx}" in
-        role:?*) val="$(_revert_identity_aws iam get-role-policy --role-name "${ctx#role:}" --policy-name "${pid}" --query 'PolicyName')" || rc=$? ;;
-        user:?*) val="$(_revert_identity_aws iam get-user-policy --user-name "${ctx#user:}" --policy-name "${pid}" --query 'PolicyName')" || rc=$? ;;
-        group:?*) val="$(_revert_identity_aws iam get-group-policy --group-name "${ctx#group:}" --policy-name "${pid}" --query 'PolicyName')" || rc=$? ;;
-        *) rc=1 ;;
-      esac
-      cls=no-id ;;
+      # named policy is still on AT LEAST ONE of them: a fixture may remove one
+      # copy out of band for the revert to restore, and that is not an identity
+      # change, while a policy gone from every principal is.
+      cls=no-id; val="$(
+        held=0
+        for principal in $(printf '%s' "${ctx}" | tr ',' ' '); do
+          kind="${principal%%:*}"; name="${principal#*:}"
+          # No case statement: bash 3.2 misparses its pattern parenthesis in a command substitution.
+          [ "${kind}" = role ] || [ "${kind}" = user ] || [ "${kind}" = group ] || exit 1
+          if _revert_identity_aws iam "get-${kind}-policy" "--${kind}-name" "${name}" --policy-name "${pid}" \
+            --query 'PolicyName' >/dev/null 2>&1; then
+            held=$((held + 1))
+          fi
+        done
+        [ "${held}" -gt 0 ] || exit 1
+        printf 'policy-on-a-principal:%s' "${pid}"
+      )" || rc=$? ;;
     AWS::Route53::RecordSet)
       # physicalId is `<zoneId>|<name>|<type>`; a record has no id or creation
       # time. Route 53 answers a wildcard as `\052`, so both sides are compared
@@ -356,10 +365,11 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
         ? props.Replicas.map((x) => x && x.Region).filter((x) => typeof x === "string").sort().join(",")
         : undefined,
       "AWS::EC2::SecurityGroupIngress": attrs.Id,
-      "AWS::IAM::Policy": (["Roles", "Users", "Groups"]
-        .map((k) => (Array.isArray(props[k]) && typeof props[k][0] === "string"
-          ? k.slice(0, -1).toLowerCase() + ":" + props[k][0] : undefined))
-        .find((x) => x !== undefined)),
+      "AWS::IAM::Policy": ["Roles", "Users", "Groups"]
+        .flatMap((k) => (Array.isArray(props[k]) ? props[k] : [])
+          .filter((x) => typeof x === "string" && x !== "" && !/[,\s]/.test(x))
+          .map((x) => k.slice(0, -1).toLowerCase() + ":" + x))
+        .join(","),
     };
     const ctx = ctxOf[r.resourceType];
     const ctxText = typeof ctx === "string" && ctx !== "" && !/[\t\n]/.test(ctx) ? ctx : "-";
