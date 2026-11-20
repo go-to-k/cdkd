@@ -530,10 +530,10 @@ describe('revert_output_assert_no_replacement', () => {
     });
 
     it('ignores the literal only, never as a pattern', () => {
-      const r = check('the Re.create step\nRecreate\n', 'ignore=Re.create');
+      // As a regex `Re.reate` would also match `Recreate` and hide it.
+      const r = check('Recreate\n', 'ignore=Re.reate');
       expect(r.status).toBe(1);
       expect(r.stderr).toContain('Recreate');
-      expect(r.stderr).not.toContain('Re.create');
     });
 
     it('FAILS an empty ignore=', () => {
