@@ -38,6 +38,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
+import { withLicensedNameHolder } from '../../../src/provisioning/licensed-name-holder.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
 
@@ -70,7 +71,7 @@ describe('LogsLogGroupProvider partial-create cleanup (Issue #376)', () => {
     expect(mockSend.mock.calls[2][0].input).toEqual({ logGroupName: '/cdkd/my-log-group' });
   });
 
-  it('does NOT issue DeleteLogGroupCommand when CreateLogGroup hit ResourceAlreadyExistsException (pre-existing LG)', async () => {
+  it('does NOT issue DeleteLogGroupCommand on a licensed take-back (pre-existing LG, go-to-k/cdkd#6655)', async () => {
     // Use the real SDK error class so `instanceof` matches inside the
     // provider. Import lazily to avoid hoisting issues.
     const { ResourceAlreadyExistsException: SdkExc } = await import(
@@ -84,14 +85,16 @@ describe('LogsLogGroupProvider partial-create cleanup (Issue #376)', () => {
     mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom'));
 
     await expect(
-      provider.create('MyLG', RESOURCE_TYPE, {
-        LogGroupName: '/cdkd/my-log-group',
-        RetentionInDays: 7,
-      })
+      withLicensedNameHolder('/cdkd/my-log-group', () =>
+        provider.create('MyLG', RESOURCE_TYPE, {
+          LogGroupName: '/cdkd/my-log-group',
+          RetentionInDays: 7,
+        })
+      )
     ).rejects.toThrow('Failed to create log group');
 
     const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
-    expect(names).not.toContain('DeleteLogGroupCommand');
+    expect(names).toEqual(['CreateLogGroupCommand', 'PutRetentionPolicyCommand']);
   });
 
   it('does NOT issue DeleteLogGroupCommand when CreateLogGroup itself fails with a non-AlreadyExists error', async () => {

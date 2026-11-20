@@ -8493,7 +8493,6 @@
         "recreate-renamed-logs-delivery",
         "ref-shape-compound-cc-ids",
         "remove-protection",
-        "retain-orphan-redeploy",
         "rollback-replacement-retain",
         "rollback-same-id-recreate",
         "route53",
@@ -8634,9 +8633,6 @@
         ],
         "remove-protection": [
           "l1",
-          "literal"
-        ],
-        "retain-orphan-redeploy": [
           "literal"
         ],
         "rollback-replacement-retain": [

@@ -775,8 +775,11 @@ const CASES: Case[] = [
     main: 'CreateLogGroupCommand',
     aux: 'PutRetentionPolicyCommand',
     responses: { GetCallerIdentityCommand: { Account: '123456789012' } },
-    mainCollisionNotRaised:
-      'CreateLogGroup ResourceAlreadyExistsException is ADOPTED, never thrown',
+    // go-to-k/cdkd#6655: refused (no longer adopted), so the main half runs.
+    mainAwsError: {
+      name: 'ResourceAlreadyExistsException',
+      message: 'The specified log group already exists',
+    },
   },
   {
     // The target group is the proxy's own; this resource's create is the

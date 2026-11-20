@@ -26,6 +26,8 @@ import {
   withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import { licensedNameHolder } from '../../../src/provisioning/licensed-name-holder.js';
+import { guardedReplacementCreate } from '../../../src/deployment/deploy-engine/create.js';
 
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
   (await import('./_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
@@ -116,6 +118,8 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
   }) {
     const levels = opts.levels ?? [['Q1'], ['Q2'], ['Q3']];
     const ids = levels.flat();
+    // go-to-k/cdkd#6655: the holder each create ran licensed to take back.
+    const licenses: Record<string, string | undefined> = {};
     const provider = {
       generatedCreateName: vi.fn((_t: string, logicalId: string) => `${STACK}-${logicalId}`),
       lookupNames: vi.fn(async (_t: string, names: readonly string[]) => {
@@ -125,6 +129,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       }),
       create: vi.fn(async (logicalId: string) => {
         events.push(`create:${logicalId}`);
+        licenses[logicalId] = licensedNameHolder();
         const fails = opts.createFails?.[logicalId];
         if (fails) throw fails;
         return { physicalId: urlOf(`${STACK}-${logicalId}`), attributes: {} };
@@ -217,8 +222,50 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         .filter(([, e]) => e.base.startsWith('adopt-by-name:'))
         .map(([id]) => id)
         .sort();
-    return { engine, provider, stateBackend, adoptIntents, diffCalculator };
+    return { engine, provider, stateBackend, adoptIntents, diffCalculator, licenses };
   }
+
+  it('go-to-k/cdkd#6655: a create runs licensed to take back exactly the holder the guard licensed, and nothing else', async () => {
+    const kept = [{ logicalId: 'Q2', resourceType: QUEUE, physicalId: urlOf('App-Q2') }];
+    const { engine, licenses } = buildEngine({
+      records: {},
+      holders: { 'App-Q2': urlOf('App-Q2') },
+      retained: kept,
+    });
+    await engine.deploy(STACK, template);
+    expect(licenses).toEqual({ Q1: undefined, Q2: urlOf('App-Q2'), Q3: undefined });
+    // Outside the create, nothing is licensed.
+    expect(licensedNameHolder()).toBeUndefined();
+  });
+
+  it('go-to-k/cdkd#6655: a replacement create runs licensed to take back the licensed holder only', async () => {
+    const guardOf = (verdict: unknown) => ({
+      candidate: vi.fn(() => ({ name: 'App-Q2', property: 'QueueName' })),
+      admit: vi.fn(async () => verdict),
+      noteSent: vi.fn(),
+      noteFailed: vi.fn(),
+      noteReturned: vi.fn(),
+    });
+    const input = {
+      logicalId: 'Q2',
+      resourceType: QUEUE,
+      stackName: STACK,
+      createdVia: 'sdk' as const,
+      resolvedProps: {},
+    };
+    const engineWith = (verdict: unknown) =>
+      ({ generatedNameGuard: guardOf(verdict), logger: getLogger() }) as never;
+    await expect(
+      guardedReplacementCreate(
+        engineWith({ kind: 'licensed', holder: urlOf('App-Q2'), via: 'ledger' }),
+        input,
+        async () => licensedNameHolder()
+      )
+    ).resolves.toBe(urlOf('App-Q2'));
+    await expect(
+      guardedReplacementCreate(engineWith({ kind: 'free' }), input, async () => licensedNameHolder())
+    ).resolves.toBeUndefined();
+  });
 
   it('looks every planned name up in ONE call before the first create, and records them before any create', async () => {
     const { engine, provider } = buildEngine({});

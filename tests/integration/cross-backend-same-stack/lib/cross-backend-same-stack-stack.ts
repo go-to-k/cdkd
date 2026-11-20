@@ -18,8 +18,9 @@ import type { Construct } from 'constructs';
  *  - the Role's CreateRole fails with EntityAlreadyExists;
  *  - the Queue's CreateQueue (identical attributes) hands back the existing
  *    queue, and its removal policy is DESTROY (the L2 default, spelled out);
- *  - the LogGroup's ResourceAlreadyExistsException is swallowed, and its
- *    removal policy is RETAIN (the L2 default, spelled out).
+ *  - the LogGroup's ResourceAlreadyExistsException was swallowed before
+ *    go-to-k/cdkd#6655 (now refused, unless the guard licensed that holder),
+ *    and its removal policy is RETAIN (the L2 default, spelled out).
  *
  * `CDKD_4705_RETENTION_DAYS` sets the LogGroup's retention, so a second
  * deployment rewriting the first one's log group is observable (default 7).
