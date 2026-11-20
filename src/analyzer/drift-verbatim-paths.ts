@@ -70,6 +70,13 @@ export function isVerbatimStatementPath(path: string, verbatimKeys: readonly str
 }
 
 /**
+ * The policy language version an omitted `Version` means, which S3, SQS, SNS,
+ * KMS, Secrets Manager and IAM's role trust policy write into a document
+ * submitted without one (go-to-k/cdkd#6624, measured).
+ */
+export const OMITTED_POLICY_VERSION = '2008-10-17';
+
+/**
  * True when `value` at `path` is `2008-10-17` at the `Version` of a document
  * at one of `verbatimKeys`: the policy language version an omitted `Version`
  * means. S3, SQS, SNS, KMS, Secrets Manager and IAM's role trust policy write
@@ -85,5 +92,5 @@ export function isOmittedVersionDefault(
   value: unknown,
   verbatimKeys: readonly string[]
 ): boolean {
-  return value === '2008-10-17' && verbatimKeys.some((key) => path === `${key}.Version`);
+  return value === OMITTED_POLICY_VERSION && verbatimKeys.some((key) => path === `${key}.Version`);
 }
