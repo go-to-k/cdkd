@@ -730,6 +730,19 @@ describe('a route whose readback is not filtered (Cloud Control, go-to-k/cdkd#66
     expect(byName(sent[0]!.desired['Policies'])).toEqual(byName(SIB_POLICIES));
   });
 
+  it("--accept on the principal does not silence a sibling's edited inline policy: drift compares it against the sibling's template", async () => {
+    routeCc();
+    const edited = { PolicyName: 'SibInline', PolicyDocument: DOC('*') };
+    ccRead = { ...withSiblings(), Policies: [edited, SIB_POLICIES[1]] };
+    resources = { Subject: principalRecord('Role'), ...siblings('Role') };
+    expect(await runDrift(['--accept', '--yes'])).toBe(0);
+    const saved = mockSaveState.mock.calls.at(-1)![2] as StackState;
+    resources = saved.resources;
+    expect(resources['Subject']!.observedProperties).toBeDefined();
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes()).toEqual([{ logicalId: 'Subject', path: 'Policies' }]);
+  });
+
   it("a recorded copy of a sibling's inline policy under an older document does not ride along beside the live one", async () => {
     routeCc();
     ccRead = withSiblings({ policies: [OOB_POLICY] });

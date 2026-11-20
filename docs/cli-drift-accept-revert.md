@@ -153,7 +153,11 @@ stack writes, and the plan lists each. An inline policy adopted with
 `cdkd drift --accept` is pinned to the document it
 had then: if the stack or tool that owns it later changes that document,
 drift reports the change and `--revert` puts the recorded document back, so
-accept again instead. The plan prints a
+accept again instead. An inline policy that a resource of the same stack writes (an
+`AWS::IAM::Policy` or `RolePolicy`) is different: drift compares it against
+that resource's template, so `--accept` does not silence an out-of-band edit
+of its document. `--revert` puts the template's document back; to keep the
+edit, put it in that resource's template and deploy. The plan prints a
 `! this resource has no observed-capture baseline ... LEAVES N AWS-authored
 values untouched` line that names each path. To have those values reverted
 too, record a snapshot first with `cdkd state refresh-observed MyStack`, or

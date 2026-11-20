@@ -163,7 +163,11 @@ organization's automation, run `cdkd drift --accept` instead: it records the
 member, and drift stops reporting it. An inline policy recorded this way is pinned to the document it
 had then: if the stack or tool that owns it later changes that document,
 drift reports the change and `--revert` puts the recorded document back, so
-accept again instead. Under these keys drift reports only a
+accept again instead. An inline policy that a resource of the same stack writes (an
+`AWS::IAM::Policy` or `RolePolicy`) is different: drift compares it against
+that resource's template, so `--accept` does not silence an out-of-band edit
+of its document. `--revert` puts the template's document back; to keep the
+edit, put it in that resource's template and deploy. Under these keys drift reports only a
 member AWS holds that nothing recorded: a recorded member that is gone is not
 reported, and `--revert` never adds one back. The exception is a recorded
 permissions boundary removed outside the stack, which widens access: it is
