@@ -240,9 +240,7 @@ ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${DRIFT_O
 REVERT_RC=$?
 set -e
 cat "${DRIFT_OUT}"
-revert_output_assert_no_replacement "${DRIFT_OUT}" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-after" "${STACK}" "${LID_BUCKET}" "${LID_POLICY}" "${LID_SG}" "${LID_TG}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 4 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 4 "${DRIFT_OUT}" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "[verify] FAIL: drift --revert -y exited ${REVERT_RC}, expected 0"
   exit 1

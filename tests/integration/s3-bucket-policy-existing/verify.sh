@@ -290,9 +290,7 @@ BUCKET_LID="$(state_lids AWS::S3::Bucket)"
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-3c-before" "${STACK}" "${BUCKET_LID}" "${POLICY_LID}" || exit 1
 REVERT_RC=0
 run_revert CDKD_TEST_UPDATE=policy,policy2 2>&1 | tee "${REVERT_WORK}/revert-3c.log" || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-3c.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-3c-after" "${STACK}" "${BUCKET_LID}" "${POLICY_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-3c-before" "${REVERT_WORK}/revert-ids-3c-after" 2 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-3c-before" "${REVERT_WORK}/revert-ids-3c-after" 2 "${REVERT_WORK}/revert-3c.log" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 3c)" >&2; exit 1; }
 P3C="$(bucket_policy)" || exit 1
 [ "$(jq -cS . <<<"${P3C}")" = "$(jq -cS . <<<"${P3B}")" ] \

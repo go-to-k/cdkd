@@ -247,9 +247,7 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
 REVERT_RC=$?
 set -e
 cat "${REVERT_WORK}/revert-2b.log"
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-2b.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-2b-after" "${STACK}" "${ERROR_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" 1 "${REVERT_WORK}/revert-2b.log" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 assert_member EvaluationWindow '. == null or . == {"SlidingWindow": {}}'
 assert_no_drift "Phase 2b"
@@ -298,9 +296,7 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
 REVERT_RC=$?
 set -e
 cat "${REVERT_WORK}/revert-4.log"
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-4.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-4-after" "${STACK}" "${PROMQL_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" 1 "${REVERT_WORK}/revert-4.log" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 assert_member EvaluationInterval '. == 60' "${PROMQL_ALARM_NAME}"
 assert_member EvaluationCriteria '.PromQLCriteria.Query == $ENV.PROMQL_QUERY' "${PROMQL_ALARM_NAME}"

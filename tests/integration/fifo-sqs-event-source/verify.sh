@@ -325,9 +325,7 @@ REVERT_DIR="$(mktemp -d)"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${ESM_LID}" || exit 1
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-1.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${ESM_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_DIR}/revert-1.log" || exit 1
 for i in 1 2 3; do
   ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
     --query 'State' --output text)"

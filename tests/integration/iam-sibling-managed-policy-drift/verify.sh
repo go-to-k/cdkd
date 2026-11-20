@@ -309,9 +309,7 @@ revert_ids_before() { # usage: revert_ids_before <tag> <resourceType>=<physicalI
   revert_identity_snapshot "${REVERT_DIR}/revert-ids-${tag}-before" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
 }
 revert_ids_after() { # usage: revert_ids_after <tag> <log-file> <literal N>; the lids are REVERT_LIDS from revert_ids_before
-  revert_output_assert_no_replacement "$2" || exit 1
-  revert_identity_snapshot "${REVERT_DIR}/revert-ids-$1-after" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
-  revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-$1-before" "${REVERT_DIR}/revert-ids-$1-after" "$3" || exit 1
+  revert_identity_verify "${REVERT_DIR}/revert-ids-$1-before" "${REVERT_DIR}/revert-ids-$1-after" "$3" "$2" || exit 1
 }
 assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON> <label>
   local recorded live

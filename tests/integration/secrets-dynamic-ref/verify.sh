@@ -3517,9 +3517,7 @@ REVERT_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKE
 REVERT_RC=$?
 set -e
 printf '%s\n' "${REVERT_OUT}" > "${REVERT_OUT_FILE}"
-revert_output_assert_no_replacement "${REVERT_OUT_FILE}" || exit 1
-revert_identity_snapshot "${REVERT_IDS_AFTER}" "${STACK}" "${REVERT_FN_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 || exit 1
+revert_identity_verify "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 "${REVERT_OUT_FILE}" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --revert' failed (rc=${REVERT_RC})" >&2
   diag_output "${REVERT_OUT}"

@@ -253,9 +253,7 @@ fi
 echo "==> Phase 5: cdkd drift --revert -y revokes only the out-of-band rule"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-5-before" "${STACK}" "${SG_A_LID}" || exit 1
 run_drift --revert -y
-revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-5-after" "${STACK}" "${SG_A_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-5-before" "${REVERT_DIR}/revert-ids-5-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-5-before" "${REVERT_DIR}/revert-ids-5-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 5"
 read_ports
 expect_ports "SgA ingress (after revert)" "${A_IN}" "443 5432 8443"
@@ -317,9 +315,7 @@ revert_identity_snapshot "${REVERT_DIR}/revert-ids-6a-before" "${STACK}" "${SG_A
 REVERT_6A_RC=0
 run_revert >"${REVERT_DIR}/revert-6a.log" 2>&1 || REVERT_6A_RC=$?
 sed 's/^/    | /' "${REVERT_DIR}/revert-6a.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-6a.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-6a-after" "${STACK}" "${SG_A_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-6a-before" "${REVERT_DIR}/revert-ids-6a-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-6a-before" "${REVERT_DIR}/revert-ids-6a-after" 1 "${REVERT_DIR}/revert-6a.log" || exit 1
 [ "${REVERT_6A_RC}" -eq 0 ] || { echo "FAIL: Phase 6a: cdkd drift --revert exited ${REVERT_6A_RC}, want 0" >&2; exit 1; }
 read_ports
 expect_ports "SgA ingress (after the revert)" "${A_IN}" "443 5432 8443"
@@ -371,9 +367,7 @@ run_drift
 expect_drift_rc 0 "Phase 6b (sibling removed)"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-6b-before" "${STACK}" "${SG_A_LID}" || exit 1
 run_drift --revert -y
-revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-6b-after" "${STACK}" "${SG_A_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-6b-before" "${REVERT_DIR}/revert-ids-6b-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-6b-before" "${REVERT_DIR}/revert-ids-6b-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 6b (--revert)"
 read_ports
 expect_ports "SgA ingress (after --revert)" "${A_IN}" "443 8443"

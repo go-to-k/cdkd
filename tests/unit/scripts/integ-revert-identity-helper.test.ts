@@ -136,6 +136,7 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(calls.length).toBe(4);
     for (const call of calls) expect(call.endsWith('--output text')).toBe(true);
     const rows = readFileSync(before(), 'utf8').trimEnd().split('\n');
+    expect(rows.shift()).toBe('#revert-identity\tStack\tus-east-1');
     expect(rows).toEqual([
       'Role1\tAWS::IAM::Role\tStack-Role1\tunique:AROAEXAMPLEUNIQUE1',
       'Sub1\tAWS::SNS::Subscription\tarn:aws:sns:us-east-1:111111111111:t:0f0e-uuid\tgen-id:AROAEXAMPLEUNIQUE1',
@@ -418,6 +419,70 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     const r = run(`revert_identity_snapshot "${before()}" Stack || exit 1`);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('needs <out-file> <stack> <logicalId>');
+  });
+});
+
+describe('revert_identity_verify', () => {
+  const log = (): string => join(sandbox, 'revert.log');
+
+  it('takes the AFTER snapshot of the recorded stack, region and ids, then passes', () => {
+    writeFileSync(log(), '  ✓ reverted\n');
+    const r = run(
+      [
+        `REVERT_IDENTITY_REGION=us-west-2 revert_identity_snapshot "${before()}" Stack Role1 Sub1`,
+        `: > "${cdkdLog}"`,
+        `revert_identity_verify "${before()}" "${after()}" 2 "${log()}"`,
+      ].join('\n')
+    );
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(readFileSync(cdkdLog, 'utf8')).toContain('state show Stack --state-bucket state-bucket --stack-region us-west-2 --json');
+    expect(readFileSync(after(), 'utf8')).toBe(readFileSync(before(), 'utf8'));
+  });
+
+  it('judges identity FIRST: a replaced resource whose output lacks the refusal wording FAILs on identity', () => {
+    writeFileSync(log(), '  recorded the identity the revert returned on 1 resource(s)\n');
+    const r = run(
+      [
+        `revert_identity_snapshot "${before()}" Stack Sub1`,
+        `printf '%s' '{"state":{"resources":{"Sub1":{"resourceType":"AWS::SNS::Subscription","physicalId":"arn:aws:sns:us-east-1:111111111111:t:new-uuid"}}}}' > "${statePath}"`,
+        `revert_identity_verify "${before()}" "${after()}" 1 "${log()}" expect-refusal`,
+      ].join('\n')
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('REPLACED or re-created a resource');
+    expect(r.stderr).not.toContain('expected to be refused');
+  });
+
+  it('then runs the output check with its options', () => {
+    writeFileSync(log(), 'Replacing Stack/Role1\n');
+    const r = run(
+      [
+        `revert_identity_snapshot "${before()}" Stack Role1`,
+        `revert_identity_verify "${before()}" "${after()}" 1 "${log()}"`,
+      ].join('\n')
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('reports a replacement or re-create');
+  });
+
+  it('FAILS a count that differs from the BEFORE rows', () => {
+    writeFileSync(log(), 'ok\n');
+    const r = run(
+      [
+        `revert_identity_snapshot "${before()}" Stack Role1 Sub1`,
+        `revert_identity_verify "${before()}" "${after()}" 3 "${log()}"`,
+      ].join('\n')
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('want 3');
+  });
+
+  it('FAILS without a BEFORE snapshot', () => {
+    writeFileSync(log(), 'ok\n');
+    const r = run(`revert_identity_verify "${before()}" "${after()}" 1 "${log()}"`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('no BEFORE snapshot');
   });
 });
 

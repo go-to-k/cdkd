@@ -223,9 +223,7 @@ fi
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-before" "${STACK}" "${DECLARED_LID}" DeclaredVolume || exit 1
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_DIR}/revert.log" || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_DIR}/revert.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-after" "${STACK}" "${DECLARED_LID}" DeclaredVolume || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-before" "${REVERT_DIR}/revert-ids-after" 2 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-before" "${REVERT_DIR}/revert-ids-after" 2 "${REVERT_DIR}/revert.log" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 5: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 if [ "$(root_dot)" != "True" ]; then
   echo "FAIL: drift --revert did not restore DeleteOnTermination=true: $(root_dot)" >&2

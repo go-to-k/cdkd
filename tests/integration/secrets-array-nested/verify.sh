@@ -917,9 +917,7 @@ echo "==> Reverting the injected drift"
 revert_identity_snapshot "${DRIFT_ERR_FILE}-ids-before" "${STACK}" ArrayDriftProject || exit 1
 run_drift --revert --yes
 printf '%s\n' "${DRIFT_OUT}" > "${DRIFT_ERR_FILE}-revert-out"
-revert_output_assert_no_replacement "${DRIFT_ERR_FILE}-revert-out" || exit 1
-revert_identity_snapshot "${DRIFT_ERR_FILE}-ids-after" "${STACK}" ArrayDriftProject || exit 1
-revert_identity_assert_unchanged "${DRIFT_ERR_FILE}-ids-before" "${DRIFT_ERR_FILE}-ids-after" 1 || exit 1
+revert_identity_verify "${DRIFT_ERR_FILE}-ids-before" "${DRIFT_ERR_FILE}-ids-after" 1 "${DRIFT_ERR_FILE}-revert-out" || exit 1
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --revert' failed (rc=${DRIFT_RC})" >&2
   diag_masked "${DRIFT_OUT}"

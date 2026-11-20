@@ -590,9 +590,7 @@ node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET
   --region "${REGION}" >"${REVERT_DIR}/revert-1.log" 2>"${DRIFT_ERR}" || REVERT_RC=$?
 cat "${DRIFT_ERR}" >>"${REVERT_DIR}/revert-1.log"
 cat "${REVERT_DIR}/revert-1.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" ignore=ReplaceUnhealthy || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" Asg || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_DIR}/revert-1.log" ignore=ReplaceUnhealthy || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: Phase 3: cdkd drift --revert failed:" >&2
   tail -30 "${DRIFT_ERR}" >&2

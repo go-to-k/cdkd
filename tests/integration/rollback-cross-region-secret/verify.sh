@@ -723,9 +723,7 @@ REVERT_V12_RC=0
 REVERT_IDENTITY_REGION="${CONSUMER_REGION}" revert_identity_snapshot "${LOGDIR}/revert-ids-v12-before" "${CONSUMER_STACK}" SecretEcho || exit 1
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" --revert -y \
   --state-bucket "${STATE_BUCKET}" >"${REVERT_V12_LOG}" 2>&1 || REVERT_V12_RC=$?
-revert_output_assert_no_replacement "${REVERT_V12_LOG}" || exit 1
-REVERT_IDENTITY_REGION="${CONSUMER_REGION}" revert_identity_snapshot "${LOGDIR}/revert-ids-v12-after" "${CONSUMER_STACK}" SecretEcho || exit 1
-revert_identity_assert_unchanged "${LOGDIR}/revert-ids-v12-before" "${LOGDIR}/revert-ids-v12-after" 1 || exit 1
+revert_identity_verify "${LOGDIR}/revert-ids-v12-before" "${LOGDIR}/revert-ids-v12-after" 1 "${REVERT_V12_LOG}" || exit 1
 assert_no_plaintext "the v12 revert output" "${REVERT_V12_LOG}"
 if grep -qF 'refused to re-resolve' "${REVERT_V12_LOG}"; then
   echo "FAIL: drift --revert refused a reference whose record names its region (the pre-#4847 behaviour)" >&2
@@ -969,9 +967,7 @@ REVERT_RC=0
 REVERT_IDENTITY_REGION="${CONSUMER_REGION}" revert_identity_snapshot "${LOGDIR}/revert-ids-before" "${CONSUMER_STACK}" SecretEcho || exit 1
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CONSUMER_STACK}" --revert -y \
   --state-bucket "${STATE_BUCKET}" >"${REVERT_LOG}" 2>&1 || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_LOG}" || exit 1
-REVERT_IDENTITY_REGION="${CONSUMER_REGION}" revert_identity_snapshot "${LOGDIR}/revert-ids-after" "${CONSUMER_STACK}" SecretEcho || exit 1
-revert_identity_assert_unchanged "${LOGDIR}/revert-ids-before" "${LOGDIR}/revert-ids-after" 1 || exit 1
+revert_identity_verify "${LOGDIR}/revert-ids-before" "${LOGDIR}/revert-ids-after" 1 "${REVERT_LOG}" || exit 1
 assert_no_plaintext "the revert output" "${REVERT_LOG}"
 
 # THE DISCRIMINATOR for this phase, and it is POSITIVE: this string is produced

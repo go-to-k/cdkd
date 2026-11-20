@@ -405,9 +405,7 @@ REVERT3D_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   >"${WORK_DIR}/revert3d.log" 2>&1 || REVERT3D_RC=$?
 cat "${WORK_DIR}/revert3d.log"
-revert_output_assert_no_replacement "${WORK_DIR}/revert3d.log" || exit 1
-revert_identity_snapshot "${WORK_DIR}/revert-ids-1-after" "${STACK}" "${REPO_LID}" || exit 1
-revert_identity_assert_unchanged "${WORK_DIR}/revert-ids-1-before" "${WORK_DIR}/revert-ids-1-after" 1 || exit 1
+revert_identity_verify "${WORK_DIR}/revert-ids-1-before" "${WORK_DIR}/revert-ids-1-after" 1 "${WORK_DIR}/revert3d.log" || exit 1
 [ "${REVERT3D_RC}" -eq 0 ] || { echo "FAIL: Phase 3d: drift --revert failed" >&2; cat "${WORK_DIR}/revert3d.log" >&2; exit 1; }
 grep -qF "/${REPO_LID} (AWS::ECR::Repository): reverted" "${WORK_DIR}/revert3d.log" || { echo "FAIL: Phase 3d: the revert output has no 'reverted' line for ${REPO_LID}" >&2; exit 1; }
 if grep -qiE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log"; then

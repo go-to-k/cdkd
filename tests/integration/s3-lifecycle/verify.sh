@@ -1887,9 +1887,7 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
   --revert --yes >"${REVERT_DIR}/revert-2r.log" 2>&1 || P2R_REVERT_RC=$?
 cat "${REVERT_DIR}/revert-2r.log"
 # DepArmReplaceBucket: a logical id of this stack that carries the needle.
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-2r.log" ignore=DepArmReplaceBucket || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-2r-after" "${STACK}" "${P2R_LOGICAL}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2r-before" "${REVERT_DIR}/revert-ids-2r-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-2r-before" "${REVERT_DIR}/revert-ids-2r-after" 1 "${REVERT_DIR}/revert-2r.log" ignore=DepArmReplaceBucket || exit 1
 [ "${P2R_REVERT_RC}" -eq 0 ] || p2r_fail "FAIL phase 2r: cdkd drift --revert failed (rc=${P2R_REVERT_RC})"
 p2r_await_live rules "after drift --revert"
 P2R_EXP="$(aws s3api get-bucket-lifecycle-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \

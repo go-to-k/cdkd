@@ -292,9 +292,7 @@ LID_HTTPSTAGE="$(lid_of AWS::ApiGatewayV2::Stage DriftHttpStage)" || exit 1
 LID_SSMPARAM="$(lid_of AWS::SSM::Parameter DriftPoliciesParameter)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" "${LID_BUCKET}" "${LID_TOPIC}" "${LID_ROLE}" "${LID_KEY}" "${LID_LOGGROUP}" "${LID_CLUSTER}" "${LID_GLUE}" "${LID_HTTPAPI}" "${LID_HTTPSTAGE}" "${LID_SSMPARAM}" || exit 1
 revert_run 5
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-5.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-after" "${STACK}" "${LID_BUCKET}" "${LID_TOPIC}" "${LID_ROLE}" "${LID_KEY}" "${LID_LOGGROUP}" "${LID_CLUSTER}" "${LID_GLUE}" "${LID_HTTPAPI}" "${LID_HTTPSTAGE}" "${LID_SSMPARAM}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 10 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 10 "${REVERT_WORK}/revert-5.log" || exit 1
 revert_run_assert 5 || exit 1
 
 # Issue #2102: `--revert` overlays the Glue database's whole `DatabaseInput`
@@ -402,9 +400,7 @@ aws s3api put-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" --ta
 LID_6D_BUCKET="$(lid_of AWS::S3::Bucket DriftBucket)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6d-before" "${STACK}" "${LID_6D_BUCKET}" || exit 1
 revert_run 6d
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-6d.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-6d-after" "${STACK}" "${LID_6D_BUCKET}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-6d-before" "${REVERT_WORK}/revert-ids-6d-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-6d-before" "${REVERT_WORK}/revert-ids-6d-after" 1 "${REVERT_WORK}/revert-6d.log" || exit 1
 revert_run_assert 6d || exit 1
 
 # Bucket subresources are eventually consistent, so retry briefly. stderr is
@@ -513,9 +509,7 @@ LID_6E_ROLE="$(lid_of AWS::IAM::Role DriftNamedRole)" || exit 1
 LID_6E_POLICY="$(lid_of AWS::IAM::ManagedPolicy DriftNamedPolicy)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6e-before" "${STACK}" "${LID_6E_ROLE}" "${LID_6E_POLICY}" || exit 1
 revert_run 6e
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-6e.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-6e-after" "${STACK}" "${LID_6E_ROLE}" "${LID_6E_POLICY}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-6e-before" "${REVERT_WORK}/revert-ids-6e-after" 2 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-6e-before" "${REVERT_WORK}/revert-ids-6e-after" 2 "${REVERT_WORK}/revert-6e.log" || exit 1
 revert_run_assert 6e || exit 1
 
 STEP6E_ERR="$(mktemp)"
@@ -640,9 +634,7 @@ fi
 LID_6G_DENY="$(lid_of AWS::IAM::ManagedPolicy DriftDenyPolicy)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6g-before" "${STACK}" "${LID_6G_DENY}" || exit 1
 revert_run 6g
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-6g.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-6g-after" "${STACK}" "${LID_6G_DENY}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-6g-before" "${REVERT_WORK}/revert-ids-6g-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-6g-before" "${REVERT_WORK}/revert-ids-6g-after" 1 "${REVERT_WORK}/revert-6g.log" || exit 1
 revert_run_assert 6g || exit 1
 
 DENY_VERSION="${NARROWED_VERSION}"

@@ -606,13 +606,15 @@ touches:
 ```bash
 . ../revert-identity.sh
 revert_identity_snapshot "${WORK}/ids-before" "${STACK}" QueueA RoleB
-cdkd drift "${STACK}" --revert -y ... >"${WORK}/revert.log" 2>&1
-revert_output_assert_no_replacement "${WORK}/revert.log"   # add expect-refusal for a refused revert
-revert_identity_snapshot "${WORK}/ids-after" "${STACK}" QueueA RoleB
-revert_identity_assert_unchanged "${WORK}/ids-before" "${WORK}/ids-after" 2
+RC=0; cdkd drift "${STACK}" --revert -y ... >"${WORK}/revert.log" 2>&1 || RC=$?
+revert_identity_verify "${WORK}/ids-before" "${WORK}/ids-after" 2 "${WORK}/revert.log"   # add expect-refusal for a refused revert
+[ "${RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${RC}"; exit 1; }
 ```
 
-Each row pairs the state physical id with an AWS-side identity from a per-type
+`revert_identity_verify` takes the AFTER snapshot, compares identities and
+only then checks the output, and it runs before the fixture's own exit-code and
+result assertions: a replacing revert must fail at the identity proof. Each row
+pairs the state physical id with an AWS-side identity from a per-type
 probe (a creation time or unique id where the type has one). A type with no
 probe fails the snapshot: add one to the helper's table. The count is a literal,
 so an emptied list cannot pass as 0 = 0.

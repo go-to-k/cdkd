@@ -24,10 +24,12 @@
 # USAGE (around every `drift --revert` call)
 #
 #     revert_identity_snapshot "${WORK}/ids-before" "${STACK}" LidA LidB
-#     <out-of-band drift, then: cdkd drift ... --revert ... >"${LOG}" 2>&1>
-#     revert_output_assert_no_replacement "${LOG}"
-#     revert_identity_snapshot "${WORK}/ids-after" "${STACK}" LidA LidB
-#     revert_identity_assert_unchanged "${WORK}/ids-before" "${WORK}/ids-after" 2
+#     RC=0; cdkd drift ... --revert ... >"${LOG}" 2>&1 || RC=$?
+#     revert_identity_verify "${WORK}/ids-before" "${WORK}/ids-after" 2 "${LOG}"
+#     <only now the fixture's own rc / result assertions>
+#
+# revert_identity_verify runs before ANY other check on the revert, so a
+# replacing provider fails at the identity proof, whatever else it broke.
 #
 # The expected count is a LITERAL the caller writes, never derived from the
 # list it passes: an emptied list would otherwise compare 0 rows to 0 rows.
@@ -332,7 +334,10 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
   process.stdout.write(out.join("\n") + "\n");
 });
 ' "$@")" || return 1
-  : >"${out}" || { echo "FAIL: revert_identity_snapshot: cannot write '${out}'" >&2; return 1; }
+  # A header naming the stack and region, so revert_identity_verify can take
+  # the matching AFTER snapshot; the row count and checks skip it.
+  printf '#revert-identity\t%s\t%s\n' "${stack}" "${region}" >"${out}" \
+    || { echo "FAIL: revert_identity_snapshot: cannot write '${out}'" >&2; return 1; }
   while IFS="$(printf '\t')" read -r lid type pid ctx; do
     [ -n "${lid}" ] || continue
     prc=0
@@ -350,6 +355,42 @@ ${rows}
 EOF
 }
 
+# revert_identity_verify <before-file> <after-file> <expected-count> <log-file> [expect-refusal] [ignore=<literal>]...
+#   The ONE call a fixture makes right after `drift --revert` returns (its rc
+#   captured, nothing asserted yet). In this order:
+#     1. the AFTER snapshot, of the same stack, region and logical ids the
+#        BEFORE snapshot recorded (its `#revert-identity` header and rows);
+#     2. revert_identity_assert_unchanged against <expected-count>;
+#     3. revert_output_assert_no_replacement on <log-file> with the options.
+#   Identity is judged FIRST: a provider that replaced a resource is reported
+#   as a replacement, never hidden behind an output-wording failure.
+revert_identity_verify() {
+  local before="${1:-}" after="${2:-}" want="${3:-}" log="${4:-}" stack region lid _rest
+  local -a lids=()
+  if [ "$#" -lt 4 ] || [ -z "${before}" ] || [ -z "${after}" ]; then
+    echo "FAIL: revert_identity_verify: needs <before-file> <after-file> <expected-count> <log-file> [options]" >&2
+    return 1
+  fi
+  shift 4
+  if [ ! -s "${before}" ]; then
+    echo "FAIL: revert_identity_verify: no BEFORE snapshot at '${before}' (take one with revert_identity_snapshot before the revert)" >&2
+    return 1
+  fi
+  stack="$(awk -F '\t' 'NR == 1 && $1 == "#revert-identity" {print $2}' "${before}")"
+  region="$(awk -F '\t' 'NR == 1 && $1 == "#revert-identity" {print $3}' "${before}")"
+  while IFS="$(printf '\t')" read -r lid _rest; do
+    case "${lid}" in '' | '#'*) continue ;; esac
+    lids+=("${lid}")
+  done <"${before}"
+  if [ -z "${stack}" ] || [ -z "${region}" ] || [ "${#lids[@]}" -eq 0 ]; then
+    echo "FAIL: revert_identity_verify: the BEFORE snapshot '${before}' names no stack, region or logical id" >&2
+    return 1
+  fi
+  REVERT_IDENTITY_REGION="${region}" revert_identity_snapshot "${after}" "${stack}" "${lids[@]}" || return 1
+  revert_identity_assert_unchanged "${before}" "${after}" "${want}" || return 1
+  revert_output_assert_no_replacement "${log}" "$@" || return 1
+}
+
 revert_identity_assert_unchanged() {
   local before="${1:-}" after="${2:-}" want="${3:-}" f n bad
   case "${want}" in
@@ -362,13 +403,13 @@ revert_identity_assert_unchanged() {
       echo "FAIL: revert_identity_assert_unchanged: snapshot file '${f}' is missing" >&2
       return 1
     fi
-    n="$(grep -c . "${f}")" || n=0
+    n="$(grep -c -v -e '^#' -e '^$' "${f}")" || n=0
     if [ "${n}" -ne "${want}" ]; then
       echo "FAIL: revert_identity_assert_unchanged: ${f} holds ${n} row(s), want ${want}" >&2
       return 1
     fi
     # Four non-empty tab-separated fields, and a real probe result.
-    bad="$(awk -F '\t' 'NF != 4 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $4 == "NO-PROBE" || $4 ~ /:$/' "${f}")"
+    bad="$(awk -F '\t' '/^#/ {next} NF != 4 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $4 == "NO-PROBE" || $4 ~ /:$/' "${f}")"
     if [ -n "${bad}" ]; then
       echo "FAIL: revert_identity_assert_unchanged: ${f} has an empty or unprobed row:" >&2
       printf '%s\n' "${bad}" >&2

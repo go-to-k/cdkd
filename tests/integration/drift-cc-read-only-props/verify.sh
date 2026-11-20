@@ -192,9 +192,7 @@ echo "==> Phase 5: cdkd drift --revert -y reverts both descriptions"
 REVERT_WORK="$(mktemp -d)"
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" Tracker Geo || exit 1
 run_drift --revert -y
-revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-after" "${STACK}" Tracker Geo || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 2 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 2 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 5"
 expect_descriptions integ "Phase 5"
 

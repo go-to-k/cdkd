@@ -236,9 +236,7 @@ fi
 REVERT_WORK="$(mktemp -d)"
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-4-before" "${STACK}" Cluster || exit 1
 run_drift --revert -y
-revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-4-after" "${STACK}" Cluster || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 4 (--revert)"
 expect_insights "Phase 4 (after --revert)" "disabled"
 expect_providers "Phase 4 (after --revert)" "FARGATE FARGATE_SPOT"

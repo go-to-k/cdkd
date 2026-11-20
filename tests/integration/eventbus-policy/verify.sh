@@ -276,9 +276,7 @@ REVERT_3A_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes \
   >"${REVERT_DIR}/revert-3a.log" 2>&1 || REVERT_3A_RC=$?
 cat "${REVERT_DIR}/revert-3a.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-3a.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-3a-after" "${STACK}" "${BUS_LID}" BusPolicy PolicyPropBus || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-3a-before" "${REVERT_DIR}/revert-ids-3a-after" 3 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-3a-before" "${REVERT_DIR}/revert-ids-3a-after" 3 "${REVERT_DIR}/revert-3a.log" || exit 1
 [ "${REVERT_3A_RC}" -eq 0 ] || { echo "FAIL: #6323: cdkd drift --revert exited ${REVERT_3A_RC}, want 0" >&2; exit 1; }
 POLICY_P3A="$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
@@ -366,9 +364,7 @@ revert_identity_snapshot "${REVERT_DIR}/revert-ids-3c-before" "${STACK}" PolicyP
 REVERT_3C_RC=0
 run_revert "${P3C_ENV[@]}" >"${REVERT_DIR}/revert-3c.log" 2>&1 || REVERT_3C_RC=$?
 cat "${REVERT_DIR}/revert-3c.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-3c.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-3c-after" "${STACK}" PolicyPropBus || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-3c-before" "${REVERT_DIR}/revert-ids-3c-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-3c-before" "${REVERT_DIR}/revert-ids-3c-after" 1 "${REVERT_DIR}/revert-3c.log" || exit 1
 [ "${REVERT_3C_RC}" -eq 0 ] || { echo "FAIL: Phase 3c: cdkd drift --revert exited ${REVERT_3C_RC}, want 0" >&2; exit 1; }
 PROP_POLICY_P3C="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"

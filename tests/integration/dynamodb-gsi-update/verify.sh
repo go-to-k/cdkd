@@ -1015,9 +1015,7 @@ revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${INSIGHTS_STACK}" "${INSIGHTS_
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${INSIGHTS_STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}" || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_IDS_AFTER}" "${INSIGHTS_STACK}" "${INSIGHTS_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 || exit 1
+revert_identity_verify "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 "${REVERT_LOG}" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase I3: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_insights_status "${INSIGHTS_TABLE}" giA ENABLED "re-enabled by drift --revert"
 assert_insights_drift_clean "after --revert"

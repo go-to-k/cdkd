@@ -308,9 +308,7 @@ revert_identity_snapshot "${REVERT_PFX}.ids-before" "${STACK}" "${INFRA_LOGICAL}
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_PFX}.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_PFX}.log"
-revert_output_assert_no_replacement "${REVERT_PFX}.log" || exit 1
-revert_identity_snapshot "${REVERT_PFX}.ids-after" "${STACK}" "${INFRA_LOGICAL}" || exit 1
-revert_identity_assert_unchanged "${REVERT_PFX}.ids-before" "${REVERT_PFX}.ids-after" 1 || exit 1
+revert_identity_verify "${REVERT_PFX}.ids-before" "${REVERT_PFX}.ids-after" 1 "${REVERT_PFX}.log" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert failed" >&2; exit 1; }
 TYPES_REVERT="$(infra_types)"
 [ "${TYPES_REVERT}" = "t3.medium t3.small" ] ||

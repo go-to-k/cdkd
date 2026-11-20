@@ -417,9 +417,7 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
 REVERT_RC=$?
 set -e
 cat "${REVERT_WORK}/revert-2b.log"
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-2b.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-2b-after" "${STACK}" Trail || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" 1 "${REVERT_WORK}/revert-2b.log" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2
   exit 1
@@ -541,9 +539,7 @@ CDKD_TEST_REMOVAL=true CDKD_TEST_ADVANCED=true node "${LOCAL_DIST}" drift "${STA
 REVERT_RC=$?
 set -e
 cat "${REVERT_WORK}/revert-2d.log"
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-2d.log" || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-2d-after" "${STACK}" Trail || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-2d-before" "${REVERT_WORK}/revert-ids-2d-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-2d-before" "${REVERT_WORK}/revert-ids-2d-after" 1 "${REVERT_WORK}/revert-2d.log" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2
   exit 1

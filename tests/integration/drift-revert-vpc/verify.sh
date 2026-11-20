@@ -191,9 +191,7 @@ REVERT_LIDS=(DriftFileSystem DriftMountTarget "${NS_LID}" "${LB_LID}" "${SUBNET_
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
 REVERT_RC=0
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" 2>&1 | tee "${REVERT_DIR}/revert-1.log" || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 7 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 7 "${REVERT_DIR}/revert-1.log" || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "[verify] FAIL: step 5: cdkd drift --revert -y exited ${REVERT_RC}, expected 0"; exit 1; }
 
 # go-to-k/cdkd#6514: reverting the description updates the rule in place
@@ -425,9 +423,7 @@ revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" DriftAsg
 REVERT_RC=0
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${REVERT_DIR}/revert-2.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-2.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-2.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" DriftAsg || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 "${REVERT_DIR}/revert-2.log" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "[verify] FAIL: step 6c: cdkd drift --revert of the legacy ALL record failed:"
   tail -30 "${REVERT_DIR}/revert-2.log"

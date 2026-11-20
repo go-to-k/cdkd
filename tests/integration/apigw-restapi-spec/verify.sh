@@ -200,9 +200,7 @@ REVERT_RC=$?
 set -e
 printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
 printf '%s\n' "${REVERT_OUT}" > "${REVERT_WORK}/revert-3.log"
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-3.log" expect-refusal || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-3-after" "${STACK}" "${ITEMS_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-3-before" "${REVERT_WORK}/revert-ids-3-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-3-before" "${REVERT_WORK}/revert-ids-3-after" 1 "${REVERT_WORK}/revert-3.log" expect-refusal || exit 1
 expect_eq "phase 3: cdkd drift --revert exit code (the Resource refused)" "${REVERT_RC}" "2"
 REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}" | grep -F "${ITEMS_LID} (AWS::ApiGateway::Resource): could not revert" || true)"
 [ -n "${REFUSAL}" ] || { echo "FAIL: phase 3: no 'could not revert' line for ${ITEMS_LID}" >&2; exit 1; }

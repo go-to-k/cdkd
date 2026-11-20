@@ -260,9 +260,7 @@ REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-1.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${BUCKET_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_DIR}/revert-1.log" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert (Phase 1c) failed" >&2
   exit 1
@@ -298,9 +296,7 @@ REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-2.log"
-revert_output_assert_no_replacement "${REVERT_DIR}/revert-2.log" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" "${SHARED_LID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 "${REVERT_DIR}/revert-2.log" || exit 1
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert (Phase 1d) failed" >&2
   exit 1

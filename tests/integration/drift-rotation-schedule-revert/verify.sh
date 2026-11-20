@@ -195,9 +195,7 @@ fi
 echo "==> Phase 5: cdkd drift --revert -y reverts the schedule without rotating"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${SCHEDULE_ID}" || exit 1
 run_drift --revert -y
-revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${SCHEDULE_ID}" || exit 1
-revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 5"
 SCHEDULE="$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" \
   --query RotationRules.ScheduleExpression --output text)"

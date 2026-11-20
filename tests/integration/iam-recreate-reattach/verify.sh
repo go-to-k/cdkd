@@ -248,9 +248,7 @@ assert_member_drifted "${DRIFT_1B}" AWS::IAM::InstanceProfile Roles "an out-of-b
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-1b-before" "${STACK}" Profile || exit 1
 REVERT_RC=0
 run_revert 2>&1 | tee "${REVERT_WORK}/revert-1b.log" || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_WORK}/revert-1b.log" ignore=CdkdIamRecreateReattachExample || exit 1
-revert_identity_snapshot "${REVERT_WORK}/revert-ids-1b-after" "${STACK}" Profile || exit 1
-revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" 1 || exit 1
+revert_identity_verify "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" 1 "${REVERT_WORK}/revert-1b.log" ignore=CdkdIamRecreateReattachExample || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 1b)" >&2; exit 1; }
 [ "$(profile_roles)" = "1" ] || { echo "FAIL: ${ROLE} is not back in ${PROFILE} after the revert" >&2; exit 1; }
 echo "    OK: the revert put ${ROLE} back in ${PROFILE}"

@@ -1256,9 +1256,7 @@ revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-before" "${STACK}" "${SE
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes >"${REVERT_1A_LOG}" 2>&1 || REVERT_RC=$?
-revert_output_assert_no_replacement "${REVERT_1A_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-after" "${STACK}" "${SEC_LOGICAL}" || exit 1
-revert_identity_assert_unchanged "${REVERT_1A_DIR}/revert-ids-1-before" "${REVERT_1A_DIR}/revert-ids-1-after" 1 || exit 1
+revert_identity_verify "${REVERT_1A_DIR}/revert-ids-1-before" "${REVERT_1A_DIR}/revert-ids-1-after" 1 "${REVERT_1A_LOG}" || exit 1
 REVERT_1A_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_1A_LOG}")"
 if [ "${REVERT_RC}" -ne 0 ]; then
   printf '%s\n' "${REVERT_1A_PLAIN}" >&2
