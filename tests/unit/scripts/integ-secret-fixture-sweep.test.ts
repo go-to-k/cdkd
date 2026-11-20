@@ -1186,9 +1186,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it
       // reads its arguments and throws or returns).
       '../tag-list.js',
-      // go-to-k/cdkd#6609: the post-write Tags settle. Its module state is a
-      // set of physical-id notes per type, held in memory only (never
-      // logged or persisted); it reads tags, never the secret value.
+      // go-to-k/cdkd#6609: the post-write Tags settle. Its module state is,
+      // per type and physical id, the tag keys and values its own
+      // TagResource sent and the keys it untagged, held in memory only
+      // (never logged or persisted); it reads tags, never the secret value.
       '../tags-own-write-baseline.js',
       // go-to-k/cdkd#5835: the provider family itself -- the class file and
       // its companion directory, every one of them read by this fence.
