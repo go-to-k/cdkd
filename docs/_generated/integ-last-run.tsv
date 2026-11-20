@@ -232,7 +232,6 @@ iam-managed-policy	2026-11-20T11:06:50Z	PASS	130	verify.sh	rc ok, orph clean; #6
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
-iam-recreate-reattach	2026-11-20T12:24:42Z	PASS	248	verify.sh	PR6652 03d784232, revert-identity kept identity, rc ok, orph clean
 iam-recreate-reattach	2026-11-20T14:40:31Z	PASS	283	verify.sh	rc ok, orph clean; 3 AFTER runs, role CC delete GetResource-compared (#6675)
 iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-role-policies-drift-clean	2026-11-20T12:24:42Z	PASS	446	verify.sh	PR6652 03d784232, IAM::Policy probe all principals ok, rc ok, orph clean
