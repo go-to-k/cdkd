@@ -35,23 +35,26 @@ export interface ReadTag {
 }
 
 /**
- * The resources whose tags the running update wrote, as
- * `<resourceType>\0<id>` (`id`: the ARN or physical id the capture reads
- * with). Process-wide: the write and the capture can run on different client
- * objects (a GlobalTable replica's regional client).
+ * Per resource type, the resources whose tags the running update wrote (the
+ * ARN or physical id the capture reads with). Process-wide: the write and the
+ * capture can run on different client objects (a GlobalTable replica's
+ * regional client).
  */
-const tagWrites = new Set<string>();
-
-const noteKey = (resourceType: string, id: string): string => `${resourceType}\0${id}`;
+const tagWrites = new Map<string, Set<string>>();
 
 /** Note that a tag call for `id` just succeeded in an update. */
 export function recordTagWrite(resourceType: string, id: string): void {
-  tagWrites.add(noteKey(resourceType, id));
+  let ids = tagWrites.get(resourceType);
+  if (ids === undefined) {
+    ids = new Set();
+    tagWrites.set(resourceType, ids);
+  }
+  ids.add(id);
 }
 
 /** Whether a tag write was noted for `id`, consumed by the capture that reads it. */
 export function takeTagWrite(resourceType: string, id: string): boolean {
-  return tagWrites.delete(noteKey(resourceType, id));
+  return tagWrites.get(resourceType)?.delete(id) === true;
 }
 
 /**
@@ -61,9 +64,10 @@ export function takeTagWrite(resourceType: string, id: string): boolean {
  * and keep the declared tags over an out-of-band change.
  */
 export function clearTagWrites(resourceType: string, owned: (id: string) => boolean): void {
-  const prefix = noteKey(resourceType, '');
-  for (const key of tagWrites) {
-    if (key.startsWith(prefix) && owned(key.slice(prefix.length))) tagWrites.delete(key);
+  const ids = tagWrites.get(resourceType);
+  if (ids === undefined) return;
+  for (const id of ids) {
+    if (owned(id)) ids.delete(id);
   }
 }
 

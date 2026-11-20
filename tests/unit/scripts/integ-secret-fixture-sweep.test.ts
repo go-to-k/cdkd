@@ -1187,7 +1187,7 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // reads its arguments and throws or returns).
       '../tag-list.js',
       // go-to-k/cdkd#6609: the post-write Tags settle. Its module state is a
-      // set of `<type>\0<physical id>` notes, held in memory only (never
+      // set of physical-id notes per type, held in memory only (never
       // logged or persisted); it reads tags, never the secret value.
       '../tags-own-write-baseline.js',
       // go-to-k/cdkd#5835: the provider family itself -- the class file and
