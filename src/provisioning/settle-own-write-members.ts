@@ -11,17 +11,25 @@
  * template does not declare never holds the capture: it can be another
  * resource's (a sibling `AWS::IAM::ManagedPolicy` attaching itself, a
  * `UserToGroupAddition`, a standalone rule), which the capture does not always
- * strip and the drift compare does (go-to-k/cdkd#6614); or an out-of-band add;
- * or a removal not yet visible, the undeclared-member residual of the earlier
- * slices. A list still unsettled after the schedule keeps every read entry and
- * gains each declared entry still unmatched, at its declared position
+ * strip and the drift compare does (go-to-k/cdkd#6614); or an out-of-band add.
+ * An entry the write itself just REMOVED ({@link OwnWriteRemovals}) does hold
+ * it: the list is settled only once none of those reads back either. Recorded
+ * still visible, a removed grant would equal a later out-of-band re-add of it,
+ * and drift would never report that. A removed entry the template declares
+ * (the same write put it back) is never waited on.
+ *
+ * A list still unsettled after the schedule keeps every read entry and gains
+ * each declared entry still unmatched, at its declared position
  * ({@link mergeDeclaredEntries}; the read reconciles to declared order, then
  * its own extras): the write just succeeded, and recording the list without
- * it would let `drift --revert` remove it. Entries match on a key both
- * spellings share (names, ARNs, policy names, `sgSettleRuleKey`), so an entry
- * is never recorded twice; a declared entry that key cannot match is never
- * added.
+ * it would let `drift --revert` remove it. Then each removed entry still read
+ * is dropped, for the same reason: the write succeeded, and a baseline without
+ * it can only over-report (a grant really live again is drift), never hide
+ * one. Entries match on a key both spellings share (names, ARNs, policy
+ * names, `sgSettleRuleKey`), so an entry is never recorded twice; a declared
+ * entry that key cannot match is never added.
  */
+import type { OwnWriteRemovals } from './own-write-removals.js';
 import {
   type MemberRead,
   policyDocumentMatchesDeclared,
@@ -124,14 +132,30 @@ export function mergeDeclaredEntries<D>(
 }
 
 /**
- * A declared list of strings as a member: settled once every declared entry
- * reads back (the module comment has the unsettled outcomes).
+ * The entries of `removed` the write must no longer show: each one `declared`
+ * does not hold. A removed entry the template declares again was put back by
+ * the same write.
+ */
+export function removedNotDeclared(
+  removed: ReadonlySet<string> | undefined,
+  declared: readonly string[]
+): Set<string> {
+  const keep = new Set(declared);
+  return new Set([...(removed ?? [])].filter((entry) => !keep.has(entry)));
+}
+
+/**
+ * A list of strings as a member: settled once every declared entry reads back
+ * and no entry in `removed` (what the write removed) does (the module comment
+ * has the unsettled outcomes).
  */
 export function stringListMember(
   key: string,
   declared: readonly string[],
-  read: () => Promise<MemberRead<unknown>>
+  read: () => Promise<MemberRead<unknown>>,
+  removed?: ReadonlySet<string>
 ): OwnWriteMember<unknown> {
+  const gone = removedNotDeclared(removed, declared);
   const missing = (value: unknown): string[] => {
     const have = new Set(Array.isArray(value) ? (value as unknown[]) : []);
     return declared.filter((entry) => !have.has(entry));
@@ -139,14 +163,17 @@ export function stringListMember(
   return {
     key,
     declared,
-    matches: (value) => Array.isArray(value) && missing(value).length === 0,
+    matches: (value) =>
+      Array.isArray(value) &&
+      missing(value).length === 0 &&
+      !(value as unknown[]).some((entry) => typeof entry === 'string' && gone.has(entry)),
     whenUnsettled: (newest) =>
       mergeDeclaredEntries(
         newest,
         declared,
         (entry, want) => entry === want,
         (want) => want
-      ),
+      ).filter((entry) => !(typeof entry === 'string' && gone.has(entry))),
     read,
   };
 }
@@ -188,8 +215,17 @@ export function declaredInlinePolicies(value: unknown): DeclaredInlinePolicy[] |
  */
 export function inlinePoliciesMember(
   declared: readonly DeclaredInlinePolicy[],
-  read: () => Promise<MemberRead<unknown>>
+  read: () => Promise<MemberRead<unknown>>,
+  removed?: ReadonlySet<string>
 ): OwnWriteMember<unknown> {
+  const gone = removedNotDeclared(
+    removed,
+    declared.map((policy) => policy.PolicyName)
+  );
+  const isGone = (entry: unknown): boolean =>
+    typeof entry === 'object' &&
+    entry !== null &&
+    gone.has((entry as Record<string, unknown>)['PolicyName'] as string);
   const entries = (value: unknown): Array<Record<string, unknown>> =>
     Array.isArray(value)
       ? (value as unknown[]).filter(
@@ -203,6 +239,7 @@ export function inlinePoliciesMember(
     declared,
     matches: (value) =>
       Array.isArray(value) &&
+      !(value as unknown[]).some(isGone) &&
       declared.every((policy) => {
         const entry = byName(value, policy.PolicyName);
         return (
@@ -220,7 +257,7 @@ export function inlinePoliciesMember(
           entry !== null &&
           (entry as Record<string, unknown>)['PolicyName'] === want.PolicyName,
         (want) => ({ PolicyName: want.PolicyName, PolicyDocument: want.PolicyDocument })
-      ),
+      ).filter((entry) => !isGone(entry)),
     read,
   };
 }
@@ -280,12 +317,14 @@ export interface PrincipalMemberReads {
 /**
  * The IAM principal members (role, user, group) a post-write capture settles:
  * `PermissionsBoundary` (read as `''` when none is set), `ManagedPolicyArns`,
- * inline `Policies` and, for a user, `Groups` — each only when the template
- * declares it, and each from its own re-read.
+ * inline `Policies` and, for a user, `Groups` — each when the template
+ * declares it or the write removed some of it (`removed`, a template that
+ * dropped the whole key included), and each from its own re-read.
  */
 export function principalOwnWriteMembers(
   properties: Record<string, unknown>,
-  reads: PrincipalMemberReads
+  reads: PrincipalMemberReads,
+  removed?: OwnWriteRemovals
 ): OwnWriteMember<unknown>[] {
   const members: OwnWriteMember<unknown>[] = [];
   const boundary = properties['PermissionsBoundary'];
@@ -297,18 +336,33 @@ export function principalOwnWriteMembers(
       isAbsent: (value) => value === '',
       read: reads.boundary,
     });
+  } else if (reads.boundary !== undefined && (removed?.get('PermissionsBoundary')?.size ?? 0) > 0) {
+    // The write deleted the boundary: settled once none reads back, and
+    // recorded as none when one still does (the module comment says why).
+    members.push({
+      key: 'PermissionsBoundary',
+      declared: '',
+      matches: (value) => value === '',
+      whenUnsettled: () => '',
+      read: reads.boundary,
+    });
   }
   const lists: Array<[string, (() => Promise<MemberRead<unknown>>) | undefined]> = [
     ['ManagedPolicyArns', reads.managedPolicyArns],
     ['Groups', reads.groups],
   ];
   for (const [key, read] of lists) {
+    if (read === undefined) continue;
     const declared = declaredStringList(properties[key]);
-    if (read !== undefined && declared !== undefined) {
-      members.push(stringListMember(key, declared, read));
+    const gone = removed?.get(key);
+    if (declared !== undefined || (gone?.size ?? 0) > 0) {
+      members.push(stringListMember(key, declared ?? [], read, gone));
     }
   }
   const policies = declaredInlinePolicies(properties['Policies']);
-  if (policies !== undefined) members.push(inlinePoliciesMember(policies, reads.policies));
+  const gonePolicies = removed?.get('Policies');
+  if (policies !== undefined || (gonePolicies?.size ?? 0) > 0) {
+    members.push(inlinePoliciesMember(policies ?? [], reads.policies, gonePolicies));
+  }
   return members;
 }

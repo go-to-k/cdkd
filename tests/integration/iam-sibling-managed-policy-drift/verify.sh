@@ -35,6 +35,12 @@
 #      CREATE-race capture leaves it, then rename the policy (REPLACED under a
 #      new ARN; the role NO_CHANGE): `cdkd drift` exits 0 and `--revert`
 #      exits 0 (before the fix it re-attached the deleted ARN: NoSuchEntity).
+#  11. (go-to-k/cdkd#6609, slice D) The role drops its managed policy, inline
+#      policy and boundary, the user and the group their own managed policy,
+#      and ${ADD_U3} its group, each dropping the whole key. Each recorded
+#      baseline must hold none of the removed grants. Each is then re-added
+#      OUT OF BAND: `cdkd drift` exits 1 naming every one, `--revert` removes
+#      them again in place (revert-identity), and drift is clean.
 #   7. Destroy + gone-probes.
 #
 # Required env vars:
@@ -814,6 +820,139 @@ fi
 rm -f "${DRIFT_LOG}"
 echo "    the role holds the renamed policy only; drift is clean"
 
+# --- Phase 11: removed grants re-added out of band (go-to-k/cdkd#6609, D) --
+# The capture right after a write that REMOVED an entry must not record it
+# (a stale read would freeze it into the baseline, and its later out-of-band
+# re-add would then equal the baseline and never report).
+export CDKD_TEST_UPDATE=late,shrink,touch,drop,rename,shed
+echo "==> Phase 11: remove the role's / user's / group's own grants and ${ADD_U3}'s group"
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+role_inline() { # sets GOT_ROLE_INLINE; top level only
+  if ! GOT_ROLE_INLINE="$(aws iam list-role-policies --role-name "${ROLE_NAME}" \
+      --query "join(' ', sort(PolicyNames || \`[]\`))" --output text)"; then
+    echo "FAIL: list-role-policies ${ROLE_NAME} failed" >&2
+    exit 1
+  fi
+}
+role_boundary() { # sets GOT_ROLE_BOUNDARY ('None' when none); top level only
+  if ! GOT_ROLE_BOUNDARY="$(aws iam get-role --role-name "${ROLE_NAME}" \
+      --query 'Role.PermissionsBoundary.PermissionsBoundaryArn' --output text)"; then
+    echo "FAIL: get-role ${ROLE_NAME} failed" >&2
+    exit 1
+  fi
+}
+read_shed() {
+  read_all
+  read_u3
+  role_inline
+  role_boundary
+}
+shed_is() { # usage: shed_is <role> <user> <group> <u3 groups> <role inline> <role boundary>
+  [ "${GOT_ROLE}" = "$1" ] && [ "${GOT_USER}" = "$2" ] && [ "${GOT_GROUP}" = "$3" ] &&
+    [ "${GOT_U3}" = "$4" ] && [ "${GOT_ROLE_INLINE}" = "$5" ] && [ "${GOT_ROLE_BOUNDARY}" = "$6" ]
+}
+# What each principal holds once the shed deploy applied: only the sibling
+# policy's own attachment.
+shed_ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  read_shed
+  if shed_is "${MP2_ARN}" "${MP2_ARN}" "${MP2_ARN}" "" "" "None"; then
+    shed_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${shed_ok}" -ne 1 ]; then
+  echo "FAIL: premise: after the shed deploy role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${MP2_ARN}' each), ${ADD_U3} groups='${GOT_U3}' (want none), role inline='${GOT_ROLE_INLINE}' (want none), role boundary='${GOT_ROLE_BOUNDARY}' (want None)" >&2
+  exit 1
+fi
+ROLE_LID=$(lid_of AWS::IAM::Role "${ROLE_NAME}")
+USER_LID=$(lid_of AWS::IAM::User "${USER_NAME}")
+GROUP_LID=$(lid_of AWS::IAM::Group "${GROUP_NAME}")
+U3_LID=$(lid_of AWS::IAM::User "${ADD_U3}")
+# The sibling policy's own attachment is that resource's and stripped (#6324),
+# so each principal's own list is empty.
+assert_observed_member "${ROLE_LID}" '.ManagedPolicyArns' '[]' "Phase 11"
+assert_observed_member "${ROLE_LID}" '.Policies' '[]' "Phase 11"
+assert_observed_member "${ROLE_LID}" '.PermissionsBoundary' '""' "Phase 11"
+assert_observed_member "${USER_LID}" '.ManagedPolicyArns' '[]' "Phase 11"
+assert_observed_member "${GROUP_LID}" '.ManagedPolicyArns' '[]' "Phase 11"
+assert_observed_member "${U3_LID}" '.Groups' '[]' "Phase 11"
+
+echo "==> Phase 11: re-add every removed grant out of band"
+aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${BASIC_ARN}"
+aws iam put-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-inline \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sqs:ListQueues","Resource":"*"}]}'
+aws iam put-role-permissions-boundary --role-name "${ROLE_NAME}" \
+  --permissions-boundary "arn:${PARTITION}:iam::aws:policy/PowerUserAccess"
+aws iam attach-user-policy --user-name "${USER_NAME}" --policy-arn "${OWN_ARN}"
+aws iam attach-group-policy --group-name "${GROUP_NAME}" --policy-arn "${OWN_ARN}"
+aws iam add-user-to-group --group-name "${GROUP_NAME}" --user-name "${ADD_U3}"
+readd_ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  read_shed
+  if shed_is "$(sorted "${BASIC_ARN}" "${MP2_ARN}")" "$(sorted "${OWN_ARN}" "${MP2_ARN}")" \
+      "$(sorted "${OWN_ARN}" "${MP2_ARN}")" "${GROUP_NAME}" "cdkd-6609-inline" \
+      "arn:${PARTITION}:iam::aws:policy/PowerUserAccess"; then
+    readd_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${readd_ok}" -ne 1 ]; then
+  echo "FAIL: premise: the out-of-band re-adds did not show: role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' ${ADD_U3} groups='${GOT_U3}' role inline='${GOT_ROLE_INLINE}' role boundary='${GOT_ROLE_BOUNDARY}'" >&2
+  exit 1
+fi
+
+echo "==> Phase 11: cdkd drift reports every re-added grant (expect exit 1)"
+run_drift
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after removed grants were re-added out of band; a baseline recorded a removed grant (go-to-k/cdkd#6609)" >&2
+  exit 1
+fi
+for needle in AWSLambdaBasicExecutionRole cdkd-6609-inline PowerUserAccess IAMUserChangePassword "${GROUP_NAME}"; do
+  if ! grep -qF "${needle}" "${DRIFT_LOG}"; then
+    echo "FAIL: cdkd drift did not name the re-added '${needle}' (go-to-k/cdkd#6609)" >&2
+    exit 1
+  fi
+done
+for hdr in "${ROLE_LID} (AWS::IAM::Role)" "${USER_LID} (AWS::IAM::User)" "${GROUP_LID} (AWS::IAM::Group)" "${U3_LID} (AWS::IAM::User)"; do
+  if ! grep -qF "${hdr}" "${DRIFT_LOG}"; then
+    echo "FAIL: cdkd drift reported no '${hdr}' block; its re-added grant went unreported, or the report wording drifted" >&2
+    exit 1
+  fi
+done
+
+echo "==> Phase 11: cdkd drift --revert -y removes them again (expect exit 0)"
+revert_ids_before 11 "AWS::IAM::Role=${ROLE_NAME}" "AWS::IAM::User=${USER_NAME}" "AWS::IAM::Group=${GROUP_NAME}" "AWS::IAM::User=${ADD_U3}"
+run_drift --revert -y
+revert_ids_after 11 "${DRIFT_LOG}" 4
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC} on the re-added grants" >&2
+  exit 1
+fi
+reverted_ok=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  read_shed
+  if shed_is "${MP2_ARN}" "${MP2_ARN}" "${MP2_ARN}" "" "" "None"; then
+    reverted_ok=1
+    break
+  fi
+  sleep 5
+done
+if [ "${reverted_ok}" -ne 1 ]; then
+  echo "FAIL: after --revert role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${MP2_ARN}' each), ${ADD_U3} groups='${GOT_U3}', role inline='${GOT_ROLE_INLINE}', role boundary='${GOT_ROLE_BOUNDARY}' (want none)" >&2
+  exit 1
+fi
+echo "==> Phase 11: cdkd drift after the revert (expect exit 0)"
+run_drift
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} after --revert removed the re-added grants" >&2
+  exit 1
+fi
+rm -f "${DRIFT_LOG}"
+echo "    every removed grant re-added out of band was reported and reverted in place"
+
 # --- Phase 7: destroy ------------------------------------------------------
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -831,4 +970,4 @@ assert_gone "user ${ADD_U3} still exists after destroy" aws iam get-user --user-
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    every resource and the cdkd state are gone"
 
-echo "[verify] PASS — a sibling's IAM attachment or group membership is not drift on the other side, drift --revert detaches only the out-of-band ARN and re-grants no removed membership, and a member a sibling stopped writing leaves the declared baseline"
+echo "[verify] PASS — a sibling's IAM attachment or group membership is not drift on the other side, drift --revert detaches only the out-of-band ARN and re-grants no removed membership, a member a sibling stopped writing leaves the declared baseline, and a grant a deploy removed is reported and reverted when re-added out of band"

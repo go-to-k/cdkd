@@ -47,7 +47,8 @@ import {
 } from './sg-rule-by-id.js';
 import { OWN_WRITE_REREAD_DELAYS_MS, warnUnsettledMember } from '../../settle-after-own-write.js';
 import { type OwnWriteMember, settleOwnWriteMembers } from '../../settle-own-write-members.js';
-import { declaredSgRulesRead, mergeDeclaredSgRules } from '../../sg-own-write-rules.js';
+import { sgRuleListMember } from '../../sg-own-write-rules.js';
+import { restoreOwnWriteRemovals, takeOwnWriteRemovals } from '../../own-write-removals.js';
 
 export async function readVpcCurrentState(
   this: EC2Provider,
@@ -320,11 +321,22 @@ export async function readSecurityGroupCurrentState(
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  // go-to-k/cdkd#6609: taken before the first await (`own-write-removals.ts`).
+  const removed =
+    context?.afterOwnWrite === true
+      ? takeOwnWriteRemovals('AWS::EC2::SecurityGroup', physicalId)
+      : undefined;
   const resp = await this.ec2Client.send(
     new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
   );
   const sg = resp.SecurityGroups?.[0];
-  if (!sg) return RESOURCE_NOT_FOUND;
+  if (!sg) {
+    // The capture re-reads a group not found yet (`drift.ts`); the next read
+    // still settles on what this create / update revoked.
+    if (removed !== undefined)
+      restoreOwnWriteRemovals('AWS::EC2::SecurityGroup', physicalId, removed);
+    return RESOURCE_NOT_FOUND;
+  }
   // go-to-k/cdkd#6641: a sibling rule record's `sgr-` id decides which live
   // rule is its (`sg-rule-by-id.ts`).
   const idOwned = await siblingIdOwnedSgRules(this, physicalId, properties, context);
@@ -364,39 +376,42 @@ export async function readSecurityGroupCurrentState(
   Object.assign(result, sgRuleLists(sg, physicalId, properties, context, idOwned));
 
   if (context?.afterOwnWrite === true && properties !== undefined) {
-    // go-to-k/cdkd#6609: `Authorize`/`Revoke...` are separate calls, so the
-    // read right after cdkd's own write can still lack a rule just written.
-    // A declared rule list is re-read until every declared rule shows
-    // (`sg-own-write-rules.ts`); a rule the template does not declare (a
-    // sibling's, an out-of-band one) never holds the capture.
+    // go-to-k/cdkd#6609: `Authorize`/`Revoke...` are separate calls; a list
+    // is re-read until every declared rule shows and no revoked one does
+    // (`sgRuleListMember`). Any other undeclared rule never holds the capture.
     const members: OwnWriteMember<unknown>[] = [];
     for (const [key, direction] of [
       ['SecurityGroupIngress', 'ingress'],
       ['SecurityGroupEgress', 'egress'],
     ] as const) {
-      const declared = properties[key];
-      if (!Array.isArray(declared)) continue;
-      members.push({
-        key,
-        declared,
-        matches: (value) => declaredSgRulesRead(value, declared, direction),
-        // Ordered by the read's own reconcile, so a later read lists it alike.
-        whenUnsettled: (newest) =>
-          reconcileSgRules(
-            mergeDeclaredSgRules(newest, declared, direction) as CfnSgRule[],
-            declared as Array<Record<string, unknown>>,
-            direction
-          ),
-        read: async () => {
-          const reread = await this.ec2Client.send(
-            new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
-          );
-          const group = reread.SecurityGroups?.[0];
-          return group
-            ? { value: sgRuleLists(group, physicalId, properties, context, idOwned)[key] }
-            : 'failed';
-        },
-      });
+      const listed = properties[key];
+      const revoked = removed?.get(key);
+      if (!Array.isArray(listed) && (revoked?.size ?? 0) === 0) continue;
+      const declared: unknown[] = Array.isArray(listed) ? listed : [];
+      members.push(
+        sgRuleListMember(
+          key,
+          direction,
+          declared,
+          revoked,
+          // Ordered by the read's own reconcile, so a later read lists it alike.
+          (rules) =>
+            reconcileSgRules(
+              rules as CfnSgRule[],
+              declared as Array<Record<string, unknown>>,
+              direction
+            ),
+          async () => {
+            const reread = await this.ec2Client.send(
+              new DescribeSecurityGroupsCommand({ GroupIds: [physicalId] })
+            );
+            const group = reread.SecurityGroups?.[0];
+            return group
+              ? { value: sgRuleLists(group, physicalId, properties, context, idOwned)[key] }
+              : 'failed';
+          }
+        )
+      );
     }
     await settleOwnWriteMembers(result, members, OWN_WRITE_REREAD_DELAYS_MS, (key) =>
       warnUnsettledMember(this.logger, physicalId, 'AWS::EC2::SecurityGroup', key)

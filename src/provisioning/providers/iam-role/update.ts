@@ -23,6 +23,7 @@ import {
   recordedGeneratedNameKept,
 } from '../../resource-name.js';
 import { withRemovalDefaults } from '../../update-removal.js';
+import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import {
   createMaskedLogSinks,
@@ -41,6 +42,12 @@ import type {
 /**
  * Update an IAM role
  */
+/**
+ * go-to-k/cdkd#6609: each removal below is noted once its call succeeds
+ * (`own-write-removals.ts`), so the capture right after waits for it.
+ */
+const ROLE_TYPE = 'AWS::IAM::Role';
+
 export async function update(
   this: IAMRoleProvider,
   logicalId: string,
@@ -67,6 +74,8 @@ export async function update(
   );
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+  // go-to-k/cdkd#6609: a note an earlier update that threw left behind.
+  clearOwnWriteRemovals(ROLE_TYPE, physicalId);
   const derivedRoleName = generateResourceNameWithFallback(
     properties['RoleName'] as string | undefined,
     logicalId,
@@ -378,6 +387,7 @@ export async function update(
             RoleName: physicalId,
           })
         );
+        recordOwnWriteRemoval(ROLE_TYPE, physicalId, 'PermissionsBoundary', oldBoundary);
         log.debug(`Removed permissions boundary from ${v(physicalId)}`);
       }
     }
@@ -480,6 +490,7 @@ export async function updateManagedPolicies(
           PolicyArn: policyArn,
         })
       );
+      recordOwnWriteRemoval(ROLE_TYPE, roleName, 'ManagedPolicyArns', policyArn);
       log.debug(`Detached managed policy ${v(policyArn)}`);
     }
   }
@@ -533,6 +544,7 @@ export async function updateInlinePolicies(
           PolicyName: policyName,
         })
       );
+      recordOwnWriteRemoval(ROLE_TYPE, roleName, 'Policies', policyName);
       log.debug(`Deleted inline policy ${v(policyName)}`);
     }
   }

@@ -27,21 +27,33 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // `shed` (go-to-k/cdkd#6609, slice D): the last deploy REMOVES members
+    // (the role's managed policy, inline policy and boundary, the user's and
+    // the group's managed policy, AddUser3's group), each dropping its whole
+    // key, so the capture right after must not record a removed grant. The
+    // policy keeps its principals: its own detach would race the user's
+    // capture.
+    const shed = (process.env['CDKD_TEST_UPDATE'] ?? '').split(',').includes('shed');
+
     const role = new iam.Role(this, 'Role', {
       roleName: 'cdkd-iam-sibling-mp-role',
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
-      ],
+      managedPolicies: shed
+        ? []
+        : [iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole')],
       // go-to-k/cdkd#6609: an inline policy and a permissions boundary, so the
-      // create's baseline capture is checked on both (static: the role stays
-      // NO_CHANGE in every later phase).
-      inlinePolicies: {
-        'cdkd-6609-inline': new iam.PolicyDocument({
-          statements: [new iam.PolicyStatement({ actions: ['sqs:ListQueues'], resources: ['*'] })],
-        }),
-      },
-      permissionsBoundary: iam.ManagedPolicy.fromAwsManagedPolicyName('PowerUserAccess'),
+      // create's baseline capture is checked on both (static until `shed`: the
+      // role stays NO_CHANGE in every phase before it).
+      inlinePolicies: shed
+        ? {}
+        : {
+            'cdkd-6609-inline': new iam.PolicyDocument({
+              statements: [new iam.PolicyStatement({ actions: ['sqs:ListQueues'], resources: ['*'] })],
+            }),
+          },
+      ...(!shed && {
+        permissionsBoundary: iam.ManagedPolicy.fromAwsManagedPolicyName('PowerUserAccess'),
+      }),
     });
     // The user and the group declare one AWS managed policy of their own too,
     // so their `ManagedPolicyArns` is compared (an undeclared, empty baseline
@@ -49,11 +61,11 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
     const own = iam.ManagedPolicy.fromAwsManagedPolicyName('IAMUserChangePassword');
     const user = new iam.User(this, 'User', {
       userName: 'cdkd-iam-sibling-mp-user',
-      managedPolicies: [own],
+      managedPolicies: shed ? [] : [own],
     });
     const group = new iam.Group(this, 'Group', {
       groupName: 'cdkd-iam-sibling-mp-group',
-      managedPolicies: [own],
+      managedPolicies: shed ? [] : [own],
     });
 
     // Mode tokens (monotonic: every later deploy keeps `late`):
@@ -110,7 +122,7 @@ export class IamSiblingManagedPolicyDriftStack extends cdk.Stack {
     // and (from `late`) the addition puts it in the second one too.
     const u3 = new iam.CfnUser(this, 'AddUser3', {
       userName: 'cdkd-iam-sibling-mp-add-u3',
-      groups: [group.groupName],
+      ...(!shed && { groups: [group.groupName] }),
       ...(touch && { tags: [{ key: 'cdkd-6343', value: 'touch' }] }),
       // go-to-k/cdkd#6609: `touch` replaces the inline policy and adds a
       // permissions boundary, so the update's baseline capture is checked.
