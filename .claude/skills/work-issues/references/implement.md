@@ -98,7 +98,8 @@ teardown): work inside it, or re-install one calling the original
 **When the audit is a MEASUREMENT, the sample's shape is the finding** — run it
 on a KNOWN-dirty case before trusting a zero; deploy each type CDK-DEFAULT, no
 optional names (#6676: a named DataSync task hid `Name: ""`). Watch for newest-N
-not the RANGE, a global needle, and `--query 'length(...)'` (per PAGE).
+not the RANGE, one global needle where each subject spells its own, and
+`--query 'length(...)'` (per PAGE).
 
 ### 5-e. Mutation probes
 
