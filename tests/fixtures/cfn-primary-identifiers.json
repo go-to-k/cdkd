@@ -290,6 +290,7 @@
     "AWS::CloudFormation::Stack": ["StackId"],
     "AWS::CloudFormation::StackSet": ["StackSetId"],
     "AWS::CloudFormation::TypeActivation": ["Arn"],
+    "AWS::CloudFormation::WaitCondition": ["Id"],
     "AWS::CloudFormation::WaitConditionHandle": ["Id"],
     "AWS::CloudFront::AnycastIpList": ["Id"],
     "AWS::CloudFront::CachePolicy": ["Id"],

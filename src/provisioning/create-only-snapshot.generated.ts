@@ -52,6 +52,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     ],
   ],
   ['AWS::CloudFormation::Stack', [['StackName']]],
+  ['AWS::CloudFormation::WaitCondition', []],
   ['AWS::CloudFormation::WaitConditionHandle', []],
   ['AWS::CloudFront::CloudFrontOriginAccessIdentity', []],
   ['AWS::CloudFront::Distribution', []],

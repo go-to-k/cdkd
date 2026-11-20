@@ -59,6 +59,8 @@ describe('generated NON_PROVISIONABLE_TYPES module', () => {
 
   it('still contains genuinely unsupported types', () => {
     expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::Macro')).toBe(true);
-    expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::WaitCondition')).toBe(true);
+    expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::ResourceScan')).toBe(true);
+    // Tier 1 since go-to-k/cdkd#6694 (an SDK provider waits on its handle).
+    expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::WaitCondition')).toBe(false);
   });
 });

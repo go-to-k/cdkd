@@ -543,6 +543,7 @@
         "update-replace",
         "vpc-nat-gateway",
         "wafv2",
+        "wait-condition-ec2-signal",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -1162,6 +1163,7 @@
         "update-replace",
         "vpc-nat-gateway",
         "wafv2",
+        "wait-condition-ec2-signal",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -1723,6 +1725,7 @@
         "update-replace",
         "vpc-nat-gateway",
         "wafv2",
+        "wait-condition-ec2-signal",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -2360,6 +2363,7 @@
         "update-replace",
         "vpc-nat-gateway",
         "wafv2",
+        "wait-condition-ec2-signal",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -2905,6 +2909,7 @@
         "update-replace",
         "vpc-nat-gateway",
         "wafv2",
+        "wait-condition-ec2-signal",
         "wait-condition-handle",
         "wide-independent",
         "wide-web-functions"
@@ -3033,6 +3038,7 @@
     "--contributor-insights-action",
     "--count",
     "--create-bucket-configuration",
+    "--data-binary",
     "--database-input",
     "--database-name",
     "--datastore-id",

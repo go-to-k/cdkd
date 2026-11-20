@@ -12,9 +12,9 @@ For every SDK provider class declaring `update()`, walks from `update()` through
 
 ## Summary
 
-- Provider classes with `update()`: **96**
+- Provider classes with `update()`: **97**
 - Wrapped: **89**
-- No AWS call in update(): **7**
+- No AWS call in update(): **8**
 - **Unwrapped-send gaps (blocks CI): 0**
 - **Unguarded wraps (blocks CI): 0**
 - Allow-listed known gaps (does NOT block CI): **0**
@@ -124,4 +124,5 @@ None. Every provider `update()` either makes no AWS call or wraps every reachabl
 | `StepFunctionsProvider` | `stepfunctions-provider.ts` | wrapped |
 | `WAFv2WebACLProvider` | `wafv2-provider.ts` | wrapped |
 | `WaitConditionHandleProvider` | `wait-condition-handle-provider.ts` | no-aws |
+| `WaitConditionProvider` | `wait-condition-provider.ts` | no-aws |
 

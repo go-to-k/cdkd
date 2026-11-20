@@ -177,13 +177,40 @@ is no single-changeset form, because CloudFormation rejects
 
 ## Wait condition handles
 
-`AWS::CloudFormation::WaitConditionHandle` works as a placeholder only. Its
-real value, a pre-signed URL that receives signals, cannot exist outside
-CloudFormation. cdkd records a placeholder id and calls no AWS API. That is
-enough for a template that uses a handle as an empty placeholder resource.
+A `AWS::CloudFormation::WaitConditionHandle`'s `Ref` is a pre-signed S3 URL,
+as under CloudFormation. cdkd signs it for one key in its own state bucket, so
+user data can signal it with `cfn-signal` or `curl -X PUT`.
+`AWS::CloudFormation::WaitCondition` then waits for the signals:
 
-`AWS::CloudFormation::WaitCondition`, which blocks until a signal arrives, is
-not supported.
+| Behaviour | cdkd |
+| --- | --- |
+| Completes when | `Count` distinct `UniqueId`s have sent `"Status": "SUCCESS"` |
+| Fails when | a `"Status": "FAILURE"` signal arrives, or `Timeout` seconds pass |
+| `Fn::GetAtt <wait>.Data` | a JSON object of each `UniqueId` to its `Data` |
+| A signal sent before the wait starts | counts |
+| Destroying the handle | deletes the signals it received |
+
+```ts
+const handle = new CfnWaitConditionHandle(this, 'Handle');
+instance.addUserData(
+  `curl -X PUT -H 'Content-Type:' --data-binary '{"Status":"SUCCESS","UniqueId":"boot","Data":"ok","Reason":"done"}' "${handle.ref}"`
+);
+new CfnWaitCondition(this, 'Wait', { handle: handle.ref, timeout: '900' });
+```
+
+Limits:
+
+- The URL is signed with the deploying credentials. Temporary credentials
+  (SSO, an assumed role) end its validity when they expire, at most seven days
+  later; cdkd warns when that is under 12 hours.
+- The instance must reach Amazon S3, as it must under CloudFormation.
+- A wait condition without a `Handle` (the `CreationPolicy` form that
+  `cfn-signal --resource` signals) is refused.
+- A handle deployed by a cdkd release before this support keeps a placeholder
+  id that is not a URL. A wait condition on it is refused: give the handle a
+  new logical id so cdkd issues a URL.
+- A handle that only serves as a placeholder resource still works: nothing
+  needs to signal it.
 
 ## Glue table Iceberg support (`IcebergTableInput` is refused)
 
