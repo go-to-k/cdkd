@@ -865,6 +865,11 @@
       ]
     },
     {
+      "name": "connect-instance",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "context-test",
       "annotated": true,
       "scenarios": []
@@ -4200,6 +4205,7 @@
     "cognito-remove-protection-temp-password",
     "cognito-schema-rollback",
     "cognito-userpool-user-ref",
+    "connect-instance",
     "created-before-failure-revert",
     "cross-backend-same-stack",
     "cross-backend-same-stack-migration",
