@@ -188,6 +188,40 @@ export function withRemovedBlockDefaults(
 }
 
 /**
+ * Top-level properties, per type, whose REMOVAL Cloud Control refuses
+ * because a read-only member lives directly under them, and which the type's
+ * handler clears when sent as an empty object instead. Each entry is
+ * MEASURED: Route 53 (go-to-k/cdkd#6690, us-east-1) refused
+ * `remove /HostedZoneFeatures` and a `replace` without `ChangeHistory`
+ * (`readOnlyProperties [/properties/HostedZoneFeatures/ChangeHistory] cannot
+ * be updated`), and applied `replace /HostedZoneFeatures` holding only the
+ * live `ChangeHistory`, disabling the change guardrails it had enabled.
+ */
+export const REMOVED_TOP_LEVEL_AS_EMPTY: Readonly<Record<string, readonly string[]>> = {
+  'AWS::Route53::HostedZone': ['HostedZoneFeatures'],
+};
+
+/**
+ * `patch` with each measured top-level `remove` ({@link REMOVED_TOP_LEVEL_AS_EMPTY})
+ * sent as `replace` with an empty object, so {@link nestedReadOnlyGaps}
+ * carries the live read-only member into it. The ops are copied, never mutated.
+ */
+export function withMeasuredRemovalsAsEmpty(
+  patch: readonly JsonPatchOp[],
+  resourceType: string
+): JsonPatchOp[] {
+  const keys = Object.hasOwn(REMOVED_TOP_LEVEL_AS_EMPTY, resourceType)
+    ? REMOVED_TOP_LEVEL_AS_EMPTY[resourceType]!
+    : [];
+  if (keys.length === 0) return [...patch];
+  return patch.map((op) =>
+    op.op === 'remove' && keys.some((key) => op.path === `/${key}`)
+      ? { op: 'replace', path: op.path, value: {} }
+      : op
+  );
+}
+
+/**
  * The paths a whole-object `add` / `replace` op of `patch` must carry from
  * the live model for each nested READ-ONLY path (go-to-k/cdkd#6553):
  *

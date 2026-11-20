@@ -316,6 +316,12 @@ A new nested key the provider never forwards, or sends in a spelling the SDK
 does not model, is not this check's finding: the `sdk-wire-coverage` suites catch it, and the pull
 request's `sdk-wire-coverage` section lists the paths (see the table above).
 
+| Option | Meaning | Choose it when |
+| --- | --- | --- |
+| Wire it, and add it to a wire bag | The SDK provider sends it | The current SDK client models the member |
+| Declare it in `src/provisioning/sdk-unmodelled-nested-paths.ts` | A template carrying it routes through Cloud Control, which sends it | The current SDK client does not model the member yet; remove the entry once it does |
+| Add a `nestedExempt` entry | No bag carries it, for the stated reason | The member cannot appear in a valid template on this path (read-only, refused by CloudFormation, legacy) |
+
 For a `definition-member-missing`, rule out the installed SDK
 simply lagging the service before allow-listing anything — an entry added over
 a stale SDK hides a real dropped value.

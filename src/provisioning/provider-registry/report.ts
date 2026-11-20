@@ -5,6 +5,7 @@ import {
   findRoutableUnrecognizedProperties,
   findSdkUnwiredProperties,
   findUnrecognizedProperties,
+  findValueRoutedProperties,
   getPropertyCoverage,
   unsupportedPropertyIssueUrl,
 } from '../property-coverage.js';
@@ -98,9 +99,17 @@ export function reportSdkUnwiredDecisions(
     const autoRoutedDrops = drops
       .map(({ property }) => property)
       .filter((property) => !this.allowedUnsupportedProperties.has(`${resourceType}:${property}`));
-    const autoRouted = [...autoRoutedDrops, ...unrecognizedRoute].sort((a, b) =>
-      a.localeCompare(b)
-    );
+    // A handled property whose VALUE the SDK provider cannot send (#5640,
+    // #6690) routes too; its rationale says why, since "does not wire" would
+    // be false for it.
+    const valueRoutes = findValueRoutedProperties(resourceType, properties).map((v) => ({
+      ...v,
+      allowed: this.allowedUnsupportedProperties.has(`${resourceType}:${v.property}`),
+    }));
+    const valueRouted = valueRoutes.filter((v) => !v.allowed);
+    const autoRouted = [
+      ...new Set([...autoRoutedDrops, ...unrecognizedRoute, ...valueRouted.map((v) => v.property)]),
+    ].sort((a, b) => a.localeCompare(b));
 
     if (autoRouted.length > 0) {
       // The CC auto-route is only viable when Cloud Control can actually
@@ -113,12 +122,20 @@ export function reportSdkUnwiredDecisions(
           safeMsg`${logicalId}: ` +
             this.buildUnroutableSdkUnwiredMessage(
               resourceType,
-              drops.filter((d) => autoRouted.includes(d.property)),
+              [...drops, ...valueRouted].filter((d) => autoRouted.includes(d.property)),
               unroutable
             )
         );
       }
-      const propList = autoRouted.join(', ');
+      const unwiredList = [...autoRoutedDrops, ...unrecognizedRoute]
+        .sort((a, b) => a.localeCompare(b))
+        .join(', ');
+      const reasons = [
+        ...(unwiredList === ''
+          ? []
+          : [safeMsg`cdkd's SDK Provider does not yet wire ${unwiredList}`]),
+        ...valueRouted.map((v) => safeMsg`${v.property}: ${v.rationale}`),
+      ].join('; ');
       const overrideHint = autoRouted.map((p) => `${resourceType}:${p}`).join(',');
       // An unrecognized key is named as such: it may be a typo, which Cloud
       // Control will REJECT — and saying so up front is what makes that
@@ -131,7 +148,7 @@ export function reportSdkUnwiredDecisions(
             `published since, and rejects a misspelled one as CloudFormation does.`;
       const message =
         `${logicalId} (${resourceType}): routing via Cloud Control API ` +
-        `(cdkd's SDK Provider does not yet wire ${propList} — CC API will ` +
+        `(${reasons} — CC API will ` +
         `forward the full property map.${unrecognizedNote} Override via ` +
         `--prefer-sdk-route ${overrideHint}.)`;
       if (provisionedBy === 'cc-api') {
@@ -141,6 +158,21 @@ export function reportSdkUnwiredDecisions(
       } else {
         this.logger.info(message);
       }
+    }
+
+    // A value route the preference turned off leaves the resource on the SDK
+    // provider, which cannot send that value (#6690): say so, or the drop the
+    // route exists to prevent is silent again.
+    const keptOnSdk = stickyCc || autoRouted.length > 0 ? [] : valueRoutes.filter((v) => v.allowed);
+    if (keptOnSdk.length > 0) {
+      const reasonList = keptOnSdk.map((v) => safeMsg`${v.property}: ${v.rationale}`).join('; ');
+      const keys = keptOnSdk.map((v) => safeMsg`${resourceType}:${v.property}`).join(',');
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): --prefer-sdk-route keeps this resource on its SDK ` +
+          `provider, which cannot send part of it as declared. ` +
+          safeMsg`${reasonList}. Drop ${keys} from --prefer-sdk-route to route it via Cloud Control ` +
+          `API, which sends it.`
+      );
     }
 
     // Say when the user's preference went INERT, because from their side an

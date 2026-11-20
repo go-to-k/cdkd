@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::ApiGateway::Authorizer",
-  "generatedAt": "2026-11-11",
+  "generatedAt": "2026-11-20",
   "properties": [
     "AuthType",
     "AuthorizerCredentials",
@@ -9,6 +9,7 @@
     "AuthorizerUri",
     "IdentitySource",
     "IdentityValidationExpression",
+    "JwtConfiguration",
     "Name",
     "ProviderARNs",
     "RestApiId",
@@ -29,19 +30,61 @@
     "AuthorizerId",
     "RestApiId"
   ],
+  "nestedProperties": {
+    "JwtConfiguration": [
+      "AdditionalClaims",
+      "Audiences",
+      "ClaimName",
+      "DefaultAlgorithms",
+      "ExpectedValues",
+      "Format",
+      "Issuer",
+      "Issuers",
+      "Required"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "JwtConfiguration": [
+      "DefaultAlgorithms",
+      "Issuers",
+      "Issuers.AdditionalClaims",
+      "Issuers.AdditionalClaims.ClaimName",
+      "Issuers.AdditionalClaims.ExpectedValues",
+      "Issuers.AdditionalClaims.Format",
+      "Issuers.AdditionalClaims.Required",
+      "Issuers.Audiences",
+      "Issuers.Issuer"
+    ]
+  },
   "definitionShapes": {
     "#top": {
-      "ProviderARNs": "array",
-      "AuthorizerCredentials": "scalar",
-      "IdentityValidationExpression": "scalar",
-      "Type": "scalar",
-      "AuthorizerUri": "scalar",
-      "AuthorizerId": "scalar",
-      "AuthorizerResultTtlInSeconds": "scalar",
       "RestApiId": "scalar",
-      "IdentitySource": "scalar",
+      "AuthorizerId": "scalar",
       "AuthType": "scalar",
-      "Name": "scalar"
+      "AuthorizerCredentials": "scalar",
+      "AuthorizerResultTtlInSeconds": "scalar",
+      "AuthorizerUri": "scalar",
+      "IdentitySource": "scalar",
+      "IdentityValidationExpression": "scalar",
+      "Name": "scalar",
+      "ProviderARNs": "array",
+      "Type": "scalar",
+      "JwtConfiguration": "object"
+    },
+    "JwtConfiguration": {
+      "Issuers": "array",
+      "DefaultAlgorithms": "array"
+    },
+    "JwtIssuer": {
+      "Issuer": "scalar",
+      "Audiences": "array",
+      "AdditionalClaims": "array"
+    },
+    "JwtAdditionalClaim": {
+      "ClaimName": "scalar",
+      "Format": "scalar",
+      "Required": "scalar",
+      "ExpectedValues": "array"
     }
   },
   "definitionRequired": {
@@ -49,9 +92,43 @@
       "Name",
       "RestApiId",
       "Type"
+    ],
+    "JwtConfiguration": [
+      "DefaultAlgorithms",
+      "Issuers"
+    ],
+    "JwtIssuer": [
+      "Audiences",
+      "Issuer"
+    ],
+    "JwtAdditionalClaim": [
+      "ClaimName",
+      "Format"
+    ]
+  },
+  "nestedRequired": {
+    "JwtConfiguration": [
+      "DefaultAlgorithms",
+      "Issuers"
+    ],
+    "JwtConfiguration.Issuers": [
+      "Audiences",
+      "Issuer"
+    ],
+    "JwtConfiguration.Issuers.AdditionalClaims": [
+      "ClaimName",
+      "Format"
     ]
   },
   "propertyShapes": {
+    "JwtConfiguration": "object",
+    "JwtConfiguration.DefaultAlgorithms": "array",
+    "JwtConfiguration.Issuers": "array",
+    "JwtConfiguration.Issuers[]": "object",
+    "JwtConfiguration.Issuers[].AdditionalClaims": "array",
+    "JwtConfiguration.Issuers[].AdditionalClaims[]": "object",
+    "JwtConfiguration.Issuers[].AdditionalClaims[].ExpectedValues": "array",
+    "JwtConfiguration.Issuers[].Audiences": "array",
     "ProviderARNs": "array"
   },
   "propertyTypes": {
@@ -62,6 +139,21 @@
     "AuthorizerUri": "string",
     "IdentitySource": "string",
     "IdentityValidationExpression": "string",
+    "JwtConfiguration": "object",
+    "JwtConfiguration.DefaultAlgorithms": "array",
+    "JwtConfiguration.DefaultAlgorithms[]": "string",
+    "JwtConfiguration.Issuers": "array",
+    "JwtConfiguration.Issuers[]": "object",
+    "JwtConfiguration.Issuers[].AdditionalClaims": "array",
+    "JwtConfiguration.Issuers[].AdditionalClaims[]": "object",
+    "JwtConfiguration.Issuers[].AdditionalClaims[].ClaimName": "string",
+    "JwtConfiguration.Issuers[].AdditionalClaims[].ExpectedValues": "array",
+    "JwtConfiguration.Issuers[].AdditionalClaims[].ExpectedValues[]": "string",
+    "JwtConfiguration.Issuers[].AdditionalClaims[].Format": "string",
+    "JwtConfiguration.Issuers[].AdditionalClaims[].Required": "boolean",
+    "JwtConfiguration.Issuers[].Audiences": "array",
+    "JwtConfiguration.Issuers[].Audiences[]": "string",
+    "JwtConfiguration.Issuers[].Issuer": "string",
     "Name": "string",
     "ProviderARNs": "array",
     "ProviderARNs[]": "string",

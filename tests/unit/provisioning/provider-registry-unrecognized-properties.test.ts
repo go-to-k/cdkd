@@ -53,6 +53,9 @@ function pickRoutableFixture(): {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
     // Routable only: an unrecognized key must be able to move the resource.
     if (cov.ccRouteUnavailable) continue;
+    // Sticky-exempt types return to the SDK provider, which the sticky cases
+    // below would read as a broken sticky route.
+    if (STICKY_CC_MIGRATION_EXEMPT.has(resourceType)) continue;
     const drop = cov.sdkUnwired.entries().next();
     const handled = cov.handled.values().next();
     if (!drop.done && !handled.done) {

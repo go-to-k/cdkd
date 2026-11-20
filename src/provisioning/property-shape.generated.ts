@@ -12,7 +12,10 @@
  */
 
 export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, string>([
-  ['AWS::ApiGateway::Authorizer', '{"ProviderARNs":"array"}'],
+  [
+    'AWS::ApiGateway::Authorizer',
+    '{"JwtConfiguration":"object","JwtConfiguration.DefaultAlgorithms":"array","JwtConfiguration.Issuers":"array","JwtConfiguration.Issuers[]":"object","JwtConfiguration.Issuers[].AdditionalClaims":"array","JwtConfiguration.Issuers[].AdditionalClaims[]":"object","JwtConfiguration.Issuers[].AdditionalClaims[].ExpectedValues":"array","JwtConfiguration.Issuers[].Audiences":"array","ProviderARNs":"array"}',
+  ],
   [
     'AWS::ApiGateway::Deployment',
     '{"DeploymentCanarySettings":"object","DeploymentCanarySettings.StageVariableOverrides":"object","StageDescription":"object","StageDescription.AccessLogSetting":"object","StageDescription.CanarySetting":"object","StageDescription.CanarySetting.StageVariableOverrides":"object","StageDescription.MethodSettings":"array","StageDescription.MethodSettings[]":"object","StageDescription.Tags":"array","StageDescription.Tags[]":"object","StageDescription.Variables":"object"}',
@@ -353,11 +356,11 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
   ['AWS::RDS::DBSubnetGroup', '{"SubnetIds":"array","Tags":"array","Tags[]":"object"}'],
   [
     'AWS::Route53::HostedZone',
-    '{"HostedZoneConfig":"object","HostedZoneFeatures":"object","HostedZoneTags":"array","HostedZoneTags[]":"object","NameServers":"array","QueryLoggingConfig":"object","VPCs":"array","VPCs[]":"object"}',
+    '{"HostedZoneConfig":"object","HostedZoneFeatures":"object","HostedZoneFeatures.ChangeGuardrails":"array","HostedZoneFeatures.ChangeGuardrails[]":"object","HostedZoneFeatures.ChangeHistory":"object","HostedZoneTags":"array","HostedZoneTags[]":"object","NameServers":"array","QueryLoggingConfig":"object","VPCs":"array","VPCs[]":"object"}',
   ],
   [
     'AWS::Route53::RecordSet',
-    '{"AliasTarget":"object","CidrRoutingConfig":"object","GeoLocation":"object","ResourceRecords":"array"}',
+    '{"AZAffinity":"object","AliasTarget":"object","CidrRoutingConfig":"object","GeoLocation":"object","ResourceRecords":"array"}',
   ],
   [
     'AWS::S3::Bucket',

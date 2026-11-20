@@ -20,6 +20,7 @@ import {
   methodSettingKey,
 } from './shared.js';
 import { REST_API_WRITE_ONLY_PATHS } from './rest-api.js';
+import { fromSdkJwtConfiguration } from './jwt-configuration.js';
 
 /**
  * Authorizer `ProviderARNs` and Method `AuthorizationScopes` are unordered:
@@ -140,6 +141,10 @@ export async function readCurrentStateAuthorizer(
     result['IdentityValidationExpression'] = resp.identityValidationExpression ?? '';
     if (resp.authorizerResultTtlInSeconds !== undefined) {
       result['AuthorizerResultTtlInSeconds'] = resp.authorizerResultTtlInSeconds;
+    }
+    // Only a JWT authorizer carries one; emit-when-present like AuthType.
+    if (resp.jwtConfiguration !== undefined) {
+      result['JwtConfiguration'] = fromSdkJwtConfiguration(resp.jwtConfiguration);
     }
     return result;
   } catch (err) {

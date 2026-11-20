@@ -1016,7 +1016,10 @@ export const CHECK_GUIDANCE = {
     '',
     'For each new path, wire it in the provider and add it to a bag of that type\'s',
     'case (`tests/unit/provisioning/sdk-wire-cases*.ts`), or add a `nestedExempt`',
-    'entry there with the reason no bag can carry it.',
+    'entry there with the reason no bag can carry it. When the current AWS SDK',
+    'client does not model the member, declare the path in',
+    '`src/provisioning/sdk-unmodelled-nested-paths.ts` instead: a template carrying',
+    'it then routes through Cloud Control, which delivers it.',
   ],
 };
 

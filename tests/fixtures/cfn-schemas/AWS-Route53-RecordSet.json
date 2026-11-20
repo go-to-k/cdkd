@@ -1,7 +1,8 @@
 {
   "resourceType": "AWS::Route53::RecordSet",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-20",
   "properties": [
+    "AZAffinity",
     "AliasTarget",
     "CidrRoutingConfig",
     "Comment",
@@ -44,6 +45,10 @@
       "EvaluateTargetHealth",
       "HostedZoneId"
     ],
+    "AZAffinity": [
+      "LocationId",
+      "LocationType"
+    ],
     "CidrRoutingConfig": [
       "CollectionId",
       "LocationName"
@@ -59,6 +64,10 @@
       "DNSName",
       "EvaluateTargetHealth",
       "HostedZoneId"
+    ],
+    "AZAffinity": [
+      "LocationId",
+      "LocationType"
     ],
     "CidrRoutingConfig": [
       "CollectionId",
@@ -79,6 +88,7 @@
       "ResourceRecords": "array",
       "HostedZoneId": "scalar",
       "SetIdentifier": "scalar",
+      "AZAffinity": "object",
       "TTL": "scalar",
       "Weight": "scalar",
       "Name": "scalar",
@@ -97,6 +107,10 @@
     "Coordinates": {
       "Latitude": "scalar",
       "Longitude": "scalar"
+    },
+    "AZAffinity": {
+      "LocationId": "scalar",
+      "LocationType": "scalar"
     },
     "CidrRoutingConfig": {
       "CollectionId": "scalar",
@@ -127,12 +141,20 @@
       "Latitude",
       "Longitude"
     ],
+    "AZAffinity": [
+      "LocationId",
+      "LocationType"
+    ],
     "CidrRoutingConfig": [
       "CollectionId",
       "LocationName"
     ]
   },
   "nestedRequired": {
+    "AZAffinity": [
+      "LocationId",
+      "LocationType"
+    ],
     "AliasTarget": [
       "DNSName",
       "HostedZoneId"
@@ -143,12 +165,16 @@
     ]
   },
   "propertyShapes": {
+    "AZAffinity": "object",
     "AliasTarget": "object",
     "CidrRoutingConfig": "object",
     "GeoLocation": "object",
     "ResourceRecords": "array"
   },
   "propertyTypes": {
+    "AZAffinity": "object",
+    "AZAffinity.LocationId": "string",
+    "AZAffinity.LocationType": "string",
     "AliasTarget": "object",
     "AliasTarget.DNSName": "string",
     "AliasTarget.EvaluateTargetHealth": "boolean",
@@ -176,6 +202,13 @@
     "Weight": "integer"
   },
   "propertyEnums": {
+    "AZAffinity.LocationType": [
+      "AvailabilityZone",
+      "AvailabilityZoneGroup",
+      "Global",
+      "Partition",
+      "Region"
+    ],
     "Failover": [
       "PRIMARY",
       "SECONDARY"
