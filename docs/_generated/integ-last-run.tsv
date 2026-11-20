@@ -143,9 +143,7 @@ drift-revert-arrays	2026-11-20T15:38:48Z	PASS	251	verify.sh	ce0906083 rc ok, ide
 drift-revert-nested-write-only	2026-11-20T11:50:48Z	PASS	259	verify.sh	PR6652 be63cc056, us-west-2; rc 0, kept identity x3, orph clean
 drift-revert-vpc	2026-11-20T15:38:48Z	PASS	480	verify.sh	ce0906083 rc ok, identity kept + no replacement, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-drift-sg-sibling-rules	2026-11-20T14:43:27Z	PASS	270	verify.sh	PR6678 39a4f11cd, revert-identity kept+no replacement; rc ok, orph clean
 drift-sns-sibling-subscription	2026-11-20T20:41:06Z	PASS	260	verify.sh	rc ok, orph clean (#6711)
-drift-sg-sibling-rules	2026-11-20T20:42:41Z	PASS	343	verify.sh	PR6700 c6350713b, 6c removal re-add reported+reverted, revert-identity kept; rc ok, orph clean
 drift-sg-sibling-rules	2026-11-20T22:29:18Z	PASS	335	verify.sh	PR6700 1aa3236df (on #6648), 6c removal re-add reported+reverted, revert-identity kept; rc ok, orph clean
 drift-sns-sibling-subscription	2026-11-20T11:22:10Z	PASS	105	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 drift-verbatim-readback	2026-11-20T18:52:47Z	PASS	1286	verify.sh	PR6648 269403695, rc ok, #6627 observed/template-only/cc-api grants + accept pass after main #6689, revert replaced nothing, orph clean
