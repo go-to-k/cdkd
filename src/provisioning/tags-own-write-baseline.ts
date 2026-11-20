@@ -21,6 +21,7 @@
  * other read takes the first answer.
  */
 import { memberReadFailure } from './settle-after-own-write.js';
+import { readTagList } from './tag-list.js';
 
 /**
  * Waits between re-reads of a disagreeing answer: five reads, 7.5 s at most,
@@ -209,4 +210,39 @@ export async function settleWrittenTags<T>(
   if (newest === undefined) throw firstError;
   onUnsettled();
   return overlayTagWrite(newest, write);
+}
+
+/**
+ * The declared `Tags` in the shape the read records: one entry per key (the
+ * last declaration of a key wins, as the tag call sends it), values as
+ * strings, `aws:` keys dropped as the read drops them; `[]` for none
+ * declared. `undefined` for a value that is not a tag list. Read by the drift
+ * heal for a baseline captured before #6609.
+ */
+export function declaredTagsReadback(desired: unknown): ReadTag[] | undefined {
+  const read = readTagList(desired, 'desired');
+  if (read.kind !== 'tags') return undefined;
+  const byKey = new Map<string, string>();
+  for (const tag of read.tags) byKey.set(tag.Key, tag.Value);
+  return [...byKey]
+    .filter(([key]) => !key.startsWith('aws:'))
+    .map(([Key, Value]) => ({ Key, Value }));
+}
+
+/**
+ * Whether a read tag list is EXACTLY the declared set: the same keys with the
+ * same values, in any order, `aws:` keys ignored on both sides. A superset (a
+ * tag outside the template) or a subset is not.
+ */
+export function tagsMatchDeclared(read: unknown, declared: readonly ReadTag[]): boolean {
+  if (!Array.isArray(read)) return false;
+  const live = new Map<string, unknown>();
+  for (const entry of read) {
+    if (typeof entry !== 'object' || entry === null) return false;
+    const { Key: key, Value: value } = entry as Record<string, unknown>;
+    if (typeof key !== 'string') return false;
+    if (!key.startsWith('aws:')) live.set(key, value);
+  }
+  const want = declared.filter((t) => !t.Key.startsWith('aws:'));
+  return live.size === want.length && want.every((t) => live.get(t.Key) === t.Value);
 }

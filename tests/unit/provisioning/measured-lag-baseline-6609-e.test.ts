@@ -82,14 +82,17 @@ import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers
 import { SecretsManagerSecretProvider } from '../../../src/provisioning/providers/secretsmanager-secret-provider.js';
 import {
   clearTagWrites,
+  declaredTagsReadback,
   isDynamoDBTableArnIn,
   overlayTagWrite,
   recordTagWrite,
   TAGS_BASELINE_REREAD_DELAYS_MS,
   type TagWrite,
+  tagsMatchDeclared,
   tagsShowWrite,
   takeTagWrite,
 } from '../../../src/provisioning/tags-own-write-baseline.js';
+import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 
 type Tag = { Key: string; Value: string };
@@ -750,5 +753,80 @@ describe('AWS::DynamoDB::GlobalTable replica Tags baseline after its own tag cal
     expect(takeTagWrite(GT_TYPE, LOCAL_ARN)).toBeUndefined();
     expect(takeTagWrite(GT_TYPE, notAReplicaRegion)).toBeDefined();
     expect(takeTagWrite(GT_TYPE, other)).toBeDefined();
+  });
+
+  it('an update clears a note on a replica only the RECORDED side names (one this update removes)', async () => {
+    const leaving = `arn:aws:dynamodb:ap-south-1:111111111111:table/${GT}`;
+    recordTagWrite(GT_TYPE, leaving, SET_NEW, []);
+    ddbSend.mockRejectedValue(denied());
+    regionalSend.mockRejectedValue(denied());
+    const previous = {
+      ...props(),
+      Replicas: [...(props()['Replicas'] as unknown[]), { Region: 'ap-south-1' }],
+    };
+    await expect(provider.update('Gt', GT, GT_TYPE, props(), previous)).rejects.toThrow();
+    expect(takeTagWrite(GT_TYPE, leaving)).toBeUndefined();
+  });
+});
+
+// ------------------------------------------------- the heal for a pre-fix baseline
+
+describe('the drift heal of a Tags baseline captured before #6609', () => {
+  const declared = [t('env', 'new'), { Key: 'n', Value: 7 }];
+  const live = [t('env', 'new'), t('n', '7'), CDK];
+  const stale = { Tags: [t('env', 'old'), t('n', '7')] };
+
+  it('the comparator is exact on the non-aws: set, both polarities', () => {
+    const want = declaredTagsReadback(declared)!;
+    expect(want).toEqual([t('env', 'new'), t('n', '7')]);
+    expect(tagsMatchDeclared(live, want)).toBe(true);
+    expect(tagsMatchDeclared([...live, AUTO], want)).toBe(false);
+    expect(tagsMatchDeclared([t('env', 'new')], want)).toBe(false);
+    expect(tagsMatchDeclared([t('env', 'x'), t('n', '7')], want)).toBe(false);
+    expect(tagsMatchDeclared([], declaredTagsReadback(undefined)!)).toBe(true);
+    expect(declaredTagsReadback('nope')).toBeUndefined();
+  });
+
+  for (const [type, extra] of [
+    [TABLE_TYPE, tableProps(undefined)],
+    [SECRET_TYPE, { Name: 's-6609e' }],
+  ] as const) {
+    describe(type, () => {
+      const bag = (tags: unknown) => ({ ...extra, ...(tags === undefined ? {} : { Tags: tags }) });
+
+      it('skips Tags while the live set is exactly the declared one', () => {
+        expect(preFixBaselineUncomparedDriftKeys(type, stale, bag(declared), { Tags: live })).toContain(
+          'Tags'
+        );
+        // None declared and none live agree too.
+        expect(preFixBaselineUncomparedDriftKeys(type, stale, bag(undefined), { Tags: [CDK] })).toContain(
+          'Tags'
+        );
+      });
+
+      it('keeps Tags compared for a tag outside the template, a missing or another value', () => {
+        for (const liveTags of [[...live, AUTO], [t('env', 'new')], [t('env', 'old'), t('n', '7')]]) {
+          expect(
+            preFixBaselineUncomparedDriftKeys(type, stale, bag(declared), { Tags: liveTags })
+          ).not.toContain('Tags');
+        }
+        expect(preFixBaselineUncomparedDriftKeys(type, stale, bag(declared), {})).not.toContain('Tags');
+        expect(preFixBaselineUncomparedDriftKeys(type, stale, bag('nope'), { Tags: [] })).not.toContain(
+          'Tags'
+        );
+      });
+    });
+  }
+
+  it('a GlobalTable replica Tags baseline stays compared (the rule names top-level keys only)', () => {
+    const replicas = [{ Region: 'us-east-1', Tags: [t('env', 'new')] }];
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        GT_TYPE,
+        { Replicas: [{ Region: 'us-east-1', Tags: [t('env', 'old')] }] },
+        { Replicas: replicas },
+        { Replicas: replicas }
+      )
+    ).toEqual([]);
   });
 });
