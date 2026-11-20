@@ -97,9 +97,12 @@ things are outside its reach:
   rollback cannot restore it. It prints a warning and continues.
 - **Data in a replaced resource.** The rollback adopts the old resource again
   when its delete had not been sent, and its data is kept. When the deploy had
-  already deleted it, the rollback re-creates it, and a re-created bucket,
-  table or other data-holding resource starts empty. cdkd warns when this
-  happens.
+  already deleted it, the rollback re-creates it from its recorded
+  properties. A re-created bucket, table or other data-holding resource
+  starts empty, and anything else AWS held for the old resource that the
+  template does not declare, such as queued messages or subscriptions made
+  outside the stack, does not come back. The rollback output and the
+  `cdkd rollback` plan both say so for each such resource.
 - **A change made outside cdkd.** An updated resource is set back to the
   properties cdkd recorded at the last deploy. cdkd does not read the live
   resource first. If someone edited the resource in the console before the
