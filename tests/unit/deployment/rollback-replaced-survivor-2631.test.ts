@@ -274,6 +274,39 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
       }
     );
 
+    // go-to-k/cdkd#6655 (D2): the types whose recorded id equals their
+    // `resourceIdentity` token, each compared by its own key.
+    it.each([
+      ['AWS::IAM::ManagedPolicy', 'PolicyId'],
+      ['AWS::DynamoDB::Table', 'TableId'],
+      ['AWS::RDS::DBInstance', 'DbiResourceId'],
+      ['AWS::RDS::DBCluster', 'DBClusterResourceId'],
+    ] as const)('refuses a %s survivor whose live %s differs', async (type, key) => {
+      const typedOp = (recorded: string) =>
+        op({
+          resourceType: type,
+          oldResourceMaySurvive: 'deferred',
+          previousState: {
+            ...rec('topic-old', { provisionedBy: 'cc-api', resourceType: type }),
+            attributes: { [key]: recorded },
+          },
+        });
+      liveRoleId = async () => 'ID-STRANGER';
+      const s = { Topic: rec('topic-new', { resourceType: type }) };
+      const refused = await replayRollback([typedOp('ID-OLD')], s, 'S', ctx);
+      expect(refused.failures).toBe(1);
+      expect(provider.delete).not.toHaveBeenCalled();
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(s['Topic'].physicalId).toBe('topic-new');
+      expect(JSON.stringify(refused) + warns.join('\n')).not.toContain('ID-STRANGER');
+      // The negative control: the same op whose live id matches re-adopts.
+      liveRoleId = async () => 'ID-OLD';
+      const matched = { Topic: rec('topic-new', { resourceType: type }) };
+      const ok = await replayRollback([typedOp('ID-OLD')], matched, 'S', ctx);
+      expect(ok.failures).toBe(0);
+      expect(matched['Topic'].physicalId).toBe('topic-old');
+    });
+
     it.each([
       ['the live RoleId matches', 'AROA-OLD', async (): Promise<unknown> => 'AROA-OLD'],
       ['the record carries no RoleId', undefined, async (): Promise<unknown> => 'AROA-STRANGER'],

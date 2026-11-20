@@ -53,7 +53,9 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **redacted-delete-address.ts** - A delete ADDRESSING a resource through a recorded property must not send cdkd's own redaction (`***` or a `{{resolve:...}}` expression) to AWS (#3952): an unknown name often answers not-found, which the idempotent arm reads as DELETED. Fall back to an unredacted source first; else `redactedDeleteAddressSkip`. A delete-then-create caller must ABORT on that skip. `CustomResourceProvider` keeps its own ServiceToken arms.
 
-- **state-orphan-remedy.ts** - `stateOrphanRecordRemedy`: the `cdkd state orphan` a delete skip names (#4602). Whole-stack only on `DeleteContext.stackDestroy`; otherwise (no context too) `--resource <logicalId>`, since a deployed stack's whole-stack drop makes the next deploy re-create everything.
+- **state-orphan-remedy.ts** - `stateOrphanRecordRemedy`: the `cdkd state orphan` a delete skip names (#4602). Whole-stack only on `DeleteContext.stackDestroy`, else `--resource <logicalId>`: a whole-stack drop re-creates everything.
+
+- **recorded-identity.ts** - by-name delete vs recorded AWS-minted id (#6655).
 
 - **composite-id.ts** - Refusal guard for COMPOSITE physicalIds (#1672). The separator is unescaped, so a segment containing one yields the wrong ARITY yet passes every guard: the deploy SUCCEEDS, then destroy deletes the wrong one. `packCompositeId` is the ACTION (throws, or warns-and-packs while replaying state); `compositeIdSeparatorRefusal` is the bare PREDICATE for `import()` paths that warn-and-SKIP. A type whose every reader ANCHORS on a recorded segment need not pack through here: `AWS::Glue::Table` builds `<db>|<table>` directly (`segmentAfterAnchor`; `|` allowed in both; an unanchored id is skipped; #3892), and `AWS::Route53::RecordSet` its id, the name anchored on the recorded `Name` / `Type` (#3890).
 
@@ -63,9 +65,9 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **final-snapshot.ts** - `DeletionPolicy` / `UpdateReplacePolicy: Snapshot`. ATOMIC types thread `DeleteContext.finalSnapshotIdentifier` — SDK route ONLY; `CloudControlProvider.delete` fail-closes on it, and when the delete's governing policy is `Delete` (or `skipFinalSnapshot`) hands an RDS cluster / instance or a Neptune cluster to its SDK provider pinned to the CC client's region: those handlers snapshot on every delete (#3993, #4029). `effectiveDeletionPolicy` applies CloudFormation's ABSENT default (`Snapshot` for an RDS cluster or standalone instance) where a DeletionPolicy is CONSUMED, never where it is recorded — `cdkd diff` compares the record to the template (#4030). **The atomic and pre-delete sets must stay DISJOINT**: atomic is tested first.
 
-- **emr-configuration.ts** - CFn -> SDK converters for `AWS::EMR::*` config blobs (renames); the SDK v3 serializer DROPS unknown members.
+- **emr-configuration.ts** - CFn -> SDK converters (renames) for `AWS::EMR::*` blobs; the SDK v3 serializer DROPS unknown members.
 
-- **dynamodb-warm-throughput.ts** - Shared by both DynamoDB providers. `coerceWarmThroughput`'s `spec` presence IS the sendability predicate (write and drift agree); `isWarmThroughputDecrease` fails OPEN on an unreadable live block: AWS rejects a LOWERING `UpdateTable`.
+- **dynamodb-warm-throughput.ts** - Both DynamoDB providers. `coerceWarmThroughput`'s `spec` presence IS the sendability predicate (write and drift agree); `isWarmThroughputDecrease` fails OPEN on an unreadable live block: AWS rejects a LOWERING `UpdateTable`.
 
 - **dynamodb-contributor-insights.ts** - ONE reader for the table-level and per-index `ContributorInsightsSpecification`. The per-index block is NOT an SDK `GlobalSecondaryIndex` member (`UpdateContributorInsights` + `IndexName`); its read-back is GATED on the desired entry declaring it (#1782).
 

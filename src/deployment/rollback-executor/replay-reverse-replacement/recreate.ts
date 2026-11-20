@@ -1,3 +1,4 @@
+import { newCopyDeleteAttributes } from '../../recorded-identity-attributes.js';
 import { withReplayDeletePrinting } from '../replay-scope.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { reverseReplacementNewHoldsName } from '../../replacement-name-holder.js';
@@ -92,7 +93,13 @@ export async function recreateOldResource(
           ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
-          recordedAttributes: current.attributes,
+          // go-to-k/cdkd#6655: never the deleted old resource's dead id.
+          recordedAttributes: newCopyDeleteAttributes(
+            op.resourceType,
+            current.attributes,
+            op.oldDeletedBeforeCreate,
+            op.previousState?.attributes
+          ),
           recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
           recordedNoEchoLeaves: current.noEchoLeaves,

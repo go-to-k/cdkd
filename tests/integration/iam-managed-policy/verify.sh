@@ -18,7 +18,12 @@
 #     holds exactly MemberB and MemberC, and GroupB is empty;
 #   - the destroy path detaches the policy before deleting it and then deletes
 #     the roles - a clean destroy with everything gone proves the
-#     detach-before-delete ordering held.
+#     detach-before-delete ordering held;
+#   - (go-to-k/cdkd#6655) ServiceRole and ReadLogsPolicy, deleted and
+#     re-created under their names outside the stack before the destroy, are
+#     REFUSED by the destroy (their RoleId / PolicyId differs from the
+#     recorded one) and left intact; once removed by hand, a second destroy
+#     finishes.
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -72,11 +77,19 @@ cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
   set +e
+  # go-to-k/cdkd#6655: the role re-created outside the stack in step 3e is
+  # no record's, so no destroy below removes it (it refuses it).
+  if [ -n "${FOREIGN_ROLE:-}" ]; then
+    aws iam delete-role --role-name "${FOREIGN_ROLE}" >/dev/null 2>&1
+  fi
+  if [ -n "${FOREIGN_POLICY:-}" ]; then
+    aws iam delete-policy --policy-arn "${FOREIGN_POLICY}" >/dev/null 2>&1
+  fi
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
-  rm -f "${DEPLOY_LOG}" 2>/dev/null || true
+  rm -f "${DEPLOY_LOG}" "${DEPLOY_LOG}.2" 2>/dev/null || true
   set -e
   exit "${rc}"
 }
@@ -123,7 +136,7 @@ if [ -z "${ROLE_NAME}" ]; then
   exit 1
 fi
 POLICY_ARN=$(aws iam list-policies --scope Local \
-  --query "Policies[?contains(PolicyName, 'ReadLogsPolicy')].Arn" \
+  --query "Policies[?contains(PolicyName, '${STACK}') && contains(PolicyName, 'ReadLogsPolicy')].Arn" \
   --output text | tr '\t' '\n' | awk 'NF{print; exit}')
 if [ -z "${POLICY_ARN}" ]; then
   echo "FAIL: no customer-managed ReadLogsPolicy found" >&2
@@ -211,18 +224,143 @@ WANT_A=$(printf '%s\n%s\n' "${MEMBER_B}" "${MEMBER_C}" | sort | tr '\n' ' ')
 expect_eq "GroupA members" "${WANT_A}" group_members "${GROUP_A}"
 expect_eq "GroupB members" "" group_members "${GROUP_B}"
 
-echo "==> Step 4: destroy (exercises detach-before-delete + role delete)"
+echo "==> Step 3e (go-to-k/cdkd#6655): ${ROLE_NAME} and ReadLogsPolicy are deleted and their names re-used outside the stack"
+# IAM reads are eventually consistent: wait until the read answers the same
+# value three times in a row, so cdkd's own read sees what this step made.
+await_stable() { # usage: await_stable <want> aws <service> <read-verb> [args...]
+  local want="$1" got n=0 i
+  shift
+  for i in $(seq 1 30); do
+    if got=$("$@" 2>&1) && [ "${got}" = "${want}" ]; then
+      n=$((n + 1))
+      [ "${n}" -ge 3 ] && return 0
+    else
+      n=0
+    fi
+    sleep 3
+  done
+  echo "FAIL: '$*' never settled on '${want}' (last: '${got}')" >&2
+  exit 1
+}
+await_gone_stable() { # usage: await_gone_stable aws <service> <read-verb> [args...]
+  local n=0 i
+  for i in $(seq 1 30); do
+    if gone_probe "$@"; then
+      n=$((n + 1))
+      [ "${n}" -ge 3 ] && return 0
+    else
+      n=0
+    fi
+    sleep 3
+  done
+  echo "FAIL: '$*' still answers after its delete" >&2
+  exit 1
+}
+recreate() { # usage: recreate <log> aws iam create-... ; prints the new id
+  local i
+  for i in $(seq 1 12); do
+    if "${@:2}" 2>"$1"; then return 0; fi
+    # Only the delete not having settled yet is retried.
+    grep -q 'EntityAlreadyExists' "$1" || { cat "$1" >&2; exit 1; }
+    sleep 5
+  done
+  echo "FAIL: could not re-create within a minute of its delete: ${*:2}" >&2
+  exit 1
+}
+OLD_ROLE_ID=$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.RoleId --output text)
+OLD_POLICY_ID=$(aws iam get-policy --policy-arn "${POLICY_ARN}" --query Policy.PolicyId --output text)
+POLICY_NAME="${POLICY_ARN##*/}"
+POLICY_PATH="${POLICY_ARN#*:policy}"
+POLICY_PATH="${POLICY_PATH%"${POLICY_NAME}"}"
+# Armed BEFORE the delete: a create that lands while its CLI call reports a
+# failure still leaves a stranger under the name, which no destroy removes.
+FOREIGN_ROLE="${ROLE_NAME}"
+FOREIGN_POLICY="${POLICY_ARN}"
+# After the update nothing is attached to ServiceRole (the policy and the
+# profile moved to SecondRole), so a bare DeleteRole takes it.
+aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null
+aws iam detach-role-policy --role-name "${SECOND_ROLE}" --policy-arn "${POLICY_ARN}" >/dev/null
+for v in $(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+  --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text); do
+  aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${v}" >/dev/null
+done
+aws iam delete-policy --policy-arn "${POLICY_ARN}" >/dev/null
+TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+DOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"logs:DescribeLogGroups","Resource":"*"}]}'
+NEW_ROLE_ID=$(recreate "${DEPLOY_LOG}" aws iam create-role --role-name "${ROLE_NAME}" \
+  --assume-role-policy-document "${TRUST}" --description "re-created outside the cdkd stack (cdkd#6655 integ)" \
+  --query Role.RoleId --output text)
+NEW_POLICY_ID=$(recreate "${DEPLOY_LOG}" aws iam create-policy --policy-name "${POLICY_NAME}" \
+  --path "${POLICY_PATH}" --policy-document "${DOC}" --query Policy.PolicyId --output text)
+# The premise: each name answers with ANOTHER id, the policy under the same ARN.
+if [ -z "${OLD_ROLE_ID}" ] || [ -z "${NEW_ROLE_ID}" ] || [ "${NEW_ROLE_ID}" = "${OLD_ROLE_ID}" ]; then
+  echo "FAIL: premise -- the re-created ${ROLE_NAME} must report another RoleId (old '${OLD_ROLE_ID}', new '${NEW_ROLE_ID}')" >&2
+  exit 1
+fi
+if [ -z "${OLD_POLICY_ID}" ] || [ -z "${NEW_POLICY_ID}" ] || [ "${NEW_POLICY_ID}" = "${OLD_POLICY_ID}" ]; then
+  echo "FAIL: premise -- the re-created ${POLICY_ARN} must report another PolicyId (old '${OLD_POLICY_ID}', new '${NEW_POLICY_ID}')" >&2
+  exit 1
+fi
+await_stable "${NEW_ROLE_ID}" aws iam get-role --role-name "${ROLE_NAME}" --query Role.RoleId --output text
+await_stable "${NEW_POLICY_ID}" aws iam get-policy --policy-arn "${POLICY_ARN}" --query Policy.PolicyId --output text
+echo "    OK: ${ROLE_NAME} and ${POLICY_ARN} re-created outside the stack under other ids"
+
+echo "==> Step 4: destroy (exercises detach-before-delete, and refuses the re-created role)"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose > "${DEPLOY_LOG}" 2>&1
 DESTROY_RC=$?
 set -e
-if [ "${DESTROY_RC}" -ne 0 ]; then
-  echo "FAIL: destroy exited ${DESTROY_RC}" >&2
+# go-to-k/cdkd#6655 (LOAD-BEARING): the delete compares the recorded RoleId
+# with the live one and refuses the stranger. Before the fix this destroy
+# exited 0 and deleted the re-created role.
+if [ "${DESTROY_RC}" -eq 0 ]; then
+  echo "FAIL: destroy exited 0 over a role re-created outside the stack under the recorded name: it was deleted, not refused" >&2
   tail -60 "${DEPLOY_LOG}" >&2
   exit 1
 fi
-echo "    OK: destroy exited 0"
+# The refusal's own line, keyed on two independent markers so a reworded
+# refusal fails loudly instead of matching nothing.
+# One awk pass (no `grep | grep -q`: under pipefail the first grep's SIGPIPE
+# would read as a failed match).
+refusal_line() { # usage: refusal_line <head> <tail> -> 0 when one line holds both
+  awk -v h="$1" -v t="$2" 'index($0, h) && index($0, t) { f = 1 } END { exit !f }' "${DEPLOY_LOG}"
+}
+if ! refusal_line "Cannot delete IAM role ServiceRole" "RoleId differs from the recorded one"; then
+  if grep -qF "Cannot delete IAM role ServiceRole" "${DEPLOY_LOG}"; then
+    echo "FAIL: the ServiceRole refusal no longer says 'RoleId differs from the recorded one': update this check" >&2
+  else
+    echo "FAIL: destroy exited ${DESTROY_RC} without the ServiceRole identity refusal" >&2
+  fi
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+if ! refusal_line "Cannot delete IAM managed policy ReadLogsPolicy" "PolicyId differs from the recorded one"; then
+  if grep -qF "Cannot delete IAM managed policy ReadLogsPolicy" "${DEPLOY_LOG}"; then
+    echo "FAIL: the ReadLogsPolicy refusal no longer says 'PolicyId differs from the recorded one': update this check" >&2
+  else
+    echo "FAIL: destroy exited ${DESTROY_RC} without the ReadLogsPolicy identity refusal" >&2
+  fi
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+for id in "${NEW_ROLE_ID}" "${OLD_ROLE_ID}" "${NEW_POLICY_ID}" "${OLD_POLICY_ID}"; do
+  if grep -qF "${id}" "${DEPLOY_LOG}"; then
+    echo "FAIL: the destroy output prints an AWS-minted id" >&2
+    exit 1
+  fi
+done
+STILL_ID=$(aws iam get-role --role-name "${ROLE_NAME}" --query Role.RoleId --output text)
+if [ "${STILL_ID}" != "${NEW_ROLE_ID}" ]; then
+  echo "FAIL: the re-created ${ROLE_NAME} is not intact after the refused destroy (RoleId '${STILL_ID}')" >&2
+  exit 1
+fi
+STILL_POLICY_ID=$(aws iam get-policy --policy-arn "${POLICY_ARN}" --query Policy.PolicyId --output text)
+if [ "${STILL_POLICY_ID}" != "${NEW_POLICY_ID}" ]; then
+  echo "FAIL: the re-created ${POLICY_ARN} is not intact after the refused destroy (PolicyId '${STILL_POLICY_ID}')" >&2
+  exit 1
+fi
+echo "    OK: destroy exited ${DESTROY_RC}, refusing the re-created ${ROLE_NAME} and ${POLICY_ARN} and leaving them intact"
 
 echo "==> Step 4b (LOAD-BEARING): the UserToGroupAddition delete ran on its recorded Users"
 # The group's own delete would clear the membership anyway, so zero orphans
@@ -252,6 +390,28 @@ if grep -qE "malformed Users in state|missing from state — membership not remo
   exit 1
 fi
 echo "    OK: the UserToGroupAddition delete removed ${MEMBER_C} from ${GROUP_A}, with no skip"
+
+echo "==> Step 4c: remove the re-created role and policy (no record's), then destroy what the records still hold"
+aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null
+aws iam delete-policy --policy-arn "${POLICY_ARN}" >/dev/null
+FOREIGN_ROLE=""
+FOREIGN_POLICY=""
+# IAM reads lag the delete; a read still answering with a re-created id
+# would be refused again.
+await_gone_stable aws iam get-role --role-name "${ROLE_NAME}"
+await_gone_stable aws iam get-policy --policy-arn "${POLICY_ARN}"
+set +e
+node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose > "${DEPLOY_LOG}.2" 2>&1
+DESTROY_RC=$?
+set -e
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "FAIL: the second destroy exited ${DESTROY_RC}" >&2
+  tail -60 "${DEPLOY_LOG}.2" >&2
+  exit 1
+fi
+rm -f "${DEPLOY_LOG}.2"
+echo "    OK: second destroy exited 0"
 
 echo "==> Step 5: assert 0 orphans"
 assert_gone "state file still exists after destroy" \

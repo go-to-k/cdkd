@@ -56,6 +56,8 @@ import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { attributesAfterUpdate } from '../recorded-identity-attributes.js';
+import { differingIdentityWarning } from '../../provisioning/recorded-identity.js';
 import {
   isUpdateUnsupportedError,
   markNonRetryable,
@@ -807,18 +809,17 @@ export async function updateInPlace(
   const keepsParameterRefusal =
     !dischargedByReplacement && hasUnverifiableParameterRefusal(currentResource);
 
-  // Attributes: prefer the update result's fresh set; when the
-  // provider returned none AND the resource was updated IN PLACE,
-  // carry the previously-stored (create-time) attributes forward —
-  // an in-place update never invalidates them, and dropping them
-  // would degrade every later Fn::GetAtt on this resource to the
-  // physical-id fallback (observed live: an FSx update wiped
-  // LustreMountName / DNSName and the stack outputs regressed to
-  // the file-system id). A REPLACED resource must NOT inherit the
-  // old resource's attributes — its create result is authoritative
-  // (and absent attributes stay absent).
-  const carriedAttributes =
-    result.attributes ?? (result.wasReplaced ? undefined : currentResource.attributes);
+  // Attributes: the update's fresh set, else (updated IN PLACE) the recorded
+  // one, as dropping it degrades every later Fn::GetAtt to the physical-id
+  // fallback (an FSx update wiped LustreMountName / DNSName). A REPLACED
+  // resource never inherits the old one's. go-to-k/cdkd#6655: in place, a
+  // recorded identity id is never replaced (`attributesAfterUpdate`).
+  const carriedAttributes = attributesAfterUpdate(
+    resourceType,
+    currentResource.attributes,
+    result,
+    (key) => engine.logger.warn(differingIdentityWarning(logicalId, resourceType, key))
+  );
 
   // Issue #2274: registered against `carriedAttributes`, not
   // `result.attributes`, because those are the values that land in the

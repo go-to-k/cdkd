@@ -6,6 +6,7 @@ import {
 } from '../../../src/deployment/intrinsic-function-resolver.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import type { StaleAttributeHealOutcome } from '../../../src/deployment/stale-attribute-heal.js';
+import { attributesAfterUpdate } from '../../../src/deployment/recorded-identity-attributes.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => fns };
@@ -202,6 +203,35 @@ describe('IntrinsicFunctionResolver - heal before constructing (issue #3627)', (
     await expect(
       new IntrinsicFunctionResolver('us-east-1').resolve({ 'Fn::GetAtt': ['X', 'Arn'] }, context)
     ).resolves.toBe(arn);
+    expect(healer).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#6655: a legacy record (no DbiResourceId) updated in place in
+  // this deploy acquires the id its update returned, so a GetAtt later in the
+  // same deploy reads it from the record. A record the update rewrote is not
+  // the one the deploy loaded, so the heal would not run for it.
+  it('a legacy DBInstance record updated in place resolves DbiResourceId from the update result', async () => {
+    const TYPE = 'AWS::RDS::DBInstance';
+    const healer = vi.fn(async (): Promise<StaleAttributeHealOutcome> => ({ kind: 'not-attempted' }));
+    const attributes = attributesAfterUpdate(TYPE, { 'Endpoint.Address': 'db.example' }, {
+      attributes: { 'Endpoint.Address': 'db.example', DbiResourceId: 'db-ABCDEFG' },
+    });
+    const context: ResolverContext = {
+      template: { Resources: { Db: { Type: TYPE, Properties: {} } } },
+      resources: {
+        Db: {
+          physicalId: 'mydb',
+          resourceType: TYPE,
+          properties: {},
+          attributes: attributes!,
+          dependencies: [],
+        },
+      },
+      attributeHealer: healer,
+    };
+    await expect(
+      new IntrinsicFunctionResolver('us-east-1').resolve({ 'Fn::GetAtt': ['Db', 'DbiResourceId'] }, context)
+    ).resolves.toBe('db-ABCDEFG');
     expect(healer).not.toHaveBeenCalled();
   });
 
