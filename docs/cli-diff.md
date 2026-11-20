@@ -268,6 +268,7 @@ Running the diff again does not clear exit `3`. One of these has to be fixed:
 | Condition | What to do |
 | --- | --- |
 | A resource to adopt from a rollback is claimed by another cdkd stack | Remove it from the stack that should not own it. |
+| The resource holding the name of one to adopt from a rollback is not the one cdkd created | Adopt it with `cdkd import` if it belongs in this stack; otherwise free the name. |
 | Part of the state record cannot be read | Repair the state record. |
 | The record of a resource to adopt from a rollback is damaged | Repair the state record. |
 | A resource's `Type` changes to or from `AWS::CloudFormation::Stack` | Give the new resource a different logical ID, or remove it in one deploy and add the replacement in the next. |

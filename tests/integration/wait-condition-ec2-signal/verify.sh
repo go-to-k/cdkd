@@ -74,8 +74,11 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
-echo "==> Phase 1: Deploy (user data signals the handle; WaitCondition Count 2)"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+echo "==> Phase 1: Deploy (user data signals the handle; WaitCondition Count 2; --concurrency 1)"
+# --concurrency 1 (issue #6704): the template has no DependsOn from the wait to
+# the instance, so only the implicit signaller edge stops the wait from taking
+# the one slot first and timing out.
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --concurrency 1 --yes
 
 STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 read_state() { # usage: read_state <js expression over s>
@@ -130,7 +133,76 @@ grep -qE 'wait-condition-signals/Handle-[^ ]*\.json\?\*\*\*\*' <<<"${SHOWN}" \
   || { echo "FAIL: state show does not print the handle URL in its masked form" >&2; exit 1; }
 echo "    OK: state show masks the handle URL's signature"
 
-echo "==> Phase 2: Destroy"
+echo "==> Phase 2: a pre-#6694 handle (placeholder id) a wait condition waits on is re-issued (#6704)"
+# Seed what an earlier cdkd left: the handle under a placeholder id, no signal
+# object, and no WaitCondition record (an earlier cdkd refused that type).
+OLD_INSTANCE_ID=$(read_state 'Object.values(s.resources).find((r) => r.resourceType === "AWS::EC2::Instance").physicalId')
+VERS_JSON=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "${SIGNAL_KEY}" \
+  --region "${REGION}" --output json)
+VERSION_IDS=$(printf '%s' "${VERS_JSON}" | KEY="${SIGNAL_KEY}" node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const r = d.trim() === "" ? {} : JSON.parse(d);
+    const all = (r.Versions ?? []).concat(r.DeleteMarkers ?? []);
+    for (const v of all) if (v.Key === process.env.KEY) process.stdout.write(v.VersionId + "\n");
+  });')
+for VID in ${VERSION_IDS}; do
+  aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${SIGNAL_KEY}" --version-id "${VID}" \
+    --region "${REGION}" >/dev/null
+done
+LEGACY_ID="cdkd-wait-condition-handle-Handle-00000000-0000-4000-8000-000000000000"
+STATE_TMP=$(mktemp)
+printf '%s' "${STATE_JSON}" | LEGACY_ID="${LEGACY_ID}" node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const s = JSON.parse(d);
+    s.resources.Handle.physicalId = process.env.LEGACY_ID;
+    delete s.resources.Wait;
+    delete s.outputs.WaitData;
+    process.stdout.write(JSON.stringify(s));
+  });' > "${STATE_TMP}"
+aws s3 cp "${STATE_TMP}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+rm -f "${STATE_TMP}"
+echo "    seeded a placeholder handle and dropped the WaitCondition record"
+
+# The instance gets a new construct id, so it is re-created and runs its user
+# data against the re-issued URL; the WaitCondition is a CREATE waiting on it.
+CDKD_TEST_NEW_INSTANCE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --concurrency 1 --yes
+
+STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+HANDLE_URL2=$(read_state 's.resources.Handle && s.resources.Handle.physicalId')
+case "${HANDLE_URL2}" in
+  https://*X-Amz-Signature=*) echo "    OK: the placeholder was re-issued as a signal URL" ;;
+  *) echo "FAIL: handle physical id after the re-issue is not a pre-signed URL" >&2; exit 1 ;;
+esac
+[ "${HANDLE_URL2}" != "${HANDLE_URL}" ] || { echo "FAIL: the re-issue reused the phase 1 URL" >&2; exit 1; }
+SIGNAL_KEY=$(printf '%s' "${HANDLE_URL2}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const p = decodeURIComponent(new URL(d).pathname);
+    const at = p.indexOf("/wait-condition-signals/");
+    process.stdout.write(at < 0 ? "" : p.slice(at + 1));
+  });')
+WAIT_DATA=$(read_state 's.outputs && s.outputs.WaitData')
+DATA_OK=$(printf '%s' "${WAIT_DATA}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    let o; try { o = JSON.parse(d); } catch { o = {}; }
+    process.stdout.write(o.boot === "booted" && o.app === "ready" && Object.keys(o).length === 2 ? "yes" : "no");
+  });')
+[ "${DATA_OK}" = "yes" ] || { echo "FAIL: WaitData after the re-issue is '${WAIT_DATA}'" >&2; exit 1; }
+echo "    OK: the re-created instance signalled the re-issued URL (${WAIT_DATA})"
+NEW_INSTANCE_ID=$(read_state 'Object.values(s.resources).find((r) => r.resourceType === "AWS::EC2::Instance").physicalId')
+[ "${NEW_INSTANCE_ID}" != "${OLD_INSTANCE_ID}" ] || { echo "FAIL: the instance was not re-created" >&2; exit 1; }
+OLD_STATE=$(aws ec2 describe-instances --instance-ids "${OLD_INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].State.Name' --output text)
+case "${OLD_STATE}" in
+  terminated | shutting-down) echo "    OK: the old instance ${OLD_INSTANCE_ID} is ${OLD_STATE}" ;;
+  *) echo "FAIL: old instance ${OLD_INSTANCE_ID} is ${OLD_STATE}" >&2; exit 1 ;;
+esac
+
+echo "==> Phase 3: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 INSTANCE_ID=$(read_state 'Object.values(s.resources).find((r) => r.resourceType === "AWS::EC2::Instance").physicalId')

@@ -34,7 +34,11 @@ export class WaitConditionEc2SignalStack extends cdk.Stack {
       `curl -sSf -X PUT -H 'Content-Type:' --data-binary '{"Status":"SUCCESS","UniqueId":"app","Data":"ready","Reason":"app up"}' '${handle.ref}'`
     );
 
-    const instance = new ec2.Instance(this, 'Instance', {
+    // CDKD_TEST_NEW_INSTANCE=true (issue #6704, verify.sh Phase 2): a new
+    // construct id, so the instance is re-created and runs its user data
+    // again against the re-issued handle URL.
+    const instanceId = process.env.CDKD_TEST_NEW_INSTANCE === 'true' ? 'Instance2' : 'Instance';
+    const instance = new ec2.Instance(this, instanceId, {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
@@ -43,12 +47,15 @@ export class WaitConditionEc2SignalStack extends cdk.Stack {
       requireImdsv2: true,
     });
 
+    // Deliberately NO `wait.node.addDependency(instance)` (issue #6704):
+    // verify.sh deploys with `--concurrency 1`, so only cdkd's implicit
+    // signaller edge keeps the wait from taking the one slot before the
+    // instance that signals it exists.
     const wait = new cloudformation.CfnWaitCondition(this, 'Wait', {
       handle: handle.ref,
       timeout: '900',
       count: 2,
     });
-    wait.node.addDependency(instance);
 
     new cdk.CfnOutput(this, 'WaitData', { value: wait.attrData });
     new cdk.CfnOutput(this, 'InstanceId', { value: instance.instanceId });

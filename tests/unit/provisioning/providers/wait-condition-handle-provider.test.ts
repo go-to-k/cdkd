@@ -28,7 +28,9 @@ function fakeStore(opts: { bucket?: string; expiresInMs?: number; issueError?: E
     return {
       url: `https://${BUCKET}.s3.amazonaws.com/wait-condition-signals/${logicalId}-${UUID}.json?X-Amz-Signature=s`,
       key: `wait-condition-signals/${logicalId}-${UUID}.json`,
-      expiresAt: new Date(Date.now() + (opts.expiresInMs ?? 7 * 24 * 3600 * 1000)),
+      // A full 12 h URL with long-lived credentials unless the test shortens it.
+      expiresAt: new Date(Date.now() + (opts.expiresInMs ?? 12 * 3600 * 1000)),
+      limitedByCredentials: opts.expiresInMs !== undefined,
     };
   });
   const deleteSignals = vi.fn().mockResolvedValue(undefined);
@@ -94,6 +96,25 @@ describe('WaitConditionHandleProvider', () => {
         { expectedRegion: 'us-west-2' }
       );
       expect(result).toEqual({ physicalId: URL_ID, wasReplaced: false, attributes: {} });
+    });
+  });
+
+  describe('update of a pre-#6694 placeholder (#6704)', () => {
+    it('issues a signal URL and reports the replacement', async () => {
+      const { store, issueSignalUrl } = fakeStore({ bucket: BUCKET });
+      const result = await new WaitConditionHandleProvider(store).update(
+        'Placeholder',
+        `cdkd-wait-condition-handle-Placeholder-${UUID}`,
+        TYPE,
+        {},
+        {}
+      );
+      expect(issueSignalUrl).toHaveBeenCalledWith('Placeholder');
+      expect(result).toEqual({
+        physicalId: `https://${BUCKET}.s3.amazonaws.com/${KEY}?X-Amz-Signature=s`,
+        wasReplaced: true,
+        attributes: {},
+      });
     });
   });
 

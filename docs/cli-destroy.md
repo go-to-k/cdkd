@@ -153,10 +153,33 @@ says what to do.
 | A damaged state record | `STATE_RESOURCES_MALFORMED`, exit `1` | [A damaged state record](cli-destroy-edge-cases.md#a-damaged-state-record-refuses-the-destroy) |
 | Another command wrote the stack's state while the confirmation prompt waited | `STATE_CHANGED`, exit `1`, nothing deleted; re-run the destroy | — |
 | An unfinished `cdkd refactor` move involves the stack | `REFACTOR_UNFINISHED`, exit `1` | [If a refactor is interrupted](cli-refactor.md#if-a-refactor-is-interrupted) |
+| The resource under a recorded name is not the one cdkd created | That resource is refused, exit `2` | [Resources deleted by name](#resources-deleted-by-name) |
 
 For `terminationProtection`, the other way through is to set it to `false` in
 your CDK code and redeploy. For an imported output, destroy the importing
 stack first.
+
+## Resources deleted by name
+
+Many types are deleted by the name their state record holds. For some of
+them cdkd also compares an id that AWS assigns at create and never reuses,
+such as an IAM role's `RoleId`, with the live one before the delete. When
+they differ, the resource holding the name is not the one cdkd created. cdkd
+sends no delete, keeps the record, and prints the `cdkd state orphan` command
+that drops it.
+
+Every other name-addressed type is deleted by its name alone: an SNS topic,
+an SQS queue, a Lambda function and an SSM parameter among them. cdkd cannot
+tell the resource it created from one created under the same name after it
+was deleted, and deletes whichever holds the name. A record written before
+cdkd recorded the id is deleted by name the same way.
+
+If you delete a resource of a deployed stack by hand and create another under
+its name, drop the stack's record of it before the next destroy:
+
+```bash
+cdkd state orphan MyStack --stack-region us-east-1 --resource MyTopic
+```
 
 ## The same stack name under another state prefix
 

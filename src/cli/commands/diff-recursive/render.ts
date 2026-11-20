@@ -13,6 +13,7 @@ import type { DiffTreeNode, UnreadableContainer } from './types.js';
 import { SDK_MIGRATION_TOKEN } from './routes.js';
 import { nodeHasChanges, unreadableCount } from './tree.js';
 import { outputNameRow } from './json.js';
+import { LEGACY_HANDLE_HEAL_REASON } from '../../../analyzer/diff-calculator/legacy-handle-heal.js';
 
 /** The name the human preview prints for each {@link UnreadableContainer}. */
 const UNREADABLE_CONTAINER_NAMES: Record<UnreadableContainer, string> = {
@@ -209,7 +210,10 @@ export function renderChangeLines(
         );
         // go-to-k/cdkd#6509: the provider re-creates the resource for this
         // update. The reason is one of the provider's fixed sentences.
-        if (change.providerReplacement !== undefined) {
+        if (change.providerReplacement === LEGACY_HANDLE_HEAL_REASON) {
+          // go-to-k/cdkd#6704: nothing exists behind the placeholder to delete.
+          logFn(`      [new physical id: ${LEGACY_HANDLE_HEAL_REASON}]`);
+        } else if (change.providerReplacement !== undefined) {
           logFn(
             `      [requires replacement: ${stripForDisplay(change.providerReplacement)}; ` +
               `deleted, then created again]`

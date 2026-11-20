@@ -34,14 +34,18 @@ import { purgeNoncurrentKeyVersions } from '../state/s3-noncurrent-version-purge
 import { listSignalVersions } from './wait-condition-signal-versions.js';
 import { WAIT_CONDITION_SIGNAL_PREFIX } from '../state/state-prefix.js';
 
-/** SigV4's ceiling for a pre-signed URL: seven days. */
-export const SIGNAL_URL_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
+/**
+ * 12 hours: what CloudFormation signs its own handle URL for (measured,
+ * `X-Amz-Expires=43199`), and the longest `Timeout` a wait condition takes.
+ * Longer would only widen the window the bearer URL is usable (#6704).
+ */
+export const SIGNAL_URL_EXPIRES_IN_SECONDS = 12 * 60 * 60;
 
 /** A signal body larger than this is ignored: CloudFormation's own cap is far smaller. */
 export const MAX_SIGNAL_BYTES = 64 * 1024;
 
-/** The physical id a pre-#6694 cdkd recorded for a handle: no URL behind it. */
-export const LEGACY_HANDLE_ID_PREFIX = 'cdkd-wait-condition-handle-';
+export { LEGACY_HANDLE_ID_PREFIX } from './wait-condition-handle-id.js';
+import { isLegacyHandleId } from './wait-condition-handle-id.js';
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const SIGNAL_KEY = new RegExp(
@@ -66,7 +70,7 @@ export type HandleUrlVerdict =
   | { kind: 'foreign' };
 
 export function classifyHandleUrl(handle: string, bucket: string): HandleUrlVerdict {
-  if (handle.startsWith(LEGACY_HANDLE_ID_PREFIX)) return { kind: 'legacy' };
+  if (isLegacyHandleId(handle)) return { kind: 'legacy' };
   let parsed: URL;
   try {
     parsed = new URL(handle);
@@ -193,10 +197,13 @@ export class WaitConditionSignalStore {
 
   /**
    * Issue a handle URL for a new key. `expiresAt` is when the URL stops
-   * working: seven days, or sooner when the signing credentials are temporary
-   * and expire first (SigV4 cannot outlive its session).
+   * working: 12 hours, or sooner when the signing credentials are temporary
+   * and expire first (SigV4 cannot outlive its session) — then
+   * `limitedByCredentials` is set.
    */
-  async issueSignalUrl(logicalId: string): Promise<{ url: string; key: string; expiresAt: Date }> {
+  async issueSignalUrl(
+    logicalId: string
+  ): Promise<{ url: string; key: string; expiresAt: Date; limitedByCredentials: boolean }> {
     const bucket = this.requireBucket();
     const client = await this.client();
     const key = signalKeyFor(logicalId);
@@ -204,6 +211,7 @@ export class WaitConditionSignalStore {
       expiresIn: SIGNAL_URL_EXPIRES_IN_SECONDS,
     });
     let expiresAt = new Date(Date.now() + SIGNAL_URL_EXPIRES_IN_SECONDS * 1000);
+    let limitedByCredentials = false;
     try {
       const provider = (client as { config?: { credentials?: unknown } }).config?.credentials;
       const creds =
@@ -212,11 +220,12 @@ export class WaitConditionSignalStore {
           : undefined;
       if (creds?.expiration instanceof Date && creds.expiration < expiresAt) {
         expiresAt = creds.expiration;
+        limitedByCredentials = true;
       }
     } catch {
       // The URL is already signed; its lifetime is only reported.
     }
-    return { url, key, expiresAt };
+    return { url, key, expiresAt, limitedByCredentials };
   }
 
   /**
