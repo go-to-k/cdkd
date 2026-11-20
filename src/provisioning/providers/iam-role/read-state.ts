@@ -22,6 +22,18 @@ import {
   withoutSiblingAttachedArns,
 } from '../../iam-sibling-managed-policies.js';
 import { isRoleName, roleIdentityToken } from './shared.js';
+import type { ReadCurrentStateContext } from '../../../types/resource.js';
+import {
+  declaredMemberDocument,
+  type MemberRead,
+  policyDocumentMatchesDeclared,
+  warnUnsettledMember,
+} from '../../settle-after-own-write.js';
+import {
+  type OwnWriteMember,
+  principalOwnWriteMembers,
+  settleOwnWriteMembers,
+} from '../../settle-own-write-members.js';
 
 /**
  * Resolve a single `Fn::GetAtt` attribute for an existing IAM role.
@@ -188,15 +200,19 @@ export async function readRoleIdIfExists(
  *    console-side tag ADD on an originally-untagged role surfaces as
  *    drift on the v3 observedProperties baseline.
  *
+ * On the capture right after cdkd's own write (`context.afterOwnWrite`,
+ * go-to-k/cdkd#6609) each declared member that disagrees is re-read alone
+ * ({@link roleOwnWriteMembers}); every other read takes the first answer.
+ *
  * Returns `RESOURCE_NOT_FOUND` when the role is gone (`NoSuchEntityException`).
  */
 export async function readCurrentState(
   this: IAMRoleProvider,
   physicalId: string,
-  _logicalId: string,
+  logicalId: string,
   _resourceType: string,
   properties?: Record<string, unknown>,
-  context?: import('../../../types/resource.js').ReadCurrentStateContext
+  context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let role;
   try {
@@ -216,121 +232,22 @@ export async function readCurrentState(
     result['MaxSessionDuration'] = role.MaxSessionDuration;
   }
   if (role.Path !== undefined) result['Path'] = role.Path;
-  // Always-emit (PR #145 pattern): surfaces console-side ADDs on roles
-  // deployed without a boundary. AWS returns the boundary as a nested
-  // `{ PermissionsBoundaryArn, PermissionsBoundaryType }` shape; cdkd
-  // state stores the bare ARN string (matches CFn input shape).
-  result['PermissionsBoundary'] = role.PermissionsBoundary?.PermissionsBoundaryArn ?? '';
-  if (role.AssumeRolePolicyDocument) {
-    // GetRole returns AssumeRolePolicyDocument URL-encoded. Decode and
-    // parse so the comparator can match cdkd state (which holds the
-    // already-resolved object form).
-    try {
-      result['AssumeRolePolicyDocument'] = JSON.parse(
-        decodeURIComponent(role.AssumeRolePolicyDocument)
-      ) as unknown;
-    } catch {
-      // Fall back to the raw string if decoding / parsing fails. The
-      // comparator handles primitive vs object mismatches correctly.
-      result['AssumeRolePolicyDocument'] = role.AssumeRolePolicyDocument;
-    }
-  }
+  Object.assign(result, roleDocumentMembers(role));
 
   // ManagedPolicyArns — string[] of attached managed policy ARNs.
   try {
-    const attached = await this.iamClient.send(
-      new ListAttachedRolePoliciesCommand({ RoleName: physicalId })
-    );
-    const arns = (attached.AttachedPolicies ?? [])
-      .map((p) => p.PolicyArn)
-      .filter((arn): arn is string => !!arn);
-    // go-to-k/cdkd#6324: a sibling `AWS::IAM::ManagedPolicy` attaching
-    // itself via `Roles: [role]` is managed by that resource, not the role.
-    result['ManagedPolicyArns'] = withoutSiblingAttachedArns(
-      arns,
-      collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Roles'),
-      properties
+    result['ManagedPolicyArns'] = await readManagedPolicyArns.call(
+      this,
+      physicalId,
+      properties,
+      context
     );
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
 
-  // Inline Policies — `[{PolicyName, PolicyDocument}]`. Cap at IAM's
-  // documented 10-inline-policies-per-role limit to bound the API
-  // budget; ListRolePolicies is paginated for forward-compat anyway.
   try {
-    const policyNames: string[] = [];
-    let policyMarker: string | undefined;
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const listResp = await this.iamClient.send(
-        new ListRolePoliciesCommand({
-          RoleName: physicalId,
-          ...(policyMarker ? { Marker: policyMarker } : {}),
-        })
-      );
-      for (const name of listResp.PolicyNames ?? []) policyNames.push(name);
-      if (!listResp.IsTruncated) break;
-      policyMarker = listResp.Marker;
-    }
-
-    // Issue #323: filter out inline policies that are managed by a
-    // SEPARATE `AWS::IAM::Policy` resource attached via `Roles: [role]`.
-    // CDK's `iam.Policy({ roles: [r] })` (and L2 helpers like
-    // `taskRole.addToPolicy(...)` / `bucket.grantRead(role)` /
-    // `ContainerImage.fromEcrRepository(repo)`'s execution-role grant)
-    // creates a separate `AWS::IAM::Policy` resource — which AWS
-    // implements via `iam:PutRolePolicy`, so those inline policies
-    // appear in `ListRolePolicies` output. Without this filter every
-    // such Role fires false drift (state.Policies = [] vs aws =
-    // [{...DefaultPolicy*}]).
-    const managedByOtherResource = collectInlinePolicyNamesManagedBySiblings(
-      physicalId,
-      context,
-      'Roles'
-    );
-    const filteredNames = policyNames.filter((n) => !managedByOtherResource.has(n));
-
-    // Fetch every body in parallel (max 10; well under any IAM rate
-    // limit). URL-decode + JSON-parse so the comparator sees the same
-    // object shape state holds after intrinsic resolution.
-    const bodies = new Map<string, unknown>();
-    await Promise.all(
-      filteredNames.map(async (name) => {
-        const resp = await this.iamClient.send(
-          new GetRolePolicyCommand({ RoleName: physicalId, PolicyName: name })
-        );
-        if (!resp.PolicyDocument) return;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(decodeURIComponent(resp.PolicyDocument));
-        } catch {
-          parsed = resp.PolicyDocument;
-        }
-        bodies.set(name, parsed);
-      })
-    );
-
-    // Reconcile order against state's `Policies` so a positional array
-    // compare doesn't fire purely from `ListRolePolicies` returning
-    // lexicographic order. AWS-only entries (console adds) tail-append
-    // so length / content mismatch still surfaces them as drift.
-    const statePolicies =
-      (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [];
-    const remaining = new Set(bodies.keys());
-    const inline: Array<{ PolicyName: string; PolicyDocument: unknown }> = [];
-    for (const sp of statePolicies) {
-      const name = sp?.PolicyName;
-      if (typeof name !== 'string') continue;
-      if (bodies.has(name)) {
-        inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
-        remaining.delete(name);
-      }
-    }
-    for (const name of [...remaining].sort()) {
-      inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
-    }
-    result['Policies'] = inline;
+    result['Policies'] = await readInlinePolicies.call(this, physicalId, properties, context);
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
@@ -363,7 +280,198 @@ export async function readCurrentState(
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
 
+  if (context?.afterOwnWrite === true && properties !== undefined) {
+    await settleOwnWriteMembers(
+      result,
+      roleOwnWriteMembers.call(this, physicalId, properties, context),
+      this.ownWriteRereadDelaysMs,
+      (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::Role', key)
+    );
+  }
   return result;
+}
+
+/**
+ * The role's `PermissionsBoundary` and `AssumeRolePolicyDocument` from one
+ * `GetRole` answer.
+ *
+ *  - `PermissionsBoundary` — emitted as `''` placeholder when AWS has none,
+ *    so a console-side ADD on a role deployed without a boundary surfaces as
+ *    drift (the comparator's top-level walk is state-keys-only). AWS returns
+ *    the nested `{ PermissionsBoundaryArn, PermissionsBoundaryType }`; cdkd
+ *    state stores the bare ARN string (the CFn input shape).
+ *  - `AssumeRolePolicyDocument` — URL-encoded JSON; URL-decoded and parsed
+ *    so the comparator matches state's already-resolved object form, the raw
+ *    string when that fails.
+ */
+function roleDocumentMembers(role: {
+  PermissionsBoundary?: { PermissionsBoundaryArn?: string | undefined } | undefined;
+  AssumeRolePolicyDocument?: string | undefined;
+}): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    PermissionsBoundary: role.PermissionsBoundary?.PermissionsBoundaryArn ?? '',
+  };
+  if (role.AssumeRolePolicyDocument) {
+    try {
+      out['AssumeRolePolicyDocument'] = JSON.parse(
+        decodeURIComponent(role.AssumeRolePolicyDocument)
+      ) as unknown;
+    } catch {
+      out['AssumeRolePolicyDocument'] = role.AssumeRolePolicyDocument;
+    }
+  }
+  return out;
+}
+
+/**
+ * The attached managed policy ARNs (`ListAttachedRolePolicies`), minus the
+ * ARN of a sibling `AWS::IAM::ManagedPolicy` attached via its `Roles`
+ * (go-to-k/cdkd#6324) unless the role's own template declares it too.
+ */
+async function readManagedPolicyArns(
+  this: IAMRoleProvider,
+  physicalId: string,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): Promise<string[]> {
+  const attached = await this.iamClient.send(
+    new ListAttachedRolePoliciesCommand({ RoleName: physicalId })
+  );
+  const arns = (attached.AttachedPolicies ?? [])
+    .map((p) => p.PolicyArn)
+    .filter((arn): arn is string => !!arn);
+  return withoutSiblingAttachedArns(
+    arns,
+    collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Roles'),
+    properties
+  );
+}
+
+/**
+ * Inline policies, `[{PolicyName, PolicyDocument}]`: `ListRolePolicies` for
+ * the names, `GetRolePolicy` per name for the body (URL-decoded and parsed).
+ * Ordered by state's `Policies` so a positional compare does not fire on
+ * `ListRolePolicies`' lexicographic order; AWS-only entries (console adds)
+ * tail-append so they still surface as drift. Capped by IAM's
+ * 10-inline-policies-per-role limit; paginated for forward-compat anyway.
+ */
+async function readInlinePolicies(
+  this: IAMRoleProvider,
+  physicalId: string,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): Promise<Array<{ PolicyName: string; PolicyDocument: unknown }>> {
+  const policyNames: string[] = [];
+  let policyMarker: string | undefined;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const listResp = await this.iamClient.send(
+      new ListRolePoliciesCommand({
+        RoleName: physicalId,
+        ...(policyMarker ? { Marker: policyMarker } : {}),
+      })
+    );
+    for (const name of listResp.PolicyNames ?? []) policyNames.push(name);
+    if (!listResp.IsTruncated) break;
+    policyMarker = listResp.Marker;
+  }
+
+  // Issue #323: filter out inline policies that are managed by a
+  // SEPARATE `AWS::IAM::Policy` resource attached via `Roles: [role]`.
+  // CDK's `iam.Policy({ roles: [r] })` (and L2 helpers like
+  // `taskRole.addToPolicy(...)` / `bucket.grantRead(role)` /
+  // `ContainerImage.fromEcrRepository(repo)`'s execution-role grant)
+  // creates a separate `AWS::IAM::Policy` resource — which AWS
+  // implements via `iam:PutRolePolicy`, so those inline policies
+  // appear in `ListRolePolicies` output. Without this filter every
+  // such Role fires false drift (state.Policies = [] vs aws =
+  // [{...DefaultPolicy*}]).
+  const managedByOtherResource = collectInlinePolicyNamesManagedBySiblings(
+    physicalId,
+    context,
+    'Roles'
+  );
+  const filteredNames = policyNames.filter((n) => !managedByOtherResource.has(n));
+
+  // Fetch every body in parallel (max 10; well under any IAM rate limit).
+  const bodies = new Map<string, unknown>();
+  await Promise.all(
+    filteredNames.map(async (name) => {
+      const resp = await this.iamClient.send(
+        new GetRolePolicyCommand({ RoleName: physicalId, PolicyName: name })
+      );
+      if (!resp.PolicyDocument) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(decodeURIComponent(resp.PolicyDocument));
+      } catch {
+        parsed = resp.PolicyDocument;
+      }
+      bodies.set(name, parsed);
+    })
+  );
+
+  const statePolicies =
+    (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [];
+  const remaining = new Set(bodies.keys());
+  const inline: Array<{ PolicyName: string; PolicyDocument: unknown }> = [];
+  for (const sp of statePolicies) {
+    const name = sp?.PolicyName;
+    if (typeof name !== 'string') continue;
+    if (bodies.has(name)) {
+      inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
+      remaining.delete(name);
+    }
+  }
+  for (const name of [...remaining].sort()) {
+    inline.push({ PolicyName: name, PolicyDocument: bodies.get(name) });
+  }
+  return inline;
+}
+
+/**
+ * The members a post-write capture settles on a role (go-to-k/cdkd#6609):
+ * each is a separate IAM call (`UpdateAssumeRolePolicy`,
+ * `Put`/`DeleteRolePermissionsBoundary`, `Attach`/`DetachRolePolicy`,
+ * `Put`/`DeleteRolePolicy`), and IAM is documented as eventually consistent,
+ * so the read right after can still show what the write replaced. Only a
+ * member the template declares is settled; each re-read is the member's own
+ * call.
+ */
+function roleOwnWriteMembers(
+  this: IAMRoleProvider,
+  physicalId: string,
+  properties: Record<string, unknown>,
+  context: ReadCurrentStateContext
+): OwnWriteMember<unknown>[] {
+  const members: OwnWriteMember<unknown>[] = [];
+  const getRoleMember = (key: string) => async (): Promise<MemberRead<unknown>> => {
+    const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
+    if (!resp.Role) return 'failed';
+    const value = roleDocumentMembers(resp.Role)[key];
+    return value === undefined ? 'failed' : { value };
+  };
+  const trust = declaredMemberDocument(properties['AssumeRolePolicyDocument']);
+  if (trust !== undefined) {
+    members.push({
+      key: 'AssumeRolePolicyDocument',
+      declared: trust,
+      matches: (value) => policyDocumentMatchesDeclared(value, trust),
+      read: getRoleMember('AssumeRolePolicyDocument'),
+    });
+  }
+  members.push(
+    ...principalOwnWriteMembers(properties, {
+      boundary: getRoleMember('PermissionsBoundary'),
+      managedPolicyArns: async () => ({
+        value: await readManagedPolicyArns.call(this, physicalId, properties, context),
+      }),
+      policies: async () => ({
+        value: await readInlinePolicies.call(this, physicalId, properties, context),
+      }),
+    })
+  );
+  return members;
 }
 
 /**

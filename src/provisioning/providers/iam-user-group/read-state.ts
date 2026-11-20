@@ -26,6 +26,8 @@ import {
   isUserOrGroupType,
   userOrGroupIdentityToken,
 } from './shared.js';
+import { warnUnsettledMember } from '../../settle-after-own-write.js';
+import { principalOwnWriteMembers, settleOwnWriteMembers } from '../../settle-own-write-members.js';
 
 /**
  * go-to-k/cdkd#4606: whether the user or group a failed CREATE journaled is
@@ -171,6 +173,10 @@ export async function readIdIfExists(
  *    drift comparator falls back to "drift unknown" and the user can
  *    inspect the membership manually.
  *
+ * On the capture right after cdkd's own write (`context.afterOwnWrite`,
+ * go-to-k/cdkd#6609) each declared member that disagrees is re-read alone
+ * (`settle-own-write-members.ts`); every other read takes the first answer.
+ *
  * Returns `RESOURCE_NOT_FOUND` when the user / group is gone
  * (`NoSuchEntityException`).
  */
@@ -184,9 +190,9 @@ export async function readCurrentState(
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   switch (resourceType) {
     case 'AWS::IAM::User':
-      return this.readUserCurrentState(physicalId, properties, context);
+      return this.readUserCurrentState(physicalId, properties, context, logicalId);
     case 'AWS::IAM::Group':
-      return this.readGroupCurrentState(physicalId, properties, context);
+      return this.readGroupCurrentState(physicalId, properties, context, logicalId);
     case 'AWS::IAM::UserToGroupAddition':
       // Membership-only resource. See JSDoc above.
       return undefined;
@@ -202,7 +208,8 @@ export async function readUserCurrentState(
   this: IAMUserGroupProvider,
   physicalId: string,
   properties?: Record<string, unknown>,
-  context?: import('../../../types/resource.js').ReadCurrentStateContext
+  context?: import('../../../types/resource.js').ReadCurrentStateContext,
+  logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let user;
   try {
@@ -221,37 +228,15 @@ export async function readUserCurrentState(
   // boundary surfaces as drift (top-level walk is state-keys-only).
   result['PermissionsBoundary'] = user.PermissionsBoundary?.PermissionsBoundaryArn ?? '';
 
+  const reads = userMemberReads.call(this, physicalId, properties, context);
   try {
-    const attached = await this.iamClient.send(
-      new ListAttachedUserPoliciesCommand({ UserName: physicalId })
-    );
-    const arns = (attached.AttachedPolicies ?? [])
-      .map((p) => p.PolicyArn)
-      .filter((arn): arn is string => !!arn);
-    // go-to-k/cdkd#6324: a sibling `AWS::IAM::ManagedPolicy`'s `Users` attach.
-    result['ManagedPolicyArns'] = withoutSiblingAttachedArns(
-      arns,
-      collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Users'),
-      properties
-    );
+    result['ManagedPolicyArns'] = await reads.managedPolicyArns();
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
 
   try {
-    const groups = await this.iamClient.send(
-      new ListGroupsForUserCommand({ UserName: physicalId })
-    );
-    const names = (groups.Groups ?? []).map((g) => g.GroupName).filter((n): n is string => !!n);
-    // go-to-k/cdkd#6328: a group a sibling `AWS::IAM::UserToGroupAddition`
-    // adds the user to is that resource's membership, not the user's.
-    result['Groups'] = withoutSiblingOwned(
-      names,
-      collectGroupsAddedBySiblings(physicalId, context),
-      properties,
-      'Groups',
-      true
-    );
+    result['Groups'] = await reads.groups();
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
@@ -260,25 +245,92 @@ export async function readUserCurrentState(
   // Capped at IAM's 10-per-user limit; ListUserPolicies is paginated for
   // forward-compat.
   try {
-    const inline = await this.collectInlinePolicies(
-      'user',
-      physicalId,
-      (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [],
-      context
-    );
-    result['Policies'] = inline;
+    result['Policies'] = await reads.policies();
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
 
+  if (context?.afterOwnWrite === true && properties !== undefined) {
+    await settleOwnWriteMembers(
+      result,
+      principalOwnWriteMembers(properties, {
+        boundary: async () => {
+          const resp = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
+          return resp.User
+            ? { value: resp.User.PermissionsBoundary?.PermissionsBoundaryArn ?? '' }
+            : 'failed';
+        },
+        managedPolicyArns: async () => ({ value: await reads.managedPolicyArns() }),
+        groups: async () => ({ value: await reads.groups() }),
+        policies: async () => ({ value: await reads.policies() }),
+      }),
+      this.ownWriteRereadDelaysMs,
+      (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::User', key)
+    );
+  }
   return result;
+}
+
+/**
+ * The user's list members, each its own read: attached managed policy ARNs
+ * minus a sibling `AWS::IAM::ManagedPolicy`'s `Users` attach
+ * (go-to-k/cdkd#6324), group names minus a group a sibling
+ * `AWS::IAM::UserToGroupAddition` adds the user to (go-to-k/cdkd#6328), and
+ * the inline policies.
+ */
+function userMemberReads(
+  this: IAMUserGroupProvider,
+  physicalId: string,
+  properties: Record<string, unknown> | undefined,
+  context: import('../../../types/resource.js').ReadCurrentStateContext | undefined
+): {
+  managedPolicyArns: () => Promise<string[]>;
+  groups: () => Promise<string[]>;
+  policies: () => Promise<Array<{ PolicyName: string; PolicyDocument: unknown }>>;
+} {
+  return {
+    managedPolicyArns: async () => {
+      const attached = await this.iamClient.send(
+        new ListAttachedUserPoliciesCommand({ UserName: physicalId })
+      );
+      const arns = (attached.AttachedPolicies ?? [])
+        .map((p) => p.PolicyArn)
+        .filter((arn): arn is string => !!arn);
+      return withoutSiblingAttachedArns(
+        arns,
+        collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Users'),
+        properties
+      );
+    },
+    groups: async () => {
+      const groups = await this.iamClient.send(
+        new ListGroupsForUserCommand({ UserName: physicalId })
+      );
+      const names = (groups.Groups ?? []).map((g) => g.GroupName).filter((n): n is string => !!n);
+      return withoutSiblingOwned(
+        names,
+        collectGroupsAddedBySiblings(physicalId, context),
+        properties,
+        'Groups',
+        true
+      );
+    },
+    policies: () =>
+      this.collectInlinePolicies(
+        'user',
+        physicalId,
+        (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [],
+        context
+      ),
+  };
 }
 
 export async function readGroupCurrentState(
   this: IAMUserGroupProvider,
   physicalId: string,
   properties?: Record<string, unknown>,
-  context?: import('../../../types/resource.js').ReadCurrentStateContext
+  context?: import('../../../types/resource.js').ReadCurrentStateContext,
+  logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let group;
   try {
@@ -294,35 +346,50 @@ export async function readGroupCurrentState(
   if (group.GroupName !== undefined) result['GroupName'] = group.GroupName;
   if (group.Path !== undefined) result['Path'] = group.Path;
 
-  try {
+  // go-to-k/cdkd#6324: minus a sibling `AWS::IAM::ManagedPolicy`'s `Groups` attach.
+  const managedPolicyArns = async (): Promise<string[]> => {
     const attached = await this.iamClient.send(
       new ListAttachedGroupPoliciesCommand({ GroupName: physicalId })
     );
     const arns = (attached.AttachedPolicies ?? [])
       .map((p) => p.PolicyArn)
       .filter((arn): arn is string => !!arn);
-    // go-to-k/cdkd#6324: a sibling `AWS::IAM::ManagedPolicy`'s `Groups` attach.
-    result['ManagedPolicyArns'] = withoutSiblingAttachedArns(
+    return withoutSiblingAttachedArns(
       arns,
       collectManagedPolicyArnsAttachedBySiblings(physicalId, context, 'Groups'),
       properties
     );
-  } catch (err) {
-    if (!(err instanceof NoSuchEntityException)) throw err;
-  }
-
-  try {
-    const inline = await this.collectInlinePolicies(
+  };
+  const policies = (): Promise<Array<{ PolicyName: string; PolicyDocument: unknown }>> =>
+    this.collectInlinePolicies(
       'group',
       physicalId,
       (properties?.['Policies'] as Array<{ PolicyName?: string }> | undefined) ?? [],
       context
     );
-    result['Policies'] = inline;
+  try {
+    result['ManagedPolicyArns'] = await managedPolicyArns();
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
 
+  try {
+    result['Policies'] = await policies();
+  } catch (err) {
+    if (!(err instanceof NoSuchEntityException)) throw err;
+  }
+
+  if (context?.afterOwnWrite === true && properties !== undefined) {
+    await settleOwnWriteMembers(
+      result,
+      principalOwnWriteMembers(properties, {
+        managedPolicyArns: async () => ({ value: await managedPolicyArns() }),
+        policies: async () => ({ value: await policies() }),
+      }),
+      this.ownWriteRereadDelaysMs,
+      (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::Group', key)
+    );
+  }
   return result;
 }
 

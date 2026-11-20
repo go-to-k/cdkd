@@ -94,6 +94,44 @@ assert_attached() { # usage: assert_attached <phase>
   done
 }
 
+# go-to-k/cdkd#6609: the baseline captured right after cdkd's own write must
+# hold the member the deploy just wrote. `cdkd drift` alone cannot see a stale
+# baseline while the live member is the declared one (the drift heal rule
+# skips the key then), so this reads the record itself: its observed member
+# must be exactly what AWS holds now, key order aside.
+assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON> <label>
+  local recorded live
+  recorded=$(state_json | jq -cS --arg l "$1" \
+    ".resources[\$l].observedProperties as \$o | if \$o == null then \"<no baseline>\" else ((\$o | $2) // \"<absent>\") end") \
+    || { echo "FAIL: cannot read the state record of $1 after $4" >&2; exit 1; }
+  live=$(jq -cS . <<<"$3") || { echo "FAIL: the live value of $1 $2 is not JSON after $4: $3" >&2; exit 1; }
+  if [ "${recorded}" != "${live}" ]; then
+    echo "FAIL: $1's recorded baseline $2 is not what AWS holds after $4 (#6609)" >&2
+    echo "  recorded: ${recorded}" >&2
+    echo "  live:     ${live}" >&2
+    exit 1
+  fi
+  echo "    OK: $1's baseline $2 is the live value after $4 (#6609)"
+}
+assert_iam_baselines() { # usage: assert_iam_baselines <phase>
+  local version
+  version=$(aws iam get-policy --policy-arn "${POLICY_ARN}" --query Policy.DefaultVersionId --output text) || return 1
+  assert_observed_member Guardrail .PolicyDocument "$(aws iam get-policy-version --policy-arn "${POLICY_ARN}" \
+    --version-id "${version}" --query PolicyVersion.Document --output json)" "$1"
+  assert_observed_member Guardrail '.Roles | sort' "$(aws iam list-entities-for-policy --policy-arn "${POLICY_ARN}" \
+    --query 'sort(PolicyRoles[].RoleName)' --output json)" "$1"
+  assert_observed_member Guardrail '.Groups | sort' "$(aws iam list-entities-for-policy --policy-arn "${POLICY_ARN}" \
+    --query 'sort(PolicyGroups[].GroupName)' --output json)" "$1"
+  assert_observed_member Guardrail '.Users | sort' "$(aws iam list-entities-for-policy --policy-arn "${POLICY_ARN}" \
+    --query 'sort(PolicyUsers[].UserName)' --output json)" "$1"
+  assert_observed_member Profile '.Roles | sort' "$(aws iam get-instance-profile --instance-profile-name "${PROFILE}" \
+    --query 'sort(InstanceProfile.Roles[].RoleName)' --output json)" "$1"
+  assert_observed_member Member '.Groups | sort' "$(aws iam list-groups-for-user --user-name "${USER_NAME}" \
+    --query 'sort(Groups[].GroupName)' --output json)" "$1"
+  assert_observed_member FixedRole .AssumeRolePolicyDocument "$(aws iam get-role --role-name "${ROLE}" \
+    --query Role.AssumeRolePolicyDocument --output json)" "$1"
+}
+
 cleanup() {
   echo "==> Cleanup"
   set +eu
@@ -151,6 +189,60 @@ RUSER_ID=$(jq -r --arg n "${RUSER}" '.Resources | to_entries[] | select(.value.T
 echo "==> Phase 1: Deploy"
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 assert_attached "phase 1"
+assert_iam_baselines "phase 1"
+
+# go-to-k/cdkd#6609: `cdkd drift --revert` acts on what the capture recorded,
+# so an out-of-band change of a member must report, revert to the template in
+# place (same physical id, no delete / create), and leave drift clean.
+revert_drift_json() { # usage: revert_drift_json [env args...] -- prints `cdkd drift --json`; exit 0..2 is a report
+  local out rc=0
+  out=$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  if [ "${rc}" -gt 2 ] || ! jq -e . >/dev/null 2>&1 <<<"${out}"; then
+    echo "FAIL: cdkd drift exited ${rc} without a JSON report (#6609 revert arm)" >&2
+    printf '%s\n' "${out}" >&2
+    return 1
+  fi
+  printf '%s' "${out}"
+}
+assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <member key> <label>
+  jq -e --arg t "$2" --arg k "$3" '
+    def member: .path == $k or (.path | startswith($k + ".")) or (.path | startswith($k + "["));
+    [.[] | (.drifted // [])[] | select(.type == $t) | .changes[] | select(member)] | length > 0
+  ' <<<"$1" >/dev/null || {
+    echo "FAIL: cdkd drift does not report the out-of-band $2 $3 after $4 (#6609)" >&2
+    printf '%s\n' "$1" >&2
+    exit 1
+  }
+  echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
+}
+assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
+  local rc=0 label="$1"
+  shift
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || rc=$?
+  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0 (#6609)" >&2; exit 1; }
+  echo "    OK: cdkd drift is clean after ${label} (#6609)"
+}
+run_revert() { # usage: run_revert [env args...]
+  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+}
+assert_same() { # usage: assert_same <label> <before> <after>
+  [ -n "$2" ] && [ "$2" = "$3" ] || { echo "FAIL: $1 changed across the revert: '$2' -> '$3' (#6609: a delete / create)" >&2; exit 1; }
+  echo "    OK: $1 unchanged across the revert ($2)"
+}
+
+echo "==> Phase 1b: a role removed from the instance profile out of band is reverted in place (#6609)"
+PROFILE_ID_BEFORE="$(aws iam get-instance-profile --instance-profile-name "${PROFILE}" --query InstanceProfile.InstanceProfileId --output text)"
+PROFILE_PID_BEFORE="$(state_json | jq -r '.resources.Profile.physicalId')"
+aws iam remove-role-from-instance-profile --instance-profile-name "${PROFILE}" --role-name "${ROLE}"
+DRIFT_1B="$(revert_drift_json)" || exit 1
+assert_member_drifted "${DRIFT_1B}" AWS::IAM::InstanceProfile Roles "an out-of-band remove-role-from-instance-profile"
+run_revert
+[ "$(profile_roles)" = "1" ] || { echo "FAIL: ${ROLE} is not back in ${PROFILE} after the revert" >&2; exit 1; }
+echo "    OK: the revert put ${ROLE} back in ${PROFILE}"
+assert_same "${PROFILE}'s InstanceProfileId" "${PROFILE_ID_BEFORE}" \
+  "$(aws iam get-instance-profile --instance-profile-name "${PROFILE}" --query InstanceProfile.InstanceProfileId --output text)"
+assert_same "Profile's state physical id" "${PROFILE_PID_BEFORE}" "$(state_json | jq -r '.resources.Profile.physicalId')"
+assert_drift_clean "the phase 1b revert"
 R0=$(role_id); G0=$(group_id); U0=$(user_id)
 [ -n "${R0}" ] && [ -n "${G0}" ] && [ -n "${U0}" ] || { echo "FAIL: no RoleId / GroupId / UserId after phase 1" >&2; exit 1; }
 echo "    OK: role ${ROLE}, group ${GROUP} and user ${RUSER} with every attachment"
@@ -198,6 +290,9 @@ set -e
   exit 1
 }
 echo "    OK: role, group and user re-created; every attachment is back"
+# go-to-k/cdkd#6609: the re-attach rewrote the attachments right after the
+# re-create, so their baselines must be the live values too.
+assert_iam_baselines "phase 3 (re-create and re-attach)"
 
 echo "==> Phase 4: Destroy + gone-probes"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes

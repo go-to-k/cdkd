@@ -17,6 +17,7 @@ import {
   type Policy,
 } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
@@ -89,6 +90,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   /** `CreatePolicy` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
   readonly createClient = new IamCreateClientCache(() => this.iamClient);
   logger: ConsoleLogger = getLogger().child('IAMManagedPolicyProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   /**
    * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
@@ -219,6 +222,17 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       return managedPolicyAttributes(physicalId, resp.Policy)[attributeName];
     }
     return undefined;
+  }
+
+  /**
+   * `Roles` / `Users` / `Groups` are attachment SETS that `ListEntitiesForPolicy`
+   * lists in entity-id order (measured for roles, us-east-1, 2026-11-19), not
+   * the template's: compared order-insensitively, so a baseline captured right
+   * after the write (go-to-k/cdkd#6609), which records a still-unread declared
+   * entry at its declared position, compares equal to a later read.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::IAM::ManagedPolicy' ? ['Roles', 'Users', 'Groups'] : [];
   }
 
   readCurrentState(

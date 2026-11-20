@@ -54,9 +54,16 @@ import type {
   ResourceImportResult,
   ResourceNotFound,
   ResourceIdentityVerdict,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { OWN_WRITE_REREAD_DELAYS_MS, warnUnsettledMember } from '../settle-after-own-write.js';
+import {
+  declaredStringList,
+  settleOwnWriteMembers,
+  stringListMember,
+} from '../settle-own-write-members.js';
 
 const INSTANCE_PROFILE_TYPE = 'AWS::IAM::InstanceProfile';
 
@@ -94,6 +101,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
   /** `CreateInstanceProfile` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
   private readonly createClient = new IamCreateClientCache(() => this.iamClient);
   private logger = getLogger().child('IAMInstanceProfileProvider');
+  /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
+  protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
 
   /**
    * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
@@ -764,11 +773,19 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
    * `string[]` of role names that CFn / cdkd state holds.
    *
    * Returns `RESOURCE_NOT_FOUND` when the profile is gone (`NoSuchEntityException`).
+   *
+   * On the capture right after cdkd's own write (`context.afterOwnWrite`,
+   * go-to-k/cdkd#6609) a declared `Roles` list the read does not show yet
+   * (`AddRoleToInstanceProfile` / `RemoveRoleFromInstanceProfile` are
+   * separate calls, and IAM is eventually consistent) is re-read
+   * (`settle-own-write-members.ts`); every other read takes the first answer.
    */
   async readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string
+    logicalId: string,
+    _resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let profile;
     try {
@@ -787,10 +804,27 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       result['InstanceProfileName'] = profile.InstanceProfileName;
     }
     if (profile.Path !== undefined) result['Path'] = profile.Path;
+    result['Roles'] = profileRoleNames(profile);
 
-    const roleNames = (profile.Roles ?? []).map((r) => r.RoleName).filter((n): n is string => !!n);
-    result['Roles'] = roleNames;
-
+    const declared =
+      context?.afterOwnWrite === true ? declaredStringList(properties?.['Roles']) : undefined;
+    if (declared !== undefined) {
+      await settleOwnWriteMembers(
+        result,
+        [
+          stringListMember('Roles', declared, async () => {
+            const resp = await this.iamClient.send(
+              new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+            );
+            return resp.InstanceProfile
+              ? { value: profileRoleNames(resp.InstanceProfile) }
+              : 'failed';
+          }),
+        ],
+        this.ownWriteRereadDelaysMs,
+        (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::InstanceProfile', key)
+      );
+    }
     return result;
   }
 
@@ -827,4 +861,11 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     // instance profile reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/** The inline `Role[]` of a `GetInstanceProfile` answer as the role names CFn / cdkd state holds. */
+function profileRoleNames(profile: {
+  Roles?: Array<{ RoleName?: string | undefined }> | undefined;
+}): string[] {
+  return (profile.Roles ?? []).map((r) => r.RoleName).filter((n): n is string => !!n);
 }

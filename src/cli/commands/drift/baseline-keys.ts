@@ -22,6 +22,13 @@ import {
   lifecycleMatchesDeclared,
   lifecycleReadIsAbsent,
 } from '../../../provisioning/providers/s3-bucket/lifecycle-baseline.js';
+import {
+  declaredInlinePolicies,
+  declaredStringList,
+  inlinePoliciesAreDeclared,
+  stringListIsDeclared,
+} from '../../../provisioning/settle-own-write-members.js';
+import { sgRulesAreDeclared } from '../../../provisioning/sg-own-write-rules.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -222,6 +229,19 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * `--accept` blind spot is the third rule's: an accepted out-of-band change
  * later undone outside cdkd, putting the member back to the template, is not
  * reported, which CloudFormation would not report either.
+ *
+ * Fourth slice: the `AWS::IAM::Role` / `User` / `Group` / `ManagedPolicy` /
+ * `InstanceProfile` members, `AWS::S3::BucketPolicy` `PolicyDocument`,
+ * `AWS::Events::EventBus` `Policy` and `AWS::EC2::SecurityGroup` rules, with
+ * the same `--accept` blind spot. A list is skipped only while the live list
+ * is EXACTLY the declared one as a set (names / ARNs / policy names with
+ * their documents, `sgSettleRuleKey` for rules): a superset or a subset is an
+ * out-of-band attach or detach and stays compared. A rule declared by
+ * `SourceSecurityGroupName` alone keeps its list compared. A live list
+ * holding an entry the read does not strip (a managed policy's attacher role
+ * declared by a sibling role's `ManagedPolicyArns`, a user's group from an
+ * `AWS::IAM::UserToGroupAddition`, a bus statement from an
+ * `AWS::Events::EventBusPolicy`) never heals: it is compared as before.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -253,9 +273,11 @@ export function preFixBaselineUncomparedDriftKeys(
       ? [...LAMBDA_PERMISSION_STATEMENT_KEYS]
       : [];
   }
-  const member = OWN_WRITE_MEMBERS.get(resourceType);
-  if (member !== undefined) {
-    return member.liveIsDeclared(properties as Record<string, unknown>, aws) ? [member.key] : [];
+  const members = OWN_WRITE_MEMBERS.get(resourceType);
+  if (members !== undefined) {
+    return members
+      .filter((member) => member.liveIsDeclared(properties as Record<string, unknown>, aws))
+      .map((member) => member.key);
   }
   if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];
   const declared = hasOwnKey(properties as Record<string, unknown>, 'Enabled')
@@ -269,102 +291,175 @@ export function preFixBaselineUncomparedDriftKeys(
 }
 
 /**
- * The fourth rule of {@link preFixBaselineUncomparedDriftKeys}: per type, the
+ * The fourth rule of {@link preFixBaselineUncomparedDriftKeys}: per type, each
  * member key and whether the live member is the declared one. Where removing
  * the member deletes it, "none declared and none live" agrees too.
  */
-const OWN_WRITE_MEMBERS: ReadonlyMap<
-  string,
-  {
-    key: string;
-    liveIsDeclared: (properties: Record<string, unknown>, aws: Record<string, unknown>) => boolean;
-  }
-> = new Map(
+type OwnWriteHeal = {
+  key: string;
+  liveIsDeclared: (properties: Record<string, unknown>, aws: Record<string, unknown>) => boolean;
+};
+
+/** A declared document member, matched as the settle matches it. */
+const documentHeal = (key: string): OwnWriteHeal => ({
+  key,
+  liveIsDeclared: (properties, aws) => {
+    const declared = declaredMemberDocument(properties[key]);
+    return declared !== undefined && policyDocumentMatchesDeclared(aws[key], declared);
+  },
+});
+
+/** A declared string list (names, ARNs): exactly the declared set live. */
+const stringListHeal = (key: string): OwnWriteHeal => ({
+  key,
+  liveIsDeclared: (properties, aws) => {
+    const declared = declaredStringList(properties[key]);
+    return declared !== undefined && stringListIsDeclared(aws[key], declared);
+  },
+});
+
+const boundaryHeal: OwnWriteHeal = {
+  key: 'PermissionsBoundary',
+  liveIsDeclared: (properties, aws) =>
+    typeof properties['PermissionsBoundary'] === 'string' &&
+    properties['PermissionsBoundary'] !== '' &&
+    aws['PermissionsBoundary'] === properties['PermissionsBoundary'],
+};
+
+const inlinePoliciesHeal: OwnWriteHeal = {
+  key: 'Policies',
+  liveIsDeclared: (properties, aws) => {
+    const declared = declaredInlinePolicies(properties['Policies']);
+    return declared !== undefined && inlinePoliciesAreDeclared(aws['Policies'], declared);
+  },
+};
+
+const sgRulesHeal = (key: string, direction: 'ingress' | 'egress'): OwnWriteHeal => ({
+  key,
+  liveIsDeclared: (properties, aws) => sgRulesAreDeclared(aws[key], properties[key], direction),
+});
+
+const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
   Object.entries({
-    'AWS::KMS::Key': {
-      key: 'KeyPolicy',
-      liveIsDeclared: (properties, aws) => {
-        const declared = declaredMemberDocument(properties['KeyPolicy']);
-        return declared !== undefined && policyDocumentMatchesDeclared(aws['KeyPolicy'], declared);
-      },
-    },
-    'AWS::Logs::DeliveryDestination': {
-      key: 'DeliveryDestinationPolicy',
-      liveIsDeclared: (properties, aws) => {
-        // An object only, as the provider settles it (CloudFormation refuses a string).
-        const inner = (block: unknown): unknown => {
-          const document =
-            typeof block === 'object' && block !== null && !Array.isArray(block)
-              ? (block as Record<string, unknown>)['DeliveryDestinationPolicy']
+    'AWS::KMS::Key': [documentHeal('KeyPolicy')],
+    'AWS::Logs::DeliveryDestination': [
+      {
+        key: 'DeliveryDestinationPolicy',
+        liveIsDeclared: (properties, aws) => {
+          // An object only, as the provider settles it (CloudFormation refuses a string).
+          const inner = (block: unknown): unknown => {
+            const document =
+              typeof block === 'object' && block !== null && !Array.isArray(block)
+                ? (block as Record<string, unknown>)['DeliveryDestinationPolicy']
+                : undefined;
+            return typeof document === 'object' && document !== null && !Array.isArray(document)
+              ? document
               : undefined;
-          return typeof document === 'object' && document !== null && !Array.isArray(document)
-            ? document
-            : undefined;
-        };
-        const declared = inner(properties['DeliveryDestinationPolicy']);
-        if (declared === undefined) {
+          };
+          const declared = inner(properties['DeliveryDestinationPolicy']);
+          if (declared === undefined) {
+            return (
+              properties['DeliveryDestinationPolicy'] === undefined &&
+              aws['DeliveryDestinationPolicy'] === undefined
+            );
+          }
+          return policyDocumentMatchesDeclared(inner(aws['DeliveryDestinationPolicy']), declared);
+        },
+      },
+    ],
+    'AWS::Logs::LogGroup': [
+      {
+        key: 'DataProtectionPolicy',
+        liveIsDeclared: (properties, aws) => {
+          const declared = declaredMemberDocument(properties['DataProtectionPolicy']);
+          if (declared === undefined) {
+            return (
+              (properties['DataProtectionPolicy'] === undefined ||
+                properties['DataProtectionPolicy'] === '') &&
+              aws['DataProtectionPolicy'] === ''
+            );
+          }
+          return policyDocumentMatchesDeclared(aws['DataProtectionPolicy'], declared);
+        },
+      },
+    ],
+    // A removed RestApi `Policy` is left at its live value, so only a declared one settles.
+    'AWS::ApiGateway::RestApi': [documentHeal('Policy')],
+    'AWS::EFS::FileSystem': [
+      {
+        key: 'FileSystemPolicy',
+        liveIsDeclared: (properties, aws) => {
+          const declared = declaredMemberDocument(properties['FileSystemPolicy']);
+          if (declared === undefined) {
+            return (
+              properties['FileSystemPolicy'] === undefined && aws['FileSystemPolicy'] === undefined
+            );
+          }
+          return efsPolicyMatchesDeclared(aws['FileSystemPolicy'], declared);
+        },
+      },
+    ],
+    'AWS::S3::Bucket': [
+      {
+        // The comparator the post-write capture settles on, so the two agree.
+        key: 'LifecycleConfiguration',
+        liveIsDeclared: (properties, aws) => {
+          const declared = declaredLifecycle(properties);
+          const live = aws['LifecycleConfiguration'];
+          if (declared === undefined || typeof live !== 'object' || live === null) return false;
+          const liveBag = live as Record<string, unknown>;
+          return declared.kind === 'absent'
+            ? lifecycleReadIsAbsent(liveBag)
+            : lifecycleMatchesDeclared(liveBag, declared.expected);
+        },
+      },
+    ],
+    'AWS::CodeBuild::Project': [
+      {
+        key: 'Visibility',
+        liveIsDeclared: (properties, aws) =>
+          typeof properties['Visibility'] === 'string' &&
+          properties['Visibility'] !== '' &&
+          aws['Visibility'] === properties['Visibility'],
+      },
+    ],
+    'AWS::IAM::Role': [
+      documentHeal('AssumeRolePolicyDocument'),
+      boundaryHeal,
+      stringListHeal('ManagedPolicyArns'),
+      inlinePoliciesHeal,
+    ],
+    'AWS::IAM::User': [
+      boundaryHeal,
+      stringListHeal('ManagedPolicyArns'),
+      stringListHeal('Groups'),
+      inlinePoliciesHeal,
+    ],
+    'AWS::IAM::Group': [stringListHeal('ManagedPolicyArns'), inlinePoliciesHeal],
+    'AWS::IAM::ManagedPolicy': [
+      documentHeal('PolicyDocument'),
+      stringListHeal('Roles'),
+      stringListHeal('Users'),
+      stringListHeal('Groups'),
+    ],
+    'AWS::IAM::InstanceProfile': [stringListHeal('Roles')],
+    'AWS::S3::BucketPolicy': [
+      {
+        key: 'PolicyDocument',
+        liveIsDeclared: (properties, aws) => {
+          const declared = declaredPolicyDocument(properties);
           return (
-            properties['DeliveryDestinationPolicy'] === undefined &&
-            aws['DeliveryDestinationPolicy'] === undefined
+            declared !== undefined && policyDocumentMatchesDeclared(aws['PolicyDocument'], declared)
           );
-        }
-        return policyDocumentMatchesDeclared(inner(aws['DeliveryDestinationPolicy']), declared);
+        },
       },
-    },
-    'AWS::Logs::LogGroup': {
-      key: 'DataProtectionPolicy',
-      liveIsDeclared: (properties, aws) => {
-        const declared = declaredMemberDocument(properties['DataProtectionPolicy']);
-        if (declared === undefined) {
-          return (
-            (properties['DataProtectionPolicy'] === undefined ||
-              properties['DataProtectionPolicy'] === '') &&
-            aws['DataProtectionPolicy'] === ''
-          );
-        }
-        return policyDocumentMatchesDeclared(aws['DataProtectionPolicy'], declared);
-      },
-    },
-    'AWS::ApiGateway::RestApi': {
-      // A removed RestApi `Policy` is left at its live value, so only a declared one settles.
-      key: 'Policy',
-      liveIsDeclared: (properties, aws) => {
-        const declared = declaredMemberDocument(properties['Policy']);
-        return declared !== undefined && policyDocumentMatchesDeclared(aws['Policy'], declared);
-      },
-    },
-    'AWS::EFS::FileSystem': {
-      key: 'FileSystemPolicy',
-      liveIsDeclared: (properties, aws) => {
-        const declared = declaredMemberDocument(properties['FileSystemPolicy']);
-        if (declared === undefined) {
-          return (
-            properties['FileSystemPolicy'] === undefined && aws['FileSystemPolicy'] === undefined
-          );
-        }
-        return efsPolicyMatchesDeclared(aws['FileSystemPolicy'], declared);
-      },
-    },
-    'AWS::S3::Bucket': {
-      // The comparator the post-write capture settles on, so the two agree.
-      key: 'LifecycleConfiguration',
-      liveIsDeclared: (properties, aws) => {
-        const declared = declaredLifecycle(properties);
-        const live = aws['LifecycleConfiguration'];
-        if (declared === undefined || typeof live !== 'object' || live === null) return false;
-        const liveBag = live as Record<string, unknown>;
-        return declared.kind === 'absent'
-          ? lifecycleReadIsAbsent(liveBag)
-          : lifecycleMatchesDeclared(liveBag, declared.expected);
-      },
-    },
-    'AWS::CodeBuild::Project': {
-      key: 'Visibility',
-      liveIsDeclared: (properties, aws) =>
-        typeof properties['Visibility'] === 'string' &&
-        properties['Visibility'] !== '' &&
-        aws['Visibility'] === properties['Visibility'],
-    },
+    ],
+    // The WHOLE document: a sibling EventBusPolicy's statement keeps it compared.
+    'AWS::Events::EventBus': [documentHeal('Policy')],
+    'AWS::EC2::SecurityGroup': [
+      sgRulesHeal('SecurityGroupIngress', 'ingress'),
+      sgRulesHeal('SecurityGroupEgress', 'egress'),
+    ],
   })
 );
 

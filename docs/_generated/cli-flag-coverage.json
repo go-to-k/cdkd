@@ -3387,6 +3387,7 @@
     "--service-revision-arns",
     "--services",
     "--session-id",
+    "--set-as-default",
     "--settings",
     "--shard-count",
     "--show-cache-node-info",
