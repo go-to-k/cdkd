@@ -529,6 +529,7 @@ vpc-lambda-cr-race	2026-11-10T16:21:52Z	PASS	375	standard	deploy+destroy rc 0, o
 vpc-lookup	2026-11-05T10:15:28Z	PASS	25	standard	deploy+destroy rc 0, AlwaysMissingLookup=latest, orph clean (#5811 round 3)
 vpc-nat-gateway	2026-11-19T05:16:25Z	PASS	2050	verify.sh	rc ok, orph clean; #6596 IGW detach budget
 wafv2	2026-11-12T11:22:31Z	PASS	225	verify.sh	rc ok, orph clean; #6140 (us-east-1)
-wait-condition-handle	2026-11-04T06:31:22Z	PASS	45	verify.sh	rc ok, orph clean
+wait-condition-ec2-signal	2026-11-20T16:10:51Z	PASS	159	verify.sh	rc ok, orph clean; #6694 (us-east-1)
+wait-condition-handle	2026-11-20T16:09:16Z	PASS	81	verify.sh	rc ok, orph clean; #6694 (us-east-1)
 wide-independent	2026-11-05T11:50:13Z	PASS	1264	verify.sh	sweep n7 rc ok, orph clean
 wide-web-functions	2026-11-05T11:29:08Z	PASS	362	verify.sh	sweep n7 rc ok, orph clean
