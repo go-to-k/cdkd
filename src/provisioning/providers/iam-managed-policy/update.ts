@@ -1,3 +1,4 @@
+import { RecordedIdentityMismatchError } from '../../recorded-identity.js';
 import type { IAMManagedPolicyProvider } from '../iam-managed-policy-provider.js';
 import { CreatePolicyVersionCommand, GetPolicyCommand } from '@aws-sdk/client-iam';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
@@ -207,7 +208,12 @@ export async function update(
         physicalId,
         resourceType,
         previousProperties,
-        { maskSecrets: log.mask }
+        {
+          maskSecrets: log.mask,
+          // go-to-k/cdkd#6655: the old record's ids, so a stranger holding
+          // the old ARN is refused rather than deleted.
+          ...(context?.recordedAttributes && { recordedAttributes: context.recordedAttributes }),
+        }
       );
       // Issue #1778: a SKIP is a non-throwing "I did not address this
       // resource", so it sails straight past the catch below — the one path
@@ -226,13 +232,22 @@ export async function update(
       // detaches the policy before `DeletePolicy` refuses, so it is not whole.
       // `error` is `delete()`'s wrap, which names an AWS failure by its class
       // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
+      // go-to-k/cdkd#6655: a stranger under the old name is no survivor of
+      // this stack; its refusal's own `cdkd state orphan` remedy would name
+      // the NEW record, so it is not quoted.
       orphanReason = log.mask(
-        `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
+        error instanceof RecordedIdentityMismatchError
+          ? `old managed policy ${v(physicalId)} was not deleted: the managed policy now holding that name is not the one cdkd created (its ${error.attribute} differs from the recorded one), so cdkd left it alone`
+          : `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
       );
-      log.warn(
-        `Failed to delete old managed policy ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
-          `The old policy may be orphaned and require manual cleanup.`
-      );
+      // On a mismatch the refusal's own remedy and "clean it up by hand" both
+      // point at the wrong resource: say only what happened.
+      if (error instanceof RecordedIdentityMismatchError) log.warn(`${orphanReason}.`);
+      else
+        log.warn(
+          `Failed to delete old managed policy ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
+            `The old policy may be orphaned and require manual cleanup.`
+        );
     }
 
     const base = {

@@ -33,7 +33,7 @@ asset-migration	2026-11-13T08:51:46Z	PASS	616	verify.sh	rc 0 in eu-west-1, 0 orp
 athena-workgroup-update	2026-11-18T21:22:04Z	PASS	170	verify.sh	rc ok, orph clean; 9d60a35; no retry
 aws-custom-resource	2026-11-06T16:04:01Z	PASS	80	verify.sh	post-hoc on main after #5879 split; rc ok, orph clean
 backup	2026-11-04T19:21:11Z	PASS	83	verify.sh	rc ok, orph clean; no Backup vault/recovery-point leak, no lambda log groups
-basic	2026-11-13T06:34:36Z	PASS	91	standard	PR #6188 fac650053; destroy 0 errors, 0 orphans
+basic	2026-11-20T11:06:50Z	PASS	95	standard	CDKD_TEST_FAIL=true rollback path then destroy, rc ok, orph clean; #6679 d7cb3dddb
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
@@ -217,7 +217,7 @@ getatt-cloudtrail-appsync	2026-11-14T06:03:17Z	PASS	99	verify.sh	rc ok, orph cle
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getatt-iam-waf-s3vectors-evaluator	2026-11-14T19:24:51Z	PASS	157	verify.sh	rc ok, orph clean (#6304)
 getatt-rds-docdb-attributes	2026-11-14T19:24:51Z	PASS	1600	verify.sh	rc ok, orph clean (#6305)
-getatt-vpc-managed-policy	2026-11-13T18:14:58Z	PASS	96	verify.sh	rc ok, orph clean; pre-fix build FAILs it (#6232)
+getatt-vpc-managed-policy	2026-11-20T11:06:50Z	PASS	100	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 getstackoutput-crossregion	2026-11-16T19:45:59Z	PASS	366	verify.sh	rc 0, destroy 0 errors, 0 orphans, own state bucket; run from sibling worktree at same sha d21b99b5f
 globaltable-delete-protection-preflight	2026-11-15T21:16:54Z	PASS	547	verify.sh	rc ok, orph clean (#6367); us-east-1 + us-west-2
 globaltable-fix-forward-orphan	2026-11-10T17:32:16Z	PASS	180	verify.sh	rc ok, orph clean; own bucket
@@ -228,14 +228,14 @@ glue-update-hardening	2026-11-10T16:06:52Z	PASS	335	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-04T19:05:12Z	PASS	205	verify.sh	all 6 phases, no pre-existing detector, no detector left, orph clean (own temp state bucket)
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-access-key	2026-11-06T19:55:55Z	PASS	80	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
-iam-managed-policy	2026-11-19T12:49:57Z	PASS	68	verify.sh	rc ok, orph clean, efe9f97 (#6625)
+iam-managed-policy	2026-11-20T11:06:50Z	PASS	130	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
-iam-profile-policy-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	137	verify.sh	rc ok, orph clean, own bucket, #5665 31f909459
+iam-profile-policy-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
-iam-recreate-reattach	2026-11-20T04:34:33Z	PASS	280	verify.sh	PR6629 7f5015fdd run A; rc 0, orph clean
-iam-role-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	102	verify.sh	rc ok, orph clean, own bucket, #5665 31f909459
+iam-recreate-reattach	2026-11-20T11:06:50Z	PASS	255	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
+iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-role-policies-drift-clean	2026-11-20T07:39:20Z	PASS	456	verify.sh	#6643 e5fb6988b phases 2o+2r: rc ok, orph clean
-iam-role-prefixed-name-update	2026-11-06T22:51:07Z	PASS	170	verify.sh	#5926 iam-policy split head; rc ok, orph clean
+iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-secret-derived-principals	2026-11-19T11:29:42Z	PASS	161	verify.sh	#6618 HEAD b0fb33e8f: rc ok, destroy 0 errors, orph clean
 iam-sibling-managed-policy-drift	2026-11-20T04:51:06Z	PASS	476	verify.sh	PR6629 081a25a9c run A2; rc 0, orph clean
 iam-user-group-fix-forward-orphan	2026-11-06T19:54:23Z	PASS	211	verify.sh	#5906 iam-user-group split head; rc ok, orph clean

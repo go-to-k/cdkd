@@ -19,6 +19,8 @@ import {
   sameIdReversalUndecidable,
 } from '../../../src/deployment/rollback-executor/plan.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { assertRecordedIdentity } from '../../../src/provisioning/recorded-identity.js';
+import type { DeleteContext } from '../../../src/provisioning/region-check.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/deployment/retry.js')>();
@@ -76,7 +78,7 @@ function tableModel() {
       liveKey = key;
       return { physicalId: NAME, attributes: {} };
     }),
-    delete: vi.fn(async (_l: string, physicalId: string) => {
+    delete: vi.fn(async (_l: string, physicalId: string, ..._rest: unknown[]) => {
       calls.push(`delete ${physicalId}`);
       liveKey = undefined;
     }),
@@ -300,6 +302,97 @@ describe('reversing a same-id delete-first replacement (go-to-k/cdkd#5096)', () 
     expect(classifyRollbackOp(plain, { Table: rec('pk') }, new Set())).toBe('skip-already-done');
     expect(sameIdReversalUndecidable(plain, rec('id'))).toBe(false);
     expect(classifyRollbackOp(plain, { Table: rec('id') }, new Set())).toBe('reverse-replacement');
+  });
+
+  // go-to-k/cdkd#6655 (B2): the delete-new-first passes the NEW record's
+  // attributes, so a provider comparing the recorded id with the live holder
+  // (the same name, the new copy's id) deletes its own new copy. The OLD
+  // record's id would refuse it and leave the rollback stuck.
+  it('deletes the new copy under the NEW record identity, which the provider compare accepts', async () => {
+    const m = tableModel();
+    const modelDelete = m.provider.delete.getMockImplementation()!;
+    m.provider.delete.mockImplementation(
+      async (logicalId: string, physicalId: string, ...rest: unknown[]) => {
+        const [type, , context] = rest as [string, unknown, DeleteContext];
+        // The live holder of the name is the new copy.
+        await assertRecordedIdentity({
+          label: 'DynamoDB table',
+          resourceType: type,
+          logicalId,
+          physicalId,
+          liveId: 'table-id-NEW',
+          reread: async () => 'table-id-NEW',
+          context,
+        });
+        await modelDelete(logicalId, physicalId, ...rest);
+      }
+    );
+    const o = op({ previousState: { ...rec('pk'), attributes: { TableId: 'table-id-OLD' } } });
+    const state: Record<string, ResourceState> = {
+      Table: { ...rec('id'), attributes: { TableId: 'table-id-NEW' } },
+    };
+    const result = await replayRollback([o], state, 'X', m.ctx);
+    expect(result.failures).toBe(0);
+    expect(m.calls).toEqual([`delete ${NAME}`, 'create pk']);
+    const context = m.provider.delete.mock.calls[0]![4] as unknown as DeleteContext;
+    expect(context.recordedAttributes).toEqual({ TableId: 'table-id-NEW' });
+  });
+
+  // go-to-k/cdkd#6655: a record that still holds the OLD resource's id (the
+  // resource the forward deleted first) never refuses the new copy's delete:
+  // that id is dead, so the delete goes by name.
+  it('drops a dead old id from the new copy delete instead of refusing it', async () => {
+    const m = tableModel();
+    const modelDelete = m.provider.delete.getMockImplementation()!;
+    m.provider.delete.mockImplementation(
+      async (logicalId: string, physicalId: string, ...rest: unknown[]) => {
+        const [type, , context] = rest as [string, unknown, DeleteContext];
+        await assertRecordedIdentity({
+          label: 'DynamoDB table',
+          resourceType: type,
+          logicalId,
+          physicalId,
+          liveId: 'table-id-NEW',
+          reread: async () => 'table-id-NEW',
+          context,
+        });
+        await modelDelete(logicalId, physicalId, ...rest);
+      }
+    );
+    const o = op({ previousState: { ...rec('pk'), attributes: { TableId: 'table-id-OLD' } } });
+    const state: Record<string, ResourceState> = {
+      Table: { ...rec('id'), attributes: { Arn: 'a', TableId: 'table-id-OLD' } },
+    };
+    const result = await replayRollback([o], state, 'X', m.ctx);
+    expect(result.failures).toBe(0);
+    expect(m.calls).toEqual([`delete ${NAME}`, 'create pk']);
+    const context = m.provider.delete.mock.calls[0]![4] as unknown as DeleteContext;
+    expect(context.recordedAttributes).toEqual({ Arn: 'a' });
+  });
+
+  // go-to-k/cdkd#6655: an in-place revert answering another identity id keeps
+  // the recorded one and warns, attribute only.
+  it('an in-place revert answering another TableId keeps the recorded one and warns', async () => {
+    const m = tableModel();
+    m.provider.update.mockImplementationOnce(async (_l: string, physicalId: string) => ({
+      physicalId,
+      wasReplaced: false,
+      attributes: { TableId: 'table-id-other' },
+    }));
+    const o = op({
+      oldDeletedBeforeCreate: false,
+      previousState: { ...rec('pk'), attributes: { TableId: 'table-id-recorded' } },
+    });
+    const state: Record<string, ResourceState> = {
+      Table: { ...rec('id'), attributes: { TableId: 'table-id-recorded' } },
+    };
+    const result = await replayRollback([o], state, 'X', m.ctx);
+    expect(result.failures).toBe(0);
+    expect(m.provider.update).toHaveBeenCalledTimes(1);
+    expect(state['Table']!.attributes?.['TableId']).toBe('table-id-recorded');
+    const warned = vi.mocked(m.ctx.logger.warn).mock.calls.flat().join('\n');
+    expect(warned).toContain('the update answered with another TableId than the recorded one');
+    expect(warned).not.toContain('table-id-other');
   });
 
   it('a same-id op the engine did not stamp delete-first keeps the in-place revert', () => {

@@ -1,3 +1,4 @@
+import { RecordedIdentityMismatchError } from '../../recorded-identity.js';
 import type { IAMRoleProvider } from '../iam-role-provider.js';
 import {
   UpdateRoleCommand,
@@ -256,8 +257,11 @@ export async function update(
     let orphanReason: string | undefined;
     try {
       // The OLD name can be secret-derived too (go-to-k/cdkd#2007).
+      // go-to-k/cdkd#6655: the old record's ids, so a stranger holding the
+      // old name is refused rather than deleted.
       const deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
         maskSecrets: log.mask,
+        ...(context?.recordedAttributes && { recordedAttributes: context.recordedAttributes }),
       });
       // Issue #1778: a SKIP is a non-throwing "I did not address this
       // resource", so it sails straight past the catch below — the one path
@@ -276,13 +280,22 @@ export async function update(
       // strips the role before `DeleteRole` refuses, so it is not whole.
       // `error` is `delete()`'s wrap, which names an AWS failure by its class
       // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
+      // go-to-k/cdkd#6655: a stranger under the old name is no survivor of
+      // this stack; its refusal's own `cdkd state orphan` remedy would name
+      // the NEW record, so it is not quoted.
       orphanReason = log.mask(
-        `old role ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
+        error instanceof RecordedIdentityMismatchError
+          ? `old role ${v(physicalId)} was not deleted: the role now holding that name is not the one cdkd created (its ${error.attribute} differs from the recorded one), so cdkd left it alone`
+          : `old role ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
       );
-      log.warn(
-        `Failed to delete old role ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
-          `The old role may be orphaned and require manual cleanup.`
-      );
+      // On a mismatch the refusal's own remedy and "clean it up by hand" both
+      // point at the wrong resource: say only what happened.
+      if (error instanceof RecordedIdentityMismatchError) log.warn(`${orphanReason}.`);
+      else
+        log.warn(
+          `Failed to delete old role ${v(physicalId)} during replacement: ${v(safeStringify(error))}. ` +
+            `The old role may be orphaned and require manual cleanup.`
+        );
     }
 
     const base = {
