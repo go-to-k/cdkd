@@ -1260,7 +1260,8 @@ describe('heal: a member is skipped only while the live value is exactly the dec
     ];
     expect(
       heal('AWS::EC2::SecurityGroup', { SecurityGroupIngress: declared }, { SecurityGroupIngress: live })
-    ).toEqual([]);    // ...also when the live group lacks it.
+    ).toEqual([]);
+    // ...also when the live group lacks it.
     expect(
       heal(
         'AWS::EC2::SecurityGroup',
