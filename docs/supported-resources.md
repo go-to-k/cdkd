@@ -54,7 +54,7 @@ part of the type name.
 | BedrockAgentCore | `AWS::BedrockAgentCore::Browser`, `AWS::BedrockAgentCore::CodeInterpreter`, `AWS::BedrockAgentCore::Evaluator`, `AWS::BedrockAgentCore::Runtime` |
 | Budgets | `AWS::Budgets::Budget` |
 | CertificateManager | `AWS::CertificateManager::Certificate` |
-| CloudFormation | `AWS::CloudFormation::Stack`, `AWS::CloudFormation::WaitConditionHandle` |
+| CloudFormation | `AWS::CloudFormation::Stack`, `AWS::CloudFormation::WaitCondition`, `AWS::CloudFormation::WaitConditionHandle` |
 | CloudFront | `AWS::CloudFront::CloudFrontOriginAccessIdentity`, `AWS::CloudFront::Distribution`, `AWS::CloudFront::OriginAccessControl` |
 | CloudTrail | `AWS::CloudTrail::Trail` |
 | CloudWatch | `AWS::CloudWatch::Alarm`, `AWS::CloudWatch::AnomalyDetector` |
@@ -208,7 +208,8 @@ leave something behind on destroy. Each links to its note in
 | `AWS::BedrockAgentCore::Browser`, `AWS::BedrockAgentCore::CodeInterpreter` | [They adopt the default AWS manages](supported-resources-type-notes.md#bedrock-agentcore-browser-and-code-interpreter). |
 | `AWS::BedrockAgentCore::Evaluator` | Changing `EvaluatorName` replaces the evaluator. Tags are updated in place. |
 | `AWS::CloudFormation::Stack` | [Nested stacks](supported-resources-type-notes.md#nested-stacks) deploy, import and export. |
-| `AWS::CloudFormation::WaitConditionHandle` | [A placeholder that calls no AWS API](supported-resources-type-notes.md#wait-condition-handles). |
+| `AWS::CloudFormation::WaitCondition` | [Waits for signals sent to its handle](supported-resources-type-notes.md#wait-condition-handles). |
+| `AWS::CloudFormation::WaitConditionHandle` | [A pre-signed signal URL into the state bucket](supported-resources-type-notes.md#wait-condition-handles). |
 | `AWS::Budgets::Budget` | A global API served from `us-east-1`. Changing `NotificationsWithSubscribers` updates in place; CloudFormation replaces the budget. |
 | `AWS::CodeCommit::Repository` | `Code` seeds the initial commit from an S3 zip on create only. `Triggers` are applied on create and update. |
 

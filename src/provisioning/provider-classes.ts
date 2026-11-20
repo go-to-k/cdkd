@@ -101,4 +101,5 @@ export { ECRProvider } from './providers/ecr-provider.js';
 export { ASGProvider } from './providers/asg-provider.js';
 export { NestedStackProvider } from './providers/nested-stack-provider.js';
 export { WaitConditionHandleProvider } from './providers/wait-condition-handle-provider.js';
+export { WaitConditionProvider } from './providers/wait-condition-provider.js';
 export { ACMCertificateProvider } from './providers/acm-certificate-provider.js';

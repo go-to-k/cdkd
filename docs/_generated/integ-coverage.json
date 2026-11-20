@@ -26,6 +26,7 @@
     "AWS::Budgets::Budget",
     "AWS::CertificateManager::Certificate",
     "AWS::CloudFormation::Stack",
+    "AWS::CloudFormation::WaitCondition",
     "AWS::CloudFormation::WaitConditionHandle",
     "AWS::CloudFront::CloudFrontOriginAccessIdentity",
     "AWS::CloudFront::Distribution",
@@ -1753,7 +1754,8 @@
         "import-migrate-vpc",
         "propagation-races-2",
         "remove-protection",
-        "remove-protection-compensation"
+        "remove-protection-compensation",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "deletion-ordering-complex": [
@@ -1786,6 +1788,9 @@
         "remove-protection-compensation": [
           "l1",
           "literal"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -1882,7 +1887,8 @@
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -2159,6 +2165,9 @@
         ],
         "vpc-nat-gateway": [
           "l2"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -2249,7 +2258,8 @@
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -2508,6 +2518,9 @@
           "l1",
           "l2",
           "literal"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -2641,7 +2654,8 @@
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -2910,6 +2924,9 @@
         ],
         "vpc-nat-gateway": [
           "l2"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -3005,7 +3022,8 @@
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -3278,6 +3296,9 @@
           "l2"
         ],
         "vpc-nat-gateway": [
+          "l2"
+        ],
+        "wait-condition-ec2-signal": [
           "l2"
         ]
       }
@@ -3687,7 +3708,8 @@
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -4003,6 +4025,9 @@
         ],
         "vpc-nat-gateway": [
           "l2"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -4104,7 +4129,8 @@
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -4362,6 +4388,9 @@
         ],
         "vpc-nat-gateway": [
           "l2"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -4476,7 +4505,8 @@
         "tags-propagation",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -4830,6 +4860,9 @@
         ],
         "vpc-nat-gateway": [
           "l2"
+        ],
+        "wait-condition-ec2-signal": [
+          "l2"
         ]
       }
     },
@@ -4924,7 +4957,8 @@
         "stack-copy-create-tokens",
         "vpc-lambda",
         "vpc-lambda-cr-race",
-        "vpc-nat-gateway"
+        "vpc-nat-gateway",
+        "wait-condition-ec2-signal"
       ],
       "signals": {
         "alb": [
@@ -5196,6 +5230,9 @@
           "l2"
         ],
         "vpc-nat-gateway": [
+          "l2"
+        ],
+        "wait-condition-ec2-signal": [
           "l2"
         ]
       }
@@ -11337,7 +11374,9 @@
       }
     }
   ],
-  "orphans": [],
+  "orphans": [
+    "AWS::CloudFormation::WaitCondition"
+  ],
   "allowListed": [
     {
       "resourceType": "AWS::RDS::DBProxyTargetGroup",

@@ -177,13 +177,52 @@ is no single-changeset form, because CloudFormation rejects
 
 ## Wait condition handles
 
-`AWS::CloudFormation::WaitConditionHandle` works as a placeholder only. Its
-real value, a pre-signed URL that receives signals, cannot exist outside
-CloudFormation. cdkd records a placeholder id and calls no AWS API. That is
-enough for a template that uses a handle as an empty placeholder resource.
+An `AWS::CloudFormation::WaitConditionHandle`'s `Ref` is a pre-signed S3 URL,
+as under CloudFormation. cdkd signs it for one key in its own state bucket, so
+user data can signal it with `cfn-signal` or `curl -X PUT`.
+`AWS::CloudFormation::WaitCondition` then waits for the signals:
 
-`AWS::CloudFormation::WaitCondition`, which blocks until a signal arrives, is
-not supported.
+| Behaviour | cdkd |
+| --- | --- |
+| Completes when | `Count` distinct `UniqueId`s have sent `"Status": "SUCCESS"` |
+| Fails when | a `"Status": "FAILURE"` signal arrives, or `Timeout` seconds pass |
+| `Fn::GetAtt <wait>.Data` | a JSON string: an object of each `UniqueId` to its `Data` |
+| A signal sent before the wait starts | counts |
+| Changing `Handle`, `Count` or `Timeout` | waits again, counting the signals the handle already holds |
+| Destroying the handle | deletes the signals it received |
+
+Changing a wait condition's properties is an update CloudFormation refuses;
+cdkd waits again instead. To wait for fresh signals, give the handle a new
+logical id as well, so the wait starts from an empty handle.
+
+```ts
+const handle = new CfnWaitConditionHandle(this, 'Handle');
+instance.addUserData(
+  `curl -X PUT -H 'Content-Type:' --data-binary '{"Status":"SUCCESS","UniqueId":"boot","Data":"ok","Reason":"done"}' "${handle.ref}"`
+);
+new CfnWaitCondition(this, 'Wait', { handle: handle.ref, timeout: '900' });
+```
+
+Limits:
+
+- The URL is signed with the deploying credentials. Temporary credentials
+  (SSO, an assumed role) end its validity when they expire, at most seven days
+  later; cdkd warns when that is under 12 hours.
+- The instance must reach Amazon S3, as it must under CloudFormation.
+- A wait condition without a `Handle` (the `CreationPolicy` form that
+  `cfn-signal --resource` signals) is refused.
+- A wait condition on a handle whose id is not a URL cdkd issued (an imported
+  handle) is refused: give the handle a new logical id so cdkd issues one.
+- A waiting wait condition holds one `--concurrency` slot. Give it a
+  dependency on the instance that signals it (`DependsOn`, or
+  `wait.node.addDependency(instance)` in CDK), so a low `--concurrency` cannot
+  run the wait before the instance exists.
+- A handle that only serves as a placeholder resource still works: nothing
+  needs to signal it.
+
+Changed in v0.359.0: a handle's `Ref` is a signal URL. A handle deployed by an
+earlier release keeps its placeholder id, which is not a URL, until it gets a
+new logical id.
 
 ## Glue table Iceberg support (`IcebergTableInput` is refused)
 

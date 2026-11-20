@@ -528,7 +528,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::BedrockAgentCore` | `Browser`, `CodeInterpreter`, `Evaluator`, `Runtime` |
 | `AWS::Budgets` | `Budget` |
 | `AWS::CertificateManager` | `Certificate` |
-| `AWS::CloudFormation` | `WaitConditionHandle` |
+| `AWS::CloudFormation` | `WaitCondition`, `WaitConditionHandle` |
 | `AWS::CloudFront` | `CloudFrontOriginAccessIdentity`, `Distribution`, `OriginAccessControl` |
 | `AWS::CloudTrail` | `Trail` |
 | `AWS::CloudWatch` | `Alarm` |

@@ -49,6 +49,7 @@ export const SDK_PROVIDER_NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set
   'AWS::BedrockAgentCore::Browser',
   'AWS::BedrockAgentCore::CodeInterpreter',
   'AWS::Budgets::Budget',
+  'AWS::CloudFormation::WaitCondition',
   'AWS::CloudFormation::WaitConditionHandle',
   'AWS::CloudWatch::AnomalyDetector',
   'AWS::CodeBuild::Project',

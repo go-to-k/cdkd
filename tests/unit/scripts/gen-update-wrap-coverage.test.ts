@@ -997,6 +997,7 @@ describe('real-repo coverage floors', () => {
       'LambdaWebFunctionRevisionProvider',
       'NestedStackProvider',
       'WaitConditionHandleProvider',
+      'WaitConditionProvider',
     ]);
   });
 

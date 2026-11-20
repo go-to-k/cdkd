@@ -22,6 +22,13 @@ import { SECRET_MASK } from './secret-redaction/pairs.js';
  *   `DBClusterResourceId`: `readDbResourceIdIfExists` returns the describe's
  *   `DbiResourceId` / `DbClusterResourceId`; `dbInstanceAttributes` /
  *   `dbClusterAttributes` record the same members.
+ * - `AWS::IAM::User` `UserId` / `AWS::IAM::Group` `GroupId`:
+ *   `userOrGroupIdentityToken(GetUser.User.UserId / GetGroup.Group.GroupId)`;
+ *   the create, update and import record `userOrGroupIdentityToken` of the
+ *   same field.
+ * - `AWS::IAM::InstanceProfile` `InstanceProfileId`:
+ *   `instanceProfileIdentityToken(GetInstanceProfile.InstanceProfile
+ *   .InstanceProfileId)`; the create, update and import record the same.
  *
  * A type whose physical id is already AWS-minted (a KMS key id) needs none;
  * one whose every id is name-derived (an SNS topic ARN) has none to compare.
@@ -40,6 +47,9 @@ export const SURVIVOR_IDENTITY_ATTRIBUTES: Readonly<Record<string, string>> = {
   'AWS::DynamoDB::Table': 'TableId',
   'AWS::RDS::DBInstance': 'DbiResourceId',
   'AWS::RDS::DBCluster': 'DBClusterResourceId',
+  'AWS::IAM::User': 'UserId',
+  'AWS::IAM::Group': 'GroupId',
+  'AWS::IAM::InstanceProfile': 'InstanceProfileId',
 };
 
 /** Is `key` the identity attribute {@link SURVIVOR_IDENTITY_ATTRIBUTES} lists for `resourceType`? */

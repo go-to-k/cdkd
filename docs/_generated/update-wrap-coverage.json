@@ -1,8 +1,8 @@
 {
   "summary": {
-    "classifiedCount": 96,
+    "classifiedCount": 97,
     "wrapped": 89,
-    "noAws": 7,
+    "noAws": 8,
     "gap": 0,
     "unguardedWrap": 0,
     "allowListed": 0,
@@ -772,6 +772,14 @@
     {
       "file": "wait-condition-handle-provider.ts",
       "className": "WaitConditionHandleProvider",
+      "bucket": "no-aws",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "wait-condition-provider.ts",
+      "className": "WaitConditionProvider",
       "bucket": "no-aws",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

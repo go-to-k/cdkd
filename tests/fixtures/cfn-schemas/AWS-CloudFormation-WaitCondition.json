@@ -1,0 +1,29 @@
+{
+  "resourceType": "AWS::CloudFormation::WaitCondition",
+  "generatedAt": "2026-11-20",
+  "properties": [
+    "Count",
+    "Data",
+    "Handle",
+    "Id",
+    "Timeout"
+  ],
+  "readOnlyProperties": [
+    "Data",
+    "Id"
+  ],
+  "createOnlyProperties": [],
+  "createOnlyPropertyPaths": [],
+  "primaryIdentifier": [
+    "Id"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "Id": "scalar",
+      "Data": "object",
+      "Count": "scalar",
+      "Handle": "scalar",
+      "Timeout": "scalar"
+    }
+  }
+}
