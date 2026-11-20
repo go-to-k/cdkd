@@ -157,8 +157,6 @@ dynamodb-ondemand	2026-11-10T16:35:53Z	PASS	446	verify.sh	rc ok, orph clean
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-dynamodb-table-policy-baseline	2026-11-19T07:33:52Z	PASS	100	verify.sh	rc ok, orph clean; pre-fix main FAILs the removal phase
-dynamodb-streams	2026-11-04T18:01:46Z	PASS	233	verify.sh	rc ok, M3 delete-resource-policy cooldown retry passed, M4/M5 passed, orph clean, own temp state bucket deleted; sweep batch 19 re-run
 dynamodb-table-policy-baseline	2026-11-20T14:06:50Z	PASS	172	verify.sh	rc ok, orph clean; #6669 rebased on main 4a61344db
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
