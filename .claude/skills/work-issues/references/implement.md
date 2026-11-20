@@ -96,11 +96,9 @@ teardown): work inside it, or re-install one calling the original
 ### 5-d. Measurement audits
 
 **When the audit is a MEASUREMENT, the sample's shape is the finding** — run it
-against a case you KNOW is dirty before trusting a zero, and deploy each type in
-its CDK-DEFAULT shape, optional names / schedules omitted (#6676: a named
-DataSync task hid the unnamed one's `Name: ""` read-back). Watch for newest-N
-instead of the RANGE, a global needle where each subject spells its own, and
-`--query 'length(...)'`, which aggregates per PAGE.
+on a KNOWN-dirty case before trusting a zero; deploy each type CDK-DEFAULT, no
+optional names (#6676: a named DataSync task hid `Name: ""`). Watch for newest-N
+not the RANGE, a global needle, and `--query 'length(...)'` (per PAGE).
 
 ### 5-e. Mutation probes
 
