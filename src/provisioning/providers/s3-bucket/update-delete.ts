@@ -69,6 +69,7 @@ import { isAuxiliaryFailure } from '../../auxiliary-failure.js';
 import { markNotGone } from '../../not-gone.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import { resolveExplicitPhysicalId } from '../../import-helpers.js';
+import { clearLifecycleWritesOf } from './lifecycle-baseline.js';
 
 /**
  * Update an S3 bucket
@@ -95,14 +96,21 @@ export async function update(
         [previousProperties['BucketNamePrefix'], physicalId],
       ]
     );
-    return this.maskedView(sinks).update(
-      logicalId,
-      physicalId,
-      resourceType,
-      properties,
-      previousProperties,
-      context
-    );
+    const view = this.maskedView(sinks);
+    try {
+      return await view.update(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
+    } catch (err) {
+      // No capture follows a failed update: drop its lifecycle notes (#6609).
+      clearLifecycleWritesOf(view);
+      throw err;
+    }
   }
   this.logger.debug(`Updating S3 bucket ${displaySafe(logicalId)}: ${this.shown(physicalId)}`);
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.

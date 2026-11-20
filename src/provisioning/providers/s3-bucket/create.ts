@@ -44,6 +44,7 @@ import {
 } from '../../../deployment/retryable-errors.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
+import { clearLifecycleWritesOf } from './lifecycle-baseline.js';
 
 /**
  * Create an S3 bucket
@@ -70,7 +71,14 @@ export async function create(
         ? await this.accountRegionalBucketName(prefix)
         : undefined;
     const view = withDerivedNameMasks(this.logger, sinks, [[prefix, derivedName]]);
-    return this.maskedView(view).create(logicalId, resourceType, properties, context);
+    const opView = this.maskedView(view);
+    try {
+      return await opView.create(logicalId, resourceType, properties, context);
+    } catch (err) {
+      // No capture follows a failed create: drop its lifecycle notes (#6609).
+      clearLifecycleWritesOf(opView);
+      throw err;
+    }
   }
   this.logger.debug(`Creating S3 bucket ${displaySafe(logicalId)}`);
   // go-to-k/cdkd#3994: a malformed Tags is refused before any call.

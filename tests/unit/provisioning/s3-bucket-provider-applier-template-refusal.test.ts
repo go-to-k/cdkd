@@ -308,13 +308,15 @@ describe('S3BucketProvider per-config appliers: template refuses, replay warns (
     // `CreateBucket` client, issue #4639) and `logger`; the two maps are
     // read-only property metadata, `credentialConfig` is inert identity data,
     // and `opMask` is a pure masker the probe inherits from the operation's
-    // view (issue #2177). A new own field —
+    // view (issue #2177); `lifecycleBaselineRereadDelaysMs` is the post-write
+    // capture's re-read schedule, plain numbers (go-to-k/cdkd#6609). A new own field —
     // above all a second AWS client — must be added to the probe's stubbing
     // before it lands here.
     expect(Object.keys(new S3BucketProvider()).sort()).toEqual([
       'createClientHolder',
       'credentialConfig',
       'handledProperties',
+      'lifecycleBaselineRereadDelaysMs',
       'logger',
       'opMask',
       's3Client',

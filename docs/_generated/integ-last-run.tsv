@@ -446,7 +446,7 @@ s3-cloudfront	2026-11-06T21:05:12Z	PASS	278	verify.sh	#5917 cloudfront-distribut
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean
 s3-event-notification	2026-11-04T08:38:33Z	PASS	231	verify.sh	us-east-1; PR #5751 776b0358d; cross-stack fromBucketName notification arm; drift clean (1b), revert keeps notifications (1c/1d), destroy 0 errors; rc ok, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
-s3-lifecycle	2026-11-19T16:28:40Z	PASS	362	verify.sh	us-east-1 PASS at cc965ad9d (src unchanged since); us-west-2 PASS at fed1d75ea rc 0 (2d/2e OK, own state bucket, orph clean)
+s3-lifecycle	2026-11-20T03:09:58Z	PASS	536	verify.sh	rebased on main 0ab46f50f: us-east-1 PASS; earlier at 64e9f5324 us-east-1 + us-west-2 PASS, phase 2r mutation probe RED
 s3-object-lock	2026-11-15T20:57:34Z	PASS	75	verify.sh	rc ok, orph clean; #6370
 s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-11-10T16:44:10Z	PASS	80	verify.sh	rc ok, orph clean, us-west-2
