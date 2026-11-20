@@ -346,6 +346,10 @@ same name must use `--resource`. cdkd cannot find resources by the
 `aws:cdk:path` tag, because AWS resources do not carry it: CloudFormation
 keeps the construct path in template metadata.
 
+A resource that names another by `Ref` is looked up after it. Once the other
+resource is imported, its `Ref` value replaces the reference, so a Route 53
+record finds the hosted zone imported in the same run.
+
 [How the lookups can fall short](import-reference.md#how-the-lookups-can-fall-short)
 covers a missing permission and a name built from the account or region.
 
@@ -508,7 +512,7 @@ with no `--resource`, or with `--auto`.
 | Lambda | `AWS::Lambda::Function`, `AWS::Lambda::LayerVersion` |
 | Neptune | `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::Neptune::DBSubnetGroup` |
 | RDS | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::RDS::DBProxy`, `AWS::RDS::DBProxyEndpoint`, `AWS::RDS::DBSubnetGroup` |
-| Route 53 | `AWS::Route53::HostedZone` |
+| Route 53 | `AWS::Route53::HostedZone`, `AWS::Route53::RecordSet` and `AWS::Route53::RecordSetGroup` (by zone, `Name`, `Type` and `SetIdentifier`, each record verified live; the zone may be imported in the same run) |
 | S3 | `AWS::S3::Bucket`, `AWS::S3Express::DirectoryBucket`, `AWS::S3Tables::TableBucket`, `AWS::S3Vectors::VectorBucket` |
 | Secrets Manager, SSM | `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter` |
 | Service Discovery | `AWS::ServiceDiscovery::Service`, `AWS::ServiceDiscovery::PrivateDnsNamespace`, `AWS::ServiceDiscovery::HttpNamespace`, `AWS::ServiceDiscovery::PublicDnsNamespace` |
@@ -542,7 +546,6 @@ of the same name.
 | IAM | `AWS::IAM::AccessKey`, `AWS::IAM::Policy`, `AWS::IAM::UserToGroupAddition` |
 | Lambda | `AWS::Lambda::EventInvokeConfig`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::MicrovmImage`, `AWS::Lambda::NetworkConnector`, `AWS::Lambda::Permission`, `AWS::Lambda::Url`, `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::WebFunctionRevision` |
 | RDS | `AWS::RDS::DBProxyTargetGroup` |
-| Route 53 | `AWS::Route53::RecordSet`, `AWS::Route53::RecordSetGroup` |
 | S3 | `AWS::S3::BucketPolicy` |
 | S3 Tables | `AWS::S3Tables::Namespace`, `AWS::S3Tables::Table` |
 | SNS, SQS | `AWS::SNS::Subscription`, `AWS::SNS::TopicPolicy`, `AWS::SQS::QueuePolicy` |

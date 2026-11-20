@@ -1073,8 +1073,11 @@ describe('AWS::Route53::RecordSet composite id', () => {
 
   it('a read whose bag does not anchor the candidate resolves the record from the bag', async () => {
     // The recorded Type disagrees with the id's last segment, so the read
-    // takes the zone, Name and Type from the recorded properties.
-    mockRoute53Send.mockResolvedValueOnce({ ResourceRecordSets: [] });
+    // takes the zone, Name and Type from the recorded properties. The miss
+    // is then confirmed by a scan of the same run (go-to-k/cdkd#6660).
+    mockRoute53Send
+      .mockResolvedValueOnce({ ResourceRecordSets: [] })
+      .mockResolvedValueOnce({ ResourceRecordSets: [], IsTruncated: false });
     const provider = new Route53Provider();
     await provider.readCurrentState(PIPE_ID, 'MyRecord', RECORD_TYPE, {
       HostedZoneId: 'ZFROMPROPERTIES',

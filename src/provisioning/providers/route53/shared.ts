@@ -482,3 +482,43 @@ export function withTemplateAliasConflicts(
     }),
   };
 }
+
+/**
+ * The record mode a `cdkd drift --revert` restores (go-to-k/cdkd#6661).
+ *
+ * Its desired bag is the live readback with the recorded values overlaid, so
+ * when the record changed MODE out of band it carries both an alias
+ * (`AliasTarget`) and a simple record (`TTL` / `ResourceRecords`), and
+ * `buildResourceRecordSet` would send whichever it prefers — the alias,
+ * so a record switched to one reverted to the alias it already was. The
+ * overlaid mode is the one the live record (the previous side) does NOT
+ * hold, so keep that and drop the other. A bag with one mode, or both on
+ * both sides, is returned as is.
+ */
+export function revertedRecordMode(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): Record<string, unknown> {
+  const isAlias = (bag: Record<string, unknown>): boolean => bag['AliasTarget'] != null;
+  const isSimple = (bag: Record<string, unknown>): boolean =>
+    bag['ResourceRecords'] != null || bag['TTL'] != null;
+  if (!isAlias(properties) || !isSimple(properties)) return properties;
+  if (isAlias(previousProperties) && !isSimple(previousProperties)) {
+    const { AliasTarget: _alias, ...simple } = properties;
+    return simple;
+  }
+  if (isSimple(previousProperties) && !isAlias(previousProperties)) {
+    const { TTL: _ttl, ResourceRecords: _records, ...alias } = properties;
+    return alias;
+  }
+  return properties;
+}
+
+/**
+ * Whether a declared `SetIdentifier` can pick one record among its name + type
+ * siblings: a plain string. An unresolved intrinsic or a `{{resolve:...}}`
+ * reference cannot, and the record read falls back to name + type for it.
+ */
+export function isMatchableSetIdentifier(value: unknown): boolean {
+  return typeof value === 'string' && !value.includes('{{resolve:');
+}

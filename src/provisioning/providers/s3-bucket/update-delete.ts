@@ -677,13 +677,17 @@ export function getDriftAbsentMeansDefaultKeys(
 }
 
 /**
- * The write-only members of the CFn schema: S3 returns none of them, so with
- * no observed baseline a declared value has nothing to compare with.
+ * Members S3 never returns, so with no observed baseline a declared value has
+ * nothing to compare with: the write-only schema members, and the create-time
+ * top-level `ObjectLockEnabled` (`readCurrentState` reads the live lock state
+ * into `ObjectLockConfiguration.ObjectLockEnabled`, compared there;
+ * go-to-k/cdkd#6664).
  */
 export function getDriftUnknownPaths(this: S3BucketProvider): string[] {
   return [
     'BucketNamePrefix',
     'BucketNamespace',
+    'ObjectLockEnabled',
     'MetadataConfiguration.JournalTableConfiguration.EncryptionConfiguration',
     'MetadataConfiguration.InventoryTableConfiguration.EncryptionConfiguration',
     'MetadataConfiguration.AnnotationTableConfiguration.EncryptionConfiguration',

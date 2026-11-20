@@ -516,14 +516,40 @@ describe('Route53Provider RecordSetGroup', () => {
       expect(out.RecordSets[1]!['HostedZoneId']).toBe(ZONE);
     });
 
-    it('returns undefined when a recorded record is missing from the lookup', async () => {
-      route({ liveRecords: [] });
+    it('returns undefined when a recorded record cannot be placed by the lookup', async () => {
+      // A truncated page of OTHER names with no continuation proves nothing.
+      mockSend.mockImplementation(async (command: unknown) =>
+        command instanceof ListResourceRecordSetsCommand
+          ? { ResourceRecordSets: [], IsTruncated: true }
+          : {}
+      );
       const out = await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
         HostedZoneId: ZONE,
         RecordSets: [rec()],
       });
       expect(out).toBeUndefined();
       expect(out).not.toBe(RESOURCE_NOT_FOUND);
+    });
+
+    // go-to-k/cdkd#6660: a member deleted out of band is left out, so drift
+    // reports the change (and still compares the other members).
+    it('leaves out a member proven gone and reads the rest', async () => {
+      route({ liveRecords: [live({ Name: 'b.example.com.' })] });
+      const out = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
+        HostedZoneId: ZONE,
+        RecordSets: [rec(), rec({ Name: 'b.example.com.' })],
+      })) as { RecordSets: Array<Record<string, unknown>> };
+      expect(out.RecordSets.map((r) => r['Name'])).toEqual(['b.example.com.']);
+      expect(out.RecordSets[0]!['TTL']).toBe(900);
+    });
+
+    it('returns RESOURCE_NOT_FOUND when every member is proven gone', async () => {
+      route({ liveRecords: [] });
+      const out = await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, {
+        HostedZoneId: ZONE,
+        RecordSets: [rec(), rec({ Name: 'b.example.com.' })],
+      });
+      expect(out).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -537,10 +563,49 @@ describe('Route53Provider RecordSetGroup', () => {
       knownPhysicalId: known,
     });
 
-    it('returns null without a knownPhysicalId', async () => {
-      route();
+    // go-to-k/cdkd#6662: with no id, the template's zone + records identify it.
+    it('auto mode adopts the group under its generated name when every record is live', async () => {
+      route({ liveRecords: [live()] });
+      const result = await provider.import(input(undefined));
+      expect(result).toEqual({ physicalId: `${ZONE}|${LOGICAL}`, attributes: {} });
+    });
+
+    it('auto mode declines when a record is missing', async () => {
+      route({ liveRecords: [] });
       expect(await provider.import(input(undefined))).toBeNull();
-      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('auto mode declines a zone it cannot resolve without any record read', async () => {
+      route();
+      const result = await provider.import({
+        ...input(undefined),
+        properties: { HostedZoneId: { Ref: 'Zone' }, RecordSets: [rec()] },
+      });
+      expect(result).toBeNull();
+      expect(
+        mockSend.mock.calls.some((c) => c[0] instanceof ListResourceRecordSetsCommand)
+      ).toBe(false);
+    });
+
+    it('auto mode declines a member whose SetIdentifier is unresolved', async () => {
+      route({ liveRecords: [live()] });
+      const result = await provider.import({
+        ...input(undefined),
+        properties: {
+          HostedZoneName: 'example.com.',
+          RecordSets: [rec({ SetIdentifier: { Ref: 'Param' }, Weight: 10 })],
+        },
+      });
+      expect(result).toBeNull();
+      // A dynamic reference is a string the read cannot match on either.
+      const dynamic = await provider.import({
+        ...input(undefined),
+        properties: {
+          HostedZoneName: 'example.com.',
+          RecordSets: [rec({ SetIdentifier: '{{resolve:ssm:/id}}', Weight: 10 })],
+        },
+      });
+      expect(dynamic).toBeNull();
     });
 
     it('records <zone>|<CFn group name> when the CFn group name is given and every record is live', async () => {
