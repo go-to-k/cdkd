@@ -14,6 +14,14 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   ReadonlyMap<string, readonly string[]>
 >([
   [
+    'AWS::ApiGateway::Authorizer',
+    new Map<string, readonly string[]>([
+      ['JwtConfiguration', ['DefaultAlgorithms', 'Issuers']],
+      ['JwtConfiguration.Issuers', ['Audiences', 'Issuer']],
+      ['JwtConfiguration.Issuers.AdditionalClaims', ['ClaimName', 'Format']],
+    ]),
+  ],
+  [
     'AWS::ApiGateway::Deployment',
     new Map<string, readonly string[]>([['StageDescription.Tags', ['Key', 'Value']]]),
   ],
@@ -1284,6 +1292,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   [
     'AWS::Route53::HostedZone',
     new Map<string, readonly string[]>([
+      ['HostedZoneFeatures.ChangeGuardrails', ['Name', 'Status']],
       ['HostedZoneTags', ['Key', 'Value']],
       ['QueryLoggingConfig', ['CloudWatchLogsLogGroupArn']],
       ['VPCs', ['VPCId', 'VPCRegion']],
@@ -1292,6 +1301,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   [
     'AWS::Route53::RecordSet',
     new Map<string, readonly string[]>([
+      ['AZAffinity', ['LocationId', 'LocationType']],
       ['AliasTarget', ['DNSName', 'HostedZoneId']],
       ['CidrRoutingConfig', ['CollectionId', 'LocationName']],
     ]),

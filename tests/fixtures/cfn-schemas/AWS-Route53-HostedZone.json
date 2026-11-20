@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Route53::HostedZone",
-  "generatedAt": "2026-10-14",
+  "generatedAt": "2026-11-20",
   "properties": [
     "DelegationSetId",
     "HostedZoneConfig",
@@ -41,10 +41,17 @@
       "VPCRegion"
     ],
     "HostedZoneFeatures": [
-      "EnableAcceleratedRecovery"
+      "ChangeGuardrails",
+      "ChangeHistory",
+      "EnableAcceleratedRecovery",
+      "EnablePublicDNSFallback",
+      "Name",
+      "RetentionStartsAt",
+      "Status"
     ],
     "HostedZoneConfig": [
-      "Comment"
+      "Comment",
+      "HostedZoneTier"
     ],
     "QueryLoggingConfig": [
       "CloudWatchLogsLogGroupArn"
@@ -60,10 +67,18 @@
       "VPCRegion"
     ],
     "HostedZoneFeatures": [
-      "EnableAcceleratedRecovery"
+      "ChangeGuardrails",
+      "ChangeGuardrails.Name",
+      "ChangeGuardrails.Status",
+      "ChangeHistory",
+      "ChangeHistory.RetentionStartsAt",
+      "ChangeHistory.Status",
+      "EnableAcceleratedRecovery",
+      "EnablePublicDNSFallback"
     ],
     "HostedZoneConfig": [
-      "Comment"
+      "Comment",
+      "HostedZoneTier"
     ],
     "QueryLoggingConfig": [
       "CloudWatchLogsLogGroupArn"
@@ -81,8 +96,15 @@
       "QueryLoggingConfig": "object",
       "Name": "scalar"
     },
+    "ChangeHistory": {
+      "Status": "scalar",
+      "RetentionStartsAt": "scalar"
+    },
     "HostedZoneFeatures": {
-      "EnableAcceleratedRecovery": "scalar"
+      "ChangeHistory": "object",
+      "EnableAcceleratedRecovery": "scalar",
+      "EnablePublicDNSFallback": "scalar",
+      "ChangeGuardrails": "array"
     },
     "HostedZoneTag": {
       "Value": "scalar",
@@ -92,8 +114,13 @@
       "VPCRegion": "scalar",
       "VPCId": "scalar"
     },
+    "ChangeGuardrail": {
+      "Status": "scalar",
+      "Name": "scalar"
+    },
     "HostedZoneConfig": {
-      "Comment": "scalar"
+      "Comment": "scalar",
+      "HostedZoneTier": "scalar"
     },
     "QueryLoggingConfig": {
       "CloudWatchLogsLogGroupArn": "scalar"
@@ -108,11 +135,19 @@
       "VPCId",
       "VPCRegion"
     ],
+    "ChangeGuardrail": [
+      "Name",
+      "Status"
+    ],
     "QueryLoggingConfig": [
       "CloudWatchLogsLogGroupArn"
     ]
   },
   "nestedRequired": {
+    "HostedZoneFeatures.ChangeGuardrails": [
+      "Name",
+      "Status"
+    ],
     "HostedZoneTags": [
       "Key",
       "Value"
@@ -128,6 +163,9 @@
   "propertyShapes": {
     "HostedZoneConfig": "object",
     "HostedZoneFeatures": "object",
+    "HostedZoneFeatures.ChangeGuardrails": "array",
+    "HostedZoneFeatures.ChangeGuardrails[]": "object",
+    "HostedZoneFeatures.ChangeHistory": "object",
     "HostedZoneTags": "array",
     "HostedZoneTags[]": "object",
     "NameServers": "array",
@@ -139,8 +177,17 @@
     "DelegationSetId": "string",
     "HostedZoneConfig": "object",
     "HostedZoneConfig.Comment": "string",
+    "HostedZoneConfig.HostedZoneTier": "string",
     "HostedZoneFeatures": "object",
+    "HostedZoneFeatures.ChangeGuardrails": "array",
+    "HostedZoneFeatures.ChangeGuardrails[]": "object",
+    "HostedZoneFeatures.ChangeGuardrails[].Name": "string",
+    "HostedZoneFeatures.ChangeGuardrails[].Status": "string",
+    "HostedZoneFeatures.ChangeHistory": "object",
+    "HostedZoneFeatures.ChangeHistory.RetentionStartsAt": "string",
+    "HostedZoneFeatures.ChangeHistory.Status": "string",
     "HostedZoneFeatures.EnableAcceleratedRecovery": "boolean",
+    "HostedZoneFeatures.EnablePublicDNSFallback": "boolean",
     "HostedZoneTags": "array",
     "HostedZoneTags[]": "object",
     "HostedZoneTags[].Key": "string",
@@ -155,5 +202,25 @@
     "VPCs[]": "object",
     "VPCs[].VPCId": "string",
     "VPCs[].VPCRegion": "string"
+  },
+  "propertyEnums": {
+    "HostedZoneConfig.HostedZoneTier": [
+      "ADVANCED",
+      "STANDARD"
+    ],
+    "HostedZoneFeatures.ChangeGuardrails[].Name": [
+      "ACTIVE_DELEGATION_CHECK",
+      "ACTIVE_RECORD_CHECK",
+      "ALIAS_TARGET_CHECK",
+      "NS_OCCLUSION_CHECK"
+    ],
+    "HostedZoneFeatures.ChangeGuardrails[].Status": [
+      "DISABLED",
+      "ENABLED"
+    ],
+    "HostedZoneFeatures.ChangeHistory.Status": [
+      "DISABLED",
+      "ENABLED"
+    ]
   }
 }
