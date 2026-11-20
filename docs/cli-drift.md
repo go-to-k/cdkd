@@ -158,6 +158,10 @@ managed policy, inline policy, boundary or group membership added outside
 the stack is reported, and `--revert` removes that one member (one detach,
 inline-policy delete, group removal or boundary delete each) without
 replacing the principal. The revert plan lists each member it will remove.
+A managed policy of the same stack whose template sets the list for that
+kind of principal (`Roles`, `Users` or `Groups`) reports and reverts its own
+attachments, so drift reports such an attachment made outside the stack on the
+policy, not a second time on the principal.
 If a member was granted on purpose, by another stack or by your
 organization's automation, run `cdkd drift --accept` instead: it records the
 member, and drift stops reporting it. An inline policy recorded this way is pinned to the document it

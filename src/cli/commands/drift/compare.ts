@@ -63,7 +63,7 @@ import {
 } from './baseline-keys.js';
 import { withAbsentDefaultKeys, driftAbsentMeansDefaultKeys } from './revert-payload.js';
 import {
-  siblingRecordedMembers,
+  undeclaredGrantSiblingMembers,
   stripSiblingOwnedParentMembers,
 } from '../../../provisioning/sibling-owned-members.js';
 
@@ -483,17 +483,13 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     absentDefaultBaseline,
     paired.aws,
     grantKeys,
-    grantKeys.includes('Policies')
-      ? {
-          Policies: siblingRecordedMembers(
-            resource.resourceType,
-            resource.physicalId,
-            'Policies',
-            resource.properties,
-            readContext
-          ),
-        }
-      : {}
+    undeclaredGrantSiblingMembers(
+      resource.resourceType,
+      resource.physicalId,
+      grantKeys,
+      resource.properties,
+      readContext
+    )
   );
   // go-to-k/cdkd#5736 / #5741: an undeclared key another writer owns
   // (a bucket's NotificationConfiguration) is not compared, whichever

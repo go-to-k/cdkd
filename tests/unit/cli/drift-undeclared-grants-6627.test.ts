@@ -598,6 +598,46 @@ describe('the observed baseline\'s recorded members (go-to-k/cdkd#6627)', () => 
   });
 });
 
+describe("an attachment a same-stack ManagedPolicy's own declared list owns (iam-sibling-managed-policy-drift's AddGroup shape)", () => {
+  beforeEach(setUp);
+  afterEach(() => exitSpy.mockRestore());
+
+  const mp = (declared: Record<string, unknown>): ResourceState => ({
+    physicalId: SIB_ARN,
+    resourceType: 'AWS::IAM::ManagedPolicy',
+    properties: { PolicyDocument: DOC('s3:GetObject'), ...declared },
+  });
+
+  it.each([
+    ['template-only', false],
+    ['observed', true],
+  ] as const)(
+    "%s: the policy attached out of band to a group its declared Groups does not name is the policy's drift, not the group's, and the group's revert leaves it",
+    async (_l, observed) => {
+      resources = {
+        Subject: principalRecord('Group', observed ? await captureObserved('Group') : undefined),
+        Mp: mp({ Groups: ['other-group'] }),
+      };
+      live.managed.push(SIB_ARN);
+      // Only the policy (read back as recorded here) could report it.
+      expect(await runDrift(['--json'])).toBe(0);
+      live.inline.set('oob-inline', DOC('*'));
+      expect(await runDrift(['--revert', '--yes'])).toBe(0);
+      expect(writes).toEqual(['DeleteGroupPolicy oob-inline']);
+      expect(live.managed).toEqual([SIB_ARN]);
+    }
+  );
+
+  it("the same attach of a policy that declares no Groups list is the group's drift, and its revert detaches it", async () => {
+    resources = { Subject: principalRecord('Group'), Mp: mp({ Roles: ['some-role'] }) };
+    live.managed.push(SIB_ARN);
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes()).toEqual([{ logicalId: 'Subject', path: 'ManagedPolicyArns' }]);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual([`DetachGroupPolicy ${SIB_ARN}`]);
+  });
+});
+
 describe('a template that DECLARES the key keeps the ordinary comparison (go-to-k/cdkd#6627)', () => {
   beforeEach(setUp);
   afterEach(() => exitSpy.mockRestore());

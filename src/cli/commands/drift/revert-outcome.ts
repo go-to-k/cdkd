@@ -38,7 +38,7 @@ import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
 import {
   siblingOwnedRevertDesired,
-  siblingRecordedMembers,
+  undeclaredGrantSiblingMembers,
   stripSiblingOwnedParentMembers,
 } from '../../../provisioning/sibling-owned-members.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
@@ -430,17 +430,13 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
         desiredProperties,
         grantLive,
         grantKeys,
-        grantKeys.includes('Policies')
-          ? {
-              Policies: siblingRecordedMembers(
-                outcome.resourceType,
-                stateResource.physicalId,
-                'Policies',
-                stateResource.properties,
-                siblingContext
-              ),
-            }
-          : {}
+        undeclaredGrantSiblingMembers(
+          outcome.resourceType,
+          stateResource.physicalId,
+          grantKeys,
+          stateResource.properties,
+          siblingContext
+        )
       ),
       grantKeys
     );
