@@ -26,10 +26,20 @@ import type { CompletedOperation } from './types.js';
  */
 export function earlyDeletedOld(
   op: Pick<CompletedOperation, 'oldDeletedBeforeCreate' | 'oldResourceMaySurvive'>,
-  oldType: string
+  oldType: string,
+  /**
+   * The replay's read found an `'unconfirmed'` delete's old resource gone:
+   * the deploy sent that delete, so the deploy deleted it. The plan, which
+   * reads nothing, never passes it.
+   */
+  unconfirmedFoundGone = false
 ): 'before-create' | 'during-deploy' | undefined {
-  if (op.oldResourceMaySurvive !== undefined) return undefined;
   if (isInlinePolicyType(oldType)) return undefined;
+  if (op.oldResourceMaySurvive !== undefined) {
+    return op.oldResourceMaySurvive === 'unconfirmed' && unconfirmedFoundGone
+      ? 'during-deploy'
+      : undefined;
+  }
   return op.oldDeletedBeforeCreate === true ? 'before-create' : 'during-deploy';
 }
 

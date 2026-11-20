@@ -178,6 +178,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // go-to-k/cdkd#2631: the deploy's delete of the old resource was not
   // confirmed, so it may still exist. Read AWS first: re-creating a live one
   // duplicates it (auto-named) or collides with it (named).
+  let unconfirmedFoundGone = false;
   if (op.oldResourceMaySurvive !== undefined) {
     let survivor = await probeReplacedSurvivor(s, oldType);
     // Alive but `'unconfirmed'`: an accepted delete may still be running
@@ -268,6 +269,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       return;
     }
     if (survivor !== 'gone') throw survivorUnprovenRefusal(s, oldType, survivor);
+    // go-to-k/cdkd#6713: the deploy sent this delete, so it is what took it.
+    unconfirmedFoundGone = op.oldResourceMaySurvive === 'unconfirmed';
     logger.info(
       safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) is gone — re-creating it`
     );
@@ -461,7 +464,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // from its record alone, which CloudFormation's rollback never needs (it
     // deletes the old copy only after the deploy succeeded). Advisory as the
     // line above, through the op's masker like every replay line.
-    const early = earlyDeletedOld(op, oldType);
+    const early = earlyDeletedOld(op, oldType, unconfirmedFoundGone);
     if (early !== undefined) {
       logger.warn(
         mask(

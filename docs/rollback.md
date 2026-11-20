@@ -101,8 +101,9 @@ things are outside its reach:
   properties. A re-created bucket, table or other data-holding resource
   starts empty, and anything else AWS held for the old resource that the
   template does not declare, such as queued messages or subscriptions made
-  outside the stack, does not come back. The rollback output and the
-  `cdkd rollback` plan both say so for each such resource.
+  outside the stack, does not come back. The rollback output says so for
+  each such resource, and the `cdkd rollback` plan does too when the deploy
+  confirmed the delete.
 - **A change made outside cdkd.** An updated resource is set back to the
   properties cdkd recorded at the last deploy. cdkd does not read the live
   resource first. If someone edited the resource in the console before the
