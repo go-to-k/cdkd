@@ -30,6 +30,9 @@ const PHASES: Record<string, { nested: boolean; comment: string }> = {
  * it; the next change returns each to the SDK provider.
  *
  * The members are property overrides: aws-cdk-lib's L1s may predate them.
+ * `OriginHttpVersion: http2` is refused by CloudFront itself (AccessDenied to
+ * the CloudFormation handler, us-east-1, 2026-11-21): `http1.1` is the value
+ * this account can set, and an origin that never set it reads it absent.
  * `NS_OCCLUSION_CHECK` is a guardrail Cloud Control applies on a STANDARD
  * zone (ChangeHistory needs another tier: measured us-east-1, 2026-11-21, it
  * stays DISABLED). The distribution is DISABLED: it serves nothing, and its
@@ -75,7 +78,7 @@ export class SdkUnmodelledNestedRouteStack extends cdk.Stack {
       ]);
       distribution.addPropertyOverride(
         'DistributionConfig.Origins.0.CustomOriginConfig.OriginHttpVersion',
-        'http2'
+        'http1.1'
       );
     }
 

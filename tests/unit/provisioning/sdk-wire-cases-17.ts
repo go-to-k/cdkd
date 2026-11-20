@@ -376,6 +376,13 @@ const HOSTED_ZONE_CASE: TypeCase = {
   createOnly: createOnlyOf('AWS::Route53::HostedZone'),
   arm: armHostedZone,
   exempt: {},
+  // The live schema lists the block in readOnlyProperties (go-to-k/cdkd#6690),
+  // so no template carries it.
+  nestedExempt: {
+    'HostedZoneFeatures.ChangeHistory': 'read-only (schema readOnlyProperties)',
+    'HostedZoneFeatures.ChangeHistory.RetentionStartsAt': 'read-only (schema readOnlyProperties)',
+    'HostedZoneFeatures.ChangeHistory.Status': 'read-only (schema readOnlyProperties)',
+  },
   // ChangeTagsForResource re-sends every kept tag in AddTags beside the
   // removed key, so no request names the removed key alone.
   targets: [],

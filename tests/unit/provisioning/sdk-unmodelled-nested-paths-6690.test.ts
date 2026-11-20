@@ -71,7 +71,7 @@ describe('the declaration', () => {
         paths++;
       }
     }
-    expect(paths).toBeGreaterThanOrEqual(10);
+    expect(paths).toBeGreaterThanOrEqual(7);
   });
 });
 
@@ -117,7 +117,6 @@ describe('findSdkUnmodelledNestedProperties', () => {
   it.each([
     ['HostedZoneConfig', { HostedZoneConfig: { Comment: 'c', HostedZoneTier: 'STANDARD' } }],
     ['HostedZoneFeatures', { HostedZoneFeatures: { EnablePublicDNSFallback: false } }],
-    ['HostedZoneFeatures', { HostedZoneFeatures: { ChangeHistory: { Status: 'ENABLED' } } }],
     [
       'HostedZoneFeatures',
       { HostedZoneFeatures: { ChangeGuardrails: [{ Name: 'NS_OCCLUSION_CHECK', Status: 'ENABLED' }] } },
@@ -137,7 +136,7 @@ describe('routing', () => {
     expect(routed.provider).toBe(r.getCloudControlProvider());
     expect(r.getProviderFor({ resourceType: DISTRIBUTION, properties: PLAIN }).provisionedBy).toBe('sdk');
 
-    const zone = { Name: 'example.com', HostedZoneFeatures: { ChangeHistory: { Status: 'ENABLED' } } };
+    const zone = { Name: 'example.com', HostedZoneFeatures: { EnablePublicDNSFallback: true } };
     expect(r.getProviderFor({ resourceType: ZONE, properties: zone }).provisionedBy).toBe('cc-api');
   });
 

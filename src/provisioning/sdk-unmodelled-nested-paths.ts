@@ -33,9 +33,6 @@ export const SDK_UNMODELLED_NESTED_PATHS: Readonly<Record<string, readonly strin
     'HostedZoneFeatures.ChangeGuardrails',
     'HostedZoneFeatures.ChangeGuardrails.Name',
     'HostedZoneFeatures.ChangeGuardrails.Status',
-    'HostedZoneFeatures.ChangeHistory',
-    'HostedZoneFeatures.ChangeHistory.RetentionStartsAt',
-    'HostedZoneFeatures.ChangeHistory.Status',
     'HostedZoneFeatures.EnablePublicDNSFallback',
   ],
 };

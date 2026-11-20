@@ -42,6 +42,7 @@ import {
   nestedCreateOnlyGaps,
   nestedReadOnlyGaps,
   withCarriedCreateOnlyMembers,
+  withMeasuredRemovalsAsEmpty,
   withRemovedBlockDefaults,
   writesTopLevelObject,
 } from '../cc-nested-create-only-patch.js';
@@ -304,6 +305,10 @@ export async function updateInIdLogScope(
     // the live model; under one the previous side holds (removed), only a
     // measured leaf is carried, inside its measured writable defaults
     // (`REMOVED_BLOCK_LEAF_CARRY`).
+    // go-to-k/cdkd#6690: a measured top-level removal Cloud Control refuses
+    // over a read-only member is sent as an empty object, which the carry
+    // below completes with that member.
+    patch = withMeasuredRemovalsAsEmpty(patch, resourceType);
     if (writesTopLevelObject(patch)) {
       const [createOnlyPaths, readOnlyPaths] = await Promise.all([
         getCreateOnlyPropertyPaths(resourceType),

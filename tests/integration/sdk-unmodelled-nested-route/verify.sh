@@ -192,7 +192,9 @@ assert_jwt "phase 1 (JWT authorizer created on the SDK route)" a
 GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 1: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
 [ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 1: zone ${ZID} starts with NS_OCCLUSION_CHECK ${GR}, not DISABLED" >&2; exit 1; }
 HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 1: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
-[ -n "${HV}" ] && [ "${HV}" != "http2" ] || { echo "FAIL: phase 1: distribution ${DID} starts with OriginHttpVersion '${HV}'" >&2; exit 1; }
+# The witness: an origin that never set it reads it ABSENT, so http1.1 later
+# can only be the routed value.
+[ "${HV}" = "absent" ] || { echo "FAIL: phase 1: distribution ${DID} starts with OriginHttpVersion '${HV}', so http1.1 could not witness the route" >&2; exit 1; }
 echo "    OK: all on the SDK route (zone ${ZID}, distribution ${DID}, JWT authorizer ${AID})"
 
 echo "==> Phase 2: add the members -- THE ARM: both move to Cloud Control on the same ids"
@@ -214,9 +216,9 @@ assert_id "phase 2" "${DIST}" "${DID}"
 GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 2: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
 [ "${GR}" = "ENABLED" ] || { echo "FAIL: phase 2: NS_OCCLUSION_CHECK is ${GR} on ${ZID}; the member never reached AWS" >&2; exit 1; }
 HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 2: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
-[ "${HV}" = "http2" ] || { echo "FAIL: phase 2: OriginHttpVersion is ${HV} on ${DID}; the member never reached AWS" >&2; exit 1; }
+[ "${HV}" = "http1.1" ] || { echo "FAIL: phase 2: OriginHttpVersion is ${HV} on ${DID}; the member never reached AWS" >&2; exit 1; }
 assert_comments "phase 2" a
-echo "    OK: both on Cloud Control, same ids, NS_OCCLUSION_CHECK ENABLED, OriginHttpVersion http2"
+echo "    OK: both on Cloud Control, same ids, NS_OCCLUSION_CHECK ENABLED, OriginHttpVersion http1.1"
 
 echo "==> Phase 3: no drift on the routed records"
 DRIFT_JSON="${LOG_DIR}/drift.json"
@@ -249,7 +251,7 @@ assert_id "phase 4" "${DIST}" "${DID}"
 GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 4: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
 [ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 4: NS_OCCLUSION_CHECK is ${GR} on ${ZID} after its removal" >&2; exit 1; }
 HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 4: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
-[ -n "${HV}" ] && [ "${HV}" != "http2" ] || { echo "FAIL: phase 4: OriginHttpVersion is '${HV}' on ${DID} after its removal" >&2; exit 1; }
+[ "${HV}" = "absent" ] || { echo "FAIL: phase 4: OriginHttpVersion is '${HV}' on ${DID} after its removal" >&2; exit 1; }
 echo "    OK: still Cloud Control, members cleared (guardrail DISABLED, OriginHttpVersion ${HV})"
 
 echo "==> Phase 5: a plain change returns both to the SDK provider, same ids"
