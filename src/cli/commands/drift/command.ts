@@ -780,14 +780,14 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
           if (!warnedOnOtherEntity) {
             warnedOnOtherEntity = true;
             getLogger().warn(
-              `A resource policy principal ARN names another account or IAM path, or a principal ` +
-                `that no longer exists, so its unique id (AROA…/AIDA…) cannot be matched to it; a ` +
+              `A resource policy principal ARN names another account or IAM path, so its unique ` +
+                `id (AROA…/AIDA…) cannot be matched to it; a ` +
                 `drift between the two spellings is reported as is. If the principal is the ` +
-                `intended one, \`cdkd drift --accept\` records the ARN form and clears it` +
-                verboseAwareText(
-                  '; re-run with --verbose to see which principal.',
-                  ' (the principal is named in the debug output).'
-                )
+                `intended one, drift with --accept records the ARN form and clears ` +
+                safeMsg`it${verboseAwareText(
+                  '; re-run with --verbose to see which principal',
+                  ' (the principal is named in the debug output)'
+                )}.`
             );
           }
           // `arn` is a principal ARN lifted out of a RESOURCE POLICY — the

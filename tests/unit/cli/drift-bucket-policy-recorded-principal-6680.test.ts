@@ -249,7 +249,7 @@ describe('cdkd drift on a bucket policy whose recorded principal is not the live
     const warned = warnSpy.mock.calls.map((c) => String(c[0]));
     const explained = warned.filter((w) => w.includes('cannot be matched'));
     expect(explained).toHaveLength(1);
-    expect(explained[0]).toContain('cdkd drift --accept');
+    expect(explained[0]).toContain('--accept');
     expect(explained[0]).not.toContain('arn:aws:iam::');
   });
 
