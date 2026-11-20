@@ -668,7 +668,10 @@ GOT_INLINE="$(aws iam list-role-policies --role-name "${ROLE_NAME}" --query "joi
 echo "    OK: the revert put the inline policies, the default document, the boundary and the attachments back"
 assert_same "the role / user / group / policy ids and their state physical ids" "${IDS_BEFORE}" "$(ids_of)"
 run_drift
-expect_drift_rc 0 "Phase 9b (after the revert)"
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 9b (after the revert): cdkd drift exited ${DRIFT_RC}, want 0" >&2
+  exit 1
+fi
 echo "    OK: cdkd drift is clean after the phase 9b revert (#6609)"
 
 export CDKD_TEST_UPDATE=late,shrink,touch,drop

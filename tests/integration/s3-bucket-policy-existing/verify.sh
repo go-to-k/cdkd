@@ -268,7 +268,10 @@ echo "==> Phase 3c: an out-of-band bucket policy is reverted in place (#6609)"
 # A marker object proves the bucket is the same one after the revert (a
 # re-created bucket would not hold it); removed before destroy, which needs an
 # empty bucket.
-aws s3api put-object --bucket "${BUCKET}" --key cdkd-6609-marker --body /dev/null >/dev/null
+MARKER_BODY="$(mktemp)"
+printf 'cdkd-6609' >"${MARKER_BODY}"
+aws s3api put-object --bucket "${BUCKET}" --region "${REGION}" --key cdkd-6609-marker --body "${MARKER_BODY}" >/dev/null
+rm -f "${MARKER_BODY}"
 POLICY_PID_BEFORE="$(state_json | jq -r --arg l "${POLICY_LID}" '.resources[$l].physicalId')"
 aws s3api put-bucket-policy --bucket "${BUCKET}" --region "${REGION}" --policy "${FOREIGN_POLICY}"
 DRIFT_3C="$(revert_drift_json CDKD_TEST_UPDATE=policy,policy2)" || exit 1
