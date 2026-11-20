@@ -9,7 +9,7 @@ vi.mock('../../../src/utils/logger.js', () => {
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
-  return { getLogger: () => ({ child: () => child, ...child }) };
+  return { getLogger: () => ({ ...child, child: () => child }) };
 });
 
 const s3 = new S3Client({

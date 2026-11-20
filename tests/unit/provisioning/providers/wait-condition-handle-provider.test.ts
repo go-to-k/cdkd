@@ -8,7 +8,7 @@ const child = {
   child: vi.fn().mockReturnThis(),
 };
 vi.mock('../../../../src/utils/logger.js', () => ({
-  getLogger: () => ({ child: () => child, ...child }),
+  getLogger: () => ({ ...child, child: () => child }),
 }));
 
 import { WaitConditionHandleProvider } from '../../../../src/provisioning/providers/wait-condition-handle-provider.js';

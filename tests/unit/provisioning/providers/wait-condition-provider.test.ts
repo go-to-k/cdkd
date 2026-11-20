@@ -8,7 +8,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
-  return { getLogger: () => ({ child: () => child, ...child }) };
+  return { getLogger: () => ({ ...child, child: () => child }) };
 });
 
 const watch = { interrupted: false };
