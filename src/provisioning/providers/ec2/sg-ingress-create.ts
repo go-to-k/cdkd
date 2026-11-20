@@ -490,12 +490,20 @@ export async function listGroupRules(
   this: EC2Provider,
   groupId: string
 ): Promise<SecurityGroupRule[] | undefined> {
+  return listSecurityGroupRules(this.ec2Client, groupId);
+}
+
+/** {@link listGroupRules} over any EC2 client. */
+export async function listSecurityGroupRules(
+  client: { send: EC2Provider['ec2Client']['send'] },
+  groupId: string
+): Promise<SecurityGroupRule[] | undefined> {
   const rules: SecurityGroupRule[] = [];
   let nextToken: string | undefined;
   let pages = 0;
   do {
     if (pages >= MAX_SG_RULE_PAGES) return undefined;
-    const resp: DescribeSecurityGroupRulesResult = await this.ec2Client.send(
+    const resp: DescribeSecurityGroupRulesResult = await client.send(
       new DescribeSecurityGroupRulesCommand({
         Filters: [{ Name: 'group-id', Values: [groupId] }],
         MaxResults: SG_RULE_PAGE_SIZE,

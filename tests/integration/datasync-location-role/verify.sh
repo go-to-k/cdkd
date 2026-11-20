@@ -15,6 +15,11 @@
 #      in this deploy). The first deploy succeeding IS the assertion. Assert
 #      both locations exist in AWS with the role and the right bucket.
 #   2. `cdkd diff` reports no changes.
+#   2b. Redeploy with `CDKD_TEST_UPDATE=verify` (the task's
+#      `Options.VerifyMode` -> NONE). The task has no schedule and Cloud
+#      Control reads it back as `Schedule: {}`, which `UpdateTask` refused on
+#      every update (issue #6676). Assert AWS holds NONE, then change it out of
+#      band, `drift --revert` it and assert NONE again and a clean drift.
 #   3. Destroy. Assert the locations, the task, the role and the state file are
 #      gone.
 #
@@ -213,6 +218,31 @@ if ! grep -qF "No changes detected for stack ${STACK}" "${DIFF_LOG}"; then
   exit 1
 fi
 echo "    diff reports no changes"
+
+# --- Phase 2b: update a schedule-less task, then drift --revert it ----------
+task_verify_mode() {
+  aws datasync describe-task --task-arn "${TASK_ARN}" --region "${REGION}" \
+    --query Options.VerifyMode --output text
+}
+echo "==> Phase 2b: redeploy with the task's VerifyMode -> NONE (issue #6676)"
+CDKD_TEST_UPDATE=verify node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+MODE="$(task_verify_mode)"
+[ "${MODE}" = "NONE" ] || { echo "FAIL: task VerifyMode '${MODE}' != NONE after the update" >&2; exit 1; }
+echo "    the update reached AWS (VerifyMode=NONE)"
+
+aws datasync update-task --task-arn "${TASK_ARN}" --region "${REGION}" \
+  --options VerifyMode=POINT_IN_TIME_CONSISTENT
+MODE="$(task_verify_mode)"
+[ "${MODE}" = "POINT_IN_TIME_CONSISTENT" ] ||
+  { echo "FAIL: the out-of-band change did not land (VerifyMode '${MODE}')" >&2; exit 1; }
+CDKD_TEST_UPDATE=verify node "${LOCAL_DIST}" drift "${STACK}" --revert --yes \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+MODE="$(task_verify_mode)"
+[ "${MODE}" = "NONE" ] || { echo "FAIL: drift --revert left VerifyMode '${MODE}'" >&2; exit 1; }
+CDKD_TEST_UPDATE=verify node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+echo "    drift --revert restored VerifyMode=NONE and drift is clean"
 
 # --- Phase 3: destroy -------------------------------------------------------
 echo "==> Phase 3: destroy"

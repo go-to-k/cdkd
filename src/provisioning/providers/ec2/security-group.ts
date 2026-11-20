@@ -33,11 +33,11 @@ import {
   SG_READBACK_RETRY_DELAY_MS,
   isDefaultEgressRule,
   securityGroupReadbackDelays,
-  sgProtocolKey,
   stackIngressRuleHolder,
 } from './sg-support.js';
 import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import { updateSgRuleDescription } from './sg-rule-description.js';
+import { refuseRevertRevokingSiblingRules, sgRuleDiffKey } from './sg-revert-guard.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 // ─── AWS::EC2::SecurityGroup ──────────────────────────────────────
@@ -331,6 +331,19 @@ export async function updateSecurityGroup(
   this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+  // go-to-k/cdkd#6641: before any write, a revert that would revoke a rule a
+  // standalone rule record of the stack holds by id refuses.
+  if (context?.desiredFromAwsReadback === true && (context.siblingSgRuleIds?.size ?? 0) > 0) {
+    await refuseRevertRevokingSiblingRules(
+      (group) => this.listGroupRules(group),
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context.siblingSgRuleIds!
+    );
+  }
 
   try {
     // Update tags (diff add/remove against previousProperties)
@@ -752,49 +765,7 @@ export async function applySecurityGroupRuleDiff(
   /** The group's logical id; only an INGRESS revoke asks which other records hold the rule. */
   logicalId?: string
 ): Promise<void> {
-  const ruleKey = (rule: Record<string, unknown>): string => {
-    const peerKey =
-      direction === 'egress'
-        ? (rule['DestinationSecurityGroupId'] as string | undefined)
-        : (rule['SourceSecurityGroupId'] as string | undefined);
-    const prefixKey =
-      direction === 'egress'
-        ? (rule['DestinationPrefixListId'] as string | undefined)
-        : (rule['SourcePrefixListId'] as string | undefined);
-    // Include the cross-account peer owner id (ingress only) so a same-id
-    // group in a different account is not collapsed into the same rule.
-    const peerOwner =
-      direction === 'ingress'
-        ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
-        : undefined;
-    // go-to-k/cdkd#5478: a peer named by group name is a rule of its own.
-    // Keyed only when no id is given, since the wire then sends the id
-    // alone: a redundant name must not churn revoke / authorize. `sgRuleKey`
-    // (the drift read side) does not key the name, because AWS reports the
-    // peer by id, so a `cdkd drift --revert` of a name-only rule re-attaches
-    // it (revoke + authorize of the same peer).
-    const peerName =
-      direction === 'ingress' ? (rule['SourceSecurityGroupName'] as string | undefined) : undefined;
-    return JSON.stringify({
-      // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
-      // MUST agree on identity, which is what this function's sibling JSDoc
-      // promises. `sgRuleKey` also keys `Description`, which only pairs drift
-      // read-back rules; here the description is compared per pair below.
-      // Without it a `--revert` of a drifted inline rule set keys the
-      // previous side (AWS's `tcp`) differently from the desired side
-      // (state's `'6'`), so EVERY rule is revoked and re-authorized instead
-      // of only the drifted one — a window with no rules on a live group.
-      p: sgProtocolKey(rule['IpProtocol']),
-      f: rule['FromPort'] ?? null,
-      t: rule['ToPort'] ?? null,
-      c4: rule['CidrIp'] ?? null,
-      c6: rule['CidrIpv6'] ?? null,
-      peer: peerKey ?? null,
-      peerName: peerKey ? null : (peerName ?? null),
-      peerOwner: peerOwner ?? null,
-      pl: prefixKey ?? null,
-    });
-  };
+  const ruleKey = (rule: Record<string, unknown>): string => sgRuleDiffKey(rule, direction);
 
   const prevByKey = new Map<string, Record<string, unknown>>();
   for (const rule of previousRules) prevByKey.set(ruleKey(rule), rule);

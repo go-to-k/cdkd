@@ -72,6 +72,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 STACK="CdkdFifoSqsEventSourceExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -130,6 +134,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  rm -rf "${REVERT_DIR:-}"
   set -eu
 }
 
@@ -316,7 +321,11 @@ fi
 # drift has no per-resource filter, so this reverts the WHOLE stack: any other
 # resource drifted at this point is written back to its baseline before Phase 1b.
 REVERT_RC=0
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes || REVERT_RC=$?
+REVERT_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${ESM_LID}" || exit 1
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_DIR}/revert-1.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_DIR}/revert-1.log" || exit 1
 for i in 1 2 3; do
   ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
     --query 'State' --output text)"

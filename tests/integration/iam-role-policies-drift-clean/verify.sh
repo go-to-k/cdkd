@@ -83,6 +83,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 STACK="CdkdIamRolePoliciesDriftCleanExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -122,6 +126,10 @@ cleanup() {
     aws sqs delete-queue --queue-url "${FAILING_URL}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   rm -f "${ROLLBACK_LOG:-}"
+  if [ -n "${REVERT_DIR:-}" ]; then
+    rm -f "${REVERT_DIR}"/revert-* 2>/dev/null
+    rmdir "${REVERT_DIR}" 2>/dev/null
+  fi
   # The standalone role keeps its inline + sibling-managed policies; delete
   # them before the role or DeleteRole 409s.
   for rn in "${ROLE_NAME}" "${MIXED_ROLE_NAME}"; do
@@ -164,6 +172,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+REVERT_DIR="$(mktemp -d)"
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy Lambda-with-grant + standalone role"
@@ -288,8 +297,13 @@ if [ "${shared_rc}" -ne 1 ]; then
   exit 1
 fi
 echo "    drift reported SharedPolicy"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2s-before" "${STACK}" "${SHARED_POLICY_LID}" || exit 1
+RC=0
 env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2s.log" 2>&1 || RC=$?
+cat "${REVERT_DIR}/revert-2s.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-2s-before" "${REVERT_DIR}/revert-ids-2s-after" 1 "${REVERT_DIR}/revert-2s.log" || exit 1
+[ "$RC" -eq 0 ] || { echo "FAIL: Phase 2s: drift --revert exited $RC"; exit 1; }
 if ! wait_shared_action "${MIXED_ROLE_NAME}" "${SHARED_ACTION}"; then
   echo "FAIL: drift --revert left ${MIXED_ROLE_NAME}'s copy of ${SHARED_POLICY} widened (got: $(shared_action "${MIXED_ROLE_NAME}")) (go-to-k/cdkd#6616)" >&2
   exit 1
@@ -362,8 +376,13 @@ if [ "${revert_rc}" -ne 1 ]; then
   exit 1
 fi
 echo "    drift --json reported SharedPolicy (paths: ${shared_paths})"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2r-before" "${STACK}" "${SHARED_POLICY_LID}" || exit 1
+RC=0
 env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2r.log" 2>&1 || RC=$?
+cat "${REVERT_DIR}/revert-2r.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-2r-before" "${REVERT_DIR}/revert-ids-2r-after" 1 "${REVERT_DIR}/revert-2r.log" || exit 1
+[ "$RC" -eq 0 ] || { echo "FAIL: Phase 2r: drift --revert exited $RC"; exit 1; }
 restored=false
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   live_first="$(shared_document "${ROLE_NAME}" 2>/dev/null | jq -cS . 2>/dev/null || true)"

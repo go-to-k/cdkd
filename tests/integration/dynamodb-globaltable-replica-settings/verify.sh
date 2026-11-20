@@ -122,6 +122,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
 
 # Per-run STACK name (so the state key, table and key aliases are per run
 # too): a concurrent or earlier run of this fixture never shares a name with
@@ -1123,8 +1124,26 @@ if [ "${RECORDED}" != "10 policy true" ] || [ "${LIVE}" != "20 nopolicy false" ]
 fi
 echo "    OK: drift reports ${SECOND_REGION} '${RECORDED}' -> '${LIVE}'"
 # 3. --revert restores all three, and drift is clean again.
+# The GlobalTable's state logical id (an L2 gets an 8 hex suffix), for the
+# revert-identity snapshots that prove the revert kept the table in place
+# (go-to-k/cdkd#6639).
+gt_lid() { # usage: gt_lid <logical id prefix>; prints the GlobalTable's full logical id
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg p "$1" '[.resources | to_entries[]
+        | select(.value.resourceType == "AWS::DynamoDB::GlobalTable" and (.key | test("^" + $p + "[0-9A-F]{8}$")))
+        | .key] | .[0] // empty'
+}
+GT_LID_2C="$(gt_lid ReplicaSettingsTable)"
+if [ -z "${GT_LID_2C}" ]; then
+  echo "FAIL: Phase 2c: no ReplicaSettingsTable GlobalTable record in state" >&2
+  exit 1
+fi
+revert_identity_snapshot "${LOG_DIR}/revert-ids-2c-before" "${STACK}" "${GT_LID_2C}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes 2>&1 | tee "${LOG_DIR}/phase2c-revert.log"
+  --revert --yes 2>&1 | tee "${LOG_DIR}/phase2c-revert.log" || REVERT_RC=$?
+revert_identity_verify "${LOG_DIR}/revert-ids-2c-before" "${LOG_DIR}/revert-ids-2c-after" 1 "${LOG_DIR}/phase2c-revert.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 2c: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_settled
 await_settings "${SECOND_REGION}" "	True$" "Phase 2c: drift --revert did not protect the replica again (issue #5381)"
 await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	present	present$" \
@@ -1237,8 +1256,17 @@ if ! grep -qE '^ +\+ SSESpecification: \{"SSEEnabled":true,"SSEType":"KMS"\}' "$
   exit 1
 fi
 echo "    OK: drift reports the move off the AWS owned key"
+GT_LID_5B="$(gt_lid SseRevertTable)"
+if [ -z "${GT_LID_5B}" ]; then
+  echo "FAIL: ${PHASE5B}: no SseRevertTable GlobalTable record in state" >&2
+  exit 1
+fi
+revert_identity_snapshot "${LOG_DIR}/revert-ids-5b-before" "${STACK}" "${GT_LID_5B}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes 2>&1 | tee "${LOG_DIR}/phase5b-revert.log"
+  --revert --yes 2>&1 | tee "${LOG_DIR}/phase5b-revert.log" || REVERT_RC=$?
+revert_identity_verify "${LOG_DIR}/revert-ids-5b-before" "${LOG_DIR}/revert-ids-5b-after" 1 "${LOG_DIR}/phase5b-revert.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 5b: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_settled
 # An AWS owned key reads back as no SSEDescription (None), as in Phase 5.
 await_settings "${REGION}" "^None	None	None	None	False$" \

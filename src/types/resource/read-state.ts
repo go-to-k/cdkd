@@ -108,6 +108,13 @@ export interface ReadCurrentStateContext {
    */
   afterOwnWrite?: boolean;
   /**
+   * go-to-k/cdkd#6641: the read resource's record is provisioned through
+   * Cloud Control (`provisionedBy: 'cc-api'`), so its readback is Cloud
+   * Control's, which assigns no security-group rule by `sgr-` id. Set by
+   * `buildReadCurrentStateContext`.
+   */
+  ccApiRead?: boolean;
+  /**
    * The read resource's OWN recorded `attributes` (cdkd state), set by
    * `buildReadCurrentStateContext` on drift / import / `state refresh-observed`
    * reads and the rollback replay's baseline refresh. A provider may use an id recorded there as ownership evidence

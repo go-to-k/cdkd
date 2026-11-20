@@ -56,6 +56,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+. ../revert-identity.sh
 
 STACK="CloudWatchStack"
 REGION="${AWS_REGION:-us-east-1}"
@@ -69,10 +70,16 @@ PROMQL_ALARM_NAME="${STACK}-promql"
 # $ENV.PROMQL_QUERY and the out-of-band node call as process.env.
 export PROMQL_QUERY='avg(rate(http_requests_total[5m])) > 100'
 TOPIC_ARN=""
+REVERT_WORK=""
 
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" "${REVERT_WORK}/revert-2b.log" \
+      "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" "${REVERT_WORK}/revert-4.log"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   [ -x "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   [ -n "${ALARM_NAME}" ] && aws cloudwatch delete-alarms --alarm-names "${ALARM_NAME}" --region "${REGION}" >/dev/null 2>&1
   aws cloudwatch delete-alarms --alarm-names "${PROMQL_ALARM_NAME}" --region "${REGION}" >/dev/null 2>&1
@@ -102,6 +109,10 @@ state_json() {
 record_of() { # usage: record_of <logical-id prefix> <jq-filter applied to the record>
   state_json | jq -r --arg p "$1" '[.resources | to_entries[] | select(.value.resourceType == "AWS::CloudWatch::Alarm" and (.key | startswith($p))) | .value]
     | if length == 1 then .[0] else error("expected exactly one \($p) alarm record, got \(length)") end | '"$2"
+}
+lid_of() { # usage: lid_of <logical-id prefix> -- the one alarm record's state logical id
+  state_json | jq -r --arg p "$1" '[.resources | to_entries[] | select(.value.resourceType == "AWS::CloudWatch::Alarm" and (.key | startswith($p))) | .key]
+    | if length == 1 then .[0] else error("expected exactly one \($p) alarm record, got \(length)") end'
 }
 alarm_record() { # usage: alarm_record <jq-filter applied to the ErrorAlarm record>
   record_of ErrorAlarm "$1"
@@ -228,7 +239,16 @@ WIN_DRIFT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKE
 grep -qF EvaluationWindow <<<"${WIN_DRIFT}" || {
   echo "FAIL: cdkd drift exited ${WIN_RC} but does not name EvaluationWindow. Report: ${WIN_DRIFT}" >&2; exit 1; }
 echo "    OK: drift reports the out-of-band EvaluationWindow"
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+REVERT_WORK="$(mktemp -d)"
+ERROR_LID="$(lid_of ErrorAlarm)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-2b-before" "${STACK}" "${ERROR_LID}" || exit 1
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes > "${REVERT_WORK}/revert-2b.log" 2>&1
+REVERT_RC=$?
+set -e
+cat "${REVERT_WORK}/revert-2b.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-2b-before" "${REVERT_WORK}/revert-ids-2b-after" 1 "${REVERT_WORK}/revert-2b.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 assert_member EvaluationWindow '. == null or . == {"SlidingWindow": {}}'
 assert_no_drift "Phase 2b"
 
@@ -269,7 +289,15 @@ DRIFT_BEFORE="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BU
 grep -qF EvaluationInterval <<<"${DRIFT_BEFORE}" || {
   echo "FAIL: cdkd drift exited ${DRIFT_RC} but does not name EvaluationInterval. Report: ${DRIFT_BEFORE}" >&2; exit 1; }
 echo "    OK: drift reports the EvaluationInterval change"
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+PROMQL_LID="$(lid_of PromQLAlarm)" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-4-before" "${STACK}" "${PROMQL_LID}" || exit 1
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes > "${REVERT_WORK}/revert-4.log" 2>&1
+REVERT_RC=$?
+set -e
+cat "${REVERT_WORK}/revert-4.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" 1 "${REVERT_WORK}/revert-4.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 assert_member EvaluationInterval '. == 60' "${PROMQL_ALARM_NAME}"
 assert_member EvaluationCriteria '.PromQLCriteria.Query == $ENV.PROMQL_QUERY' "${PROMQL_ALARM_NAME}"
 assert_no_drift "Phase 4" 2

@@ -92,7 +92,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **ec2-volume-delete.ts** - CC deletes EVERY `AWS::EC2::Volume` via EC2 `DeleteVolume`: the handler can snapshot, then hang (#3455). Region check OUTSIDE the delete `try`; timeout: a marked abandoned wait (already-deleted needles hit logical ids).
 - **ipam-pool-cidr-release.ts** - CC `IPAMPoolCidr` delete refused (allocations): waits out own-account same-region DELETED VPCs/subnets, re-sends (#5975).
 
-- **guardduty-detector-patch.ts** (#4910), **apigwv2-body-import-patch.ts** (#5260), **cc-read-back-empty-keys.ts** (#6569), **elbv2-listener-rule-patch.ts** (#6663) - CC update patch fixes; `cc-read-back-empty-keys.ts` reads only a listed type live.
+- **guardduty-detector-patch.ts** (#4910), **apigwv2-body-import-patch.ts** (#5260), **elbv2-listener-rule-patch.ts** (#6663), **cc-read-back-{empty-keys,default-paths}.ts** (#6569, #6676) - CC patch fixes; the last two read only a listed type live.
 
 - **delete-gone-wait.ts** - The wait after an accepted delete whose resource holds its NAME while deleting (Kinesis, Firehose, #3872; DynamoDB `Table`, #5514; RDS DBProxy, endpoint, #6522). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, record kept) — never on a first read alone.
 

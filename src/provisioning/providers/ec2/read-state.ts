@@ -40,6 +40,11 @@ import {
   withoutSiblingOwnedSgRules,
 } from '../../sg-sibling-rules.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import {
+  type SiblingIdOwnership,
+  readSgIngressById,
+  siblingIdOwnedSgRules,
+} from './sg-rule-by-id.js';
 import { OWN_WRITE_REREAD_DELAYS_MS, warnUnsettledMember } from '../../settle-after-own-write.js';
 import { type OwnWriteMember, settleOwnWriteMembers } from '../../settle-own-write-members.js';
 import { declaredSgRulesRead, mergeDeclaredSgRules } from '../../sg-own-write-rules.js';
@@ -320,6 +325,9 @@ export async function readSecurityGroupCurrentState(
   );
   const sg = resp.SecurityGroups?.[0];
   if (!sg) return RESOURCE_NOT_FOUND;
+  // go-to-k/cdkd#6641: a sibling rule record's `sgr-` id decides which live
+  // rule is its (`sg-rule-by-id.ts`).
+  const idOwned = await siblingIdOwnedSgRules(this, physicalId, properties, context);
 
   const result: Record<string, unknown> = {};
   if (sg.GroupName !== undefined) result['GroupName'] = sg.GroupName;
@@ -353,7 +361,7 @@ export async function readSecurityGroupCurrentState(
   const tags = normalizeAwsTagsToCfn(sg.Tags);
   if (tags.length > 0) result['Tags'] = tags;
 
-  Object.assign(result, sgRuleLists(sg, physicalId, properties, context));
+  Object.assign(result, sgRuleLists(sg, physicalId, properties, context, idOwned));
 
   if (context?.afterOwnWrite === true && properties !== undefined) {
     // go-to-k/cdkd#6609: `Authorize`/`Revoke...` are separate calls, so the
@@ -385,7 +393,7 @@ export async function readSecurityGroupCurrentState(
           );
           const group = reread.SecurityGroups?.[0];
           return group
-            ? { value: sgRuleLists(group, physicalId, properties, context)[key] }
+            ? { value: sgRuleLists(group, physicalId, properties, context, idOwned)[key] }
             : 'failed';
         },
       });
@@ -408,7 +416,9 @@ export async function readSecurityGroupCurrentState(
  * go-to-k/cdkd#6418: a rule a sibling standalone `SecurityGroupIngress` /
  * `SecurityGroupEgress` record of the stack authorizes is that resource's,
  * not this group's, unless the group's own template declares it too
- * (`sg-sibling-rules.ts`).
+ * (`sg-sibling-rules.ts`). With `idOwned` (go-to-k/cdkd#6641), a sibling
+ * recording its `sgr-` id owns exactly the live rule carrying that id, and a
+ * rule at its recorded identity under another id stays the group's.
  *
  * Egress: AWS auto-attaches an `allow-all 0.0.0.0/0` rule on creation when
  * the user doesn't template `SecurityGroupEgress`. It is filtered out when
@@ -420,14 +430,25 @@ function sgRuleLists(
   sg: SecurityGroup,
   physicalId: string,
   properties: Record<string, unknown> | undefined,
-  context: ReadCurrentStateContext | undefined
+  context: ReadCurrentStateContext | undefined,
+  idOwned: SiblingIdOwnership | undefined
 ): { SecurityGroupIngress: CfnSgRule[]; SecurityGroupEgress: CfnSgRule[] } {
+  const owned = (direction: 'ingress' | 'egress'): Set<string> => {
+    if (idOwned === undefined) {
+      return siblingOwnedSgRuleIdentities(physicalId, direction, properties, context);
+    }
+    const out = siblingOwnedSgRuleIdentities(physicalId, direction, properties, context, (lid) =>
+      idOwned.decided.has(lid)
+    );
+    for (const identity of idOwned.owned[direction]) out.add(identity);
+    return out;
+  };
   const stateIngress = Array.isArray(properties?.['SecurityGroupIngress'])
     ? (properties['SecurityGroupIngress'] as Array<Record<string, unknown>>)
     : undefined;
   const ingressRules = withoutSiblingOwnedSgRules(
     flattenIpPermissions(sg.IpPermissions ?? [], 'ingress'),
-    siblingOwnedSgRuleIdentities(physicalId, 'ingress', properties, context),
+    owned('ingress'),
     'ingress'
   );
   const stateEgress = Array.isArray(properties?.['SecurityGroupEgress'])
@@ -435,7 +456,7 @@ function sgRuleLists(
     : undefined;
   let egressRules = withoutSiblingOwnedSgRules(
     flattenIpPermissions(sg.IpPermissionsEgress ?? [], 'egress'),
-    siblingOwnedSgRuleIdentities(physicalId, 'egress', properties, context),
+    owned('egress'),
     'egress'
   );
   if (stateEgress === undefined) {
@@ -668,6 +689,16 @@ export async function readSecurityGroupIngressCurrentState(
   const protocol = parts[1]!;
   const fromPort = parts[2] === '-1' ? undefined : parseInt(parts[2]!, 10);
   const toPort = parts[3] === '-1' ? undefined : parseInt(parts[3]!, 10);
+
+  // go-to-k/cdkd#6641: a record holding its rule's `sgr-` id reads THAT rule
+  // (one `DescribeSecurityGroupRules` in place of the `DescribeSecurityGroups`
+  // below), so a rule moved out of band is drift here and a stranger's rule at
+  // the record's identity is not this record's.
+  if (properties && Object.keys(properties).length > 0) {
+    const byId = await readSgIngressById(this, groupId, properties, context);
+    if (byId === 'gone') return RESOURCE_NOT_FOUND;
+    if (byId !== 'fallback') return { GroupId: groupId, ...byId };
+  }
 
   const resp = await this.ec2Client.send(
     new DescribeSecurityGroupsCommand({ GroupIds: [groupId] })

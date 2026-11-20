@@ -152,6 +152,22 @@ the delete since. The deferred delete of a custom resource or nested stack
 that needs a NoEcho value is never in state, so when its read cannot answer,
 a later `cdkd rollback` refuses it.
 
+Before re-adopting an old resource AWS still reports, the rollback compares
+the AWS-assigned id its old record carries, where its type has one (an IAM
+role's `RoleId`, a managed policy's `PolicyId`, a DynamoDB table's `TableId`,
+an RDS instance's `DbiResourceId` or cluster's `DBClusterResourceId`): a
+different id is refused, since another resource took the name. Where nothing
+can be compared (a type with no such id, a record written before cdkd kept
+it), the resource is re-adopted as before, with one `⚠` line saying cdkd
+could not prove it is the one it created and naming
+`cdkd state orphan --resource <logicalId>` to drop its record if it is not
+this stack's; that line leaves the exit code as it was. A recorded id that
+could not be compared (a redacted value, an identity read that failed or could
+not name the resource) takes the rule for a read that cannot answer, with its
+own wording: a deferred old resource still listed in state is re-adopted with
+the same kind of line, and every other case is refused, saying that only a
+failed read is worth re-running `cdkd rollback` for.
+
 A deferred `AWS::S3::Bucket` is judged by who holds the old name, because
 bucket names are global and another party can take the name after an
 out-of-band delete. When the deploy defers the delete, it journals the

@@ -156,6 +156,7 @@ LOCAL_DIST="${REPO_ROOT}/dist/cli.js"
 # regression would leave plaintext in object versions forever. Sourced by
 # ABSOLUTE path, since this script `cd`s into the fixture dir below.
 . "${REPO_ROOT}/tests/integration/s3-versions.sh"
+. "${REPO_ROOT}/tests/integration/revert-identity.sh"
 
 PRODUCER_STATE_PREFIX="$(s3_stack_prefix "${PRODUCER_STACK}" "${PRODUCER_REGION}")"
 CONSUMER_STATE_PREFIX="$(s3_stack_prefix "${CONSUMER_STACK}" "${CONSUMER_REGION}")"
@@ -558,8 +559,10 @@ if [ "${V12_DRIFT_RC}" -ne 1 ]; then
   exit 1
 fi
 V12_REVERT_RC=0
+REVERT_IDENTITY_REGION="${CONSUMER_REGION}" revert_identity_snapshot "${LOGDIR}/revert-ids-v12-before" "${CHILD_STACK}" SecretEcho || exit 1
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CHILD_STACK}" --revert -y \
   --state-bucket "${STATE_BUCKET}" > "${LOGDIR}/drift-revert-v12.log" 2>&1 || V12_REVERT_RC=$?
+revert_identity_verify "${LOGDIR}/revert-ids-v12-before" "${LOGDIR}/revert-ids-v12-after" 1 "${LOGDIR}/drift-revert-v12.log" || exit 1
 sed 's/^/  /' "${LOGDIR}/drift-revert-v12.log" || true
 assert_no_plaintext "${LOGDIR}/drift-revert-v12.log" "the v12 drift --revert output"
 assert_no_refusal "${LOGDIR}/drift-revert-v12.log" "drift --revert on the v12 child"
@@ -621,8 +624,10 @@ case ",${CHILD_DRIFTED_PATHS}," in
     ;;
 esac
 DRIFT_REVERT_RC=0
+REVERT_IDENTITY_REGION="${CONSUMER_REGION}" revert_identity_snapshot "${LOGDIR}/revert-ids-refused-before" "${CHILD_STACK}" SecretEcho || exit 1
 AWS_REGION="${CONSUMER_REGION}" ${CLI} drift "${CHILD_STACK}" --revert -y \
   --state-bucket "${STATE_BUCKET}" > "${LOGDIR}/drift-revert.log" 2>&1 || DRIFT_REVERT_RC=$?
+revert_identity_verify "${LOGDIR}/revert-ids-refused-before" "${LOGDIR}/revert-ids-refused-after" 1 "${LOGDIR}/drift-revert.log" || exit 1
 sed 's/^/  /' "${LOGDIR}/drift-revert.log" || true
 assert_no_plaintext "${LOGDIR}/drift-revert.log" "the drift --revert output"
 # `refused to re-resolve` is printed only by the revert path's refusal branch,

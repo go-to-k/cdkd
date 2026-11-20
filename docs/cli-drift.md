@@ -183,7 +183,26 @@ security groups (`connections.allowFrom(otherGroup, ...)`,
 keeps CIDR rules in the group's own `SecurityGroupIngress` /
 `SecurityGroupEgress`. Drift leaves out of the group's lists every rule such a
 resource in the same stack adds, unless the group's template lists it too, so
-`--revert` never revokes it. A rule nothing in the stack declares is still
+`--revert` never revokes it. Such a resource that records its rule's `sgr-`
+id owns exactly the live rule carrying that id: a change to the rule's
+protocol, ports or peer out of band (which keeps the id) is reported on that
+resource, and a rule someone adds at the resource's declared protocol, ports
+and peer under another id is reported on the group, and its `--revert` revokes
+it. This reads the group's rules with `ec2:DescribeSecurityGroupRules`, once per
+group that has such a resource, on every read of the stack's recorded state
+(`cdkd drift`, `--revert`, `cdkd state refresh-observed` and `cdkd import`).
+A deploy makes it only when it re-captures a drift baseline recorded with a
+masked secret; its post-write capture
+and the rollback replay's baseline refresh never do. A resource whose rule
+another resource of the stack also declares, whose peer is named by group name,
+or whose recorded id is no longer live is still matched by protocol, ports and
+peer. Without that permission the group's rules are matched that way, the read
+of such a resource fails (`cdkd drift` exits 2), and the group's `--revert`
+refuses rather than revoke anything. A group provisioned through Cloud Control
+is matched that way too; Cloud Control replaces a changed rule list whole, so
+when such a group has these resources, its `--revert` refuses any change to its
+rule lists (revert it by redeploying the stack) and reverts only its other
+properties. A rule nothing in the stack declares is still
 reported, as in CloudFormation, and `--revert` revokes only that one. When a deploy removes
 such a resource, or replaces it with a different rule, its delete revokes the
 rule and the same deploy removes it from the group's recorded snapshot, so

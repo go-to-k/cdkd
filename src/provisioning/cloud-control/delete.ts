@@ -45,6 +45,7 @@ import {
 } from './delete-guards.js';
 import { IdScrubLog, inIdLogScope, holdsSecretDerivedLeaf } from './id-log.js';
 import { CloudControlOperationFailedError } from './shared.js';
+import { assertRecordedIdentityBeforeCcDelete } from './delete-identity.js';
 import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
@@ -276,6 +277,22 @@ export async function deleteInIdLogScope(
       indeterminateGuard
     );
   }
+
+  // go-to-k/cdkd#6666: a record holding an AWS-minted id (an IAM role's
+  // `RoleId`, an RDS instance's `DbiResourceId`, ...) is compared with the
+  // live resource holding its name before anything below sends a request,
+  // the RDS hand-off to the SDK provider included: that provider deletes by
+  // identifier too and does not compare the recorded id. No type in the
+  // identity table is in either `--remove-protection` table or the ASG
+  // delegation, so nothing mutating precedes it. Every other record returns
+  // before any call.
+  await assertRecordedIdentityBeforeCcDelete.call(
+    this,
+    logicalId,
+    resourceType,
+    physicalId,
+    context
+  );
 
   // Issue #3993: under an explicit `DeletionPolicy: Delete`, or when the user
   // opted out with `--skip-final-snapshot` (#4029), an RDS cluster or

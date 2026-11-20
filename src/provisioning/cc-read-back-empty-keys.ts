@@ -1,12 +1,12 @@
 import type { JsonPatchOp } from './json-patch-generator.js';
 
 /**
- * Per type: the top-level keys whose EMPTY read-back value (`{}` or `[]`)
+ * Per type: the top-level keys whose EMPTY read-back value (`{}`, `[]` or `""`)
  * the service's update API refuses (go-to-k/cdkd#6569).
  *
  * Cloud Control applies an update patch on top of the model its read handler
  * returns. For these types that model spells "not set" as an empty
- * collection, so a patch that never mentions the key still sends the empty
+ * value, so a patch that never mentions the key still sends the empty
  * value, and the update fails although the template did not change it:
  *
  * - `AWS::ImageBuilder::InfrastructureConfiguration` `ResourceTags`: a
@@ -15,11 +15,18 @@ import type { JsonPatchOp } from './json-patch-generator.js';
  *   satisfy min_items 1`). Its other empty read-backs (`Tags: {}`,
  *   `SecurityGroupIds: []`, `Logging.S3Logs: {}`) were measured to update
  *   fine, so they are not listed.
+ * - `AWS::DataSync::Task` `Schedule` and `Name`: a task created without them
+ *   (the CDK default) reads back `"Schedule": {}` and `"Name": ""`.
+ *   `UpdateTask` refuses the null expression the first becomes (`Value null
+ *   at 'schedule.scheduleExpression' failed to satisfy constraint`), and
+ *   Cloud Control's own model validation the second (`#/Name: expected
+ *   minLength: 1, actual: 0`), go-to-k/cdkd#6676.
  *
  * A type joins by measurement, never by reading its schema: a key is listed
  * only once its empty read-back was seen refused.
  */
 export const CC_READ_BACK_EMPTY_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::DataSync::Task': ['Name', 'Schedule'],
   'AWS::ImageBuilder::InfrastructureConfiguration': ['ResourceTags'],
 };
 
@@ -28,7 +35,8 @@ export function hasCcReadBackEmptyKeys(resourceType: string): boolean {
   return Object.prototype.hasOwnProperty.call(CC_READ_BACK_EMPTY_KEYS, resourceType);
 }
 
-function isEmptyCollection(value: unknown): boolean {
+function isEmptyValue(value: unknown): boolean {
+  if (value === '') return true;
   if (Array.isArray(value)) return value.length === 0;
   return value !== null && typeof value === 'object' && Object.keys(value as object).length === 0;
 }
@@ -47,10 +55,11 @@ function isEmptyCollection(value: unknown): boolean {
  *   snapshot, which may carry the read-back empty value. Either way the
  *   request then omits the key, as a CloudFormation update does.
  *
- * An `add` / `replace` the patch already has on `/<key>` whose value is an
- * empty collection is the same refused request, so it becomes a `remove`
- * while the live model holds the key and is dropped when it does not; any
- * other op there is left as the generator wrote it.
+ * An `add` / `replace` the patch already has on `/<key>` whose value is
+ * empty is the same refused request, so it becomes a `remove`
+ * while the live model holds the key and is dropped when it does not; a `""`
+ * over a live non-empty string, and any other op there, is left as the
+ * generator wrote it.
  *
  * Every other type, an empty patch, or nothing to change returns the same
  * array.
@@ -69,21 +78,26 @@ export function withCcReadBackEmptyKeyRemovals(
     const path = `/${escapeJsonPointer(key)}`;
     const existing = out.findIndex((op) => op.path === path);
     if (existing !== -1) {
-      // An `add` / `replace` OF an empty collection is the same refused
+      // An `add` / `replace` OF an empty value is the same refused
       // request (a `drift --revert` restoring a `{}` baseline over tags added
       // out of band): send `remove` instead while the model holds the key,
-      // and nothing when it does not (a missing-path remove fails).
+      // and nothing when it does not (a missing-path remove fails). A `""`
+      // over a live non-empty string is sent as written: a `remove` would
+      // keep the live string (UpdateTask leaves an omitted Name alone), so a
+      // `drift --revert` would report success without reverting it.
       const op = out[existing]!;
-      if ((op.op === 'add' || op.op === 'replace') && isEmptyCollection(op.value)) {
+      const live = liveModel[key];
+      const keepsLiveString = op.value === '' && typeof live === 'string' && live !== '';
+      if ((op.op === 'add' || op.op === 'replace') && isEmptyValue(op.value) && !keepsLiveString) {
         out = Object.prototype.hasOwnProperty.call(liveModel, key)
           ? out.map((o, i) => (i === existing ? { op: 'remove', path } : o))
           : out.filter((_, i) => i !== existing);
       }
       continue;
     }
-    // An absent key is not an empty collection, so it gets no `remove`.
-    if (!isEmptyCollection(liveModel[key])) continue;
-    if (Object.prototype.hasOwnProperty.call(desired, key) && !isEmptyCollection(desired[key])) {
+    // An absent key is not an empty value, so it gets no `remove`.
+    if (!isEmptyValue(liveModel[key])) continue;
+    if (Object.prototype.hasOwnProperty.call(desired, key) && !isEmptyValue(desired[key])) {
       continue;
     }
     extra.push({ op: 'remove', path });

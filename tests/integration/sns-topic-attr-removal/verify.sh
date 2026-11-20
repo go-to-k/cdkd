@@ -56,6 +56,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 CDKD="node ../../../dist/cli.js"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -68,6 +72,7 @@ cleanup() {
   echo ""
   echo "==> Cleanup (errors tolerated)"
   ${CDKD} destroy ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
+  rm -rf "${REVERT_DIR:-}"
   exit ${rc}
 }
 trap cleanup EXIT
@@ -208,7 +213,23 @@ if [[ "${DRIFT_RC}" -ne 1 ]]; then
   exit 1
 fi
 echo "    out-of-band change detected (exit 1) (✓)"
-${CDKD} drift ${STACK} --revert --yes --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+UNSET_LID=$(echo "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)" | python3 -c '
+import sys, json
+want = sys.argv[1]
+m = [k for k, v in json.load(sys.stdin)["resources"].items() if v["resourceType"] == "AWS::SNS::Topic" and v["physicalId"] == want]
+print(m[0] if len(m) == 1 else "")
+' "${UNSET_ARN}")
+if [[ -z "${UNSET_LID}" ]]; then
+  echo "FAIL: could not resolve the unset topic's logical id from state"
+  exit 1
+fi
+REVERT_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${UNSET_LID}" || exit 1
+REVERT_RC=0
+${CDKD} drift ${STACK} --revert --yes --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_DIR}/revert-1.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 "${REVERT_DIR}/revert-1.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert failed"; exit 1; }
 expect_attr "${UNSET_ARN}" TracingConfig PassThrough "after drift --revert"
 DRIFT_RC=0
 ${CDKD} drift ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" || DRIFT_RC=$?

@@ -1068,7 +1068,9 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
     const KNOWN_FUNCTIONS =
       'asJson|requireSecretStringShape|generateMemberRefusal|generateCharset|randomIndex|' +
       'create|update|deleteImpl|replicaRegionsBlockingDelete|retainPreviousGenerateBlock|' +
-      'changedSecretValue|asPersisted|generateSecretString|readCurrentState|importImpl';
+      'changedSecretValue|asPersisted|generateSecretString|readCurrentState|importImpl|' +
+      // go-to-k/cdkd#6609: re-reads DescribeSecret's Tags only, never the value.
+      'settleSecretTags';
     for (const f of family) {
       const topLevel: string[] = [];
       let depth = 0;
@@ -1178,9 +1180,17 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       '../not-gone.js',
       '../region-check.js',
       '../resource-name.js',
+      // go-to-k/cdkd#6609: `warnUnsettledMember` (names the logical id, the
+      // type and the key, never a value) and the classifier of a read failure.
+      '../settle-after-own-write.js',
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it
       // reads its arguments and throws or returns).
       '../tag-list.js',
+      // go-to-k/cdkd#6609: the post-write Tags settle. Its module state is,
+      // per type and physical id, the tag keys and values its own
+      // TagResource sent and the keys it untagged, held in memory only
+      // (never logged or persisted); it reads tags, never the secret value.
+      '../tags-own-write-baseline.js',
       // go-to-k/cdkd#5835: the provider family itself -- the class file and
       // its companion directory, every one of them read by this fence.
       './secretsmanager-secret-provider.js',

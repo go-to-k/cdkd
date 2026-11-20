@@ -1431,6 +1431,13 @@ describe('EC2Provider.readCurrentState', () => {
     });
 
     describe('the identity fallback (go-to-k/cdkd#4447)', () => {
+      // go-to-k/cdkd#6641 reads a record holding its id by that id first
+      // (`tests/unit/provisioning/ec2-sg-rule-by-id-6641.test.ts`); this
+      // fallback answers when the group's rule listing cannot be read whole
+      // (more pages than cdkd reads), the by-id call still answering.
+      beforeEach(() => {
+        vi.spyOn(provider, 'listGroupRules').mockResolvedValue(undefined);
+      });
       const ID = 'sgr-0a1b2c3d4e5f60718';
       const TYPE = 'AWS::EC2::SecurityGroupIngress';
       const PHYS = 'sg-1|tcp|443|443';

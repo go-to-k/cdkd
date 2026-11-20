@@ -25,6 +25,7 @@ import type {
   CreateContext,
   UpdateContext,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { create } from './secretsmanager-secret/create.js';
@@ -36,7 +37,12 @@ import {
   asPersisted,
   generateSecretString,
 } from './secretsmanager-secret/secret-value.js';
-import { readCurrentState, importImpl } from './secretsmanager-secret/read-state.js';
+import {
+  readCurrentState,
+  importImpl,
+  settleSecretTags,
+} from './secretsmanager-secret/read-state.js';
+import { TAGS_BASELINE_REREAD_DELAYS_MS } from '../tags-own-write-baseline.js';
 
 /**
  * AWS Secrets Manager Secret Provider
@@ -251,9 +257,20 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   readCurrentState(
     physicalId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, logicalId, resourceType);
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties, context);
+  }
+
+  /** Re-read schedule of the post-write `Tags` capture (#6609); tests zero it. */
+  tagsBaselineRereadDelaysMs: readonly number[] = TAGS_BASELINE_REREAD_DELAYS_MS;
+
+  settleSecretTags(
+    ...args: Parameters<typeof settleSecretTags>
+  ): ReturnType<typeof settleSecretTags> {
+    return settleSecretTags.call(this, ...args);
   }
 
   /**

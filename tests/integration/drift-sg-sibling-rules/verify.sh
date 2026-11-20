@@ -66,6 +66,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
+REVERT_DIR=""
 
 STACK="CdkdDriftSgSiblingRulesExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -85,6 +87,7 @@ cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
   rm -f "${DRIFT_LOG:-}" "${PLANT_FILE:-}"
+  [ -n "${REVERT_DIR:-}" ] && rm -rf "${REVERT_DIR}"
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
@@ -121,6 +124,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+REVERT_DIR="$(mktemp -d)"
 
 # The FromPort list of one direction of a group, sorted numerically,
 # space-joined. `-1` stands for an all-ports rule.
@@ -247,7 +251,9 @@ if grep -qE '"FromPort":(5432|8080)' "${DRIFT_LOG}"; then
 fi
 
 echo "==> Phase 5: cdkd drift --revert -y revokes only the out-of-band rule"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-5-before" "${STACK}" "${SG_A_LID}" || exit 1
 run_drift --revert -y
+revert_identity_verify "${REVERT_DIR}/revert-ids-5-before" "${REVERT_DIR}/revert-ids-5-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 5"
 read_ports
 expect_ports "SgA ingress (after revert)" "${A_IN}" "443 5432 8443"
@@ -305,7 +311,12 @@ read_ports
 expect_ports "SgA ingress (443 revoked out of band)" "${A_IN}" "5432 8443"
 DRIFT_6A="$(revert_drift_json)" || exit 1
 assert_member_drifted "${DRIFT_6A}" AWS::EC2::SecurityGroup SecurityGroupIngress "an out-of-band revoke"
-run_revert
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-6a-before" "${STACK}" "${SG_A_LID}" || exit 1
+REVERT_6A_RC=0
+run_revert >"${REVERT_DIR}/revert-6a.log" 2>&1 || REVERT_6A_RC=$?
+sed 's/^/    | /' "${REVERT_DIR}/revert-6a.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-6a-before" "${REVERT_DIR}/revert-ids-6a-after" 1 "${REVERT_DIR}/revert-6a.log" || exit 1
+[ "${REVERT_6A_RC}" -eq 0 ] || { echo "FAIL: Phase 6a: cdkd drift --revert exited ${REVERT_6A_RC}, want 0" >&2; exit 1; }
 read_ports
 expect_ports "SgA ingress (after the revert)" "${A_IN}" "443 5432 8443"
 expect_ports "SgA egress (after the revert)" "${A_OUT}" "443 8080"
@@ -354,7 +365,9 @@ BASE_IN="$(jq -r --arg l "${SG_A_LID}" \
 expect_ports "SgA baseline after the sibling's removal" "${BASE_IN}" "443 8443"
 run_drift
 expect_drift_rc 0 "Phase 6b (sibling removed)"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-6b-before" "${STACK}" "${SG_A_LID}" || exit 1
 run_drift --revert -y
+revert_identity_verify "${REVERT_DIR}/revert-ids-6b-before" "${REVERT_DIR}/revert-ids-6b-after" 1 "${DRIFT_LOG}" || exit 1
 expect_drift_rc 0 "Phase 6b (--revert)"
 read_ports
 expect_ports "SgA ingress (after --revert)" "${A_IN}" "443 8443"
@@ -368,4 +381,5 @@ assert_gone "state ${STATE_KEY} leaked" aws s3api head-object --bucket "${STATE_
 
 trap - EXIT INT TERM
 rm -f "${DRIFT_LOG:-}"
+rm -rf "${REVERT_DIR}"
 echo "PASS: drift-sg-sibling-rules"

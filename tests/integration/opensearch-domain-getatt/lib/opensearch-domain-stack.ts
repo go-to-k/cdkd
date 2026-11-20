@@ -53,6 +53,25 @@ export class OpenSearchDomainStack extends cdk.Stack {
     // which may synthesize the ARN client-side instead of via Fn::GetAtt.
     const cfnDomain = domain.node.defaultChild as opensearch.CfnDomain;
 
+    // `CDKD_TEST_UPDATE=policy` adds an access policy (the L1 property: the L2
+    // `accessPolicies` prop writes it through a custom resource instead). The
+    // domain declares neither `AdvancedOptions` nor `AIMLOptions`, and Cloud
+    // Control reads back defaults for both that `UpdateDomainConfig` refuses
+    // unless the update drops them (issue #6676).
+    if (process.env.CDKD_TEST_UPDATE === 'policy') {
+      cfnDomain.accessPolicies = {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { AWS: `arn:aws:iam::${this.account}:root` },
+            Action: 'es:ESHttpGet',
+            Resource: `arn:aws:es:${this.region}:${this.account}:domain/cdkd-opensearch-getatt/*`,
+          },
+        ],
+      };
+    }
+
     // LOAD-BEARING: these SSM Parameters' Value is a Fn::GetAtt against the
     // domain's computed endpoint / ARN. Pre-fix they resolved to the domain
     // name (garbage); post-fix they hold the real endpoint hostname / ARN.

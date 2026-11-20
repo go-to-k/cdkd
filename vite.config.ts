@@ -542,6 +542,16 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-update-path-coverage.ts --check',
         cache: false,
       },
+      // Issue #6676: the measured table of Cloud Control update paths; every type
+      // measured as refusing has a registered fix or a recorded exemption.
+      'gen:cc-update-measurements': {
+        command: 'node --experimental-strip-types scripts/gen-cc-update-measurements.ts',
+        cache: false,
+      },
+      'gen:cc-update-measurements:check': {
+        command: 'node --experimental-strip-types scripts/gen-cc-update-measurements.ts --check',
+        cache: false,
+      },
       // Issue #6612: every compound-id type has a decided CloudFormation `Ref`
       // (a segment mapping, or a recorded "compound" / "no Ref" / ... with source).
       'gen:ref-segment-coverage': {
@@ -718,6 +728,7 @@ export default defineConfig({
           'vp run gen:sdk-attr-coverage',
           'vp run gen:update-wrap-coverage',
           'vp run gen:update-path-coverage',
+          'vp run gen:cc-update-measurements',
           'vp run gen:ref-segment-coverage',
           'vp run gen:provider-replace-branches',
           'vp run gen:nested-key-coverage',

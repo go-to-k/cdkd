@@ -75,6 +75,24 @@ export type ReplacedSurvivorVerdict =
   | 'exists-unverified'
   | 'owner-unverified'
   /**
+   * go-to-k/cdkd#6655 (D5): AWS reports a resource under the old id, and
+   * nothing can prove it the one cdkd created: the type records no
+   * AWS-minted id, the old record holds none, or the type's provider has no
+   * read for it ({@link unverifiedIdentityCause}). Re-adopted as `'exists'`,
+   * with a warning naming the `cdkd state orphan` way out.
+   */
+  | 'identity-unverified'
+  /**
+   * go-to-k/cdkd#6655 (D5): AWS reports a resource under the old id and the
+   * old record carries an identity id, but it could not be compared:
+   * `identity-uncompared` when that holds on every run (a redacted recorded
+   * value, a read that cannot name the resource), `identity-unread` when the
+   * identity read failed (a re-run reads it again). Both take the `'unknown'`
+   * rule (go-to-k/cdkd#6399), with their own wording.
+   */
+  | 'identity-uncompared'
+  | 'identity-unread'
+  /**
    * go-to-k/cdkd#6621: refused, never re-adopted. `free-unreadable`: nothing
    * held the id when the rollback started and its state now cannot be read;
    * `vacated`: the probe's confirmation read found the id free after the
@@ -378,12 +396,16 @@ function judgeHolder(
 }
 
 /**
- * go-to-k/cdkd#6393: the live resource under the old physical id, judged
- * against the identity the old record carries: `'foreign'` only when both
- * are known and differ, `'gone'` when the identity read finds nothing (it
- * went between the two reads). Anything less (no table entry, nothing
- * recorded or a masked value, no `resourceIdentity`, a failed or undecided
- * read) answers `'exists'`, the existence-only verdict it had before.
+ * go-to-k/cdkd#6393 / #6655 (D5): the live resource under the old physical
+ * id, judged against the identity the old record carries: `'foreign'` only
+ * when both are known and differ, `'gone'` when the identity read finds
+ * nothing (it went between the two reads). What cannot prove identity at
+ * all (no table entry, nothing recorded, no `resourceIdentity`) answers
+ * `'identity-unverified'`, which re-adopts with a warning. A recorded value
+ * that is no id (masked, a secret reference) and a read that cannot name the
+ * resource answer `'identity-uncompared'`, a read that fails
+ * `'identity-unread'`: an id was recorded, so the proof exists and could not
+ * be made.
  *
  * Read through the TYPE's provider, not the record's route: a Cloud Control
  * record's provider has no `resourceIdentity`, and the token is the type's.
@@ -392,22 +414,68 @@ async function identityVerdict(
   s: Pick<ReplayOpScope, 'op' | 'ctx' | 'secrets'>,
   physicalId: string,
   oldType: string
-): Promise<'exists' | 'gone' | 'foreign'> {
+): Promise<
+  'exists' | 'gone' | 'foreign' | 'identity-unverified' | 'identity-uncompared' | 'identity-unread'
+> {
+  const held = recordedIdentityValue(oldType, s.op.previousState?.attributes);
+  if (held.kind === 'no-attribute' || held.kind === 'not-recorded') return 'identity-unverified';
   // A masked or secret-reference value is no id (`recordedIdentityId`, the
   // delete's own reading of the record).
   const recorded = recordedIdentityId(oldType, {
     recordedAttributes: s.op.previousState?.attributes,
   })?.value;
-  if (recorded === undefined) return 'exists';
+  if (recorded === undefined) return 'identity-uncompared';
   try {
     const provider = s.ctx.providerRegistry.getProvider(oldType);
-    if (typeof provider.resourceIdentity !== 'function') return 'exists';
+    if (typeof provider.resourceIdentity !== 'function') return 'identity-unverified';
     const live = await withReplayDeletePrinting(s, () =>
       provider.resourceIdentity!(physicalId, oldType, { expectedRegion: s.ctx.region })
     );
     if (live === RESOURCE_NOT_FOUND) return 'gone';
-    return typeof live === 'string' && live !== '' && live !== recorded ? 'foreign' : 'exists';
+    // `undefined`: the read could not name the resource (the contract's answer).
+    if (typeof live !== 'string' || live === '') return 'identity-uncompared';
+    return live === recorded ? 'exists' : 'foreign';
   } catch {
-    return 'exists';
+    return 'identity-unread';
   }
+}
+
+/** Whether the old record carries the type's identity attribute at all. */
+function recordedIdentityValue(
+  oldType: string,
+  attributes: Readonly<Record<string, unknown>> | null | undefined
+): { kind: 'no-attribute' | 'not-recorded' } | { kind: 'held'; key: string } {
+  if (!Object.hasOwn(SURVIVOR_IDENTITY_ATTRIBUTES, oldType)) return { kind: 'no-attribute' };
+  const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType]!;
+  // A journal can carry `attributes: null`; this runs outside the read's try.
+  const value =
+    typeof attributes === 'object' && attributes !== null && Object.hasOwn(attributes, key)
+      ? attributes[key]
+      : undefined;
+  // Empty is nothing recorded, as `isUsableIdentityValue` reads it; a masked
+  // or otherwise unusable value is a recorded id that could not be compared.
+  return value === undefined || value === null || value === ''
+    ? { kind: 'not-recorded' }
+    : { kind: 'held', key };
+}
+
+/**
+ * go-to-k/cdkd#6655 (D5): why an `'identity-unverified'` survivor could not be
+ * proven the stack's, for its warning: the type and attribute named, never a
+ * value.
+ */
+export function unverifiedIdentityCause(
+  oldType: string,
+  attributes: Readonly<Record<string, unknown>> | null | undefined,
+  /** The type as the line may print it (plain, else described). */
+  shownType: string
+): string {
+  const held = recordedIdentityValue(oldType, attributes);
+  if (held.kind === 'no-attribute') {
+    return `cdkd records no AWS-assigned id for ${shownType} to compare`;
+  }
+  const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType]!;
+  return held.kind === 'not-recorded'
+    ? `its state record holds no ${key}: it was written before cdkd recorded one`
+    : `cdkd has no read of the ${key} for ${shownType}`;
 }
