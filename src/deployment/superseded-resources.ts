@@ -17,6 +17,14 @@ import {
   replacementDeletePolicy,
 } from '../provisioning/final-snapshot.js';
 import { CdkdError } from '../utils/error-handler.js';
+import {
+  type HolderJudgement,
+  incomparableHolderNote,
+  isUnreadHolder,
+  judgeJournaledHolder,
+  notOursHolderCause,
+  unreadHolderCause,
+} from './journaled-holder.js';
 import type { ResourceDeleteResult, ResourceProvider } from '../types/resource.js';
 import type { ResourceState, StackState, SupersededResourceRecord } from '../types/state.js';
 import { reportDeleteGuards } from './delete-guard-scope.js';
@@ -286,9 +294,18 @@ export function withoutSuperseded<T extends Pick<StackState, 'supersededResource
   return rest;
 }
 
-/** What {@link deleteSupersededEntry} did: deleted, not deleted (a provider's reason), or failed. */
+/**
+ * What {@link deleteSupersededEntry} did: deleted, not deleted (a provider's
+ * reason), or failed. go-to-k/cdkd#6668, for an entry carrying `identity`:
+ * `gone` (nothing holds the name, so no delete was sent) and `notOurs` (a
+ * holder PROVEN not the stack's, left alone; `cause` names the attribute,
+ * never a value). Both drop the entry. A holder that could not be read is
+ * `failed`, unsent, and keeps it.
+ */
 export type SupersededDeleteOutcome =
   | { kind: 'deleted' }
+  | { kind: 'gone' }
+  | { kind: 'notOurs'; cause: string }
   | { kind: 'notDeleted'; reason: string }
   | {
       kind: 'failed';
@@ -330,9 +347,54 @@ export async function deleteSupersededEntry(
       clients: PreDeleteSnapshotClients;
       logger: { info(message: string): void; debug(message: string): void };
     };
+    /**
+     * go-to-k/cdkd#6668: the provider of the entry's TYPE, for an entry
+     * carrying `identity` (the routed `provider` of a Cloud Control record
+     * reads no holder). Without it such an entry fails, unsent.
+     */
+    holderProvider?: () => Pick<ResourceProvider, 'replacedSurvivorIdentity'>;
+    /** go-to-k/cdkd#6668: where an `identity` that cannot be compared is warned about. */
+    warn?: (message: string) => void;
   }
 ): Promise<SupersededDeleteOutcome> {
   const record = entry.state;
+  // go-to-k/cdkd#6668: before anything is sent (a snapshot included), the
+  // holder of the name, when the deferral journaled its generation. Read
+  // only for such an entry: an ordinary deploy or destroy reads nothing.
+  if (Object.prototype.hasOwnProperty.call(entry, 'identity')) {
+    const journaled: unknown = entry.identity;
+    // A malformed value (a hand edit) or no reader compares with nothing, in
+    // this run or any later one: warned, then the by-name delete below.
+    const judged: HolderJudgement =
+      typeof journaled !== 'string' || journaled === ''
+        ? { incomparable: 'the recorded generation is malformed' }
+        : input.holderProvider === undefined
+          ? { incomparable: 'cdkd reads no holder for this resource type' }
+          : await judgeJournaledHolder({
+              provider: input.holderProvider,
+              resourceType: record.resourceType,
+              physicalId: record.physicalId,
+              region: input.region,
+              journaled,
+              interrupted: input.stop,
+            });
+    if (judged === 'gone') return { kind: 'gone' };
+    if (isUnreadHolder(judged)) {
+      return {
+        kind: 'failed',
+        // No final period: callers append ". <remedy>".
+        error: new CdkdError(
+          `No delete was sent: ${unreadHolderCause(judged)}`,
+          'SUPERSEDED_HOLDER_UNREAD'
+        ),
+      };
+    }
+    if (typeof judged === 'object' && 'incomparable' in judged) {
+      input.warn?.(incomparableHolderNote(judged.incomparable));
+    } else if (judged !== 'ours') {
+      return { kind: 'notOurs', cause: notOursHolderCause(record.resourceType, judged.notOurs) };
+    }
+  }
   // go-to-k/cdkd#6463: a create-first replacement of a pre-delete-snapshot
   // type (an EBS volume, a Redshift cluster, an ElastiCache replication
   // group) records its owed snapshot as `finalSnapshotIdentifier`; no other

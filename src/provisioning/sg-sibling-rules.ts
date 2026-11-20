@@ -37,7 +37,12 @@
  */
 import type { ReadCurrentStateContext } from '../types/resource.js';
 import { isRedactedRecordedValue } from './redacted-delete-address.js';
-import { cfnIngressPortValue, sgProtocolKey } from './sg-rule-identity.js';
+import {
+  SG_RULE_ID_PATTERN,
+  cfnIngressPortValue,
+  recordedSgRuleId,
+  sgProtocolKey,
+} from './sg-rule-identity.js';
 import {
   previousMaySurvive,
   type TemplatePolicies,
@@ -97,17 +102,22 @@ export function sgRuleOwnershipIdentity(rule: unknown, direction: SgDirection): 
  * record of the stack authorizes on `groupId`, minus those the group's own
  * `properties` (its template) also declare inline. Empty without a context or a
  * group id.
+ *
+ * `skip` (go-to-k/cdkd#6641) leaves out the siblings whose rule was assigned
+ * by its `sgr-` id instead ({@link sgSiblingDecidedById}).
  */
 export function siblingOwnedSgRuleIdentities(
   groupId: string | undefined,
   direction: SgDirection,
   properties: Record<string, unknown> | undefined,
-  context: ReadCurrentStateContext | undefined
+  context: ReadCurrentStateContext | undefined,
+  skip?: (logicalId: string, sibling: RuleIdRecord) => boolean
 ): Set<string> {
   const owned = new Set<string>();
   if (typeof groupId !== 'string' || groupId === '') return owned;
-  for (const sibling of Object.values(context?.siblings ?? {})) {
+  for (const [lid, sibling] of Object.entries(context?.siblings ?? {})) {
     if (sibling.resourceType !== RULE_TYPE[direction]) continue;
+    if (skip?.(lid, sibling) === true) continue;
     const props = sibling.properties;
     if (!isPlainRecord(props) || props['GroupId'] !== groupId) continue;
     const identity = sgRuleOwnershipIdentity(props, direction);
@@ -122,6 +132,146 @@ export function siblingOwnedSgRuleIdentities(
     }
   }
   return owned;
+}
+
+/** The ingress keys a rule's identity reads, `SourceSecurityGroupOwnerId` included. */
+const INGRESS_IDENTITY_KEYS = [
+  'IpProtocol',
+  'FromPort',
+  'ToPort',
+  'CidrIp',
+  'CidrIpv6',
+  'SourceSecurityGroupId',
+  'SourceSecurityGroupName',
+  'SourceSecurityGroupOwnerId',
+  'SourcePrefixListId',
+] as const;
+
+/**
+ * go-to-k/cdkd#6641: may the rule of standalone rule record `self` be decided
+ * by its recorded `sgr-` id? ONE predicate for both sides (the group's
+ * readback and revert helpers, and the record's own readback), so the two never
+ * claim different rules. True when the record holds an id and an identity that
+ * names one rule: no redacted identity value, no peer named by group name only
+ * (AWS reports the group id), and no other rule record of the group in
+ * `records` (other than `selfLogicalId`) declaring the same identity or
+ * recording the same id, nor the group's own inline list (`groupProperties`)
+ * declaring it (go-to-k/cdkd#4492: AWS keeps one rule for both). Otherwise the
+ * rule stays matched by identity, as before. Whether the id is still live is
+ * the caller's to check against the group's rules.
+ */
+export function sgSiblingDecidedById(
+  selfLogicalId: string | undefined,
+  self: RuleIdRecord,
+  records: Iterable<readonly [string, RuleIdRecord]>,
+  groupProperties: Record<string, unknown> | undefined
+): boolean {
+  if (!isPlainRecord(self)) return false;
+  const direction: SgDirection | undefined =
+    self.resourceType === RULE_TYPE.ingress
+      ? 'ingress'
+      : self.resourceType === RULE_TYPE.egress
+        ? 'egress'
+        : undefined;
+  const props = self.properties;
+  const id = recordedRuleIdOf(self);
+  if (direction === undefined || !isPlainRecord(props) || id === undefined) return false;
+  const groupId = props['GroupId'];
+  if (typeof groupId !== 'string' || groupId === '') return false;
+  if (INGRESS_IDENTITY_KEYS.some((key) => isRedactedRecordedValue(props[key]))) return false;
+  if (props['SourceSecurityGroupName'] != null && props['SourceSecurityGroupId'] == null) {
+    return false;
+  }
+  const identity = sgRuleOwnershipIdentity(props, direction);
+  if (identity === undefined) return false;
+  for (const [lid, other] of records) {
+    if (lid === selfLogicalId || !isPlainRecord(other)) continue;
+    if (other.resourceType !== RULE_TYPE[direction]) continue;
+    const otherProps = other.properties;
+    if (!isPlainRecord(otherProps) || otherProps['GroupId'] !== groupId) continue;
+    if (recordedRuleIdOf(other) === id) return false;
+    if (sgRuleOwnershipIdentity(otherProps, direction) === identity) return false;
+  }
+  const inline = groupProperties?.[LIST_KEY[direction]];
+  if (
+    Array.isArray(inline) &&
+    inline.some((e) => sgRuleOwnershipIdentity(e, direction) === identity)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The `skip` the drift-side helpers pass {@link siblingOwnedSgRuleIdentities}
+ * for a group's LIVE side: the siblings the SDK readback assigned by id, whose
+ * rules it already placed (a live rule at such a sibling's recorded identity is
+ * a stranger's). A group read through Cloud Control (`context.ccApiRead`)
+ * assigned nothing by id, so it skips none.
+ */
+export function skipSiblingsDecidedById(
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): ((logicalId: string, sibling: RuleIdRecord) => boolean) | undefined {
+  if (context?.ccApiRead === true) return undefined;
+  const records = Object.entries(context?.siblings ?? {});
+  return (lid, sibling) => sgSiblingDecidedById(lid, sibling, records, properties);
+}
+
+/** The record fields {@link siblingRecordedSgRuleIds} reads. */
+export interface RuleIdRecord {
+  resourceType: string;
+  physicalId?: string | undefined;
+  properties?: Record<string, unknown> | undefined;
+  attributes?: Readonly<Record<string, unknown>> | undefined;
+}
+
+/**
+ * A standalone rule record's `sgr-` id: its `attributes.Id`, or a Cloud
+ * Control record's physical id, which IS the rule id.
+ */
+export function recordedRuleIdOf(record: RuleIdRecord): string | undefined {
+  return (
+    recordedSgRuleId(record.attributes) ??
+    (typeof record.physicalId === 'string' && SG_RULE_ID_PATTERN.test(record.physicalId)
+      ? record.physicalId
+      : undefined)
+  );
+}
+
+/**
+ * go-to-k/cdkd#6641: the `sgr-` rule ids the stack's standalone rule records
+ * in `direction` (every direction when omitted) recorded on `groupId`, each
+ * with the record's own identity (`undefined` when it cannot be compared).
+ * The id is the record's `attributes.Id`, or a Cloud Control record's
+ * physical id, which IS the rule id. `ModifySecurityGroupRules` keeps the id
+ * while it changes the rule's protocol, ports or peer, so a rule carrying a
+ * sibling's id is that sibling's whatever its identity now reads.
+ */
+export function siblingRecordedSgRuleIds(
+  groupId: string | undefined,
+  records: Iterable<readonly [string, RuleIdRecord]> | undefined,
+  direction?: SgDirection
+): Map<string, string | undefined> {
+  const ids = new Map<string, string | undefined>();
+  if (typeof groupId !== 'string' || groupId === '' || records === undefined) return ids;
+  for (const [, record] of records) {
+    // A malformed state entry (`null`, a string) names no rule.
+    if (!isPlainRecord(record)) continue;
+    const recordDirection: SgDirection | undefined =
+      record.resourceType === RULE_TYPE.ingress
+        ? 'ingress'
+        : record.resourceType === RULE_TYPE.egress
+          ? 'egress'
+          : undefined;
+    if (recordDirection === undefined) continue;
+    if (direction !== undefined && recordDirection !== direction) continue;
+    const props = record.properties;
+    if (!isPlainRecord(props) || props['GroupId'] !== groupId) continue;
+    const id = recordedRuleIdOf(record);
+    if (id !== undefined) ids.set(id, sgRuleOwnershipIdentity(props, recordDirection));
+  }
+  return ids;
 }
 
 /** `rules` without the ones `owned` names. Order is kept. */
@@ -160,14 +310,25 @@ export function stripSiblingOwnedSgRules(
   for (const direction of ['ingress', 'egress'] as const) {
     const owned = siblingOwnedSgRuleIdentities(physicalId, direction, properties, context);
     if (owned.size === 0) continue;
+    // go-to-k/cdkd#6641: the readback already assigned the rules of an
+    // id-recording sibling BY ID, so the live side drops by identity only for
+    // a sibling recording none; a rule at an id-recording sibling's identity
+    // that the readback kept is a stranger's and stays compared.
+    const liveOwned = siblingOwnedSgRuleIdentities(
+      physicalId,
+      direction,
+      properties,
+      context,
+      skipSiblingsDecidedById(properties, context)
+    );
     const key = LIST_KEY[direction];
-    const strip = (bag: Record<string, unknown>): Record<string, unknown> => {
+    const strip = (bag: Record<string, unknown>, drop: ReadonlySet<string>) => {
       const list = bag[key];
-      if (!Array.isArray(list)) return bag;
-      const kept = withoutSiblingOwnedSgRules(list as CfnSgRule[], owned, direction);
+      if (!Array.isArray(list) || drop.size === 0) return bag;
+      const kept = withoutSiblingOwnedSgRules(list as CfnSgRule[], drop, direction);
       return kept.length === list.length ? bag : { ...bag, [key]: kept };
     };
-    out = { baseline: strip(out.baseline), aws: strip(out.aws) };
+    out = { baseline: strip(out.baseline, owned), aws: strip(out.aws, liveOwned) };
   }
   return out;
 }

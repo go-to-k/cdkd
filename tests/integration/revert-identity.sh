@@ -131,6 +131,13 @@ _revert_identity_probe() {
           printf '%s=%s,' "${r}" "${id}"
         done
       )" || rc=$? ;;
+    AWS::SecretsManager::Secret)
+      # CreatedDate: an update, a tag change and a delete-then-RestoreSecret
+      # keep it (RestoreSecret cancels the deletion of the SAME secret: same
+      # ARN), while a delete + create under the same name gets a new one and a
+      # new ARN suffix (measured, us-east-1, 2026-11-20). DescribeSecret never
+      # reads the value.
+      cls=unique; val="$(_revert_identity_aws secretsmanager describe-secret --region "${region}" --secret-id "${pid}" --query 'CreatedDate')" || rc=$? ;;
     AWS::ECR::Repository)
       cls=unique; val="$(_revert_identity_aws ecr describe-repositories --region "${region}" --repository-names "${pid}" --query 'repositories[0].createdAt')" || rc=$? ;;
     AWS::ApiGatewayV2::Api)

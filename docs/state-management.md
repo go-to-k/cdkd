@@ -293,7 +293,13 @@ Four of these fields change what a command does:
   update answered a new one, from the update until the deploy's `Delete` of it. Every later `cdkd deploy` retries the delete once
   its own changes are done and drops the entry when it succeeds, and
   `cdkd destroy` deletes the resource after the stack's own resources. While
-  the delete keeps failing, the entry stays and each attempt warns.
+  the delete keeps failing, the entry stays and each attempt warns. For an S3
+  bucket, the entry also records the old bucket's creation time
+  (`identity`). Before deleting by name, the deploy or destroy checks who
+  holds that name now. A bucket of another account or region, or one created
+  at another time in us-east-1, is left alone and the entry is dropped. A name
+  nothing holds is dropped without a delete. If the holder cannot be read,
+  the entry is kept and no delete is sent.
 
 `nestedSsmNamesChecked` changes no command's outcome: it only tells a deploy
 it can skip reading the nested stacks' records for that one-time check.

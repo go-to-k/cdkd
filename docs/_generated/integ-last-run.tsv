@@ -55,7 +55,7 @@ cc-protection-flip-eks	2026-11-04T07:36:26Z	PASS	807	verify.sh	rc ok, orph clean
 cc-required-name-generation	2026-11-05T04:10:23Z	PASS	53	verify.sh	rc ok on main 8547010bb dist, own temp state bucket, destroy 0 errors, orph clean (state keys + live resources, us-east-1/us-west-2)
 cc-to-sdk-reroute	2026-11-03T04:12:32Z	PASS	210	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-cloudfront-distribution	2026-11-18T01:46:29Z	PASS	666	verify.sh	rc ok, orph clean; phase 7 replay restore (pre-fix probe red at phase 7)
-cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
+cc-to-sdk-reroute-common-types	2026-11-20T14:40:31Z	PASS	318	verify.sh	rc ok, orph clean (#6675)
 cc-to-sdk-reroute-common-types-10	2026-11-17T16:32:48Z	PASS	191	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-11	2026-11-18T04:18:23Z	PASS	2545	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-12	2026-11-19T03:38:31Z	PASS	216	verify.sh	rc ok, orph clean
@@ -140,16 +140,16 @@ drift-ecs-capacity-association	2026-11-20T10:54:34Z	PASS	256	verify.sh	PR6652 be
 drift-revert	2026-11-20T13:26:50Z	PASS	618	verify.sh	PR6652 f7526a805, rc ok, 6b PASS on #6680 main, revert-identity kept identity at every revert, orph clean
 drift-revert-arrays	2026-11-20T11:50:48Z	PASS	237	verify.sh	PR6652 be63cc056, us-west-2; own detached sibling (builds); rc 0, kept identity x1, orph clean
 drift-revert-nested-write-only	2026-11-20T11:50:48Z	PASS	259	verify.sh	PR6652 be63cc056, us-west-2; rc 0, kept identity x3, orph clean
-drift-revert-vpc	2026-11-20T10:54:34Z	PASS	511	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement x2, orph clean (eu-west-1)
+drift-revert-vpc	2026-11-20T14:43:27Z	PASS	452	verify.sh	PR6678 39a4f11cd, revert-identity kept+no replacement; own sibling tree; rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-drift-sg-sibling-rules	2026-11-20T10:54:34Z	PASS	321	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement x3, orph clean (eu-west-1, own state bucket)
+drift-sg-sibling-rules	2026-11-20T14:43:27Z	PASS	270	verify.sh	PR6678 39a4f11cd, revert-identity kept+no replacement; rc ok, orph clean
 drift-sns-sibling-subscription	2026-11-20T11:22:10Z	PASS	105	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 drift-verbatim-readback	2026-11-19T17:11:53Z	PASS	370	verify.sh	us-east-1; #6633 HEAD c0c76760a: rc ok, destroy 0 errors, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
 dynamodb-fix-forward-orphan	2026-11-04T22:06:17Z	PASS	181	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
-dynamodb-globaltable	2026-10-30T20:57:28Z	PASS	2090	verify.sh	rc 0, orph clean; PR #5582 161892a57 multi-region; 12e0/16a4 no replica scalable target left; probe red at 12e0
+dynamodb-globaltable	2026-11-20T15:08:45Z	PASS	1784	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 dynamodb-globaltable-implied-stream	2026-11-06T16:08:16Z	PASS	335	verify.sh	post-hoc on main after #5839 split; rc ok, orph clean
 dynamodb-globaltable-replica-settings	2026-11-20T11:50:48Z	PASS	3875	verify.sh	PR6652 be63cc056, us-west-2 (second us-east-1); rc 0, revert-identity kept identity x2, orph clean
 dynamodb-gsi-update	2026-11-20T11:50:48Z	PASS	4442	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
@@ -157,7 +157,7 @@ dynamodb-ondemand	2026-11-10T16:35:53Z	PASS	446	verify.sh	rc ok, orph clean
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-dynamodb-table-policy-baseline	2026-11-19T07:33:52Z	PASS	100	verify.sh	rc ok, orph clean; pre-fix main FAILs the removal phase
+dynamodb-table-policy-baseline	2026-11-20T15:08:45Z	PASS	187	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 ec2-instance	2026-11-19T06:17:01Z	PASS	837	verify.sh	rc ok, orph clean
@@ -232,7 +232,7 @@ iam-managed-policy	2026-11-20T11:06:50Z	PASS	130	verify.sh	rc ok, orph clean; #6
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
-iam-recreate-reattach	2026-11-20T12:24:42Z	PASS	248	verify.sh	PR6652 03d784232, revert-identity kept identity, rc ok, orph clean
+iam-recreate-reattach	2026-11-20T14:40:31Z	PASS	283	verify.sh	rc ok, orph clean; 3 AFTER runs, role CC delete GetResource-compared (#6675)
 iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-role-policies-drift-clean	2026-11-20T12:24:42Z	PASS	446	verify.sh	PR6652 03d784232, IAM::Policy probe all principals ok, rc ok, orph clean
 iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
@@ -417,7 +417,7 @@ rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter spli
 replace-predelete-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	174	verify.sh	rc ok, orph clean (#6463, rebased tree)
 replace-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	1599	verify.sh	rc ok, orph clean (#6463 regression)
 replace-squatter-refusal	2026-11-16T08:22:27Z	PASS	100	verify.sh	rc ok, orph clean (#6374 sweep)
-replaced-delete-failed-rollback	2026-11-18T06:37:13Z	PASS	225	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
+replaced-delete-failed-rollback	2026-11-20T14:35:46Z	PASS	200	verify.sh	rc ok, orph clean, own state bucket, head 21f2bed07 (#6687)
 replacement-fanout	2026-11-16T12:51:14Z	PASS	104	verify.sh	rc ok, orph clean (#6398)
 replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph clean (#6374 sweep)
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
@@ -428,13 +428,13 @@ rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orp
 rollback-command	2026-11-19T06:52:45Z	PASS	876	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-deletion-policy-snapshot	2026-11-04T20:33:20Z	PASS	102	verify.sh	re-run after review fix: verify.sh state check treats missing .resources map as FAIL (unreadable); PASS through it, VolumeSnap record removed; orph clean us-east-1
-rollback-explicit-name-rewrite	2026-11-16T15:41:55Z	PASS	275	verify.sh	rc ok, orph clean (#6423)
+rollback-explicit-name-rewrite	2026-11-20T14:35:46Z	PASS	195	verify.sh	rc ok, orph clean, own state bucket, head 21f2bed07 (#6687)
 rollback-failure-injection	2026-11-19T06:52:45Z	PASS	376	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-nested-cross-region-secret	2026-11-20T11:50:48Z	PASS	458	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-observed-baseline-refresh	2026-11-18T05:18:35Z	PASS	101	verify.sh	rc ok, orph clean (PR #6531, #6526)
 rollback-regenerated-secret	2026-11-19T06:52:45Z	PASS	121	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-replacement-retain	2026-11-16T12:51:14Z	PASS	100	verify.sh	rc ok, orph clean (#6398)
-rollback-replay-cc-generated-name	2026-11-16T08:22:27Z	PASS	174	verify.sh	rc ok, orph clean (#6374 sweep)
+rollback-replay-cc-generated-name	2026-11-20T14:40:31Z	PASS	172	verify.sh	rc ok, orph clean (#6675)
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
 rollback-same-id-recreate	2026-11-16T15:41:55Z	PASS	196	verify.sh	rc ok, orph clean (#6423)
 rollback-sqs-cooldown	2026-11-07T12:50:15Z	PASS	158	verify.sh	#6008 rollback split head; rc ok, orph clean
@@ -448,7 +448,7 @@ s3-cloudfront	2026-11-06T21:05:12Z	PASS	278	verify.sh	#5917 cloudfront-distribut
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean
 s3-event-notification	2026-11-20T11:22:10Z	PASS	310	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
-s3-lifecycle	2026-11-20T13:26:50Z	PASS	525	verify.sh	PR6652 f7526a805, rc ok, own state bucket, no peer collision, orph clean
+s3-lifecycle	2026-11-20T14:35:46Z	PASS	610	verify.sh	us-east-1 rc ok, orph clean, head 21f2bed07 (#6687)
 s3-object-lock	2026-11-20T06:41:59Z	PASS	115	verify.sh	rc ok, orph clean; #6664 Phase 1b + Phase 2 drift clean
 s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-11-10T16:44:10Z	PASS	80	verify.sh	rc ok, orph clean, us-west-2
@@ -478,7 +478,7 @@ secrets-array-nested	2026-11-20T11:22:10Z	PASS	300	verify.sh	PR6652 be63cc056, u
 secrets-dynamic-ref	2026-11-20T11:22:10Z	PASS	721	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 secrets-rotation-schedule	2026-11-04T22:20:19Z	PASS	60	verify.sh	own state bucket, rc ok, orph clean
 secretsmanager-replica-rekey	2026-11-10T16:00:58Z	PASS	110	verify.sh	rc ok, orph clean
-secretsmanager-update-value-source	2026-11-07T00:31:21Z	PASS	150	verify.sh	#5940 secretsmanager-secret split head; rc ok, orph clean
+secretsmanager-update-value-source	2026-11-20T15:08:45Z	PASS	146	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 select-out-of-bounds	2026-11-13T04:16:36Z	PASS	36	verify.sh	rc ok, orph clean
 serverless-api	2026-11-19T18:50:43Z	PASS	75	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 servicediscovery	2026-11-17T05:50:34Z	PASS	265	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
@@ -486,7 +486,7 @@ servicediscovery-http-namespace-update	2026-11-17T06:22:39Z	PASS	145	verify.sh	r
 servicediscovery-namespaces	2026-11-17T05:50:34Z	PASS	145	verify.sh	rc ok, destroy 0 errors, orph clean; at 148f393bc (#6484)
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
-sg-rule-description-update	2026-11-19T18:50:43Z	PASS	116	verify.sh	#6640 regression 84223153c: rc ok, orph clean
+sg-rule-description-update	2026-11-20T14:43:27Z	PASS	162	verify.sh	PR6678 39a4f11cd, phases 4+4b OK; rc ok, orph clean
 shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-east-1+us-west-2, orph clean both regions (own temp state bucket)
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic split head; rc ok, orph clean

@@ -63,7 +63,8 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['changedSecretValue', secretValue, 'changedSecretValue', 4],
   ['asPersisted', secretValue, 'asPersisted', 1],
   ['generateSecretString', secretValue, 'generateSecretString', 2],
-  ['readCurrentState', readState, 'readCurrentState', 3],
+  ['readCurrentState', readState, 'readCurrentState', 5],
+  ['settleSecretTags', readState, 'settleSecretTags', 5],
   ['import', readState, 'importImpl', 1],
 ];
 

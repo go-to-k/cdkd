@@ -1,5 +1,7 @@
 import type { CloudControlProvider } from '../cloud-control-provider.js';
 import { GetBucketLocationCommand } from '@aws-sdk/client-s3';
+import { GetResourceCommand } from '@aws-sdk/client-cloudcontrol';
+import { markNotGoneOnNeedle } from './poll-failure.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -13,7 +15,10 @@ import {
   CC_DELETE_REGION_IDENTITY_GUARD,
   bucketLocationToRegion,
   isNoSuchBucketError,
+  recordedCcDeleteIdentity,
+  CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES,
 } from './delete-guards.js';
+import { assertRecordedIdentity } from '../recorded-identity.js';
 
 /**
  * Refuse a Cloud Control call whose target region cannot be shown to be the
@@ -107,6 +112,94 @@ export async function assertRecordedRegionAgainstClient(
     throw markNonRetryable(error as Error);
   }
 }
+
+/**
+ * Refuse a Cloud Control delete whose name now denotes a resource the record
+ * did not create (go-to-k/cdkd#6666, `.claude/rules/provider-delete-path.md`),
+ * through the SAME comparison the SDK deletes run (`assertRecordedIdentity`,
+ * go-to-k/cdkd#6655), so the two routes refuse, re-read and word alike.
+ *
+ * Runs only for a record that holds, at delete time, a usable AWS-minted id of
+ * a type in `CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES`: every other Cloud
+ * Control delete returns before any call. For those, one `GetResource`
+ * through the region-vetted Cloud Control client (before an RDS delete is
+ * handed to its SDK provider too), then:
+ *
+ *  - the live id equals the recorded one -> proceed;
+ *  - it differs -> one more read after the shared re-read delay (eventual
+ *    consistency), then the non-retryable `RecordedIdentityMismatchError`:
+ *    nothing sent, record kept, neither value printed;
+ *  - Cloud Control reports the resource absent on the FIRST read -> proceed:
+ *    the `DeleteResource` below reaches its region-checked already-deleted
+ *    arm, exactly as today. A same-name re-create between this read and that
+ *    delete is not caught: no read-then-delete by name can close that window;
+ *  - a read fails -> throw it, wrapped as every Cloud Control error is, so the
+ *    callers' retry classifiers decide; once they give up, the delete fails.
+ *    It never falls back to a by-name delete;
+ *  - the model answers without the id -> the shared not-gone
+ *    `RecordedIdentityError`, left to the retry classifiers.
+ */
+export async function assertRecordedIdentityBeforeCcDelete(
+  this: CloudControlProvider,
+  logicalId: string,
+  resourceType: string,
+  physicalId: string,
+  context: DeleteContext | undefined
+): Promise<void> {
+  if (recordedCcDeleteIdentity(resourceType, context) === undefined) return;
+
+  const read = async (): Promise<string | undefined | typeof ABSENT> => {
+    let raw: string | undefined;
+    try {
+      const response = await this.cloudControlClient.send(
+        new GetResourceCommand({ TypeName: resourceType, Identifier: physicalId })
+      );
+      raw = response.ResourceDescription?.Properties;
+    } catch (error) {
+      if ((error as { name?: unknown } | null | undefined)?.name === 'ResourceNotFoundException') {
+        return ABSENT;
+      }
+      try {
+        // 'READ': the delete was never sent, and the message must not say so.
+        this.handleError(error, 'READ', resourceType, logicalId, physicalId);
+      } catch (wrapped) {
+        throw markNotGoneOnNeedle(wrapped);
+      }
+    }
+    const key = CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES.get(resourceType)!;
+    try {
+      const model: unknown = typeof raw === 'string' ? JSON.parse(raw) : undefined;
+      const live =
+        model !== null && typeof model === 'object' && !Array.isArray(model)
+          ? (model as Record<string, unknown>)[key]
+          : undefined;
+      return typeof live === 'string' ? live : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const first = await read();
+  if (first === ABSENT) return;
+  await assertRecordedIdentity({
+    label: resourceType,
+    resourceType,
+    logicalId,
+    physicalId,
+    liveId: first,
+    // Absent on the re-read: the holder that differed went away in between,
+    // which proves nothing about the next holder; answered as "no id", so the
+    // retry's fresh first read decides.
+    reread: async () => {
+      const again = await read();
+      return again === ABSENT ? undefined : again;
+    },
+    context,
+  });
+}
+
+/** `GetResource` answered `ResourceNotFoundException`. */
+const ABSENT = Symbol('absent');
 
 /**
  * Confirm that the resource `physicalId` names actually lives in the region

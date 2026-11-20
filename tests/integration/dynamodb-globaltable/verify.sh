@@ -58,6 +58,9 @@
 #       a UpdateTimeToLive call. Deferring TTL to the end keeps the only
 #       TTL state changes to enable-here → disable-at-step-13.)
 #  12g. assert TTL is now ENABLED and the UpdateTest tag is present
+#       12g-6609 (#6609): the local replica's observed baseline Tags hold
+#       UpdateTest; an out-of-band untag is reported by drift and restored
+#       in place by `drift --revert`, then drift is clean.
 #  13. cdkd deploy with CDKD_TEST_UPDATE= (cleared, baseline)
 #  13j. issues #1733 / #1738: with BillingMode REMOVED from the state record,
 #       a template declaring PAY_PER_REQUEST must resolve its baseline from
@@ -222,6 +225,9 @@ STACK="CdkdDynamoDBGlobalTableExample"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/dynamodb-globaltable"
 CLI="node ${REPO_ROOT}/dist/cli.js"
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+# shellcheck source=../revert-identity.sh
+. "${REPO_ROOT}/tests/integration/revert-identity.sh"
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
@@ -1322,6 +1328,108 @@ if [ "${TAG_VALUE}" != "true" ]; then
   exit 1
 fi
 echo "[verify] step 12g ok: UpdateTest tag present"
+
+# go-to-k/cdkd#6609 slice E: ListTagsOfResource answered the previous tags for
+# up to ~2.5 s after a TagResource (measured), and the deploy recorded that
+# answer as the local replica's Tags baseline, so drift reported an untouched
+# table and --revert removed the tag again.
+echo "[verify] step 12g-6609: the local replica's baseline Tags hold UpdateTest, and drift --revert restores an out-of-band untag in place"
+GT6609_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+GT6609_LID="$(jq -r --arg n "${TABLE_NAME}" '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::DynamoDB::GlobalTable" and .value.physicalId == $n) | .key]
+  | if length == 1 then .[0] else "" end' <<<"${GT6609_STATE}")"
+if [ -z "${GT6609_LID}" ]; then
+  echo "[verify] FAIL (#6609): expected exactly one GlobalTable record holding ${TABLE_NAME}" >&2
+  exit 1
+fi
+gt6609_baseline_tags() { # the local replica's user tags in the observed baseline, sorted
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -c --arg id "${GT6609_LID}" --arg r "${REGION}" \
+    '[.resources[$id].observedProperties.Replicas[]? | select(.Region == $r) | .Tags // []] | first // null
+     | if . == null then null else map(select(.Key | startswith("aws:") | not)) | sort_by(.Key) end'
+}
+gt6609_live_tags() {
+  aws dynamodb list-tags-of-resource --resource-arn "${TABLE_ARN}" --region "${REGION}" --output json \
+    | jq -c '.Tags | map(select(.Key | startswith("aws:") | not)) | sort_by(.Key)'
+}
+gt6609_await_live() { # $1 = jq predicate over the sorted user tags, $2 = label; 3 reads in a row
+  local seen=0 got=""
+  for _ in $(seq 1 30); do
+    got="$(gt6609_live_tags 2>/dev/null)" || got="read-failed"
+    if [ "${got}" != read-failed ] && jq -e "$1" <<<"${got}" >/dev/null; then seen=$((seen + 1)); else seen=0; fi
+    [ "${seen}" -ge 3 ] && return 0
+    sleep 2
+  done
+  echo "[verify] FAIL (#6609): $2: the live tags never matched $1 (last: ${got})" >&2
+  exit 1
+}
+GT6609_HAS_PROBE='any(.[]; .Key == "UpdateTest" and .Value == "true")'
+GT6609_BASE="$(gt6609_baseline_tags)"
+if ! jq -e "${GT6609_HAS_PROBE}" <<<"${GT6609_BASE}" >/dev/null 2>&1; then
+  echo "[verify] FAIL (#6609): the local replica's baseline Tags lack UpdateTest=true (got ${GT6609_BASE}): the pre-write tags were recorded" >&2
+  exit 1
+fi
+GT6609_LIVE="$(gt6609_live_tags)"
+if [ "${GT6609_BASE}" != "${GT6609_LIVE}" ]; then
+  echo "[verify] FAIL (#6609): the local replica's baseline Tags ${GT6609_BASE} differ from the live ${GT6609_LIVE}" >&2
+  exit 1
+fi
+echo "[verify] step 12g-6609 ok: baseline Tags = live Tags = ${GT6609_BASE}"
+
+aws dynamodb untag-resource --resource-arn "${TABLE_ARN}" --region "${REGION}" --tag-keys UpdateTest >/dev/null
+gt6609_await_live "${GT6609_HAS_PROBE} | not" "after the out-of-band untag"
+set +e
+GT6609_DRIFT="$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)"
+set -e
+# Only this table may have drifted: --revert pushes EVERY drifted resource.
+GT6609_DRIFTED="$(jq -c '[.[].drifted[].logicalId] | unique' <<<"${GT6609_DRIFT}")" || {
+  echo "[verify] FAIL (#6609): could not parse cdkd drift --json" >&2
+  printf '%s\n' "${GT6609_DRIFT}" >&2
+  exit 1
+}
+if [ "${GT6609_DRIFTED}" != "[\"${GT6609_LID}\"]" ]; then
+  echo "[verify] FAIL (#6609): expected drift on ${GT6609_LID} alone, got ${GT6609_DRIFTED}" >&2
+  printf '%s\n' "${GT6609_DRIFT}" >&2
+  exit 1
+fi
+# A replica's Tags drift is reported on the `Replicas` path (the replica list is
+# compared as a whole), so accept that path when the replicas' Tags differ
+# between the baseline and the live read, or any path naming Tags.
+if ! jq -e --arg id "${GT6609_LID}" '
+  [.[].drifted[] | select(.logicalId == $id) | .changes[]
+    | select((.path | test("Tags"))
+      or ((.path | test("^Replicas")) and
+          (([.stateValue[]? | .Tags] | tojson) != ([.awsValue[]? | .Tags] | tojson))))]
+  | length > 0' \
+  <<<"${GT6609_DRIFT}" >/dev/null; then
+  echo "[verify] FAIL (#6609): drift on ${GT6609_LID} does not name a Tags path" >&2
+  printf '%s\n' "${GT6609_DRIFT}" >&2
+  exit 1
+fi
+# The global table's identity: the state physical id plus the TableId of every
+# replica region the record lists (revert-identity.sh's GlobalTable probe).
+GT6609_DIR="$(mktemp -d)"
+revert_identity_snapshot "${GT6609_DIR}/ids-before" "${STACK}" "${GT6609_LID}" || exit 1
+GT6609_RC=0
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes \
+  >"${GT6609_DIR}/revert.log" 2>&1 || GT6609_RC=$?
+revert_identity_verify "${GT6609_DIR}/ids-before" "${GT6609_DIR}/ids-after" 1 "${GT6609_DIR}/revert.log" || exit 1
+if [ "${GT6609_RC}" -ne 0 ]; then
+  echo "[verify] FAIL (#6609): cdkd drift --revert exited ${GT6609_RC}" >&2
+  cat "${GT6609_DIR}/revert.log" >&2
+  exit 1
+fi
+rm -rf "${GT6609_DIR}"
+gt6609_await_live "${GT6609_HAS_PROBE}" "after drift --revert"
+set +e
+GT6609_AFTER="$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)"
+set -e
+if ! jq -e --arg id "${GT6609_LID}" '([.[].clean[] | select(.logicalId == $id)] | length) == 1 and ([.[].drifted[]] | length) == 0' \
+  <<<"${GT6609_AFTER}" >/dev/null; then
+  echo "[verify] FAIL (#6609): the stack is not drift-clean after --revert" >&2
+  printf '%s\n' "${GT6609_AFTER}" >&2
+  exit 1
+fi
+echo "[verify] step 12g-6609 ok: --revert restored UpdateTest on the same table; drift clean"
 
 echo "[verify] step 13: cdkd deploy with CDKD_TEST_UPDATE=ttl,tags (structural teardown — flip deletion-protection back to false, flip BillingMode back to PAY_PER_REQUEST, tear down autoscaling)"
 # KEEP ttl,tags ON in step 13. AWS's DynamoDB TTL rate limit allows
