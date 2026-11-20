@@ -24,6 +24,14 @@ import { SECRET_DERIVED_READ_LIVE } from '../../iam-policy-targets.js';
 import type { InlinePolicyClaimed, ResourceUpdateResult } from '../../../types/resource.js';
 import { readPrincipalSides, iamPathOf, userOrGroupIdentityToken } from './shared.js';
 import { definedAttributes } from '../../attribute-map.js';
+import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
+
+/**
+ * go-to-k/cdkd#6609: each removal below is noted once its call succeeds (a
+ * tolerated "not found" included), so the capture right after waits for it
+ * (`own-write-removals.ts`).
+ */
+const USER_TYPE = 'AWS::IAM::User';
 
 export async function updateUser(
   this: IAMUserGroupProvider,
@@ -39,6 +47,8 @@ export async function updateUser(
   log.debug(`Updating IAM user ${logicalId}: ${v(physicalId)}`);
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+  // go-to-k/cdkd#6609: a note an earlier update that threw left behind.
+  clearOwnWriteRemovals(USER_TYPE, physicalId);
   // `Groups` on BOTH sides before any call (go-to-k/cdkd#3888): a string was
   // walked by character, removing the user from one-letter groups.
   const groups = await readPrincipalSides({
@@ -110,6 +120,7 @@ export async function updateUser(
         await this.iamClient.send(
           new DeleteUserPermissionsBoundaryCommand({ UserName: physicalId })
         );
+        recordOwnWriteRemoval(USER_TYPE, physicalId, 'PermissionsBoundary', oldPermBoundary);
         log.debug(`Removed permissions boundary from user ${v(physicalId)}`);
       }
     }
@@ -286,6 +297,7 @@ export async function updateUserManagedPolicies(
           throw error;
         }
       }
+      recordOwnWriteRemoval(USER_TYPE, userName, 'ManagedPolicyArns', policyArn);
     }
   }
 }
@@ -330,6 +342,7 @@ export async function updateUserGroups(
           throw error;
         }
       }
+      recordOwnWriteRemoval(USER_TYPE, userName, 'Groups', groupName);
     }
   }
 }
@@ -385,6 +398,7 @@ export async function updateUserInlinePolicies(
           throw error;
         }
       }
+      recordOwnWriteRemoval(USER_TYPE, userName, 'Policies', policyName);
     }
   }
 }

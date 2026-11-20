@@ -23,6 +23,8 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *   rules exist.
  * - `CDKD_TEST_UPDATE=inline,nofrom` (go-to-k/cdkd#6420) removes the 5432
  *   standalone ingress, whose delete revokes the rule.
+ * - `CDKD_TEST_UPDATE=nofrom` (go-to-k/cdkd#6609) then drops the inline 8443
+ *   ingress again, so the group's update REVOKES a rule.
  *
  * covers: AWS::EC2::SecurityGroup
  * covers: AWS::EC2::SecurityGroupIngress
