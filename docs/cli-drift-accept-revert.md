@@ -192,8 +192,10 @@ with `cdkd deploy --replace` to replace it. The refusals are:
 - `AWS::EC2::SecurityGroupIngress`: a rule whose protocol, ports or source
   differ from the record, a description update that finds no rule, or a
   recorded description that is redacted. A description is still reverted in
-  place. (A rule moved to other ports out of band reads as deleted, so it is
-  not reverted at all.)
+  place. A record holding its rule's `sgr-` id reads that rule, so a rule
+  moved to other ports or another source out of band
+  (`ModifySecurityGroupRules`, which keeps the id) is reported on this resource
+  and its revert is refused; the group's revert never revokes it.
 - `AWS::Lambda::Permission`: always, since it has no update API.
 - `AWS::ApiGateway::Resource`: a changed `PathPart`.
 - `AWS::EC2::Route`: a bag that names another route than the physical id.

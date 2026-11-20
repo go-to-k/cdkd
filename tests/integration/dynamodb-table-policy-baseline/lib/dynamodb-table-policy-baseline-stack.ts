@@ -28,6 +28,10 @@ export class DynamoDBTablePolicyBaselineStack extends cdk.Stack {
       }),
     });
 
+    // go-to-k/cdkd#6609 slice E: a tag whose value a later phase changes
+    // (`CDKD_TEST_TAG`). ListTagsOfResource lags a TagResource by seconds.
+    cdk.Tags.of(table).add('Lag6609e', process.env.CDKD_TEST_TAG ?? 'v1');
+
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
     new cdk.CfnOutput(this, 'TableArn', { value: table.tableArn });
   }

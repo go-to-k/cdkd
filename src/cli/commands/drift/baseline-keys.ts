@@ -31,6 +31,10 @@ import {
 } from '../../../provisioning/settle-own-write-members.js';
 import { sgRulesAreDeclared } from '../../../provisioning/sg-own-write-rules.js';
 import { readHadAgreeingCopies } from '../../../provisioning/providers/iam-policy/agreeing-copies.js';
+import {
+  declaredTagsReadback,
+  tagsMatchDeclared,
+} from '../../../provisioning/tags-own-write-baseline.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -254,6 +258,15 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * (the read echoes the recorded list less a principal lacking the policy, so a
  * detached principal is a subset and stays compared). A principal that gained
  * the policy out of band is invisible to the read anyway (#6616).
+ *
+ * Slice E: `AWS::DynamoDB::Table` and `AWS::SecretsManager::Secret` `Tags`,
+ * with the same `--accept` blind spot, skipped only while the live tags
+ * (`aws:` dropped) are EXACTLY the declared set, key and value: a tag outside
+ * the template or a missing declared tag stays compared. An
+ * `AWS::DynamoDB::GlobalTable` replica's tags live inside `Replicas`, which
+ * this rule (top-level keys only) cannot skip without hiding the replica's
+ * other members, so a pre-fix replica `Tags` baseline is still compared until
+ * the next update or `cdkd state refresh-observed` rewrites it.
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -289,9 +302,11 @@ function preFixBaselineKeys(
     return [];
   }
   if (resourceType === 'AWS::DynamoDB::Table') {
-    return staleTablePolicyBaseline(observed, properties as Record<string, unknown>, aws)
-      ? ['ResourcePolicy']
-      : [];
+    const bag = properties as Record<string, unknown>;
+    return [
+      ...(staleTablePolicyBaseline(observed, bag, aws) ? ['ResourcePolicy'] : []),
+      ...(tagsHeal.liveIsDeclared(bag, aws) ? [tagsHeal.key] : []),
+    ];
   }
   if (resourceType === 'AWS::SQS::QueuePolicy' || resourceType === 'AWS::SNS::TopicPolicy') {
     const declared = declaredPolicyDocument(properties);
@@ -374,6 +389,19 @@ const sgRulesHeal = (key: string, direction: 'ingress' | 'egress'): OwnWriteHeal
   liveIsDeclared: (properties, aws) => sgRulesAreDeclared(aws[key], properties[key], direction),
 });
 
+/**
+ * `Tags` (slice E): skipped only while the live tags (`aws:` dropped, as the
+ * read drops them) are EXACTLY the declared set, key and value. A tag outside
+ * the template, or a declared tag missing, stays compared.
+ */
+const tagsHeal: OwnWriteHeal = {
+  key: 'Tags',
+  liveIsDeclared: (properties, aws) => {
+    const declared = declaredTagsReadback(properties['Tags']);
+    return declared !== undefined && tagsMatchDeclared(aws['Tags'], declared);
+  },
+};
+
 const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
   Object.entries({
     'AWS::KMS::Key': [documentHeal('KeyPolicy')],
@@ -449,6 +477,7 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
         },
       },
     ],
+    'AWS::SecretsManager::Secret': [tagsHeal],
     'AWS::CodeBuild::Project': [
       {
         key: 'Visibility',

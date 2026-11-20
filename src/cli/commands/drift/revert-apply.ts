@@ -28,6 +28,8 @@ import {
   withoutUnsettledProperties,
 } from '../../../state/unsettled-properties.js';
 import { declaredEmptyProperties, declaredTrueProperties } from './baseline-keys.js';
+import { siblingRecordedSgRuleIds } from '../../../provisioning/sg-sibling-rules.js';
+import { refuseCcGroupRevertChangingRules } from '../../../provisioning/providers/ec2/sg-revert-guard.js';
 import { keepBaselineAtUncertifiedPaths } from './revert-live-values.js';
 import {
   collectNarrowedTopLevelKeys,
@@ -71,6 +73,26 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
       previous: outcome.awsProperties,
       desired: newProperties,
     });
+    // go-to-k/cdkd#6641: a group provisioned through Cloud Control is updated
+    // by the Cloud Control provider, which knows nothing of the stack's
+    // standalone rules and replaces a changed rule list WHOLE, without the
+    // sibling rules the drift strip left out. Such a revert refuses, before
+    // the update, whenever the group has a standalone rule record and a rule
+    // list would change.
+    if (
+      outcome.resourceType === 'AWS::EC2::SecurityGroup' &&
+      stateResource.provisionedBy === 'cc-api'
+    ) {
+      refuseCcGroupRevertChangingRules(
+        outcome.logicalId,
+        stateResource.physicalId,
+        outcome.resourceType,
+        newProperties,
+        revertPrevious,
+        Object.entries(report.state.resources ?? {}).filter(([lid]) => lid !== outcome.logicalId),
+        revertPrevious['GroupName'] ?? stateResource.properties?.['GroupName']
+      );
+    }
     const updateResult = await withRetry(
       () =>
         provider.update(
@@ -133,6 +155,18 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
             // observed baseline the desired bag is built on `properties`,
             // so the set constrains only observed-baseline records.
             declaredTrueProperties: declaredTrueProperties(stateResource.properties),
+            // go-to-k/cdkd#6641: a group's revert never revokes a rule a
+            // standalone rule record of the stack holds by id.
+            ...(outcome.resourceType === 'AWS::EC2::SecurityGroup' && {
+              siblingSgRuleIds: new Set(
+                siblingRecordedSgRuleIds(
+                  stateResource.physicalId,
+                  Object.entries(report.state.resources ?? {}).filter(
+                    ([lid]) => lid !== outcome.logicalId
+                  )
+                ).keys()
+              ),
+            }),
             maskSecrets: createSecretMasker(secrets),
             expectedRegion: report.region,
             recordedAttributes: stateResource.attributes,

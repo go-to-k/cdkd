@@ -4,9 +4,14 @@ import { canonicalizeIpProtocolValue } from '../../../utils/ip-protocol.js';
 import type { ResourceState } from '../../../types/state.js';
 import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import { THROTTLING_ERROR_NAMES } from '../../../deployment/retryable-errors.js';
-import { cfnIngressPortValue, sgProtocolKey } from '../../sg-rule-identity.js';
+import {
+  SG_RULE_ID_PATTERN,
+  cfnIngressPortValue,
+  recordedSgRuleId,
+  sgProtocolKey,
+} from '../../sg-rule-identity.js';
 
-export { cfnIngressPortValue, sgProtocolKey };
+export { SG_RULE_ID_PATTERN, cfnIngressPortValue, recordedSgRuleId, sgProtocolKey };
 
 /** The `AuthorizeSecurityGroupIngress` default protocol: "all protocols". */
 const SG_INGRESS_IP_PROTOCOL_DEFAULT = '-1';
@@ -49,24 +54,6 @@ export const MAX_SG_RULE_PAGES = 20;
  * keeps the common case (a group with a handful of rules) to ONE round trip.
  */
 export const SG_RULE_PAGE_SIZE = 1000;
-
-/**
- * The `sgr-…` security-group rule id, anchored.
- *
- * The twin of `SG_RULE_ID_PATTERN` in `src/cli/commands/export.ts`, restated
- * rather than imported for the same reason that file restates
- * `ROUTE_DESTINATION_KEYS` instead of importing it from here: neither module may
- * pull the other's graph (the export command would drag in this provider and its
- * SDK client).
- *
- * Anchoring is what discriminates. `startsWith('sgr-')` also accepts
- * `sgr-0abc|tcp|443|443` — a composite wearing the identifier's prefix — which
- * on the import path reaches AWS as a malformed id and raises
- * `InvalidSecurityGroupRuleId.Malformed`, an error `isNotFoundError` does not
- * match, so `verifyExplicit` would THROW and abort the whole `cdkd import` run
- * instead of declining that one row.
- */
-export const SG_RULE_ID_PATTERN = /^sgr-[0-9a-f]+$/;
 
 /**
  * Resolve the `IpProtocol` an `AWS::EC2::SecurityGroupIngress` rule actually
@@ -318,14 +305,6 @@ export function comparableIngressIdentity(group: unknown, rule: unknown): string
     return undefined;
   }
   return ingressRuleIdentity(group, rule);
-}
-
-/** A record's recorded `sgr-` rule id, when it has one. */
-export function recordedSgRuleId(
-  attributes: Readonly<Record<string, unknown>> | undefined
-): string | undefined {
-  const recorded = attributes?.['Id'];
-  return typeof recorded === 'string' && SG_RULE_ID_PATTERN.test(recorded) ? recorded : undefined;
 }
 
 /**

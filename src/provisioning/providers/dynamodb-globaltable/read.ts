@@ -32,6 +32,7 @@ import {
   TABLE_READ_PROVISIONED_KEY,
 } from './replica-shape.js';
 import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provider.js';
+import { writtenReplicaTags } from './read-support.js';
 
 /**
  * go-to-k/cdkd#4606: whether the global table a failed CREATE journaled is
@@ -358,7 +359,7 @@ export async function unsettledInTransition(
 export async function readCurrentState(
   this: DynamoDBGlobalTableProvider,
   physicalId: string,
-  _logicalId: string,
+  logicalId: string,
   _resourceType: string,
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
@@ -566,11 +567,18 @@ export async function readCurrentState(
           // inside `Replicas[]` (no top-level `Tags`), so they MUST be
           // surfaced here — not at the top level of `result`.
           if (replicaArn) {
-            try {
-              const tagsResp = await client.send(
-                new ListTagsOfResourceCommand({ ResourceArn: replicaArn })
+            const listTags = async (): Promise<Array<{ Key: string; Value: string }>> =>
+              normalizeAwsTagsToCfn(
+                (await client.send(new ListTagsOfResourceCommand({ ResourceArn: replicaArn }))).Tags
               );
-              entry['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
+            // go-to-k/cdkd#6609: right after an update that tagged this
+            // replica, re-read until the declared tags show (note consumed).
+            const tagsDeclared = writtenReplicaTags(afterOwnWrite, replicaArn, declaredReplica);
+            try {
+              entry['Tags'] =
+                tagsDeclared === undefined
+                  ? await listTags()
+                  : await this.settleReplicaTags(listTags, tagsDeclared, logicalId);
             } catch (tagErr) {
               // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
               if (strictFor('Replicas') && !(tagErr instanceof ResourceNotFoundException))

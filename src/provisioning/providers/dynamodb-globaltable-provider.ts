@@ -103,7 +103,9 @@ import {
   readReplicaPolicies,
   readAutoScalingSettings,
   importResource,
+  settleReplicaTags,
 } from './dynamodb-globaltable/read-support.js';
+import { TAGS_BASELINE_REREAD_DELAYS_MS } from '../tags-own-write-baseline.js';
 import {
   getDriftUnknownPaths,
   getDriftUnorderedPaths,
@@ -655,6 +657,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
   readReplicaPolicies(...args: Parameters<typeof readReplicaPolicies>) {
     return readReplicaPolicies.call(this, ...args);
+  }
+
+  /** Re-read schedule of the post-write replica `Tags` capture (#6609); tests zero it. */
+  tagsBaselineRereadDelaysMs: readonly number[] = TAGS_BASELINE_REREAD_DELAYS_MS;
+
+  settleReplicaTags(...args: Parameters<typeof settleReplicaTags>) {
+    return settleReplicaTags.call(this, ...args);
   }
 
   readAutoScalingSettings(...args: Parameters<typeof readAutoScalingSettings>) {
