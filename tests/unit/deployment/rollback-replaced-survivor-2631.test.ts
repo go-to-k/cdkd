@@ -154,9 +154,10 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
   });
 
   // go-to-k/cdkd#6374: a delete deferred to the cleanup phase was never sent,
-  // so nothing went wrong with the old resource: no warning, and no reason on
-  // the event (a reason there marks a survivor record).
-  it('re-adopts a deferred old resource quietly, with no reason on its success event', async () => {
+  // so nothing went wrong with the old resource: nothing counted, and no
+  // reason on the event (a reason there marks a survivor record). The one
+  // warning line is go-to-k/cdkd#6655's: an SNS topic cannot prove identity.
+  it('re-adopts a deferred old resource with no count and no reason on its success event', async () => {
     const events: Array<Record<string, unknown>> = [];
     ctx.recordEvent = (e) => events.push(e as Record<string, unknown>);
     const s = state();
@@ -166,7 +167,8 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     expect(provider.delete.mock.calls.map((c) => c[1])).toEqual(['topic-new']);
     expect(s['Topic']!.physicalId).toBe('topic-old');
     expect(result.warnings).toBe(0);
-    expect(warns).toEqual([]);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('cdkd could not prove');
     const ok = events.find((e) => e.eventType === 'ROLLBACK_RESOURCE_SUCCEEDED');
     expect(ok).toBeDefined();
     expect(ok && 'reason' in ok).toBe(false);
@@ -227,7 +229,7 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
   // carries (an IAM role's RoleId) must match the live one to re-adopt.
   describe('a survivor whose recorded identity differs (#6393)', () => {
     const ROLE = 'AWS::IAM::Role';
-    const roleOp = (verdict: 'kept' | 'deferred', recordedRoleId: unknown) =>
+    const roleOp = (verdict: 'kept' | 'deferred' | 'unconfirmed', recordedRoleId: unknown) =>
       op({
         resourceType: ROLE,
         oldResourceMaySurvive: verdict,
@@ -307,24 +309,223 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
       expect(matched['Topic'].physicalId).toBe('topic-old');
     });
 
-    it.each([
-      ['the live RoleId matches', 'AROA-OLD', async (): Promise<unknown> => 'AROA-OLD'],
-      ['the record carries no RoleId', undefined, async (): Promise<unknown> => 'AROA-STRANGER'],
-      ['the recorded RoleId is masked', '***', async (): Promise<unknown> => 'AROA-STRANGER'],
-      [
-        'the identity read fails',
-        'AROA-OLD',
-        async (): Promise<unknown> => {
-          throw new Error('AccessDenied');
-        },
-      ],
-      ['the identity read cannot name it', 'AROA-OLD', async (): Promise<unknown> => undefined],
-    ] as const)('re-adopts as before when %s', async (_label, recorded, live) => {
-      liveRoleId = live;
+    const unverifiedLines = () => warns.filter((w) => w.includes('cdkd could not prove'));
+
+    it('re-adopts with no unverified warning when the live RoleId matches', async () => {
       const s = roleState();
-      const result = await replayRollback([roleOp('deferred', recorded)], s, 'S', ctx);
+      const result = await replayRollback([roleOp('deferred', 'AROA-OLD')], s, 'S', ctx);
       expect(result.failures).toBe(0);
       expect(s['Topic']!.physicalId).toBe('topic-old');
+      expect(unverifiedLines()).toEqual([]);
+    });
+
+    // go-to-k/cdkd#6655 (D5): what cannot prove identity keeps re-adopting,
+    // with one warning line per op naming the way out; nothing counted.
+    describe('a survivor that cannot prove identity (#6655 D5)', () => {
+      it.each([
+        ['kept', undefined],
+        ['deferred', undefined],
+        ['kept', ''],
+        ['deferred', ''],
+      ] as const)(
+        'a %s record with RoleId %j re-adopts, warns once, and sends no identity read',
+        async (verdict, recorded) => {
+          const s = roleState();
+          const result = await replayRollback([roleOp(verdict, recorded)], s, 'S', ctx);
+          expect(result.failures).toBe(0);
+          expect(s['Topic']!.physicalId).toBe('topic-old');
+          expect(identityReads).toEqual([]);
+          // The kept arm's own survivor warning is the only one counted.
+          expect(result.warnings).toBe(verdict === 'kept' ? 1 : 0);
+          expect(unverifiedLines()).toHaveLength(1);
+          const line = unverifiedLines()[0]!;
+          expect(line).toContain('its state record holds no RoleId');
+          expect(line).toContain('cdkd state orphan');
+          expect(line).toContain('--resource Topic');
+          expect(line).not.toContain('topic-old');
+        }
+      );
+
+      it.each(['kept', 'deferred'] as const)(
+        'a %s survivor of a type with no identity attribute re-adopts and warns once, naming the type',
+        async (verdict) => {
+          const s = state();
+          const result = await replayRollback([op({ oldResourceMaySurvive: verdict })], s, 'S', ctx);
+          expect(result.failures).toBe(0);
+          expect(s['Topic']!.physicalId).toBe('topic-old');
+          expect(identityReads).toEqual([]);
+          expect(result.warnings).toBe(verdict === 'kept' ? 1 : 0);
+          expect(unverifiedLines()).toHaveLength(1);
+          expect(unverifiedLines()[0]).toContain(
+            `cdkd records no AWS-assigned id for ${TYPE} to compare`
+          );
+          expect(unverifiedLines()[0]).not.toContain('topic-old');
+        }
+      );
+
+      it('a journaled op whose old attributes are null re-adopts and warns, never throwing', async () => {
+        const nulled = roleOp('kept', undefined);
+        (nulled.previousState as unknown as { attributes: unknown }).attributes = null;
+        const s = roleState();
+        const result = await replayRollback([nulled], s, 'S', ctx);
+        expect(result.failures).toBe(0);
+        expect(s['Topic']!.physicalId).toBe('topic-old');
+        expect(unverifiedLines()).toHaveLength(1);
+        expect(unverifiedLines()[0]).toContain('its state record holds no RoleId');
+      });
+
+      it('prints no unverified line when the re-adopt itself fails', async () => {
+        provider.delete.mockImplementation(async () => {
+          throw new Error('AccessDenied: not authorized');
+        });
+        const s = state();
+        const result = await replayRollback(
+          [op({ oldResourceMaySurvive: 'deferred' })],
+          s,
+          'S',
+          ctx
+        );
+        expect(result.failures).toBe(1);
+        expect(unverifiedLines()).toEqual([]);
+      });
+
+      it('describes a resource type that is not plain instead of printing it', async () => {
+        const odd = 'Custom::X$(touch y)';
+        const typed = op({
+          resourceType: odd,
+          oldResourceMaySurvive: 'deferred',
+          previousState: rec('topic-old', { resourceType: odd }),
+        });
+        await replayRollback([typed], { Topic: rec('topic-new', { resourceType: odd }) }, 'S', ctx);
+        expect(unverifiedLines()).toHaveLength(1);
+        expect(unverifiedLines()[0]).not.toContain('$(touch');
+      });
+
+      it('a type whose provider has no identity read re-adopts and warns once', async () => {
+        (ctx.providerRegistry as unknown as { getProvider: (t: string) => unknown }).getProvider =
+          () => ({});
+        const s = roleState();
+        const result = await replayRollback([roleOp('kept', 'AROA-OLD')], s, 'S', ctx);
+        expect(result.failures).toBe(0);
+        expect(s['Topic']!.physicalId).toBe('topic-old');
+        expect(unverifiedLines()).toHaveLength(1);
+        expect(unverifiedLines()[0]).toContain(`cdkd has no read of the RoleId for ${ROLE}`);
+        expect(unverifiedLines()[0]).not.toContain('AROA-OLD');
+      });
+
+      it('an unconfirmed op is still refused, with no unverified warning', async () => {
+        const s = roleState();
+        const result = await replayRollback([roleOp('unconfirmed', undefined)], s, 'S', ctx);
+        expect(result.failures).toBe(1);
+        expect(provider.delete).not.toHaveBeenCalled();
+        expect(s['Topic']!.physicalId).toBe('topic-new');
+        expect(unverifiedLines()).toEqual([]);
+      });
+
+      it('a non-plain logical id is described, and the command keeps a hole', async () => {
+        const odd = 'Topic$(x)';
+        const typed = op({ logicalId: odd, oldResourceMaySurvive: 'deferred' });
+        await replayRollback([typed], { [odd]: rec('topic-new') }, 'S', ctx);
+        expect(unverifiedLines()).toHaveLength(1);
+        expect(unverifiedLines()[0]).not.toContain(odd);
+      });
+    });
+
+    // go-to-k/cdkd#6655 (D5): an id was recorded but could not be compared
+    // this time: the existing `'unknown'` handling (go-to-k/cdkd#6399).
+    describe('a recorded id that could not be compared takes the unknown rule (#6655 D5)', () => {
+      // [label, recorded, live read, transient]: only a failed read is worth a re-run.
+      const cases = [
+        ['the recorded RoleId is masked', '***', async (): Promise<unknown> => 'AROA-STRANGER', false],
+        [
+          'the identity read fails',
+          'AROA-OLD',
+          async (): Promise<unknown> => {
+            throw new Error('AccessDenied');
+          },
+          true,
+        ],
+        ['the identity read cannot name it', 'AROA-OLD', async (): Promise<unknown> => undefined, false],
+      ] as const;
+      const uncomparedLines = () => warns.filter((w) => w.includes('could not compare it'));
+
+      it.each(cases)(
+        'refuses a kept op, sending nothing, worded for the compare, when %s',
+        async (_label, recorded, live, transient) => {
+          liveRoleId = live;
+          const s = roleState();
+          const result = await replayRollback([roleOp('kept', recorded)], s, 'S', ctx);
+          expect(result.failures).toBe(1);
+          expect(provider.delete).not.toHaveBeenCalled();
+          expect(provider.create).not.toHaveBeenCalled();
+          expect(s['Topic']!.physicalId).toBe('topic-new');
+          expect(unverifiedLines()).toEqual([]);
+          const text = warns.join('\n');
+          expect(text).toContain('AWS reports a resource under that id, but');
+          expect(text).toContain('RoleId');
+          expect(text).toContain("cannot be proven the stack's");
+          // Not the existence read's wording, and no hand delete of what may be another's.
+          expect(text).not.toContain('cdkd could not read whether it does');
+          expect(text).not.toContain('delete the old resource by hand');
+          expect(text).toContain('--orphan');
+          if (transient) {
+            expect(text).toContain('the read of its RoleId failed');
+            expect(text).toContain('reads it again');
+            expect(text).not.toContain('a re-run meets the same answer');
+          } else {
+            expect(text).toContain('could not compare it with the recorded RoleId');
+            expect(text).toContain('a re-run meets the same answer');
+            expect(text).not.toContain('reads it again');
+          }
+          expect(JSON.stringify(result) + text).not.toContain('AROA-STRANGER');
+          expect(text).not.toContain('AROA-OLD');
+        }
+      );
+
+      it.each(cases)(
+        'a deferred op re-adopts, warned once, only while state lists it as superseded, when %s',
+        async (_label, recorded, live) => {
+          liveRoleId = live;
+          const listed = {
+            logicalId: 'Topic',
+            supersededAt: 1,
+            state: rec('topic-old', { resourceType: ROLE }),
+          };
+          ctx.supersededResources = [listed];
+          const s = roleState();
+          const ok = await replayRollback([roleOp('deferred', recorded)], s, 'S', ctx);
+          expect(ok.failures).toBe(0);
+          expect(ok.warnings).toBe(0);
+          expect(s['Topic']!.physicalId).toBe('topic-old');
+          expect(unverifiedLines()).toHaveLength(1);
+          expect(uncomparedLines()).toHaveLength(1);
+          expect(uncomparedLines()[0]).toContain('state still lists it as awaiting its delete');
+          expect(uncomparedLines()[0]).toContain('--resource Topic');
+          expect(uncomparedLines()[0]).not.toContain('AROA-');
+
+          warns.length = 0;
+          ctx.supersededResources = [];
+          const refusedState = roleState();
+          const refused = await replayRollback([roleOp('deferred', recorded)], refusedState, 'S', ctx);
+          expect(refused.failures).toBe(1);
+          expect(refusedState['Topic']!.physicalId).toBe('topic-new');
+          expect(uncomparedLines()).toHaveLength(1);
+          expect(unverifiedLines()).toEqual([]);
+        }
+      );
+
+      it('an existence read that fails keeps its own re-run wording', async () => {
+        read.mockImplementation(async () => {
+          throw new Error('ThrottlingException: Rate exceeded');
+        });
+        const s = roleState();
+        const result = await replayRollback([roleOp('kept', 'AROA-OLD')], s, 'S', ctx);
+        expect(result.failures).toBe(1);
+        expect(identityReads).toEqual([]);
+        const text = warns.join('\n');
+        expect(text).toContain('cdkd could not read whether it does');
+        expect(text).not.toContain('could not compare it');
+      });
     });
 
     it('re-creates when the identity read finds the role gone after the existence read', async () => {
@@ -585,7 +786,10 @@ describe('probeReplacedSurvivor', () => {
     vi.useFakeTimers();
     try {
       const provider = { readCurrentState: async () => ({ DisplayName: 'old' }) };
-      expect(await probeReplacedSurvivor(scope(provider, () => false), TYPE)).toBe('exists');
+      // go-to-k/cdkd#6655: an SNS topic records no AWS-minted id to compare.
+      expect(await probeReplacedSurvivor(scope(provider, () => false), TYPE)).toBe(
+        'identity-unverified'
+      );
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();

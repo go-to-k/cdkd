@@ -14,6 +14,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { isReadableBag } from '../../types/state.js';
 import type { OrphanRewriteOptions } from './types.js';
+import { isUnexposedRecordedIdentity } from '../../deployment/unexposed-identity-attribute.js';
 import {
   UNREADABLE_ORPHAN_RECORD_REASON,
   isResolvableOrphanRecord,
@@ -186,6 +187,20 @@ export class AttributeFetcher {
     // read fields of the record, and the fallback would index its `attributes`.
     if (!isResolvableOrphanRecord(orphan)) {
       return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
+    }
+    // go-to-k/cdkd#6655: an identity id cdkd records but CloudFormation does
+    // not expose (`TableId`) is never substituted -- neither the record, the
+    // live read nor the `--force` cache fallback -- since the sibling's
+    // template could not have read it under CloudFormation. Refused with or
+    // without `--force`, like the resolver's `refuseUnexposedRecordedIdentity`.
+    if (isUnexposedRecordedIdentity(orphan.resourceType, attribute)) {
+      return {
+        ok: false,
+        reason:
+          `CloudFormation does not expose ${displaySafe(attribute, { asciiOnly: true })} as an ` +
+          `attribute of ${displaySafe(orphan.resourceType, { asciiOnly: true })}; cdkd records it ` +
+          `for its own identity checks only`,
+      };
     }
 
     // RECORDED OVER A LIVE ANSWER (go-to-k/cdkd#4186): see `servableRecordedAttribute`.

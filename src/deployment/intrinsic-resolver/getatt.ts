@@ -40,7 +40,11 @@ import {
   staleRecordRemedy,
   usableHealedAttribute,
 } from './getatt-heal.js';
-import { guardedPhysicalIdFallback, refuseEndpointTheEngineLacks } from './getatt-refusals.js';
+import {
+  guardedPhysicalIdFallback,
+  refuseEndpointTheEngineLacks,
+  refuseUnexposedRecordedIdentity,
+} from './getatt-refusals.js';
 import { reresolveCrossStackValue } from './cross-stack.js';
 import { lookupResourceRecord } from './refs.js';
 import { noteAttributeSecrecy, recordSecretNamedRead } from './getatt/secrecy.js';
@@ -201,6 +205,15 @@ export async function resolveGetAtt(
   // an older record holds a value for it, and with no re-read for a value no
   // read can produce.
   refuseEndpointTheEngineLacks(resolver, resource, logicalId, attributeName, context);
+  // go-to-k/cdkd#6655: an identity id cdkd records but CloudFormation does
+  // not expose (`TableId`) is refused before the record is read.
+  refuseUnexposedRecordedIdentity(
+    resolver,
+    resource.resourceType,
+    logicalId,
+    attributeName,
+    context
+  );
 
   // Check if attribute exists in resource.attributes
   // except an always-live attribute, which goes to constructAttribute's live
