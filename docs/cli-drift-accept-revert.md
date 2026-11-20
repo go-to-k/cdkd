@@ -149,7 +149,11 @@ was added out of band, and the revert sends your template's document whole.
 An IAM role's, user's or group's managed policies, inline policies,
 permissions boundary and group memberships are another: the revert removes
 each one that your template does not declare and no other resource of the
-stack writes, and the plan lists each. The plan prints a
+stack writes, and the plan lists each. An inline policy adopted with
+`cdkd drift --accept` is pinned to the document it
+had then: if the stack or tool that owns it later changes that document,
+drift reports the change and `--revert` puts the recorded document back, so
+accept again instead. The plan prints a
 `! this resource has no observed-capture baseline ... LEAVES N AWS-authored
 values untouched` line that names each path. To have those values reverted
 too, record a snapshot first with `cdkd state refresh-observed MyStack`, or

@@ -86,6 +86,22 @@ describe('the revert plan lists each undeclared grant member it removes (go-to-k
     );
   });
 
+  it('an inline policy both sides name under different documents is a restore, with the pinned-document note', () => {
+    const lines = render(
+      report({}, [
+        {
+          path: 'Policies',
+          stateValue: [{ PolicyName: 'accepted', PolicyDocument: { a: 1 } }],
+          awsValue: [{ PolicyName: 'accepted', PolicyDocument: { a: 2 } }],
+        },
+      ])
+    );
+    expect(lines).toContain('    ~ restores inline policy accepted to its recorded document');
+    expect(lines.some((l) => l.includes('- deletes inline policy'))).toBe(false);
+    expect(lines.join('\n')).toContain('A recorded inline policy document is pinned');
+    expect(lines.join('\n')).not.toContain('--accept for this stack');
+  });
+
   it('a list the redaction masked names no member but says its unrecorded members go', () => {
     const lines = render(report({}, [{ path: 'Policies', stateValue: [], awsValue: '***' }]));
     expect(lines).toContain(

@@ -37,6 +37,12 @@ export interface SiblingOwnedRow {
   nameOf?: (element: unknown) => string | undefined;
   /** The NAME inside a member identity this row's `identity` built (the inverse half of `nameOf`). */
   memberName?: (member: string) => string | undefined;
+  /**
+   * The member VALUE a member identity encodes (an inline policy's
+   * `{PolicyName, PolicyDocument}` as the sibling recorded it), for a revert
+   * that restores the sibling's member (go-to-k/cdkd#6627).
+   */
+  memberValue?: (member: string) => unknown;
 }
 
 /** How many times each member identity is written (a multiset). */
@@ -122,6 +128,17 @@ function inlinePolicyMemberName(member: string): string | undefined {
   try {
     const name = (JSON.parse(member) as unknown[])[0];
     return typeof name === 'string' ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `{PolicyName, PolicyDocument}` an {@link inlinePolicyIdentity} encodes (document key-sorted). */
+function inlinePolicyMemberValue(member: string): unknown {
+  try {
+    const [name, doc] = JSON.parse(member) as unknown[];
+    if (typeof name !== 'string' || typeof doc !== 'string') return undefined;
+    return { PolicyName: name, PolicyDocument: JSON.parse(doc) as unknown };
   } catch {
     return undefined;
   }
@@ -324,6 +341,7 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
       identity: inlinePolicyIdentity,
       nameOf: inlinePolicyName,
       memberName: inlinePolicyMemberName,
+      memberValue: inlinePolicyMemberValue,
     },
     {
       child: standalone,
@@ -333,6 +351,7 @@ export const SIBLING_OWNED_ROWS: readonly SiblingOwnedRow[] = [
       identity: inlinePolicyIdentity,
       nameOf: inlinePolicyName,
       memberName: inlinePolicyMemberName,
+      memberValue: inlinePolicyMemberValue,
     },
   ]),
 ];

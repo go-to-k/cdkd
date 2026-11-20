@@ -160,7 +160,10 @@ inline-policy delete, group removal or boundary delete each) without
 replacing the principal. The revert plan lists each member it will remove.
 If a member was granted on purpose, by another stack or by your
 organization's automation, run `cdkd drift --accept` instead: it records the
-member, and drift stops reporting it. Under these keys drift reports only a
+member, and drift stops reporting it. An inline policy recorded this way is pinned to the document it
+had then: if the stack or tool that owns it later changes that document,
+drift reports the change and `--revert` puts the recorded document back, so
+accept again instead. Under these keys drift reports only a
 member AWS holds that nothing recorded: a recorded member that is gone is not
 reported, and `--revert` never adds one back. The exception is a recorded
 permissions boundary removed outside the stack, which widens access: it is

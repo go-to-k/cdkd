@@ -307,6 +307,33 @@ export function stripSiblingOwnedParentMembers(
 }
 
 /**
+ * go-to-k/cdkd#6627: the members SIBLING records of the stack write under
+ * top-level `key` of this resource, as each sibling recorded them (rows with a
+ * `memberValue`; today an IAM principal's inline `Policies`), minus those the
+ * resource's own template declares. Lets a comparison that treats an
+ * undeclared list as "none" read a sibling's member whose live document was
+ * changed out of band as a CHANGE of that member, which `--revert` restores,
+ * rather than as an addition it would delete.
+ */
+export function siblingRecordedMembers(
+  resourceType: string,
+  physicalId: string | undefined,
+  key: string,
+  properties: Record<string, unknown> | undefined,
+  context: ReadCurrentStateContext | undefined
+): unknown[] {
+  const out: unknown[] = [];
+  for (const [row, owned] of ownedByRow(resourceType, physicalId, context)) {
+    if (row.key !== key || row.memberValue === undefined) continue;
+    for (const [member, n] of effectiveDrop(row, owned, properties)) {
+      const value = row.memberValue(member);
+      for (let i = 0; i < n && value !== undefined; i++) out.push(value);
+    }
+  }
+  return out;
+}
+
+/**
  * The revert pass over the DESIRED bag (the recorded baseline): the members
  * {@link stripSiblingOwnedParentMembers} dropped leave it, and for a
  * {@link SIBLING_OWNED_ROWS} row the LIVE sibling-owned members of `aws` (the

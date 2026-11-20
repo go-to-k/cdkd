@@ -566,6 +566,18 @@ describe('the observed baseline\'s recorded members (go-to-k/cdkd#6627)', () => 
     expect(stdout).not.toContain('- deletes inline policy');
   });
 
+  it('a recorded group whose spelling differs from the live one only in case stays, and the revert sends the live spelling', async () => {
+    live.groups.push('admins');
+    resources = {
+      Subject: principalRecord('User', { ...(await captureObserved('User')), Groups: ['Admins'] }),
+    };
+    expect(await runDrift([])).toBe(0);
+    live.groups.push('oob-group');
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual(['RemoveUserFromGroup oob-group']);
+    expect(live.groups).toEqual(['admins']);
+  });
+
   it("matches a sibling addition's group case-insensitively at compare and revert", async () => {
     live.groups.push('Sib-Group');
     resources = { Subject: principalRecord('User'), ...siblings('User') };
@@ -700,6 +712,22 @@ describe('a route whose readback is not filtered (Cloud Control, go-to-k/cdkd#66
     // AWS::IAM::Role's create-only keys.
     expect(desired['RoleName']).toBe(previous['RoleName']);
     expect(desired['Path']).toBe(previous['Path']);
+  });
+
+  it.each(BASELINES)("%s: a sibling's inline policy whose document was edited out of band is reported as a change, and --revert restores the sibling's recorded document, never deletes it", async (_l, observed) => {
+    routeCc();
+    const edited = { PolicyName: 'SibInline', PolicyDocument: DOC('*') };
+    ccRead = { ...withSiblings(), Policies: [edited, SIB_POLICIES[1]] };
+    resources = { Subject: principalRecord('Role', observed), ...siblings('Role') };
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes().map((c) => c.path)).toEqual(['Policies']);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(stdout).not.toContain('- deletes inline policy');
+    expect(stdout).toContain('~ restores inline policy SibInline to its recorded document');
+    expect(sent).toHaveLength(1);
+    const byName = (l: unknown): unknown[] =>
+      [...(l as Array<{ PolicyName: string }>)].sort((a, b) => a.PolicyName.localeCompare(b.PolicyName));
+    expect(byName(sent[0]!.desired['Policies'])).toEqual(byName(SIB_POLICIES));
   });
 
   it("a recorded copy of a sibling's inline policy under an older document does not ride along beside the live one", async () => {

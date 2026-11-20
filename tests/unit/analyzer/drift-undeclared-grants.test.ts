@@ -73,7 +73,7 @@ describe('withUndeclaredGrantBaseline (go-to-k/cdkd#6627)', () => {
     );
     expect(out['ManagedPolicyArns']).toEqual(['kept']);
     // IAM group names are case-insensitive.
-    expect(out['Groups']).toEqual(['Admins']);
+    expect(out['Groups']).toEqual(['admins']);
     // The RECORDED document, so an out-of-band edit still differs.
     expect(out['Policies']).toEqual([recordedPolicy]);
   });

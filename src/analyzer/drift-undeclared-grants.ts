@@ -114,7 +114,8 @@ function isNoBoundary(value: unknown): boolean {
 export function withUndeclaredGrantBaseline(
   baseline: Record<string, unknown>,
   aws: Record<string, unknown>,
-  keys: readonly string[]
+  keys: readonly string[],
+  siblingRecorded: Readonly<Record<string, readonly unknown[]>> = {}
 ): Record<string, unknown> {
   let out = baseline;
   const set = (key: string, value: unknown): void => {
@@ -132,7 +133,11 @@ export function withUndeclaredGrantBaseline(
     const recorded = hasOwnKey(baseline, key) ? baseline[key] : [];
     if (!Array.isArray(recorded)) continue;
     const byId = new Map<string, unknown>();
-    for (const member of recorded) {
+    // A same-stack sibling's member as the sibling recorded it comes first: a
+    // live one under that name whose document differs (edited out of band,
+    // which the sibling strip leaves compared) is a CHANGE `--revert` undoes
+    // by sending this document, never an addition it would delete.
+    for (const member of [...(siblingRecorded[key] ?? []), ...recorded]) {
       const id = grantMemberIdentity(key, member);
       if (id !== undefined && !byId.has(id)) byId.set(id, member);
     }
@@ -140,7 +145,10 @@ export function withUndeclaredGrantBaseline(
     for (const member of live) {
       const id = grantMemberIdentity(key, member);
       if (id === undefined || !byId.has(id)) continue;
-      projected.push(byId.get(id));
+      // A name (an ARN, a group) goes back as AWS spells it: a fold-matched
+      // recorded group sent in its recorded spelling made the update add the
+      // user to it and then remove it from the live spelling, one group.
+      projected.push(typeof member === 'string' ? member : byId.get(id));
       byId.delete(id);
     }
     const same =

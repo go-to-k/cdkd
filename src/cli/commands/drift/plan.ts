@@ -12,6 +12,7 @@ import { maskSecretsInText } from '../../../deployment/secret-redaction.js';
 import { type StackDriftReport, matchOutcome, type DriftedOutcome } from './outcome.js';
 import { acceptRefusalReason } from './redaction.js';
 import { findRevertPreservedTagKeys, findRevertUnbaselinedAwsKeys } from './revert-merge.js';
+import { deepEqualUnordered } from './revert-payload.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import {
   isUndeclaredGrantScalarKey,
@@ -37,6 +38,29 @@ const GRANT_REMOVAL_VERB: Readonly<Record<string, string>> = {
   PermissionsBoundary: 'deletes permissions boundary',
 };
 
+/** The names of inline policies both sides hold under different documents. */
+function restoredInlinePolicies(awsValue: unknown, stateValue: unknown): string[] {
+  if (!Array.isArray(awsValue) || !Array.isArray(stateValue)) return [];
+  const nameOf = (m: unknown): string | undefined => {
+    if (typeof m !== 'object' || m === null || Array.isArray(m)) return undefined;
+    const name = (m as Record<string, unknown>)['PolicyName'];
+    return typeof name === 'string' ? name : undefined;
+  };
+  const recorded = new Map<string, unknown>();
+  for (const m of stateValue) {
+    const name = nameOf(m);
+    if (name !== undefined && !recorded.has(name)) recorded.set(name, m);
+  }
+  const out: string[] = [];
+  for (const m of awsValue) {
+    const name = nameOf(m);
+    if (name !== undefined && recorded.has(name) && !deepEqualUnordered(recorded.get(name), m)) {
+      out.push(name);
+    }
+  }
+  return out;
+}
+
 /**
  * go-to-k/cdkd#6627: one line per member the revert removes under an IAM
  * principal key the template does not declare, before the confirmation
@@ -51,6 +75,7 @@ function printRemovedGrantMembers(
   const keys = undeclaredGrantDriftKeys(o.resourceType, properties);
   if (keys.length === 0) return;
   let printed = 0;
+  let restored = 0;
   for (const change of o.changes) {
     if (!keys.includes(change.path)) continue;
     // A list the redaction replaced with a mask (`***`) names no member; the
@@ -76,11 +101,28 @@ function printRemovedGrantMembers(
       );
       printed++;
     }
+    // An inline policy both sides name whose live document differs goes back
+    // to the RECORDED document (an --accept-ed one, or a same-stack sibling's):
+    // a restore, never a delete.
+    if (change.path === 'Policies') {
+      for (const name of restoredInlinePolicies(change.awsValue, change.stateValue)) {
+        out.write(
+          safeMsg`    ~ restores inline policy ${reportPlanValue(displayDriftValue(o, name))} to its recorded document\n`
+        );
+        restored++;
+      }
+    }
+  }
+  if (restored > 0) {
+    out.write(
+      `      A recorded inline policy document is pinned: one adopted with --accept stays as it ` +
+        `was then, so after the stack that owns it changes it, accept again rather than revert.\n`
+    );
   }
   if (printed > 0) {
     out.write(
       `      The template does not declare ${printed === 1 ? 'this' : 'these'}, so the revert ` +
-        `removes ${printed === 1 ? 'it' : 'each one'} and no other member. If ${printed === 1 ? 'it was' : 'they were'} ` +
+        `removes ${printed === 1 ? 'it' : 'each one'}. If ${printed === 1 ? 'it was' : 'they were'} ` +
         `granted on purpose (by another stack or tool), run ` +
         `${proseQuoted(cdkdRemedy('cdkd drift', '--accept'))} for this stack instead: it records ` +
         `everything AWS holds on every drifted resource of the stack, so drift stops reporting ` +

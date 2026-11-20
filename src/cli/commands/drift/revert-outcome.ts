@@ -38,6 +38,7 @@ import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
 import {
   siblingOwnedRevertDesired,
+  siblingRecordedMembers,
   stripSiblingOwnedParentMembers,
 } from '../../../provisioning/sibling-owned-members.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
@@ -425,7 +426,22 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
             siblingContext
           ).aws;
     const noBoundary = withoutUndeclaredNoBoundary(
-      withUndeclaredGrantBaseline(desiredProperties, grantLive, grantKeys),
+      withUndeclaredGrantBaseline(
+        desiredProperties,
+        grantLive,
+        grantKeys,
+        grantKeys.includes('Policies')
+          ? {
+              Policies: siblingRecordedMembers(
+                outcome.resourceType,
+                stateResource.physicalId,
+                'Policies',
+                stateResource.properties,
+                siblingContext
+              ),
+            }
+          : {}
+      ),
       grantKeys
     );
     desiredProperties = noBoundary.desired;
