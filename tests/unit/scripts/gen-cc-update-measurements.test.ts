@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   buildReport,
   findProblems,
+  importedPatchModules,
   parseHelperTypes,
   renderMarkdown,
   type HelperTexts,
@@ -33,6 +34,42 @@ const good: CcUpdateMeasurement[] = [
 ];
 
 describe('gen-cc-update-measurements findProblems', () => {
+  it('refuses a fix whose table only names the type in a comment', () => {
+    const commented: HelperTexts = {
+      ...texts,
+      'cc-read-back-empty-keys':
+        "export const CC_READ_BACK_EMPTY_KEYS: Readonly<Record<string, readonly string[]>> = {\n  // 'AWS::DataSync::Task': ['Schedule'],\n  'AWS::Other::Type': ['K'],\n};\n",
+    };
+    expect(findProblems(good, commented).join('\n')).toContain(
+      'AWS::DataSync::Task: fix module cc-read-back-empty-keys.ts does not name the type'
+    );
+  });
+
+  it('reads no keys from an empty table, not those of a later object', () => {
+    expect(
+      parseHelperTypes(
+        'cc-read-back-empty-keys',
+        "export const CC_READ_BACK_EMPTY_KEYS = {};\nconst other = {\n  'AWS::Later::Type': 1,\n};\n"
+      )
+    ).toEqual([]);
+  });
+
+  it('refuses a patch helper update.ts imports that is in neither registry', () => {
+    const update =
+      "import { a } from '../guardduty-detector-patch.js';\nimport { b } from '../apigwv2-body-import-patch.js';\nimport { c } from '../sqs-queue-patch.js';\nimport { d } from '../write-only-properties.js';\n";
+    expect(importedPatchModules(update)).toEqual([
+      'guardduty-detector-patch.ts',
+      'apigwv2-body-import-patch.ts',
+      'sqs-queue-patch.ts',
+    ]);
+    expect(findProblems(good, texts, update)).toEqual([
+      'cloud-control/update.ts imports sqs-queue-patch.ts: register it in CC_UPDATE_FIX_MODULES or NOT_READ_MODEL_FIX_MODULES',
+    ]);
+    expect(findProblems(good, texts, 'nothing here').join('\n')).toContain(
+      'parsed zero patch-helper imports'
+    );
+  });
+
   it('passes a consistent table', () => {
     expect(findProblems(good, texts)).toEqual([]);
   });

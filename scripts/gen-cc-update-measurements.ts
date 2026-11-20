@@ -11,12 +11,15 @@
  * (naming the type) on:
  *   (a) generated files out of date;
  *   (b) a `refuses` row with neither `fix` nor `exemption`, or with both;
- *   (c) a row whose `fix` module does not contain the type string literally;
+ *   (c) a row whose `fix` module does not REGISTER the type (the parsed table
+ *       keys / `*_TYPE` constants; a commented-out key does not count);
  *   (d) a type a helper module registers that lacks a `refuses` row with that
  *       fix (the reverse direction);
  *   (e) a duplicate type;
  *   (f) zero rows, or a helper module with zero parsed types (a parse that
- *       silently found nothing would make (c) and (d) pass vacuously).
+ *       silently found nothing would make (c) and (d) pass vacuously);
+ *   (g) a `*-patch` / `cc-read-back-*` module `cloud-control/update.ts`
+ *       imports that is neither a fix nor in `NOT_READ_MODEL_FIX_MODULES`.
  * Helper modules are read as TEXT, never imported.
  *
  * Usage:
@@ -64,8 +67,11 @@ export function parseHelperTypes(fix: CcUpdateFix, text: string): string[] {
   if (table) {
     const start = text.indexOf(`export const ${table}`);
     const open = start < 0 ? -1 : text.indexOf('= {', start);
-    const close = open < 0 ? -1 : text.indexOf('\n};', open);
-    if (open < 0 || close < 0) return [];
+    // An empty table has no `\n};` of its own: the search would run on into a
+    // later object of the same file and read its keys.
+    if (open < 0 || text.startsWith('= {}', open)) return [];
+    const close = text.indexOf('\n};', open);
+    if (close < 0) return [];
     return [...text.slice(open, close).matchAll(/^ {2}'(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)'\s*:/gm)].map(
       (m) => m[1]!
     );
@@ -75,12 +81,46 @@ export function parseHelperTypes(fix: CcUpdateFix, text: string): string[] {
   );
 }
 
-/** Every `--check` failure over the rows and helper module texts (b-f). */
+/**
+ * Patch helpers `cloud-control/update.ts` imports that are NOT a read-model
+ * fix, so they need no measured row. Any other `*-patch` / `cc-read-back-*`
+ * module it imports must be a `CcUpdateFix`, so a new per-type helper cannot
+ * skip the reverse-direction check.
+ */
+export const NOT_READ_MODEL_FIX_MODULES: Readonly<Record<string, string>> = {
+  'apigwv2-body-import-patch.ts': 'routes an imported HTTP API definition through ReimportApi (#5260)',
+  'cc-nested-create-only-patch.ts': 'type-generic nested create-only handling, read from the schema',
+};
+
+/** The `../<name>.js` patch-helper modules an `update.ts` text imports, as `<name>.ts`. */
+export function importedPatchModules(updateText: string): string[] {
+  return [
+    ...updateText.matchAll(/from '\.\.\/((?:[a-z0-9-]+-patch)|(?:cc-read-back-[a-z0-9-]+))\.js'/g),
+  ].map((m) => `${m[1]!}.ts`);
+}
+
+/** Every `--check` failure over the rows, helper module texts and `update.ts` (b-g). */
 export function findProblems(
   rows: readonly CcUpdateMeasurement[],
-  helperTexts: HelperTexts
+  helperTexts: HelperTexts,
+  updateText?: string
 ): string[] {
   const problems: string[] = [];
+  if (updateText !== undefined) {
+    const imported = importedPatchModules(updateText);
+    if (imported.length === 0) problems.push('cloud-control/update.ts: parsed zero patch-helper imports');
+    const known = new Set<string>([
+      ...Object.values(CC_UPDATE_FIX_MODULES),
+      ...Object.keys(NOT_READ_MODEL_FIX_MODULES),
+    ]);
+    for (const module of imported) {
+      if (!known.has(module)) {
+        problems.push(
+          `cloud-control/update.ts imports ${module}: register it in CC_UPDATE_FIX_MODULES or NOT_READ_MODEL_FIX_MODULES`
+        );
+      }
+    }
+  }
   if (rows.length === 0) problems.push('no measurement rows parsed');
   const seen = new Set<string>();
   for (const row of rows) {
@@ -98,7 +138,7 @@ export function findProblems(
       const text = helperTexts[row.fix];
       if (text === undefined) {
         problems.push(`${row.type}: fix '${row.fix}' is not a registered fix`);
-      } else if (!text.includes(`'${row.type}'`)) {
+      } else if (!parseHelperTypes(row.fix, text).includes(row.type)) {
         problems.push(`${row.type}: fix module ${CC_UPDATE_FIX_MODULES[row.fix]} does not name the type`);
       }
     }
@@ -189,7 +229,11 @@ function main(): void {
   const json = JSON.stringify(report, null, 2) + '\n';
   const md = renderMarkdown(report) + '\n';
   if (process.argv.includes('--check')) {
-    const problems = findProblems(CC_UPDATE_MEASUREMENTS, loadHelperTexts());
+    const problems = findProblems(
+      CC_UPDATE_MEASUREMENTS,
+      loadHelperTexts(),
+      readFileSync(resolve(PROVISIONING_DIR, 'cloud-control/update.ts'), 'utf-8')
+    );
     for (const [path, want] of [
       [OUT_JSON, json],
       [OUT_MD, md],
