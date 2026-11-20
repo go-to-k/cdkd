@@ -38,6 +38,13 @@ import {
 import { strictFor } from './projection.js';
 import { autoScalingResourceId, type DynamoDBScalableDimension } from './capacity.js';
 import type { DynamoDBGlobalTableProvider } from '../dynamodb-globaltable-provider.js';
+import {
+  declaredTagsReadback,
+  type ReadTag,
+  settleWrittenTags,
+  takeTagWrite,
+} from '../../tags-own-write-baseline.js';
+import { warnUnsettledMember } from '../../settle-after-own-write.js';
 
 /**
  * Read per-replica sub-specifications against the given `DynamoDBClient`
@@ -434,4 +441,36 @@ export async function importResource(
   // DescribeStackResources or the template's physical-name property; a table
   // reaching here needs an explicit `--resource` override.
   return null;
+}
+
+/**
+ * The declared `Tags` of a replica the post-write capture settles on
+ * (go-to-k/cdkd#6609): only on that capture (`afterOwnWrite`), only when the
+ * update tagged or untagged this replica (`recordTagWrite`, consumed here),
+ * and only for a replica the template declares. `undefined`: take the first
+ * answer.
+ */
+export function writtenReplicaTags(
+  afterOwnWrite: boolean,
+  replicaArn: string,
+  declaredReplica: Record<string, unknown> | undefined
+): ReadTag[] | undefined {
+  if (!afterOwnWrite || !takeTagWrite('AWS::DynamoDB::GlobalTable', replicaArn)) return undefined;
+  return declaredReplica === undefined ? undefined : declaredTagsReadback(declaredReplica['Tags']);
+}
+
+/**
+ * A replica's `Tags` on the post-write capture: `listTags` re-asked until it
+ * shows `declared`, else `declared` (`settleWrittenTags`). A deterministic
+ * first failure (a not-found too) throws to the caller's existing handling.
+ */
+export function settleReplicaTags(
+  this: DynamoDBGlobalTableProvider,
+  listTags: () => Promise<ReadTag[]>,
+  declared: ReadTag[],
+  logicalId: string
+): Promise<ReadTag[]> {
+  return settleWrittenTags(listTags, listTags, declared, this.tagsBaselineRereadDelaysMs, () =>
+    warnUnsettledMember(this.logger, logicalId, 'AWS::DynamoDB::GlobalTable', 'Tags')
+  );
 }

@@ -11,7 +11,16 @@ held the deleted policy, so `cdkd drift` reported it and `cdkd drift --revert`
 would have re-granted it. After each phase the run requires the baseline to
 hold a policy exactly when the template declares one, the live table to
 settle to the same answer, and `cdkd drift --json` to report the table fully
-compared and clean. It then destroys the stack and checks that the table and
+compared and clean.
+
+The table also carries a `Lag6609e` tag (Refs #6609). A fourth deploy changes
+its value (`CDKD_TEST_TAG=v2`): `ListTagsOfResource` answers the previous tags
+for seconds after `TagResource`, and before the fix the deploy recorded that
+answer, so the run requires the observed baseline `Tags` to equal the new
+value. It then tags the table out of band, requires `cdkd drift --json` to
+report `Tags`, runs `cdkd drift --revert --yes`, and requires the declared tag
+live again on the same table (ARN, `CreationDateTime` and the state physical
+id unchanged) and a clean follow-up drift. It then destroys the stack and checks that the table and
 state are gone.
 
 Build the repository first. The maintainer runs this fixture via `/run-integ

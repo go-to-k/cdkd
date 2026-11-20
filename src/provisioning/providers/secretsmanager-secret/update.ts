@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
+import { clearTagWrites, recordTagWrite } from '../../tags-own-write-baseline.js';
 import type { ResourceUpdateResult, UpdateContext } from '../../../types/resource.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 
@@ -28,6 +29,9 @@ export async function update(
   previousProperties: Record<string, unknown>,
   context?: UpdateContext
 ): Promise<ResourceUpdateResult> {
+  // go-to-k/cdkd#6609: a note an earlier, failed update left (no capture
+  // followed it) must not make this update's capture re-read.
+  clearTagWrites('AWS::SecretsManager::Secret', (id) => id === physicalId);
   // Issue #2177: ONE masked sink per operation. The physical id is an ARN
   // embedding the secret's NAME, so it is masked whenever that name is
   // secret-derived: from the desired `Name`, or, after a rotated secret,
@@ -155,6 +159,8 @@ export async function update(
           TagKeys: tagPlan.remove,
         })
       );
+      // The post-write capture re-reads only tags this update wrote (#6609).
+      recordTagWrite('AWS::SecretsManager::Secret', physicalId);
     }
     if (tagPlan.set.size > 0) {
       await this.smClient.send(
@@ -163,6 +169,7 @@ export async function update(
           Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
         })
       );
+      recordTagWrite('AWS::SecretsManager::Secret', physicalId);
     }
     if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
       log.debug(`Updated tags for secret ${v(physicalId)}`);

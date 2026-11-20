@@ -66,8 +66,8 @@ if [ ! -d node_modules ]; then pnpm install --ignore-workspace --prefer-offline;
 state_json() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" --only-show-errors
 }
-deploy_phase() { # CDKD_TEST_REMOVAL
-  CDKD_TEST_REMOVAL="$1" node "${LOCAL_DIST}" deploy "${STACK}" \
+deploy_phase() { # CDKD_TEST_REMOVAL [CDKD_TEST_TAG]
+  CDKD_TEST_REMOVAL="$1" CDKD_TEST_TAG="${2:-v1}" node "${LOCAL_DIST}" deploy "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 }
 # The one table's logical id, asserted unique (the stack declares one table).
@@ -163,6 +163,81 @@ check_baseline present
 check_live_policy present
 check_drift "the re-add"
 
+# --- go-to-k/cdkd#6609 slice E: the Tags baseline after an update's tag call ---
+# ListTagsOfResource answered the previous tags for up to ~2.5 s after a
+# TagResource (measured), and the deploy recorded that answer, so drift
+# reported an untouched table and --revert put the old tag back.
+# The user tags (aws: dropped) of the table baseline / the live table, as
+# compact JSON sorted by key.
+baseline_tags() {
+  local id
+  id=$(table_id) || exit 1
+  state_json | jq -c --arg id "${id}" \
+    '.resources[$id].observedProperties.Tags | map(select(.Key | startswith("aws:") | not)) | sort_by(.Key)'
+}
+live_tags() {
+  aws dynamodb list-tags-of-resource --region "${REGION}" --resource-arn "${TABLE_ARN}" --output json \
+    | jq -c '.Tags | map(select(.Key | startswith("aws:") | not)) | sort_by(.Key)'
+}
+# Waits until 3 reads in a row answer the user tag set $1.
+await_live_tags() { # $1 = compact JSON, $2 = label
+  local seen=0 got=""
+  for _ in $(seq 1 30); do
+    got=$(live_tags 2>/dev/null) || got="read-failed"
+    if [ "${got}" = "$1" ]; then seen=$((seen + 1)); else seen=0; fi
+    [ "${seen}" -ge 3 ] && return 0
+    sleep 2
+  done
+  echo "FAIL: $2: the live tags never settled on $1 (last: ${got})" >&2
+  exit 1
+}
+table_created() {
+  aws dynamodb describe-table --region "${REGION}" --table-name "${TABLE_NAME}" \
+    --query 'Table.CreationDateTime' --output text
+}
+TAGS_V2='[{"Key":"Lag6609e","Value":"v2"}]'
+
+echo "==> Change the table tag: the baseline must hold the new value (#6609)"
+CREATED_BEFORE=$(table_created)
+[ -n "${CREATED_BEFORE}" ] && [ "${CREATED_BEFORE}" != None ] || { echo "FAIL: no CreationDateTime" >&2; exit 1; }
+PHYS_BEFORE=$(state_json | jq -r --arg id "$(table_id)" '.resources[$id].physicalId')
+deploy_phase false v2
+# Every later synth (drift, --revert) sees the template this deploy applied.
+export CDKD_TEST_TAG=v2
+GOT=$(baseline_tags)
+[ "${GOT}" = "${TAGS_V2}" ] || { echo "FAIL: the baseline Tags are ${GOT}, want ${TAGS_V2} (the pre-write tag recorded?)" >&2; exit 1; }
+echo "    OK: the observed baseline Tags equal the declared ${TAGS_V2}"
+await_live_tags "${TAGS_V2}" "after the tag change"
+check_drift "the tag change"
+
+echo "==> Tag the table out of band: drift reports Tags, drift --revert restores them in place (#6609)"
+aws dynamodb tag-resource --region "${REGION}" --resource-arn "${TABLE_ARN}" \
+  --tags Key=Lag6609e,Value=oob >/dev/null
+await_live_tags '[{"Key":"Lag6609e","Value":"oob"}]' "after the out-of-band tag"
+set +e
+REVERT_DRIFT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)
+set -e
+REVERT_PATHS=$(jq -c --arg id "$(table_id)" '[.[].drifted[] | select(.logicalId == $id) | .changes[].path]' <<<"${REVERT_DRIFT}") || {
+  echo "FAIL: could not parse cdkd drift --json" >&2
+  printf '%s\n' "${REVERT_DRIFT}" >&2
+  exit 1
+}
+case "${REVERT_PATHS}" in
+  *Tags*) echo "    OK: drift reports the out-of-band tag (${REVERT_PATHS})" ;;
+  *) echo "FAIL: drift did not report Tags on the table (paths: ${REVERT_PATHS})" >&2; printf '%s\n' "${REVERT_DRIFT}" >&2; exit 1 ;;
+esac
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes || { echo "FAIL: cdkd drift --revert failed" >&2; exit 1; }
+await_live_tags "${TAGS_V2}" "after drift --revert"
+ARN_AFTER=$(aws dynamodb describe-table --region "${REGION}" --table-name "${TABLE_NAME}" --query 'Table.TableArn' --output text)
+[ "${ARN_AFTER}" = "${TABLE_ARN}" ] || { echo "FAIL: the table ARN changed ${TABLE_ARN} -> ${ARN_AFTER}" >&2; exit 1; }
+CREATED_AFTER=$(table_created)
+[ "${CREATED_AFTER}" = "${CREATED_BEFORE}" ] || { echo "FAIL: CreationDateTime ${CREATED_BEFORE} -> ${CREATED_AFTER}: --revert replaced the table" >&2; exit 1; }
+PHYS_AFTER=$(state_json | jq -r --arg id "$(table_id)" '.resources[$id].physicalId')
+[ "${PHYS_AFTER}" = "${PHYS_BEFORE}" ] || { echo "FAIL: state physicalId ${PHYS_BEFORE} -> ${PHYS_AFTER}" >&2; exit 1; }
+echo "    OK: --revert restored the tag on the same table (ARN, CreationDateTime and physicalId kept)"
+check_drift "drift --revert"
+
 echo "==> Destroy and verify resources and state are gone"
 env -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --force
@@ -170,4 +245,4 @@ assert_gone "table still exists" aws dynamodb describe-table --region "${REGION}
 assert_gone "state still exists" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 CLEANED_UP=1
 trap - EXIT INT TERM
-echo "[verify] PASS: a Table ResourcePolicy removal and re-add left a settled baseline, drift clean, clean destroy (#6604)"
+echo "[verify] PASS: a Table ResourcePolicy removal and re-add and a tag change left a settled baseline, drift --revert restored a tag in place, drift clean, clean destroy (#6604, #6609)"

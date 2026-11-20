@@ -24,6 +24,7 @@ import {
 } from '../../dynamodb-ttl.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
 import { maskLeafValue } from './table-helpers.js';
+import { recordTagWrite } from '../../tags-own-write-baseline.js';
 
 /**
  * Apply a diff between old and new CFn-shape Tags arrays via DynamoDB's
@@ -65,12 +66,15 @@ export async function applyTagDiff(
     await this.dynamoDBClient.send(
       new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove })
     );
+    // The post-write capture re-reads only tags this update wrote (#6609).
+    recordTagWrite('AWS::DynamoDB::Table', tableArn);
     this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from DynamoDB table ${tableArn}`);
   }
   if (tagsToAdd.length > 0) {
     await this.dynamoDBClient.send(
       new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
     );
+    recordTagWrite('AWS::DynamoDB::Table', tableArn);
     // A malformed recorded tag list cannot say which keys are new: record none
     // (a missing name only keeps a tag, never removes one).
     let recordedKeys: Set<string> | undefined;

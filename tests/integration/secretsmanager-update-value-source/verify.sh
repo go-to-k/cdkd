@@ -17,6 +17,10 @@
 #      nothing else. Assert the tag reached AWS, AWSCURRENT is the SAME
 #      VersionId on both, and each still has exactly one version — pre-fix
 #      both got a second version and AWSCURRENT moved.
+#      Also (#6609) the observed baseline Tags of both secrets must hold the
+#      added tag. 2r: untag the literal secret out of band; drift must report
+#      Tags, `drift --revert` must restore the tag on the same secret (ARN,
+#      state physicalId, AWSCURRENT kept), and a follow-up drift is clean.
 #   3. UPDATE (CDKD_TEST_UPDATE=regen), the positive control: the
 #      `GenerateSecretString` block changes (PasswordLength 32 -> 40) and the
 #      literal changes. Assert BOTH values moved — a new AWSCURRENT, the old
@@ -231,6 +235,86 @@ assert_eq "Phase 2 literal AWSCURRENT (issue #2472: an unchanged literal was re-
 assert_eq "Phase 2 generated version count" "1" "$(version_count "${GENERATED_NAME}")"
 assert_eq "Phase 2 literal version count" "1" "$(version_count "${LITERAL_NAME}")"
 echo "    tag reached AWS; AWSCURRENT unchanged on both secrets; still one version each"
+
+# --- go-to-k/cdkd#6609 slice E: the Tags baseline after the update's tag call ---
+# DescribeSecret missed a just-written tag on single reads (measured), and the
+# deploy recorded that answer, so drift reported an untouched secret and
+# --revert removed the tag again. Phase 2's tag change must be in the baseline.
+state_json() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" --only-show-errors
+}
+secret_logical_id() { # usage: secret_logical_id <secret-name> -> the one state record holding it
+  local ids
+  ids="$(state_json | jq -c --arg n "$1-" '[.resources | to_entries[]
+    | select(.value.resourceType == "AWS::SecretsManager::Secret" and (.value.physicalId | contains(":secret:" + $n))) | .key]')" || return 1
+  [ "$(jq 'length' <<<"${ids}")" = 1 ] || { echo "FAIL: expected one record holding $1, got ${ids}" >&2; exit 1; }
+  jq -r '.[0]' <<<"${ids}"
+}
+baseline_user_tags() { # usage: baseline_user_tags <logical-id> -> compact JSON sorted by key
+  state_json | jq -c --arg id "$1" \
+    '.resources[$id].observedProperties.Tags | map(select(.Key | startswith("aws:") | not)) | sort_by(.Key)'
+}
+live_user_tags() { # usage: live_user_tags <secret-name>
+  aws secretsmanager describe-secret --secret-id "$1" --region "${REGION}" --output json \
+    | jq -c '(.Tags // []) | map(select(.Key | startswith("aws:") | not)) | sort_by(.Key)'
+}
+await_live_user_tags() { # usage: await_live_user_tags <secret-name> <compact JSON> <label>; 3 reads in a row
+  local seen=0 got=""
+  for _ in $(seq 1 30); do
+    got="$(live_user_tags "$1" 2>/dev/null)" || got="read-failed"
+    if [ "${got}" = "$2" ]; then seen=$((seen + 1)); else seen=0; fi
+    [ "${seen}" -ge 3 ] && return 0
+    sleep 2
+  done
+  echo "FAIL: $3: the live tags of $1 never settled on $2 (last: ${got})" >&2
+  exit 1
+}
+PROBE_TAGS='[{"Key":"cdkd-update-probe","Value":"true"}]'
+GEN_ID="$(secret_logical_id "${GENERATED_NAME}")"
+LIT_ID="$(secret_logical_id "${LITERAL_NAME}")"
+assert_eq "Phase 2 generated baseline Tags (#6609: the pre-write tags recorded)" "${PROBE_TAGS}" "$(baseline_user_tags "${GEN_ID}")"
+assert_eq "Phase 2 literal baseline Tags (#6609: the pre-write tags recorded)" "${PROBE_TAGS}" "$(baseline_user_tags "${LIT_ID}")"
+echo "    the observed baseline Tags of both secrets hold the tag this deploy added"
+
+# --- Phase 2r: an out-of-band tag change, drift --revert restores it in place ---
+echo "==> Phase 2r: untag the literal secret out of band; drift reports Tags, drift --revert restores them (#6609)"
+LIT_ARN_2="$(secret_field "${LITERAL_NAME}" ARN)"
+assert_nonempty "Phase 2r literal ARN" "${LIT_ARN_2}"
+LIT_PHYS_2="$(state_json | jq -r --arg id "${LIT_ID}" '.resources[$id].physicalId')"
+aws secretsmanager untag-resource --secret-id "${LITERAL_NAME}" --region "${REGION}" \
+  --tag-keys cdkd-update-probe >/dev/null
+await_live_user_tags "${LITERAL_NAME}" '[]' "after the out-of-band untag"
+set +e
+P2R_DRIFT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)"
+set -e
+P2R_PATHS="$(jq -c --arg id "${LIT_ID}" '[.[].drifted[] | select(.logicalId == $id) | .changes[].path]' <<<"${P2R_DRIFT}")" || {
+  echo "FAIL: Phase 2r: could not parse cdkd drift --json" >&2
+  printf '%s\n' "${P2R_DRIFT}" >&2
+  exit 1
+}
+case "${P2R_PATHS}" in
+  *Tags*) echo "    drift reports the out-of-band untag (${P2R_PATHS})" ;;
+  *) echo "FAIL: Phase 2r: drift did not report Tags on ${LIT_ID} (paths: ${P2R_PATHS})" >&2; printf '%s\n' "${P2R_DRIFT}" >&2; exit 1 ;;
+esac
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes || { echo "FAIL: Phase 2r: cdkd drift --revert failed" >&2; exit 1; }
+await_live_user_tags "${LITERAL_NAME}" "${PROBE_TAGS}" "after drift --revert"
+assert_eq "Phase 2r literal ARN (--revert must not replace the secret)" "${LIT_ARN_2}" "$(secret_field "${LITERAL_NAME}" ARN)"
+assert_eq "Phase 2r literal state physicalId" "${LIT_PHYS_2}" "$(state_json | jq -r --arg id "${LIT_ID}" '.resources[$id].physicalId')"
+# The value did not move either (Phase 3 also requires AWSPREVIOUS to be LIT_V2).
+assert_eq "Phase 2r literal AWSCURRENT" "${LIT_V2}" "$(current_version_id "${LITERAL_NAME}")"
+set +e
+P2R_AFTER="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)"
+set -e
+if ! jq -e --arg id "${LIT_ID}" '
+  ([.[].clean[] | select(.logicalId == $id)] | length) == 1 and
+  ([.[].drifted[] | select(.logicalId == $id)] | length) == 0
+' <<<"${P2R_AFTER}" >/dev/null; then
+  echo "FAIL: Phase 2r: ${LIT_ID} is not drift-clean after --revert" >&2
+  printf '%s\n' "${P2R_AFTER}" >&2
+  exit 1
+fi
+echo "    --revert restored the tag on the same secret (ARN, physicalId and AWSCURRENT kept); drift clean"
 
 # --- Phase 3: source CHANGED — the value MUST move (positive control) --------
 echo "==> Phase 3: re-deploy with GenerateSecretString changed (PasswordLength 40) and a new literal"
