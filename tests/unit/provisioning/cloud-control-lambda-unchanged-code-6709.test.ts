@@ -119,13 +119,15 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
       'Fn',
       'fn-1',
       'AWS::Lambda::Function',
-      { Code: IMAGE_CODE, PublishToLatestPublished: true, FunctionScalingConfig: SCALING },
+      // A distinct object with the same contents: state and the resolved
+      // template never share a reference.
+      { Code: { ...IMAGE_CODE }, PublishToLatestPublished: true, FunctionScalingConfig: SCALING },
       { Code: IMAGE_CODE, PublishToLatestPublished: true }
     );
 
     const patch = sentPatch();
     expect(patch).toContainEqual({ op: 'add', path: '/FunctionScalingConfig', value: SCALING });
-    // The other write-only key of the type keeps the issue #809 re-add.
+    // `PublishToLatestPublished` still gets the re-add required by go-to-k/cdkd#809.
     expect(patch).toContainEqual({ op: 'add', path: '/PublishToLatestPublished', value: true });
     expect(paths(patch)).toEqual(['/FunctionScalingConfig', '/PublishToLatestPublished']);
   });
@@ -138,7 +140,7 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
       'Fn',
       'fn-1',
       'AWS::Lambda::Function',
-      { Code: code, MemorySize: 256 },
+      { Code: { ...code }, MemorySize: 256 },
       { Code: code, MemorySize: 128 }
     );
 
@@ -163,8 +165,8 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
   });
 
   it('still sends a Code the previous side does not hold', async () => {
-    // A `drift --revert` update: the previous side is the read model, which
-    // carries no write-only value.
+    // Models the input `drift --revert` hands `provider.update`: a previous
+    // side built from the read model, which carries no write-only value.
     mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
 
     await provider.update(

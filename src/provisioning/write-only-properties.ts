@@ -278,8 +278,9 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
  * shape made no such call, so leaving the key out serves parity and speed
  * alike.
  *
- * An entry is a MEASUREMENT of one type's handler, never a guess from the
- * schema: for most types an omitted write-only key is lost (issue #809).
+ * Require handler measurements before adding an entry. Readback omits
+ * write-only values, so omitting them from a Cloud Control patch can lose them
+ * (go-to-k/cdkd#809).
  */
 const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['AWS::Lambda::Function', new Set(['Code'])],
