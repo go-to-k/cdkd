@@ -161,6 +161,27 @@ describe('SNSSubscriptionProvider.readCurrentState: topic membership (go-to-k/cd
       expect(result).toMatchObject({ Protocol: 'https', Endpoint: 'https://e/x' });
     });
 
+    it('matches a basic-auth endpoint the list spells with its password masked', async () => {
+      // Measured: GetSubscriptionAttributes returns the password in the clear,
+      // ListSubscriptionsByTopic returns it as `****`.
+      route(
+        attributes({
+          PendingConfirmation: 'true',
+          Protocol: 'https',
+          Endpoint: 'https://user:pw@e/x',
+        }),
+        [
+          {
+            Subscriptions: [
+              { SubscriptionArn: 'PendingConfirmation', Protocol: 'https', Endpoint: 'https://user:****@e/x' },
+            ],
+          },
+        ]
+      );
+      const result = await provider.readCurrentState(SUB_ARN, 'Sub', TYPE, {}, {});
+      expect(result).toMatchObject({ Endpoint: 'https://user:pw@e/x' });
+    });
+
     it('is deleted when the topic lists no pending entry for its endpoint', async () => {
       route(pending, [
         {

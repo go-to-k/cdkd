@@ -17,8 +17,9 @@ import {
  * - `listed`: the topic lists the subscription's ARN. A subscription still
  *   `PendingConfirmation` is listed under that literal instead of its ARN, so
  *   for one (`pending`) an entry of that spelling with the same `Protocol` and
- *   `Endpoint` counts: SNS keeps one subscription per (topic, protocol,
- *   endpoint).
+ *   `Endpoint` counts (the endpoint compared with any basic-auth password
+ *   masked, as the list spells it): SNS keeps one subscription per (topic,
+ *   protocol, endpoint).
  * - `absent`: the topic exists and does not list it.
  * - `topic-gone`: the topic itself is `NotFound`.
  *
@@ -52,7 +53,9 @@ export async function readTopicMembership(
         pending !== undefined &&
         s.SubscriptionArn === 'PendingConfirmation' &&
         s.Protocol === pending.protocol &&
-        s.Endpoint === pending.endpoint
+        s.Endpoint !== undefined &&
+        pending.endpoint !== undefined &&
+        maskUrlPassword(s.Endpoint) === maskUrlPassword(pending.endpoint)
       ) {
         return 'listed';
       }
@@ -60,4 +63,14 @@ export async function readTopicMembership(
     nextToken = resp?.NextToken;
   } while (nextToken);
   return 'absent';
+}
+
+/**
+ * An http(s) endpoint with its basic-auth password replaced by `****`.
+ * `GetSubscriptionAttributes` returns the password in the clear, while
+ * `ListSubscriptionsByTopic` returns it as `****` (measured), so the pending
+ * match compares both in the masked spelling.
+ */
+function maskUrlPassword(endpoint: string): string {
+  return endpoint.replace(/^(https?:\/\/[^:/?#@]*:)[^/?#@]*@/i, '$1****@');
 }
