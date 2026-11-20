@@ -376,7 +376,9 @@ export class DagBuilder {
    * Add implicit edges to each `AWS::CloudFormation::WaitCondition` from every
    * other resource downstream of its `Handle` (go-to-k/cdkd#6704): the
    * instance whose user data signals the handle URL, or the Auto Scaling group
-   * launching from a launch template that embeds it.
+   * launching from a launch template that embeds it. This over-approximates
+   * (an instance's EIP association also runs first), which only delays the
+   * wait's start: a signal sent before the wait starts still counts.
    *
    * A waiting WaitCondition holds a `--concurrency` slot for up to its
    * `Timeout`. With no edge — CloudFormation needs none, having no concurrency
