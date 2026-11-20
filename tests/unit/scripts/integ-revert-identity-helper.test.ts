@@ -415,6 +415,38 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(existsSync(awsLog)).toBe(false);
   });
 
+  it('reads an inline IAM policy on its first principal, and a Route 53 record by zone, name and type', () => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        state: {
+          resources: {
+            Pol1: {
+              resourceType: 'AWS::IAM::Policy',
+              physicalId: 'SharedPolicy',
+              properties: { Roles: ['RoleA', 'RoleB'] },
+            },
+            Rec1: { resourceType: 'AWS::Route53::RecordSet', physicalId: 'Z1|*.example.com.|A' },
+          },
+        },
+      })
+    );
+    // Route 53 answers `<name>\t<type>`, spelling the wildcard `\052`.
+    setAwsValue('\\052.example.com.\tA\n');
+    const r = run(`revert_identity_snapshot "${before()}" Stack Rec1`);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(readFileSync(before(), 'utf8')).toContain('\tno-id:record:Z1|*.example.com.|A\n');
+    setAwsValue('\\052.example.com.\tTXT\n');
+    expect(run(`revert_identity_snapshot "${after()}" Stack Rec1 || exit 1`).status).toBe(1);
+    setAwsValue('SharedPolicy\n');
+    const p = run(`revert_identity_snapshot "${before()}" Stack Pol1`);
+    expect(p.status).toBe(0);
+    expect(readFileSync(awsLog, 'utf8')).toContain(
+      'iam get-role-policy --role-name RoleA --policy-name SharedPolicy'
+    );
+  });
+
   it('FAILS a snapshot with no logical ids', () => {
     const r = run(`revert_identity_snapshot "${before()}" Stack || exit 1`);
     expect(r.status).toBe(1);

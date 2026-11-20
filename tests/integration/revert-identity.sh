@@ -205,6 +205,36 @@ _revert_identity_probe() {
       # it is still on the bus.
       cls=no-id; val="$(_revert_identity_aws events describe-event-bus --region "${region}" --name "${pid%%|*}" --query 'Policy' \
         | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const sid=process.argv[1].split("|").pop();const st=(JSON.parse(s).Statement||[]).find(x=>x.Sid===sid);if(st)process.stdout.write(st.Sid);});' "${pid}")" || rc=$? ;;
+    AWS::IAM::Policy)
+      # An inline policy: physicalId is its PolicyName, ctx `role:` / `user:` /
+      # `group:` + the first principal it is attached to. It has no id, and its
+      # document is what a revert rewrites, so the probe proves only that the
+      # named policy is still on that principal.
+      case "${ctx}" in
+        role:?*) val="$(_revert_identity_aws iam get-role-policy --role-name "${ctx#role:}" --policy-name "${pid}" --query 'PolicyName')" || rc=$? ;;
+        user:?*) val="$(_revert_identity_aws iam get-user-policy --user-name "${ctx#user:}" --policy-name "${pid}" --query 'PolicyName')" || rc=$? ;;
+        group:?*) val="$(_revert_identity_aws iam get-group-policy --group-name "${ctx#group:}" --policy-name "${pid}" --query 'PolicyName')" || rc=$? ;;
+        *) rc=1 ;;
+      esac
+      cls=no-id ;;
+    AWS::Route53::RecordSet)
+      # physicalId is `<zoneId>|<name>|<type>`; a record has no id or creation
+      # time. Route 53 answers a wildcard as `\052`, so both sides are compared
+      # with that escape and the trailing dot normalised.
+      cls=no-id; val="$(
+        z="${pid%%|*}"; rest="${pid#*|}"; n="${rest%|*}"; t="${rest##*|}"
+        got="$(_revert_identity_aws route53 list-resource-record-sets --hosted-zone-id "${z}" \
+          --start-record-name "${n}" --start-record-type "${t}" --max-items 1 \
+          --query 'ResourceRecordSets[0].[Name, Type]')" || exit 1
+        norm() { printf '%s' "$1" | sed -e 's/\\052/*/g' -e 's/\.$//'; }
+        [ "$(norm "$(printf '%s' "${got}" | cut -f1)")" = "$(norm "${n}")" ] \
+          && [ "$(printf '%s' "${got}" | cut -f2)" = "${t}" ] || exit 1
+        printf 'record:%s' "${pid}"
+      )" || rc=$? ;;
+    AWS::Route53::RecordSetGroup)
+      # physicalId is `<zoneId>|<groupName>`; a group is a set of records with
+      # no identity of its own (its members are their own rows where named).
+      cls=no-id; val="$(_revert_identity_aws route53 get-hosted-zone --id "${pid%%|*}" --query 'HostedZone.Id')" || rc=$? ;;
     AWS::SNS::Topic)
       # GetTopicAttributes carries no creation time or unique id.
       cls=no-id; val="$(_revert_identity_aws sns get-topic-attributes --region "${region}" --topic-arn "${pid}" --query 'Attributes.TopicArn')" || rc=$? ;;
@@ -326,6 +356,10 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
         ? props.Replicas.map((x) => x && x.Region).filter((x) => typeof x === "string").sort().join(",")
         : undefined,
       "AWS::EC2::SecurityGroupIngress": attrs.Id,
+      "AWS::IAM::Policy": (["Roles", "Users", "Groups"]
+        .map((k) => (Array.isArray(props[k]) && typeof props[k][0] === "string"
+          ? k.slice(0, -1).toLowerCase() + ":" + props[k][0] : undefined))
+        .find((x) => x !== undefined)),
     };
     const ctx = ctxOf[r.resourceType];
     const ctxText = typeof ctx === "string" && ctx !== "" && !/[\t\n]/.test(ctx) ? ctx : "-";

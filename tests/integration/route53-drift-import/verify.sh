@@ -64,6 +64,10 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+REVERT_DIR=""
+
 STACK="Route53DriftImportStack"
 REGION="${AWS_REGION:-us-east-1}"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -100,6 +104,10 @@ change_batch() { # usage: change_batch <zoneId> <changes-json-array>
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   rm -f "${DRIFT_JSON:-}" "${IMPORT_LOG:-}" 2>/dev/null || true
+  if [ -n "${REVERT_DIR:-}" ]; then
+    rm -f "${REVERT_DIR}"/revert-* 2>/dev/null || true
+    rmdir "${REVERT_DIR}" 2>/dev/null || true
+  fi
   set +eu
   local destroy_rc=0
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
@@ -156,6 +164,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+REVERT_DIR="$(mktemp -d)"
 
 # --- Phase 1: deploy --------------------------------------------------------
 echo "==> Phase 1: deploy"
@@ -256,10 +265,12 @@ echo "    OK: deleted record, group member loss + change, and alias switch repor
 
 # --- Phase 4: revert ----------------------------------------------------------
 echo "==> Phase 4: drift --revert"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-4-before" "${STACK}" "${WILDCARD_ID}" Group || exit 1
 set +e
-cdkd drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
-REVERT_RC=$?
+cdkd drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_DIR}/revert-4.log"
+REVERT_RC=${PIPESTATUS[0]}
 set -e
+revert_identity_verify "${REVERT_DIR}/revert-ids-4-before" "${REVERT_DIR}/revert-ids-4-after" 2 "${REVERT_DIR}/revert-4.log" expect-refusal || exit 1
 echo "    revert exited ${REVERT_RC} (the deleted record is not revertable)"
 WILDCARD_AFTER=$(record_json "${ZONE_ID}" "\\052.${ZONE_NAME}." A)
 if ! jq -e '.AliasTarget == null and .ResourceRecords == [{"Value": "192.0.2.3"}]' <<<"${WILDCARD_AFTER}" >/dev/null; then
@@ -320,5 +331,8 @@ assert_gone "hosted zone ${ZONE_ID} survived destroy" aws route53 get-hosted-zon
 assert_gone "state ${STATE_KEY} survived destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 
+rm -f "${REVERT_DIR}"/revert-*
+rmdir "${REVERT_DIR}" 2>/dev/null || true
+REVERT_DIR=""
 trap - EXIT INT TERM
 echo "==> route53-drift-import test passed (#6660 deleted records + group members, #6661 alias revert, #6662 auto import)"
