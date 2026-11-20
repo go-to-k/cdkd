@@ -55,7 +55,7 @@ cc-protection-flip-eks	2026-11-04T07:36:26Z	PASS	807	verify.sh	rc ok, orph clean
 cc-required-name-generation	2026-11-05T04:10:23Z	PASS	53	verify.sh	rc ok on main 8547010bb dist, own temp state bucket, destroy 0 errors, orph clean (state keys + live resources, us-east-1/us-west-2)
 cc-to-sdk-reroute	2026-11-03T04:12:32Z	PASS	210	verify.sh	rc ok, orph clean, 4750ae2de
 cc-to-sdk-reroute-cloudfront-distribution	2026-11-18T01:46:29Z	PASS	666	verify.sh	rc ok, orph clean; phase 7 replay restore (pre-fix probe red at phase 7)
-cc-to-sdk-reroute-common-types	2026-11-16T19:59:30Z	PASS	356	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
+cc-to-sdk-reroute-common-types	2026-11-20T14:40:31Z	PASS	318	verify.sh	rc ok, orph clean (#6675)
 cc-to-sdk-reroute-common-types-10	2026-11-17T16:32:48Z	PASS	191	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-11	2026-11-18T04:18:23Z	PASS	2545	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-common-types-12	2026-11-19T03:38:31Z	PASS	216	verify.sh	rc ok, orph clean
@@ -233,6 +233,7 @@ iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 error
 iam-profile-policy-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
 iam-recreate-reattach	2026-11-20T12:24:42Z	PASS	248	verify.sh	PR6652 03d784232, revert-identity kept identity, rc ok, orph clean
+iam-recreate-reattach	2026-11-20T14:40:31Z	PASS	283	verify.sh	rc ok, orph clean; 3 AFTER runs, role CC delete GetResource-compared (#6675)
 iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-role-policies-drift-clean	2026-11-20T12:24:42Z	PASS	446	verify.sh	PR6652 03d784232, IAM::Policy probe all principals ok, rc ok, orph clean
 iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
@@ -434,7 +435,7 @@ rollback-nested-cross-region-secret	2026-11-20T11:50:48Z	PASS	458	verify.sh	PR66
 rollback-observed-baseline-refresh	2026-11-18T05:18:35Z	PASS	101	verify.sh	rc ok, orph clean (PR #6531, #6526)
 rollback-regenerated-secret	2026-11-19T06:52:45Z	PASS	121	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-replacement-retain	2026-11-16T12:51:14Z	PASS	100	verify.sh	rc ok, orph clean (#6398)
-rollback-replay-cc-generated-name	2026-11-16T08:22:27Z	PASS	174	verify.sh	rc ok, orph clean (#6374 sweep)
+rollback-replay-cc-generated-name	2026-11-20T14:40:31Z	PASS	172	verify.sh	rc ok, orph clean (#6675)
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
 rollback-same-id-recreate	2026-11-16T15:41:55Z	PASS	196	verify.sh	rc ok, orph clean (#6423)
 rollback-sqs-cooldown	2026-11-07T12:50:15Z	PASS	158	verify.sh	#6008 rollback split head; rc ok, orph clean
