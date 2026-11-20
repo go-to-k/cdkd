@@ -124,6 +124,7 @@ export class ApiGatewayProvider implements ResourceProvider {
         'IdentitySource',
         'IdentityValidationExpression',
         'AuthorizerResultTtlInSeconds',
+        'JwtConfiguration',
       ]),
     ],
     ['AWS::ApiGateway::Resource', new Set(['RestApiId', 'ParentId', 'PathPart'])],

@@ -13,7 +13,7 @@ For every SDK provider that forwards a nested CFn config blob, compares the SHAP
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths under handled top-levels: **1536**
+- Nested CFn key paths under handled top-levels: **1538**
 - Paths delivered whole by a generic hand-off: **628**
 - Bare-array pairs clean: **182**
 - Explicitly handled in provider: **50**
@@ -49,22 +49,22 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::AppSync::DataSource` | `LambdaConfig` | `LambdaFunctionArn` | definition | SDK interface `LambdaConfig` has no `lambdaFunctionArn` member |
 | `AWS::AppSync::GraphQLApi` | `#top` | `Tags` | wrapper | — |
 | `AWS::CloudFront::Distribution` | `#top` | `Tags` | wrapper | — |
+| `AWS::CloudFront::Distribution` | `GeoRestriction` | `Locations` | definition | SDK interface `GeoRestriction` has no `Locations` member |
+| `AWS::CloudFront::Distribution` | `Cookies` | `WhitelistedNames` | wrapper | SDK wraps it as `CookieNames` ({ Quantity, Items }) |
+| `AWS::CloudFront::Distribution` | `CacheBehavior` | `FunctionAssociations` | wrapper | SDK wraps it as `FunctionAssociations` ({ Quantity, Items }) |
+| `AWS::CloudFront::Distribution` | `CacheBehavior` | `LambdaFunctionAssociations` | wrapper | SDK wraps it as `LambdaFunctionAssociations` ({ Quantity, Items }) |
+| `AWS::CloudFront::Distribution` | `CacheBehavior` | `TrustedSigners` | wrapper | SDK wraps it as `TrustedSigners` ({ Quantity, Items }) |
+| `AWS::CloudFront::Distribution` | `CacheBehavior` | `TrustedKeyGroups` | wrapper | SDK wraps it as `TrustedKeyGroups` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `AllowedMethods` | wrapper | SDK wraps it as `AllowedMethods` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `CachedMethods` | wrapper | SDK wraps it as `CachedMethods` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `CacheBehavior` | `CachedMethods` | definition | SDK interface `CacheBehavior` has no `CachedMethods` member |
-| `AWS::CloudFront::Distribution` | `CacheBehavior` | `FunctionAssociations` | wrapper | SDK wraps it as `FunctionAssociations` ({ Quantity, Items }) |
-| `AWS::CloudFront::Distribution` | `CacheBehavior` | `LambdaFunctionAssociations` | wrapper | SDK wraps it as `LambdaFunctionAssociations` ({ Quantity, Items }) |
-| `AWS::CloudFront::Distribution` | `CacheBehavior` | `TrustedKeyGroups` | wrapper | SDK wraps it as `TrustedKeyGroups` ({ Quantity, Items }) |
-| `AWS::CloudFront::Distribution` | `CacheBehavior` | `TrustedSigners` | wrapper | SDK wraps it as `TrustedSigners` ({ Quantity, Items }) |
-| `AWS::CloudFront::Distribution` | `Cookies` | `WhitelistedNames` | wrapper | SDK wraps it as `CookieNames` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `DefaultCacheBehavior` | `CachedMethods` | definition | SDK interface `DefaultCacheBehavior` has no `CachedMethods` member |
-| `AWS::CloudFront::Distribution` | `DistributionConfig` | `Aliases` | wrapper | SDK wraps it as `Aliases` ({ Quantity, Items }) |
-| `AWS::CloudFront::Distribution` | `DistributionConfig` | `CacheBehaviors` | wrapper | SDK wraps it as `CacheBehaviors` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `DistributionConfig` | `CustomErrorResponses` | wrapper | SDK wraps it as `CustomErrorResponses` ({ Quantity, Items }) |
+| `AWS::CloudFront::Distribution` | `DistributionConfig` | `CacheBehaviors` | wrapper | SDK wraps it as `CacheBehaviors` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `DistributionConfig` | `Origins` | wrapper | SDK wraps it as `Origins` ({ Quantity, Items }) |
+| `AWS::CloudFront::Distribution` | `DistributionConfig` | `Aliases` | wrapper | SDK wraps it as `Aliases` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `ForwardedValues` | `Headers` | wrapper | SDK wraps it as `Headers` ({ Quantity, Items }) |
 | `AWS::CloudFront::Distribution` | `ForwardedValues` | `QueryStringCacheKeys` | wrapper | SDK wraps it as `QueryStringCacheKeys` ({ Quantity, Items }) |
-| `AWS::CloudFront::Distribution` | `GeoRestriction` | `Locations` | definition | SDK interface `GeoRestriction` has no `Locations` member |
 | `AWS::ECS::Service` | `DeploymentLifecycleHook` | `HookDetails` | wrapper | — |
 | `AWS::Events::Rule` | `#top` | `EventPattern` | wrapper | — |
 | `AWS::Events::Rule` | `PlacementStrategy` | `Type` | definition | SDK interface `PlacementStrategy` has no `Type` member |
@@ -108,7 +108,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::AppSync::DataSource` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | 27 | 0 | 6 |
 | `AWS::AppSync::GraphQLApi` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | 33 | 0 | 1 |
 | `AWS::AppSync::Resolver` | `appsync-provider.ts` | `@aws-sdk/client-appsync` | lower-first | 9 | 0 | 0 |
-| `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | 173 | 160 | 4 |
+| `AWS::CloudFront::Distribution` | `cloudfront-distribution-provider.ts` | `@aws-sdk/client-cloudfront` | exact | 175 | 160 | 4 |
 | `AWS::CloudWatch::AnomalyDetector` | `cloudwatch-anomaly-detector-provider.ts` | `@aws-sdk/client-cloudwatch` | exact | 31 | 27 | 1 |
 | `AWS::CodeBuild::Project` | `codebuild-provider.ts` | `@aws-sdk/client-codebuild` | lower-first | 112 | 0 | 4 |
 | `AWS::ECS::Service` | `ecs-provider.ts` | `@aws-sdk/client-ecs` | lower-first | 140 | 127 | 5 |

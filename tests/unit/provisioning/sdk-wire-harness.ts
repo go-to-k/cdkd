@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import type { ResourceProvider, UpdateContext } from '../../../src/types/resource.js';
 import { MEMBER_RENAMES, type TypeRenames } from './sdk-wire-member-renames.js';
 import { CALL_ROOTS, type CommandRoot } from './sdk-wire-call-roots.js';
+import { SDK_UNMODELLED_NESTED_PATHS } from '../../../src/provisioning/sdk-unmodelled-nested-paths.js';
 
 /**
  * The differential wire harness behind `sdk-wire-coverage.test.ts` (#3723).
@@ -1209,7 +1210,17 @@ export function describeWireCases(cases: TypeCase[]): void {
 
     it('its bags carry every nested path the schema lists under a carried top-level', () => {
       const nested = nestedPathsOf(t.resourceType);
-      const exempt = t.nestedExempt ?? {};
+      // A path the shipped SDK does not model routes its resource through
+      // Cloud Control (#6690), so no SDK wire carries it.
+      const exempt: Record<string, string> = {
+        ...Object.fromEntries(
+          (SDK_UNMODELLED_NESTED_PATHS[t.resourceType] ?? []).map((p) => [
+            p,
+            'routed through Cloud Control (sdk-unmodelled-nested-paths.ts)',
+          ])
+        ),
+        ...t.nestedExempt,
+      };
       const missing: string[] = [];
       for (const [top, schemaPaths] of Object.entries(nested)) {
         const carriers = t.bags.filter((b) => top in b.bag).map((b) => b.bag[top]);

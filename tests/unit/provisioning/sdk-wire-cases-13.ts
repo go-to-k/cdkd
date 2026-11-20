@@ -170,6 +170,39 @@ const APIGW_AUTHORIZER_CASE: TypeCase = {
       },
       expectedRemovalThrows: APIGW_AUTHORIZER_REQUIRED,
     },
+    {
+      name: 'a JWT authorizer with every JwtConfiguration member',
+      bag: {
+        RestApiId: APIGW_API_ID,
+        Name: 'jwt',
+        Type: 'JWT',
+        IdentitySource: 'method.request.header.Authorization',
+        JwtConfiguration: {
+          Issuers: [
+            {
+              Issuer: 'https://issuer.example.com',
+              Audiences: ['aud-1'],
+              AdditionalClaims: [
+                {
+                  ClaimName: 'tenant',
+                  Format: 'SINGLE_STRING',
+                  Required: true,
+                  ExpectedValues: ['tenant-1'],
+                },
+              ],
+            },
+          ],
+          DefaultAlgorithms: ['RS256'],
+        },
+      },
+      expectedRemovalThrows: {
+        ...APIGW_AUTHORIZER_REQUIRED,
+        'update-remove:JwtConfiguration': {
+          why: `a JWT authorizer dropping it is refused before any call: API Gateway refuses \`remove /jwtConfiguration\`, so the old issuers would stay in force (measured us-east-1, go-to-k/cdkd#6690; ${APIGW_SRC}/authorizer.ts)`,
+          says: /needs JwtConfiguration: API Gateway cannot remove it/,
+        },
+      },
+    },
   ],
 };
 

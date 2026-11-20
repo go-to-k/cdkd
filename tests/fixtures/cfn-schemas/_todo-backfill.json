@@ -23,11 +23,17 @@
     "regenerations of the `types` block."
   ],
   "types": {
+    "AWS::ApiGateway::Authorizer": [
+      "JwtConfiguration"
+    ],
     "AWS::Lambda::Function": [
       "AcceleratorConfig"
     ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
+    ],
+    "AWS::Route53::RecordSet": [
+      "AZAffinity"
     ]
   },
   "bogusTolerated": {
