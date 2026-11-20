@@ -108,7 +108,7 @@ export async function readCurrentState(
   // Placeholders for an unset field (docs/provider-rules.md). A value added
   // outside cdkd is drift only where the template DECLARES the key: an
   // undeclared key captured as `{}` / `[]` is skipped by the comparator
-  // (`undeclaredEmptyObservedKeys`, CloudFormation parity).
+  // (`undeclaredEmptyObservedKeys`, #1498: keys another resource fills).
   // `writeSharedRuntimeMembers` leaves each placeholder off the wire.
   result['RequestHeaderConfiguration'] =
     resp.requestHeaderConfiguration !== undefined
