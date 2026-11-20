@@ -18,9 +18,11 @@ For how to run the command and read its output, see
 
 `cdkd diff` runs the same verification the deploy runs before it draws this
 row, in the stack's own region: the resource must still exist, still answer to the recorded physical id,
-and be claimed by no other cdkd stack. A record that fails any of those is not
+and be claimed by no other cdkd stack. Where the record holds an id AWS assigned
+at create and never reuses (an IAM role's `RoleId`, for one), the resource
+holding the name must not report another one. A record that fails any of those is not
 adopted, and the row stays a create — which is what the deploy will attempt.
-A record that fails the ownership check is reported under `Blocking` instead;
+A record that fails the ownership or id check is reported under `Blocking` instead;
 see [Exit codes](cli-diff.md#exit-codes).
 
 The annotation is not cosmetic. Without it the row is indistinguishable from an

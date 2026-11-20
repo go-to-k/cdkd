@@ -47,6 +47,10 @@ import {
 import { cdkdRemedy } from '../utils/pasteable-command.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { carriesSecretMask } from './secret-redaction.js';
+import { isUsableIdentityValue } from './recorded-identity-attributes.js';
+import { recordedIdentityId } from '../provisioning/recorded-identity.js';
+import { stateOrphanRecordRemedy } from '../provisioning/state-orphan-remedy.js';
+import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 
 /**
  * What the pre-pass decided. Every field is always present so a caller cannot
@@ -446,6 +450,30 @@ export async function planOrphanAdoption(params: {
       continue;
     }
 
+    // (d2) Is the resource holding the name the one cdkd created
+    // (go-to-k/cdkd#6655)? A name match is not identity: a hand-deleted
+    // orphan's name can be taken again. Compared only where the record holds
+    // an AWS-minted id; a legacy record without one adopts as before.
+    const identity = await orphanIdentityVerdict(provider, state, found.attributes, params.region);
+    if (identity.verdict === 'differs') {
+      outcome.refusals.push(
+        `${shownId}: the ${shownType} now holding ${shownPhysicalId} is not the one cdkd ` +
+          `created (its ${identity.attribute} differs from the recorded one), so cdkd will not ` +
+          `adopt it. If that resource belongs in this stack, adopt it with: ` +
+          `${cdkdRemedy('cdkd import')}; otherwise free the name before deploying again.`
+      );
+      outcome.remaining.push(record);
+      continue;
+    }
+    if (identity.verdict === 'unverified') {
+      outcome.warnings.push(
+        `${shownId} (${shownType}): cdkd could not read the ${identity.attribute} of ` +
+          `${shownPhysicalId} to confirm it is the resource cdkd created, and adopts it by its ` +
+          `name. If it is not, drop its record after this deploy with ` +
+          `${stateOrphanRecordRemedy(undefined, logicalId)}.`
+      );
+    }
+
     // (e) Adopt: the RECORDED state, with attributes refreshed from the
     // readback. Attributes are MERGED rather than replaced — a provider whose
     // `import()` reports a narrower set than `create()` did would otherwise
@@ -519,6 +547,65 @@ export async function planOrphanAdoption(params: {
   }
 
   return outcome;
+}
+
+/**
+ * go-to-k/cdkd#6655: the live holder of an orphan record's name, judged
+ * against the AWS-minted id the record carries (`SURVIVOR_IDENTITY_ATTRIBUTES`).
+ *
+ * - `none`: the type has no table entry, or the record holds no usable id (a
+ *   legacy record, a masked or secret-reference value): adopted as before.
+ *   A record WITHOUT the key acquires the id `import()` returned through the
+ *   attribute merge (trust on first use); a masked one stays masked, since a
+ *   recorded value always wins that merge.
+ * - `match` / `differs`: the live id is the recorded one / another one.
+ * - `unverified`: no usable live id (D5: adopted, with a warning).
+ *
+ * The live id is the one the existence check's `import()` already returned
+ * (every SDK provider of the listed types returns it), so the usual path adds
+ * no call. Only when `import()` did not return a usable one is the record's
+ * provider asked once through `resourceIdentity`, on this adoption path only:
+ * an SDK import whose response lacked the id. A Cloud Control record whose
+ * model masked it is `unverified`, since Cloud Control has no
+ * `resourceIdentity`. A throw or `RESOURCE_NOT_FOUND` there is `unverified`,
+ * never a refusal.
+ *
+ * One read decides `differs`, without the delete path's delayed re-read
+ * (`RECORDED_IDENTITY_REREAD_DELAY_MS`): an orphan is adopted on a deploy
+ * after the rollback, not right after a same-name replacement, and a refusal
+ * deletes nothing, so a lagging read costs only a re-run.
+ */
+async function orphanIdentityVerdict(
+  provider: ResourceProvider,
+  state: ResourceState,
+  importedAttributes: Record<string, unknown> | undefined,
+  region: string
+): Promise<
+  { verdict: 'none' | 'match' } | { verdict: 'differs' | 'unverified'; attribute: string }
+> {
+  const recorded = recordedIdentityId(state.resourceType, {
+    recordedAttributes: isReadableBag(state.attributes) ? state.attributes : undefined,
+  });
+  if (recorded === undefined) return { verdict: 'none' };
+  let live: unknown =
+    importedAttributes !== undefined && Object.hasOwn(importedAttributes, recorded.key)
+      ? importedAttributes[recorded.key]
+      : undefined;
+  if (!isUsableIdentityValue(live) && typeof provider.resourceIdentity === 'function') {
+    try {
+      live = await provider.resourceIdentity(state.physicalId, state.resourceType, {
+        expectedRegion: region,
+      });
+    } catch {
+      live = undefined;
+    }
+  }
+  if (live === RESOURCE_NOT_FOUND || !isUsableIdentityValue(live)) {
+    return { verdict: 'unverified', attribute: recorded.key };
+  }
+  return live === recorded.value
+    ? { verdict: 'match' }
+    : { verdict: 'differs', attribute: recorded.key };
 }
 
 /**
