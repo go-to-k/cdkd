@@ -282,6 +282,46 @@ _revert_identity_probe() {
       # DescribeParameters carries only LastModifiedDate, and Version moves on
       # every write. DescribeParameters, not GetParameter: it never reads the value.
       cls=no-id; val="$(_revert_identity_aws ssm describe-parameters --region "${region}" --parameter-filters "Key=Name,Values=${pid}" --query 'Parameters[0].Name')" || rc=$? ;;
+    AWS::SQS::Queue)
+      # physicalId is the queue URL; CreatedTimestamp is set at creation and
+      # no attribute write moves it.
+      cls=unique; val="$(_revert_identity_aws sqs get-queue-attributes --region "${region}" --queue-url "${pid}" --attribute-names CreatedTimestamp --query 'Attributes.CreatedTimestamp')" || rc=$? ;;
+    AWS::KMS::Alias)
+      # ctx is the recorded AliasName (the physicalId's spelling varies by
+      # route); ListAliases carries a CreationDate per alias.
+      cls=unique; val="$(_revert_identity_aws kms list-aliases --region "${region}" --query "Aliases[?AliasName=='${ctx:?no AliasName}'].CreationDate | [0]")" || rc=$? ;;
+    AWS::SQS::QueuePolicy)
+      # A policy is the Policy attribute of its queue (ctx, the first queue
+      # URL it names) and has no identity of its own: presence only.
+      cls=no-id; val="$(_revert_identity_aws sqs get-queue-attributes --region "${region}" --queue-url "${ctx:?no Queues}" --attribute-names Policy --query 'Attributes.Policy' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.trim()&&s.trim()!=="None")process.stdout.write("policy-on-queue");});')" || rc=$? ;;
+    AWS::SNS::TopicPolicy)
+      # The Policy attribute of its topic (ctx, the first topic ARN): presence only.
+      cls=no-id; val="$(_revert_identity_aws sns get-topic-attributes --region "${region}" --topic-arn "${ctx:?no Topics}" --query 'Attributes.Policy' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.trim()&&s.trim()!=="None")process.stdout.write("policy-on-topic");});')" || rc=$? ;;
+    AWS::SecretsManager::ResourcePolicy)
+      # The policy of its secret (ctx, the recorded SecretId): presence only
+      # (the secret's own row carries the CreatedDate).
+      cls=no-id; val="$(_revert_identity_aws secretsmanager get-resource-policy --region "${region}" --secret-id "${ctx:?no SecretId}" --query 'ResourcePolicy' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{if(s.trim()&&s.trim()!=="None")process.stdout.write("policy-on-secret");});')" || rc=$? ;;
+    AWS::IAM::RolePolicy | AWS::IAM::UserPolicy | AWS::IAM::GroupPolicy)
+      # ctx is `<PolicyName>|<principal name>` from the record; the policy has
+      # no id or creation time: presence only.
+      cls=no-id; val="$(
+        kind="$(printf '%s' "${type#AWS::IAM::}" | sed -e 's/Policy$//' | tr '[:upper:]' '[:lower:]')"
+        [ -n "${ctx}" ] || exit 1
+        _revert_identity_aws iam "get-${kind}-policy" "--${kind}-name" "${ctx#*|}" --policy-name "${ctx%%|*}" --query 'PolicyName' >/dev/null || exit 1
+        printf 'inline-policy:%s' "${ctx}"
+      )" || rc=$? ;;
+    AWS::IAM::UserToGroupAddition)
+      # ctx is `<group name>|<user>,<user>...` from the record; a membership
+      # has no id: every recorded user must still be in the group.
+      cls=no-id; val="$(
+        g="${ctx%%|*}"
+        [ -n "${ctx#*|}" ] && [ "${ctx#*|}" != "${ctx}" ] || exit 1
+        have="$(_revert_identity_aws iam get-group --group-name "${g}" --query 'Users[].UserName')" || exit 1
+        for u in $(printf '%s' "${ctx#*|}" | tr ',' ' '); do
+          printf '%s\n' "${have}" | tr '\t' '\n' | grep -qxF -- "${u}" || exit 1
+        done
+        printf 'members-of:%s' "${ctx}"
+      )" || rc=$? ;;
     AWS::SecretsManager::RotationSchedule)
       # The schedule is a property of its secret (the physicalId is the secret
       # ARN) and has no identity of its own.
@@ -372,6 +412,16 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
         ? props.Replicas.map((x) => x && x.Region).filter((x) => typeof x === "string").sort().join(",")
         : undefined,
       "AWS::EC2::SecurityGroupIngress": attrs.Id,
+      "AWS::KMS::Alias": props.AliasName,
+      "AWS::SQS::QueuePolicy": Array.isArray(props.Queues) ? props.Queues[0] : undefined,
+      "AWS::SNS::TopicPolicy": Array.isArray(props.Topics) ? props.Topics[0] : undefined,
+      "AWS::SecretsManager::ResourcePolicy": props.SecretId,
+      "AWS::IAM::RolePolicy": props.PolicyName && props.RoleName ? props.PolicyName + "|" + props.RoleName : undefined,
+      "AWS::IAM::UserPolicy": props.PolicyName && props.UserName ? props.PolicyName + "|" + props.UserName : undefined,
+      "AWS::IAM::GroupPolicy": props.PolicyName && props.GroupName ? props.PolicyName + "|" + props.GroupName : undefined,
+      "AWS::IAM::UserToGroupAddition": props.GroupName && Array.isArray(props.Users)
+        ? props.GroupName + "|" + props.Users.filter((x) => typeof x === "string" && x !== "" && !/[,\s|]/.test(x)).join(",")
+        : undefined,
       "AWS::IAM::Policy": ["Roles", "Users", "Groups"]
         .flatMap((k) => (Array.isArray(props[k]) ? props[k] : [])
           .filter((x) => typeof x === "string" && x !== "" && !/[,\s]/.test(x))

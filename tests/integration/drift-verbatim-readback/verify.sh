@@ -243,51 +243,29 @@ QUEUE_URL=$(aws sqs get-queue-url --queue-name "${QUEUE}" --region "${REGION}" -
 QUEUE_ARN="arn:${PARTITION}:sqs:${REGION}:${ACCOUNT}:${QUEUE}"
 
 # --- The revert must update in place: no resource replaced ------------------
-# One line per state resource: its logical id, the physical id state records,
-# and an AWS-side identity that a delete + create would change (a creation
-# timestamp or IAM's unique id; for a policy resource, the target it is
-# attached to). The count is checked against state so the comparison below
-# cannot pass over an empty or partial snapshot.
-identities() { # $1 = output file
-  local st="${ARTIFACT_DIR}/state-identity.json" n
+# tests/integration/revert-identity.sh snapshots every state resource's
+# physical id and an AWS-side identity (its per-type probe) before a revert and
+# proves both unchanged right after it, before any assertion on the revert.
+# The count is a literal, so an emptied or partial snapshot cannot pass.
+. ../revert-identity.sh
+REVERT_IDS=22
+# The stack's logical ids, read from state; the count must be the stack's 22.
+revert_ids_before() { # usage: revert_ids_before <tag>
+  local st="${ARTIFACT_DIR}/state-identity.json" lids
   show_state "${st}"
-  node -e '
+  lids=($(node -e '
     const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).state.resources;
-    for (const id of Object.keys(s).sort()) {
-      console.log(`${id}\t${s[id].resourceType}\t${s[id].physicalId}`);
-    }
-  ' "${st}" >"${ARTIFACT_DIR}/state-ids.tsv"
-  n=$(wc -l <"${ARTIFACT_DIR}/state-ids.tsv" | tr -d ' ')
-  [ "${n}" = 22 ] || { echo "FAIL: identity snapshot holds ${n} resources, expected the stack's 22" >&2; return 1; }
-  : >"$1"
-  local id type pid aws
-  while IFS=$'\t' read -r id type pid; do
-    [ -n "${pid}" ] && [ "${pid}" != "undefined" ] || { echo "FAIL: ${id} has no physical id in state" >&2; return 1; }
-    case "${type}" in
-      AWS::S3::Bucket) aws=$(aws s3api list-buckets --query "Buckets[?Name=='${pid}'].CreationDate" --output text) || return 1 ;;
-      AWS::S3::BucketPolicy) aws=$(aws s3api get-bucket-policy --bucket "${pid}" --region "${REGION}" >/dev/null && echo "attached:${pid}") || return 1 ;;
-      AWS::SQS::Queue) aws=$(aws sqs get-queue-attributes --queue-url "${pid}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
-      AWS::SQS::QueuePolicy) aws=$(aws sqs get-queue-attributes --queue-url "${QUEUE_URL}" --region "${REGION}" --attribute-names CreatedTimestamp --query Attributes.CreatedTimestamp --output text) || return 1 ;;
-      AWS::SNS::Topic | AWS::SNS::TopicPolicy) aws=$(aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}" --query Attributes.TopicArn --output text) || return 1 ;;
-      AWS::KMS::Key) aws=$(aws kms describe-key --key-id "${pid}" --region "${REGION}" --query KeyMetadata.CreationDate --output text) || return 1 ;;
-      AWS::KMS::Alias) aws=$(aws kms describe-key --key-id "${KEY_ALIAS}" --region "${REGION}" --query KeyMetadata.KeyId --output text) || return 1 ;;
-      AWS::SecretsManager::Secret | AWS::SecretsManager::ResourcePolicy) aws=$(aws secretsmanager describe-secret --secret-id "${SECRET}" --region "${REGION}" --query CreatedDate --output text) || return 1 ;;
-      AWS::IAM::Role) aws=$(aws iam get-role --role-name "${pid}" --query Role.RoleId --output text) || return 1 ;;
-      AWS::IAM::User) aws=$(aws iam get-user --user-name "${pid}" --query User.UserId --output text) || return 1 ;;
-      AWS::IAM::Group) aws=$(aws iam get-group --group-name "${pid}" --query Group.GroupId --output text) || return 1 ;;
-      AWS::IAM::ManagedPolicy) aws=$(aws iam get-policy --policy-arn "${pid}" --query Policy.PolicyId --output text) || return 1 ;;
-      # Cloud Control physical id `<policy name>|<principal name>`.
-      AWS::IAM::RolePolicy) aws=$(aws iam get-role-policy --role-name "${pid#*|}" --policy-name "${pid%%|*}" --query RoleName --output text) || return 1 ;;
-      AWS::IAM::UserPolicy) aws=$(aws iam get-user-policy --user-name "${pid#*|}" --policy-name "${pid%%|*}" --query UserName --output text) || return 1 ;;
-      AWS::IAM::GroupPolicy) aws=$(aws iam get-group-policy --group-name "${pid#*|}" --policy-name "${pid%%|*}" --query GroupName --output text) || return 1 ;;
-      AWS::IAM::Policy) aws=$(aws iam get-role-policy --role-name "${SIB_ROLE}" --policy-name "${pid}" --query PolicyName --output text) || return 1 ;;
-      AWS::IAM::UserToGroupAddition) aws=$(aws iam get-group --group-name "${SIB_GROUP}" --query "Users[?UserName=='${SIB_USER}'].UserName" --output text) || return 1 ;;
-      *) echo "FAIL: identity snapshot has no AWS-side probe for ${type} (${id})" >&2; return 1 ;;
-    esac
-    [ -n "${aws}" ] && [ "${aws}" != "None" ] || { echo "FAIL: no AWS-side identity for ${id} (${type})" >&2; return 1; }
-    printf '%s\t%s\t%s\n' "${id}" "${pid}" "${aws}" >>"$1"
-  done <"${ARTIFACT_DIR}/state-ids.tsv"
-  [ "$(wc -l <"$1" | tr -d ' ')" = "${n}" ] || { echo "FAIL: identity snapshot lost rows" >&2; return 1; }
+    console.log(Object.keys(s).sort().join(" "));
+  ' "${st}")) || { echo "FAIL: could not read the state's logical ids" >&2; exit 1; }
+  [ "${#lids[@]}" = "${REVERT_IDS}" ] || { echo "FAIL: the state holds ${#lids[@]} resources, expected the stack's ${REVERT_IDS}" >&2; exit 1; }
+  revert_identity_snapshot "${ARTIFACT_DIR}/revert-ids-$1-before" "${STACK}" "${lids[@]}" || exit 1
+}
+# The identities right after the revert (rc captured first, before any
+# assertion on it). A Cloud Control patch's own `"op":"replace"` (the --verbose
+# line listing it) is a JSON Patch verb, not a resource replacement.
+revert_ids_after() { # usage: revert_ids_after <tag> <revert log>
+  revert_identity_verify "${ARTIFACT_DIR}/revert-ids-$1-before" "${ARTIFACT_DIR}/revert-ids-$1-after" 22 "$2" \
+    'ignore="op":"replace"' || exit 1
 }
 
 # --- go-to-k/cdkd#6627: grants out of band on principals declaring none ------
@@ -375,14 +353,17 @@ grant_phase() { # $1 = baseline label (observed | template-only)
   fi
   echo "    OK: all 16 grants reported"
 
-  identities "${ARTIFACT_DIR}/identity-grants-${label}-before.tsv" || exit 1
+  revert_ids_before "grants-${label}"
   echo "==> #6627 (${label}): drift --revert"
   # On the Cloud Control route, --verbose so the log proves each principal's
   # update went through Cloud Control (its `Update request submitted` line).
   local verbose=()
   [ "${label}" = cc-api ] && verbose=(--verbose)
+  local rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
-    "${verbose[@]+"${verbose[@]}"}" 2>&1 | tee "${ARTIFACT_DIR}/revert-grants-${label}.log"
+    "${verbose[@]+"${verbose[@]}"}" 2>&1 | tee "${ARTIFACT_DIR}/revert-grants-${label}.log" || rc=$?
+  revert_ids_after "grants-${label}" "${ARTIFACT_DIR}/revert-grants-${label}.log"
+  [ "${rc}" -eq 0 ] || { echo "FAIL: #6627 (${label}): drift --revert exited ${rc}" >&2; exit 1; }
   if [ "${label}" = cc-api ]; then
     local id
     for id in BareRole BareUser BareGroup SiblingRole SiblingUser SiblingGroup; do
@@ -417,12 +398,6 @@ grant_phase() { # $1 = baseline label (observed | template-only)
     echo "${hits}" >&2
     exit 1
   fi
-  identities "${ARTIFACT_DIR}/identity-grants-${label}-after.tsv" || exit 1
-  if ! diff "${ARTIFACT_DIR}/identity-grants-${label}-before.tsv" "${ARTIFACT_DIR}/identity-grants-${label}-after.tsv" >&2; then
-    echo "FAIL: #6627 (${label}): drift --revert replaced a resource (physical id or RoleId / UserId / GroupId changed, diff above)" >&2
-    exit 1
-  fi
-  echo "    OK: the revert replaced nothing"
 
   echo "==> #6627 (${label}): AWS holds exactly the pre-grant members again"
   after=$(live_principals) || { echo "FAIL: could not read the principals after the revert" >&2; exit 1; }
@@ -460,8 +435,12 @@ accept_phase() {
   run_drift "${ARTIFACT_DIR}/drift-accept-after.json"
   got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-after.json")
   [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 accept: drift after --accept:" >&2; echo "${got}" >&2; exit 1; }
+  revert_ids_before accepted
+  local rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
-    2>&1 | tee "${ARTIFACT_DIR}/revert-accepted.log"
+    2>&1 | tee "${ARTIFACT_DIR}/revert-accepted.log" || rc=$?
+  revert_ids_after accepted "${ARTIFACT_DIR}/revert-accepted.log"
+  [ "${rc}" -eq 0 ] || { echo "FAIL: #6627 accept: drift --revert exited ${rc}" >&2; exit 1; }
   sleep 15
   got=$(live_principal role "${BARE_ROLE}") || exit 1
   grep -qF "managed=[${OOB_POLICY_ARN}] inline=[] boundary=${OOB_POLICY_ARN}" <<<"${got}" ||
@@ -475,8 +454,12 @@ accept_phase() {
   got=$(drift_paths "${ARTIFACT_DIR}/drift-boundary-removed.json")
   [ "${got}" = "BareRole PermissionsBoundary" ] && [ "${DRIFT_RC}" = 1 ] ||
     { echo "FAIL: #6627 accept: drift after removing the accepted boundary is '${got}' (rc=${DRIFT_RC})" >&2; exit 1; }
+  revert_ids_before boundary
+  rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
-    2>&1 | tee "${ARTIFACT_DIR}/revert-boundary.log"
+    2>&1 | tee "${ARTIFACT_DIR}/revert-boundary.log" || rc=$?
+  revert_ids_after boundary "${ARTIFACT_DIR}/revert-boundary.log"
+  [ "${rc}" -eq 0 ] || { echo "FAIL: #6627 accept: drift --revert exited ${rc}" >&2; exit 1; }
   sleep 15
   got=$(live_principal role "${BARE_ROLE}") || exit 1
   grep -qF "boundary=${OOB_POLICY_ARN}" <<<"${got}" ||
@@ -578,12 +561,14 @@ if [ "${got}" != "${EXPECTED_DRIFT}" ] || [ "${DRIFT_RC}" != 1 ]; then
 fi
 echo "    OK: all 9 documents report the added Condition"
 
-identities "${ARTIFACT_DIR}/identity-before.tsv" || exit 1
-echo "    identity snapshot: $(wc -l <"${ARTIFACT_DIR}/identity-before.tsv" | tr -d ' ') resources"
+revert_ids_before main
 
 echo "==> drift --revert"
+RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
-  2>&1 | tee "${ARTIFACT_DIR}/revert.log"
+  2>&1 | tee "${ARTIFACT_DIR}/revert.log" || RC=$?
+revert_ids_after main "${ARTIFACT_DIR}/revert.log"
+[ "${RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${RC}" >&2; exit 1; }
 sleep 15
 
 # A revert updates in place; its output must not describe a replacement.
@@ -592,12 +577,6 @@ if grep -qiE 'replac|re-?creat' "${ARTIFACT_DIR}/revert.log"; then
   grep -iE 'replac|re-?creat' "${ARTIFACT_DIR}/revert.log" >&2
   exit 1
 fi
-identities "${ARTIFACT_DIR}/identity-after.tsv" || exit 1
-if ! diff "${ARTIFACT_DIR}/identity-before.tsv" "${ARTIFACT_DIR}/identity-after.tsv" >&2; then
-  echo "FAIL: drift --revert replaced a resource (physical id or AWS identity changed, diff above)" >&2
-  exit 1
-fi
-echo "    OK: the revert replaced nothing ($(wc -l <"${ARTIFACT_DIR}/identity-after.tsv" | tr -d ' ') identities unchanged)"
 
 echo "==> The live documents hold no Condition after the revert"
 live_docs() {

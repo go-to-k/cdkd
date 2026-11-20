@@ -312,6 +312,82 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(calls).toContain('apigateway get-resource --region us-east-1 --rest-api-id rest42 --resource-id res9');
   });
 
+  it('reads the service-policy, alias, inline-policy and membership types from the record', () => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        state: {
+          resources: {
+            Q: { resourceType: 'AWS::SQS::Queue', physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q' },
+            QP: {
+              resourceType: 'AWS::SQS::QueuePolicy',
+              physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q',
+              properties: { Queues: ['https://sqs.us-east-1.amazonaws.com/1/q'] },
+            },
+            TP: {
+              resourceType: 'AWS::SNS::TopicPolicy',
+              physicalId: 'arn:aws:sns:us-east-1:1:t',
+              properties: { Topics: ['arn:aws:sns:us-east-1:1:t'] },
+            },
+            AL: {
+              resourceType: 'AWS::KMS::Alias',
+              physicalId: 'alias/x',
+              properties: { AliasName: 'alias/x' },
+            },
+            SP: {
+              resourceType: 'AWS::SecretsManager::ResourcePolicy',
+              physicalId: 'arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf',
+              properties: { SecretId: 'arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf' },
+            },
+            RP: {
+              resourceType: 'AWS::IAM::RolePolicy',
+              physicalId: 'pol|rol',
+              properties: { PolicyName: 'pol', RoleName: 'rol' },
+            },
+            UP: {
+              resourceType: 'AWS::IAM::UserPolicy',
+              physicalId: 'pol|usr',
+              properties: { PolicyName: 'pol', UserName: 'usr' },
+            },
+            GP: {
+              resourceType: 'AWS::IAM::GroupPolicy',
+              physicalId: 'pol|grp',
+              properties: { PolicyName: 'pol', GroupName: 'grp' },
+            },
+            UG: {
+              resourceType: 'AWS::IAM::UserToGroupAddition',
+              physicalId: 'UG',
+              properties: { GroupName: 'grp', Users: ['usr'] },
+            },
+          },
+        },
+      })
+    );
+    setAwsValue('usr\tother\n');
+    const r = run(`revert_identity_snapshot "${before()}" Stack Q QP TP AL SP RP UP GP UG`);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    const calls = readFileSync(awsLog, 'utf8');
+    expect(calls).toContain('sqs get-queue-attributes --region us-east-1 --queue-url https://sqs.us-east-1.amazonaws.com/1/q --attribute-names CreatedTimestamp');
+    expect(calls).toContain('--attribute-names Policy');
+    expect(calls).toContain('sns get-topic-attributes --region us-east-1 --topic-arn arn:aws:sns:us-east-1:1:t --query Attributes.Policy');
+    expect(calls).toContain("kms list-aliases --region us-east-1 --query Aliases[?AliasName=='alias/x'].CreationDate | [0]");
+    expect(calls).toContain('secretsmanager get-resource-policy --region us-east-1 --secret-id arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf');
+    expect(calls).toContain('iam get-role-policy --role-name rol --policy-name pol');
+    expect(calls).toContain('iam get-user-policy --user-name usr --policy-name pol');
+    expect(calls).toContain('iam get-group-policy --group-name grp --policy-name pol');
+    expect(calls).toContain('iam get-group --group-name grp --query Users[].UserName');
+    // A membership whose user left the group, and a policy AWS reads as None, FAIL.
+    setAwsValue('other\n');
+    const gone = run(`revert_identity_snapshot "${after()}" Stack UG || exit 1`);
+    expect(gone.status).toBe(1);
+    expect(gone.stderr).toContain('AWS::IAM::UserToGroupAddition probe');
+    setAwsValue('None\n');
+    const none = run(`revert_identity_snapshot "${after()}" Stack TP || exit 1`);
+    expect(none.status).toBe(1);
+    expect(none.stderr).toContain('AWS::SNS::TopicPolicy probe');
+  });
+
   it('FAILS when a type needing an extra read value has none recorded', () => {
     writeState({ Stage1: { resourceType: 'AWS::ApiGatewayV2::Stage', physicalId: 'prod' } });
     const r = run(`revert_identity_snapshot "${before()}" Stack Stage1 || exit 1`);
