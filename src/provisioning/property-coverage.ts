@@ -25,6 +25,7 @@ import { hasNoCloudControlHandlers } from './unsupported-types.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 import { sameRegion } from '../utils/aws-partition.js';
 import { ambientRegion } from '../utils/stack-aws-scope.js';
+import { findSdkUnmodelledNestedProperties } from './sdk-unmodelled-nested-paths.js';
 
 export { PROPERTY_COVERAGE_BY_TYPE };
 export type { PropertyCoverage };
@@ -134,18 +135,22 @@ export const AWS_CN_CROSS_REGION_REPLICA_RATIONALE =
  * (go-to-k/cdkd#5639), which the middleware presigns for CreateDBCluster. A region
  * the scope cannot name (`ambientRegion`) counts as another. Only a RESOLVED
  * string is read: a raw template value behind an intrinsic is not gated.
+ *
+ * go-to-k/cdkd#6690: a nested member the shipped AWS SDK client does not model
+ * ({@link findSdkUnmodelledNestedProperties}).
  */
-function findValueRoutedProperties(
+export function findValueRoutedProperties(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined
 ): Array<{ property: string; rationale: string }> {
+  const nested = findSdkUnmodelledNestedProperties(resourceType, templateProperties);
   const property = CROSS_REGION_REPLICA_SOURCE_KEYS[resourceType];
-  if (property === undefined) return [];
+  if (property === undefined) return nested;
   const source = templateProperties?.[property];
-  if (typeof source !== 'string' || !source.startsWith('arn:aws-cn:')) return [];
+  if (typeof source !== 'string' || !source.startsWith('arn:aws-cn:')) return nested;
   // `sameRegion` answers false for an unknown (`undefined`) own region.
-  if (sameRegion(ambientRegion(), source.split(':')[3])) return [];
-  return [{ property, rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE }];
+  if (sameRegion(ambientRegion(), source.split(':')[3])) return nested;
+  return [...nested, { property, rationale: AWS_CN_CROSS_REGION_REPLICA_RATIONALE }];
 }
 
 /**
