@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { SNSSubscriptionProvider } from '../../../src/provisioning/providers/sns-subscription-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { membershipTiming } from '../../../src/provisioning/providers/sns-subscription/topic-membership.js';
 
 const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 const SUB_ARN = `${TOPIC_ARN}:11111111-2222-3333-4444-555555555555`;
@@ -88,6 +89,7 @@ describe('SNSSubscriptionProvider.readCurrentState: topic membership (go-to-k/cd
     vi.clearAllMocks();
     mockSend.mockReset();
     provider = new SNSSubscriptionProvider();
+    membershipTiming.absentRecheckMs = 0;
   });
 
   it('reports a subscription its topic no longer lists as deleted', async () => {
@@ -128,9 +130,26 @@ describe('SNSSubscriptionProvider.readCurrentState: topic membership (go-to-k/cd
     ]);
   });
 
+  it('re-reads an absent answer once, so a listing lagging a fresh Subscribe is not a deletion', async () => {
+    route(attributes(), [{ Subscriptions: [] }, { Subscriptions: [{ SubscriptionArn: SUB_ARN }] }]);
+    const result = await provider.readCurrentState(SUB_ARN, 'Sub', TYPE, {}, {});
+    expect(result).toMatchObject({ TopicArn: TOPIC_ARN });
+    expect(listCalls()).toHaveLength(2);
+  });
+
+  it('keeps the attribute answer when another account\'s topic refuses the subscriber the list', async () => {
+    route(
+      attributes({ Owner: '210987654321' }),
+      [],
+      new AuthorizationErrorException({ message: 'not authorized', $metadata: {} })
+    );
+    const result = await provider.readCurrentState(SUB_ARN, 'Sub', TYPE, {}, {});
+    expect(result).toMatchObject({ TopicArn: TOPIC_ARN, Endpoint: QUEUE_ARN });
+  });
+
   it('throws when membership cannot be read, never reporting the subscription clean', async () => {
     route(
-      attributes(),
+      attributes({ Owner: '123456789012' }),
       [],
       new AuthorizationErrorException({ message: 'not authorized', $metadata: {} })
     );

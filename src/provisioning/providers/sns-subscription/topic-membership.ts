@@ -1,8 +1,64 @@
 import {
+  AuthorizationErrorException,
   ListSubscriptionsByTopicCommand,
   NotFoundException,
   type SNSClient,
 } from '@aws-sdk/client-sns';
+
+/** The pause before the one re-read that confirms an `absent` answer. Mutable for tests. */
+export const membershipTiming = { absentRecheckMs: 2000 };
+
+/**
+ * Whether the subscription `attributes` (a `GetSubscriptionAttributes` answer
+ * for `subscriptionArn`) describe is still on its topic (go-to-k/cdkd#6711):
+ *
+ * - `gone`: the topic is `NotFound`, or it does not list the subscription on a
+ *   read and on one re-read {@link membershipTiming}`.absentRecheckMs` later,
+ *   so a listing that lags a fresh `Subscribe` is not reported as a deletion
+ *   (a failed UPDATE's record is dropped on a `RESOURCE_NOT_FOUND`).
+ * - `unconfirmable`: the topic is in another account than the subscription's
+ *   `Owner` and refuses the subscriber `ListSubscriptionsByTopic` (a topic
+ *   policy usually grants another account `sns:Subscribe` only), so the caller
+ *   keeps the answer it had before this read existed.
+ * - `listed`: otherwise, when the read succeeded.
+ *
+ * Any other failure is thrown ({@link readTopicMembership}).
+ */
+export async function confirmTopicMembership(
+  client: SNSClient,
+  topicArn: string,
+  subscriptionArn: string,
+  attributes: Readonly<Record<string, string>>
+): Promise<'listed' | 'gone' | 'unconfirmable'> {
+  const pending =
+    attributes['PendingConfirmation'] === 'true'
+      ? { protocol: attributes['Protocol'], endpoint: attributes['Endpoint'] }
+      : undefined;
+  const read = async (): Promise<'listed' | 'absent' | 'topic-gone' | 'unconfirmable'> => {
+    try {
+      return await readTopicMembership(client, topicArn, subscriptionArn, pending);
+    } catch (err) {
+      const topicAccount = topicArn.split(':')[4];
+      const owner = attributes['Owner'];
+      if (
+        err instanceof AuthorizationErrorException &&
+        owner !== undefined &&
+        topicAccount !== undefined &&
+        owner !== topicAccount
+      ) {
+        return 'unconfirmable';
+      }
+      throw err;
+    }
+  };
+  let verdict = await read();
+  if (verdict === 'absent') {
+    await new Promise((resolve) => setTimeout(resolve, membershipTiming.absentRecheckMs));
+    verdict = await read();
+  }
+  if (verdict === 'listed' || verdict === 'unconfirmable') return verdict;
+  return 'gone';
+}
 
 /**
  * Whether a subscription `GetSubscriptionAttributes` answered for is still on

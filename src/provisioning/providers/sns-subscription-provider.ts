@@ -23,7 +23,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { planSubscriptionAttributes } from './sns-subscription/attribute-plan.js';
-import { readTopicMembership } from './sns-subscription/topic-membership.js';
+import { confirmTopicMembership } from './sns-subscription/topic-membership.js';
 import { isDriftRevert, revertReplacementRefusal } from '../revert-no-replace.js';
 import type {
   CreateContext,
@@ -755,7 +755,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
    *
    * Returns `RESOURCE_NOT_FOUND` when the subscription is gone
    * (`NotFoundException`), or when its topic no longer lists it
-   * (`readTopicMembership`, go-to-k/cdkd#6711: SNS keeps answering
+   * (`confirmTopicMembership`, go-to-k/cdkd#6711: SNS keeps answering
    * `GetSubscriptionAttributes` for a subscription whose topic was deleted),
    * and `undefined` for the special "PendingConfirmation" case where the
    * `SubscriptionArn` has not yet been confirmed and `Attributes` is null.
@@ -795,15 +795,13 @@ export class SNSSubscriptionProvider implements ResourceProvider {
 
     const topicArn = attributes['TopicArn'];
     if (context?.afterOwnWrite !== true && topicArn) {
-      const membership = await readTopicMembership(
+      const membership = await confirmTopicMembership(
         this.snsClient,
         topicArn,
         physicalId,
-        attributes['PendingConfirmation'] === 'true'
-          ? { protocol: attributes['Protocol'], endpoint: attributes['Endpoint'] }
-          : undefined
+        attributes
       );
-      if (membership !== 'listed') return RESOURCE_NOT_FOUND;
+      if (membership === 'gone') return RESOURCE_NOT_FOUND;
     }
 
     const result: Record<string, unknown> = {};
