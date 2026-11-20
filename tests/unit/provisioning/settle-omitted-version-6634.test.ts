@@ -338,4 +338,16 @@ describe('the drift heal agrees with the settle (matched as the settle matches i
       )
     ).toEqual([]);
   });
+
+  it('a queue policy whose recorded baseline holds the filled-in Version is compared, a stale one is skipped', () => {
+    const heal = (observed: unknown, live: unknown) =>
+      preFixBaselineUncomparedDriftKeys(
+        'AWS::SQS::QueuePolicy',
+        { PolicyDocument: observed },
+        { Queues: [Q1], PolicyDocument: sqsDocs.declared },
+        { PolicyDocument: live }
+      );
+    expect(heal(sqsDocs.filled, sqsDocs.filled)).toEqual([]);
+    expect(heal(sqsDocs.other, sqsDocs.filled)).toEqual(['PolicyDocument']);
+  });
 });
