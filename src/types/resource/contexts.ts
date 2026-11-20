@@ -211,6 +211,16 @@ export interface UpdateContext extends SecretMaskingContext {
   declaredTrueProperties?: ReadonlySet<string> | undefined;
 
   /**
+   * With {@link desiredFromAwsReadback}, for an `AWS::EC2::SecurityGroup`: the
+   * `sgr-` rule ids the stack's standalone `AWS::EC2::SecurityGroupIngress` /
+   * `SecurityGroupEgress` records hold on this group, set by
+   * `cdkd drift --revert` only (go-to-k/cdkd#6641). The group's revert refuses,
+   * before any write, rather than revoke a live rule carrying one of them. Ids
+   * only. Absent on every other caller.
+   */
+  siblingSgRuleIds?: ReadonlySet<string> | undefined;
+
+  /**
    * `true` when the desired properties handed to `update()` come from a cdkd
    * STATE record rather than from the synthesized template — today that is the
    * rollback executor's two REVERT arms (`revert` and `revert-failed-update`),

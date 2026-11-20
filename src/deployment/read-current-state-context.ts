@@ -57,8 +57,12 @@ export function buildReadCurrentStateContext(
   const ownAttributes = ownRecord('attributes');
   // go-to-k/cdkd#6616: the own drift baseline, through the same gate.
   const ownObserved = ownRecord('observedProperties');
+  // go-to-k/cdkd#6641: a Cloud Control readback assigns no rule by id.
+  const ccApiRead =
+    isReadableResourceEntry(own) && (own as { provisionedBy?: unknown }).provisionedBy === 'cc-api';
   return {
     siblings,
+    ...(ccApiRead && { ccApiRead: true }),
     ...(ownAttributes && { attributes: ownAttributes }),
     ...(ownObserved && { driftBaseline: ownObserved }),
   };
