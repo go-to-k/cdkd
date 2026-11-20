@@ -321,37 +321,37 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
             Q: { resourceType: 'AWS::SQS::Queue', physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q' },
             QP: {
               resourceType: 'AWS::SQS::QueuePolicy',
-              physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q',
+              physicalId: 'https://sqs.us-east-1.amazonaws.com/1/q,https://sqs.us-east-1.amazonaws.com/1/q2',
               properties: { Queues: ['https://sqs.us-east-1.amazonaws.com/1/q'] },
             },
             TP: {
               resourceType: 'AWS::SNS::TopicPolicy',
-              physicalId: 'arn:aws:sns:us-east-1:1:t',
+              physicalId: 'arn:aws:sns:us-east-1:1:t,arn:aws:sns:us-east-1:1:t2',
               properties: { Topics: ['arn:aws:sns:us-east-1:1:t'] },
             },
             AL: {
               resourceType: 'AWS::KMS::Alias',
-              physicalId: 'alias/x',
+              physicalId: 'key-id-1',
               properties: { AliasName: 'alias/x' },
             },
             SP: {
               resourceType: 'AWS::SecretsManager::ResourcePolicy',
-              physicalId: 'arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf',
+              physicalId: 'some-other-id',
               properties: { SecretId: 'arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf' },
             },
             RP: {
               resourceType: 'AWS::IAM::RolePolicy',
-              physicalId: 'pol|rol',
+              physicalId: 'x|y',
               properties: { PolicyName: 'pol', RoleName: 'rol' },
             },
             UP: {
               resourceType: 'AWS::IAM::UserPolicy',
-              physicalId: 'pol|usr',
+              physicalId: 'x|y',
               properties: { PolicyName: 'pol', UserName: 'usr' },
             },
             GP: {
               resourceType: 'AWS::IAM::GroupPolicy',
-              physicalId: 'pol|grp',
+              physicalId: 'x|y',
               properties: { PolicyName: 'pol', GroupName: 'grp' },
             },
             UG: {
@@ -377,6 +377,12 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(calls).toContain('iam get-user-policy --user-name usr --policy-name pol');
     expect(calls).toContain('iam get-group-policy --group-name grp --policy-name pol');
     expect(calls).toContain('iam get-group --group-name grp --query Users[].UserName');
+    const rows = readFileSync(before(), 'utf8');
+    expect(rows).toContain('\tno-id:policy-on-queue\n');
+    expect(rows).toContain('\tno-id:policy-on-topic\n');
+    expect(rows).toContain('\tno-id:policy-on-secret\n');
+    expect(rows).toContain('\tno-id:inline-policy:pol|rol\n');
+    expect(rows).toContain('\tno-id:members-of:grp|usr\n');
     // A membership whose user left the group, and a policy AWS reads as None, FAIL.
     setAwsValue('other\n');
     const gone = run(`revert_identity_snapshot "${after()}" Stack UG || exit 1`);
