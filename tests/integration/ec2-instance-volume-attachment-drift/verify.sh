@@ -68,7 +68,7 @@ STACK="CdkdEc2InstanceVolumeAttachmentDrift"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
-REVERT_DIR="$(mktemp -d)"
+REVERT_DIR=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -106,6 +106,8 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# Created AFTER the pre-run cleanup above, which removes it (go-to-k/cdkd#6639).
+REVERT_DIR="$(mktemp -d)"
 
 # --- Phase 1: deploy ---------------------------------------------------------
 echo "==> Phase 1: deploy two instances, each with a sibling VolumeAttachment"

@@ -74,8 +74,8 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 INFRA_LOGICAL="Infra"
 INFRA_NAME="${STACK}-infra"
 DRIFT_OUT="${TMPDIR:-/tmp}/cdkd-6569-drift.$$.log"
-REVERT_DIR="$(mktemp -d)"
-REVERT_PFX="${REVERT_DIR}/revert"
+REVERT_DIR=""
+REVERT_PFX=""
 
 CLEANED_UP=0
 PRE_RUN=0
@@ -193,6 +193,9 @@ echo "==> Installing fixture deps"
 echo "==> Pre-run cleanup"
 PRE_RUN=1
 cleanup
+# Created AFTER the pre-run cleanup above, which removes it (go-to-k/cdkd#6639).
+REVERT_DIR="$(mktemp -d)"
+REVERT_PFX="${REVERT_DIR}/revert"
 PRE_RUN=0
 CLEANED_UP=0
 

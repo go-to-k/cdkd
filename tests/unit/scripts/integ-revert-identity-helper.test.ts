@@ -403,6 +403,17 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(r.stderr).toContain('is not JSON');
   });
 
+  it("FAILS by name, before any read, when the snapshot's directory is gone", () => {
+    const out = join(sandbox, 'removed-dir', 'ids-before');
+    const r = run(`revert_identity_snapshot "${out}" Stack Role1 || exit 1; echo unreachable`);
+    expect(r.status).toBe(1);
+    expect(r.stdout).not.toContain('unreachable');
+    expect(r.stderr).toContain('FAIL: revert_identity_snapshot: the directory of');
+    expect(r.stderr).not.toContain('No such file or directory');
+    expect(existsSync(cdkdLog)).toBe(false);
+    expect(existsSync(awsLog)).toBe(false);
+  });
+
   it('FAILS a snapshot with no logical ids', () => {
     const r = run(`revert_identity_snapshot "${before()}" Stack || exit 1`);
     expect(r.status).toBe(1);

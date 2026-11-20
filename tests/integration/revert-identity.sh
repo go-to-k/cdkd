@@ -240,6 +240,17 @@ revert_identity_snapshot() {
     return 1
   fi
   shift 2
+  # Fail by name, before any AWS call, when the snapshot cannot be written: a
+  # raw redirect error reads as a helper bug (a fixture's pre-run cleanup had
+  # removed the directory its mktemp -d made).
+  if [ ! -d "$(dirname "${out}")" ]; then
+    echo "FAIL: revert_identity_snapshot: the directory of '${out}' does not exist (did a cleanup remove it after it was created?)" >&2
+    return 1
+  fi
+  if ! : >"${out}" 2>/dev/null; then
+    echo "FAIL: revert_identity_snapshot: cannot write '${out}'" >&2
+    return 1
+  fi
   if [ -z "${region}" ] || [ -z "${STATE_BUCKET:-}" ]; then
     echo "FAIL: revert_identity_snapshot: needs a region (REVERT_IDENTITY_REGION / REGION / AWS_REGION) and STATE_BUCKET" >&2
     return 1
@@ -302,7 +313,7 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
   process.stdout.write(out.join("\n") + "\n");
 });
 ' "$@")" || return 1
-  : >"${out}" || return 1
+  : >"${out}" || { echo "FAIL: revert_identity_snapshot: cannot write '${out}'" >&2; return 1; }
   while IFS="$(printf '\t')" read -r lid type pid ctx; do
     [ -n "${lid}" ] || continue
     prc=0

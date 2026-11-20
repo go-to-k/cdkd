@@ -81,7 +81,7 @@ PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 PLAIN_ID="PlainConnConnection082B58BA"
 SECRET_ID="SecretConnConnection8E194AA8"
 DRIFT_LOG=""
-REVERT_DIR="$(mktemp -d)"
+REVERT_DIR=""
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -129,6 +129,8 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# Created AFTER the pre-run cleanup above, which removes it (go-to-k/cdkd#6639).
+REVERT_DIR="$(mktemp -d)"
 
 run_drift() { # usage: run_drift [extra drift flags...] -> sets DRIFT_RC; output in DRIFT_LOG
   rm -f "${DRIFT_LOG:-}"

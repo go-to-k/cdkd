@@ -69,7 +69,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # The phases set the mode; an inherited value would deploy one early.
 unset CDKD_TEST_UPDATE
 DRIFT_LOG=""
-REVERT_DIR="$(mktemp -d)"
+REVERT_DIR=""
 TOPIC_ARN=""
 QUEUE_A=""
 QUEUE_B=""
@@ -124,6 +124,8 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# Created AFTER the pre-run cleanup above, which removes it (go-to-k/cdkd#6639).
+REVERT_DIR="$(mktemp -d)"
 
 # The topic's live subscription endpoints, as the queue letters A / B / C,
 # sorted and space-joined. Any other endpoint prints as `?`.
