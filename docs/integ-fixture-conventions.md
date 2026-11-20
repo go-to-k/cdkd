@@ -593,6 +593,30 @@ attribute change). The loop exits only on the EXPECTED value, so a wrong value
 still fails, just later. A read whose subject is that the value has NOT
 changed must not loop — it would wait out the deadline on every passing run.
 
+## Prove a `drift --revert` replaced nothing
+
+A drift revert updates a resource in place and never replaces one
+([#6638](https://github.com/go-to-k/cdkd/issues/6638)). Reading back the
+reverted property cannot show that: a delete + create carrying the template's
+value reads back the same, and cdkd's `{stack}-{logicalId}` names keep the same
+physical id. Wrap every `drift --revert` call with
+`tests/integration/revert-identity.sh`, naming each resource the revert
+touches:
+
+```bash
+. ../revert-identity.sh
+revert_identity_snapshot "${WORK}/ids-before" "${STACK}" QueueA RoleB
+cdkd drift "${STACK}" --revert -y ... >"${WORK}/revert.log" 2>&1
+revert_output_assert_no_replacement "${WORK}/revert.log"   # add expect-refusal for a refused revert
+revert_identity_snapshot "${WORK}/ids-after" "${STACK}" QueueA RoleB
+revert_identity_assert_unchanged "${WORK}/ids-before" "${WORK}/ids-after" 2
+```
+
+Each row pairs the state physical id with an AWS-side identity from a per-type
+probe (a creation time or unique id where the type has one). A type with no
+probe fails the snapshot: add one to the helper's table. The count is a literal,
+so an emptied list cannot pass as 0 = 0.
+
 ## `state destroy` must pass `--state-bucket`
 
 The harness exports the state bucket as `STATE_BUCKET`, but the CLI's own
