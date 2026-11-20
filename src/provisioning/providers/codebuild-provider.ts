@@ -38,6 +38,7 @@ import { create, createWebhook, createWebhookOnNewProject } from './codebuild/cr
 import { reconcileWebhook, applyVisibility, update } from './codebuild/update.js';
 import { deleteImpl } from './codebuild/delete.js';
 import { readCurrentState, importImpl } from './codebuild/read-state.js';
+import { canonicalizeDriftPair } from './codebuild/drift.js';
 
 /**
  * SDK Provider for AWS CodeBuild resources
@@ -278,6 +279,15 @@ export class CodeBuildProvider implements ResourceProvider {
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     return readCurrentState.call(this, physicalId, _logicalId, _resourceType, properties, context);
+  }
+
+  /** go-to-k/cdkd#6659: an absent `LogsConfig.S3Logs.EncryptionDisabled` is `false`. */
+  canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    return Promise.resolve(canonicalizeDriftPair(resourceType, baseline, aws));
   }
 
   getDriftUnknownPaths(): string[] {
