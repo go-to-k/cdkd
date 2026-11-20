@@ -51,6 +51,7 @@ import {
 } from './redaction.js';
 import {
   undeclaredUncomparedDriftKeys,
+  undeclaredEmptyComparedDriftKeys,
   preFixBaselineUncomparedDriftKeys,
   readOnlyUncomparedDriftPaths,
   stripDerivedEchoMembers,
@@ -341,8 +342,14 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // RE-captured once the sibling has written (a later update of the parent)
   // is not empty; the sibling-owned strip below covers that case for every
   // pair in `provisioning/sibling-owned-members.ts` (go-to-k/cdkd#6610).
+  // go-to-k/cdkd#6651: keys no other writer fills (an AgentCore runtime's
+  // `ResourceConfigurations`, ...) are compared even when captured empty.
   const observedIgnorePaths = useObserved
-    ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {})
+    ? undeclaredEmptyObservedKeys(
+        resource.observedProperties!,
+        resource.properties ?? {},
+        undeclaredEmptyComparedDriftKeys(resource.resourceType)
+      )
     : [];
   // Issue #1515: AWS renders an IAM principal inside a resource policy as
   // either its ARN or its `AROA…` / `AIDA…` unique id, choosing on its own

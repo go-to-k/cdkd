@@ -546,6 +546,34 @@ describe('undeclaredEmptyObservedKeys (issue #1498)', () => {
     expect(undeclaredEmptyObservedKeys(observed, declared)).toEqual([]);
   });
 
+  // go-to-k/cdkd#6651: a key the caller names as compared-when-empty (no other
+  // resource fills it) is not skipped, so an out-of-band add is drift.
+  it('compares an undeclared captured-empty key named in comparedKeys (#6651)', () => {
+    const observed = { Name: 'n', ResourceConfigurations: [], CapacityProviders: [] };
+    const declared = { Name: 'n' };
+    const ignorePaths = undeclaredEmptyObservedKeys(observed, declared, [
+      'ResourceConfigurations',
+    ]);
+    expect(ignorePaths).toEqual(['CapacityProviders']);
+    const aws = {
+      Name: 'n',
+      ResourceConfigurations: [{ MinimumMemoryInMiB: 4096 }],
+      CapacityProviders: ['FARGATE'],
+    };
+    const changes = calculateResourceDrift(observed, aws, { ignorePaths, unionWalkObjects: true });
+    expect(changes.map((c) => c.path)).toEqual(['ResourceConfigurations']);
+  });
+
+  it('a comparedKeys entry does not change a DECLARED key (#6651)', () => {
+    const observed = { ResourceConfigurations: [] };
+    expect(
+      undeclaredEmptyObservedKeys(observed, { ResourceConfigurations: [] }, [
+        'ResourceConfigurations',
+      ])
+    ).toEqual([]);
+    expect(undeclaredEmptyObservedKeys(observed, { ResourceConfigurations: [] })).toEqual([]);
+  });
+
   it('does not treat empty strings or zero as empty containers', () => {
     const observed = { Description: '', Count: 0, Flag: false };
     expect(undeclaredEmptyObservedKeys(observed, {})).toEqual([]);

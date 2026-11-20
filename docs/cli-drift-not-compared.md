@@ -237,6 +237,20 @@ separate resources.
 A key your template did not declare is still compared when cdkd recorded a
 real value for it, such as a default AWS applied.
 
+Some keys are compared even when they were recorded empty, because no other
+resource and no AWS process fills them in. A value added to one of them
+outside cdkd is drift, and `cdkd drift --revert` clears it again:
+
+| Resource type | Keys compared even when recorded empty |
+| --- | --- |
+| `AWS::BedrockAgentCore::Runtime` | `FilesystemConfigurations`, `HooksConfiguration`, `RequestHeaderConfiguration`, `ResourceConfigurations` |
+
+A value added there is drift only when cdkd's recorded snapshot carries the
+key. A runtime last deployed by an older cdkd may not have `HooksConfiguration`
+or `ResourceConfigurations` in its snapshot; run
+[`cdkd state refresh-observed`](cli-state-writing.md#cdkd-state-refresh-observed)
+or redeploy to record them.
+
 ### Tags
 
 Tags with an `aws:` prefix, such as `aws:cdk:path`, are added by CDK and AWS

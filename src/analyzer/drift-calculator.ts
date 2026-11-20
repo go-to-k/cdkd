@@ -172,13 +172,21 @@ export function calculateResourceDrift(
  * Returned keys are fed into `calculateResourceDrift`'s `ignorePaths`, so
  * they are excluded as whole subtrees from detection — and therefore from
  * `--revert` / `--accept`, which operate on the detected changes.
+ *
+ * `comparedKeys` names undeclared keys that are compared even when captured
+ * empty: keys of this resource type that no other resource or AWS fills, so
+ * a value appearing there was added outside cdkd (go-to-k/cdkd#6651). The
+ * caller supplies them from the per-type table
+ * `undeclaredEmptyComparedDriftKeys` (`cli/commands/drift/baseline-keys.ts`).
  */
 export function undeclaredEmptyObservedKeys(
   observed: Record<string, unknown>,
-  declared: Record<string, unknown>
+  declared: Record<string, unknown>,
+  comparedKeys: readonly string[] = []
 ): string[] {
   const keys: string[] = [];
   for (const key of Object.keys(observed)) {
+    if (comparedKeys.includes(key)) continue;
     // `Object.hasOwn`, not `in` (issue #3515). `in` read an inherited
     // `Object.prototype` member name as DECLARED, so a captured-empty
     // undeclared key of that name was COMPARED instead of skipped: phantom
