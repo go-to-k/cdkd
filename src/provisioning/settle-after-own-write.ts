@@ -144,7 +144,7 @@ export function warnUnsettledMember(
   memberKey: string
 ): void {
   logger.warn(
-    safeMsg`${resourceType} ${logicalId}: the read right after the write never showed the declared ${memberKey}, so its drift baseline may not match the live resource; run ${proseQuoted(cdkdRemedy('cdkd state refresh-observed'))} on the stack to re-capture it`
+    safeMsg`${resourceType} ${logicalId}: the read right after the write never showed ${memberKey} as the write left it (a declared value missing, or a removed one still present), so its drift baseline may not match the live resource; run ${proseQuoted(cdkdRemedy('cdkd state refresh-observed'))} on the stack to re-capture it`
   );
 }
 

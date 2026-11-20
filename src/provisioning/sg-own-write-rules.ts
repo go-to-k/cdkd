@@ -73,20 +73,44 @@ export function sgRemovalRuleKey(
 /**
  * The removal keys a capture waits to see gone: each of `removed` that no
  * declared rule has (a declared rule with the key was put back by the write).
+ *
+ * A declared ingress rule naming its peer by `SourceSecurityGroupName` alone
+ * has no key, so it cannot be told apart from a revoked peer-group rule: the
+ * same update may have revoked that peer's rule in another spelling (by id,
+ * `'443'` for `443`, with an owner id) and put it back by name, and the read
+ * then still shows it. Waiting for it to go would never settle, and dropping
+ * it would leave a declared live grant out of the baseline (phantom drift,
+ * and `drift --revert` revoking it). So with such a rule declared, no revoked
+ * PEER-GROUP rule is waited on; a revoked CIDR or prefix-list rule still is.
  */
 export function sgRemovedNotDeclared(
   removed: ReadonlySet<string> | undefined,
   declared: readonly unknown[],
   direction: SgDirection
 ): Set<string> {
-  const keep = new Set(
-    declared.map((rule) =>
-      typeof rule === 'object' && rule !== null
-        ? sgRemovalRuleKey(rule as Record<string, unknown>, direction)
-        : undefined
+  const keys = declared.map((rule) =>
+    typeof rule === 'object' && rule !== null
+      ? sgRemovalRuleKey(rule as Record<string, unknown>, direction)
+      : undefined
+  );
+  const keep = new Set(keys);
+  const namedPeerDeclared = declared.some(
+    (rule, index) => typeof rule === 'object' && rule !== null && keys[index] === undefined
+  );
+  return new Set(
+    [...(removed ?? [])].filter(
+      (key) => !keep.has(key) && !(namedPeerDeclared && removalKeyHasPeer(key))
     )
   );
-  return new Set([...(removed ?? [])].filter((key) => !keep.has(key)));
+}
+
+/** Whether a removal key names a peer security group. */
+function removalKeyHasPeer(key: string): boolean {
+  try {
+    return (JSON.parse(key) as { peer?: unknown }).peer !== null;
+  } catch {
+    return true;
+  }
 }
 
 /** Whether `rule`, as read, is one of `gone` (removal keys). */

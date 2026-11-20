@@ -19,6 +19,12 @@
  * a policy document or a rule description. Held in memory, never logged or
  * persisted.
  *
+ * Notes are keyed by type and physical id only, not by account or region: two
+ * same-named IAM principals of different accounts deployed in one process
+ * could meet each other's note. That fails safe: a foreign note only makes a
+ * capture wait for, or leave out, an entry this write did not remove, which
+ * can only make drift report more, never hide a grant.
+ *
  * Lifecycle:
  *  - recorded by the removal call that succeeded, after any skip that keeps
  *    the entry (go-to-k/cdkd#4225, go-to-k/cdkd#4492), so a call that throws

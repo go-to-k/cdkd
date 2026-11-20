@@ -331,8 +331,8 @@ export async function readSecurityGroupCurrentState(
   );
   const sg = resp.SecurityGroups?.[0];
   if (!sg) {
-    // The capture re-reads a group not found yet (`drift.ts`); the next read
-    // still settles on what this create / update revoked.
+    // `readCurrentState` (drift.ts) re-reads a group not found on the capture
+    // (OWN_WRITE_READ_ATTEMPTS); that read still settles on what was revoked.
     if (removed !== undefined)
       restoreOwnWriteRemovals('AWS::EC2::SecurityGroup', physicalId, removed);
     return RESOURCE_NOT_FOUND;

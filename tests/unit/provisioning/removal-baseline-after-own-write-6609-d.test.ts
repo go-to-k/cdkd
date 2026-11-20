@@ -802,3 +802,150 @@ describe('drift after an out-of-band re-add of a removed grant', () => {
     expect(drifts.length).toBeGreaterThan(0);
   });
 });
+
+// ─── Round 1 review: a peer named by name, and every record site ───────────
+describe('a declared ingress rule naming its peer by SourceSecurityGroupName alone', () => {
+  const NAMED = { IpProtocol: 'tcp', FromPort: 443, ToPort: 443, SourceSecurityGroupName: 'peer', Description: 'by name' };
+  const peerPermission = {
+    IpProtocol: 'tcp',
+    FromPort: 443,
+    ToPort: 443,
+    UserIdGroupPairs: [{ GroupId: 'sg-peer', UserId: ACCT, Description: 'by name' }],
+  };
+  const idKey = sgRemovalRuleKey({ IpProtocol: 'tcp', FromPort: '443', ToPort: '443', SourceSecurityGroupId: 'sg-peer' }, 'ingress')!;
+
+  it('the same peer rule revoked in its id spelling and put back by name: settled at once, the declared rule kept', async () => {
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', idKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission], []));
+    const read = bag(await readSg({ GroupDescription: 'd', SecurityGroupIngress: [NAMED] }, AFTER));
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(1);
+    expect(read['SecurityGroupIngress']).toEqual([expect.objectContaining({ SourceSecurityGroupId: 'sg-peer', FromPort: 443 })]);
+    expect(unsettledWarnings()).toEqual([]);
+  });
+
+  it('a revoked CIDR rule beside it is still waited on', async () => {
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', ingressKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission, oldPermission], []), sgAnswer([peerPermission], []));
+    const read = bag(await readSg({ GroupDescription: 'd', SecurityGroupIngress: [NAMED] }, AFTER));
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(2);
+    expect(read['SecurityGroupIngress']).toEqual([expect.objectContaining({ SourceSecurityGroupId: 'sg-peer' })]);
+  });
+
+  it('a revoked CIDR rule beside it still read after the schedule is dropped; the peer rule is kept', async () => {
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', ingressKey);
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', idKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([peerPermission, oldPermission], []));
+    const read = bag(await readSg({ GroupDescription: 'd', SecurityGroupIngress: [NAMED] }, AFTER));
+    expect(read['SecurityGroupIngress']).toEqual([expect.objectContaining({ SourceSecurityGroupId: 'sg-peer' })]);
+    expect(unsettledWarnings()).toHaveLength(1);
+  });
+
+  it('with no name-only rule declared, a revoked peer-group rule is still waited on', async () => {
+    note('AWS::EC2::SecurityGroup', 'sg-1', 'SecurityGroupIngress', idKey);
+    answer('DescribeSecurityGroupsCommand', sgAnswer([ingressPermission, peerPermission], []), sgAnswer([ingressPermission], []));
+    await readSg({ GroupDescription: 'd', SecurityGroupIngress: [INGRESS] }, AFTER);
+    expect(callsOf('DescribeSecurityGroupsCommand')).toBe(2);
+  });
+});
+
+const boom = fail('ServiceFailure');
+/** Each record site: the call it follows, and how to make the write that removes one entry. */
+const recordSites: Array<{
+  name: string;
+  type: string;
+  id: string;
+  key: string;
+  identity: string;
+  command: string;
+  write: () => Promise<unknown>;
+}> = [
+  { name: 'role ManagedPolicyArns', type: 'AWS::IAM::Role', id: 'r', key: 'ManagedPolicyArns', identity: ARN_OLD, command: 'DetachRolePolicyCommand', write: () => role().updateManagedPolicies('r', [], [ARN_OLD], log) },
+  { name: 'role Policies', type: 'AWS::IAM::Role', id: 'r', key: 'Policies', identity: 'old', command: 'DeleteRolePolicyCommand', write: () => role().updateInlinePolicies('r', [], [pol('old')], log) },
+  {
+    name: 'role PermissionsBoundary',
+    type: 'AWS::IAM::Role',
+    id: 'r',
+    key: 'PermissionsBoundary',
+    identity: BOUNDARY,
+    command: 'DeleteRolePermissionsBoundaryCommand',
+    write: () =>
+      role().update('Role', 'r', 'AWS::IAM::Role', { RoleName: 'r', AssumeRolePolicyDocument: DOC }, { RoleName: 'r', AssumeRolePolicyDocument: DOC, PermissionsBoundary: BOUNDARY }),
+  },
+  { name: 'user ManagedPolicyArns', type: 'AWS::IAM::User', id: 'u', key: 'ManagedPolicyArns', identity: ARN_OLD, command: 'DetachUserPolicyCommand', write: () => userGroup().updateUserManagedPolicies('u', [], [ARN_OLD], log) },
+  { name: 'user Groups', type: 'AWS::IAM::User', id: 'u', key: 'Groups', identity: 'admins', command: 'RemoveUserFromGroupCommand', write: () => userGroup().updateUserGroups('u', [], ['admins'], log) },
+  { name: 'user Policies', type: 'AWS::IAM::User', id: 'u', key: 'Policies', identity: 'old', command: 'DeleteUserPolicyCommand', write: () => userGroup().updateUserInlinePolicies('u', [], [pol('old')], log, undefined) },
+  {
+    name: 'user PermissionsBoundary',
+    type: 'AWS::IAM::User',
+    id: 'u',
+    key: 'PermissionsBoundary',
+    identity: BOUNDARY,
+    command: 'DeleteUserPermissionsBoundaryCommand',
+    write: () => userGroup().update('User', 'u', 'AWS::IAM::User', { UserName: 'u' }, { UserName: 'u', PermissionsBoundary: BOUNDARY }),
+  },
+  { name: 'group ManagedPolicyArns', type: 'AWS::IAM::Group', id: 'g', key: 'ManagedPolicyArns', identity: ARN_OLD, command: 'DetachGroupPolicyCommand', write: () => userGroup().updateGroupManagedPolicies('g', [], [ARN_OLD], log) },
+  { name: 'group Policies', type: 'AWS::IAM::Group', id: 'g', key: 'Policies', identity: 'old', command: 'DeleteGroupPolicyCommand', write: () => userGroup().updateGroupInlinePolicies('g', [], [pol('old')], log, undefined) },
+  { name: 'managed policy Roles', type: 'AWS::IAM::ManagedPolicy', id: MP_ARN, key: 'Roles', identity: 'r', command: 'DetachRolePolicyCommand', write: () => managedPolicy().updatePrincipals(MP_ARN, [], [], [], ['r'], [], [], log) },
+  { name: 'managed policy Groups', type: 'AWS::IAM::ManagedPolicy', id: MP_ARN, key: 'Groups', identity: 'g', command: 'DetachGroupPolicyCommand', write: () => managedPolicy().updatePrincipals(MP_ARN, [], ['g'], [], [], [], [], log) },
+  { name: 'managed policy Users', type: 'AWS::IAM::ManagedPolicy', id: MP_ARN, key: 'Users', identity: 'u', command: 'DetachUserPolicyCommand', write: () => managedPolicy().updatePrincipals(MP_ARN, [], [], [], [], [], ['u'], log) },
+  { name: 'instance profile Roles', type: 'AWS::IAM::InstanceProfile', id: 'ip', key: 'Roles', identity: 'old', command: 'RemoveRoleFromInstanceProfileCommand', write: () => profile().update('Profile', 'ip', 'AWS::IAM::InstanceProfile', { Roles: [] }, { Roles: ['old'] }) },
+  { name: 'security group rule revoke', type: 'AWS::EC2::SecurityGroup', id: 'sg-1', key: 'SecurityGroupIngress', identity: ingressKey, command: 'RevokeSecurityGroupIngressCommand', write: () => new EC2Provider().applySecurityGroupRuleDiff('sg-1', [OLD_INGRESS], [], 'ingress', 'Sg') },
+  { name: 'security group default egress revoke', type: 'AWS::EC2::SecurityGroup', id: 'sg-1', key: 'SecurityGroupEgress', identity: allowAllKey, command: 'RevokeSecurityGroupEgressCommand', write: () => new EC2Provider().applyInlineEgress('sg-1', [EGRESS]) },
+];
+
+describe.each(recordSites)('record site: $name', (site) => {
+  it('a call that succeeds notes the removed entry', async () => {
+    await site.write();
+    expect(callsOf(site.command)).toBeGreaterThan(0);
+    expect(taken(site.type, site.id)?.get(site.key)).toEqual(new Set([site.identity]));
+  });
+
+  it('a call that throws notes nothing', async () => {
+    answer(site.command, boom);
+    await expect(site.write()).rejects.toThrow();
+    expect(taken(site.type, site.id)).toBeUndefined();
+  });
+});
+
+describe('every update clears a note an earlier update that threw left behind', () => {
+  it.each([
+    ['user', 'AWS::IAM::User', 'u', () => userGroup().update('User', 'u', 'AWS::IAM::User', { UserName: 'u' }, { UserName: 'u' })],
+    ['group', 'AWS::IAM::Group', 'g', () => userGroup().update('Group', 'g', 'AWS::IAM::Group', { GroupName: 'g' }, { GroupName: 'g' })],
+    ['role', 'AWS::IAM::Role', 'r', () => role().update('Role', 'r', 'AWS::IAM::Role', { RoleName: 'r', AssumeRolePolicyDocument: DOC }, { RoleName: 'r', AssumeRolePolicyDocument: DOC })],
+  ] as const)('%s', async (_kind, type, id, update) => {
+    note(type, id, 'Policies', 'leftover');
+    await update();
+    expect(taken(type, id)).toBeUndefined();
+  });
+});
+
+it("a create's default-egress revoke answered \"not found\" (no default rule) still notes it", async () => {
+  answer('RevokeSecurityGroupEgressCommand', fail('InvalidPermission.NotFound', 'The specified rule does not exist'));
+  await new EC2Provider().applyInlineEgress('sg-1', [EGRESS]);
+  expect(taken('AWS::EC2::SecurityGroup', 'sg-1')?.get('SecurityGroupEgress')).toEqual(new Set([allowAllKey]));
+});
+
+describe.each([
+  { name: 'user', type: 'AWS::IAM::User', id: 'u', read: () => userGroup().readCurrentState('u', 'User', 'AWS::IAM::User', {}, AFTER) },
+  { name: 'group', type: 'AWS::IAM::Group', id: 'g', read: () => userGroup().readCurrentState('g', 'Group', 'AWS::IAM::Group', {}, AFTER) },
+  { name: 'managed policy', type: 'AWS::IAM::ManagedPolicy', id: MP_ARN, read: () => managedPolicy().readCurrentState(MP_ARN, 'Mp', 'AWS::IAM::ManagedPolicy', {}, AFTER) },
+  { name: 'instance profile', type: 'AWS::IAM::InstanceProfile', id: 'ip', read: () => profile().readCurrentState('ip', 'Profile', 'AWS::IAM::InstanceProfile', {}, AFTER) },
+  {
+    name: 'security group',
+    type: 'AWS::EC2::SecurityGroup',
+    id: 'sg-1',
+    read: () => {
+      answer('DescribeSecurityGroupsCommand', sgAnswer([], []));
+      return readSg({ GroupDescription: 'd' }, AFTER);
+    },
+  },
+])('the $name capture takes its note before its first await', (spec) => {
+  it('a note recorded once the capture started is left for the next capture', async () => {
+    note(spec.type, spec.id, 'Roles', 'forward');
+    const pending = spec.read();
+    expect(takeOwnWriteRemovals(spec.type, spec.id)).toBeUndefined();
+    note(spec.type, spec.id, 'Roles', 'revert');
+    await pending.catch(() => undefined);
+    expect(takeOwnWriteRemovals(spec.type, spec.id)?.get('Roles')).toEqual(new Set(['revert']));
+  });
+});
