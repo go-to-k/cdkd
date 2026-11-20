@@ -438,7 +438,7 @@ rollback-replay-cc-generated-name	2026-11-16T08:22:27Z	PASS	174	verify.sh	rc ok,
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
 rollback-same-id-recreate	2026-11-16T15:41:55Z	PASS	196	verify.sh	rc ok, orph clean (#6423)
 rollback-sqs-cooldown	2026-11-07T12:50:15Z	PASS	158	verify.sh	#6008 rollback split head; rc ok, orph clean
-route53	2026-11-20T06:38:06Z	PASS	516	verify.sh	#6670 route53 drift/import fixes: rc ok, orph clean
+route53	2026-11-20T11:10:33Z	PASS	535	verify.sh	#6656 PR #6673 7a9357d after #6682 rebase: rc ok, orph clean
 route53-drift-import	2026-11-20T08:30:09Z	PASS	155	verify.sh	#6682 group revert zone key: rc ok, orph clean, no 'exactly one of' warning
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
@@ -492,8 +492,8 @@ sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-sqs-event	2026-11-19T18:50:43Z	PASS	339	verify.sh	#6640 regression 84223153c: rc ok, orph clean
-sns-subscription-filter	2026-11-19T18:50:43Z	PASS	309	verify.sh	#6640 Phase 1e revert never replaces 84223153c: rc ok, orph clean
-sns-subscription-update	2026-11-19T18:50:43Z	PASS	152	verify.sh	#6640 regression 84223153c: rc ok, orph clean
+sns-subscription-filter	2026-11-20T07:16:28Z	PASS	292	verify.sh	#6656 PR #6673 319ac7a: rc ok, orph clean
+sns-subscription-update	2026-11-20T07:16:28Z	PASS	173	verify.sh	#6656 PR #6673 319ac7a: rc ok, orph clean
 sns-topic-attr-removal	2026-11-13T15:36:43Z	PASS	80	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean

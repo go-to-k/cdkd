@@ -108,7 +108,11 @@ deploy will treat that property.
   `FilterPolicyScope` change in one deploy, or when its `DeliveryPolicy`,
   `ReplayPolicy` or `SubscriptionRoleArn` is removed. The subscription gets a
   new ARN, messages published in between are not delivered, and an email or
-  HTTP(S) endpoint has to confirm the subscription again.
+  HTTP(S) endpoint has to confirm the subscription again. A Route 53 record
+  set is replaced this way when its `Name` changes: the old record is deleted
+  and the new one created in one change batch. A `Type` or `SetIdentifier`
+  change uses the same batch but is shown as an update, as CloudFormation
+  shows it, since the name keeps resolving throughout.
 - `(known after deploy)`: the new value refers to a resource this deploy will
   create, so the value does not exist yet.
 - `[metadata only, no AWS API call]`: a `DeletionPolicy` or

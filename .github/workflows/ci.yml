@@ -199,6 +199,10 @@ jobs:
       # to the whole `|`-joined id, which AWS often accepts silently.
       - run: vp run audit:ref-segment-coverage:check
 
+      # go-to-k/cdkd#6656 — a provider update() that replaces the resource for a
+      # change the diff shows as an update hides a replacement from the approval.
+      - run: vp run audit:provider-replace-branches:check
+
       - run: vp run audit:nested-key-coverage:check
 
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a

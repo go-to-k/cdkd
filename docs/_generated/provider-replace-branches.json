@@ -1,0 +1,647 @@
+{
+  "summary": {
+    "sites": 17,
+    "types": 9,
+    "triggers": 88,
+    "replacement": 66,
+    "conditional": 3,
+    "providerMarked": 11,
+    "exempt": 8,
+    "gap": 0,
+    "underived": 0,
+    "disposed": 3
+  },
+  "sites": [
+    {
+      "key": "AWS::ApiGateway::Resource src/provisioning/providers/apigateway/resource-deployment.ts:updateResource was-replaced#1",
+      "resourceType": "AWS::ApiGateway::Resource",
+      "className": "ApiGatewayProvider",
+      "file": "src/provisioning/providers/apigateway/resource-deployment.ts",
+      "function": "updateResource",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "PathPart",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::CertificateManager::Certificate src/provisioning/providers/acm-certificate/update.ts:update own-create#1",
+      "resourceType": "AWS::CertificateManager::Certificate",
+      "className": "ACMCertificateProvider",
+      "file": "src/provisioning/providers/acm-certificate/update.ts",
+      "function": "update",
+      "signal": "own-create",
+      "triggers": [
+        {
+          "property": "CertificateAuthorityArn",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CertificateExport",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DomainName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DomainValidationOptions",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KeyAlgorithm",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubjectAlternativeNames",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ValidationMethod",
+          "verdict": "replacement",
+          "via": "rule"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::CertificateManager::Certificate src/provisioning/providers/acm-certificate/update.ts:update was-replaced#1",
+      "resourceType": "AWS::CertificateManager::Certificate",
+      "className": "ACMCertificateProvider",
+      "file": "src/provisioning/providers/acm-certificate/update.ts",
+      "function": "update",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "CertificateAuthorityArn",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CertificateExport",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DomainName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DomainValidationOptions",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "KeyAlgorithm",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SubjectAlternativeNames",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ValidationMethod",
+          "verdict": "replacement",
+          "via": "rule"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::EC2::Route src/provisioning/providers/ec2/route.ts:updateRoute own-create#1",
+      "resourceType": "AWS::EC2::Route",
+      "className": "EC2Provider",
+      "file": "src/provisioning/providers/ec2/route.ts",
+      "function": "updateRoute",
+      "signal": "own-create",
+      "triggers": [
+        {
+          "property": "DestinationCidrBlock",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationIpv6CidrBlock",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationPrefixListId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RouteTableId",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::EC2::Route src/provisioning/providers/ec2/route.ts:updateRoute was-replaced#1",
+      "resourceType": "AWS::EC2::Route",
+      "className": "EC2Provider",
+      "file": "src/provisioning/providers/ec2/route.ts",
+      "function": "updateRoute",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "DestinationCidrBlock",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationIpv6CidrBlock",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "DestinationPrefixListId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RouteTableId",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::EC2::SecurityGroupIngress src/provisioning/providers/ec2/sg-ingress-update.ts:updateSecurityGroupIngress own-create#1",
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "className": "EC2Provider",
+      "file": "src/provisioning/providers/ec2/sg-ingress-update.ts",
+      "function": "updateSecurityGroupIngress",
+      "signal": "own-create",
+      "disposition": {
+        "kind": "no-template-trigger",
+        "rationale": "a rollback replay (replayingState) of an update with the same bag on both sides authorizes the recorded rule again; an unchanged bag returns before it on every other path"
+      },
+      "triggers": [],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::EC2::SecurityGroupIngress src/provisioning/providers/ec2/sg-ingress-update.ts:updateSecurityGroupIngress own-create#2",
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "className": "EC2Provider",
+      "file": "src/provisioning/providers/ec2/sg-ingress-update.ts",
+      "function": "updateSecurityGroupIngress",
+      "signal": "own-create",
+      "triggers": [
+        {
+          "property": "CidrIp",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CidrIpv6",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "verdict": "exempt",
+          "exemption": "not-a-trigger",
+          "rationale": "a description change updates the rule in place (#6514); revoke + authorize follows only when AWS no longer has the rule or the recorded description is redacted"
+        },
+        {
+          "property": "FromPort",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "GroupId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "IpProtocol",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourcePrefixListId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupOwnerId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ToPort",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::EC2::SecurityGroupIngress src/provisioning/providers/ec2/sg-ingress-update.ts:updateSecurityGroupIngress was-replaced#1",
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "className": "EC2Provider",
+      "file": "src/provisioning/providers/ec2/sg-ingress-update.ts",
+      "function": "updateSecurityGroupIngress",
+      "signal": "was-replaced",
+      "disposition": {
+        "kind": "no-template-trigger",
+        "rationale": "the answer of the rollback-replay re-authorize above"
+      },
+      "triggers": [],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::EC2::SecurityGroupIngress src/provisioning/providers/ec2/sg-ingress-update.ts:updateSecurityGroupIngress was-replaced#2",
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "className": "EC2Provider",
+      "file": "src/provisioning/providers/ec2/sg-ingress-update.ts",
+      "function": "updateSecurityGroupIngress",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "CidrIp",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "CidrIpv6",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Description",
+          "verdict": "exempt",
+          "exemption": "not-a-trigger",
+          "rationale": "a description change updates the rule in place (#6514); revoke + authorize follows only when AWS no longer has the rule or the recorded description is redacted"
+        },
+        {
+          "property": "FromPort",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "GroupId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "IpProtocol",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourcePrefixListId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceSecurityGroupOwnerId",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ToPort",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::IAM::ManagedPolicy src/provisioning/providers/iam-managed-policy/update.ts:update own-create#1",
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "className": "IAMManagedPolicyProvider",
+      "file": "src/provisioning/providers/iam-managed-policy/update.ts",
+      "function": "update",
+      "signal": "own-create",
+      "triggers": [
+        {
+          "property": "Description",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ManagedPolicyName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Path",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::IAM::ManagedPolicy src/provisioning/providers/iam-managed-policy/update.ts:update was-replaced#1",
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "className": "IAMManagedPolicyProvider",
+      "file": "src/provisioning/providers/iam-managed-policy/update.ts",
+      "function": "update",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "Description",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ManagedPolicyName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Path",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::IAM::Role src/provisioning/providers/iam-role/update.ts:update own-create#1",
+      "resourceType": "AWS::IAM::Role",
+      "className": "IAMRoleProvider",
+      "file": "src/provisioning/providers/iam-role/update.ts",
+      "function": "update",
+      "signal": "own-create",
+      "triggers": [
+        {
+          "property": "Path",
+          "verdict": "conditional"
+        },
+        {
+          "property": "RoleName",
+          "verdict": "replacement",
+          "via": "rule"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::IAM::Role src/provisioning/providers/iam-role/update.ts:update was-replaced#1",
+      "resourceType": "AWS::IAM::Role",
+      "className": "IAMRoleProvider",
+      "file": "src/provisioning/providers/iam-role/update.ts",
+      "function": "update",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "Path",
+          "verdict": "conditional"
+        },
+        {
+          "property": "RoleName",
+          "verdict": "replacement",
+          "via": "rule"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::Lambda::Permission src/provisioning/providers/lambda-permission-provider.ts:update own-create#1",
+      "resourceType": "AWS::Lambda::Permission",
+      "className": "LambdaPermissionProvider",
+      "file": "src/provisioning/providers/lambda-permission-provider.ts",
+      "function": "update",
+      "signal": "own-create",
+      "disposition": {
+        "kind": "every-property",
+        "rationale": "a permission has no update API, so every change removes and re-adds the statement; every property is create-only, so the diff replaces it through the engine first"
+      },
+      "triggers": [
+        {
+          "property": "Action",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "EventSourceToken",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FunctionName",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FunctionUrlAuthType",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "InvokedViaFunctionUrl",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "Principal",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "PrincipalOrgID",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceAccount",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "SourceArn",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::Route53::RecordSet src/provisioning/providers/route53/record-set.ts:updateRecordSet was-replaced#1",
+      "resourceType": "AWS::Route53::RecordSet",
+      "className": "Route53Provider",
+      "file": "src/provisioning/providers/route53/record-set.ts",
+      "function": "updateRecordSet",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "HostedZoneName",
+          "verdict": "conditional"
+        },
+        {
+          "property": "Name",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "SetIdentifier",
+          "verdict": "exempt",
+          "exemption": "cfn-update",
+          "rationale": "CloudFormation shows an update; the record is swapped in one atomic change batch, so the name never stops resolving"
+        },
+        {
+          "property": "Type",
+          "verdict": "exempt",
+          "exemption": "cfn-update",
+          "rationale": "CloudFormation shows an update; the record is swapped in one atomic change batch, so the name never stops resolving"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::SNS::Subscription src/provisioning/providers/sns-subscription-provider.ts:replace own-create#1",
+      "resourceType": "AWS::SNS::Subscription",
+      "className": "SNSSubscriptionProvider",
+      "file": "src/provisioning/providers/sns-subscription-provider.ts",
+      "function": "replace",
+      "signal": "own-create",
+      "triggers": [
+        {
+          "property": "DeliveryPolicy",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "Endpoint",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FilterPolicy",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "FilterPolicyScope",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "Protocol",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RawMessageDelivery",
+          "verdict": "exempt",
+          "exemption": "not-a-trigger",
+          "rationale": "the attribute plan sets it in place, and resets it when removed (RESET_VALUES)"
+        },
+        {
+          "property": "RedrivePolicy",
+          "verdict": "exempt",
+          "exemption": "not-a-trigger",
+          "rationale": "the attribute plan sets it in place, and resets it when removed (RESET_VALUES)"
+        },
+        {
+          "property": "ReplayPolicy",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "SubscriptionRoleArn",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "TopicArn",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::SNS::Subscription src/provisioning/providers/sns-subscription-provider.ts:replace was-replaced#1",
+      "resourceType": "AWS::SNS::Subscription",
+      "className": "SNSSubscriptionProvider",
+      "file": "src/provisioning/providers/sns-subscription-provider.ts",
+      "function": "replace",
+      "signal": "was-replaced",
+      "triggers": [
+        {
+          "property": "DeliveryPolicy",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "Endpoint",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "FilterPolicy",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "FilterPolicyScope",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "Protocol",
+          "verdict": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "RawMessageDelivery",
+          "verdict": "exempt",
+          "exemption": "not-a-trigger",
+          "rationale": "the attribute plan sets it in place, and resets it when removed (RESET_VALUES)"
+        },
+        {
+          "property": "RedrivePolicy",
+          "verdict": "exempt",
+          "exemption": "not-a-trigger",
+          "rationale": "the attribute plan sets it in place, and resets it when removed (RESET_VALUES)"
+        },
+        {
+          "property": "ReplayPolicy",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "SubscriptionRoleArn",
+          "verdict": "provider-marked"
+        },
+        {
+          "property": "TopicArn",
+          "verdict": "replacement",
+          "via": "create-only"
+        }
+      ],
+      "status": "ok"
+    }
+  ]
+}
