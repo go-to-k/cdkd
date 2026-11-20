@@ -8,8 +8,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import type { ResourceState } from '../../types/state.js';
 import { StaleAttributeMissSignal } from '../stale-attribute-heal.js';
 import { getPropertyCoverage } from '../../provisioning/property-coverage.js';
-import { WRITABLE_GETATT_ATTRIBUTES } from '../../provisioning/getatt-attributes.generated.js';
-import { isRecordedIdentityAttribute } from '../recorded-identity-attributes.js';
+import { isUnexposedRecordedIdentity } from '../unexposed-identity-attribute.js';
 import {
   healWithheld,
   staleRecordRemedy,
@@ -547,28 +546,6 @@ export function refuseEndpointTheEngineLacks(
 }
 
 /**
- * Whether the type's committed schema lists `attributeName` as a
- * `Fn::GetAtt` attribute: its read-only properties (the CFn schema fixture,
- * via {@link getPropertyCoverage}) union the writable ones the resource
- * specification also lists ({@link WRITABLE_GETATT_ATTRIBUTES}). `undefined`
- * for a type with no committed schema: cdkd cannot tell, so it does not refuse.
- * Offline on purpose: the live `getTopLevelAttributeNames` would add a
- * `DescribeType` call to every deploy that reads one of these attributes.
- */
-function committedGetAttListsAttribute(
-  resourceType: string,
-  attributeName: string
-): boolean | undefined {
-  const coverage = getPropertyCoverage(resourceType);
-  if (coverage === undefined) return undefined;
-  if (coverage.readOnly.has(attributeName)) return true;
-  return (
-    Object.hasOwn(WRITABLE_GETATT_ATTRIBUTES, resourceType) &&
-    WRITABLE_GETATT_ATTRIBUTES[resourceType]!.includes(attributeName)
-  );
-}
-
-/**
  * go-to-k/cdkd#6655: the AWS-minted identity id cdkd records for its own
  * delete and re-adopt checks (`SURVIVOR_IDENTITY_ATTRIBUTES`) is NOT
  * always a CloudFormation attribute. `AWS::DynamoDB::Table` exposes only `Arn`
@@ -582,9 +559,10 @@ function committedGetAttListsAttribute(
  * resource specification's for a few types, so it can certify an identity key
  * as unexposed but not refuse an arbitrary one.
  *
- * Template `Fn::GetAtt` only: cdkd's own readers of the record
- * (`recorded-identity.ts`, the rollback re-adopt check) read `attributes`
- * directly and never come through here.
+ * `cdkd orphan`'s attribute fetcher takes the same check
+ * (`analyzer/orphan-rewriter/attribute-fetcher.ts`). cdkd's own identity
+ * readers (`recorded-identity.ts`, the rollback re-adopt check) read
+ * `attributes` directly and never come through either.
  */
 export function refuseUnexposedRecordedIdentity(
   resolver: IntrinsicFunctionResolver,
@@ -593,12 +571,7 @@ export function refuseUnexposedRecordedIdentity(
   attributeName: string,
   context: ResolverContext | undefined
 ): void {
-  if (
-    !isRecordedIdentityAttribute(resourceType, attributeName) ||
-    committedGetAttListsAttribute(resourceType, attributeName) !== false
-  ) {
-    return;
-  }
+  if (!isUnexposedRecordedIdentity(resourceType, attributeName)) return;
   // `markNonRetryable`: the verdict is the template's own spelling, which no
   // retry changes, and the message interpolates template text.
   throw markNonRetryable(
