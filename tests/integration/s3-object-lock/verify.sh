@@ -14,6 +14,10 @@
 # Phases:
 #   1. Deploy; assert ObjectLockEnabled + GOVERNANCE retention Days=1 and
 #      DefaultEventHold.Days=1.
+#   1b. (go-to-k/cdkd#6664) Phase 1 deploys with --no-capture-observed-state,
+#      so the buckets carry NO observed baseline; `cdkd drift` must exit 0 and
+#      not report the declared top-level ObjectLockEnabled (the readback never
+#      emits it) as drift.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (Days 1 -> 5, hold 1 -> 3). Assert
 #      both new values reached AWS and the bucket was not replaced (same
 #      CreationDate). LateFlagBucket gains the top-level ObjectLockEnabled:
@@ -140,7 +144,7 @@ cleanup
 # --- Phase 1: deploy baseline (GOVERNANCE, 1 day) ---------------------
 echo "==> Phase 1: deploy bucket with Object Lock + default retention 1 day"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-capture-observed-state
 
 MODE_P1="$(aws s3api get-object-lock-configuration --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --query 'ObjectLockConfiguration.Rule.DefaultRetention.Mode' --output text)"
@@ -175,6 +179,20 @@ if ! gone_probe aws s3api get-object-lock-configuration --bucket "${LATE_BUCKET_
   exit 1
 fi
 echo "    ${LATE_BUCKET_NAME}: no Object Lock (CreationDate=${LATE_CREATION_P1})"
+
+# --- Phase 1b: drift with no observed baseline (#6664) -------------------
+echo "==> Phase 1b: drift on a bucket with no observed baseline must not report ObjectLockEnabled"
+DRIFT_P1B="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
+  echo "FAIL: cdkd drift exited non-zero on an untouched stack with no observed baseline (#6664):" >&2
+  echo "${DRIFT_P1B}" >&2
+  exit 1
+}
+if grep -q 'ObjectLockEnabled' <<<"${DRIFT_P1B}"; then
+  echo "FAIL: cdkd drift reported ObjectLockEnabled as drift with no observed baseline (#6664):" >&2
+  echo "${DRIFT_P1B}" >&2
+  exit 1
+fi
+echo "    drift clean: no ObjectLockEnabled drift without a baseline"
 
 # --- Phase 2: raise retention 1 -> 5 days (in-place) ------------------
 echo "==> Phase 2: re-deploy raising default retention 1 -> 5 days"

@@ -15,6 +15,9 @@ reads it back via `GetObjectLockConfiguration`.
 
 1. **Phase 1 (deploy)** — the bucket is created with Object Lock enabled and a
    GOVERNANCE default retention of 1 day.
+1b. **Phase 1b (drift, go-to-k/cdkd#6664)** — Phase 1 deploys with
+   `--no-capture-observed-state`, so there is no observed baseline; `cdkd drift`
+   must exit 0 and not report the declared top-level `ObjectLockEnabled`.
 2. **Phase 2 (UPDATE, `CDKD_TEST_UPDATE=true`)** — raising the default retention
    1 -> 5 days is an in-place `PutObjectLockConfiguration` UPDATE; the bucket is
    **not** replaced (CreationDate unchanged) and there is no phantom drift.
