@@ -169,7 +169,7 @@ export function reportSdkUnwiredDecisions(
       const keys = keptOnSdk.map((v) => safeMsg`${resourceType}:${v.property}`).join(',');
       this.logger.warn(
         safeMsg`${logicalId} (${resourceType}): --prefer-sdk-route keeps this resource on its SDK ` +
-          `provider, which cannot send part of it — the deploy will still report success. ` +
+          `provider, which cannot send part of it as declared. ` +
           safeMsg`${reasonList}. Drop ${keys} from --prefer-sdk-route to route it via Cloud Control ` +
           `API, which sends it.`
       );

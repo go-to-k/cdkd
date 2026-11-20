@@ -9,6 +9,7 @@ import {
 import type { CreateAuthorizerCommandOutput } from '@aws-sdk/client-api-gateway';
 import { isDeepStrictEqual } from 'node:util';
 import { toSdkJwtConfiguration } from './jwt-configuration.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors/marks.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { stringifyValue } from '../../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -201,6 +202,27 @@ export async function updateAuthorizer(
     );
   }
 
+  // A JWT authorizer keeps its trusted issuers until something replaces them,
+  // and API Gateway refuses `remove /jwtConfiguration`, so a template dropping
+  // the block while staying JWT would report success over the OLD access
+  // gate. Refuse before any call.
+  if (
+    properties['Type'] === 'JWT' &&
+    properties['JwtConfiguration'] == null &&
+    previousProperties['JwtConfiguration'] != null
+  ) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        `API Gateway Authorizer ${logicalId} is a JWT authorizer, which needs JwtConfiguration: ` +
+          `API Gateway cannot remove it, so the issuers deployed before would stay in force. ` +
+          `Declare the JwtConfiguration it should hold, or change Type.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
   // ProviderARNs is a list API Gateway patches only element by element:
   // `replace /providerARNs` is refused (go-to-k/cdkd#5408). The adds go
   // FIRST and the removes LAST because AWS applies the operations in
@@ -256,9 +278,12 @@ export async function updateAuthorizer(
   // JwtConfiguration is replaced whole (see jwt-configuration.ts). A REMOVED
   // one sends nothing: API Gateway refuses `remove /jwtConfiguration`, and
   // drops the block itself when `/type` leaves JWT, which a JWT authorizer
-  // losing it must do.
+  // losing it must do (refused above otherwise). A TOKEN / REQUEST -> JWT
+  // switch fails at AWS ("A JWT authorizer doesn't support this parameter"):
+  // the Lambda authorizer's TTL cannot be cleared (measured us-east-1,
+  // go-to-k/cdkd#6690), so such an authorizer needs a new logical id.
   const jwt = properties['JwtConfiguration'];
-  if (jwt !== undefined && !isDeepStrictEqual(jwt, previousProperties['JwtConfiguration'])) {
+  if (jwt != null && !isDeepStrictEqual(jwt, previousProperties['JwtConfiguration'])) {
     patchOperations.push({
       op: 'replace',
       path: '/jwtConfiguration',

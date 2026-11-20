@@ -195,10 +195,13 @@ const APIGW_AUTHORIZER_CASE: TypeCase = {
           DefaultAlgorithms: ['RS256'],
         },
       },
-      expectedSilent: {
-        'update-remove:JwtConfiguration': `nothing is sent on removal: API Gateway refuses \`remove /jwtConfiguration\` and drops the block itself when /type leaves JWT (measured us-east-1, go-to-k/cdkd#6690; ${APIGW_SRC}/authorizer.ts)`,
+      expectedRemovalThrows: {
+        ...APIGW_AUTHORIZER_REQUIRED,
+        'update-remove:JwtConfiguration': {
+          why: `a JWT authorizer dropping it is refused before any call: API Gateway refuses \`remove /jwtConfiguration\`, so the old issuers would stay in force (measured us-east-1, go-to-k/cdkd#6690; ${APIGW_SRC}/authorizer.ts)`,
+          says: /needs JwtConfiguration: API Gateway cannot remove it/,
+        },
       },
-      expectedRemovalThrows: APIGW_AUTHORIZER_REQUIRED,
     },
   ],
 };
