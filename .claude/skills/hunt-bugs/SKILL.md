@@ -19,19 +19,15 @@ verified gone ("Cleanup is non-negotiable" below).
    notifications, `BucketDeployment`, Lambda `logRetention`,
    `AwsCustomResource`, `LambdaRestApi`, adding a GSI / changing a property on
    redeploy, `grant*` IAM, cross-stack refs) over exotic edge cases.
-2. **UPDATE and DESTROY are where bugs hide.** CREATE usually works; the
-   high-value paths are redeploy-with-a-changed-property (replacement
-   classification, silent drops) and delete (custom-resource onDelete,
-   ordering, state cleanup). Always test an update and always run destroy.
+2. **UPDATE and DESTROY are where bugs hide** (replacement classification,
+   silent drops, delete ordering, state cleanup): always test both.
 3. **Check coverage first** — hunt in genuinely-uncovered territory:
    ```bash
    grep -rln "BucketDeployment\|addEventNotification\|logRetention\|AwsCustomResource\|LambdaRestApi\|NodejsFunction" tests/integration/
    ```
-4. **Parallelize, but cap at ~4-5 in flight.** One CDK app, several stacks.
-   **Pre-synth once, then deploy from the assembly** — parallel deploys that
-   each re-synth collide on the shared `cdk.out` lock. `npx cdk synth -q` (every
-   stack, no flag needed) once, then `node dist/cli.js deploy <Stack> -a "$HUNT_DIR/cdk.out" ...`
-   per stack. (Without `-a`, deploy serially.)
+4. **Parallelize, ~4-5 in flight, from ONE pre-synthesized assembly**:
+   parallel re-synths collide on the `cdk.out` lock. `npx cdk synth -q` once,
+   then `node dist/cli.js deploy <Stack> -a "$HUNT_DIR/cdk.out" ...` per stack.
 
 ## Workflow
 
@@ -63,25 +59,21 @@ stack per pattern, named `CdkdBughunt${RUN}<Pattern>`.
 ### 3. Deploy (parallel, capped)
 
 `node dist/cli.js deploy <Stack> -a <path-to-cdk.out> --state-bucket <bucket>`,
-each to its own log. Watch for deploy errors, wrong replacement decisions,
-silent drops, custom-resource hangs. Where cheap, add a quick **functional**
-check (put an S3 object, confirm the notification fired) — a clean deploy
-summary is not proof the feature works.
+each to its own log. Where cheap, add a **functional** check (put an S3
+object, confirm the notification fired): a clean summary proves nothing.
 
 ### 4. Test an UPDATE
 
-For at least one stack, redeploy with a changed property (env var, memory,
-GSI, tag, added resource). `cdkd diff` first, then deploy. The single richest
-bug source — verify the change reached AWS and was NOT a surprise replacement.
+For at least one stack, `cdkd diff` then redeploy a changed property; verify
+it reached AWS and was NOT a surprise replacement.
 
-**For every Cloud Control-routed resource** (`provisionedBy: 'cc-api'` in
-state), also change ONE property that goes through the service's main update
-call (a `Description`, an action, a setting; not a tag, a priority or a
-name) while the other declared properties stay unchanged, and run an
-out-of-band change through `drift --revert`. Cloud Control sends the read
-model's spelling of every untouched property, which some update calls refuse
-(#6676); a no-op patch and a property served by a separate call prove
-nothing. Compare a refusal with a CloudFormation A/B stack.
+**Per Cloud Control-routed type** (`provisionedBy: 'cc-api'` in state), on one
+resource: change ONE property served by the service's main update call (a
+`Description`, an action, a setting; not a tag, priority or name) with the
+rest unchanged, then change that property out of band and `drift --revert`.
+Some update calls refuse the read-model spelling Cloud Control sends for the
+untouched ones (#6676). Skip a type with no such property; compare a refusal
+with a CloudFormation A/B stack.
 
 ### 5. Destroy + verify zero orphans — non-negotiable
 
