@@ -42,6 +42,10 @@ graphlib graph. On top:
 - **Lambda `VpcConfig` edge** (`lambda-vpc-deps.ts`) — subnets and SGs in
   `VpcConfig` get edges to the Lambda, so the reversed delete removes the
   Lambda first and the async ENI detach finishes before EC2 refuses.
+- **WaitCondition signaller edge** (#6704) — every resource referencing a
+  `WaitCondition`'s `Handle` gets an edge to it, so a small `--concurrency`
+  cannot run the wait before the instance that signals it. Skipped for a
+  resource the wait already reaches.
 - **Alias `UpdatePolicy` edge** — `--update-policy` only: an alias depends on
   what its `CodeDeployLambdaAliasUpdate` names (#6437).
 - **Type-based deletion ordering** (`implicit-delete-deps.ts`) — type-pair rules

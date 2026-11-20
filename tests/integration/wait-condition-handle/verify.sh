@@ -145,7 +145,64 @@ HANDLE_ID2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | node 
   || { echo "FAIL: handle physical id changed on update (${HANDLE_ID} -> ${HANDLE_ID2})" >&2; exit 1; }
 echo "    OK: handle physical id stable across update"
 
-echo "==> Phase 3: Destroy"
+echo "==> Phase 3: a placeholder handle no wait condition waits on is left alone (#6704)"
+# A pre-#6694 handle had no signal object: remove phase 1's versions first.
+VERS_JSON=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "${SIGNAL_KEY}" \
+  --region "${REGION}" --output json)
+VERSION_IDS=$(printf '%s' "${VERS_JSON}" | KEY="${SIGNAL_KEY}" node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const r = d.trim() === "" ? {} : JSON.parse(d);
+    const all = (r.Versions ?? []).concat(r.DeleteMarkers ?? []);
+    for (const v of all) if (v.Key === process.env.KEY) process.stdout.write(v.VersionId + "\n");
+  });')
+for VID in ${VERSION_IDS}; do
+  aws s3api delete-object --bucket "${STATE_BUCKET}" --key "${SIGNAL_KEY}" --version-id "${VID}" \
+    --region "${REGION}" >/dev/null
+done
+LEGACY_ID="cdkd-wait-condition-handle-Placeholder-00000000-0000-4000-8000-000000000000"
+STATE_TMP=$(mktemp)
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | LEGACY_ID="${LEGACY_ID}" node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const s = JSON.parse(d);
+    const id = Object.keys(s.resources).find(
+      (k) => s.resources[k].resourceType === "AWS::CloudFormation::WaitConditionHandle"
+    );
+    s.resources[id].physicalId = process.env.LEGACY_ID;
+    s.outputs.HandleRef = process.env.LEGACY_ID;
+    process.stdout.write(JSON.stringify(s));
+  });' > "${STATE_TMP}"
+aws s3 cp "${STATE_TMP}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+rm -f "${STATE_TMP}"
+echo "    seeded the record with a placeholder id"
+
+CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+HANDLE_ID3=$(printf '%s' "${STATE_JSON}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const s = JSON.parse(d);
+    const r = Object.values(s.resources).find(
+      (x) => x.resourceType === "AWS::CloudFormation::WaitConditionHandle"
+    );
+    process.stdout.write(r ? r.physicalId : "");
+  });')
+# Only a wait condition re-issues a placeholder (the re-issue updates every
+# reader); this stack has none, so the record must keep it, as
+# cdk-multi-region-stack's bare handle does.
+[ "${HANDLE_ID3}" = "${LEGACY_ID}" ] \
+  || { echo "FAIL: a placeholder handle no wait condition waits on was re-issued" >&2; exit 1; }
+echo "    OK: the placeholder handle is left as it was"
+OUTPUT_REF3=$(printf '%s' "${STATE_JSON}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => process.stdout.write(JSON.parse(d).outputs?.HandleRef ?? ""));')
+[ "${OUTPUT_REF3}" = "${LEGACY_ID}" ] \
+  || { echo "FAIL: HandleRef output moved off the placeholder" >&2; exit 1; }
+
+echo "==> Phase 4: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 assert_gone "SSM param still exists after destroy" aws ssm get-parameter --name "${PARAM}" --region "${REGION}"

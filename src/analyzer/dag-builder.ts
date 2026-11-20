@@ -187,6 +187,9 @@ export class DagBuilder {
     // in the DAG even when those properties are wrapped in unusual shapes.
     edgeCount += this.addLambdaVpcEdges(graph, template);
 
+    // A WaitCondition waits for the resources that signal its handle (#6704).
+    edgeCount += this.addWaitConditionSignallerEdges(graph, template);
+
     // Validate graph is acyclic
     if (!alg.isAcyclic(graph)) {
       const cycles = this.findCycles(graph);
@@ -367,6 +370,68 @@ export class DagBuilder {
   dependsOn(graph: GraphType, resourceA: string, resourceB: string): boolean {
     const deps = this.getAllDependencies(graph, resourceA);
     return deps.has(resourceB);
+  }
+
+  /**
+   * Add implicit edges to each `AWS::CloudFormation::WaitCondition` from every
+   * other resource downstream of its `Handle` (go-to-k/cdkd#6704): the
+   * instance whose user data signals the handle URL, or the Auto Scaling group
+   * launching from a launch template that embeds it. This over-approximates
+   * (an instance's EIP association also runs first), which only delays the
+   * wait's start: a signal sent before the wait starts still counts.
+   *
+   * A waiting WaitCondition holds a `--concurrency` slot for up to its
+   * `Timeout`. With no edge — CloudFormation needs none, having no concurrency
+   * limit — a small `--concurrency` could run the wait first and starve the
+   * resource that would signal it. Ordering the wait after its signallers
+   * loses nothing: signals sent before the wait starts still count.
+   *
+   * An edge is skipped when the WaitCondition already reaches the resource
+   * (that resource runs after the wait by the template's own edges), as
+   * `addCustomResourcePolicyEdges` does. Templates without a WaitCondition pay
+   * one type scan and nothing else.
+   *
+   * Returns the number of edges added.
+   */
+  private addWaitConditionSignallerEdges(
+    graph: GraphType,
+    template: CloudFormationTemplate
+  ): number {
+    const resourceIds = this.parser.getResourceIds(template);
+    const waits: { id: string; handleId: string }[] = [];
+    for (const id of resourceIds) {
+      const resource = this.parser.getResource(template, id);
+      if (resource?.Type !== 'AWS::CloudFormation::WaitCondition') continue;
+      const handleId = this.extractLogicalIdFromReference((resource.Properties ?? {})['Handle']);
+      if (handleId !== undefined) waits.push({ id, handleId });
+    }
+    if (waits.length === 0) return 0;
+
+    let added = 0;
+    for (const wait of waits) {
+      if (!graph.hasNode(wait.handleId)) continue;
+      // Every resource downstream of the handle, not only its direct readers:
+      // an Auto Scaling group launching from a launch template that embeds the
+      // handle is the signaller there, one hop away.
+      const signallers = this.getAllDependents(graph, wait.handleId);
+      const downstream = this.getAllDependents(graph, wait.id);
+      for (const id of signallers) {
+        if (id === wait.id) continue;
+        if (graph.hasEdge(id, wait.id)) continue;
+        if (downstream.has(id)) {
+          this.logger.debug(
+            safeMsg`Skipped implicit edge (wait condition signaller) from ${displayIdent(id)} to ${displayIdent(wait.id)}: it would close a cycle, the resource already runs after the wait`
+          );
+          continue;
+        }
+        graph.setEdge(id, wait.id);
+        added++;
+        this.logger.debug(
+          safeMsg`Added implicit edge (wait condition signaller) from ${displayIdent(id)} to ${displayIdent(wait.id)}`
+        );
+      }
+    }
+    return added;
   }
 
   /**

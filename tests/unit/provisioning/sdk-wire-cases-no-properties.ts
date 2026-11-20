@@ -26,7 +26,8 @@ const SIGNAL_STORE = {
   issueSignalUrl: async () => ({
     url: SIGNAL_URL,
     key: SIGNAL_KEY,
-    expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+    expiresAt: new Date(Date.now() + 12 * 3600 * 1000),
+    limitedByCredentials: false,
   }),
   readSignals: async () => [],
   deleteSignals: async () => undefined,

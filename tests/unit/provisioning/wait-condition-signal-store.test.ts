@@ -185,7 +185,8 @@ describe('WaitConditionSignalStore', () => {
     const issued = await store.issueSignalUrl('Handle');
     expect(issued.key).toMatch(/^wait-condition-signals\/Handle-[0-9a-f-]{36}\.json$/);
     const url = new URL(issued.url);
-    expect(url.searchParams.get('X-Amz-Expires')).toBe(String(SIGNAL_URL_EXPIRES_IN_SECONDS));
+    // CloudFormation's own handle URL lifetime, 12 h (#6704).
+    expect(url.searchParams.get('X-Amz-Expires')).toBe('43200');
     expect(url.searchParams.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/);
     // Neither the owner header nor a content type is signed: curl must be able to PUT.
     expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('host');
@@ -193,6 +194,8 @@ describe('WaitConditionSignalStore', () => {
     expect(issued.expiresAt.getTime()).toBeGreaterThanOrEqual(
       before + SIGNAL_URL_EXPIRES_IN_SECONDS * 1000
     );
+    // Long-lived credentials do not shorten it, so nothing should warn.
+    expect(issued.limitedByCredentials).toBe(false);
     expect(mockSend).not.toHaveBeenCalled();
   });
 
@@ -214,6 +217,7 @@ describe('WaitConditionSignalStore', () => {
     store.setBucket(BUCKET);
     const issued = await store.issueSignalUrl('Handle');
     expect(issued.expiresAt).toEqual(expiration);
+    expect(issued.limitedByCredentials).toBe(true);
   });
 
   it('reads each version in arrival order, GETting only versions not yet seen', async () => {
