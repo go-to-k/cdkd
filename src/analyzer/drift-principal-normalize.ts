@@ -169,30 +169,26 @@ export function collectPrincipalForms(value: unknown): {
 
 /**
  * Whether a `Principal` / `NotPrincipal` position anywhere in the value holds
- * an IAM unique id, a policy document carried as a JSON string included
- * (go-to-k/cdkd#6680). Such a value is AWS's rendering of a principal, which
- * only {@link canonicalizePrincipalUniqueIds} may prove equal to an ARN.
+ * an IAM unique id (`uniqueIds`) or an IAM role / user ARN (`arns`), a policy
+ * document carried as a JSON string included (go-to-k/cdkd#6680).
  */
-export function holdsPrincipalUniqueId(value: unknown): boolean {
+export function holdsPrincipalForm(value: unknown, form: 'uniqueIds' | 'arns'): boolean {
   if (typeof value === 'string') {
     if (!value.trimStart().startsWith('{')) return false;
     try {
-      return holdsPrincipalUniqueId(JSON.parse(value) as unknown);
+      return holdsPrincipalForm(JSON.parse(value) as unknown, form);
     } catch {
       return false;
     }
   }
-  if (collectPrincipalForms(value).uniqueIds.size > 0) return true;
-  if (Array.isArray(value)) return value.some((element) => holdsEmbeddedUniqueId(element));
   if (!value || typeof value !== 'object') return false;
-  return Object.values(value as Record<string, unknown>).some(holdsEmbeddedUniqueId);
-}
-
-/** A nested JSON-string document, or a container that may hold one. */
-function holdsEmbeddedUniqueId(value: unknown): boolean {
-  return (
-    (typeof value === 'string' || (typeof value === 'object' && value !== null)) &&
-    holdsPrincipalUniqueId(value)
+  if (collectPrincipalForms(value)[form].size > 0) return true;
+  // A nested JSON-string document, or a container that may hold one.
+  const members = Array.isArray(value) ? value : Object.values(value as Record<string, unknown>);
+  return members.some(
+    (member) =>
+      (typeof member === 'string' || (typeof member === 'object' && member !== null)) &&
+      holdsPrincipalForm(member, form)
   );
 }
 

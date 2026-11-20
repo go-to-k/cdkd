@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
-import { holdsPrincipalUniqueId } from '../../../src/analyzer/drift-principal-normalize.js';
+import { holdsPrincipalForm } from '../../../src/analyzer/drift-principal-normalize.js';
 
 /**
  * go-to-k/cdkd#6680: a pre-fix-baseline heal skipped a policy key whenever the
@@ -64,6 +64,13 @@ describe('preFixBaselineUncomparedDriftKeys: a recorded unique-id principal (go-
       );
     });
 
+    it('recorded with a unique-id principal, live naming no IAM ARN (#1515 cannot decide): skipped', () => {
+      const service = { [key]: member('*') };
+      expect(
+        preFixBaselineUncomparedDriftKeys(type, { [key]: member(BOGUS) }, service, service)
+      ).toEqual([key]);
+    });
+
     it('recorded as another document spelled with ARNs, live the declared value: skipped', () => {
       expect(
         preFixBaselineUncomparedDriftKeys(type, { [key]: member(ROLE_ARN, 's3:*') }, declared, live)
@@ -84,6 +91,17 @@ describe('preFixBaselineUncomparedDriftKeys: a recorded unique-id principal (go-
     expect(keys).not.toContain('Principal');
   });
 
+  it('a DynamoDB policy the template dropped, recorded with a unique id, live none: skipped', () => {
+    expect(
+      preFixBaselineUncomparedDriftKeys(
+        'AWS::DynamoDB::Table',
+        { ResourcePolicy: { PolicyDocument: JSON.stringify(doc(BOGUS)) } },
+        {},
+        {}
+      )
+    ).toEqual(['ResourcePolicy']);
+  });
+
   it('another member of the same resource still heals on its own', () => {
     const declared = { AssumeRolePolicyDocument: doc(ROLE_ARN), ManagedPolicyArns: [ROLE_ARN] };
     expect(
@@ -97,7 +115,7 @@ describe('preFixBaselineUncomparedDriftKeys: a recorded unique-id principal (go-
   });
 });
 
-describe('holdsPrincipalUniqueId', () => {
+describe('holdsPrincipalForm', () => {
   it.each([
     ['an object document', doc(BOGUS)],
     ['a user id in a NotPrincipal array', { Statement: [{ NotPrincipal: { AWS: [ROLE_ARN, USER_ID] } }] }],
@@ -106,7 +124,7 @@ describe('holdsPrincipalUniqueId', () => {
     ['a JSON string nested in an array', [JSON.stringify(doc(BOGUS))]],
     ['a top-level Principal string', { Principal: BOGUS }],
   ])('%s: true', (_label, value) => {
-    expect(holdsPrincipalUniqueId(value)).toBe(true);
+    expect(holdsPrincipalForm(value, 'uniqueIds')).toBe(true);
   });
 
   it.each([
@@ -116,6 +134,16 @@ describe('holdsPrincipalUniqueId', () => {
     ['a string that is not JSON', '{not json'],
     ['undefined', undefined],
   ])('%s: false', (_label, value) => {
-    expect(holdsPrincipalUniqueId(value)).toBe(false);
+    expect(holdsPrincipalForm(value, 'uniqueIds')).toBe(false);
+  });
+
+  it.each([
+    ['an object document', doc(ROLE_ARN), true],
+    ['a JSON-string document', JSON.stringify(doc(ROLE_ARN)), true],
+    ['a top-level Principal string', { Principal: ROLE_ARN }, true],
+    ['a wildcard and a service principal', { Statement: [{ Principal: '*' }, { Principal: { Service: 's3.amazonaws.com' } }] }, false],
+    ['an ARN outside a principal position', { Resource: ROLE_ARN }, false],
+  ])('arns, %s: %s', (_label, value, expected) => {
+    expect(holdsPrincipalForm(value, 'arns')).toBe(expected);
   });
 });
