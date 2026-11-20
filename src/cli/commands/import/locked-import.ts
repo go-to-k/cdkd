@@ -28,6 +28,7 @@ import {
 import { importNestedStackChildrenRecursive, synthesizeNestedStackArn } from './nested.js';
 import { captureObservedForImportedResources } from './observed-capture.js';
 import { writeRecordedMapping } from './overrides.js';
+import { adoptedRefValue, inRefOrder } from './sibling-refs.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
   buildStackState,
@@ -125,7 +126,12 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // the ids it read are stale (issue #4873).
   const collectRows = async (): Promise<ImportRow[]> => {
     const collected: ImportRow[] = [];
-    for (const { logicalId, resource } of resources) {
+    // go-to-k/cdkd#6662: a `Ref` target is dispatched first, and once adopted
+    // its `Ref` value joins the substitution map, so a resource naming its
+    // parent by `Ref` (a Route 53 record's zone) is resolved against it. An
+    // override keeps precedence; rows are reported in template order.
+    const refValues = new Map(overrides);
+    for (const { logicalId, resource } of inRefOrder(resources)) {
       // Selective mode: skip resources not in overrides up front. They
       // never hit the provider, so the summary correctly distinguishes
       // "out of scope" from "AWS not found".
@@ -177,11 +183,16 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
         region: targetRegion,
         providerRegistry,
         override: overrides.get(logicalId),
-        overrides,
+        overrides: refValues,
       });
       collected.push(outcome);
+      const refValue = overrides.has(logicalId) ? undefined : adoptedRefValue(outcome);
+      if (refValue !== undefined) refValues.set(logicalId, refValue);
     }
-    return collected;
+    const templateIndex = new Map(resources.map(({ logicalId }, i) => [logicalId, i]));
+    return collected.sort(
+      (a, b) => (templateIndex.get(a.logicalId) ?? 0) - (templateIndex.get(b.logicalId) ?? 0)
+    );
   };
   let rows = await collectRows();
 

@@ -35,6 +35,7 @@ import {
   recordedZoneForSwitch,
   refuseCfnUnresolvableZoneName,
   withTemplateAliasConflicts,
+  revertedRecordMode,
 } from './shared.js';
 import { isRecordValuesMismatchRefusal } from './record-set-group-shape.js';
 
@@ -223,7 +224,11 @@ export async function updateRecordSet(
 
   try {
     const resourceRecordSet = stateBorne
-      ? this.buildResourceRecordSet(properties)
+      ? this.buildResourceRecordSet(
+          context?.desiredFromAwsReadback === true
+            ? revertedRecordMode(properties, previousProperties)
+            : properties
+        )
       : withTemplateAliasConflicts(this.buildResourceRecordSet(properties), properties);
 
     const comment = properties['Comment'] as string | undefined;

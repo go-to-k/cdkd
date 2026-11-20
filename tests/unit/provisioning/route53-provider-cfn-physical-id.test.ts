@@ -167,17 +167,59 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       });
     });
 
-    it('stays override-only: declines with no override, per docs/import.md', async () => {
-      const result = await provider.import({
-        logicalId: 'WebsiteRecord',
-        resourceType: 'AWS::Route53::RecordSet',
-        stackName: 'MyStack',
-        region: 'us-east-1',
-        properties: RECORD_PROPS,
-      });
+    // go-to-k/cdkd#6662: auto mode finds the record by the template's identity.
+    const autoInput = (properties: Record<string, unknown>) => ({
+      logicalId: 'WebsiteRecord',
+      resourceType: 'AWS::Route53::RecordSet',
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      properties,
+    });
 
-      expect(result).toBeNull();
-      expect(mockSend).not.toHaveBeenCalled();
+    it('auto mode adopts a live record under the composite id', async () => {
+      mockSend.mockResolvedValueOnce(AWS_RECORD);
+      const result = await provider.import(autoInput(RECORD_PROPS));
+      expect(result).toEqual({
+        physicalId: 'Z0123456789ABCDEFGHIJ|record.example.com.|A',
+        attributes: {},
+      });
+    });
+
+    it('auto mode declines a record that is not live', async () => {
+      mockSend.mockResolvedValue({ ResourceRecordSets: [], IsTruncated: false });
+      expect(await provider.import(autoInput(RECORD_PROPS))).toBeNull();
+    });
+
+    it('auto mode picks the sibling by SetIdentifier, and declines when only another is live', async () => {
+      const sibling = (id: string) => ({
+        Name: 'record.example.com.',
+        Type: 'A',
+        SetIdentifier: id,
+        Weight: 10,
+        TTL: 300,
+        ResourceRecords: [{ Value: '1.2.3.4' }],
+      });
+      mockSend.mockResolvedValue({ ResourceRecordSets: [sibling('other')], IsTruncated: false });
+      expect(
+        await provider.import(autoInput({ ...RECORD_PROPS, SetIdentifier: 'mine', Weight: 10 }))
+      ).toBeNull();
+      mockSend.mockReset();
+      mockSend.mockResolvedValue({ ResourceRecordSets: [sibling('mine')], IsTruncated: false });
+      expect(
+        await provider.import(autoInput({ ...RECORD_PROPS, SetIdentifier: 'mine', Weight: 10 }))
+      ).toEqual({ physicalId: 'Z0123456789ABCDEFGHIJ|record.example.com.|A', attributes: {} });
+    });
+
+    it('auto mode declines an unresolved zone or SetIdentifier without a record read', async () => {
+      expect(
+        await provider.import(autoInput({ ...RECORD_PROPS, HostedZoneId: { Ref: 'Zone' } }))
+      ).toBeNull();
+      expect(
+        await provider.import(autoInput({ ...RECORD_PROPS, SetIdentifier: { Ref: 'P' } }))
+      ).toBeNull();
+      expect(
+        mockSend.mock.calls.some((c) => c[0] instanceof ListResourceRecordSetsCommand)
+      ).toBe(false);
     });
 
     // The import command aborts only when ZERO resources import, so a `null`

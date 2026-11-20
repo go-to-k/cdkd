@@ -31,12 +31,10 @@ import {
  * Supported types: `AWS::Route53::HostedZone` (AUTO-RESOLVED from the
  * template's `Name` since issue #1702, with an explicit `--resource`
  * override still taking precedence);
- * `AWS::Route53::RecordSet` (override-only — the supplied id is
- * CANONICALIZED rather than trusted, using the template's
- * `HostedZoneId` / `HostedZoneName` + `Name` + `Type` and verified
- * against AWS, but an import with no override still declines because
- * a RecordSet has no standalone identity for auto mode to key on);
- * `AWS::Route53::RecordSetGroup` (override-only for the same reason).
+ * `AWS::Route53::RecordSet` and `AWS::Route53::RecordSetGroup` (AUTO-RESOLVED
+ * from the template's zone + `Name` + `Type` + `SetIdentifier` since issue
+ * #6662, every record verified live; a supplied id is CANONICALIZED against
+ * the same identity rather than trusted).
  */
 export async function importImpl(
   this: Route53Provider,
@@ -166,17 +164,15 @@ export function compositeAgreesWithTemplate(
  * (Wildcard records used to fail here as well; `normalizeRecordName` now
  * decodes Route 53's octal escapes, so they canonicalize normally.)
  *
- * This stays OVERRIDE-ONLY (see the "sub-resources without a standalone
- * identity" list in docs/import.md): the id is now derived from the template
- * rather than trusted, but an import with no override at all still declines,
- * because a RecordSet has no standalone identity for auto mode to key on.
+ * With no override at all, {@link importRecordSetFromTemplate} finds the
+ * record by the identity the template declares (go-to-k/cdkd#6662).
  */
 export async function importRecordSet(
   this: Route53Provider,
   input: ResourceImportInput
 ): Promise<ResourceImportResult | null> {
   const known = input.knownPhysicalId;
-  if (!known) return null;
+  if (!known) return importRecordSetFromTemplate.call(this, input);
   // The early accept has to be CROSS-CHECKED against the template, or it
   // becomes the mis-decode this whole guard exists to prevent (issue #1711,
   // found in review). `parseRecordSetCompositeId` only asks for three
@@ -249,7 +245,10 @@ export async function importRecordSet(
   const compositeId = recordSetCompositeId(identity.hostedZoneId, identity.name, identity.type);
   let observed: Record<string, unknown> | ResourceNotFound | undefined;
   try {
-    observed = await this.readRecordSetAt(identity);
+    // The template's bag, so a weighted / latency / failover record is
+    // verified by its own SetIdentifier rather than by whichever sibling of
+    // its name + type sorts first (go-to-k/cdkd#6662).
+    observed = await this.readRecordSetAt(identity, input.properties);
   } catch (err) {
     // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
     const head = `Record set ${input.logicalId}: verification of '${known}' failed: `;
@@ -262,6 +261,36 @@ export async function importRecordSet(
   }
 
   return { physicalId: compositeId, attributes: {} };
+}
+
+/**
+ * Auto-mode adoption of a record set (go-to-k/cdkd#6662): the template names
+ * it exactly — its hosted zone (a `HostedZoneId` the import loop resolved
+ * from the zone adopted earlier in the run, or a `HostedZoneName`), `Name`,
+ * `Type` and, for a routing-policy record, `SetIdentifier` — so it is found
+ * by that identity and adopted only when the record is live. Anything the
+ * template leaves unresolved, a split-horizon zone name, or a record that is
+ * not there declines (`null`), never guesses. A lookup failure propagates,
+ * as for the hosted zone's name lookup.
+ */
+async function importRecordSetFromTemplate(
+  this: Route53Provider,
+  input: ResourceImportInput
+): Promise<ResourceImportResult | null> {
+  const { Name: name, Type: type, SetIdentifier: setIdentifier } = input.properties;
+  if (typeof name !== 'string' || !name || typeof type !== 'string' || !type) return null;
+  // An unresolved SetIdentifier cannot pick one record among its siblings.
+  if (setIdentifier !== undefined && typeof setIdentifier !== 'string') return null;
+  const identity = await this.resolveRecordSetIdentity(name, input.properties, {
+    requireUnambiguousZoneName: true,
+  });
+  if (!identity) return null;
+  const observed = await this.readRecordSetAt(identity, input.properties);
+  if (!observed || observed === RESOURCE_NOT_FOUND) return null;
+  return {
+    physicalId: recordSetCompositeId(identity.hostedZoneId, identity.name, identity.type),
+    attributes: {},
+  };
 }
 
 /**

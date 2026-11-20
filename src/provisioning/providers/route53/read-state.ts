@@ -237,6 +237,69 @@ export async function readRecordSet(
   return this.readRecordSetAt(identity, properties);
 }
 
+/**
+ * The characters a Route 53 record name holds UNESCAPED, plus the two
+ * `canonicalizeQueryName` encodes (`*`, `|`). Any other character is stored
+ * as an octal escape the query does not reproduce, so the listing position
+ * of such a name is not known and a miss proves nothing.
+ */
+const POSITIONABLE_RECORD_NAME = /^[a-z0-9_.*|-]+$/;
+
+/** Pages {@link recordProvablyAbsent} reads before answering "cannot tell". */
+const ABSENCE_SCAN_MAX_PAGES = 10;
+
+/**
+ * Whether no record of `name` + `type` (+ `setIdentifier`, absent meaning
+ * the record without one) exists in the zone (go-to-k/cdkd#6660).
+ *
+ * AWS starts the listing AT the requested name and type, so every record of
+ * that name + type is in the run that follows; the scan reads the WHOLE run
+ * (no `StartRecordIdentifier`, whose ordering AWS does not document) and
+ * proves absence only once it sees the run end — a later name or type, or
+ * the end of the listing. A name the query cannot position, a run longer
+ * than the scan cap, or a page without a continuation answers `false`.
+ */
+async function recordProvablyAbsent(
+  this: Route53Provider,
+  hostedZoneId: string,
+  name: string,
+  type: string,
+  setIdentifier: string | undefined
+): Promise<boolean> {
+  if (!POSITIONABLE_RECORD_NAME.test(name.toLowerCase())) return false;
+  const queryName = canonicalizeQueryName(name);
+  const wantedName = normalizeRecordName(name);
+  let start: { name: string; type: string; identifier?: string } = {
+    name: queryName,
+    type,
+  };
+  for (let page = 0; page < ABSENCE_SCAN_MAX_PAGES; page++) {
+    const resp = await this.getClient().send(
+      new ListResourceRecordSetsCommand({
+        HostedZoneId: hostedZoneId,
+        StartRecordName: start.name,
+        StartRecordType: start.type as RRType,
+        ...(start.identifier !== undefined && { StartRecordIdentifier: start.identifier }),
+        MaxItems: 100,
+      })
+    );
+    for (const r of resp.ResourceRecordSets ?? []) {
+      if (r.Name === undefined || normalizeRecordName(r.Name) !== wantedName || r.Type !== type) {
+        return true;
+      }
+      if (r.SetIdentifier === setIdentifier) return false;
+    }
+    if (resp.IsTruncated !== true) return true;
+    if (resp.NextRecordName === undefined || resp.NextRecordType === undefined) return false;
+    start = {
+      name: resp.NextRecordName,
+      type: resp.NextRecordType,
+      ...(resp.NextRecordIdentifier !== undefined && { identifier: resp.NextRecordIdentifier }),
+    };
+  }
+  return false;
+}
+
 /** {@link readRecordSet} for an identity already resolved. */
 export async function readRecordSetAt(
   this: Route53Provider,
@@ -300,10 +363,18 @@ export async function readRecordSetAt(
       r.Type === type &&
       (!matchSetIdentifier || r.SetIdentifier === setIdentifier)
   );
-  // A miss in this bounded window is cdkd's matcher failing to find the
-  // record (a name escape the query does not encode, a page boundary), not
-  // AWS saying it is gone: keep "cannot tell" (go-to-k/cdkd#4283).
-  if (!recordSet) return undefined;
+  // A miss in this bounded window can be cdkd's matcher failing to find the
+  // record (a name escape the query does not encode, a page boundary) rather
+  // than AWS saying it is gone (go-to-k/cdkd#4283): keep "cannot tell" unless
+  // a full scan of the record's name + type run proves it absent — without
+  // that, a record deleted out of band read as `unsupported` and drift
+  // exited 0 (go-to-k/cdkd#6660).
+  if (!recordSet) {
+    return matchSetIdentifier &&
+      (await recordProvablyAbsent.call(this, hostedZoneId, name, type, setIdentifier))
+      ? RESOURCE_NOT_FOUND
+      : undefined;
+  }
 
   const result: Record<string, unknown> = {
     HostedZoneId: hostedZoneId,

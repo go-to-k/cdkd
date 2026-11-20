@@ -2832,6 +2832,11 @@
       "scenarios": []
     },
     {
+      "name": "route53-drift-import",
+      "annotated": true,
+      "scenarios": []
+    },
+    {
       "name": "s3-analytics-inventory",
       "annotated": false,
       "scenarios": []
