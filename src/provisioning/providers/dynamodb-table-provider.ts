@@ -116,6 +116,13 @@ import {
 } from './dynamodb-table/table-settings.js';
 import { update } from './dynamodb-table/update.js';
 import {
+  settleWrittenTags,
+  type TagWrite,
+  TAGS_BASELINE_REREAD_DELAYS_MS,
+} from '../tags-own-write-baseline.js';
+import { warnUnsettledMember } from '../settle-after-own-write.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import {
   waitForTableActive,
   waitForTableActiveAfterUpdate,
   waitForTableAndIndexesActive,
@@ -750,6 +757,30 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
   readTableTags(...args: Parameters<typeof readTableTags>): ReturnType<typeof readTableTags> {
     return readTableTags.call(this, ...args);
+  }
+  /** Re-read schedule of the post-write `Tags` capture (#6609); tests zero it. */
+  protected tagsBaselineRereadDelaysMs: readonly number[] = TAGS_BASELINE_REREAD_DELAYS_MS;
+  /**
+   * The post-write capture's `Tags` (go-to-k/cdkd#6609): `readTableTags`
+   * re-asked until it shows what the update's tag calls wrote, else the
+   * newest answer with that write overlaid (`settleWrittenTags`).
+   */
+  readTableTagsBaseline(
+    tableArn: string,
+    written: TagWrite,
+    logicalId: string
+  ): ReturnType<typeof readTableTags> {
+    const read = (): ReturnType<typeof readTableTags> => this.readTableTags(tableArn);
+    // Positional, not an options literal: `gen-nested-key-coverage` reads an
+    // object literal in a readCurrentState path as reverse-map keys.
+    return settleWrittenTags(
+      read,
+      read,
+      written,
+      this.tagsBaselineRereadDelaysMs,
+      () => warnUnsettledMember(this.logger, logicalId, 'AWS::DynamoDB::Table', 'Tags'),
+      (answer) => answer === RESOURCE_NOT_FOUND
+    );
   }
 
   readPointInTimeRecovery(

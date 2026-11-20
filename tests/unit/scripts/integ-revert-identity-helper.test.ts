@@ -373,6 +373,25 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(gone.status).toBe(1);
   });
 
+  it('reads a secret by its CreatedDate, and FAILS once the secret is re-created', () => {
+    const arn = 'arn:aws:secretsmanager:us-east-1:111111111111:secret:s-AbCdEf';
+    writeState({ S1: { resourceType: 'AWS::SecretsManager::Secret', physicalId: arn } });
+    setAwsValue('2026-11-20T23:08:33.772000+09:00\n');
+    const r = run(`revert_identity_snapshot "${before()}" Stack S1`);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(readFileSync(before(), 'utf8')).toContain('\tunique:2026-11-20T23:08:33.772000+09:00\n');
+    const calls = readFileSync(awsLog, 'utf8');
+    expect(calls).toContain(`secretsmanager describe-secret --region us-east-1 --secret-id ${arn}`);
+    expect(calls).toContain('--query CreatedDate');
+    expect(calls).not.toContain('get-secret-value');
+    setAwsValue('2026-11-20T23:09:08.449000+09:00\n');
+    const after2 = run(
+      `revert_identity_snapshot "${after()}" Stack S1 && revert_identity_assert_unchanged "${before()}" "${after()}" 1 || exit 1`
+    );
+    expect(after2.status).toBe(1);
+  });
+
   it('classes an S3 bucket no-id (its CreationDate moves on a policy edit)', () => {
     writeState({ B1: { resourceType: 'AWS::S3::Bucket', physicalId: 'bkt' } });
     setAwsValue('bkt\n');
