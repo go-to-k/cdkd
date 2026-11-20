@@ -19,7 +19,11 @@ import {
   collectPrincipalsAttachingPolicy,
   managedPolicyAttachmentField,
 } from '../iam-sibling-managed-policies.js';
-import { sgRuleOwnershipIdentity, siblingOwnedSgRuleIdentities } from '../sg-sibling-rules.js';
+import {
+  sgRuleOwnershipIdentity,
+  siblingOwnedSgRuleIdentities,
+  skipSiblingsDecidedById,
+} from '../sg-sibling-rules.js';
 
 /** One helper-owned list: its key, a member's key, and which keys a sibling owns. */
 interface OwnedList {
@@ -91,7 +95,16 @@ function helperOwnedLists(
       out.push({
         key,
         keyOf: (m) => sgRuleOwnershipIdentity(m, direction),
-        owned: siblingOwnedSgRuleIdentities(physicalId, direction, properties, context),
+        // An id-recording sibling's live rule is assigned by id in the
+        // readback (go-to-k/cdkd#6641); a live rule at its identity is a
+        // stranger's, which the revert removes.
+        owned: siblingOwnedSgRuleIdentities(
+          physicalId,
+          direction,
+          properties,
+          context,
+          skipSiblingsDecidedById(properties, context)
+        ),
       });
     }
   }

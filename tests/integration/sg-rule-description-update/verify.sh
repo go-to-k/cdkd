@@ -14,7 +14,21 @@
 #      (pre-fix: three new ids, `Standalone ... replaced`);
 #   3. deploy v3 (the standalone rule's description is dropped): its id is kept
 #      and the description is gone;
-#   4. destroy: no group, VPC or state file of this fixture left.
+#   4. go-to-k/cdkd#6641: the standalone rule's port is moved 8443 -> 8444 out
+#      of band (`modify-security-group-rules` keeps its sgr- id). `cdkd drift`
+#      reports it on the Standalone record, not as an extra rule of the group;
+#      `cdkd drift --revert` refuses to replace the rule (exit 2) and the
+#      group's revert does not revoke it: the same sgr- id is still live on
+#      8444 and the group, the inline rules and the record keep their ids
+#      (pre-fix: the group's revert revoked the rule). Moved back, drift is
+#      clean;
+#   4b. the standalone rule is widened to 22 from 192.0.2.0/24 (TEST-NET-1:
+#      nothing is opened to the internet) and a stranger rule is authorized at
+#      its old identity (8443): drift reports the widening on Standalone and the
+#      stranger on the group; the revert revokes the stranger, refuses
+#      Standalone (exit 2) and never reports the widening reverted; moved back,
+#      drift is clean;
+#   5. destroy: no group, VPC or state file of this fixture left.
 #
 # Required env vars:
 #   STATE_BUCKET -- cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -72,6 +86,7 @@ fixture_vpcs() { # usage: fixture_vpcs -- ids, one per line, or a hard failure
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  [ -n "${CLEANUP_FILES:-}" ] && rm -f "${CLEANUP_FILES}"
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -220,7 +235,124 @@ expect_description "phase 3" "${SG}" "${IN_ID}" "cdkd 6514 ingress v2"
 expect_description "phase 3" "${SG}" "${OUT_ID}" "cdkd 6514 egress v2"
 echo "    OK: ${ST_ID} kept, its description cleared"
 
-echo "==> Phase 4: destroy"
+echo "==> Phase 4: a standalone rule moved out of band is never revoked by drift --revert (go-to-k/cdkd#6641)"
+STANDALONE_CIDR="10.97.0.0/16"
+move_standalone() { # usage: move_standalone <port> [cidr]
+  aws ec2 modify-security-group-rules --region "${REGION}" --group-id "${SG}" \
+    --security-group-rules "[{\"SecurityGroupRuleId\":\"${ST_ID}\",\"SecurityGroupRule\":{\"IpProtocol\":\"tcp\",\"FromPort\":$1,\"ToPort\":$1,\"CidrIpv4\":\"${2:-${STANDALONE_CIDR}}\"}}]" >/dev/null
+  local got=""
+  for _ in 1 2 3 4 5 6; do
+    got="$(rule_id "${SG}" false "$1" 2>/dev/null || true)"
+    [ "${got}" = "${ST_ID}" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: phase 4 premise: ${ST_ID} does not show on port $1 after modify-security-group-rules (got '${got}')" >&2
+  return 1
+}
+ST_PHYS="$(state_field '.resources.Standalone.physicalId // ""')"
+[ -n "${ST_PHYS}" ] || { echo "FAIL: phase 4 premise: Standalone records no physical id" >&2; exit 1; }
+move_standalone 8444
+DRIFT_JSON="$(mktemp)"
+CLEANUP_FILES="${DRIFT_JSON}"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+[ "${DRIFT_RC}" = "1" ] || { echo "FAIL: phase 4: cdkd drift exited ${DRIFT_RC}, expected 1 (drift)" >&2; cat "${DRIFT_JSON}" >&2; exit 1; }
+in_list() { # usage: in_list <list> <logical id> -- how many entries of <list> name it
+  jq --arg l "$2" "[.[].$1[]? | select(.logicalId == \$l)] | length" "${DRIFT_JSON}"
+}
+[ "$(in_list drifted Standalone)" = "1" ] || {
+  echo "FAIL: phase 4: the moved rule is not reported as drift on Standalone (go-to-k/cdkd#6641: it read as deleted)" >&2
+  cat "${DRIFT_JSON}" >&2; exit 1; }
+[ "$(in_list clean "${GROUP_LID}")" = "1" ] || {
+  echo "FAIL: phase 4: ${GROUP_LID} is not clean (go-to-k/cdkd#6641: the moved sibling rule read as an extra inline rule of the group)" >&2
+  cat "${DRIFT_JSON}" >&2; exit 1; }
+set +e
+REVERT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y 2>&1)"
+REVERT_RC=$?
+set -e
+printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
+# THE ARM: the same rule id is still live on 8444, so nothing revoked it.
+[ "$(rule_id "${SG}" false 8444)" = "${ST_ID}" ] || {
+  echo "FAIL: phase 4: ${ST_ID} is no longer the rule on 8444 after drift --revert (go-to-k/cdkd#6641: the group's revert revoked the sibling's rule)" >&2; exit 1; }
+[ "${REVERT_RC}" = "2" ] || { echo "FAIL: phase 4: cdkd drift --revert exited ${REVERT_RC}, expected 2 (the Standalone revert refused)" >&2; exit 1; }
+REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}" | grep -F "Standalone (AWS::EC2::SecurityGroupIngress): could not revert" || true)"
+grep -q 'a drift revert never replaces a resource' <<<"${REFUSAL}" || {
+  echo "FAIL: phase 4: no 'could not revert ... never replaces' line for Standalone: '${REFUSAL}'" >&2; exit 1; }
+# Nothing replaced: the group, its inline rules and the record keep their ids.
+aws ec2 describe-security-groups --group-ids "${SG}" --region "${REGION}" --query 'SecurityGroups[0].GroupId' --output text | grep -qx "${SG}" || {
+  echo "FAIL: phase 4: group ${SG} is gone after drift --revert" >&2; exit 1; }
+[ "$(state_field ".resources[\"${GROUP_LID}\"].physicalId // \"\"")" = "${SG}" ] || { echo "FAIL: phase 4: ${GROUP_LID} no longer records ${SG}" >&2; exit 1; }
+[ "$(rule_id "${SG}" false 443)" = "${IN_ID}" ] || { echo "FAIL: phase 4: the inline ingress rule is no longer ${IN_ID}" >&2; exit 1; }
+[ "$(rule_id "${SG}" true 443)" = "${OUT_ID}" ] || { echo "FAIL: phase 4: the inline egress rule is no longer ${OUT_ID}" >&2; exit 1; }
+[ "$(state_field '.resources.Standalone.attributes.Id // ""')" = "${ST_ID}" ] || {
+  echo "FAIL: phase 4: Standalone no longer records ${ST_ID} as its Id" >&2; exit 1; }
+[ "$(state_field '.resources.Standalone.physicalId // ""')" = "${ST_PHYS}" ] || {
+  echo "FAIL: phase 4: Standalone's physical id changed" >&2; exit 1; }
+# Moved back to the record, the stack is drift-clean again.
+move_standalone 8443
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1
+DRIFT_RC=$?
+set -e
+[ "${DRIFT_RC}" = "0" ] || { echo "FAIL: phase 4: cdkd drift exited ${DRIFT_RC} after the rule moved back, expected 0" >&2; exit 1; }
+echo "    OK: drift reported the moved rule on Standalone, the revert refused and revoked nothing, ids kept"
+
+echo "==> Phase 4b: a sibling widened to 22 plus a stranger at its old identity (go-to-k/cdkd#6641)"
+# Ownership is by sgr- id on both sides: the widened rule is Standalone's (its
+# drift, its refused revert), the stranger at Standalone's recorded identity is
+# the group's (its drift, revoked by its revert).
+rule_count() { # usage: rule_count <port> -- how many ingress rules of the group sit on it
+  aws ec2 describe-security-group-rules --region "${REGION}" --filters "Name=group-id,Values=${SG}" \
+    --query "length(SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`$1\`])" --output text
+}
+move_standalone 22 192.0.2.0/24
+STRANGER_ID="$(aws ec2 authorize-security-group-ingress --region "${REGION}" --group-id "${SG}" \
+  --ip-permissions "IpProtocol=tcp,FromPort=8443,ToPort=8443,IpRanges=[{CidrIp=${STANDALONE_CIDR}}]" \
+  --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text)"
+case "${STRANGER_ID}" in sgr-?*) ;; *) echo "FAIL: phase 4b premise: the stranger rule was not authorized ('${STRANGER_ID}')" >&2; exit 1 ;; esac
+[ "${STRANGER_ID}" != "${ST_ID}" ] || { echo "FAIL: phase 4b premise: the stranger carries ${ST_ID}" >&2; exit 1; }
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+[ "${DRIFT_RC}" = "1" ] || { echo "FAIL: phase 4b: cdkd drift exited ${DRIFT_RC}, expected 1" >&2; cat "${DRIFT_JSON}" >&2; exit 1; }
+[ "$(in_list drifted Standalone)" = "1" ] || {
+  echo "FAIL: phase 4b: the widened rule is not reported as drift on Standalone (go-to-k/cdkd#6641: the stranger at its old identity was read as its rule)" >&2
+  cat "${DRIFT_JSON}" >&2; exit 1; }
+[ "$(in_list drifted "${GROUP_LID}")" = "1" ] || {
+  echo "FAIL: phase 4b: ${GROUP_LID} does not report the stranger ${STRANGER_ID} (go-to-k/cdkd#6641: it was hidden as Standalone's)" >&2
+  cat "${DRIFT_JSON}" >&2; exit 1; }
+set +e
+REVERT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert -y 2>&1)"
+REVERT_RC=$?
+set -e
+printf '%s\n' "${REVERT_OUT}" | sed 's/^/    | /'
+PLAIN_REVERT="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${REVERT_OUT}")"
+# THE ARM: the stranger is revoked, the widened rule is never reported reverted.
+[ "$(rule_count 8443)" = "0" ] || { echo "FAIL: phase 4b: the stranger on 8443 survived the group's revert" >&2; exit 1; }
+if grep -F "Standalone (AWS::EC2::SecurityGroupIngress)" <<<"${PLAIN_REVERT}" | grep -q ': reverted'; then
+  echo "FAIL: phase 4b: the widened rule (22) was reported reverted" >&2; exit 1
+fi
+grep -F "Standalone (AWS::EC2::SecurityGroupIngress): could not revert" <<<"${PLAIN_REVERT}" | grep -q 'a drift revert never replaces a resource' || {
+  echo "FAIL: phase 4b: no 'could not revert ... never replaces' line for Standalone" >&2; exit 1; }
+[ "${REVERT_RC}" = "2" ] || { echo "FAIL: phase 4b: cdkd drift --revert exited ${REVERT_RC}, expected 2" >&2; exit 1; }
+[ "$(rule_id "${SG}" false 22)" = "${ST_ID}" ] || { echo "FAIL: phase 4b: ${ST_ID} is no longer the rule on 22 (the group's revert revoked Standalone's rule)" >&2; exit 1; }
+[ "$(rule_id "${SG}" false 443)" = "${IN_ID}" ] || { echo "FAIL: phase 4b: the inline ingress rule is no longer ${IN_ID}" >&2; exit 1; }
+[ "$(rule_id "${SG}" true 443)" = "${OUT_ID}" ] || { echo "FAIL: phase 4b: the inline egress rule is no longer ${OUT_ID}" >&2; exit 1; }
+[ "$(state_field ".resources[\"${GROUP_LID}\"].physicalId // \"\"")" = "${SG}" ] || { echo "FAIL: phase 4b: ${GROUP_LID} no longer records ${SG}" >&2; exit 1; }
+[ "$(state_field '.resources.Standalone.attributes.Id // ""')" = "${ST_ID}" ] || { echo "FAIL: phase 4b: Standalone no longer records ${ST_ID}" >&2; exit 1; }
+# Narrowed back by hand, the stack is drift-clean.
+move_standalone 8443
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1
+DRIFT_RC=$?
+set -e
+[ "${DRIFT_RC}" = "0" ] || { echo "FAIL: phase 4b: cdkd drift exited ${DRIFT_RC} after the rule moved back, expected 0" >&2; exit 1; }
+echo "    OK: the widening was Standalone's drift and never reported reverted; the stranger was the group's and was revoked"
+
+echo "==> Phase 5: destroy"
 VPC_ID="$(state_field '.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId')"
 case "${VPC_ID}" in vpc-?*) ;; *) echo "FAIL: phase 4: the VPC recorded '${VPC_ID}'" >&2; exit 1 ;; esac
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

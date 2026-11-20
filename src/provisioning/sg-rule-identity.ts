@@ -72,3 +72,28 @@ export function cfnIngressPortValue(value: unknown): number {
   // Booleans, arrays, objects: not a port in any spelling AWS or CFn accepts.
   return Number.NaN;
 }
+
+/**
+ * The `sgr-…` security-group rule id, anchored.
+ *
+ * Here, in a leaf with no SDK client, so `cdkd drift --revert` reads recorded
+ * rule ids without loading the EC2 provider (go-to-k/cdkd#6641);
+ * `sg-support.ts` re-exports it. `src/cli/commands/export/sg-ingress-rule-id.ts`
+ * keeps its own copy.
+ *
+ * Anchoring is what discriminates. `startsWith('sgr-')` also accepts
+ * `sgr-0abc|tcp|443|443` — a composite wearing the identifier's prefix — which
+ * on the import path reaches AWS as a malformed id and raises
+ * `InvalidSecurityGroupRuleId.Malformed`, an error `isNotFoundError` does not
+ * match, so `verifyExplicit` would THROW and abort the whole `cdkd import` run
+ * instead of declining that one row.
+ */
+export const SG_RULE_ID_PATTERN = /^sgr-[0-9a-f]+$/;
+
+/** A record's recorded `sgr-` rule id, when it has one. */
+export function recordedSgRuleId(
+  attributes: Readonly<Record<string, unknown>> | undefined
+): string | undefined {
+  const recorded = attributes?.['Id'];
+  return typeof recorded === 'string' && SG_RULE_ID_PATTERN.test(recorded) ? recorded : undefined;
+}
