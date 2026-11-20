@@ -337,17 +337,25 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region 
   --revert --yes >"${REVERT_LOG}" 2>&1
 REVERT_RC=$?
 set -e
-revert_identity_verify "${REVERT_DIR}/ids-before" "${REVERT_DIR}/ids-after" 3 "${REVERT_LOG}" || exit 1
+# The seeded marker makes cdkd print its refused-baseline remedy for the
+# policy, which names "a deploy that replaces the resource" as a way to clear
+# it: cdkd's advice, not a replacement this revert made.
+revert_identity_verify "${REVERT_DIR}/ids-before" "${REVERT_DIR}/ids-after" 3 "${REVERT_LOG}" \
+  "ignore=a deploy that replaces the resource" || exit 1
 sed 's/^/    | /' "${REVERT_LOG}"
 if [ "${REVERT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert --yes exited ${REVERT_RC}" >&2
   exit 1
 fi
-DETACH_LINES="$(grep -cF "detaches managed policy" "${REVERT_LOG}" || true)"
-if [ "${DETACH_LINES}" != "1" ]; then
-  echo "FAIL: the revert plan lists ${DETACH_LINES} managed-policy detaches, want exactly 1 (SecondRole's)" >&2
+DETACH_PLAN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_LOG}" | grep -F "detaches managed policy" || true)"
+DETACH_LINES="$(printf '%s' "${DETACH_PLAN}" | grep -c . || true)"
+echo "    revert plan detach line(s):"
+printf '%s\n' "${DETACH_PLAN}" | sed 's/^/    > /'
+if [ "${DETACH_LINES}" != "1" ] || ! grep -qF "${POLICY_ARN}" <<<"${DETACH_PLAN}"; then
+  echo "FAIL: the revert plan lists ${DETACH_LINES} managed-policy detaches, want exactly 1, of ${POLICY_ARN} (SecondRole's)" >&2
   exit 1
 fi
+echo "    OK: the revert plan lists exactly 1 detach, of ${POLICY_ARN}"
 expect_eq "ReadLogsPolicy on ${SECOND_ROLE} after the revert" "0" policy_on_role "${SECOND_ROLE}"
 OOB_ATTACHED_ROLE=""
 expect_eq "ReadLogsPolicy on ${ROLE_NAME} (declared) after the revert" "1" policy_on_role "${ROLE_NAME}"
