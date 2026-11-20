@@ -782,7 +782,7 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
             getLogger().warn(
               `A resource policy principal ARN names another account or IAM path, so its unique ` +
                 `id (AROA…/AIDA…) cannot be matched to it; a ` +
-                `drift between the two spellings is reported as is. If the principal is the ` +
+                `difference between the two spellings may be reported as drift. If the principal is the ` +
                 `intended one, drift with --accept records the ARN form and clears ` +
                 safeMsg`it${verboseAwareText(
                   '; re-run with --verbose to see which principal',
