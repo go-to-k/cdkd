@@ -143,6 +143,20 @@ failed against real S3).
    rule (`big-objects`, `ObjectSizeGreaterThan`). Assert the new values reached
    AWS, there are 3 rules, and the bucket was **not** replaced (same
    `CreationDate`).
+   - **Lifecycle baseline** (issue [#6609](https://github.com/go-to-k/cdkd/issues/6609)):
+     after phase 1 (create) and phase 2 (the rules change), the bucket's
+     `observedProperties.LifecycleConfiguration` must hold the declared rules
+     (rule count, `archive` expiration and GLACIER days, the `big-objects`
+     rule), and `cdkd drift --json` must list the bucket as compared and clean.
+     `GetBucketLifecycleConfiguration` answers the previous rules, or none, for
+     seconds after a Put, and the capture used to record that answer.
+   - **Phase 2r** (issue [#6609](https://github.com/go-to-k/cdkd/issues/6609)):
+     replace the bucket's lifecycle rules out of band, require `cdkd drift
+     --json` to report `LifecycleConfiguration`, run `cdkd drift --revert
+     --yes`, and require the template's rules live again on the same bucket:
+     the same state record, plus phase 1's identity check (an unchanged
+     `CreationDate` in us-east-1, a marker object's version elsewhere). A
+     follow-up drift must be clean.
    - **Phase 2d** (issue [#4684](https://github.com/go-to-k/cdkd/issues/4684)):
      `RenameArmBucket` (`CDKD_RENAME_ARM_BUCKET`) is renamed by a deploy that
      then fails on a queue depending on it (`CDKD_RENAME_ARM_FAIL`,

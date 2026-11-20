@@ -17,6 +17,11 @@ import {
   lambdaPermissionMatchesDeclared,
   policyDocumentMatchesDeclared,
 } from '../../../provisioning/settle-after-own-write.js';
+import {
+  declaredLifecycle,
+  lifecycleMatchesDeclared,
+  lifecycleReadIsAbsent,
+} from '../../../provisioning/providers/s3-bucket/lifecycle-baseline.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -162,10 +167,13 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * `AWS::Logs::DeliveryDestination` `DeliveryDestinationPolicy`,
  * `AWS::Logs::LogGroup` `DataProtectionPolicy`, `AWS::ApiGateway::RestApi`
  * `Policy`, `AWS::EFS::FileSystem` `FileSystemPolicy`,
- * `AWS::CodeBuild::Project` `Visibility` — is not compared while the live
+ * `AWS::CodeBuild::Project` `Visibility`, `AWS::S3::Bucket`
+ * `LifecycleConfiguration` (third slice) — is not compared while the live
  * member is the declared one (IAM-equivalent spellings folded), whatever the
  * baseline holds: a value captured before the write showed, or a kept
- * declared value AWS spells differently. Where removing the member deletes
+ * declared value AWS spells differently (a lifecycle rule declared without
+ * an `Id`, kept without the `Id` S3 generates, compares with the provider's
+ * own settle comparator, `lifecycleMatchesDeclared`). Where removing the member deletes
  * it, a template declaring none and a resource holding none agree too. The
  * `--accept` blind spot is the third rule's: an accepted out-of-band change
  * later undone outside cdkd, putting the member back to the template, is not
@@ -291,6 +299,19 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<
           );
         }
         return efsPolicyMatchesDeclared(aws['FileSystemPolicy'], declared);
+      },
+    },
+    'AWS::S3::Bucket': {
+      // The comparator the post-write capture settles on, so the two agree.
+      key: 'LifecycleConfiguration',
+      liveIsDeclared: (properties, aws) => {
+        const declared = declaredLifecycle(properties);
+        const live = aws['LifecycleConfiguration'];
+        if (declared === undefined || typeof live !== 'object' || live === null) return false;
+        const liveBag = live as Record<string, unknown>;
+        return declared.kind === 'absent'
+          ? lifecycleReadIsAbsent(liveBag)
+          : lifecycleMatchesDeclared(liveBag, declared.expected);
       },
     },
     'AWS::CodeBuild::Project': {
