@@ -60,6 +60,12 @@ import {
   compareDriftReadback,
   warnIfPreV10BaselineGap,
 } from './compare.js';
+import {
+  MANAGED_POLICY_TYPE,
+  managedPoliciesFirst,
+  notComparedManagedPolicyArns,
+  restoreEntryOrder,
+} from './not-compared-policies.js';
 
 /**
  * Run drift detection for one stack and shape the per-resource outcomes
@@ -274,7 +280,21 @@ export async function runDriftForStack(
       consecutiveReadFailures.ccApi = 0;
     };
 
-    for (const [logicalId, resource] of entries) {
+    // go-to-k/cdkd#6697: managed policies are compared first, so a principal
+    // knows which of them this run did not compare (`not-compared-policies.ts`);
+    // the outcomes go back to `entries` order after the walk (warnings logged
+    // during the walk keep the walk's order).
+    const walkStart = outcomes.length;
+    let notComparedPolicyArns: ReadonlySet<string> | undefined;
+    let inPolicyBlock = true;
+    for (const [logicalId, resource] of managedPoliciesFirst(entries)) {
+      // The breaker counts failures IN A ROW; grouping the policies first must
+      // not let IAM-policy-only failures (a missing `iam:GetPolicy`) run
+      // together and abort the rest of the stack's reads, which in template
+      // order other reads would have split. So a policy's failed read is not
+      // counted (the catch below). The cost: with every read failing, each
+      // policy is still tried before the rest of the stack trips the breaker.
+      if (resource.resourceType !== MANAGED_POLICY_TYPE) inPolicyBlock = false;
       // go-to-k/cdkd#3315. FIRST, above the skip rules: the warning names every
       // repaired id as not compared, so every one of them gets the outcome —
       // a type drift never compares included. That exit 2 is intended: the
@@ -589,6 +609,11 @@ export async function runDriftForStack(
             return;
           }
 
+          // Every managed policy is behind us by now (`managedPoliciesFirst`);
+          // a policy's own value is unused (it reads no sibling policy).
+          if (resource.resourceType !== MANAGED_POLICY_TYPE) {
+            notComparedPolicyArns ??= notComparedManagedPolicyArns(state.resources, outcomes);
+          }
           await compareDriftReadback({
             region,
             resolvePrincipalUniqueId,
@@ -605,6 +630,7 @@ export async function runDriftForStack(
             aws,
             readContext,
             ...(readOnlyPathsLookup && { readOnlyPathsLookup }),
+            ...(notComparedPolicyArns && { notComparedPolicyArns }),
           });
         } catch (err) {
           // A type with NO read path is not a failure. When the Cloud Control
@@ -691,7 +717,7 @@ export async function runDriftForStack(
           let breakerTripped = false;
           if (err instanceof DriftReadRefusedError) {
             noteReadReturned();
-          } else if (!readReturned) {
+          } else if (!readReturned && !inPolicyBlock) {
             consecutiveReadFailures[readPath]++;
             if (consecutiveReadFailures[readPath] === DRIFT_READ_FAILURE_BREAKER_THRESHOLD) {
               trippedReadPaths.add(readPath);
@@ -750,6 +776,7 @@ export async function runDriftForStack(
         }
       });
     }
+    restoreEntryOrder(outcomes, walkStart, entries);
 
     // Issue #3011. The `baselineRefused` gate above can only fire for a record
     // a v10-or-later binary refused, because only such a binary knew how to

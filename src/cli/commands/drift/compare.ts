@@ -89,6 +89,12 @@ interface CompareDriftReadbackArgs {
    * (go-to-k/cdkd#6485); absent for a provider's own read.
    */
   readOnlyPathsLookup?: Promise<readonly string[] | undefined>;
+  /**
+   * The ARNs of the stack's managed policies this run did not compare
+   * (`not-compared-policies.ts`, go-to-k/cdkd#6697); absent when none was
+   * looked up (a managed policy's own comparison).
+   */
+  notComparedPolicyArns?: ReadonlySet<string>;
 }
 
 /**
@@ -114,6 +120,7 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     aws,
     readContext,
     readOnlyPathsLookup,
+    notComparedPolicyArns,
   } = args;
   // Providers can declare state property paths they cannot read back
   // from AWS (e.g. Lambda `Code`, Secrets Manager `SecretString`). The
@@ -488,17 +495,16 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
       resource.physicalId,
       grantKeys,
       resource.properties,
-      readContext
+      readContext,
+      notComparedPolicyArns
     )
   );
   // go-to-k/cdkd#5736 / #5741: an undeclared key another writer owns
   // (a bucket's NotificationConfiguration) is not compared, whichever
-  // baseline is in use. The #6328 IAM attachment-list entries give way to
-  // go-to-k/cdkd#6627's grant keys.
+  // baseline is in use. The table names no IAM principal key: those are
+  // go-to-k/cdkd#6627's grant keys, compared above.
   const ownedIgnorePaths = [
-    ...undeclaredUncomparedDriftKeys(resource.resourceType, resource.properties).filter(
-      (key) => !grantKeys.includes(key)
-    ),
+    ...undeclaredUncomparedDriftKeys(resource.resourceType, resource.properties),
     ...undeclaredGrantIgnorePaths(comparedBaseline, paired.aws, grantKeys),
   ];
   // go-to-k/cdkd#5749: a baseline value a pre-#5737 cdkd recorded by

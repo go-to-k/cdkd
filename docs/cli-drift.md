@@ -164,8 +164,10 @@ attachments, so drift reports such an attachment made outside the stack on the
 policy, not a second time on the principal. This holds only when that list
 holds plain names; a list holding a `{{resolve:...}}` reference leaves the
 attachment to the principal. In a run where the policy itself is not
-compared (its read failed, or its baseline was refused), such an attachment
-is reported on neither resource until a later run compares the policy.
+compared (its read failed, or its baseline was refused), the principal
+reports such an attachment instead, and `--revert` detaches it from the
+principal. `--accept` in such a run records it on the principal only, so a
+later run that compares the policy reports it again, on the policy.
 If a member was granted on purpose, by another stack or by your
 organization's automation, run `cdkd drift --accept` instead: it records the
 member, and drift stops reporting it. An inline policy recorded this way is pinned to the document it

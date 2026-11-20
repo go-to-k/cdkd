@@ -74,13 +74,15 @@ export function collectManagedPolicyArnsAttachedBySiblings(
  * attach would be reverted twice (the second detach finds nothing to detach).
  * Empty without a context or for another type.
  *
- * KNOWN LIMIT (go-to-k/cdkd#6697): the policy's own comparison can still fail
- * in that run (a refused baseline, a failed read, an unresolved token); the
- * attachment is then reported on neither resource for that run.
+ * `notCompared` (go-to-k/cdkd#6697): the ARNs of the stack's managed policies
+ * that this drift run did NOT compare (a failed or aborted read, a refused
+ * baseline, a record it could not read). Such a policy reports nothing, so its
+ * attachment stays the principal's to report and revert in that run.
  */
 export function managedPoliciesDeclaringAttachments(
   resourceType: string,
-  context: ReadCurrentStateContext | undefined
+  context: ReadCurrentStateContext | undefined,
+  notCompared: ReadonlySet<string> = new Set()
 ): string[] {
   const field = ATTACHMENT_FIELD[resourceType];
   if (field === undefined) return [];
@@ -88,7 +90,7 @@ export function managedPoliciesDeclaringAttachments(
   for (const sibling of Object.values(context?.siblings ?? {})) {
     if (sibling.resourceType !== 'AWS::IAM::ManagedPolicy') continue;
     const arn = sibling.physicalId;
-    if (typeof arn !== 'string' || arn === '') continue;
+    if (typeof arn !== 'string' || arn === '' || notCompared.has(arn)) continue;
     // Only a list the policy's own drift can compare and revert: names as
     // plain strings. A stored expression or mask (`{{resolve:...}}`, `***`)
     // makes that policy's update ADD-only, and an unresolved intrinsic is no

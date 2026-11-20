@@ -686,6 +686,92 @@ describe("an attachment a same-stack ManagedPolicy's own declared list owns (iam
   });
 });
 
+describe('a same-stack ManagedPolicy this run did not compare (go-to-k/cdkd#6697)', () => {
+  beforeEach(setUp);
+  afterEach(() => exitSpy.mockRestore());
+
+  // `ZMp` sorts AFTER `Subject`, so a walk in template order would compare
+  // the group before the policy's outcome exists.
+  const mp = (groups: string[], extra: Partial<ResourceState> = {}): ResourceState => ({
+    physicalId: SIB_ARN,
+    resourceType: 'AWS::IAM::ManagedPolicy',
+    properties: { PolicyDocument: DOC('s3:GetObject'), Groups: groups },
+    ...extra,
+  });
+  const failPolicyRead = (): void => {
+    const groupProvider = new IAMUserGroupProvider();
+    mockRegistryGetProvider.mockImplementation((type) =>
+      type === 'AWS::IAM::ManagedPolicy'
+        ? {
+            readCurrentState: async () => {
+              throw new Error('AccessDenied: iam:GetPolicy');
+            },
+          }
+        : groupProvider
+    );
+  };
+  function notCompared(): Array<{ logicalId: string; cause: string }> {
+    const [report] = JSON.parse(stdout) as Array<{
+      notCompared: Array<{ logicalId: string; cause: string }>;
+    }>;
+    return report!.notCompared.map(({ logicalId, cause }) => ({ logicalId, cause }));
+  }
+
+  it.each([
+    ['its read failed', 'readFailed', {}],
+    ['its baseline was refused', 'baselineRefused', { observedBaselineRefused: true as const }],
+  ] as const)(
+    "when %s, its out-of-band attach to a group its Groups does not name is the group's drift, and --revert detaches it once",
+    async (_l, cause, extra) => {
+      if (cause === 'readFailed') failPolicyRead();
+      resources = { Subject: principalRecord('Group'), ZMp: mp(['other-group'], extra) };
+      live.managed.push(SIB_ARN);
+      expect(await runDrift(['--json'])).toBe(1);
+      expect(changes()).toEqual([{ logicalId: 'Subject', path: 'ManagedPolicyArns' }]);
+      expect(notCompared()).toEqual([{ logicalId: 'ZMp', cause }]);
+      expect(await runDrift(['--revert', '--yes'])).toBe(0);
+      expect(writes).toEqual([`DetachGroupPolicy ${SIB_ARN}`]);
+      expect(stdout).toContain(`- detaches managed policy ${SIB_ARN}`);
+      expect(live.managed).toEqual([]);
+    }
+  );
+
+  it('when it was compared, the same attach is the policy\'s alone, whichever comes first', async () => {
+    resources = { Subject: principalRecord('Group'), ZMp: mp(['other-group']) };
+    live.managed.push(SIB_ARN);
+    // The policy reads back as recorded here, so only it could report the attach.
+    expect(await runDrift(['--json'])).toBe(0);
+    expect(changes()).toEqual([]);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual([]);
+  });
+
+  it('an attachment its declared Groups names stays out of the group\'s comparison while it is not compared', async () => {
+    failPolicyRead();
+    resources = { Subject: principalRecord('Group'), ZMp: mp([NAME.Group]) };
+    live.managed.push(SIB_ARN);
+    expect(await runDrift(['--json'])).toBe(2);
+    expect(changes()).toEqual([]);
+    expect(notCompared()).toEqual([{ logicalId: 'ZMp', cause: 'readFailed' }]);
+    await runDrift(['--revert', '--yes']);
+    expect(writes).toEqual([]);
+    expect(live.managed).toEqual([SIB_ARN]);
+  });
+
+  it("policies' failed reads, compared together first, do not trip the read breaker for the rest of the stack", async () => {
+    failPolicyRead();
+    resources = { Subject: principalRecord('Group') };
+    for (let i = 0; i < 6; i++) {
+      resources[`ZMp${i}`] = mp(['other-group'], { physicalId: `${SIB_ARN}${i}` });
+    }
+    live.managed.push(OOB_ARN);
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes()).toEqual([{ logicalId: 'Subject', path: 'ManagedPolicyArns' }]);
+    expect(notCompared().every((n) => n.cause === 'readFailed')).toBe(true);
+    expect(notCompared().map((n) => n.logicalId)).not.toContain('Subject');
+  });
+});
+
 describe('a template that DECLARES the key keeps the ordinary comparison (go-to-k/cdkd#6627)', () => {
   beforeEach(setUp);
   afterEach(() => exitSpy.mockRestore());

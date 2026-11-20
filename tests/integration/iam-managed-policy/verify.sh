@@ -19,6 +19,14 @@
 #   - the destroy path detaches the policy before deleting it and then deletes
 #     the roles - a clean destroy with everything gone proves the
 #     detach-before-delete ordering held;
+#   - (go-to-k/cdkd#6697) ReadLogsPolicy attached out of band to SecondRole,
+#     which its `Roles` does not name: while the policy is compared, `cdkd
+#     drift` reports the attach on the policy and not on SecondRole; once the
+#     policy's record is marked `observedBaselineRefused` (seeded in the S3
+#     state, so the policy is not compared), drift reports it on SecondRole,
+#     and `cdkd drift --revert --yes` detaches it from SecondRole in place (no
+#     replacement), keeps ServiceRole's declared attachment, and drift no
+#     longer reports SecondRole;
 #   - (go-to-k/cdkd#6655) ServiceRole and ReadLogsPolicy, deleted and
 #     re-created under their names outside the stack before the destroy, are
 #     REFUSED by the destroy (their RoleId / PolicyId differs from the
@@ -67,6 +75,9 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DEPLOY_LOG="$(mktemp -t iam-managed-policy.XXXXXX)"
+# go-to-k/cdkd#6697: the drift / revert arm's reports and identity snapshots.
+. ../revert-identity.sh
+REVERT_DIR="$(mktemp -d -t iam-managed-policy-revert.XXXXXX)"
 
 # IAM is eventually consistent right after create; let the CLI back off
 # transparently for the assertion + cleanup calls.
@@ -85,11 +96,17 @@ cleanup() {
   if [ -n "${FOREIGN_POLICY:-}" ]; then
     aws iam delete-policy --policy-arn "${FOREIGN_POLICY}" >/dev/null 2>&1
   fi
+  # go-to-k/cdkd#6697: the out-of-band attach no record holds, should the run
+  # stop before its revert.
+  if [ -n "${OOB_ATTACHED_ROLE:-}" ]; then
+    aws iam detach-role-policy --role-name "${OOB_ATTACHED_ROLE}" --policy-arn "${POLICY_ARN}" >/dev/null 2>&1
+  fi
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
   fi
   rm -f "${DEPLOY_LOG}" "${DEPLOY_LOG}.2" 2>/dev/null || true
+  [ -n "${REVERT_DIR:-}" ] && rm -rf "${REVERT_DIR}" 2>/dev/null
   set -e
   exit "${rc}"
 }
@@ -202,6 +219,161 @@ echo "==> Step 3b (LOAD-BEARING): the baseline lists landed as declared"
 expect_eq "instance profile roles" "${ROLE_NAME} " profile_roles "${PROFILE}"
 expect_eq "GroupA members" "${MEMBER_A} " group_members "${GROUP_A}"
 expect_eq "GroupB members" "${MEMBER_B} " group_members "${GROUP_B}"
+
+echo "==> Step 3b2 (LOAD-BEARING, go-to-k/cdkd#6697): an attach of a policy drift did not compare is the principal's drift"
+state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
+lid_of() { # usage: lid_of <resourceType> <physicalId>
+  state_json | jq -r --arg t "$1" --arg p "$2" \
+    '.resources | to_entries[] | select(.value.resourceType == $t and .value.physicalId == $p) | .key'
+}
+POLICY_LID="$(lid_of AWS::IAM::ManagedPolicy "${POLICY_ARN}")"
+SECOND_LID="$(lid_of AWS::IAM::Role "${SECOND_ROLE}")"
+ROLE_LID="$(lid_of AWS::IAM::Role "${ROLE_NAME}")"
+for v in POLICY_LID SECOND_LID ROLE_LID; do
+  if [ -z "${!v}" ]; then echo "FAIL: no state record for ${v}" >&2; exit 1; fi
+done
+run_drift_json() { # usage: run_drift_json <out-file> -> DRIFT_RC; exit 0..2 is a report
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json \
+    >"$1" 2>"$1.err"
+  DRIFT_RC=$?
+  set -e
+  if [ "${DRIFT_RC}" -gt 2 ] || ! jq -e . "$1" >/dev/null 2>&1; then
+    echo "FAIL: cdkd drift --json exited ${DRIFT_RC} without a JSON report" >&2
+    cat "$1" "$1.err" >&2
+    exit 1
+  fi
+}
+# Whether <logical-id>'s drift names the policy ARN under a path starting <key>.
+drift_names_policy() { # usage: drift_names_policy <report> <logical-id> <key>
+  jq -e --arg l "$2" --arg k "$3" --arg a "${POLICY_ARN}" '
+    [.[] | (.drifted // [])[] | select(.logicalId == $l) | .changes[]
+      | select(.path | startswith($k)) | (.awsValue | tostring) | contains($a)] | any
+  ' "$1" >/dev/null
+}
+drifted_ids() { # usage: drifted_ids <report> -> one drifted logical id per line, sorted
+  jq -r '[.[] | (.drifted // [])[] | .logicalId] | sort | .[]' "$1"
+}
+
+# The attach SecondRole's own template does not declare, and the policy's
+# `Roles` does not name. IAM is eventually consistent: wait until it reads.
+aws iam attach-role-policy --role-name "${SECOND_ROLE}" --policy-arn "${POLICY_ARN}"
+OOB_ATTACHED_ROLE="${SECOND_ROLE}"
+expect_eq "ReadLogsPolicy on ${SECOND_ROLE} (out of band)" "1" policy_on_role "${SECOND_ROLE}"
+# The policy's own drift reads `ListEntitiesForPolicy`, a separate read that
+# can lag the role-side one.
+policy_lists_role() { # usage: policy_lists_role <role-name> -> 1 when listed, 0 when not
+  aws iam list-entities-for-policy --policy-arn "${POLICY_ARN}" --entity-filter Role \
+    --query "PolicyRoles[?RoleName=='$1'] | length(@)" --output text
+}
+expect_eq "ReadLogsPolicy lists ${SECOND_ROLE} (out of band)" "1" policy_lists_role "${SECOND_ROLE}"
+
+# NEGATIVE CONTROL: the policy is compared, so the attach is its drift
+# (`Roles`), and SecondRole does not report it a second time (go-to-k/cdkd#6627).
+REPORT="${REVERT_DIR}/drift-compared.json"
+run_drift_json "${REPORT}"
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} with ReadLogsPolicy attached out of band, want 1" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+if ! jq -e --arg l "${POLICY_LID}" --arg r "${SECOND_ROLE}" '
+    [.[] | (.drifted // [])[] | select(.logicalId == $l) | .changes[]
+      | select(.path | startswith("Roles")) | (.awsValue | tostring) | contains($r)] | any
+  ' "${REPORT}" >/dev/null; then
+  echo "FAIL: ReadLogsPolicy (${POLICY_LID}) does not report ${SECOND_ROLE} in its Roles drift" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+if drifted_ids "${REPORT}" | grep -qxF "${SECOND_LID}"; then
+  echo "FAIL: ${SECOND_LID} reports the attach although ReadLogsPolicy was compared (a second detach on --revert)" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+echo "    OK: the compared policy reports the attach, ${SECOND_LID} does not"
+
+# Make ReadLogsPolicy NOT compared: mark its record's baseline refused, the
+# marker a `cdkd import` writes (drift reports `notCompared: baselineRefused`
+# before any read). Assignments, so a failed read or jq aborts here; an empty
+# read is never uploaded over the state.
+SEED_STATE="$(state_json)"
+SEEDED="$(printf '%s' "${SEED_STATE}" | jq --arg id "${POLICY_LID}" '.resources[$id].observedBaselineRefused = true')"
+if [ -z "${SEEDED}" ] || [ "$(printf '%s' "${SEEDED}" | jq -r --arg id "${POLICY_LID}" '.resources[$id].observedBaselineRefused')" != "true" ]; then
+  echo "FAIL: could not seed observedBaselineRefused on ${POLICY_LID}" >&2
+  exit 1
+fi
+printf '%s\n' "${SEEDED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+
+REPORT="${REVERT_DIR}/drift-not-compared.json"
+run_drift_json "${REPORT}"
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} with ReadLogsPolicy not compared, want 1 (the attach on ${SECOND_LID})" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+if ! jq -e --arg l "${POLICY_LID}" \
+  '[.[] | (.notCompared // [])[] | select(.logicalId == $l and .cause == "baselineRefused")] | length == 1' \
+  "${REPORT}" >/dev/null; then
+  echo "FAIL: ReadLogsPolicy (${POLICY_LID}) is not reported notCompared: baselineRefused; the seed did not take" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+if ! drift_names_policy "${REPORT}" "${SECOND_LID}" ManagedPolicyArns; then
+  echo "FAIL: ${SECOND_LID} does not report the out-of-band ReadLogsPolicy attach while the policy is not compared (go-to-k/cdkd#6697: reported on neither resource)" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+if drifted_ids "${REPORT}" | grep -qxF "${ROLE_LID}"; then
+  echo "FAIL: ${ROLE_LID} reports drift; its attachment is the one the policy's Roles declares" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+echo "    OK: with the policy not compared, ${SECOND_LID} reports the attach and ${ROLE_LID} does not"
+
+REVERT_LOG="${REVERT_DIR}/revert.log"
+revert_identity_snapshot "${REVERT_DIR}/ids-before" "${STACK}" "${SECOND_LID}" "${ROLE_LID}" "${POLICY_LID}" || exit 1
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes >"${REVERT_LOG}" 2>&1
+REVERT_RC=$?
+set -e
+revert_identity_verify "${REVERT_DIR}/ids-before" "${REVERT_DIR}/ids-after" 3 "${REVERT_LOG}" || exit 1
+sed 's/^/    | /' "${REVERT_LOG}"
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift --revert --yes exited ${REVERT_RC}" >&2
+  exit 1
+fi
+DETACH_LINES="$(grep -cF "detaches managed policy" "${REVERT_LOG}" || true)"
+if [ "${DETACH_LINES}" != "1" ]; then
+  echo "FAIL: the revert plan lists ${DETACH_LINES} managed-policy detaches, want exactly 1 (SecondRole's)" >&2
+  exit 1
+fi
+expect_eq "ReadLogsPolicy on ${SECOND_ROLE} after the revert" "0" policy_on_role "${SECOND_ROLE}"
+OOB_ATTACHED_ROLE=""
+expect_eq "ReadLogsPolicy on ${ROLE_NAME} (declared) after the revert" "1" policy_on_role "${ROLE_NAME}"
+
+REPORT="${REVERT_DIR}/drift-after-revert.json"
+run_drift_json "${REPORT}"
+if drifted_ids "${REPORT}" | grep -qxF "${SECOND_LID}"; then
+  echo "FAIL: ${SECOND_LID} still reports drift after the revert" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+echo "    OK: the revert detached the attach once, in place, and ${SECOND_LID} is clean"
+
+# Restore the record so the rest of the run deploys and destroys it as usual.
+SEED_STATE="$(state_json)"
+RESTORED="$(printf '%s' "${SEED_STATE}" | jq --arg id "${POLICY_LID}" 'del(.resources[$id].observedBaselineRefused)')"
+if [ -z "${RESTORED}" ]; then echo "FAIL: could not restore ${POLICY_LID}'s record" >&2; exit 1; fi
+printf '%s\n' "${RESTORED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+REPORT="${REVERT_DIR}/drift-restored.json"
+run_drift_json "${REPORT}"
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} once the policy's record was restored, want 0" >&2
+  cat "${REPORT}" >&2
+  exit 1
+fi
+echo "    OK: drift is clean with the policy compared again"
 
 echo "==> Step 3c: redeploy with CDKD_TEST_UPDATE=true (every principal list swapped)"
 set +e
