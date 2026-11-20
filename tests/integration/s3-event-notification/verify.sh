@@ -256,16 +256,17 @@ if ! await_value 1 aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --regi
 fi
 BUCKET_LID="$(bucket_lid "${BUCKET_NAME}")" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${BUCKET_LID}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || {
-  cat "${REVERT_DIR}/revert-1.log"
-  echo "FAIL: cdkd drift --revert (Phase 1c) failed" >&2
-  exit 1
-}
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-1.log"
 revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${BUCKET_LID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift --revert (Phase 1c) failed" >&2
+  exit 1
+fi
 if ! INJECTED_AFTER="$(await_value 0 aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" \
     --region "${REGION}" --query "length(TagSet[?Key=='cdkd-integ-5736'])" --output text)"; then
   echo "FAIL: drift --revert did not remove the injected tag (count ${INJECTED_AFTER}) -- the revert never wrote the bucket" >&2
@@ -293,16 +294,17 @@ if ! await_value Suspended aws s3api get-bucket-versioning --bucket "${SHARED_BU
 fi
 SHARED_LID="$(bucket_lid "${SHARED_BUCKET}")" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" "${SHARED_LID}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2.log" 2>&1 || {
-  cat "${REVERT_DIR}/revert-2.log"
-  echo "FAIL: cdkd drift --revert (Phase 1d) failed" >&2
-  exit 1
-}
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-2.log"
 revert_output_assert_no_replacement "${REVERT_DIR}/revert-2.log" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" "${SHARED_LID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL: cdkd drift --revert (Phase 1d) failed" >&2
+  exit 1
+fi
 if ! VERSIONING_AFTER="$(await_value Enabled aws s3api get-bucket-versioning \
     --bucket "${SHARED_BUCKET}" --region "${REGION}" --query Status --output text)"; then
   echo "FAIL: drift --revert did not restore the shared bucket's versioning (${VERSIONING_AFTER}) -- the revert never wrote the bucket" >&2

@@ -1139,11 +1139,13 @@ if [ -z "${GT_LID_2C}" ]; then
   exit 1
 fi
 revert_identity_snapshot "${LOG_DIR}/revert-ids-2c-before" "${STACK}" "${GT_LID_2C}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes 2>&1 | tee "${LOG_DIR}/phase2c-revert.log"
+  --revert --yes 2>&1 | tee "${LOG_DIR}/phase2c-revert.log" || REVERT_RC=$?
 revert_output_assert_no_replacement "${LOG_DIR}/phase2c-revert.log" || exit 1
 revert_identity_snapshot "${LOG_DIR}/revert-ids-2c-after" "${STACK}" "${GT_LID_2C}" || exit 1
 revert_identity_assert_unchanged "${LOG_DIR}/revert-ids-2c-before" "${LOG_DIR}/revert-ids-2c-after" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 2c: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_settled
 await_settings "${SECOND_REGION}" "	True$" "Phase 2c: drift --revert did not protect the replica again (issue #5381)"
 await_replica "${SECOND_REGION}" "^ENABLED	10	ENABLED	${REPLICA_KINESIS_ARN}	present	present$" \
@@ -1262,11 +1264,13 @@ if [ -z "${GT_LID_5B}" ]; then
   exit 1
 fi
 revert_identity_snapshot "${LOG_DIR}/revert-ids-5b-before" "${STACK}" "${GT_LID_5B}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
-  --revert --yes 2>&1 | tee "${LOG_DIR}/phase5b-revert.log"
+  --revert --yes 2>&1 | tee "${LOG_DIR}/phase5b-revert.log" || REVERT_RC=$?
 revert_output_assert_no_replacement "${LOG_DIR}/phase5b-revert.log" || exit 1
 revert_identity_snapshot "${LOG_DIR}/revert-ids-5b-after" "${STACK}" "${GT_LID_5B}" || exit 1
 revert_identity_assert_unchanged "${LOG_DIR}/revert-ids-5b-before" "${LOG_DIR}/revert-ids-5b-after" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 5b: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_settled
 # An AWS owned key reads back as no SSEDescription (None), as in Phase 5.
 await_settings "${REGION}" "^None	None	None	None	False$" \

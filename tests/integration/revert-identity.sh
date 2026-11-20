@@ -62,7 +62,8 @@
 #   REPLACED backstop line (src/cli/commands/drift/revert-apply.ts) FAILs in
 #   both modes.
 #   Each ignore=<literal> (a stack name, logical id or property name of the
-#   fixture's own that contains the needle) is removed from the output first.
+#   fixture's own that contains the needle) is removed from the output first,
+#   as is ${STATE_BUCKET} (a run-chosen name cdkd echoes) always.
 #   Re-check a fixture's names against the needle when wiring it.
 #
 # AWS IDENTITY CLASSES (the probe table)
@@ -400,6 +401,9 @@ revert_output_assert_no_replacement() {
   # A fixture's own identifier that carries the needle (a stack name such as
   # `CdkdRecreate...`, a property such as `ReplaceUnhealthy`) is cut out
   # literally before matching, so only cdkd's wording is judged.
+  # The state bucket name is a run's own choice and is echoed in cdkd's
+  # summary lines, so it is always ignored.
+  [ -n "${STATE_BUCKET:-}" ] && ignores+=("${STATE_BUCKET}")
   if [ "${#ignores[@]}" -gt 0 ]; then
     for lit in "${ignores[@]}"; do
       plain="$(REVERT_IDENTITY_LIT="${lit}" perl -pe 's/\Q$ENV{REVERT_IDENTITY_LIT}\E/<ignored>/g' <<<"${plain}")" || return 1

@@ -547,6 +547,20 @@ describe('revert_output_assert_no_replacement', () => {
       expect(r.stderr).toContain('Recreate');
     });
 
+    it('always ignores the state bucket name (a run-chosen name cdkd echoes)', () => {
+      const body = 'Revert completed with 1 resource error(s) ... state bucket cdkd-state-6652a-recreate\n';
+      writeFileSync(log(), body);
+      const ok = run(`revert_output_assert_no_replacement "${log()}"`, {
+        STATE_BUCKET: 'cdkd-state-6652a-recreate',
+      });
+      expect(ok.stderr).toBe('');
+      expect(ok.status).toBe(0);
+      const other = run(`revert_output_assert_no_replacement "${log()}"`, {
+        STATE_BUCKET: 'another-bucket',
+      });
+      expect(other.status).toBe(1);
+    });
+
     it('FAILS an empty ignore=', () => {
       const r = check('ok\n', 'ignore=');
       expect(r.status).toBe(1);

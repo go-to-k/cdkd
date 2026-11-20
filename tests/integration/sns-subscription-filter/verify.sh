@@ -435,10 +435,10 @@ REVERT_RC=$?
 set -e
 sed 's/^/    | /' "${REVERT_LOG}"
 # A refused resource is a partly failed revert: exit 2, never a success.
-[ "${REVERT_RC}" = "2" ] || { rm -f "${REVERT_LOG}"; echo "FAIL: cdkd drift --revert exited ${REVERT_RC}, want 2 (the subscription refused)" >&2; exit 1; }
 revert_output_assert_no_replacement "${REVERT_LOG}" expect-refusal || { rm -f "${REVERT_LOG}"; exit 1; }
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${SUB_LID}" || { rm -f "${REVERT_LOG}"; exit 1; }
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || { rm -f "${REVERT_LOG}"; exit 1; }
+[ "${REVERT_RC}" = "2" ] || { rm -f "${REVERT_LOG}"; echo "FAIL: cdkd drift --revert exited ${REVERT_RC}, want 2 (the subscription refused)" >&2; exit 1; }
 REFUSAL="$(sed 's/\x1b\[[0-9;]*m//g' "${REVERT_LOG}" | grep -F "${SUB_LID} (AWS::SNS::Subscription): could not revert" || true)"
 rm -f "${REVERT_LOG}"
 [ -n "${REFUSAL}" ] || { echo "FAIL: the revert printed no 'could not revert' line for ${SUB_LID}" >&2; exit 1; }

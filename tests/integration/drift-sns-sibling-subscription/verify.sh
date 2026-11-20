@@ -250,10 +250,10 @@ if grep -qF "${QUEUE_B}" "${DRIFT_LOG}"; then
 fi
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" Topic SubscriptionB || exit 1
 run_drift --revert -y
-expect_drift_rc 0 "Phase 3 (--revert)"
 revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" Topic SubscriptionB || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 2 || exit 1
+expect_drift_rc 0 "Phase 3 (--revert)"
 expect_endpoints "Phase 3 (after --revert)" "A B"
 STRANGER_SUB=""
 

@@ -1256,6 +1256,9 @@ revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-before" "${STACK}" "${SE
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes >"${REVERT_1A_LOG}" 2>&1 || REVERT_RC=$?
+revert_output_assert_no_replacement "${REVERT_1A_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-after" "${STACK}" "${SEC_LOGICAL}" || exit 1
+revert_identity_assert_unchanged "${REVERT_1A_DIR}/revert-ids-1-before" "${REVERT_1A_DIR}/revert-ids-1-after" 1 || exit 1
 REVERT_1A_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_1A_LOG}")"
 if [ "${REVERT_RC}" -ne 0 ]; then
   printf '%s\n' "${REVERT_1A_PLAIN}" >&2
@@ -1272,9 +1275,6 @@ if grep -qF 'does not turn the Data API' <<<"${REVERT_1A_PLAIN}"; then
   echo "FAIL: #5707: drift --revert withheld the Data API the template declares" >&2
   exit 1
 fi
-revert_output_assert_no_replacement "${REVERT_1A_LOG}" || exit 1
-revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-after" "${STACK}" "${SEC_LOGICAL}" || exit 1
-revert_identity_assert_unchanged "${REVERT_1A_DIR}/revert-ids-1-before" "${REVERT_1A_DIR}/revert-ids-1-after" 1 || exit 1
 wait_http_endpoint "true available"
 POST_ROW=$(sec_drift_row)
 if [ "${POST_ROW}" != "clean" ]; then

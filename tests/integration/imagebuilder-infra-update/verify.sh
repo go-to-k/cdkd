@@ -305,15 +305,13 @@ grep -qF "~ ${INFRA_LOGICAL} (AWS::ImageBuilder::InfrastructureConfiguration)" "
 echo "    drift reports ${INFRA_LOGICAL} drifted"
 
 revert_identity_snapshot "${REVERT_PFX}.ids-before" "${STACK}" "${INFRA_LOGICAL}" || exit 1
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_PFX}.log" 2>&1 || {
-  cat "${REVERT_PFX}.log"
-  echo "FAIL: cdkd drift --revert failed" >&2
-  exit 1
-}
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_PFX}.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_PFX}.log"
 revert_output_assert_no_replacement "${REVERT_PFX}.log" || exit 1
 revert_identity_snapshot "${REVERT_PFX}.ids-after" "${STACK}" "${INFRA_LOGICAL}" || exit 1
 revert_identity_assert_unchanged "${REVERT_PFX}.ids-before" "${REVERT_PFX}.ids-after" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert failed" >&2; exit 1; }
 TYPES_REVERT="$(infra_types)"
 [ "${TYPES_REVERT}" = "t3.medium t3.small" ] ||
   { echo "FAIL: drift --revert left instanceTypes '${TYPES_REVERT}', expected 't3.medium t3.small' (go-to-k/cdkd#6569)" >&2; exit 1; }

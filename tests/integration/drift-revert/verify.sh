@@ -112,12 +112,14 @@ lid_of() { # usage: lid_of <type> <logical-id prefix>
 }
 
 # One checked drift --revert: <tag> names the files under ${REVERT_WORK}.
-revert_run() { # usage: revert_run <tag> -> runs `drift --revert -y`, log in ${REVERT_WORK}/revert-<tag>.log
-  local rc=0
-  ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${REVERT_WORK}/revert-$1.log" 2>&1 || rc=$?
+revert_run() { # usage: revert_run <tag> -> runs `drift --revert -y`, log in ${REVERT_WORK}/revert-<tag>.log; only CAPTURES the rc (REVERT_RUN_RC), the caller asserts it via revert_run_assert AFTER the revert-identity helpers
+  REVERT_RUN_RC=0
+  ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${REVERT_WORK}/revert-$1.log" 2>&1 || REVERT_RUN_RC=$?
   cat "${REVERT_WORK}/revert-$1.log"
-  if [ "${rc}" -ne 0 ]; then
-    echo "[verify] FAIL: cdkd drift --revert -y exited ${rc} (${1}), expected 0" >&2
+}
+revert_run_assert() { # usage: revert_run_assert <tag> -> fails unless the last revert_run exited 0
+  if [ "${REVERT_RUN_RC}" -ne 0 ]; then
+    echo "[verify] FAIL: cdkd drift --revert -y exited ${REVERT_RUN_RC} (${1}), expected 0" >&2
     return 1
   fi
 }
@@ -289,10 +291,11 @@ LID_HTTPAPI="$(lid_of AWS::ApiGatewayV2::Api DriftHttpApi)" || exit 1
 LID_HTTPSTAGE="$(lid_of AWS::ApiGatewayV2::Stage DriftHttpStage)" || exit 1
 LID_SSMPARAM="$(lid_of AWS::SSM::Parameter DriftPoliciesParameter)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" "${LID_BUCKET}" "${LID_TOPIC}" "${LID_ROLE}" "${LID_KEY}" "${LID_LOGGROUP}" "${LID_CLUSTER}" "${LID_GLUE}" "${LID_HTTPAPI}" "${LID_HTTPSTAGE}" "${LID_SSMPARAM}" || exit 1
-revert_run 5 || exit 1
+revert_run 5
 revert_output_assert_no_replacement "${REVERT_WORK}/revert-5.log" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-after" "${STACK}" "${LID_BUCKET}" "${LID_TOPIC}" "${LID_ROLE}" "${LID_KEY}" "${LID_LOGGROUP}" "${LID_CLUSTER}" "${LID_GLUE}" "${LID_HTTPAPI}" "${LID_HTTPSTAGE}" "${LID_SSMPARAM}" || exit 1
 revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 10 || exit 1
+revert_run_assert 5 || exit 1
 
 # Issue #2102: `--revert` overlays the Glue database's whole `DatabaseInput`
 # (its Description drifted), and `Parameters.conn` EMBEDS a token cdkd cannot
@@ -398,10 +401,11 @@ aws s3api put-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" --ta
 
 LID_6D_BUCKET="$(lid_of AWS::S3::Bucket DriftBucket)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6d-before" "${STACK}" "${LID_6D_BUCKET}" || exit 1
-revert_run 6d || exit 1
+revert_run 6d
 revert_output_assert_no_replacement "${REVERT_WORK}/revert-6d.log" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6d-after" "${STACK}" "${LID_6D_BUCKET}" || exit 1
 revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-6d-before" "${REVERT_WORK}/revert-ids-6d-after" 1 || exit 1
+revert_run_assert 6d || exit 1
 
 # Bucket subresources are eventually consistent, so retry briefly. stderr is
 # CAPTURED rather than discarded: an empty tag set legitimately raises
@@ -508,10 +512,11 @@ wait_iam "injected policy default version" "${DRIFTED_VERSION}" \
 LID_6E_ROLE="$(lid_of AWS::IAM::Role DriftNamedRole)" || exit 1
 LID_6E_POLICY="$(lid_of AWS::IAM::ManagedPolicy DriftNamedPolicy)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6e-before" "${STACK}" "${LID_6E_ROLE}" "${LID_6E_POLICY}" || exit 1
-revert_run 6e || exit 1
+revert_run 6e
 revert_output_assert_no_replacement "${REVERT_WORK}/revert-6e.log" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6e-after" "${STACK}" "${LID_6E_ROLE}" "${LID_6E_POLICY}" || exit 1
 revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-6e-before" "${REVERT_WORK}/revert-ids-6e-after" 2 || exit 1
+revert_run_assert 6e || exit 1
 
 STEP6E_ERR="$(mktemp)"
 ROLE_ID_AFTER="$(aws iam get-role --role-name "${NAMED_ROLE}" --query Role.RoleId --output text 2>"${STEP6E_ERR}")" || {
@@ -634,10 +639,11 @@ fi
 
 LID_6G_DENY="$(lid_of AWS::IAM::ManagedPolicy DriftDenyPolicy)" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6g-before" "${STACK}" "${LID_6G_DENY}" || exit 1
-revert_run 6g || exit 1
+revert_run 6g
 revert_output_assert_no_replacement "${REVERT_WORK}/revert-6g.log" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-6g-after" "${STACK}" "${LID_6G_DENY}" || exit 1
 revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-6g-before" "${REVERT_WORK}/revert-ids-6g-after" 1 || exit 1
+revert_run_assert 6g || exit 1
 
 DENY_VERSION="${NARROWED_VERSION}"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -699,6 +705,13 @@ for mode in revert accept; do
   rc=$?
   set -e
   cat "${STEP6H_OUT}"
+  # No identity snapshot here: the one resource the revert addresses is gone
+  # (the assert_gone below and the record compare after the loop are its
+  # identity proof). The output must still report no replacement, its
+  # "cannot recreate one" refusal aside (go-to-k/cdkd#6639).
+  if [ "${mode}" = revert ]; then
+    revert_output_assert_no_replacement "${STEP6H_OUT}" expect-refusal || exit 1
+  fi
   if [ "${rc}" -ne 2 ]; then
     echo "[verify] FAIL step 6h: cdkd drift --${mode} over a deleted resource exited ${rc}, expected 2" >&2
     exit 1
@@ -706,13 +719,6 @@ for mode in revert accept; do
   if ! grep -qE "DriftGlueDatabase[^ ]* \(AWS::Glue::Database\): NOT ${mode}ed" "${STEP6H_OUT}"; then
     echo "[verify] FAIL step 6h: --${mode} did not refuse the deleted Glue database by name" >&2
     exit 1
-  fi
-  # No identity snapshot here: the one resource the revert addresses is gone
-  # (the assert_gone below and the record compare after the loop are its
-  # identity proof). The output must still report no replacement, its
-  # "cannot recreate one" refusal aside (go-to-k/cdkd#6639).
-  if [ "${mode}" = revert ]; then
-    revert_output_assert_no_replacement "${STEP6H_OUT}" expect-refusal || exit 1
   fi
   assert_gone "--${mode} recreated the out-of-band-deleted Glue database ${GLUE_DB}" \
     aws glue get-database --name "${GLUE_DB}"

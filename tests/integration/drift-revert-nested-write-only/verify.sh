@@ -249,10 +249,10 @@ done
 echo "==> Phase 5: cdkd drift --revert -y reverts both, keys intact"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${PLAIN_ID}" "${SECRET_ID}" || exit 1
 run_drift --revert -y
-expect_drift_rc 0 "Phase 5"
 revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${PLAIN_ID}" "${SECRET_ID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 2 || exit 1
+expect_drift_rc 0 "Phase 5"
 if grep -q 'secret-key-1\|plain-key-1' "${DRIFT_LOG}"; then
   echo "FAIL: Phase 5: the revert output prints an API key" >&2
   exit 1
@@ -272,10 +272,10 @@ run_drift
 expect_drift_rc 1 "Phase 7"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" "${PLAIN_ID}" || exit 1
 run_drift --revert -y
-expect_drift_rc 0 "Phase 7"
 revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" "${PLAIN_ID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
+expect_drift_rc 0 "Phase 7"
 expect_plain_key_name x-api-key "Phase 7"
 expect_stored_key "${PLAIN_NAME}" plain-key-1 "Phase 7"
 
@@ -288,10 +288,10 @@ expect_drift_rc 0 "Phase 8 (after accept)"
 set_plain_key_name x-third
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-3-before" "${STACK}" "${PLAIN_ID}" || exit 1
 run_drift --revert -y
-expect_drift_rc 0 "Phase 8 (revert)"
 revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-3-after" "${STACK}" "${PLAIN_ID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-3-before" "${REVERT_DIR}/revert-ids-3-after" 1 || exit 1
+expect_drift_rc 0 "Phase 8 (revert)"
 expect_plain_key_name x-accepted "Phase 8"
 expect_stored_key "${PLAIN_NAME}" plain-key-1 "Phase 8"
 run_drift

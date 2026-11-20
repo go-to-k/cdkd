@@ -578,11 +578,13 @@ if [ -z "${MEMBERS_LID}" ]; then
   exit 1
 fi
 revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${MEMBERS_STACK}" "${MEMBERS_LID}" || exit 1
+REVERT_RC=0
 node "${LOCAL_DIST}" drift "${MEMBERS_STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}"
+  --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}" || REVERT_RC=$?
 revert_output_assert_no_replacement "${REVERT_LOG}" || exit 1
 revert_identity_snapshot "${REVERT_IDS_AFTER}" "${MEMBERS_STACK}" "${MEMBERS_LID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase M3: drift --revert exited ${REVERT_RC}, expected 0" >&2; exit 1; }
 wait_members_on "${STREAM_ARN_2}" "${EXPECTED_STATEMENT}" "${MEMBERS_TAG_VALUE}" "restored by drift --revert"
 if [ "$(members_stream_arn)" != "${STREAM_ARN_2}" ]; then
   echo "FAIL (issue #3458): drift --revert replaced the stream (arn is now '$(members_stream_arn)')" >&2

@@ -288,10 +288,10 @@ revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" Detector
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-1.log"
-[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 3b: cdkd drift --revert exited ${REVERT_RC}" >&2; exit 1; }
 revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" Detector || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 3b: cdkd drift --revert exited ${REVERT_RC}" >&2; exit 1; }
 F="$(detector_field "${DETECTOR_ID}" FindingPublishingFrequency)"
 if [ "${F}" != "ONE_HOUR" ]; then
   echo "FAIL: Phase 3b: FindingPublishingFrequency is '${F}' after the revert, expected ONE_HOUR" >&2; exit 1
@@ -330,10 +330,10 @@ revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" Detector
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-2.log"
-[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 3b: cdkd drift --revert exited ${REVERT_RC}" >&2; exit 1; }
 revert_output_assert_no_replacement "${REVERT_DIR}/revert-2.log" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" Detector || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: Phase 3b: cdkd drift --revert exited ${REVERT_RC}" >&2; exit 1; }
 EKS="$(detector_field "${DETECTOR_ID}" "Features[?Name=='EKS_AUDIT_LOGS'] | [0].Status")"
 if [ "${EKS}" != "DISABLED" ]; then
   echo "FAIL: Phase 3b: EKS_AUDIT_LOGS is '${EKS}' after the revert, expected DISABLED" >&2; exit 1

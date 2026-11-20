@@ -237,16 +237,16 @@ LID_TG="$(lid_of AWS::ElasticLoadBalancingV2::TargetGroup ArraysTargetGroup)" ||
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" "${LID_BUCKET}" "${LID_POLICY}" "${LID_SG}" "${LID_TG}" || exit 1
 set +e
 ${CLI} drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" >"${DRIFT_OUT}" 2>&1
-rc=$?
+REVERT_RC=$?
 set -e
 cat "${DRIFT_OUT}"
-if [ "${rc}" -ne 0 ]; then
-  echo "[verify] FAIL: drift --revert -y exited ${rc}, expected 0"
-  exit 1
-fi
 revert_output_assert_no_replacement "${DRIFT_OUT}" || exit 1
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-after" "${STACK}" "${LID_BUCKET}" "${LID_POLICY}" "${LID_SG}" "${LID_TG}" || exit 1
 revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 4 || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: drift --revert -y exited ${REVERT_RC}, expected 0"
+  exit 1
+fi
 
 echo "[verify] step 6: cdkd drift again (expect exit 0)"
 set +e

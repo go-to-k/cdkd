@@ -225,15 +225,13 @@ if [[ -z "${UNSET_LID}" ]]; then
 fi
 REVERT_DIR="$(mktemp -d)"
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${UNSET_LID}" || exit 1
-${CDKD} drift ${STACK} --revert --yes --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" >"${REVERT_DIR}/revert-1.log" 2>&1 || {
-  cat "${REVERT_DIR}/revert-1.log"
-  echo "FAIL: cdkd drift --revert failed"
-  exit 1
-}
+REVERT_RC=0
+${CDKD} drift ${STACK} --revert --yes --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" >"${REVERT_DIR}/revert-1.log" 2>&1 || REVERT_RC=$?
 cat "${REVERT_DIR}/revert-1.log"
 revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
 revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${UNSET_LID}" || exit 1
 revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert failed"; exit 1; }
 expect_attr "${UNSET_ARN}" TracingConfig PassThrough "after drift --revert"
 DRIFT_RC=0
 ${CDKD} drift ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" || DRIFT_RC=$?
