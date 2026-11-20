@@ -105,9 +105,13 @@ export async function readCurrentState(
   if (resp.environmentVariables !== undefined) {
     result['EnvironmentVariables'] = resp.environmentVariables;
   }
-  // Placeholders for an unset field, so a value added outside cdkd is seen
-  // by drift (docs/provider-rules.md#readcurrentstate-for-drift-detection);
-  // `writeSharedRuntimeMembers` leaves each placeholder off the wire.
+  // Placeholders for an unset field; `writeSharedRuntimeMembers` leaves each
+  // placeholder off the wire. An undeclared key captured empty is skipped by
+  // drift unless listed in `UNDECLARED_EMPTY_COMPARED_KEYS`
+  // (`cli/commands/drift/baseline-keys.ts`, go-to-k/cdkd#6651):
+  // RequestHeaderConfiguration, FilesystemConfigurations, HooksConfiguration
+  // and ResourceConfigurations ARE compared even when undeclared, so a value
+  // added outside cdkd is drift; CapacityProviderConfiguration is not listed.
   result['RequestHeaderConfiguration'] =
     resp.requestHeaderConfiguration !== undefined
       ? camelToPascalCaseKeys(resp.requestHeaderConfiguration, SDK_MAP_KEYS)

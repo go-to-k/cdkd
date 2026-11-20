@@ -56,6 +56,7 @@ import {
 } from './redaction.js';
 import {
   undeclaredUncomparedDriftKeys,
+  undeclaredEmptyComparedDriftKeys,
   preFixBaselineUncomparedDriftKeys,
   readOnlyUncomparedDriftPaths,
   stripDerivedEchoMembers,
@@ -352,10 +353,14 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
   // go-to-k/cdkd#6627: an IAM principal's undeclared grant keys are compared
   // on both baselines, so neither skip below applies to them.
   const grantKeys = undeclaredGrantDriftKeys(resource.resourceType, resource.properties);
+  // go-to-k/cdkd#6651: keys no other writer fills (an AgentCore runtime's
+  // `ResourceConfigurations`, ...) are compared even when captured empty.
   const observedIgnorePaths = useObserved
-    ? undeclaredEmptyObservedKeys(resource.observedProperties!, resource.properties ?? {}).filter(
-        (key) => !grantKeys.includes(key)
-      )
+    ? undeclaredEmptyObservedKeys(
+        resource.observedProperties!,
+        resource.properties ?? {},
+        undeclaredEmptyComparedDriftKeys(resource.resourceType)
+      ).filter((key) => !grantKeys.includes(key))
     : [];
   // Issue #1515: AWS renders an IAM principal inside a resource policy as
   // either its ARN or its `AROA…` / `AIDA…` unique id, choosing on its own

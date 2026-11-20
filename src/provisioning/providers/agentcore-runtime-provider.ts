@@ -596,7 +596,12 @@ export class AgentCoreRuntimeProvider implements ResourceProvider {
           CFN_MAP_KEYS
         );
       }
-      if (properties['Description'] !== undefined) {
+      // `''` is the readback's placeholder for no description, which a drift
+      // revert sends back. AWS refuses it ("Member must have length greater
+      // than or equal to 1", measured us-east-1, go-to-k/cdkd#6651); leaving it
+      // out clears the description on this full replace, which is what `''`
+      // means.
+      if (properties['Description'] !== undefined && properties['Description'] !== '') {
         input['description'] = properties['Description'];
       }
       if (properties['AuthorizerConfiguration'] !== undefined) {
