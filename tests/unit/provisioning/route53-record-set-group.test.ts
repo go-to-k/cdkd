@@ -55,6 +55,7 @@ import { isNameCollisionErrorFrom } from '../../../src/deployment/retryable-erro
 import { CNAME_CONFLICT_COLLISION_NOTE } from '../../../src/provisioning/providers/route53/shared.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { buildRevertNewProperties } from '../../../src/cli/commands/drift/revert-payload.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { markReplayMayCollide } from '../../../src/deployment/retryable-errors.js';
 
@@ -579,6 +580,27 @@ describe('Route53Provider RecordSetGroup', () => {
       );
       expect(changeInputs()).toHaveLength(1);
       expect(changeInputs()[0]!.HostedZoneId).toBe(ZONE);
+    });
+
+    it('names the zone in the real revert payload over a baseline captured without the key', async () => {
+      route({ liveRecords: [live()] });
+      const recorded = { HostedZoneId: ZONE, RecordSets: [rec()] };
+      const readback = (await provider.readCurrentState(COMPOSITE, LOGICAL, TYPE, recorded)) as Record<
+        string,
+        unknown
+      >;
+      const oldBaseline = { RecordSets: [rec()] };
+      const desired = buildRevertNewProperties(
+        [{ path: 'RecordSets', stateValue: oldBaseline.RecordSets, awsValue: readback['RecordSets'] }],
+        oldBaseline,
+        readback
+      );
+      expect(desired['HostedZoneId']).toBe(ZONE);
+      const warn = vi.spyOn(provider.logger, 'warn');
+      await provider.update(LOGICAL, COMPOSITE, TYPE, desired, readback, { desiredFromAwsReadback: true });
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toMatch(
+        /HostedZoneId and HostedZoneName/
+      );
     });
 
     it('returns RESOURCE_NOT_FOUND when every member is proven gone', async () => {
