@@ -137,7 +137,7 @@ docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split
 docker-image-asset	2026-11-13T05:08:51Z	PASS	95	verify.sh	rc ok, orph clean, #6160
 drift-cc-read-only-props	2026-11-17T06:05:19Z	PASS	95	verify.sh	rc ok, orph clean
 drift-ecs-capacity-association	2026-11-19T10:36:45Z	PASS	203	verify.sh	#6614 batch1 HEAD ba72216f9: rc ok, destroy 0 errors, orph clean
-drift-revert	2026-11-20T11:34:30Z	PASS	457	verify.sh	PR6683 8da73033f; step 6b/6c ok; rc 0, orph clean
+drift-revert	2026-11-20T12:35:36Z	PASS	466	verify.sh	PR6683 0e93a7ff0, step 6b/6c ok, rc ok, orph clean
 drift-revert-arrays	2026-11-19T18:50:43Z	PASS	306	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 drift-revert-nested-write-only	2026-11-17T15:14:38Z	PASS	236	verify.sh	rc ok, orph clean, versions swept
 drift-revert-vpc	2026-11-19T18:50:43Z	PASS	372	verify.sh	#6640 regression 84223153c: rc ok, orph clean
