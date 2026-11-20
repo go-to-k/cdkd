@@ -218,8 +218,10 @@ export async function adoptRollbackOrphans(
   // go-to-k/cdkd#3869: the same bag masks these lines, a record named from a
   // secret (its name still a `{{resolve:` reference) by its id spellings. One
   // log-only bag over every record: a line names one record, and a sibling's
-  // needle only over-masks. The thrown refusal too: it names the id and
-  // carries no command, and the logical id beside it is what the user acts on.
+  // needle only over-masks. The thrown refusal too: it names the id, and the
+  // logical id beside it is what the user acts on. Its only command, the
+  // identity refusal's `cdkd import` (go-to-k/cdkd#6655), carries the run's
+  // flags and no state-chosen value, so the mask leaves it pasteable.
   for (const notice of plan.notices) deps.logger.info(maskSecretsInText(notice, named));
   for (const warning of plan.warnings) deps.logger.warn(maskSecretsInText(warning, named));
 

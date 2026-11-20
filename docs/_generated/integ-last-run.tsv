@@ -422,7 +422,7 @@ replacement-fanout	2026-11-16T12:51:14Z	PASS	104	verify.sh	rc ok, orph clean (#6
 replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph clean (#6374 sweep)
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
 require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destroy 0 errors, orph clean (state keys + IAM/Lambda/log groups), own state bucket; main-based re-run on wrasse
-retain-orphan-redeploy	2026-11-04T22:42:27Z	PASS	200	verify.sh	rc ok, #5064 name generations behave as the fixture expects, orph clean, own temp state bucket
+retain-orphan-redeploy	2026-11-20T19:04:37Z	PASS	201	verify.sh	rc ok, orph clean, own state bucket, head 870be8d13 (#6702)
 retain-orphan-secret	2026-11-04T22:39:07Z	PASS	85	verify.sh	rc ok, no plaintext in any S3 version, orph clean, own temp state bucket
 rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orph clean (PR #6531)
 rollback-command	2026-11-20T16:18:33Z	PASS	897	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
