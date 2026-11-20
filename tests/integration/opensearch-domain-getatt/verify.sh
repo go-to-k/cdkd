@@ -11,6 +11,11 @@
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 # NOTE: OpenSearch domain create + delete are SLOW (~15-20 min each).
+#
+# Step 2b (issue #6676) updates the access policy and `drift --revert`s an
+# out-of-band change: Cloud Control reads back defaults the template never
+# declared (`AdvancedOptions.override_main_response_version`, `AIMLOptions`)
+# that `UpdateDomainConfig` refused on every update.
 
 set -euo pipefail
 
@@ -135,6 +140,53 @@ case "${ARN}" in
     exit 1
     ;;
 esac
+
+echo "==> Step 2b: update the access policy, then drift --revert an out-of-band change (issue #6676)"
+# Cloud Control reads back `AdvancedOptions.override_main_response_version` and
+# `AIMLOptions` defaults the template never declared, and `UpdateDomainConfig`
+# refused them on every update until cdkd drops them from the patch.
+DOMAIN_NAME="cdkd-opensearch-getatt"
+domain_policy() {
+  aws opensearch describe-domain-config --domain-name "${DOMAIN_NAME}" --region "${REGION}" \
+    --query 'DomainConfig.AccessPolicies.Options' --output text
+}
+wait_domain_settled() { # an out-of-band config change leaves the domain processing
+  local i
+  for i in $(seq 1 90); do
+    [ "$(aws opensearch describe-domain --domain-name "${DOMAIN_NAME}" --region "${REGION}" \
+      --query 'DomainStatus.Processing' --output text)" = "False" ] && return 0
+    sleep 20
+  done
+  echo "FAIL: domain ${DOMAIN_NAME} still processing after 30 min" >&2
+  exit 1
+}
+CDKD_TEST_UPDATE=policy node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+case "$(domain_policy)" in
+  *ESHttpGet*) echo "    OK: the update reached AWS (policy allows es:ESHttpGet)" ;;
+  *) echo "FAIL: access policy after the update lacks es:ESHttpGet: $(domain_policy)" >&2; exit 1 ;;
+esac
+wait_domain_settled
+
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+aws opensearch update-domain-config --domain-name "${DOMAIN_NAME}" --region "${REGION}" \
+  --access-policies "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::${ACCOUNT_ID}:root\"},\"Action\":\"es:ESHttpHead\",\"Resource\":\"arn:aws:es:${REGION}:${ACCOUNT_ID}:domain/${DOMAIN_NAME}/*\"}]}" \
+  >/dev/null
+wait_domain_settled
+case "$(domain_policy)" in
+  *ESHttpHead*) ;;
+  *) echo "FAIL: the out-of-band policy change did not land: $(domain_policy)" >&2; exit 1 ;;
+esac
+CDKD_TEST_UPDATE=policy node "${LOCAL_DIST}" drift "${STACK}" --revert --yes \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+case "$(domain_policy)" in
+  *ESHttpHead*) echo "FAIL: drift --revert left the out-of-band policy: $(domain_policy)" >&2; exit 1 ;;
+  *ESHttpGet*) ;;
+  *) echo "FAIL: access policy after drift --revert lacks es:ESHttpGet: $(domain_policy)" >&2; exit 1 ;;
+esac
+CDKD_TEST_UPDATE=policy node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}"
+echo "    OK: drift --revert restored the policy and drift is clean"
 
 echo "==> Step 3: destroy (SLOW, ~15-20 min)"
 set +e

@@ -15,11 +15,16 @@ import type { JsonPatchOp } from './json-patch-generator.js';
  *   satisfy min_items 1`). Its other empty read-backs (`Tags: {}`,
  *   `SecurityGroupIds: []`, `Logging.S3Logs: {}`) were measured to update
  *   fine, so they are not listed.
+ * - `AWS::DataSync::Task` `Schedule`: a task created without one (the CDK
+ *   default) reads back `"Schedule": {}`, and `UpdateTask` refuses the null
+ *   expression it becomes (`Value null at 'schedule.scheduleExpression'
+ *   failed to satisfy constraint`, go-to-k/cdkd#6676).
  *
  * A type joins by measurement, never by reading its schema: a key is listed
  * only once its empty read-back was seen refused.
  */
 export const CC_READ_BACK_EMPTY_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::DataSync::Task': ['Schedule'],
   'AWS::ImageBuilder::InfrastructureConfiguration': ['ResourceTags'],
 };
 

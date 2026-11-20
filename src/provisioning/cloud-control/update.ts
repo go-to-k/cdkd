@@ -14,6 +14,10 @@ import { displaySafe } from '../../utils/display-safe.js';
 import { withGuardDutyDetectorReadBackOps } from '../guardduty-detector-patch.js';
 import { withListenerRuleConditionOps } from '../elbv2-listener-rule-patch.js';
 import {
+  hasCcReadBackDefaultPaths,
+  withCcReadBackDefaultRemovals,
+} from '../cc-read-back-default-paths.js';
+import {
   hasCcReadBackEmptyKeys,
   withCcReadBackEmptyKeyRemovals,
 } from '../cc-read-back-empty-keys.js';
@@ -271,6 +275,16 @@ export async function updateInIdLogScope(
       );
       // Its only op set an empty collection the live model lacks: nothing to send.
       if (patch.length === 0) return { physicalId, wasReplaced: false, ...sentNothing };
+    }
+    // go-to-k/cdkd#6676: the same for a read-back DEFAULT the template never
+    // declared (an OpenSearch domain's `AIMLOptions`); same shared read.
+    if (hasCcReadBackDefaultPaths(resourceType)) {
+      patch = withCcReadBackDefaultRemovals(
+        resourceType,
+        patch,
+        cleanProperties,
+        await readLiveModel()
+      );
     }
 
     // go-to-k/cdkd#6294: a whole-object op drops the AWS-defaulted nested

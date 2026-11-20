@@ -14,6 +14,10 @@ import type { Construct } from 'constructs';
  * IAM has propagated the role. cdkd now retries that wording as IAM
  * propagation. The locations are L1 `CfnLocationS3`, as an app writes them.
  *
+ * `CDKD_TEST_UPDATE=verify` sets the task's `Options.VerifyMode`: the task has
+ * no schedule, so Cloud Control reads it back as `Schedule: {}`, which
+ * `UpdateTask` refuses unless the update drops it (issue #6676).
+ *
  * covers: AWS::DataSync::LocationS3, AWS::DataSync::Task
  */
 export class DatasyncLocationRoleStack extends cdk.Stack {
@@ -48,6 +52,7 @@ export class DatasyncLocationRoleStack extends cdk.Stack {
     const task = new datasync.CfnTask(this, 'Task', {
       sourceLocationArn: locSrc.attrLocationArn,
       destinationLocationArn: locDst.attrLocationArn,
+      ...(process.env.CDKD_TEST_UPDATE === 'verify' ? { options: { verifyMode: 'NONE' } } : {}),
     });
 
     new cdk.CfnOutput(this, 'SrcLocationArn', { value: locSrc.attrLocationArn });
