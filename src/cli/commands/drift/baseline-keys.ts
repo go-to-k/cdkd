@@ -398,9 +398,7 @@ const tagsHeal: OwnWriteHeal = {
   key: 'Tags',
   liveIsDeclared: (properties, aws) => {
     const declared = declaredTagsReadback(properties['Tags']);
-    return (
-      declared !== undefined && hasOwnKey(aws, 'Tags') && tagsMatchDeclared(aws['Tags'], declared)
-    );
+    return declared !== undefined && tagsMatchDeclared(aws['Tags'], declared);
   },
 };
 
