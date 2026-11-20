@@ -380,6 +380,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`replace-snapshot-failed-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-snapshot-failed-rollback/)
 - [`replace-squatter-refusal`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replace-squatter-refusal/)
 - [`replaced-delete-failed-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replaced-delete-failed-rollback/)
+- [`replaced-queue-topic-failed-rollback`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replaced-queue-topic-failed-rollback/)
 - [`replacement-immutable-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-immutable-name/)
 - [`replacement-rename-onto-holder`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-rename-onto-holder/)
 - [`require-approval-broadening`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/require-approval-broadening/)
