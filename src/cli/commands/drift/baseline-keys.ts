@@ -29,6 +29,7 @@ import {
   stringListIsDeclared,
 } from '../../../provisioning/settle-own-write-members.js';
 import { sgRulesAreDeclared } from '../../../provisioning/sg-own-write-rules.js';
+import { readHadAgreeingCopies } from '../../../provisioning/providers/iam-policy/agreeing-copies.js';
 
 /**
  * Per resource type, the top-level keys drift never compares unless the
@@ -242,6 +243,16 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
  * declared by a sibling role's `ManagedPolicyArns`, a user's group from an
  * `AWS::IAM::UserToGroupAddition`, a bus statement from an
  * `AWS::Events::EventBusPolicy`) never heals: it is compared as before.
+ *
+ * `AWS::IAM::Policy` (slice C2), same blind spot: `PolicyDocument` is skipped
+ * only while EVERY principal's copy is the declared document — a read whose
+ * copies differ surfaces one of them (go-to-k/cdkd#6616), so it heals only on a
+ * bag the read marked as every copy agreeing (`readHadAgreeingCopies`): a bag
+ * that lost the mark stays compared. `PolicyName` heals on the
+ * exact declared name; `Roles` / `Users` / `Groups` on the exact declared set
+ * (the read echoes the recorded list less a principal lacking the policy, so a
+ * detached principal is a subset and stays compared). A principal that gained
+ * the policy out of band is invisible to the read anyway (#6616).
  */
 export function preFixBaselineUncomparedDriftKeys(
   resourceType: string,
@@ -443,6 +454,25 @@ const OWN_WRITE_MEMBERS: ReadonlyMap<string, readonly OwnWriteHeal[]> = new Map(
       stringListHeal('Groups'),
     ],
     'AWS::IAM::InstanceProfile': [stringListHeal('Roles')],
+    // Only a read whose every copy agreed may skip it; an unmarked bag is compared.
+    'AWS::IAM::Policy': [
+      {
+        key: 'PolicyDocument',
+        liveIsDeclared: (properties, aws) =>
+          readHadAgreeingCopies(aws) &&
+          documentHeal('PolicyDocument').liveIsDeclared(properties, aws),
+      },
+      {
+        key: 'PolicyName',
+        liveIsDeclared: (properties, aws) =>
+          typeof properties['PolicyName'] === 'string' &&
+          properties['PolicyName'] !== '' &&
+          aws['PolicyName'] === properties['PolicyName'],
+      },
+      stringListHeal('Roles'),
+      stringListHeal('Users'),
+      stringListHeal('Groups'),
+    ],
     'AWS::S3::BucketPolicy': [
       {
         key: 'PolicyDocument',
