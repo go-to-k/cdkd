@@ -438,10 +438,8 @@ rollback-replay-cc-generated-name	2026-11-16T08:22:27Z	PASS	174	verify.sh	rc ok,
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
 rollback-same-id-recreate	2026-11-16T15:41:55Z	PASS	196	verify.sh	rc ok, orph clean (#6423)
 rollback-sqs-cooldown	2026-11-07T12:50:15Z	PASS	158	verify.sh	#6008 rollback split head; rc ok, orph clean
-route53	2026-11-20T06:38:06Z	PASS	516	verify.sh	#6670 route53 drift/import fixes: rc ok, orph clean
-route53-drift-import	2026-11-20T08:30:09Z	PASS	155	verify.sh	#6682 group revert zone key: rc ok, orph clean, no 'exactly one of' warning
 route53	2026-11-20T09:26:37Z	PASS	490	verify.sh	#6656 PR #6673 acaa73f after #6670 rebase: rc ok, orph clean
-route53-drift-import	2026-11-20T06:38:06Z	PASS	120	verify.sh	#6670 route53 drift/import fixes: rc ok, orph clean
+route53-drift-import	2026-11-20T08:30:09Z	PASS	155	verify.sh	#6682 group revert zone key: rc ok, orph clean, no 'exactly one of' warning
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
