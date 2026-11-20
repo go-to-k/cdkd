@@ -371,7 +371,9 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(calls).toContain('sqs get-queue-attributes --region us-east-1 --queue-url https://sqs.us-east-1.amazonaws.com/1/q --attribute-names CreatedTimestamp');
     expect(calls).toContain('--attribute-names Policy');
     expect(calls).toContain('sns get-topic-attributes --region us-east-1 --topic-arn arn:aws:sns:us-east-1:1:t --query Attributes.Policy');
-    expect(calls).toContain("kms list-aliases --region us-east-1 --query Aliases[?AliasName=='alias/x'].CreationDate | [0]");
+    expect(calls).toContain('kms describe-key --region us-east-1 --key-id alias/x');
+    expect(calls).toContain('kms list-aliases --region us-east-1 --key-id');
+    expect(calls).toContain("Aliases[?AliasName=='alias/x'].CreationDate | [0]");
     expect(calls).toContain('secretsmanager get-resource-policy --region us-east-1 --secret-id arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf');
     expect(calls).toContain('iam get-role-policy --role-name rol --policy-name pol');
     expect(calls).toContain('iam get-user-policy --user-name usr --policy-name pol');
@@ -392,6 +394,34 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     const none = run(`revert_identity_snapshot "${after()}" Stack TP || exit 1`);
     expect(none.status).toBe(1);
     expect(none.stderr).toContain('AWS::SNS::TopicPolicy probe');
+  });
+
+  it.each([
+    ['AWS::IAM::RolePolicy', { PolicyName: 'pol' }],
+    ['AWS::IAM::UserPolicy', { PolicyName: 'pol' }],
+    ['AWS::IAM::GroupPolicy', { PolicyName: 'pol' }],
+  ])('FAILS for %s when the record names no principal', (type, properties) => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({ state: { resources: { P: { resourceType: type, physicalId: 'pol|x', properties } } } })
+    );
+    const r = run(`revert_identity_snapshot "${before()}" Stack P || exit 1`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`${type} probe`);
+  });
+
+  it.each([
+    ['AWS::SQS::QueuePolicy', { Queues: ['https://sqs.us-east-1.amazonaws.com/1/q'] }],
+    ['AWS::SecretsManager::ResourcePolicy', { SecretId: 'arn:aws:secretsmanager:us-east-1:1:secret:s-AbCdEf' }],
+  ])('FAILS for %s when AWS reads no policy (None)', (type, properties) => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({ state: { resources: { P: { resourceType: type, physicalId: 'p', properties } } } })
+    );
+    setAwsValue('None\n');
+    const r = run(`revert_identity_snapshot "${before()}" Stack P || exit 1`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`${type} probe`);
   });
 
   it('FAILS when a type needing an extra read value has none recorded', () => {

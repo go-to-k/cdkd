@@ -168,7 +168,7 @@ _revert_identity_probe() {
     AWS::ImageBuilder::InfrastructureConfiguration)
       cls=unique; val="$(_revert_identity_aws imagebuilder get-infrastructure-configuration --region "${region}" --infrastructure-configuration-arn "${pid}" --query 'infrastructureConfiguration.dateCreated')" || rc=$? ;;
     AWS::Logs::LogGroup)
-      cls=unique; val="$(_revert_identity_aws logs describe-log-groups --region "${region}" --log-group-name-prefix "${pid}" --query "logGroups[?logGroupName=='${pid}'].creationTime | [0]")" || rc=$? ;;
+      cls=unique; val="$(_revert_identity_aws logs describe-log-groups --region "${region}" --log-group-name-prefix "${pid}" --query "logGroups[?logGroupName=='${pid}'].creationTime | [0]" | grep -vx None | head -n 1)" || rc=$? ;;
     # --- gen-id -----------------------------------------------------------
     AWS::SNS::Subscription)
       cls=gen-id; val="$(_revert_identity_aws sns get-subscription-attributes --region "${region}" --subscription-arn "${pid}" --query 'Attributes.SubscriptionArn')" || rc=$? ;;
@@ -289,7 +289,12 @@ _revert_identity_probe() {
     AWS::KMS::Alias)
       # ctx is the recorded AliasName (the physicalId's spelling varies by
       # route); ListAliases carries a CreationDate per alias.
-      cls=unique; val="$(_revert_identity_aws kms list-aliases --region "${region}" --query "Aliases[?AliasName=='${ctx:?no AliasName}'].CreationDate | [0]")" || rc=$? ;;
+      # Narrowed to the alias's key first: --query runs per PAGE, so an
+      # unfiltered listing of >50 aliases would print one line per page.
+      cls=unique; val="$(
+        kid="$(_revert_identity_aws kms describe-key --region "${region}" --key-id "${ctx:?no AliasName}" --query 'KeyMetadata.KeyId')" || exit 1
+        _revert_identity_aws kms list-aliases --region "${region}" --key-id "${kid}" --query "Aliases[?AliasName=='${ctx}'].CreationDate | [0]" | grep -vx None | head -n 1
+      )" || rc=$? ;;
     AWS::SQS::QueuePolicy)
       # A policy is the Policy attribute of its queue (ctx, the first queue
       # URL it names) and has no identity of its own: presence only.
