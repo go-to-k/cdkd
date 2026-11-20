@@ -16,12 +16,12 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **145**
+- Classified types (cached schema): **146**
 - Fully enriched: **50**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **77**
-- Types with allow-listed (not-a-gap) attributes: **88**
+- SDK-fallback gaps (informational, #614 path only): **78**
+- Types with allow-listed (not-a-gap) attributes: **89**
 
 ## Pure-CC latent gaps
 
@@ -42,6 +42,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::BedrockAgentCore::Evaluator` | `CreatedAt`, `EvaluatorId`, `EvaluatorType`, `Provider`, `Status`, `UpdatedAt` |
 | `AWS::BedrockAgentCore::Runtime` | `AgentRuntimeArn`, `AgentRuntimeVersion`, `CreatedAt`, `FailureReason`, `LastUpdatedAt`, `Status`, `WorkloadIdentityDetails` |
 | `AWS::CloudFormation::Stack` | `ChangeSetId`, `CreationTime`, `LastUpdateTime`, `Outputs`, `ParentId`, `RootId`, `StackStatus` |
+| `AWS::CloudFormation::WaitCondition` | `Data` |
 | `AWS::CloudFront::Distribution` | `DomainName` |
 | `AWS::CloudTrail::Trail` | `Arn`, `SnsTopicArn` |
 | `AWS::CloudWatch::Alarm` | `Arn` |
@@ -141,6 +142,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Budgets::Budget` | yes | enriched | `Id` (allow) |
 | `AWS::CertificateManager::Certificate` | yes | enriched | `CertificateArn` (allow) |
 | `AWS::CloudFormation::Stack` | yes | sdk-fallback-gap | `ChangeSetId` (GAP), `CreationTime` (GAP), `LastUpdateTime` (GAP), `Outputs` (GAP), `ParentId` (GAP), `RootId` (GAP), `StackId` (allow), `StackStatus` (GAP) |
+| `AWS::CloudFormation::WaitCondition` | yes | sdk-fallback-gap | `Data` (GAP), `Id` (allow) |
 | `AWS::CloudFormation::WaitConditionHandle` | yes | enriched | `Id` (allow) |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | yes | enriched | `Id` (allow), `S3CanonicalUserId` (OK) |
 | `AWS::CloudFront::Distribution` | yes | sdk-fallback-gap | `DomainName` (GAP), `Id` (allow) |

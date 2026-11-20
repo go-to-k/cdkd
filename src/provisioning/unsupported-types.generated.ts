@@ -64,7 +64,6 @@ export const NON_PROVISIONABLE_TYPES: ReadonlySet<string> = new Set([
   'AWS::CleanRoomsML::TrainedModelInferenceJob',
   'AWS::CloudFormation::Macro',
   'AWS::CloudFormation::ResourceScan',
-  'AWS::CloudFormation::WaitCondition',
   'AWS::CloudFront::StreamingDistribution',
   'AWS::CloudHSMV2::Backup',
   'AWS::CodeArtifact::Package',

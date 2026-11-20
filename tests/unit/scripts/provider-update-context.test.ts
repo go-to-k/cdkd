@@ -304,6 +304,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'StepFunctionsProvider',
       'WAFv2WebACLProvider',
       'WaitConditionHandleProvider',
+      'WaitConditionProvider',
     ]);
   });
 

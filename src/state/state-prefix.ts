@@ -32,3 +32,13 @@ export const DEFAULT_STATE_PREFIX = 'cdkd';
  * which is stated at the sweep's own call site rather than implied here.
  */
 export const CUSTOM_RESOURCE_RESPONSE_PREFIX = 'custom-resource-responses';
+
+/**
+ * The state-bucket prefix a `AWS::CloudFormation::WaitConditionHandle`'s
+ * pre-signed signal URL points under, one key per handle
+ * (`wait-condition-signals/{logicalId}-{uuid}.json`, go-to-k/cdkd#6694). Each
+ * `cfn-signal` PUT lands as a new object VERSION of that key; the handle's
+ * delete removes the key and its versions. No lifecycle rule expires it: the
+ * handle URL must stay writable for as long as the handle exists.
+ */
+export const WAIT_CONDITION_SIGNAL_PREFIX = 'wait-condition-signals';

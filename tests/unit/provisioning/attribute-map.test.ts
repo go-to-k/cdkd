@@ -657,7 +657,12 @@ const FLOORS = {
 // (`properties['ClusterName'] || ...`, the describe's argument) and
 // `lambda-function/create.ts`'s `this.createClient` (the send's receiver).
 // An id and an SDK client, not a recorded shape.
-const DEPTH_DROPPED_CAP = 37;
+// Raised to 43 by go-to-k/cdkd#6694: `wait-condition-provider.ts` records
+// `Data` as `JSON.stringify(data)`, `data` being `waitForSignals`' return, so
+// the walk follows its create and update sites into the poll loop (the signal
+// store read and `evaluateSignals`' verdict) and drops six past the cap. A
+// signal fold, not a fallback.
+const DEPTH_DROPPED_CAP = 43;
 
 /**
  * The fence's verdict over a scan: hits that match no allow-list entry, and

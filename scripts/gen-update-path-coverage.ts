@@ -153,6 +153,16 @@ export const UPDATE_PATH_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new M
   ['AWS::AppConfig::Environment#DeletionProtectionCheck', DELETE_TIME('DeleteEnvironment (#5875)')],
   ['AWS::ECR::Repository#EmptyOnDelete', DELETE_TIME("DeleteRepository's force flag (#1340)")],
   ['AWS::KMS::Key#PendingWindowInDays', DELETE_TIME('ScheduleKeyDeletion')],
+  ...(['Count', 'Handle', 'Timeout'] as const).map(
+    (prop): [string, AllowListEntry] => [
+      `AWS::CloudFormation::WaitCondition#${prop}`,
+      {
+        rationale:
+          'never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs ' +
+          '(update() waits again; #6694)',
+      },
+    ]
+  ),
   [
     'AWS::ApiGateway::RestApi#CloneFrom',
     {

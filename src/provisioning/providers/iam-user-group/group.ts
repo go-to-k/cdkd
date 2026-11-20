@@ -13,6 +13,7 @@ import {
   NoSuchEntityException,
   UpdateGroupCommand,
   type Group,
+  type User,
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -30,6 +31,8 @@ import type {
   ResourceUpdateResult,
 } from '../../../types/resource.js';
 import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './shared.js';
+import { definedAttributes } from '../../attribute-map.js';
+import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
 
 export async function createGroup(
   this: IAMUserGroupProvider,
@@ -179,8 +182,11 @@ export async function createGroup(
 
     return {
       physicalId: groupName,
+      // go-to-k/cdkd#6655: the GroupId CreateGroup answered with (an adopted
+      // group's, read from it), which a later delete compares.
       attributes: {
         Arn: group?.Arn,
+        ...definedAttributes({ GroupId: createdGroupIdentity }),
       },
     };
   } catch (error) {
@@ -257,8 +263,13 @@ export async function updateGroup(
     return {
       physicalId,
       wasReplaced: false,
+      // go-to-k/cdkd#6655: the GroupId too, which a record without one
+      // acquires (a recorded one is kept by the engine).
       attributes: {
         Arn: getGroupResponse.Group?.Arn,
+        ...definedAttributes({
+          GroupId: userOrGroupIdentityToken(getGroupResponse.Group?.GroupId),
+        }),
       },
     };
   } catch (error) {
@@ -293,14 +304,45 @@ export async function deleteGroup(
   const progress: DeleteProgress = { stripped: false };
 
   try {
+    // Step 0: the `GetGroup` step 3 reads its members from, made first
+    // (go-to-k/cdkd#6655): a record holding a `GroupId` refuses a holder of
+    // the name with another one before anything is detached. No `GroupId`
+    // recorded: the by-name delete as before. A group already gone answers
+    // `NoSuchEntity` here, which the catch below reads as deleted. A user
+    // added between this read and step 3 is not removed, so `DeleteGroup`
+    // refuses (`DeleteConflict`) and the retry reads again.
+    let members: User[] = [];
+    const readGroup = async () => {
+      const response = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
+      // The last read's: after a re-read, the group it answered for.
+      members = response.Users ?? [];
+      // A response naming another group carries no id of this one: with an
+      // id recorded, that refuses rather than compares. Compared ignoring
+      // case: IAM group names are unique regardless of case and `GetGroup`
+      // answers the stored spelling, so a record holding another case (an
+      // import) names this very group.
+      return response.Group?.GroupName?.toLowerCase() === physicalId.toLowerCase()
+        ? response.Group.GroupId
+        : undefined;
+    };
+    await assertRecordedIdentity({
+      label: 'IAM group',
+      resourceType,
+      logicalId,
+      physicalId,
+      liveId: await readGroup(),
+      reread: readGroup,
+      context,
+    });
+
     // Step 1: Detach all managed policies
     await this.detachAllGroupPolicies(physicalId, log, progress);
 
     // Step 2: Delete all inline policies
     await this.deleteAllGroupInlinePolicies(physicalId, log, progress);
 
-    // Step 3: Remove all users from group
-    await this.removeAllUsersFromGroup(physicalId, log, progress);
+    // Step 3: Remove all users from group (those step 0 read)
+    await this.removeAllUsersFromGroup(physicalId, log, progress, members);
 
     // Step 4: Delete the group
     await this.iamClient.send(new DeleteGroupCommand({ GroupName: physicalId }));
@@ -320,6 +362,8 @@ export async function deleteGroup(
       }
       return;
     }
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
     const failure = this.wrapMaskedError(
@@ -383,13 +427,12 @@ export async function removeAllUsersFromGroup(
   this: IAMUserGroupProvider,
   groupName: string,
   log: MaskedLogSinks,
-  progress?: DeleteProgress
+  progress: DeleteProgress | undefined,
+  /** The members the delete's own `GetGroup` answered (go-to-k/cdkd#6655). */
+  users: User[]
 ): Promise<void> {
   const { value: v } = log;
   try {
-    const response = await this.iamClient.send(new GetGroupCommand({ GroupName: groupName }));
-
-    const users = response.Users || [];
     for (const user of users) {
       if (user.UserName) {
         try {

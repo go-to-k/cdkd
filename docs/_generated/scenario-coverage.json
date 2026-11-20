@@ -3351,6 +3351,11 @@
       "scenarios": []
     },
     {
+      "name": "wait-condition-ec2-signal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "wait-condition-handle",
       "annotated": true,
       "scenarios": []
@@ -4435,6 +4440,7 @@
     "termination-protection",
     "unrecognized-key-autoroute",
     "update-deleted-outside",
+    "wait-condition-ec2-signal",
     "wide-independent",
     "wide-web-functions"
   ]

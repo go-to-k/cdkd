@@ -9,13 +9,13 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * outright ("not supported by Cloud Control API and no SDK provider is
  * registered"). The type is emitted by `cdk-multi-region-stack` as an
  * empty-template placeholder, so any app using that construct was
- * undeployable. The no-op `WaitConditionHandleProvider` synthesizes a
- * placeholder physical id and never calls AWS.
+ * undeployable. Since issue #6694 the handle's physical id is a pre-signed
+ * PUT URL into the state bucket, which verify.sh signals from the host.
  *
  * The stack mirrors the real-world shape: a bare handle (no properties,
  * nothing referencing it) next to an ordinary resource, plus an output
- * `Ref`-ing the handle so the placeholder physical id is exercised through
- * intrinsic resolution.
+ * `Ref`-ing the handle so the physical id is exercised through intrinsic
+ * resolution.
  *
  * Phase envs (set by verify.sh):
  * - CDKD_TEST_UPDATE=true -> SSM parameter value 'base' -> 'updated'

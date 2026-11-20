@@ -154,8 +154,11 @@ describe('an in-place update never replaces a recorded identity id (go-to-k/cdkd
   it('keepRecordedIdentity covers every listed type', () => {
     expect(Object.keys(SURVIVOR_IDENTITY_ATTRIBUTES).sort()).toEqual([
       'AWS::DynamoDB::Table',
+      'AWS::IAM::Group',
+      'AWS::IAM::InstanceProfile',
       'AWS::IAM::ManagedPolicy',
       'AWS::IAM::Role',
+      'AWS::IAM::User',
       'AWS::RDS::DBCluster',
       'AWS::RDS::DBInstance',
     ]);

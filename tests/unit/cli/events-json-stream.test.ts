@@ -245,6 +245,46 @@ describe('events --json keeps stdout to the payload (issue #2280)', () => {
     expect(events.map((e) => e.reason)).toEqual([reason]);
   });
 
+  // go-to-k/cdkd#6694: a physical id that IS a bearer credential is masked
+  // here as in `state show`; any other id is printed exactly.
+  it('--run <id> --json masks a wait condition handle URL and keeps other ids', async () => {
+    const url =
+      'https://b.s3.amazonaws.com/wait-condition-signals/H-x.json?X-Amz-Signature=0123456789abcdef';
+    mockGetRawObject.mockImplementation(async (key: string) => {
+      if (key === INDEX_KEY) return JSON.stringify({ runs: [RUN_SUMMARY] });
+      if (key === RUN_KEY) {
+        return [
+          {
+            eventType: 'RESOURCE_SUCCEEDED',
+            timestamp: RUN_SUMMARY.startedAt,
+            logicalId: 'Handle',
+            resourceType: 'AWS::CloudFormation::WaitConditionHandle',
+            physicalId: url,
+          },
+          {
+            eventType: 'RESOURCE_SUCCEEDED',
+            timestamp: RUN_SUMMARY.startedAt,
+            logicalId: 'Bucket',
+            resourceType: 'AWS::S3::Bucket',
+            physicalId: 'my-bucket',
+          },
+        ]
+          .map((e) => JSON.stringify(e))
+          .join('\n');
+      }
+      return null;
+    });
+
+    const { stdout, error } = await runEvents(['TestStack', '--run', RUN_SUMMARY.runId, '--json']);
+
+    expect(error).toBeUndefined();
+    const events = JSON.parse(stdout) as Array<{ physicalId?: string }>;
+    expect(events.map((e) => e.physicalId)).toEqual([
+      'https://b.s3.amazonaws.com/wait-condition-signals/H-x.json?****cdef',
+      'my-bucket',
+    ]);
+  });
+
   it('--json run listing escapes a planted CSI in a stored run field and round-trips it', async () => {
     const command = 'deploy\u009b[2J\u2028FAKE';
     mockGetRawObject.mockImplementation(async (key: string) => {

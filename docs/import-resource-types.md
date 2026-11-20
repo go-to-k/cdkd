@@ -125,6 +125,7 @@ with `--auto` and a CloudFormation stack of the same name.
 | `AWS::IAM::UserToGroupAddition` | The physical id. |
 | `AWS::CloudWatch::AnomalyDetector` | Any stable id. |
 | `AWS::Scheduler::Schedule` | The physical id. |
+| `AWS::CloudFormation::WaitCondition` | Any id. |
 | `AWS::CloudFormation::WaitConditionHandle` | Any id, or none. |
 | `AWS::ApiGateway::Account` | Any id. |
 | `AWS::CloudFront::OriginAccessControl` | The `E...` id. |
@@ -141,6 +142,11 @@ with `--auto` and a CloudFormation stack of the same name.
 - **`AWS::CloudFormation::WaitConditionHandle`**: cdkd records the id as
   given, and uses a placeholder when you pass none. Under
   `--migrate-from-cloudformation` it records CloudFormation's pre-signed URL.
+  Neither is a URL cdkd issued, so a wait condition on such a handle is
+  refused until the handle gets a new logical id.
+- **`AWS::CloudFormation::WaitCondition`**: cdkd records the id as given,
+  with no AWS call; there is nothing to look up. An imported wait condition
+  has no recorded `Data`, so `Fn::GetAtt <wait>.Data` cannot resolve for it.
 - **`AWS::ApiGateway::Account`**: there is one per account and region and it
   has no id of its own, so cdkd records the id without an AWS call. A deploy
   records `ApiGatewayAccount`. `cdkd destroy` clears the region's

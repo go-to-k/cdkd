@@ -1,10 +1,10 @@
 {
   "summary": {
-    "types": 145,
-    "properties": 1545,
+    "types": 146,
+    "properties": 1548,
     "update": 1130,
     "replacement": 397,
-    "allowListed": 18,
+    "allowListed": 21,
     "gap": 0,
     "outsideSchema": 13
   },
@@ -1298,6 +1298,30 @@
           "property": "TemplateURL",
           "status": "allow-listed",
           "rationale": "informational: the update deploys the child from the assembly's local template (Metadata['aws:asset:path']), so a changed child template is applied without reading the URL"
+        }
+      ],
+      "outsideSchema": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitCondition",
+      "file": "src/provisioning/providers/wait-condition-provider.ts",
+      "className": "WaitConditionProvider",
+      "properties": [
+        {
+          "property": "Count",
+          "status": "allow-listed",
+          "rationale": "never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs (update() waits again; #6694)"
+        },
+        {
+          "property": "Handle",
+          "status": "allow-listed",
+          "rationale": "never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs (update() waits again; #6694)"
+        },
+        {
+          "property": "Timeout",
+          "status": "allow-listed",
+          "rationale": "never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs (update() waits again; #6694)"
         }
       ],
       "outsideSchema": [],

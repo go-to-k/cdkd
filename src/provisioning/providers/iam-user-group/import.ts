@@ -1,6 +1,7 @@
 import type { IAMUserGroupProvider } from '../iam-user-group-provider.js';
 import { GetUserCommand, GetGroupCommand, NoSuchEntityException } from '@aws-sdk/client-iam';
 import { definedAttributes } from '../../attribute-map.js';
+import { userOrGroupIdentityToken } from './shared.js';
 import { resolveExplicitPhysicalId } from '../../import-helpers.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
 
@@ -39,8 +40,15 @@ export async function importUser(
     try {
       const resp = await this.iamClient.send(new GetUserCommand({ UserName: explicit }));
       // Issue #3627: the `Arn` `create()` records. The resolver's arm builds
-      // `user/<name>` and drops a non-`/` `Path`, silently.
-      return { physicalId: explicit, attributes: definedAttributes({ Arn: resp.User?.Arn }) };
+      // `user/<name>` and drops a non-`/` `Path`, silently. The `UserId` too
+      // (go-to-k/cdkd#6655): an adopted record compares it on delete.
+      return {
+        physicalId: explicit,
+        attributes: definedAttributes({
+          Arn: resp.User?.Arn,
+          UserId: userOrGroupIdentityToken(resp.User?.UserId),
+        }),
+      };
     } catch (err) {
       if (err instanceof NoSuchEntityException) return null;
       throw err;
@@ -64,8 +72,14 @@ export async function importGroup(
     try {
       const resp = await this.iamClient.send(new GetGroupCommand({ GroupName: explicit }));
       // Issue #3627: the `Arn` `create()` records (the resolver's arm drops a
-      // non-`/` `Path`).
-      return { physicalId: explicit, attributes: definedAttributes({ Arn: resp.Group?.Arn }) };
+      // non-`/` `Path`), and the `GroupId` (go-to-k/cdkd#6655), as on the user.
+      return {
+        physicalId: explicit,
+        attributes: definedAttributes({
+          Arn: resp.Group?.Arn,
+          GroupId: userOrGroupIdentityToken(resp.Group?.GroupId),
+        }),
+      };
     } catch (err) {
       if (err instanceof NoSuchEntityException) return null;
       throw err;

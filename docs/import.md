@@ -536,7 +536,7 @@ of the same name.
 | API Gateway v2 | `AWS::ApiGatewayV2::Authorizer`, `AWS::ApiGatewayV2::Integration`, `AWS::ApiGatewayV2::Route`, `AWS::ApiGatewayV2::Stage` |
 | AppSync | `AWS::AppSync::ApiKey`, `AWS::AppSync::DataSource`, `AWS::AppSync::GraphQLSchema`, `AWS::AppSync::Resolver` |
 | Bedrock AgentCore | `AWS::BedrockAgentCore::Evaluator`, `AWS::BedrockAgentCore::Runtime` |
-| CloudFormation | `AWS::CloudFormation::CustomResource`, `AWS::CloudFormation::WaitConditionHandle` |
+| CloudFormation | `AWS::CloudFormation::CustomResource`, `AWS::CloudFormation::WaitCondition`, `AWS::CloudFormation::WaitConditionHandle` |
 | CloudFront | `AWS::CloudFront::CloudFrontOriginAccessIdentity`, `AWS::CloudFront::OriginAccessControl` |
 | CloudWatch | `AWS::CloudWatch::AnomalyDetector` |
 | EC2 | `AWS::EC2::NetworkAclEntry`, `AWS::EC2::Route`, `AWS::EC2::SecurityGroupIngress`, `AWS::EC2::SubnetNetworkAclAssociation`, `AWS::EC2::SubnetRouteTableAssociation`, `AWS::EC2::VPCGatewayAttachment` |

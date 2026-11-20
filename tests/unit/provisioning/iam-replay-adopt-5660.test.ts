@@ -147,7 +147,7 @@ const TYPES: TypeCase[] = [
     readCommand: GetUserCommand,
     readInput: { UserName: NAME },
     live: (UserId) => ({ User: { Arn: USER_ARN, UserId } }),
-    attributes: { Arn: USER_ARN },
+    attributes: { Arn: USER_ARN, UserId: MINE },
     destructive: [DeleteUserCommand, DeleteLoginProfileCommand],
   },
   {
@@ -167,7 +167,7 @@ const TYPES: TypeCase[] = [
     readCommand: GetGroupCommand,
     readInput: { GroupName: NAME, MaxItems: 1 },
     live: (GroupId) => ({ Group: { Arn: GROUP_ARN, GroupId } }),
-    attributes: { Arn: GROUP_ARN },
+    attributes: { Arn: GROUP_ARN, GroupId: MINE },
     destructive: [DeleteGroupCommand],
   },
   {
@@ -185,7 +185,7 @@ const TYPES: TypeCase[] = [
     live: (InstanceProfileId) => ({
       InstanceProfile: { Arn: PROFILE_ARN, InstanceProfileId, Roles: [] },
     }),
-    attributes: { Arn: PROFILE_ARN },
+    attributes: { Arn: PROFILE_ARN, InstanceProfileId: MINE },
     destructive: [DeleteInstanceProfileCommand, RemoveRoleFromInstanceProfileCommand],
   },
   {

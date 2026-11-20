@@ -2,9 +2,10 @@
  * Physical ids that ARE a bearer credential (go-to-k/cdkd#5868).
  *
  * One per-type declaration: a type qualifies only when the id string itself
- * authenticates a caller. `AWS::AppSync::ApiKey` is the only one today: its
- * id is `<apiId>|<apiKeyId>` (or, on a record imported before #5540, the key's
- * ARN), and the key is the `x-api-key` value. An IAM access key's id
+ * authenticates a caller. `AWS::AppSync::ApiKey`: its id is
+ * `<apiId>|<apiKeyId>` (or, on a record imported before #5540, the key's ARN),
+ * and the key is the `x-api-key` value. `AWS::CloudFormation::WaitConditionHandle`:
+ * a pre-signed PUT URL whose query string is the signature (#6694). An IAM access key's id
  * (`AKIA...`) is the PUBLIC half of its pair, and a Secrets Manager secret's
  * id is its ARN, so neither qualifies.
  *
@@ -47,8 +48,14 @@ export function secretPhysicalIdSegment(
   resourceType: unknown,
   physicalId: unknown
 ): string | undefined {
-  if (resourceType !== 'AWS::AppSync::ApiKey') return undefined;
   if (typeof physicalId !== 'string' || physicalId === '') return undefined;
+  if (resourceType === 'AWS::CloudFormation::WaitConditionHandle') {
+    // A pre-signed signal URL (#6694): its query string is the signature that
+    // authorizes the PUT. A legacy placeholder id carries none.
+    const query = physicalId.indexOf('?');
+    return query >= 0 && query < physicalId.length - 1 ? physicalId.slice(query + 1) : undefined;
+  }
+  if (resourceType !== 'AWS::AppSync::ApiKey') return undefined;
   const parts = physicalId.split('|');
   if (parts.length === 2 && parts[0] !== '' && parts[1] !== '') return parts[1];
   const arn = APPSYNC_ARN.exec(physicalId);
