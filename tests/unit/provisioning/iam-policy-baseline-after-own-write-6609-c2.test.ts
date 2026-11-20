@@ -37,6 +37,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { preFixBaselineUncomparedDriftKeys } from '../../../src/cli/commands/drift/baseline-keys.js';
 
 const TYPE = 'AWS::IAM::Policy';
 const AFTER = { afterOwnWrite: true } as const;
@@ -325,5 +326,117 @@ describe('AWS::IAM::Policy reads outside the post-write capture believe AWS (#66
       RESOURCE_NOT_FOUND
     );
     expect(calls()).toHaveLength(1);
+  });
+});
+
+// ─── The drift heal (fourth rule of preFixBaselineUncomparedDriftKeys) ─────
+describe('heal: an AWS::IAM::Policy member is skipped only while every live copy is the declared one (#6609 C2)', () => {
+  /** A baseline captured before the write showed: the replaced document. */
+  const STALE = { PolicyName: 'pol', PolicyDocument: PREVIOUS, Roles: ['R1', 'R2'] };
+  /** An out-of-band edit on one principal's copy. */
+  const EDITED = {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }],
+  };
+  const EDITED_RAW = encodeURIComponent(JSON.stringify(EDITED));
+  const healOf = (properties: Record<string, unknown>, aws: Record<string, unknown>) =>
+    preFixBaselineUncomparedDriftKeys(TYPE, STALE, properties, aws);
+  /** The drift read (against the stale baseline), then the heal over its bag. */
+  const readThenHeal = async (properties: Record<string, unknown>) => {
+    const aws = (await read(properties, { driftBaseline: STALE })) as Record<string, unknown>;
+    return { aws, healed: healOf(properties, aws) };
+  };
+
+  it('skips PolicyDocument when the sole copy is the declared one', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    const { healed } = await readThenHeal({ PolicyName: 'pol', PolicyDocument: DECLARED, Roles: ['R1'] });
+    expect(healed).toContain('PolicyDocument');
+  });
+
+  it('skips a declared JSON-string PolicyDocument the copy holds parsed', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    const { healed } = await readThenHeal({ PolicyDocument: JSON.stringify(DECLARED), Roles: ['R1'] });
+    expect(healed).toContain('PolicyDocument');
+  });
+
+  it('compares PolicyDocument when the sole copy is another document', async () => {
+    answer('role:R1', doc(EDITED_RAW));
+    const { healed } = await readThenHeal({ PolicyDocument: DECLARED, Roles: ['R1'] });
+    expect(healed).not.toContain('PolicyDocument');
+  });
+
+  it('skips PolicyDocument when every principal\'s copy is the declared one', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('role:R2', doc(DECLARED_RAW));
+    answer('user:U1', doc(DECLARED_RAW));
+    const { healed } = await readThenHeal({
+      PolicyDocument: DECLARED,
+      Roles: ['R1', 'R2'],
+      Users: ['U1'],
+    });
+    expect(healed).toEqual(expect.arrayContaining(['PolicyDocument', 'Roles', 'Users']));
+  });
+
+  it('never skips PolicyDocument when copies differ, even though the surfaced copy is the declared one', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('role:R2', doc(EDITED_RAW));
+    const { aws, healed } = await readThenHeal({ PolicyDocument: DECLARED, Roles: ['R1', 'R2'] });
+    // The read surfaces R1's copy (the first differing from the stale baseline) ...
+    expect(aws['PolicyDocument']).toEqual(DECLARED);
+    // ... so only the differing-copies marker keeps R2's edit reported.
+    expect(healed).not.toContain('PolicyDocument');
+    expect(healed).toContain('Roles');
+  });
+
+  it('never skips PolicyDocument when a second copy still holds the stale baseline\'s document', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('role:R2', doc(PREVIOUS_RAW));
+    const { aws, healed } = await readThenHeal({ PolicyDocument: DECLARED, Roles: ['R1', 'R2'] });
+    expect(aws['PolicyDocument']).toEqual(DECLARED);
+    expect(healed).not.toContain('PolicyDocument');
+  });
+
+  it('skips PolicyDocument but compares Roles when a principal lacks the policy', async () => {
+    answer('role:R1', doc(DECLARED_RAW));
+    answer('role:R2', missing());
+    const { aws, healed } = await readThenHeal({ PolicyDocument: DECLARED, Roles: ['R1', 'R2'] });
+    expect(aws['Roles']).toEqual(['R1']);
+    expect(healed).toContain('PolicyDocument');
+    expect(healed).not.toContain('Roles');
+  });
+
+  for (const key of ['Roles', 'Users', 'Groups'] as const) {
+    it(`skips ${key} only on the exact declared set`, () => {
+      const properties = { PolicyDocument: DECLARED, [key]: ['a', 'b'] };
+      expect(healOf(properties, { [key]: ['a', 'b'] })).toContain(key);
+      expect(healOf(properties, { [key]: ['b', 'a'] })).toContain(key);
+      for (const live of [['a', 'b', 'c'], ['a'], ['a', 'c'], [], undefined]) {
+        expect(healOf(properties, { [key]: live })).not.toContain(key);
+      }
+      // Undeclared: nothing to agree with.
+      expect(healOf({ PolicyDocument: DECLARED }, { [key]: ['a'] })).not.toContain(key);
+    });
+  }
+
+  it('skips PolicyName only on the exact declared name', () => {
+    expect(healOf({ PolicyName: 'pol', PolicyDocument: DECLARED }, { PolicyName: 'pol' })).toContain(
+      'PolicyName'
+    );
+    expect(healOf({ PolicyName: 'pol', PolicyDocument: DECLARED }, { PolicyName: 'other' })).not.toContain(
+      'PolicyName'
+    );
+    expect(healOf({ PolicyDocument: DECLARED }, { PolicyName: 'pol' })).not.toContain('PolicyName');
+    expect(healOf({ PolicyName: '', PolicyDocument: DECLARED }, { PolicyName: '' })).not.toContain(
+      'PolicyName'
+    );
+  });
+
+  it('heals nothing without a recorded baseline', () => {
+    expect(
+      preFixBaselineUncomparedDriftKeys(TYPE, undefined, { PolicyDocument: DECLARED, Roles: ['R1'] }, {
+        PolicyDocument: DECLARED,
+        Roles: ['R1'],
+      })
+    ).toEqual([]);
   });
 });
