@@ -92,10 +92,13 @@ export const NOT_READ_MODEL_FIX_MODULES: Readonly<Record<string, string>> = {
   'cc-nested-create-only-patch.ts': 'type-generic nested create-only handling, read from the schema',
 };
 
-/** The `../<name>.js` patch-helper modules an `update.ts` text imports, as `<name>.ts`. */
+/**
+ * The `../<name>.js` / `./<name>.js` patch-helper modules an `update.ts` text
+ * imports, as `<name>.ts` (a helper is named `*-patch` or `cc-read-back-*`).
+ */
 export function importedPatchModules(updateText: string): string[] {
   return [
-    ...updateText.matchAll(/from '\.\.\/((?:[a-z0-9-]+-patch)|(?:cc-read-back-[a-z0-9-]+))\.js'/g),
+    ...updateText.matchAll(/from '\.\.?\/((?:[a-z0-9-]+-patch)|(?:cc-read-back-[a-z0-9-]+))\.js'/g),
   ].map((m) => `${m[1]!}.ts`);
 }
 

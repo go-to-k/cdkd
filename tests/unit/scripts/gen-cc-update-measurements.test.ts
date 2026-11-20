@@ -70,6 +70,12 @@ describe('gen-cc-update-measurements findProblems', () => {
     );
   });
 
+  it('reads a sibling ./ patch helper import too, but no other ./ module', () => {
+    const update =
+      "import { a } from './sqs-queue-patch.js';\nimport { b } from './codedeploy-alias-update.js';\n";
+    expect(importedPatchModules(update)).toEqual(['sqs-queue-patch.ts']);
+  });
+
   it('passes a consistent table', () => {
     expect(findProblems(good, texts)).toEqual([]);
   });

@@ -162,6 +162,20 @@ describe('withCcReadBackEmptyKeyRemovals: DataSync task (go-to-k/cdkd#6676)', ()
     const live = { Schedule: { ScheduleExpression: 'rate(1 day)' } };
     expect(withCcReadBackEmptyKeyRemovals(TASK, VERIFY, live, live)).toBe(VERIFY);
   });
+
+  it('sends a revert to an empty Name over a live name as written (a remove keeps the name)', () => {
+    const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Name', value: '' }];
+    expect(withCcReadBackEmptyKeyRemovals(TASK, patch, { Name: '' }, { Name: 'oob' })).toBe(
+      patch
+    );
+  });
+
+  it('turns a replace OF an empty Name into a remove while the live Name is empty too', () => {
+    const patch: JsonPatchOp[] = [{ op: 'replace', path: '/Name', value: '' }];
+    expect(withCcReadBackEmptyKeyRemovals(TASK, patch, { Name: '' }, { Name: '' })).toEqual([
+      { op: 'remove', path: '/Name' },
+    ]);
+  });
 });
 
 describe('CloudControlProvider.update wiring (go-to-k/cdkd#6569)', () => {

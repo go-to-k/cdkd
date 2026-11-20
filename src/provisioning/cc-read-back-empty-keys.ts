@@ -57,8 +57,9 @@ function isEmptyValue(value: unknown): boolean {
  *
  * An `add` / `replace` the patch already has on `/<key>` whose value is
  * empty is the same refused request, so it becomes a `remove`
- * while the live model holds the key and is dropped when it does not; any
- * other op there is left as the generator wrote it.
+ * while the live model holds the key and is dropped when it does not; a `""`
+ * over a live non-empty string, and any other op there, is left as the
+ * generator wrote it.
  *
  * Every other type, an empty patch, or nothing to change returns the same
  * array.
@@ -80,9 +81,14 @@ export function withCcReadBackEmptyKeyRemovals(
       // An `add` / `replace` OF an empty value is the same refused
       // request (a `drift --revert` restoring a `{}` baseline over tags added
       // out of band): send `remove` instead while the model holds the key,
-      // and nothing when it does not (a missing-path remove fails).
+      // and nothing when it does not (a missing-path remove fails). A `""`
+      // over a live non-empty string is sent as written: a `remove` would
+      // keep the live string (UpdateTask leaves an omitted Name alone), so a
+      // `drift --revert` would report success without reverting it.
       const op = out[existing]!;
-      if ((op.op === 'add' || op.op === 'replace') && isEmptyValue(op.value)) {
+      const live = liveModel[key];
+      const keepsLiveString = op.value === '' && typeof live === 'string' && live !== '';
+      if ((op.op === 'add' || op.op === 'replace') && isEmptyValue(op.value) && !keepsLiveString) {
         out = Object.prototype.hasOwnProperty.call(liveModel, key)
           ? out.map((o, i) => (i === existing ? { op: 'remove', path } : o))
           : out.filter((_, i) => i !== existing);
