@@ -222,16 +222,25 @@ export class WaitConditionSignalStore {
   /**
    * Every signal received at `key` so far, in arrival order. `seen` caches
    * each version's parse across polls (keyed by version id), so a poll GETs
-   * only what is new.
+   * only what is new. More than `maxVersions` versions is a flood, not a set
+   * of signals: it throws a `WaitConditionSignalFlood` error rather than
+   * reading them all.
    */
   async readSignals(
     key: string,
-    seen: Map<string, WaitConditionSignal | null>
+    seen: Map<string, WaitConditionSignal | null>,
+    maxVersions = Infinity
   ): Promise<WaitConditionSignal[]> {
     const bucket = this.requireBucket();
     const client = await this.client();
     const owner = await expectedOwnerParam(client);
     const versions = await listSignalVersions(client, bucket, key, owner);
+    if (versions.length > maxVersions) {
+      throw Object.assign(
+        new Error(`${versions.length} signal versions exceed the limit of ${maxVersions}`),
+        { name: 'WaitConditionSignalFlood' }
+      );
+    }
     const signals: WaitConditionSignal[] = [];
     for (const { versionId, size } of versions) {
       if (!seen.has(versionId)) {
@@ -283,8 +292,22 @@ export class WaitConditionSignalStore {
       const bucket = this.requireBucket();
       const client = await this.client();
       const owner = await expectedOwnerParam(client);
-      await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key, ...owner }));
+      const deleted = await client.send(
+        new DeleteObjectCommand({ Bucket: bucket, Key: key, ...owner })
+      );
       await purgeNoncurrentKeyVersions(client, bucket, [key], { requestFields: owner });
+      // On the versioned state bucket the delete left a marker; the prefix has
+      // no lifecycle rule, so remove it by its own version id too.
+      if (deleted.DeleteMarker === true && typeof deleted.VersionId === 'string') {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            VersionId: deleted.VersionId,
+            ...owner,
+          })
+        );
+      }
     } catch (error) {
       const failure = describeAwsFailure(error);
       this.logger.warn(

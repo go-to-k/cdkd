@@ -3,6 +3,8 @@ import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { displaySafe, safeMsg, truncateCodePoints } from '../../utils/display-safe.js';
 import { markNonRetryable } from '../../deployment/retryable-errors/marks.js';
+import { isThrottlingError, isTransientServerError } from '../../deployment/retryable-errors.js';
+import { resolvedPerTypeResourceTimeoutMs } from '../resource-timeout-registry.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
 import {
   classifyHandleUrl,
@@ -90,6 +92,10 @@ export class WaitConditionProvider implements ResourceProvider {
   /**
    * A changed `Handle`, `Count` or `Timeout` waits again (against what the
    * handle has received so far); anything else keeps the recorded `Data`.
+   *
+   * A rollback replay or a `drift --revert` restores a recorded wait, which
+   * already completed: it keeps the recorded `Data` without waiting, since the
+   * handle it named may be gone (its signals deleted) or re-created at a new URL.
    */
   async update(
     logicalId: string,
@@ -97,8 +103,14 @@ export class WaitConditionProvider implements ResourceProvider {
     _resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    if (context?.replayingState === true || context?.desiredFromAwsReadback === true) {
+      this.logger.debug(
+        safeMsg`WaitCondition ${logicalId}: restoring a recorded wait, not waiting`
+      );
+      return { physicalId, wasReplaced: false };
+    }
     const differs = (a: unknown, b: unknown): boolean => JSON.stringify(a) !== JSON.stringify(b);
     const changed =
       differs(properties['Handle'], previousProperties['Handle']) ||
@@ -202,7 +214,12 @@ export class WaitConditionProvider implements ResourceProvider {
       );
     }
 
-    const deadline = this.now() + spec.timeoutSeconds * 1000;
+    // A `--resource-timeout <TYPE>=<d>` below `Timeout` ends the row first; the
+    // engine only abandons the call, so the poll stops there too.
+    const perTypeCapMs = resolvedPerTypeResourceTimeoutMs(TYPE);
+    const waitMs = Math.min(spec.timeoutSeconds * 1000, perTypeCapMs ?? Infinity);
+    const deadline = this.now() + waitMs;
+    const maxVersions = spec.count * 10 + 100;
     const seen = new Map<string, WaitConditionSignal | null>();
     const watch = startInterruptWatch(`WaitCondition ${logicalId}`);
     let interval = INITIAL_POLL_INTERVAL_MS;
@@ -215,14 +232,24 @@ export class WaitConditionProvider implements ResourceProvider {
         if (watch.isInterrupted()) throw watch.onInterrupted();
         let signals: WaitConditionSignal[] | undefined;
         try {
-          signals = await this.signals.readSignals(verdict.key, seen);
+          signals = await this.signals.readSignals(verdict.key, seen, maxVersions);
         } catch (error) {
+          const name = error instanceof Error ? error.name : 'unknown error';
+          if (!isTransientReadFailure(error)) {
+            // Access denied, a foreign bucket owner, a signal flood: waiting
+            // cannot fix it, and a silent wait would end blaming the instance.
+            throw markNonRetryable(
+              new ProvisioningError(
+                safeMsg`WaitCondition ${logicalId} could not read its signals from the cdkd state bucket (${name}).`,
+                TYPE,
+                logicalId,
+                undefined,
+                error instanceof Error ? error : undefined
+              )
+            );
+          }
           // A throttle or a blip: the next poll retries until the deadline.
-          this.logger.debug(
-            safeMsg`WaitCondition ${logicalId} signal read failed: ${
-              error instanceof Error ? error.name : 'unknown error'
-            }`
-          );
+          this.logger.debug(safeMsg`WaitCondition ${logicalId} signal read failed: ${name}`);
         }
         if (signals !== undefined) {
           const result = evaluateSignals(signals, spec.count);
@@ -243,7 +270,7 @@ export class WaitConditionProvider implements ResourceProvider {
         if (remaining <= 0) {
           this.refuse(
             logicalId,
-            `WaitCondition ${logicalId} timed out after ${spec.timeoutSeconds}s with ` +
+            `WaitCondition ${logicalId} timed out after ${Math.round(waitMs / 1000)}s with ` +
               `${received} of ${spec.count} SUCCESS signal(s) received.`
           );
         }
@@ -254,6 +281,30 @@ export class WaitConditionProvider implements ResourceProvider {
       watch.dispose();
     }
   }
+}
+
+/** Error names a later poll can outlast: throttles, 5xx, the network, a version deleted mid-read. */
+const TRANSIENT_READ_ERROR_NAMES = new Set([
+  'NoSuchKey',
+  'NoSuchVersion',
+  'RequestTimeout',
+  'TimeoutError',
+  'NetworkingError',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+]);
+
+function isTransientReadFailure(error: unknown): boolean {
+  if (isThrottlingError(error) || isTransientServerError(error)) return true;
+  const e = error as { name?: unknown; code?: unknown } | null;
+  return (
+    (typeof e?.name === 'string' && TRANSIENT_READ_ERROR_NAMES.has(e.name)) ||
+    (typeof e?.code === 'string' && TRANSIENT_READ_ERROR_NAMES.has(e.code))
+  );
 }
 
 /** A signal field, written by whoever holds the URL, made displayable and capped. */

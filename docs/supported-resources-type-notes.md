@@ -177,7 +177,7 @@ is no single-changeset form, because CloudFormation rejects
 
 ## Wait condition handles
 
-A `AWS::CloudFormation::WaitConditionHandle`'s `Ref` is a pre-signed S3 URL,
+An `AWS::CloudFormation::WaitConditionHandle`'s `Ref` is a pre-signed S3 URL,
 as under CloudFormation. cdkd signs it for one key in its own state bucket, so
 user data can signal it with `cfn-signal` or `curl -X PUT`.
 `AWS::CloudFormation::WaitCondition` then waits for the signals:
@@ -186,9 +186,14 @@ user data can signal it with `cfn-signal` or `curl -X PUT`.
 | --- | --- |
 | Completes when | `Count` distinct `UniqueId`s have sent `"Status": "SUCCESS"` |
 | Fails when | a `"Status": "FAILURE"` signal arrives, or `Timeout` seconds pass |
-| `Fn::GetAtt <wait>.Data` | a JSON object of each `UniqueId` to its `Data` |
+| `Fn::GetAtt <wait>.Data` | a JSON string: an object of each `UniqueId` to its `Data` |
 | A signal sent before the wait starts | counts |
+| Changing `Handle`, `Count` or `Timeout` | waits again, counting the signals the handle already holds |
 | Destroying the handle | deletes the signals it received |
+
+Changing a wait condition's properties is an update CloudFormation refuses;
+cdkd waits again instead. To wait for fresh signals, give the handle a new
+logical id as well, so the wait starts from an empty handle.
 
 ```ts
 const handle = new CfnWaitConditionHandle(this, 'Handle');
@@ -206,11 +211,18 @@ Limits:
 - The instance must reach Amazon S3, as it must under CloudFormation.
 - A wait condition without a `Handle` (the `CreationPolicy` form that
   `cfn-signal --resource` signals) is refused.
-- A handle deployed by a cdkd release before this support keeps a placeholder
-  id that is not a URL. A wait condition on it is refused: give the handle a
-  new logical id so cdkd issues a URL.
+- A wait condition on a handle whose id is not a URL cdkd issued (an imported
+  handle) is refused: give the handle a new logical id so cdkd issues one.
+- A waiting wait condition holds one `--concurrency` slot. Give it a
+  dependency on the instance that signals it (`DependsOn`, or
+  `wait.node.addDependency(instance)` in CDK), so a low `--concurrency` cannot
+  run the wait before the instance exists.
 - A handle that only serves as a placeholder resource still works: nothing
   needs to signal it.
+
+Changed in v0.359.0: a handle's `Ref` is a signal URL. A handle deployed by an
+earlier release keeps its placeholder id, which is not a URL, until it gets a
+new logical id.
 
 ## Glue table Iceberg support (`IcebergTableInput` is refused)
 

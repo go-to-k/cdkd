@@ -18,15 +18,16 @@ import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-error
 
 const TYPE = 'AWS::CloudFormation::WaitConditionHandle';
 const BUCKET = 'cdkd-state-123456789012';
-const KEY = 'wait-condition-signals/Placeholder-0f8fad5b-d9cb-469f-a165-70867728950e.json';
+const UUID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+const KEY = `wait-condition-signals/Placeholder-${UUID}.json`;
 const URL_ID = `https://${BUCKET}.s3.us-east-1.amazonaws.com/${KEY}?X-Amz-Signature=abc`;
 
 function fakeStore(opts: { bucket?: string; expiresInMs?: number; issueError?: Error } = {}) {
   const issueSignalUrl = vi.fn(async (logicalId: string) => {
     if (opts.issueError) throw opts.issueError;
     return {
-      url: `https://${BUCKET}.s3.amazonaws.com/wait-condition-signals/${logicalId}-x.json?X-Amz-Signature=s`,
-      key: `wait-condition-signals/${logicalId}-x.json`,
+      url: `https://${BUCKET}.s3.amazonaws.com/wait-condition-signals/${logicalId}-${UUID}.json?X-Amz-Signature=s`,
+      key: `wait-condition-signals/${logicalId}-${UUID}.json`,
       expiresAt: new Date(Date.now() + (opts.expiresInMs ?? 7 * 24 * 3600 * 1000)),
     };
   });
@@ -53,7 +54,7 @@ describe('WaitConditionHandleProvider', () => {
       const result = await new WaitConditionHandleProvider(store).create('Placeholder', TYPE, {});
       expect(issueSignalUrl).toHaveBeenCalledWith('Placeholder');
       expect(result).toEqual({
-        physicalId: `https://${BUCKET}.s3.amazonaws.com/wait-condition-signals/Placeholder-x.json?X-Amz-Signature=s`,
+        physicalId: `https://${BUCKET}.s3.amazonaws.com/${KEY}?X-Amz-Signature=s`,
         attributes: {},
       });
       expect(child.warn).not.toHaveBeenCalled();

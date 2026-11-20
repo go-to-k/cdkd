@@ -44,7 +44,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# Body-bearing versions of one key (delete markers excluded), counted as rows.
+# Every version of one key, delete markers included, counted as rows.
 signal_versions() { # usage: signal_versions <key>
   local out
   out=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "$1" \
@@ -53,7 +53,8 @@ signal_versions() { # usage: signal_versions <key>
     let d = ""; process.stdin.on("data", (c) => (d += c));
     process.stdin.on("end", () => {
       const r = d.trim() === "" ? {} : JSON.parse(d);
-      process.stdout.write(String((r.Versions ?? []).filter((v) => v.Key === process.env.KEY).length));
+      const all = (r.Versions ?? []).concat(r.DeleteMarkers ?? []);
+      process.stdout.write(String(all.filter((v) => v.Key === process.env.KEY).length));
     });'
 }
 
@@ -125,6 +126,8 @@ if grep -q 'X-Amz-Signature=' <<<"${SHOWN}"; then
   echo "FAIL: state show prints the handle URL's signature" >&2
   exit 1
 fi
+grep -qE 'wait-condition-signals/Handle-[^ ]*\.json\?\*\*\*\*' <<<"${SHOWN}" \
+  || { echo "FAIL: state show does not print the handle URL in its masked form" >&2; exit 1; }
 echo "    OK: state show masks the handle URL's signature"
 
 echo "==> Phase 2: Destroy"
@@ -138,8 +141,12 @@ case "${STATE_OUT}" in
   *) echo "FAIL: instance ${INSTANCE_ID} is ${STATE_OUT} after destroy" >&2; exit 1 ;;
 esac
 VERSIONS=$(signal_versions "${SIGNAL_KEY}")
-[ "${VERSIONS}" = "0" ] || { echo "FAIL: ${VERSIONS} signal version(s) left after destroy" >&2; exit 1; }
-echo "    OK: signal versions removed with the handle"
+[ "${VERSIONS}" = "0" ] || { echo "FAIL: ${VERSIONS} signal version(s) or marker(s) left after destroy" >&2; exit 1; }
+echo "    OK: signal versions and the delete marker removed with the handle"
+VPC_ID=$(read_state 'Object.values(s.resources).find((r) => r.resourceType === "AWS::EC2::VPC").physicalId')
+[ -n "${VPC_ID}" ] || { echo "FAIL: no VPC in the recorded state" >&2; exit 1; }
+assert_gone "VPC ${VPC_ID} still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
+echo "    OK: VPC ${VPC_ID} gone"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" --region "${REGION}"
 echo "    OK: state gone"
 

@@ -41,6 +41,7 @@ import {
   stringifyJsonPayload,
 } from '../../utils/display-safe.js';
 import { UNRENDERABLE } from '../../state/lock-contention-message.js';
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 
 /**
  * Issue [#2438](https://github.com/go-to-k/cdkd/issues/2438): every string
@@ -280,7 +281,9 @@ export async function eventsCommand(
       // `stringifyJsonPayload` writes each of them as a `\uXXXX` escape: the
       // payload parses back to the same values, so a consumer sees no change.
       if (asJson) {
-        process.stdout.write(`${stringifyJsonPayload(events)}\n`);
+        // A physical id that IS a bearer credential (an AppSync key, a wait
+        // condition handle's signed URL) is shown masked, as `state show` does.
+        process.stdout.write(`${stringifyJsonPayload(events.map(withDisplayedPhysicalId))}\n`);
         return;
       }
       printRunEvents(stackName, targetRegion, options.run, events);
@@ -583,6 +586,13 @@ export async function confirmPrompt(prompt: string): Promise<boolean> {
  * `plainOrDescribed` (go-to-k/cdkd#3760). `result` is sanitised BEFORE the colour decision so the
  * colour matches the text the user actually sees.
  */
+/** An event whose `physicalId` is a bearer credential, with that id masked for display. */
+export function withDisplayedPhysicalId(event: DeploymentEvent): DeploymentEvent {
+  if (typeof event.physicalId !== 'string') return event;
+  const shown = displayPhysicalId(event.resourceType, event.physicalId);
+  return shown === event.physicalId ? event : { ...event, physicalId: shown };
+}
+
 function printRunList(stackName: string, region: string, runs: DeploymentRunSummary[]): void {
   const logger = getLogger();
   // Named only when a plain identifier: this header sits above the labelled

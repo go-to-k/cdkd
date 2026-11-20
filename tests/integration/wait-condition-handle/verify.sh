@@ -159,9 +159,9 @@ LEFT=$(printf '%s' "${VERSIONS_JSON}" | node -e '
   let d = ""; process.stdin.on("data", (c) => (d += c));
   process.stdin.on("end", () => {
     const r = d.trim() === "" ? {} : JSON.parse(d);
-    process.stdout.write(String((r.Versions ?? []).length));
+    process.stdout.write(String((r.Versions ?? []).concat(r.DeleteMarkers ?? []).length));
   });')
-[ "${LEFT}" = "0" ] || { echo "FAIL: ${LEFT} signal version(s) left after destroy" >&2; exit 1; }
-echo "    OK: signal versions removed with the handle"
+[ "${LEFT}" = "0" ] || { echo "FAIL: ${LEFT} signal version(s) or marker(s) left after destroy" >&2; exit 1; }
+echo "    OK: signal versions and the delete marker removed with the handle"
 echo ""
 echo "==> wait-condition-handle test passed"

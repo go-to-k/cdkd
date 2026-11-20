@@ -313,6 +313,64 @@ describe('WaitConditionSignalStore', () => {
     });
   });
 
+  it('removes the delete marker the versioned bucket leaves, after the purge', async () => {
+    store.setBucket(BUCKET);
+    const order: string[] = [];
+    mockSend.mockImplementation(async (command: { input: Record<string, unknown> }) => {
+      order.push(`delete ${String(command.input['VersionId'] ?? 'current')}`);
+      return command.input['VersionId'] === undefined ? { DeleteMarker: true, VersionId: 'm1' } : {};
+    });
+    mockPurge.mockImplementation(async () => {
+      order.push('purge');
+    });
+    await store.deleteSignals(KEY);
+    expect(order).toEqual(['delete current', 'purge', 'delete m1']);
+    expect(mockSend.mock.calls[1]![0].input).toEqual({
+      Bucket: BUCKET,
+      Key: KEY,
+      VersionId: 'm1',
+      ExpectedBucketOwner: '123456789012',
+    });
+  });
+
+  it('refuses a flood of versions instead of reading them', async () => {
+    store.setBucket(BUCKET);
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      expect(command.constructor.name).toBe('ListObjectVersionsCommand');
+      return {
+        Versions: Array.from({ length: 4 }, (_, i) => ({ Key: KEY, VersionId: `v${i}`, Size: 9 })),
+      };
+    });
+    await expect(store.readSignals(KEY, new Map(), 3)).rejects.toMatchObject({
+      name: 'WaitConditionSignalFlood',
+    });
+  });
+
+  it('skips a listed version with no version id', async () => {
+    store.setBucket(BUCKET);
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'ListObjectVersionsCommand') {
+        return { Versions: [{ Key: KEY, Size: 20 }] };
+      }
+      throw new Error('no GET expected');
+    });
+    await expect(store.readSignals(KEY, new Map())).resolves.toEqual([]);
+  });
+
+  it('resolves the region-corrected client once per base client, and retries a failed one', async () => {
+    const { rebuildClientForBucketRegion } = await import(
+      '../../../src/utils/bucket-region-client.js'
+    );
+    const rebuild = vi.mocked(rebuildClientForBucketRegion);
+    rebuild.mockClear();
+    rebuild.mockRejectedValueOnce(new Error('probe failed'));
+    store.setBucket(BUCKET);
+    await expect(store.issueSignalUrl('Handle')).rejects.toThrow(/probe failed/);
+    await store.issueSignalUrl('Handle');
+    await store.issueSignalUrl('Handle');
+    expect(rebuild).toHaveBeenCalledTimes(2);
+  });
+
   it('does not fail when the delete fails', async () => {
     store.setBucket(BUCKET);
     mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }));

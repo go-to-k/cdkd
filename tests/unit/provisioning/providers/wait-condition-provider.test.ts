@@ -28,6 +28,10 @@ import type {
   WaitConditionSignalStore,
 } from '../../../../src/provisioning/wait-condition-signal-store.js';
 import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
+import {
+  clearResolvedResourceTimeouts,
+  setResolvedResourceTimeouts,
+} from '../../../../src/provisioning/resource-timeout-registry.js';
 
 const TYPE = 'AWS::CloudFormation::WaitCondition';
 const BUCKET = 'cdkd-state-123456789012';
@@ -43,8 +47,12 @@ const signal = (
 
 /** A store whose `readSignals` answers one batch per poll (the last one repeats). */
 function storeAnswering(polls: Array<WaitConditionSignal[] | Error>) {
-  const readSignals = vi.fn(async (key: string) => {
+  const seenMaps = new Set<unknown>();
+  const readSignals = vi.fn(async (key: string, seen: unknown, _maxVersions?: number) => {
     expect(key).toBe(KEY);
+    // One cache for the whole wait, so a poll GETs only new versions.
+    seenMaps.add(seen);
+    expect(seenMaps.size).toBe(1);
     const next = polls.length > 1 ? polls.shift()! : polls[0]!;
     if (next instanceof Error) throw next;
     return next;
@@ -133,14 +141,86 @@ describe('WaitConditionProvider', () => {
       expect(Math.max(...provider.sleeps)).toBeLessThanOrEqual(10000);
     });
 
-    it('keeps polling through a failed read until the deadline', async () => {
-      const { store, readSignals } = storeAnswering([
-        Object.assign(new Error('slow down'), { name: 'SlowDown' }),
-        [signal('SUCCESS', 'a')],
-      ]);
+    it.each([
+      ['a throttle', Object.assign(new Error('slow down'), { name: 'SlowDown' })],
+      ['a 503', Object.assign(new Error('unavailable'), { $metadata: { httpStatusCode: 503 } })],
+      ['a reset socket', Object.assign(new Error('socket'), { code: 'ECONNRESET' })],
+    ])('keeps polling through %s', async (_what, failure) => {
+      const { store, readSignals } = storeAnswering([failure, [signal('SUCCESS', 'a')]]);
       const result = await new TestProvider(store).create('Wait', TYPE, props());
       expect(result.attributes).toEqual({ Data: '{"a":""}' });
       expect(readSignals).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['access denied', 'AccessDenied'],
+      ['a signal flood', 'WaitConditionSignalFlood'],
+    ])('refuses at once, non-retryably, on %s', async (_what, name) => {
+      const { store, readSignals } = storeAnswering([
+        Object.assign(new Error('x'), { name }),
+        [signal('SUCCESS', 'a')],
+      ]);
+      const error = await new TestProvider(store)
+        .create('Wait', TYPE, props())
+        .catch((e: unknown) => e);
+      expect((error as Error).message).toBe(
+        `WaitCondition Wait could not read its signals from the cdkd state bucket (${name}).`
+      );
+      expect(isMarkedNonRetryable(error as Error)).toBe(true);
+      expect(readSignals).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds the versions it will read by Count', async () => {
+      const { store, readSignals } = storeAnswering([[signal('SUCCESS', 'a'), signal('SUCCESS', 'b')]]);
+      await new TestProvider(store).create('Wait', TYPE, props({ Count: 2 }));
+      expect(readSignals.mock.calls[0]![2]).toBe(120);
+    });
+
+    it('reports the successes received when it times out', async () => {
+      const { store } = storeAnswering([[signal('SUCCESS', 'a')]]);
+      const error = await new TestProvider(store)
+        .create('Wait', TYPE, props({ Timeout: '30', Count: 2 }))
+        .catch((e: unknown) => e);
+      expect((error as Error).message).toMatch(/with 1 of 2 SUCCESS signal/);
+    });
+
+    it('stops polling at a shorter per-type --resource-timeout', async () => {
+      setResolvedResourceTimeouts({ perTypeMs: { [TYPE]: 20_000 }, globalMs: 3_600_000 });
+      try {
+        const { store } = storeAnswering([[]]);
+        const provider = new TestProvider(store);
+        const error = await provider.create('Wait', TYPE, props()).catch((e: unknown) => e);
+        expect((error as Error).message).toMatch(/timed out after 20s/);
+        expect(provider.clock).toBe(20_000);
+      } finally {
+        clearResolvedResourceTimeouts();
+      }
+    });
+
+    it('ignores a global --resource-timeout (the engine lifts it to the 12 h floor)', async () => {
+      setResolvedResourceTimeouts({ globalMs: 10_000 });
+      try {
+        const { store } = storeAnswering([[]]);
+        const provider = new TestProvider(store);
+        await provider.create('Wait', TYPE, props({ Timeout: '30' })).catch(() => undefined);
+        expect(provider.clock).toBe(30_000);
+      } finally {
+        clearResolvedResourceTimeouts();
+      }
+    });
+
+    it('caps a FAILURE reason and omits empty fields', async () => {
+      const long = 'x'.repeat(600);
+      const { store } = storeAnswering([[signal('FAILURE', 'i-1', '', long)]]);
+      const message = await new TestProvider(store)
+        .create('Wait', TYPE, props())
+        .catch((e: unknown) => (e as Error).message);
+      expect(message).toBe(`WaitCondition Wait received a FAILURE signal from i-1: ${'x'.repeat(512)}...`);
+
+      const bare = storeAnswering([[signal('FAILURE', '')]]);
+      await expect(new TestProvider(bare.store).create('Wait', TYPE, props())).rejects.toThrow(
+        /^WaitCondition Wait received a FAILURE signal$/
+      );
     });
 
     it('stops on Ctrl-C', async () => {
@@ -210,20 +290,44 @@ describe('WaitConditionProvider', () => {
       expect(readSignals).not.toHaveBeenCalled();
     });
 
-    it('waits again when Handle, Count or Timeout changes', async () => {
-      const { store } = storeAnswering([[signal('SUCCESS', 'a'), signal('SUCCESS', 'b')]]);
+    it.each([
+      ['Handle', { Handle: HANDLE }, { Handle: HANDLE.replace('Handle-', 'Handle2-') }],
+      ['Count', { Count: 2 }, { Count: 1 }],
+      ['Timeout', { Timeout: '600' }, { Timeout: '300' }],
+    ])('waits again when %s changes', async (_what, next, prev) => {
+      const { store, readSignals } = storeAnswering([
+        [signal('SUCCESS', 'a'), signal('SUCCESS', 'b')],
+      ]);
       const result = await new TestProvider(store).update(
         'Wait',
         'cdkd-wait-condition-Wait-x',
         TYPE,
-        props({ Count: 2 }),
-        props({ Count: 1 })
+        props({ Count: 2, ...next }),
+        props({ Count: 2, ...prev })
       );
+      expect(readSignals).toHaveBeenCalledTimes(1);
       expect(result).toEqual({
         physicalId: 'cdkd-wait-condition-Wait-x',
         wasReplaced: false,
         attributes: { Data: '{"a":"","b":""}' },
       });
+    });
+
+    it.each([
+      ['a rollback replay', { replayingState: true }],
+      ['drift --revert', { desiredFromAwsReadback: true }],
+    ])('restores a recorded wait without waiting on %s', async (_what, context) => {
+      const { store, readSignals } = storeAnswering([[]]);
+      const result = await new TestProvider(store).update(
+        'Wait',
+        'cdkd-wait-condition-Wait-x',
+        TYPE,
+        props({ Count: 2 }),
+        props({ Count: 1 }),
+        context
+      );
+      expect(result).toEqual({ physicalId: 'cdkd-wait-condition-Wait-x', wasReplaced: false });
+      expect(readSignals).not.toHaveBeenCalled();
     });
   });
 

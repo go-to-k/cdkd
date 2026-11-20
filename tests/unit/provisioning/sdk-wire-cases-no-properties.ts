@@ -18,14 +18,14 @@ const CODE_INTERPRETER_ARN = `arn:aws:bedrock-agentcore:${REGION}:aws:code-inter
 
 const NOTHING_TO_PROBE = { bags: [], exempt: {}, targets: [] };
 
-const SIGNAL_URL =
-  'https://cdkd-state-123456789012.s3.us-east-1.amazonaws.com/wait-condition-signals/L-x.json?X-Amz-Signature=s';
+const SIGNAL_KEY = 'wait-condition-signals/L-0f8fad5b-d9cb-469f-a165-70867728950e.json';
+const SIGNAL_URL = `https://cdkd-state-123456789012.s3.us-east-1.amazonaws.com/${SIGNAL_KEY}?X-Amz-Signature=s`;
 /** The state-bucket side of both wait-condition types, which a store unit test covers. */
 const SIGNAL_STORE = {
   requireBucket: () => 'cdkd-state-123456789012',
   issueSignalUrl: async () => ({
     url: SIGNAL_URL,
-    key: 'wait-condition-signals/L-x.json',
+    key: SIGNAL_KEY,
     expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
   }),
   readSignals: async () => [],
