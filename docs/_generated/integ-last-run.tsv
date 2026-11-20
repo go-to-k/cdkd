@@ -417,7 +417,7 @@ rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter spli
 replace-predelete-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	174	verify.sh	rc ok, orph clean (#6463, rebased tree)
 replace-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	1599	verify.sh	rc ok, orph clean (#6463 regression)
 replace-squatter-refusal	2026-11-16T08:22:27Z	PASS	100	verify.sh	rc ok, orph clean (#6374 sweep)
-replaced-delete-failed-rollback	2026-11-18T06:37:13Z	PASS	225	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
+replaced-delete-failed-rollback	2026-11-20T14:35:46Z	PASS	200	verify.sh	rc ok, orph clean, own state bucket, head 21f2bed07 (#6687)
 replacement-fanout	2026-11-16T12:51:14Z	PASS	104	verify.sh	rc ok, orph clean (#6398)
 replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph clean (#6374 sweep)
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
@@ -428,7 +428,7 @@ rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orp
 rollback-command	2026-11-19T06:52:45Z	PASS	876	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-deletion-policy-snapshot	2026-11-04T20:33:20Z	PASS	102	verify.sh	re-run after review fix: verify.sh state check treats missing .resources map as FAIL (unreadable); PASS through it, VolumeSnap record removed; orph clean us-east-1
-rollback-explicit-name-rewrite	2026-11-16T15:41:55Z	PASS	275	verify.sh	rc ok, orph clean (#6423)
+rollback-explicit-name-rewrite	2026-11-20T14:35:46Z	PASS	195	verify.sh	rc ok, orph clean, own state bucket, head 21f2bed07 (#6687)
 rollback-failure-injection	2026-11-19T06:52:45Z	PASS	376	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-nested-cross-region-secret	2026-11-20T11:50:48Z	PASS	458	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-observed-baseline-refresh	2026-11-18T05:18:35Z	PASS	101	verify.sh	rc ok, orph clean (PR #6531, #6526)
@@ -449,6 +449,7 @@ s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-b
 s3-event-notification	2026-11-20T11:22:10Z	PASS	310	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
 s3-lifecycle	2026-11-20T13:26:50Z	PASS	525	verify.sh	PR6652 f7526a805, rc ok, own state bucket, no peer collision, orph clean
+s3-lifecycle	2026-11-20T14:35:46Z	PASS	610	verify.sh	us-east-1 rc ok, orph clean, head 21f2bed07 (#6687)
 s3-object-lock	2026-11-20T06:41:59Z	PASS	115	verify.sh	rc ok, orph clean; #6664 Phase 1b + Phase 2 drift clean
 s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-11-10T16:44:10Z	PASS	80	verify.sh	rc ok, orph clean, us-west-2
