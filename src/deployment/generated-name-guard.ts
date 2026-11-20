@@ -7,7 +7,9 @@
  * an SNS topic, a log group, an alarm, an EventBridge rule, an S3 bucket, an
  * ECS cluster, an ELBv2 load balancer or target group, a state machine) do not
  * fail a create whose name is taken: their create hands the existing resource
- * back, or overwrites it. cdkd's generated names derive from the stack name
+ * back, or overwrites it. (A log group's create refuses a taken name since
+ * go-to-k/cdkd#6655, except the holder licensed here, which it reads through
+ * `licensed-name-holder.ts`.) cdkd's generated names derive from the stack name
  * and logical id alone, so the SAME stack deployed under a second state
  * backend (another prefix, bucket or account's bucket) generates the same
  * names and its creates were handed the first deployment's resources, which
@@ -72,6 +74,7 @@ import { startInterruptWatch, type InterruptWatch } from '../provisioning/interr
 import { createdBeforeFailure } from '../provisioning/auxiliary-failure.js';
 import { isAmbiguousOutcomeError } from './retryable-errors/transient.js';
 import { isThrottlingError } from './retryable-errors/marks.js';
+import { isNameCollisionErrorFrom } from './retryable-errors/name-collision.js';
 import type { ProvisionedBy } from '../provisioning/provider-registry.js';
 import type { ResourceProvider } from '../types/resource.js';
 import {
@@ -119,10 +122,16 @@ export class GeneratedNameMismatchError extends Error {
 
 /**
  * Did the create call that threw `error` prove that it created nothing? A
- * definite client rejection (a 4xx: validation, AlreadyExists, AccessDenied --
- * not a throttle, 408 or 429) with no ambiguous link and no mark that the
+ * definite client rejection (a 4xx: validation, AccessDenied -- not a
+ * throttle, 408 or 429) with no ambiguous link and no mark that the
  * provider's create returned before the failure. Anything else -- a timeout,
  * a socket error, a 5xx, an unknown -- may have made the resource.
+ *
+ * A NAME COLLISION proves nothing either (go-to-k/cdkd#6655): a create that
+ * refuses a taken name (a log group) answers it to a replay of its own first
+ * request whose response was lost, so the intent is kept (with its failure
+ * time) and the next deploy's ledger license, bounded by the holder's
+ * creation time, takes back only a resource made in that window.
  */
 export function provenNothingCreated(
   error: unknown,
@@ -131,6 +140,7 @@ export function provenNothingCreated(
 ): boolean {
   if (createdBeforeFailure(error, logicalId, resourceType) !== undefined) return false;
   if (isAmbiguousOutcomeError(error) || isThrottlingError(error)) return false;
+  if (isNameCollisionErrorFrom(error, logicalId)) return false;
   let current: unknown = error;
   for (let depth = 0; depth < 8 && current !== null && typeof current === 'object'; depth++) {
     const status = (current as { $metadata?: { httpStatusCode?: unknown } }).$metadata

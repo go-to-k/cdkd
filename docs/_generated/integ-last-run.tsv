@@ -96,7 +96,7 @@ conditions-and-if	2026-11-07T12:23:22Z	PASS	89	verify.sh	#6005 s3-state-backend 
 conditions-update-2	2026-11-07T15:28:00Z	PASS	70	verify.sh	#6015 deploy-engine split head; rc ok, orph clean
 context-test	2026-11-07T00:10:22Z	PASS	30	standard	#5938 ssm-parameter split head; rc ok, orph clean
 created-before-failure-revert	2026-11-19T06:52:45Z	PASS	195	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
-cross-backend-same-stack	2026-11-10T15:55:35Z	PASS	331	verify.sh	rc ok, orph clean; own bucket
+cross-backend-same-stack	2026-11-20T10:58:39Z	PASS	316	verify.sh	rc ok, orph clean; #6674 824a7e947 us-east-1
 cross-backend-same-stack-migration	2026-11-04T10:52:56Z	PASS	241	verify.sh	#5760 arm (c)3 rewritten; rc 0, destroy clean, orph clean
 cross-region-concurrent-stacks	2026-11-19T17:43:38Z	PASS	209	verify.sh	rc 0 us-east-1 + us-west-2; orph clean (#6637 TopicPolicy)
 cross-region-state-bucket	2026-11-04T10:48:42Z	PASS	41	verify.sh	rc ok, orph clean (#5745 PR #5752)
@@ -341,7 +341,7 @@ loggroup-class-guard	2026-11-08T04:01:35Z	PASS	113	verify.sh	#6039 deletion-prot
 loggroup-kms-associate	2026-11-06T20:47:47Z	PASS	52	verify.sh	#5916 logs-loggroup split head; rc ok, orph clean
 loggroup-never-expire-guard	2026-11-06T20:49:53Z	PASS	116	verify.sh	#5916 logs-loggroup split head; rc ok, orph clean
 logs-delivery	2026-11-19T12:20:51Z	PASS	126	verify.sh	#6620 f519ac2dd + dpp_identifiers jq fix (uncommitted); rc ok, orph clean, member baselines OK x4, drift-clean x2
-logs-loggroup-fix-forward-orphan	2026-11-07T16:00:00Z	PASS	85	verify.sh	#6021 journaled-orphans split head; own bucket; rc ok, orph clean
+logs-loggroup-fix-forward-orphan	2026-11-20T10:58:39Z	PASS	95	verify.sh	rc ok, orph clean; #6674 824a7e947 us-east-1
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-10T12:50:06Z	PASS	80	verify.sh	rc ok, orph clean (#6080 marker re-set on branch tree)
 microservices	2026-11-19T14:40:15Z	PASS	63	standard	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean

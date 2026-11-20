@@ -233,9 +233,12 @@ Step Functions `CreateStateMachine` and ECS `CreateCluster` return the resource
 already holding the name, as do ELBv2 `CreateLoadBalancer` and
 `CreateTargetGroup` when the settings match, EventBridge `PutRule` and
 CloudWatch `PutMetricAlarm` overwrite it, and
-cdkd's CloudWatch Logs provider reads `ResourceAlreadyExistsException` as
-success, as its S3 provider reads `BucketAlreadyOwnedByYou` for a generated
-bucket name (an explicit `BucketName` a bucket already holds is refused, except the bucket an earlier attempt of the same create made and could not delete, which its retry takes back while that bucket's name, region and creation date are unchanged). For those types
+cdkd's S3 provider reads `BucketAlreadyOwnedByYou` as success for a generated
+bucket name (an explicit `BucketName` a bucket already holds is refused, except the bucket an earlier attempt of the same create made and could not delete, which its retry takes back while that bucket's name, region and creation date are unchanged). A log group's create fails on a taken name
+with `ResourceAlreadyExistsException`, as CloudFormation's does, except for
+the log group the generated-name check licensed from the stack's own records
+([Name check before a create](state-store-name-check.md)); log groups are
+checked like these types. For those types and log groups
 on cdkd's SDK providers, a replacement that changes the name — or moves an
 EventBridge rule to another bus, or changes `Type` onto one of these types, or,
 for an ELBv2 load balancer or target group, sends another name only because
