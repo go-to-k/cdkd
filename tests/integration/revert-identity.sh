@@ -284,7 +284,7 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
       process.stderr.write("FAIL: revert_identity_snapshot: " + lid + "'"'"'s physicalId holds a tab or newline\n");
       process.exit(1);
     }
-    // The one extra value a type's read needs beside its physical id (the
+    // The one extra value the read of a type needs beside its physical id (the
     // owning API / function, or the rule id a composite id leaves out); "-"
     // when the type needs none, since `read` collapses an empty tab field.
     const props = r.properties || {};
