@@ -23,6 +23,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { planSubscriptionAttributes } from './sns-subscription/attribute-plan.js';
+import { confirmTopicMembership } from './sns-subscription/topic-membership.js';
 import { isDriftRevert, revertReplacementRefusal } from '../revert-no-replace.js';
 import type {
   CreateContext,
@@ -34,6 +35,7 @@ import type {
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
+  ReadCurrentStateContext,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 
@@ -752,14 +754,23 @@ export class SNSSubscriptionProvider implements ResourceProvider {
    * as strings.
    *
    * Returns `RESOURCE_NOT_FOUND` when the subscription is gone
-   * (`NotFoundException`), and `undefined` for the special
-   * "PendingConfirmation" case where the `SubscriptionArn` has not yet been
-   * confirmed and `Attributes` is null.
+   * (`NotFoundException`), or when its topic no longer lists it
+   * (`confirmTopicMembership`, go-to-k/cdkd#6711: SNS keeps answering
+   * `GetSubscriptionAttributes` for a subscription whose topic was deleted),
+   * and `undefined` for the special "PendingConfirmation" case where the
+   * `SubscriptionArn` has not yet been confirmed and `Attributes` is null.
+   *
+   * The membership read is skipped on the capture right after cdkd's own write
+   * (`context.afterOwnWrite`), so an ordinary deploy issues no extra call: the
+   * write just proved the subscription. Every other read (drift, import,
+   * `state refresh-observed`) makes it.
    */
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    _properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     // The literal "PendingConfirmation" placeholder (issue #1301 — e.g. state
     // adopted via `cdkd import --resource <id>=PendingConfirmation`) is not a
@@ -781,6 +792,17 @@ export class SNSSubscriptionProvider implements ResourceProvider {
       throw err;
     }
     if (!attributes) return undefined;
+
+    const topicArn = attributes['TopicArn'];
+    if (context?.afterOwnWrite !== true && topicArn) {
+      const membership = await confirmTopicMembership(
+        this.snsClient,
+        topicArn,
+        physicalId,
+        attributes
+      );
+      if (membership === 'gone') return RESOURCE_NOT_FOUND;
+    }
 
     const result: Record<string, unknown> = {};
     if (attributes['TopicArn'] !== undefined) result['TopicArn'] = attributes['TopicArn'];

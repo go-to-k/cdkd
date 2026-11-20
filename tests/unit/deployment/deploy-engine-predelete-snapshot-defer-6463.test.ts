@@ -462,7 +462,7 @@ describe('the deferred delete of a pre-delete-snapshot type (go-to-k/cdkd#6463)'
     ).toBe(true);
   });
 
-  it('an inline delete (an old id another record holds) snapshots first, then deletes', async () => {
+  it('an old id another record holds defers in memory; the cleanup phase snapshots first, then deletes (go-to-k/cdkd#6712)', async () => {
     const { engine, run, host } = inDeploy();
     const old = oldOf(VOLUME);
     engine.deployStateResources = {
@@ -472,14 +472,19 @@ describe('the deferred delete of a pre-delete-snapshot type (go-to-k/cdkd#6463)'
 
     await replaceDelete(engine, old);
 
+    expect(steps()).toEqual([]);
+    expect(run.deferredReplacedDeletes!.has('Vol')).toBe(true);
+    expect(host.supersededResources).toBeUndefined();
+
+    await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', { updated: 1, updatePartial: 0 });
+
     expect(steps()).toEqual(['snapshot vol-old', 'delete vol-old']);
-    expect(run.deferredReplacedDeletes!.size).toBe(0);
     expect(host.supersededResources).toBeUndefined();
     expect(deleteContexts('vol-old')[0]).not.toHaveProperty('finalSnapshotIdentifier');
   });
 
-  it('an inline delete of a held old id whose snapshot fails names the other record, not an untracked copy', async () => {
-    const { engine } = inDeploy();
+  it('a held old id whose cleanup snapshot fails names the other record, not an untracked copy', async () => {
+    const { engine, run } = inDeploy();
     const old = oldOf(VOLUME);
     engine.deployStateResources = {
       Vol: old,
@@ -488,6 +493,7 @@ describe('the deferred delete of a pre-delete-snapshot type (go-to-k/cdkd#6463)'
     snapshotFails.ids.add('vol-old');
 
     await replaceDelete(engine, old);
+    await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', { updated: 1, updatePartial: 0 });
 
     expect(provider.delete).not.toHaveBeenCalled();
     const line = printed.warn.find((l) => l.includes('Final snapshot for old Vol'))!;
@@ -564,22 +570,22 @@ describe('the deferred delete of a pre-delete-snapshot type (go-to-k/cdkd#6463)'
     expect(options.stop!()).toBe(true);
   });
 
-  it("an inline delete's snapshot reuses only one started by this attempt", async () => {
-    const { engine } = inDeploy();
+  it("an in-memory deferral's cleanup snapshot reuses only one started by this attempt (go-to-k/cdkd#6712)", async () => {
+    const { engine, run } = inDeploy();
     const old = oldOf(VOLUME);
     engine.deployStateResources = {
       Vol: old,
       Other: { physicalId: 'vol-old', resourceType: VOLUME, properties: {} } as ResourceState,
     };
-    const before = Date.now();
 
     await replaceDelete(engine, old);
+    const before = Date.now();
+    await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', { updated: 1, updatePartial: 0 });
 
+    // No superseded entry carries a deferral time, so the bound is this attempt's start.
     const bound = optionsOf().reuseStartedAtOrAfter!;
     expect(bound).toBeGreaterThanOrEqual(before);
     expect(bound).toBeLessThanOrEqual(Date.now());
-    // Not stopped on Ctrl-C: a stopped inline delete would leave the copy untracked.
-    expect(optionsOf()).not.toHaveProperty('stop');
   });
 
   it.each([

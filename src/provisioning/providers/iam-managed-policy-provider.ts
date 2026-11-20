@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
+import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../own-write-removals.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
@@ -393,6 +394,11 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     log: MaskedLogSinks
   ): Promise<void> {
     const { value: v } = log;
+    // go-to-k/cdkd#6609: each detach is noted once its call succeeds (a
+    // tolerated "not found" included), so the capture right after waits for
+    // it (`own-write-removals.ts`); a note an earlier update that threw left
+    // behind is dropped first. Only this method notes for the type.
+    clearOwnWriteRemovals(MANAGED_POLICY_TYPE, policyArn);
     const newGroupSet = new Set(newGroups || []);
     const oldGroupSet = new Set(oldGroups || []);
     for (const g of newGroupSet) {
@@ -413,6 +419,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
+        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Groups', g);
       }
     }
 
@@ -436,6 +443,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
+        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Roles', r);
       }
     }
 
@@ -459,6 +467,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
+        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Users', u);
       }
     }
   }

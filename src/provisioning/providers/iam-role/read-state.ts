@@ -23,6 +23,7 @@ import {
 } from '../../iam-sibling-managed-policies.js';
 import { isRoleName, roleIdentityToken } from './shared.js';
 import type { ReadCurrentStateContext } from '../../../types/resource.js';
+import { type OwnWriteRemovals, takeOwnWriteRemovals } from '../../own-write-removals.js';
 import {
   declaredMemberDocument,
   type MemberRead,
@@ -214,6 +215,12 @@ export async function readCurrentState(
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  // go-to-k/cdkd#6609: what the write removed, taken before the first await
+  // (`own-write-removals.ts`).
+  const removed =
+    context?.afterOwnWrite === true
+      ? takeOwnWriteRemovals('AWS::IAM::Role', physicalId)
+      : undefined;
   let role;
   try {
     const resp = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
@@ -283,7 +290,7 @@ export async function readCurrentState(
   if (context?.afterOwnWrite === true && properties !== undefined) {
     await settleOwnWriteMembers(
       result,
-      roleOwnWriteMembers.call(this, physicalId, properties, context),
+      roleOwnWriteMembers.call(this, physicalId, properties, context, removed),
       this.ownWriteRereadDelaysMs,
       (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::Role', key)
     );
@@ -442,7 +449,8 @@ function roleOwnWriteMembers(
   this: IAMRoleProvider,
   physicalId: string,
   properties: Record<string, unknown>,
-  context: ReadCurrentStateContext
+  context: ReadCurrentStateContext,
+  removed: OwnWriteRemovals | undefined
 ): OwnWriteMember<unknown>[] {
   const members: OwnWriteMember<unknown>[] = [];
   const getRoleMember = (key: string) => async (): Promise<MemberRead<unknown>> => {
@@ -461,15 +469,19 @@ function roleOwnWriteMembers(
     });
   }
   members.push(
-    ...principalOwnWriteMembers(properties, {
-      boundary: getRoleMember('PermissionsBoundary'),
-      managedPolicyArns: async () => ({
-        value: await readManagedPolicyArns.call(this, physicalId, properties, context),
-      }),
-      policies: async () => ({
-        value: await readInlinePolicies.call(this, physicalId, properties, context),
-      }),
-    })
+    ...principalOwnWriteMembers(
+      properties,
+      {
+        boundary: getRoleMember('PermissionsBoundary'),
+        managedPolicyArns: async () => ({
+          value: await readManagedPolicyArns.call(this, physicalId, properties, context),
+        }),
+        policies: async () => ({
+          value: await readInlinePolicies.call(this, physicalId, properties, context),
+        }),
+      },
+      removed
+    )
   );
   return members;
 }

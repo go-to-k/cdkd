@@ -19,7 +19,14 @@
 #      the topic is unchanged. The deploy drops B from the topic's baseline,
 #      so `cdkd drift` exits 0 (it would report B as lost, which `--revert`
 #      would re-subscribe).
-#   6. Destroy + gone-probes.
+#   6. CDKD_TEST_UPDATE=sub,display re-adds the standalone subscription.
+#      `cdkd drift` exits 0.
+#   7. go-to-k/cdkd#6711: delete the topic OUT OF BAND. `cdkd drift` exits 1
+#      and reports the topic AND SubscriptionB deleted (SNS still answers
+#      GetSubscriptionAttributes for the orphaned subscription).
+#   8. Re-create the topic under the same name (same ARN): `cdkd drift` still
+#      reports SubscriptionB deleted.
+#   9. Destroy + gone-probes.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -75,6 +82,8 @@ QUEUE_A=""
 QUEUE_B=""
 QUEUE_C=""
 STRANGER_SUB=""
+SUB_B=""
+RECREATED_TOPIC=""
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -91,6 +100,10 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
+  fi
+  # Phase 8's out-of-band topic, should the destroy not have reached it.
+  if [ -n "${RECREATED_TOPIC:-}" ]; then
+    aws sns delete-topic --topic-arn "${RECREATED_TOPIC}" >/dev/null 2>&1
   fi
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
@@ -271,7 +284,51 @@ expect_baseline "Phase 5" "A"
 run_drift
 expect_drift_rc 0 "Phase 5"
 
-echo "==> Phase 6: destroy"
+echo "==> Phase 6: re-add the standalone subscription to queue B"
+CDKD_TEST_UPDATE=sub,display node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --yes
+expect_endpoints "Phase 6" "A B"
+SUB_B="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.SubscriptionB.physicalId // empty')"
+case "${SUB_B}" in arn:*:sns:?*) ;; *) echo "FAIL: SubscriptionB's physical id is not a subscription ARN: '${SUB_B}'" >&2; exit 1 ;; esac
+run_drift
+expect_drift_rc 0 "Phase 6"
+
+# go-to-k/cdkd#6711: SNS keeps answering GetSubscriptionAttributes for a
+# subscription whose topic was deleted (or deleted and re-created under the
+# same name), while the topic no longer lists it; drift read it as clean.
+SUB_B_DELETED="SubscriptionB (AWS::SNS::Subscription) — DELETED outside cdkd"
+expect_sub_b_deleted() { # usage: expect_sub_b_deleted <phase label>
+  expect_drift_rc 1 "$1"
+  if ! grep -qF "${SUB_B_DELETED}" "${DRIFT_LOG}"; then
+    echo "FAIL: $1: drift does not report SubscriptionB deleted (go-to-k/cdkd#6711)" >&2
+    exit 1
+  fi
+  if aws sns get-subscription-attributes --subscription-arn "${SUB_B}" >/dev/null 2>&1; then
+    echo "    note: $1: GetSubscriptionAttributes still answers for SubscriptionB (the stale answer the fix reads past)"
+  else
+    echo "    NOTE: $1: GetSubscriptionAttributes no longer answers for SubscriptionB, so this phase does not discriminate go-to-k/cdkd#6711"
+  fi
+}
+
+echo "==> Phase 7: delete the topic out of band; its subscription is deleted too"
+aws sns delete-topic --topic-arn "${TOPIC_ARN}"
+run_drift
+expect_sub_b_deleted "Phase 7"
+if ! grep -qF "Topic (AWS::SNS::Topic) — DELETED outside cdkd" "${DRIFT_LOG}"; then
+  echo "FAIL: Phase 7: drift does not report the deleted topic" >&2
+  exit 1
+fi
+
+echo "==> Phase 8: re-create the topic under the same name; the subscription stays deleted"
+RECREATED_TOPIC="$(aws sns create-topic --name "${TOPIC_ARN##*:}" --query TopicArn --output text)"
+if [ "${RECREATED_TOPIC}" != "${TOPIC_ARN}" ]; then
+  echo "FAIL: premise: the re-created topic's ARN '${RECREATED_TOPIC}' is not the recorded '${TOPIC_ARN}'" >&2
+  exit 1
+fi
+run_drift
+expect_sub_b_deleted "Phase 8"
+
+echo "==> Phase 9: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "topic ${TOPIC_ARN} leaked" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}"
 for q in "${QUEUE_A}" "${QUEUE_B}" "${QUEUE_C}"; do

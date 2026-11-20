@@ -553,7 +553,14 @@ function reuseBound(recorded: SupersededResourceRecord | undefined): number {
  * reads this run's re-resolved NoEcho values (a custom resource or a nested
  * stack, go-to-k/cdkd#6445): those never go to state, so it waits in memory
  * only, and a hard kill before the cleanup phase leaves the old copy
- * untracked.
+ * untracked. So does an old physical id another record of this deploy holds
+ * (go-to-k/cdkd#6712): never recorded, since a later run would delete that
+ * record's resource, yet not deleted before the deploy succeeds either. The
+ * holder is usually a policy recorded under the id of the queue, topic or
+ * bucket it is attached to (`AWS::SQS::QueuePolicy`, `AWS::SNS::TopicPolicy`),
+ * whose update moves it off the old id before the cleanup phase; deleting a
+ * topic right away took its subscriptions with it, and a failed deploy's
+ * rollback re-created it with none.
  *
  * `UpdateReplacePolicy: Snapshot` defers for an atomic type
  * (`ATOMIC_FINAL_SNAPSHOT_TYPES`: RDS and the like), whose delete call takes
@@ -567,15 +574,10 @@ function reuseBound(recorded: SupersededResourceRecord | undefined): number {
  * past that snapshot. Both copies stay live, and billed, until the deploy
  * ends; writes that reach the old copy meanwhile are in its snapshot.
  *
- * Two cases delete right away by the maintainer's decision
- * (go-to-k/cdkd#6445):
- *
- *   - An IAM inline policy: both policies attached for the rest of the deploy
- *     would grant the union of their permissions, and deferring buys nothing,
- *     since the rollback journal re-creates the policy document exactly.
- *   - An old physical id another record of this deploy holds: a recorded
- *     deferral could make a later run delete that record's live resource,
- *     and the other resource must be able to move off the id.
+ * An IAM inline policy deletes right away by the maintainer's decision
+ * (go-to-k/cdkd#6445): both policies attached for the rest of the deploy
+ * would grant the union of their permissions, and deferring buys nothing,
+ * since the rollback journal re-creates the policy document exactly.
  */
 function deferToCleanupPhase(
   run: ReplacementRunState,
@@ -602,7 +604,8 @@ function deferToCleanupPhase(
   // All four inline-policy types, `AWS::IAM::Policy` included: no other arm
   // may defer one, in memory or in state.
   if (isInlinePolicyType(oldResource.resourceType)) return false;
-  if (oldIdHeldByAnotherRecord(deps, logicalId, oldResource)) return false;
+  // In memory only: `recordSupersededForDeferral` never records it.
+  if (oldIdHeldByAnotherRecord(deps, logicalId, oldResource)) return true;
   recordSupersededForDeferral(run, deps, logicalId, oldResource, {
     updateReplacePolicy,
     finalSnapshotIdentifier: context.finalSnapshotIdentifier,

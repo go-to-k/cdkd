@@ -667,6 +667,26 @@ describe('a nested child cleanup phase runs at the root (go-to-k/cdkd#6398)', ()
     }
   );
 
+  // go-to-k/cdkd#6712: a record of ANOTHER type naming the same string (a
+  // queue policy recorded under the queue URL, a role and a function both
+  // named `foo`) does not hold the old copy: it is still deleted.
+  it('an in-memory deferral whose id a re-read record of another type names is still deleted', async () => {
+    const child = childEngine();
+    const queue = new NestedCleanupQueue();
+
+    await withNestedCleanupQueue(queue, () => deployStack(child, CHILD, 'C'));
+    child.replacementRun.supersededEntries.delete('CRev');
+    const stored = store.get(CHILD)!;
+    const { supersededResources: _dropped, ...rest } = stored.state;
+    store.set(CHILD, { ...stored, state: rest as StackState });
+    store.get(CHILD)!.state.resources['Policy'] = record('CRev-old', 'AWS::SQS::QueuePolicy', {});
+
+    await queue.runAll({ interrupted: () => false }, { info: vi.fn(), warn: vi.fn() });
+
+    expect(deletesOf('CRev-old')).toBe(1);
+    expect(printed.warn.some((l) => l.includes('names its physical id again'))).toBe(false);
+  });
+
   it('a carried entry no longer listed in the persisted child state is not deleted', async () => {
     const child = childEngine();
     const queue = new NestedCleanupQueue();

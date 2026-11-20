@@ -11,7 +11,8 @@
  *      snapshot (RDS); a type snapshotted before its delete defers with its
  *      snapshot moved into the deferred delete (go-to-k/cdkd#6463), and stays
  *      inline only when its snapshot was already taken.
- *   4. An old physical id another record holds is deleted right away.
+ *   4. An old physical id another record holds defers in memory only, never
+ *      recorded (go-to-k/cdkd#6712; it was deleted right away before).
  *
  * The engine-level runs (dependent ordering, rollback re-adopt) are in
  * `deploy-engine-cleanup-phase-delete-6374.test.ts`.
@@ -374,29 +375,51 @@ describe('which replaced deletes wait for the cleanup phase (go-to-k/cdkd#6445)'
   it.each([
     ['a plain record', {}],
     ['a custom resource with re-resolved NoEcho values', 'cr'],
-  ] as const)('case 4: an old physical id another record holds is deleted right away (%s)', async (_l, shape) => {
+  ] as const)(
+    'case 4: an old physical id another record holds waits in memory only, and the cleanup phase deletes it (go-to-k/cdkd#6712, %s)',
+    async (_l, shape) => {
+      const { engine, run, host } = inDeploy();
+      const old =
+        shape === 'cr'
+          ? crRecord()
+          : ({ physicalId: 'cr-old', resourceType: 'AWS::SQS::Queue', properties: {} } as unknown as ResourceState);
+      engine.deployStateResources = {
+        Mine: old,
+        Other: { physicalId: 'cr-old', resourceType: old.resourceType, properties: {} } as ResourceState,
+      };
+
+      await replaceDelete(engine, 'Mine', old, shape === 'cr' ? { noEchoDeleteValues: reresolved() } : {});
+
+      // Nothing deleted before the deploy succeeds, so a failed deploy's
+      // rollback finds the old copy whole.
+      expect(provider.delete).not.toHaveBeenCalled();
+      expect(run.deferredReplacedDeletes!.get('Mine')?.cleanupPhase).toBe(true);
+      expect(run.replacedOldMaySurvive.get('Mine')).toBe('deferred');
+      // Never recorded: a later run would delete the holder's resource.
+      expect(host.supersededResources).toBeUndefined();
+      expect(run.supersededEntries.has('Mine')).toBe(false);
+
+      await retryDeferredReplacedDeletes(run, engine.replacementDeps(), 'S', { updated: 1, updatePartial: 0 });
+
+      expect(deletedIds()).toEqual(['cr-old']);
+    }
+  );
+
+  it('case 4: a queue held by its QueuePolicy record is not deleted when the deploy fails, and an interrupt names it (go-to-k/cdkd#6712)', async () => {
     const { engine, run, host } = inDeploy();
-    const old =
-      shape === 'cr'
-        ? crRecord()
-        : ({ physicalId: 'cr-old', resourceType: 'AWS::SQS::Queue', properties: {} } as unknown as ResourceState);
+    const url = 'https://sqs.us-east-1.amazonaws.com/123456789012/q-a';
+    const old = { physicalId: url, resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q-a' } } as unknown as ResourceState;
     engine.deployStateResources = {
-      Mine: old,
-      Other: { physicalId: 'cr-old', resourceType: old.resourceType, properties: {} } as ResourceState,
+      Q: old,
+      QPolicy: { physicalId: url, resourceType: 'AWS::SQS::QueuePolicy', properties: {} } as ResourceState,
     };
 
-    await replaceDelete(engine, 'Mine', old, shape === 'cr' ? { noEchoDeleteValues: reresolved() } : {});
+    await replaceDelete(engine, 'Q', old);
+    // The deploy fails: the cleanup pass never runs.
+    warnUnretriedReplacedDeletes(run, engine.replacementDeps(), 'interrupted');
 
-    expect(deletedIds()).toEqual(['cr-old']);
-    expect(run.deferredReplacedDeletes!.size).toBe(0);
-    expect(host.supersededResources).toBeUndefined();
-
-    // Control: no other holder, so it defers.
-    vi.mocked(provider.delete).mockClear();
-    const free = inDeploy();
-    free.engine.deployStateResources = { Mine: old };
-    await replaceDelete(free.engine, 'Mine', old, shape === 'cr' ? { noEchoDeleteValues: reresolved() } : {});
     expect(provider.delete).not.toHaveBeenCalled();
-    expect(free.run.deferredReplacedDeletes!.has('Mine')).toBe(true);
+    expect(host.supersededResources).toBeUndefined();
+    expect(printed.warn.some((l) => l.includes(`Old Q (${url}) was not deleted`))).toBe(true);
   });
 });
