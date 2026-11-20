@@ -35,9 +35,10 @@
 #      CREATE-race capture leaves it, then rename the policy (REPLACED under a
 #      new ARN; the role NO_CHANGE): `cdkd drift` exits 0 and `--revert`
 #      exits 0 (before the fix it re-attached the deleted ARN: NoSuchEntity).
-#  11. (go-to-k/cdkd#6609, slice D) The role drops its managed policy, inline
-#      policy and boundary, the user and the group their own managed policy,
-#      and ${ADD_U3} its group, each dropping the whole key. Each recorded
+#  11. (go-to-k/cdkd#6609, slice D) The role drops AWSLambdaBasicExecutionRole,
+#      its inline policy and its boundary, the user and the group
+#      IAMUserChangePassword, and ${ADD_U3} its group; each list keeps another
+#      declared member (drift compares no undeclared one). Each recorded
 #      baseline must hold none of the removed grants. Each is then re-added
 #      OUT OF BAND: `cdkd drift` exits 1 naming every one, `--revert` removes
 #      them again in place (revert-identity), and drift is clean.
@@ -99,6 +100,7 @@ ADD_GROUP="cdkd-iam-sibling-mp-addgroup"
 ADD_U1="cdkd-iam-sibling-mp-add-u1"
 ADD_U2="cdkd-iam-sibling-mp-add-u2"
 ADD_U3="cdkd-iam-sibling-mp-add-u3"
+KEEP_GROUP="cdkd-iam-sibling-mp-keepgroup"
 # Phase 1b and Phase 8 set the modes; an inherited value would deploy them early.
 unset CDKD_TEST_UPDATE
 DRIFT_LOG=""
@@ -131,6 +133,7 @@ cleanup() {
     aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${arn}" >/dev/null 2>&1
   done
   aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-inline >/dev/null 2>&1
+  aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-keep >/dev/null 2>&1
   aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name cdkd-6609-oob >/dev/null 2>&1
   aws iam delete-role-permissions-boundary --role-name "${ROLE_NAME}" >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1
@@ -142,6 +145,7 @@ cleanup() {
   for u in "${ADD_U1}" "${ADD_U2}" "${ADD_U3}"; do
     aws iam remove-user-from-group --group-name "${ADD_GROUP}" --user-name "${u}" >/dev/null 2>&1
     aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${u}" >/dev/null 2>&1
+    aws iam remove-user-from-group --group-name "${KEEP_GROUP}" --user-name "${u}" >/dev/null 2>&1
     aws iam delete-user-policy --user-name "${u}" --policy-name cdkd-6609-u3-inline >/dev/null 2>&1
     aws iam delete-user-permissions-boundary --user-name "${u}" >/dev/null 2>&1
     aws iam delete-user --user-name "${u}" >/dev/null 2>&1
@@ -151,6 +155,7 @@ cleanup() {
     aws iam detach-group-policy --group-name "${ADD_GROUP}" --policy-arn "${arn}" >/dev/null 2>&1
   done
   aws iam delete-group --group-name "${ADD_GROUP}" >/dev/null 2>&1
+  aws iam delete-group --group-name "${KEEP_GROUP}" >/dev/null 2>&1
   for arn in $(aws iam list-attached-user-policies --user-name "${USER_NAME}" \
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
     aws iam detach-user-policy --user-name "${USER_NAME}" --policy-arn "${arn}" >/dev/null 2>&1
@@ -823,9 +828,14 @@ echo "    the role holds the renamed policy only; drift is clean"
 # --- Phase 11: removed grants re-added out of band (go-to-k/cdkd#6609, D) --
 # The capture right after a write that REMOVED an entry must not record it
 # (a stale read would freeze it into the baseline, and its later out-of-band
-# re-add would then equal the baseline and never report).
+# re-add would then equal the baseline and never report). Each list keeps a
+# declared member (AWSDenyAll, cdkd-6609-keep, ${KEEP_GROUP}): drift compares
+# no undeclared `ManagedPolicyArns` / user `Groups` (#6328) and no undeclared
+# key captured empty such as `Policies`, so dropping the whole key would leave
+# the re-add unreported whatever the capture held. The boundary goes whole (a
+# removed boundary is still compared).
 export CDKD_TEST_UPDATE=late,shrink,touch,drop,rename,shed
-echo "==> Phase 11: remove the role's / user's / group's own grants and ${ADD_U3}'s group"
+echo "==> Phase 11: remove one of the role's / user's / group's own grants and ${ADD_U3}'s group, keeping another"
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 role_inline() { # sets GOT_ROLE_INLINE; top level only
   if ! GOT_ROLE_INLINE="$(aws iam list-role-policies --role-name "${ROLE_NAME}" \
@@ -851,19 +861,20 @@ shed_is() { # usage: shed_is <role> <user> <group> <u3 groups> <role inline> <ro
   [ "${GOT_ROLE}" = "$1" ] && [ "${GOT_USER}" = "$2" ] && [ "${GOT_GROUP}" = "$3" ] &&
     [ "${GOT_U3}" = "$4" ] && [ "${GOT_ROLE_INLINE}" = "$5" ] && [ "${GOT_ROLE_BOUNDARY}" = "$6" ]
 }
-# What each principal holds once the shed deploy applied: only the sibling
-# policy's own attachment.
+# What each principal holds once the shed deploy applied: the kept member and
+# the sibling policy's own attachment.
+WANT_SHED="$(sorted "${DENY_ARN}" "${MP2_ARN}")"
 shed_ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   read_shed
-  if shed_is "${MP2_ARN}" "${MP2_ARN}" "${MP2_ARN}" "" "" "None"; then
+  if shed_is "${WANT_SHED}" "${WANT_SHED}" "${WANT_SHED}" "${KEEP_GROUP}" "cdkd-6609-keep" "None"; then
     shed_ok=1
     break
   fi
   sleep 5
 done
 if [ "${shed_ok}" -ne 1 ]; then
-  echo "FAIL: premise: after the shed deploy role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${MP2_ARN}' each), ${ADD_U3} groups='${GOT_U3}' (want none), role inline='${GOT_ROLE_INLINE}' (want none), role boundary='${GOT_ROLE_BOUNDARY}' (want None)" >&2
+  echo "FAIL: premise: after the shed deploy role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${WANT_SHED}' each), ${ADD_U3} groups='${GOT_U3}' (want '${KEEP_GROUP}'), role inline='${GOT_ROLE_INLINE}' (want 'cdkd-6609-keep'), role boundary='${GOT_ROLE_BOUNDARY}' (want None)" >&2
   exit 1
 fi
 ROLE_LID=$(lid_of AWS::IAM::Role "${ROLE_NAME}")
@@ -871,13 +882,14 @@ USER_LID=$(lid_of AWS::IAM::User "${USER_NAME}")
 GROUP_LID=$(lid_of AWS::IAM::Group "${GROUP_NAME}")
 U3_LID=$(lid_of AWS::IAM::User "${ADD_U3}")
 # The sibling policy's own attachment is that resource's and stripped (#6324),
-# so each principal's own list is empty.
-assert_observed_member "${ROLE_LID}" '.ManagedPolicyArns' '[]' "Phase 11"
-assert_observed_member "${ROLE_LID}" '.Policies' '[]' "Phase 11"
+# so each principal's own list holds the kept member only.
+KEEP_MP_JSON="$(jq -cn --arg a "${DENY_ARN}" '[$a]')"
+assert_observed_member "${ROLE_LID}" '.ManagedPolicyArns | sort' "${KEEP_MP_JSON}" "Phase 11"
+assert_observed_member "${ROLE_LID}" '.Policies' "$(inline_json role "${ROLE_NAME}" cdkd-6609-keep)" "Phase 11"
 assert_observed_member "${ROLE_LID}" '.PermissionsBoundary' '""' "Phase 11"
-assert_observed_member "${USER_LID}" '.ManagedPolicyArns' '[]' "Phase 11"
-assert_observed_member "${GROUP_LID}" '.ManagedPolicyArns' '[]' "Phase 11"
-assert_observed_member "${U3_LID}" '.Groups' '[]' "Phase 11"
+assert_observed_member "${USER_LID}" '.ManagedPolicyArns | sort' "${KEEP_MP_JSON}" "Phase 11"
+assert_observed_member "${GROUP_LID}" '.ManagedPolicyArns | sort' "${KEEP_MP_JSON}" "Phase 11"
+assert_observed_member "${U3_LID}" '.Groups | sort' "$(jq -cn --arg g "${KEEP_GROUP}" '[$g]')" "Phase 11"
 
 echo "==> Phase 11: re-add every removed grant out of band"
 aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${BASIC_ARN}"
@@ -891,9 +903,9 @@ aws iam add-user-to-group --group-name "${GROUP_NAME}" --user-name "${ADD_U3}"
 readd_ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   read_shed
-  if shed_is "$(sorted "${BASIC_ARN}" "${MP2_ARN}")" "$(sorted "${OWN_ARN}" "${MP2_ARN}")" \
-      "$(sorted "${OWN_ARN}" "${MP2_ARN}")" "${GROUP_NAME}" "cdkd-6609-inline" \
-      "arn:${PARTITION}:iam::aws:policy/PowerUserAccess"; then
+  if shed_is "$(sorted "${BASIC_ARN}" "${DENY_ARN}" "${MP2_ARN}")" "$(sorted "${OWN_ARN}" "${DENY_ARN}" "${MP2_ARN}")" \
+      "$(sorted "${OWN_ARN}" "${DENY_ARN}" "${MP2_ARN}")" "$(sorted "${GROUP_NAME}" "${KEEP_GROUP}")" \
+      "$(sorted cdkd-6609-inline cdkd-6609-keep)" "arn:${PARTITION}:iam::aws:policy/PowerUserAccess"; then
     readd_ok=1
     break
   fi
@@ -934,14 +946,14 @@ fi
 reverted_ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   read_shed
-  if shed_is "${MP2_ARN}" "${MP2_ARN}" "${MP2_ARN}" "" "" "None"; then
+  if shed_is "${WANT_SHED}" "${WANT_SHED}" "${WANT_SHED}" "${KEEP_GROUP}" "cdkd-6609-keep" "None"; then
     reverted_ok=1
     break
   fi
   sleep 5
 done
 if [ "${reverted_ok}" -ne 1 ]; then
-  echo "FAIL: after --revert role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${MP2_ARN}' each), ${ADD_U3} groups='${GOT_U3}', role inline='${GOT_ROLE_INLINE}', role boundary='${GOT_ROLE_BOUNDARY}' (want none)" >&2
+  echo "FAIL: after --revert role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${WANT_SHED}' each), ${ADD_U3} groups='${GOT_U3}' (want '${KEEP_GROUP}'), role inline='${GOT_ROLE_INLINE}' (want 'cdkd-6609-keep'), role boundary='${GOT_ROLE_BOUNDARY}' (want None)" >&2
   exit 1
 fi
 echo "==> Phase 11: cdkd drift after the revert (expect exit 0)"
@@ -964,6 +976,7 @@ assert_gone "policy ${MP_ARN} still exists after destroy" aws iam get-policy --p
 assert_gone "policy ${MP2_ARN} still exists after destroy" aws iam get-policy --policy-arn "${MP2_ARN}"
 assert_gone "role ${ATTACHER_NAME} still exists after destroy" aws iam get-role --role-name "${ATTACHER_NAME}"
 assert_gone "group ${ADD_GROUP} still exists after destroy" aws iam get-group --group-name "${ADD_GROUP}"
+assert_gone "group ${KEEP_GROUP} still exists after destroy" aws iam get-group --group-name "${KEEP_GROUP}"
 assert_gone "user ${ADD_U1} still exists after destroy" aws iam get-user --user-name "${ADD_U1}"
 assert_gone "user ${ADD_U2} still exists after destroy" aws iam get-user --user-name "${ADD_U2}"
 assert_gone "user ${ADD_U3} still exists after destroy" aws iam get-user --user-name "${ADD_U3}"
