@@ -105,12 +105,13 @@ Secrets Manager reads a rotation schedule set as `rate(N days)` (CDK's
 accepts only one of the two in a request. Drift ignores that echo beside the
 expression, and `--revert` sends the expression alone.
 
-For a resource managed through Cloud Control, `--revert` also sends the
-template's declared write-only values, which AWS never returns on a read. A
-deploy sends them as well, except a Lambda function's `Code` that the template
-did not change: a deploy can compare it with the previous template value, and
-a revert cannot. For a field AWS does not keep when it is left out, omitting
-it would apply the field's default or make the update fail:
+For a resource managed through Cloud Control, a read never returns a
+write-only value, so `--revert` generally sends the template's declared
+values. A deploy can leave out a Lambda function's unchanged `Code`, because
+it can compare against the previous template value. A revert takes its
+previous value from the read, and so still sends a declared Lambda `Code`.
+For a field AWS does not keep when it is left out, omitting it would apply the
+field's default or make the update fail:
 
 - a rotation schedule's `RotateImmediatelyOnUpdate: false` would become `true`
   and rotate the secret;

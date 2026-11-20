@@ -72,11 +72,11 @@ CONFIG_ONLY_LOG=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probe"
-  if [ -n "${CONFIG_ONLY_LOG:-}" ]; then rm -f "${CONFIG_ONLY_LOG}"; fi
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
   set +eu
+  if [ -n "${CONFIG_ONLY_LOG:-}" ]; then rm -f "${CONFIG_ONLY_LOG}"; fi
   # go-to-k/cdkd#1889's arm (Sub-3e) denies `s3:DeleteBucket` on the probe
   # bucket with a bucket policy. Drop it FIRST, before the leaked-bucket
   # delete below, or a run that died mid-arm cannot clear the bucket.
@@ -261,11 +261,11 @@ if [ -z "${PATCH_LINE}" ]; then
   tail -n 60 "${CONFIG_ONLY_LOG}" >&2
   exit 1
 fi
-if ! grep -qF '"path":"/Timeout"' <<< "${PATCH_LINE}"; then
+if [[ "${PATCH_LINE}" != *'"path":"/Timeout"'* ]]; then
   echo "FAIL: the patch does not carry the Timeout change: ${PATCH_LINE}" >&2
   exit 1
 fi
-if grep -qF '"path":"/Code"' <<< "${PATCH_LINE}"; then
+if [[ "${PATCH_LINE}" == *'"path":"/Code"'* ]]; then
   echo "FAIL: the patch re-sends the unchanged Code (go-to-k/cdkd#6709): ${PATCH_LINE}" >&2
   exit 1
 fi
