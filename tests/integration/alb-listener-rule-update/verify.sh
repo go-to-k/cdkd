@@ -82,7 +82,7 @@ rule_arn() { # RuleA|RuleB
 live_rule() { # rule ARN
   aws elbv2 describe-rules --region "${REGION}" --rule-arns "$1" --output json |
     jq -r '.Rules[0] | "\(.Priority) \(.Actions[0].FixedResponseConfig.MessageBody) \(
-      [.Conditions[] | (.PathPatternConfig.Values // .HostHeaderConfig.Values // .HttpHeaderConfig.Values // [])[]] | sort | join(","))"'
+      [.Conditions[] | (.PathPatternConfig.Values // .HostHeaderConfig.Values // .HttpHeaderConfig.Values // [])[], (.HttpHeaderConfig.HttpHeaderName // empty)] | sort | join(","))"'
 }
 expect_rule() { # rule ARN, expected live_rule line, label
   local got
@@ -112,7 +112,7 @@ VPC_ID=$(state_json | jq -r '.outputs.VpcId')
 case "${VPC_ID}" in vpc-?*) ;; *) echo "FAIL: no VPC id" >&2; exit 1 ;; esac
 RULE_A=$(rule_arn RuleA) || exit 1
 RULE_B=$(rule_arn RuleB) || exit 1
-expect_rule "${RULE_A}" "10 rule-a-v1 /a*,yes" "RuleA after the create"
+expect_rule "${RULE_A}" "10 rule-a-v1 /a*,X-Fixture,yes" "RuleA after the create"
 expect_rule "${RULE_B}" "20 rule-b /b*,b.example.com" "RuleB after the create"
 
 echo "==> Change RuleA's action and RuleB's priority, conditions unchanged (#6663)"
@@ -121,7 +121,7 @@ echo "==> Change RuleA's action and RuleB's priority, conditions unchanged (#666
 deploy_phase true
 [ "$(rule_arn RuleA)" = "${RULE_A}" ] || { echo "FAIL: RuleA was replaced" >&2; exit 1; }
 [ "$(rule_arn RuleB)" = "${RULE_B}" ] || { echo "FAIL: RuleB was replaced" >&2; exit 1; }
-expect_rule "${RULE_A}" "10 rule-a-v2 /a*,yes" "RuleA after the update"
+expect_rule "${RULE_A}" "10 rule-a-v2 /a*,X-Fixture,yes" "RuleA after the update"
 expect_rule "${RULE_B}" "25 rule-b /b*,b.example.com" "RuleB after the update"
 [ "$(drifted_ids)" = "|0" ] || { echo "FAIL: drift not clean after the update: $(drifted_ids)" >&2; exit 1; }
 echo "    OK: drift is clean after the update"
@@ -135,7 +135,7 @@ RULE_A_ID=$(state_json | jq -r --arg p "${STACK}/RuleA/Resource" '.resources | t
 [ "$(drifted_ids)" = "${RULE_A_ID}|0" ] || { echo "FAIL: drift did not report exactly RuleA: $(drifted_ids)" >&2; exit 1; }
 echo "    OK: drift reports RuleA"
 node "${LOCAL_DIST}" drift "${STACK}" --revert --yes --state-bucket "${STATE_BUCKET}" --region "${REGION}"
-expect_rule "${RULE_A}" "10 rule-a-v2 /a*,yes" "RuleA after drift --revert"
+expect_rule "${RULE_A}" "10 rule-a-v2 /a*,X-Fixture,yes" "RuleA after drift --revert"
 [ "$(drifted_ids)" = "|0" ] || { echo "FAIL: drift not clean after --revert: $(drifted_ids)" >&2; exit 1; }
 echo "    OK: drift is clean after --revert"
 

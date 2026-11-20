@@ -10,6 +10,7 @@ acm-certificate	2026-11-19T18:50:43Z	PASS	114	verify.sh	#6640 regression 8422315
 agentcore-tools	2026-11-04T09:11:36Z	PASS	75	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy 0 errors, orph clean; own state bucket
 alb	2026-11-06T16:12:24Z	PASS	585	verify.sh	#5881 split head; rc ok, orph clean
 alb-advanced	2026-11-06T16:14:57Z	PASS	151	standard	#5881 split head; rc ok, orph clean
+alb-listener-rule-update	2026-11-20T07:05:13Z	PASS	286	verify.sh	rc ok, orph clean; #6663
 api-cognito	2026-11-12T11:22:31Z	PASS	40	standard	deploy+destroy rc 0, orph clean; #6140 (us-east-1)
 apigateway	2026-11-19T18:50:43Z	PASS	151	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 apigatewayv2-update-removal	2026-11-06T16:39:58Z	PASS	210	verify.sh	#5885 split head; rc ok, orph clean
