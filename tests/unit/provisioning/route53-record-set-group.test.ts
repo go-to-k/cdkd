@@ -597,6 +597,15 @@ describe('Route53Provider RecordSetGroup', () => {
         },
       });
       expect(result).toBeNull();
+      // A dynamic reference is a string the read cannot match on either.
+      const dynamic = await provider.import({
+        ...input(undefined),
+        properties: {
+          HostedZoneName: 'example.com.',
+          RecordSets: [rec({ SetIdentifier: '{{resolve:ssm:/id}}', Weight: 10 })],
+        },
+      });
+      expect(dynamic).toBeNull();
     });
 
     it('records <zone>|<CFn group name> when the CFn group name is given and every record is live', async () => {

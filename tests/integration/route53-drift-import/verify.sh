@@ -216,12 +216,12 @@ for v in GONE_LIVE G1_LIVE G2_LIVE WILDCARD_LIVE; do
 done
 change_batch "${ZONE_ID}" "$(jq -nc \
   --argjson gone "${GONE_LIVE}" --argjson g1 "${G1_LIVE}" --argjson g2 "${G2_LIVE}" \
-  --argjson wc "${WILDCARD_LIVE}" --arg zone "${ZONE_ID}" --arg target "target.${ZONE_NAME}." \
+  --argjson wild "${WILDCARD_LIVE}" --arg zone "${ZONE_ID}" --arg target "target.${ZONE_NAME}." \
   '[{Action: "DELETE", ResourceRecordSet: $gone},
     {Action: "DELETE", ResourceRecordSet: $g2},
     {Action: "UPSERT", ResourceRecordSet: ($g1 | .ResourceRecords = [{Value: "192.0.2.99"}])},
-    {Action: "DELETE", ResourceRecordSet: $wc},
-    {Action: "CREATE", ResourceRecordSet: {Name: $wc.Name, Type: "A",
+    {Action: "DELETE", ResourceRecordSet: $wild},
+    {Action: "CREATE", ResourceRecordSet: {Name: $wild.Name, Type: "A",
       AliasTarget: {HostedZoneId: $zone, DNSName: $target, EvaluateTargetHealth: false}}}]')"
 
 run_drift
