@@ -73,6 +73,10 @@ export function collectManagedPolicyArnsAttachedBySiblings(
  * undeclared `ManagedPolicyArns` does not report it too, or one out-of-band
  * attach would be reverted twice (the second detach finds nothing to detach).
  * Empty without a context or for another type.
+ *
+ * KNOWN LIMIT (go-to-k/cdkd#6697): the policy's own comparison can still fail
+ * in that run (a refused baseline, a failed read, an unresolved token); the
+ * attachment is then reported on neither resource for that run.
  */
 export function managedPoliciesDeclaringAttachments(
   resourceType: string,
@@ -85,7 +89,19 @@ export function managedPoliciesDeclaringAttachments(
     if (sibling.resourceType !== 'AWS::IAM::ManagedPolicy') continue;
     const arn = sibling.physicalId;
     if (typeof arn !== 'string' || arn === '') continue;
-    if (Object.prototype.hasOwnProperty.call(sibling.properties, field)) out.push(arn);
+    // Only a list the policy's own drift can compare and revert: names as
+    // plain strings. A stored expression or mask (`{{resolve:...}}`, `***`)
+    // makes that policy's update ADD-only, and an unresolved intrinsic is no
+    // name, so then the principal keeps reporting the attachment.
+    const list = Object.prototype.hasOwnProperty.call(sibling.properties, field)
+      ? sibling.properties[field]
+      : undefined;
+    if (
+      Array.isArray(list) &&
+      list.every((m) => typeof m === 'string' && m !== '' && !isStoredExpression(m))
+    ) {
+      out.push(arn);
+    }
   }
   return out;
 }

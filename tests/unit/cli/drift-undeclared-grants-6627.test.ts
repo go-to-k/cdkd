@@ -628,6 +628,19 @@ describe("an attachment a same-stack ManagedPolicy's own declared list owns (iam
     }
   );
 
+  it.each([
+    ['a {{resolve:}} reference', ['{{resolve:ssm:/team/group}}']],
+    ['a masked name', ['***']],
+    ['an unresolved intrinsic', [{ Ref: 'Other' }]],
+  ])("a declared Groups holding %s does not take the attachment from the group", async (_l, groups) => {
+    resources = { Subject: principalRecord('Group'), Mp: mp({ Groups: groups }) };
+    live.managed.push(SIB_ARN);
+    expect(await runDrift(['--json'])).toBe(1);
+    expect(changes()).toEqual([{ logicalId: 'Subject', path: 'ManagedPolicyArns' }]);
+    expect(await runDrift(['--revert', '--yes'])).toBe(0);
+    expect(writes).toEqual([`DetachGroupPolicy ${SIB_ARN}`]);
+  });
+
   it("the same attach of a policy that declares no Groups list is the group's drift, and its revert detaches it", async () => {
     resources = { Subject: principalRecord('Group'), Mp: mp({ Roles: ['some-role'] }) };
     live.managed.push(SIB_ARN);
