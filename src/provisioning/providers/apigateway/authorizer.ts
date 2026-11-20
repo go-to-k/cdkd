@@ -279,7 +279,8 @@ export async function updateAuthorizer(
   // one sends nothing: API Gateway refuses `remove /jwtConfiguration`, and
   // drops the block itself when `/type` leaves JWT, which a JWT authorizer
   // losing it must do (refused above otherwise). A TOKEN / REQUEST -> JWT
-  // switch fails at AWS ("A JWT authorizer doesn't support this parameter"):
+  // switch fails at AWS ("A JWT authorizer doesn't support this parameter",
+  // then "Invalid value specified for Authorizer TTL" once the URI is cleared):
   // the Lambda authorizer's TTL cannot be cleared (measured us-east-1,
   // go-to-k/cdkd#6690), so such an authorizer needs a new logical id.
   const jwt = properties['JwtConfiguration'];
