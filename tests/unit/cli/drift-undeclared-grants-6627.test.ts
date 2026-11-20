@@ -770,6 +770,46 @@ describe('a same-stack ManagedPolicy this run did not compare (go-to-k/cdkd#6697
     expect(notCompared().every((n) => n.cause === 'readFailed')).toBe(true);
     expect(notCompared().map((n) => n.logicalId)).not.toContain('Subject');
   });
+
+  it('a policy read that returned still splits the failures around it in template order, so the breaker does not trip', async () => {
+    // Template order: A1 A2 A3 fail, B (a policy) reads, C1 C2 D fail. In a
+    // row that is 3, then 3: no trip, so D is read (readFailed). Counted in
+    // the walk's order (the policy first), the six failures run together and
+    // D would be readAborted.
+    mockRegistryGetProvider.mockImplementation((type) =>
+      type === 'AWS::IAM::ManagedPolicy'
+        ? { readCurrentState: async (_p: string, _l: string, _t: string, r: unknown) => r }
+        : {
+            readCurrentState: async () => {
+              throw new Error('ThrottlingException: Rate exceeded');
+            },
+          }
+    );
+    const queue = (id: string): ResourceState => ({
+      physicalId: `https://sqs/${id}`,
+      resourceType: 'AWS::SQS::Queue',
+      properties: {},
+    });
+    resources = {
+      A1: queue('a1'),
+      A2: queue('a2'),
+      A3: queue('a3'),
+      B: mp(['other-group']),
+      C1: queue('c1'),
+      C2: queue('c2'),
+      D: queue('d'),
+    };
+    await runDrift(['--json']);
+    const causes = Object.fromEntries(notCompared().map((n) => [n.logicalId, n.cause]));
+    expect(causes).toEqual({
+      A1: 'readFailed',
+      A2: 'readFailed',
+      A3: 'readFailed',
+      C1: 'readFailed',
+      C2: 'readFailed',
+      D: 'readFailed',
+    });
+  });
 });
 
 describe('a template that DECLARES the key keeps the ordinary comparison (go-to-k/cdkd#6627)', () => {

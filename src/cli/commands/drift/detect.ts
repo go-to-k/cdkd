@@ -275,26 +275,63 @@ export async function runDriftForStack(
     // `DRIFT_READ_FAILURE_BREAKER_THRESHOLD` for what resets it.
     const consecutiveReadFailures: Record<DriftReadPath, number> = { provider: 0, ccApi: 0 };
     const trippedReadPaths = new Set<DriftReadPath>();
-    const noteReadReturned = (): void => {
-      consecutiveReadFailures.provider = 0;
-      consecutiveReadFailures.ccApi = 0;
-    };
-
     // go-to-k/cdkd#6697: managed policies are compared first, so a principal
     // knows which of them this run did not compare (`not-compared-policies.ts`);
     // the outcomes go back to `entries` order after the walk (warnings logged
     // during the walk keep the walk's order).
+    //
+    // The breaker counts failures IN A ROW, in TEMPLATE order. Reading the
+    // policies first must not change what it sees: their failures would run
+    // together (a missing `iam:GetPolicy` aborting every other read), and
+    // their successes would no longer split the later failures template order
+    // interleaves them with. So a policy's read result (returned / failed) is
+    // DEFERRED, and replayed into the counters at its template position, just
+    // before the first later resource is read (`flushPolicyReads`). The
+    // breaker can therefore never stop a policy's own read. The cost: with
+    // every read failing, each policy is still tried before anything trips.
+    const resetReadFailures = (): void => {
+      consecutiveReadFailures.provider = 0;
+      consecutiveReadFailures.ccApi = 0;
+    };
+    const warnBreakerTripped = (path: DriftReadPath): void => {
+      logger.warn(
+        safeMsg`${DRIFT_READ_FAILURE_BREAKER_THRESHOLD} reads in a row in this stack failed ` +
+          safeMsg`${DRIFT_READ_PATH_LABELS[path]} — expired credentials, a revoked ` +
+          `role, a permission all of them need, or a burst of throttling — so cdkd stops ` +
+          `reading this stack's resources that way, and reports each one left as not ` +
+          `compared. Fix the cause, or re-run if it was throttling.`
+      );
+    };
+    /** Counts one failed read; true when it trips its path. */
+    const countReadFailure = (path: DriftReadPath): boolean => {
+      consecutiveReadFailures[path]++;
+      if (consecutiveReadFailures[path] !== DRIFT_READ_FAILURE_BREAKER_THRESHOLD) return false;
+      trippedReadPaths.add(path);
+      return true;
+    };
+    const templateRank = new Map(entries.map(([id], i) => [id, i] as const));
+    let inPolicyBlock = true;
+    let currentRank = 0;
+    const deferredPolicyReads: Array<{ rank: number; failed?: DriftReadPath }> = [];
+    const flushPolicyReads = (beforeRank: number): void => {
+      while (deferredPolicyReads.length > 0 && deferredPolicyReads[0]!.rank < beforeRank) {
+        const { failed } = deferredPolicyReads.shift()!;
+        if (failed === undefined) resetReadFailures();
+        else if (countReadFailure(failed)) warnBreakerTripped(failed);
+      }
+    };
+    const noteReadReturned = (): void => {
+      if (inPolicyBlock) deferredPolicyReads.push({ rank: currentRank });
+      else resetReadFailures();
+    };
     const walkStart = outcomes.length;
     let notComparedPolicyArns: ReadonlySet<string> | undefined;
-    let inPolicyBlock = true;
     for (const [logicalId, resource] of managedPoliciesFirst(entries)) {
-      // The breaker counts failures IN A ROW; grouping the policies first must
-      // not let IAM-policy-only failures (a missing `iam:GetPolicy`) run
-      // together and abort the rest of the stack's reads, which in template
-      // order other reads would have split. So a policy's failed read is not
-      // counted (the catch below). The cost: with every read failing, each
-      // policy is still tried before the rest of the stack trips the breaker.
-      if (resource.resourceType !== MANAGED_POLICY_TYPE) inPolicyBlock = false;
+      currentRank = templateRank.get(logicalId) ?? 0;
+      if (resource.resourceType !== MANAGED_POLICY_TYPE) {
+        inPolicyBlock = false;
+        flushPolicyReads(currentRank);
+      }
       // go-to-k/cdkd#3315. FIRST, above the skip rules: the warning names every
       // repaired id as not compared, so every one of them gets the outcome —
       // a type drift never compares included. That exit 2 is intended: the
@@ -717,12 +754,9 @@ export async function runDriftForStack(
           let breakerTripped = false;
           if (err instanceof DriftReadRefusedError) {
             noteReadReturned();
-          } else if (!readReturned && !inPolicyBlock) {
-            consecutiveReadFailures[readPath]++;
-            if (consecutiveReadFailures[readPath] === DRIFT_READ_FAILURE_BREAKER_THRESHOLD) {
-              trippedReadPaths.add(readPath);
-              breakerTripped = true;
-            }
+          } else if (!readReturned) {
+            if (inPolicyBlock) deferredPolicyReads.push({ rank: currentRank, failed: readPath });
+            else breakerTripped = countReadFailure(readPath);
           }
           logger.warn(
             `${logicalId} (${resource.resourceType}): could not be compared — the read or ` +
@@ -735,15 +769,7 @@ export async function runDriftForStack(
               (trippedReadPaths.size > 0 ? '' : `cdkd goes on with the rest of this stack. `) +
               `${maskSecretsInText(describeAwsFailure(err).detail, secrets)}`
           );
-          if (breakerTripped) {
-            logger.warn(
-              safeMsg`${DRIFT_READ_FAILURE_BREAKER_THRESHOLD} reads in a row in this stack failed ` +
-                safeMsg`${DRIFT_READ_PATH_LABELS[readPath]} — expired credentials, a revoked ` +
-                `role, a permission all of them need, or a burst of throttling — so cdkd stops ` +
-                `reading this stack's resources that way, and reports each one left as not ` +
-                `compared. Fix the cause, or re-run if it was throttling.`
-            );
-          }
+          if (breakerTripped) warnBreakerTripped(readPath);
           // The message alone is enough for the population this arm is FOR (an
           // IAM denial, a throttle), and useless for the one nobody expects: a
           // cdkd bug in a normalizer or in `calculateResourceDrift` would surface
@@ -776,6 +802,7 @@ export async function runDriftForStack(
         }
       });
     }
+    flushPolicyReads(Number.POSITIVE_INFINITY);
     restoreEntryOrder(outcomes, walkStart, entries);
 
     // Issue #3011. The `baselineRefused` gate above can only fire for a record
