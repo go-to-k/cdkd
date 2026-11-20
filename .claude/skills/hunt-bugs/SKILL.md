@@ -74,6 +74,15 @@ For at least one stack, redeploy with a changed property (env var, memory,
 GSI, tag, added resource). `cdkd diff` first, then deploy. The single richest
 bug source — verify the change reached AWS and was NOT a surprise replacement.
 
+**For every Cloud Control-routed resource** (`provisionedBy: 'cc-api'` in
+state), also change ONE property that goes through the service's main update
+call (a `Description`, an action, a setting; not a tag, a priority or a
+name) while the other declared properties stay unchanged, and run an
+out-of-band change through `drift --revert`. Cloud Control sends the read
+model's spelling of every untouched property, which some update calls refuse
+(#6676); a no-op patch and a property served by a separate call prove
+nothing. Compare a refusal with a CloudFormation A/B stack.
+
 ### 5. Destroy + verify zero orphans — non-negotiable
 
 Destroy **every** stack
