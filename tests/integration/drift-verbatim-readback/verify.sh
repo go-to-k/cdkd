@@ -160,7 +160,16 @@ echo "==> Pre-run cleanup"; cleanup
 # Deploy WITH the observed capture (the default), so state records each
 # resource's deploy-time `readCurrentState` output to read back below.
 echo "==> Deploy"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes \
+  2>&1 | tee "${ARTIFACT_DIR}/deploy.log"
+# go-to-k/cdkd#6634: the documents below omit `Version`, and the services fill
+# in `2008-10-17` (asserted after the readback). The post-write settle takes
+# that as the declared document, so no member settle (ProbeKey's KeyPolicy,
+# the bucket policy, the roles' trust policies) warns that the read never
+# showed what the write left.
+unsettled=$(grep -F 'the read right after the write never showed' "${ARTIFACT_DIR}/deploy.log" || true)
+[ -z "${unsettled}" ] || { echo "FAIL: #6634: the deploy warned of an unsettled post-write read:" >&2; echo "${unsettled}" >&2; exit 1; }
+echo "    OK: #6634: no post-write settle warning on the deploy"
 
 # `drift` exits 0 clean, 1 drifted, 2 refused; any of the three is a result
 # to record here, anything else is a failure of the run.
