@@ -417,7 +417,7 @@ rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter spli
 replace-predelete-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	174	verify.sh	rc ok, orph clean (#6463, rebased tree)
 replace-snapshot-failed-rollback	2026-11-17T00:58:18Z	PASS	1599	verify.sh	rc ok, orph clean (#6463 regression)
 replace-squatter-refusal	2026-11-16T08:22:27Z	PASS	100	verify.sh	rc ok, orph clean (#6374 sweep)
-replaced-delete-failed-rollback	2026-11-20T14:35:46Z	PASS	200	verify.sh	rc ok, orph clean, own state bucket, head 21f2bed07 (#6687)
+replaced-delete-failed-rollback	2026-11-20T16:18:33Z	PASS	200	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
 replacement-fanout	2026-11-16T12:51:14Z	PASS	104	verify.sh	rc ok, orph clean (#6398)
 replacement-immutable-name	2026-11-16T08:22:27Z	PASS	140	verify.sh	rc ok, orph clean (#6374 sweep)
 replacement-rename-onto-holder	2026-11-16T08:22:27Z	PASS	636	verify.sh	rc ok, orph clean (#6374 sweep)
@@ -425,10 +425,10 @@ require-approval-broadening	2026-11-04T17:48:59Z	PASS	81	verify.sh	rc ok, destro
 retain-orphan-redeploy	2026-11-04T22:42:27Z	PASS	200	verify.sh	rc ok, #5064 name generations behave as the fixture expects, orph clean, own temp state bucket
 retain-orphan-secret	2026-11-04T22:39:07Z	PASS	85	verify.sh	rc ok, no plaintext in any S3 version, orph clean, own temp state bucket
 rollback-attribute-only-revert	2026-11-18T05:18:35Z	PASS	90	verify.sh	rc ok, orph clean (PR #6531)
-rollback-command	2026-11-19T06:52:45Z	PASS	876	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
+rollback-command	2026-11-20T16:18:33Z	PASS	897	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
 rollback-cross-region-secret	2026-11-20T11:50:48Z	PASS	298	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-deletion-policy-snapshot	2026-11-04T20:33:20Z	PASS	102	verify.sh	re-run after review fix: verify.sh state check treats missing .resources map as FAIL (unreadable); PASS through it, VolumeSnap record removed; orph clean us-east-1
-rollback-explicit-name-rewrite	2026-11-20T14:35:46Z	PASS	195	verify.sh	rc ok, orph clean, own state bucket, head 21f2bed07 (#6687)
+rollback-explicit-name-rewrite	2026-11-20T16:18:33Z	PASS	195	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
 rollback-failure-injection	2026-11-19T06:52:45Z	PASS	376	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 rollback-nested-cross-region-secret	2026-11-20T11:50:48Z	PASS	458	verify.sh	PR6652 be63cc056, us-west-2+us-east-1; own state bucket (deleted); rc 0, kept identity x2, orph clean
 rollback-observed-baseline-refresh	2026-11-18T05:18:35Z	PASS	101	verify.sh	rc ok, orph clean (PR #6531, #6526)
@@ -519,7 +519,7 @@ synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; mar
 tags-propagation	2026-11-10T18:27:43Z	PASS	221	verify.sh	rc ok, orph clean
 termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
 throttle-wide-dag	2026-11-05T12:05:22Z	PASS	241	verify.sh	rc ok, orph clean
-type-change-replacement	2026-11-17T00:07:33Z	PASS	226	verify.sh	rc ok, orph clean (#6466 PR #6467)
+type-change-replacement	2026-11-20T16:18:33Z	PASS	215	verify.sh	rc ok, orph clean, own state bucket, head 27ba68d76 (#6692)
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
 update-deleted-outside	2026-11-11T11:02:54Z	PASS	139	verify.sh	rc ok, orph clean
 update-policy-mutations	2026-11-04T08:15:09Z	PASS	70	verify.sh	rc ok, orph clean
