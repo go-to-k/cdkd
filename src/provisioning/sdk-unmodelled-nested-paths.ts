@@ -6,25 +6,27 @@
  * deploy such a template "successfully" without the value. A declared path
  * present in a resource's properties routes that resource through Cloud
  * Control instead, which forwards the property map verbatim — the nested
- * counterpart of the top-level SDK-unwired route (#614). Read by
- * `findActionableSdkUnwired` (routing only), and by the sdk-wire harness, which
- * exempts each declared path from its nested-coverage check and fails one the
- * schema no longer lists.
+ * counterpart of the top-level SDK-unwired route (#614). Read through
+ * `findValueRoutedProperties` (routing and the deploy report only), and by the
+ * sdk-wire harness, which exempts each declared path from its nested-coverage
+ * check and fails one the schema no longer lists.
  *
  * Paths are dotted from the top-level property, array levels implicit (the
- * sdk-wire harness's label form). Remove an entry once the SDK models the
- * member and the provider sends it: the sticky escape then returns resources
- * on a `sdk-coverage` `STICKY_CC_MIGRATION_EXEMPT` type to the SDK provider.
+ * sdk-wire harness's label form). Declare only on a `sdk-coverage`
+ * `STICKY_CC_MIGRATION_EXEMPT` type, so the sticky escape returns a routed
+ * resource to the SDK provider once the entry is removed — which is due when
+ * the SDK models the member and the provider sends it.
  *
  * A LEAF.
  */
 export const SDK_UNMODELLED_NESTED_PATHS: Readonly<Record<string, readonly string[]>> = {
-  // @aws-sdk/client-cloudfront 3.1173.0 declares no OriginHttpVersion.
+  // @aws-sdk/client-cloudfront declares no OriginHttpVersion (3.1169.0
+  // installed, 3.1173.0 the latest published).
   'AWS::CloudFront::Distribution': [
     'DistributionConfig.Origins.CustomOriginConfig.OriginHttpVersion',
     'DistributionConfig.Origins.VpcOriginConfig.OriginHttpVersion',
   ],
-  // @aws-sdk/client-route-53 3.1173.0 declares none of these; the provider
+  // @aws-sdk/client-route-53 declares none of these (same versions); the provider
   // also reads only Comment and EnableAcceleratedRecovery off the two blocks.
   'AWS::Route53::HostedZone': [
     'HostedZoneConfig.HostedZoneTier',

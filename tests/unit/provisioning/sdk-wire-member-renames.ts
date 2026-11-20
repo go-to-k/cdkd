@@ -40,6 +40,12 @@ export interface TypeRenames {
 }
 
 export const MEMBER_RENAMES: Record<string, TypeRenames> = {
+  'AWS::ApiGateway::Authorizer': {
+    containers: {
+      // An update replaces the block whole, its SDK JSON the patch value (#6690).
+      JwtConfiguration: ['patchOperations.value'],
+    },
+  },
   'AWS::ApiGateway::Method': {
     members: {
       // A model map's media-type key is a JSON-pointer segment in the patch path.

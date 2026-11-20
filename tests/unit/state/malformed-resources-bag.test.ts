@@ -8260,17 +8260,18 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     ],
     [
       'src/provisioning/property-coverage.ts',
-      3,
+      4,
       '`${resourceType}:${property}` membership in the ' +
         '--allow-unsupported-properties set; the property half comes from the ' +
-        'GENERATED drop table, a closed set, or (the unrecognized-key arm) is a ' +
+        'GENERATED drop table or the value-routed table, closed sets, or (the unrecognized-key arm) is a ' +
         'template key tested against the same user-supplied set -- a lookup ' +
         'that decides a route, never a key anything is stored or served under',
     ],
     [
       'src/provisioning/provider-registry/report.ts',
-      3,
-      ':100 / :164 are the closed-set membership test above. :336 is NOT -- its ' +
+      4,
+      'Three are the closed-set membership test above (the drop table, the ' +
+        'value-routed table, the inert-preference list). The unrecognized-key one is NOT -- its ' +
         'property half is `findUnrecognizedProperties`, i.e. TEMPLATE-declared names, ' +
         'an open set. What holds there is the other half: a collision needs a ' +
         'REGISTERED resourceType that is a `:`-delimited proper prefix of another, ' +

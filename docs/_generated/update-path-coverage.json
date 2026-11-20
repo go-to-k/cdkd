@@ -1,8 +1,8 @@
 {
   "summary": {
     "types": 145,
-    "properties": 1544,
-    "update": 1129,
+    "properties": 1545,
+    "update": 1130,
     "replacement": 397,
     "allowListed": 18,
     "gap": 0,
@@ -49,6 +49,10 @@
         },
         {
           "property": "IdentityValidationExpression",
+          "status": "update"
+        },
+        {
+          "property": "JwtConfiguration",
           "status": "update"
         },
         {

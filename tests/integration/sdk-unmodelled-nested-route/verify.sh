@@ -49,6 +49,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 ZONE=NestedRouteZone
 DIST=NestedRouteDistribution
+AUTH=NestedRouteJwtAuthorizer
+API=NestedRouteApi
 
 STATE_JSON=""
 load_state() {
@@ -96,6 +98,22 @@ live_origin_http() { # usage: live_origin_http <distribution-id>
   printf '%s' "${props}" | jq -r '.DistributionConfig.Origins[0].CustomOriginConfig.OriginHttpVersion // "absent"'
 }
 
+# The authorizer's first audience, read through Cloud Control (the AWS CLI's
+# model may predate jwtConfiguration).
+live_jwt_audience() { # usage: live_jwt_audience <rest-api-id> <authorizer-id>
+  local props
+  props=$(cc_props AWS::ApiGateway::Authorizer "$1|$2") || return 1
+  printf '%s' "${props}" | jq -r '.JwtConfiguration.Issuers[0].Audiences[0] // "absent"'
+}
+
+assert_jwt() { # usage: assert_jwt <phase-label> <a|b>
+  local got
+  assert_layer "$1" "${AUTH}" sdk
+  assert_id "$1" "${AUTH}" "${AID}"
+  got=$(live_jwt_audience "${APIID}" "${AID}") || { echo "FAIL: $1: cannot read authorizer ${AID} through Cloud Control" >&2; exit 1; }
+  [ "${got}" = "cdkd-nested-route-$2" ] || { echo "FAIL: $1: JWT authorizer ${AID} holds audience '${got}', expected 'cdkd-nested-route-$2'" >&2; exit 1; }
+}
+
 assert_comments() { # usage: assert_comments <phase-label> <a|b>
   local zc dc want="cdkd-nested-route phase-$2"
   zc=$(aws route53 get-hosted-zone --id "${ZID}" --query 'HostedZone.Config.Comment' --output text) || return 1
@@ -127,10 +145,14 @@ cleanup() {
   zone_name="cdkd-nested-route-${acct}.internal"
   case "${zone_name}" in
     cdkd-nested-route-?*.internal)
-      local zid
+      local zid aid
       for zid in $(aws route53 list-hosted-zones-by-name --dns-name "${zone_name}" \
         --query "HostedZones[?Name=='${zone_name}.'].Id" --output text 2>/dev/null); do
         aws route53 delete-hosted-zone --id "${zid}" >/dev/null 2>&1
+      done
+      for aid in $(aws apigateway get-rest-apis --region "${REGION}" \
+        --query "items[?name=='${zone_name%.internal}'].id" --output text 2>/dev/null); do
+        aws apigateway delete-rest-api --region "${REGION}" --rest-api-id "${aid}" >/dev/null 2>&1
       done
       ;;
     *)
@@ -163,10 +185,15 @@ assert_layer "phase 1" "${ZONE}" sdk
 assert_layer "phase 1" "${DIST}" sdk
 ZID=$(record "${ZONE}" '.physicalId')
 DID=$(record "${DIST}" '.physicalId')
+APIID=$(record "${API}" '.physicalId')
+AID=$(record "${AUTH}" '.physicalId')
 assert_comments "phase 1" a
-[ "$(live_guardrail "${ZID}")" = "DISABLED" ] || { echo "FAIL: phase 1: zone ${ZID} starts with NS_OCCLUSION_CHECK not DISABLED" >&2; exit 1; }
-[ "$(live_origin_http "${DID}")" != "http2" ] || { echo "FAIL: phase 1: distribution ${DID} starts with OriginHttpVersion http2" >&2; exit 1; }
-echo "    OK: both on the SDK route (zone ${ZID}, distribution ${DID})"
+assert_jwt "phase 1 (JWT authorizer created on the SDK route)" a
+GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 1: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
+[ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 1: zone ${ZID} starts with NS_OCCLUSION_CHECK ${GR}, not DISABLED" >&2; exit 1; }
+HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 1: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
+[ -n "${HV}" ] && [ "${HV}" != "http2" ] || { echo "FAIL: phase 1: distribution ${DID} starts with OriginHttpVersion '${HV}'" >&2; exit 1; }
+echo "    OK: all on the SDK route (zone ${ZID}, distribution ${DID}, JWT authorizer ${AID})"
 
 echo "==> Phase 2: add the members -- THE ARM: both move to Cloud Control on the same ids"
 deploy route "${LOG_DIR}/route.log"
@@ -198,7 +225,7 @@ node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --stack-region "${REGION}" --json >"${DRIFT_JSON}" 2>"${LOG_DIR}/drift.err"
 DRIFT_RC=$?
 set -e
-for id in "${ZONE}" "${DIST}"; do
+for id in "${ZONE}" "${DIST}" "${AUTH}"; do
   bucket=$(jq -r --arg id "${id}" '[.. | objects | to_entries[]
     | select((.value | type) == "array") | .key as $bucket
     | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' "${DRIFT_JSON}" 2>/dev/null || true)
@@ -208,7 +235,7 @@ for id in "${ZONE}" "${DIST}"; do
     exit 1
   fi
 done
-echo "    OK: both clean (rc=0)"
+echo "    OK: zone, distribution and JWT authorizer clean (rc=0)"
 
 echo "==> Phase 4: remove the members -- Cloud Control stays and clears them"
 deploy removal "${LOG_DIR}/removal.log"
@@ -222,7 +249,7 @@ assert_id "phase 4" "${DIST}" "${DID}"
 GR=$(live_guardrail "${ZID}") || { echo "FAIL: phase 4: cannot read zone ${ZID} through Cloud Control" >&2; exit 1; }
 [ "${GR}" = "DISABLED" ] || { echo "FAIL: phase 4: NS_OCCLUSION_CHECK is ${GR} on ${ZID} after its removal" >&2; exit 1; }
 HV=$(live_origin_http "${DID}") || { echo "FAIL: phase 4: cannot read distribution ${DID} through Cloud Control" >&2; exit 1; }
-[ "${HV}" != "http2" ] || { echo "FAIL: phase 4: OriginHttpVersion is still http2 on ${DID} after its removal" >&2; exit 1; }
+[ -n "${HV}" ] && [ "${HV}" != "http2" ] || { echo "FAIL: phase 4: OriginHttpVersion is '${HV}' on ${DID} after its removal" >&2; exit 1; }
 echo "    OK: still Cloud Control, members cleared (guardrail DISABLED, OriginHttpVersion ${HV})"
 
 echo "==> Phase 5: a plain change returns both to the SDK provider, same ids"
@@ -233,7 +260,8 @@ assert_layer "phase 5" "${DIST}" sdk
 assert_id "phase 5" "${ZONE}" "${ZID}"
 assert_id "phase 5" "${DIST}" "${DID}"
 assert_comments "phase 5" b
-echo "    OK: both back on the SDK route, update applied in place"
+assert_jwt "phase 5 (JWT authorizer updated on the SDK route)" b
+echo "    OK: both back on the SDK route, update applied in place; JWT audience updated in place"
 
 echo "==> Phase 6: Destroy + gone-probes"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
@@ -241,6 +269,8 @@ assert_gone "hosted zone ${ZID} survived destroy" \
   aws route53 get-hosted-zone --id "${ZID}"
 assert_gone "distribution ${DID} survived destroy" \
   aws cloudfront get-distribution --id "${DID}"
+assert_gone "REST API ${APIID} survived destroy" \
+  aws apigateway get-rest-api --rest-api-id "${APIID}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: destroyed clean"

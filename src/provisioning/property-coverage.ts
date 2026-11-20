@@ -307,7 +307,11 @@ export function findAcceptedSdkUnwired(
       templateProperties,
       allowedKeys,
       recordedProperties
-    ).length > 0
+    ).length > 0 ||
+    // A value route moves the resource as a drop does (#6690).
+    findValueRoutedProperties(resourceType, templateProperties).some(
+      ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
+    )
   ) {
     return [];
   }

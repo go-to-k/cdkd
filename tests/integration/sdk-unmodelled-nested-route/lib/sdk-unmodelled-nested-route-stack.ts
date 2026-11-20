@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 
@@ -21,7 +22,7 @@ const PHASES: Record<string, { nested: boolean; comment: string }> = {
  * (`SDK_UNMODELLED_NESTED_PATHS`) routes its resource through Cloud Control,
  * which forwards it, instead of the SDK serializer dropping it.
  *
- * covers: AWS::CloudFront::Distribution, AWS::Route53::HostedZone
+ * covers: AWS::CloudFront::Distribution, AWS::Route53::HostedZone, AWS::ApiGateway::RestApi, AWS::ApiGateway::Authorizer
  *
  * Both start on the SDK route; adding the member moves each to Cloud Control
  * on the SAME physical id (both are `sdk-coverage` sticky-exempt types, whose
@@ -77,6 +78,33 @@ export class SdkUnmodelledNestedRouteStack extends cdk.Stack {
         'http2'
       );
     }
+
+    // The same refresh added `AWS::ApiGateway::Authorizer` `JwtConfiguration`,
+    // which the SDK models and the provider now sends: a JWT authorizer stays
+    // on the SDK route, its audience changing with the comment.
+    const api = new apigateway.CfnRestApi(this, 'NestedRouteApi', {
+      name: `cdkd-nested-route-${this.account}`,
+    });
+    api.overrideLogicalId('NestedRouteApi');
+    const authorizer = new apigateway.CfnAuthorizer(this, 'NestedRouteJwtAuthorizer', {
+      restApiId: api.ref,
+      name: 'jwt',
+      type: 'JWT',
+      identitySource: 'method.request.header.Authorization',
+    });
+    authorizer.overrideLogicalId('NestedRouteJwtAuthorizer');
+    authorizer.addPropertyOverride('JwtConfiguration', {
+      Issuers: [
+        {
+          Issuer: 'https://accounts.google.com',
+          Audiences: [`cdkd-nested-route-${phase.comment}`],
+          AdditionalClaims: [
+            { ClaimName: 'tenant', Format: 'SINGLE_STRING', Required: true, ExpectedValues: ['t-1'] },
+          ],
+        },
+      ],
+      DefaultAlgorithms: ['RS256'],
+    });
 
     new cdk.CfnOutput(this, 'ZoneRef', { value: zone.ref });
     new cdk.CfnOutput(this, 'DistributionRef', { value: distribution.ref });

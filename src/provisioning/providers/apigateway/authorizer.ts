@@ -7,6 +7,8 @@ import {
   NotFoundException,
 } from '@aws-sdk/client-api-gateway';
 import type { CreateAuthorizerCommandOutput } from '@aws-sdk/client-api-gateway';
+import { isDeepStrictEqual } from 'node:util';
+import { toSdkJwtConfiguration } from './jwt-configuration.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { stringifyValue } from '../../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -103,7 +105,7 @@ export async function createAuthorizer(
         new CreateAuthorizerCommand({
           restApiId,
           name,
-          type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS',
+          type: type as 'TOKEN' | 'REQUEST' | 'COGNITO_USER_POOLS' | 'JWT',
           authType: properties['AuthType'] as string | undefined,
           providerARNs: providerArns,
           authorizerUri: properties['AuthorizerUri'] as string | undefined,
@@ -115,6 +117,7 @@ export async function createAuthorizer(
           authorizerResultTtlInSeconds: properties['AuthorizerResultTtlInSeconds'] as
             | number
             | undefined,
+          jwtConfiguration: toSdkJwtConfiguration(properties['JwtConfiguration']),
         })
       );
     } catch (error) {
@@ -248,6 +251,19 @@ export async function updateAuthorizer(
         value: newVal !== undefined ? stringifyValue(newVal) : '',
       });
     }
+  }
+
+  // JwtConfiguration is replaced whole (see jwt-configuration.ts). A REMOVED
+  // one sends nothing: API Gateway refuses `remove /jwtConfiguration`, and
+  // drops the block itself when `/type` leaves JWT, which a JWT authorizer
+  // losing it must do.
+  const jwt = properties['JwtConfiguration'];
+  if (jwt !== undefined && !isDeepStrictEqual(jwt, previousProperties['JwtConfiguration'])) {
+    patchOperations.push({
+      op: 'replace',
+      path: '/jwtConfiguration',
+      value: JSON.stringify(toSdkJwtConfiguration(jwt)),
+    });
   }
 
   patchOperations.push(...arnOps.removes);

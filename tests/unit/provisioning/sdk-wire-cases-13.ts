@@ -170,6 +170,36 @@ const APIGW_AUTHORIZER_CASE: TypeCase = {
       },
       expectedRemovalThrows: APIGW_AUTHORIZER_REQUIRED,
     },
+    {
+      name: 'a JWT authorizer with every JwtConfiguration member',
+      bag: {
+        RestApiId: APIGW_API_ID,
+        Name: 'jwt',
+        Type: 'JWT',
+        IdentitySource: 'method.request.header.Authorization',
+        JwtConfiguration: {
+          Issuers: [
+            {
+              Issuer: 'https://issuer.example.com',
+              Audiences: ['aud-1'],
+              AdditionalClaims: [
+                {
+                  ClaimName: 'tenant',
+                  Format: 'SINGLE_STRING',
+                  Required: true,
+                  ExpectedValues: ['tenant-1'],
+                },
+              ],
+            },
+          ],
+          DefaultAlgorithms: ['RS256'],
+        },
+      },
+      expectedSilent: {
+        'update-remove:JwtConfiguration': `nothing is sent on removal: API Gateway refuses \`remove /jwtConfiguration\` and drops the block itself when /type leaves JWT (measured us-east-1, go-to-k/cdkd#6690; ${APIGW_SRC}/authorizer.ts)`,
+      },
+      expectedRemovalThrows: APIGW_AUTHORIZER_REQUIRED,
+    },
   ],
 };
 

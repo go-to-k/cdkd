@@ -3030,6 +3030,11 @@
       "scenarios": []
     },
     {
+      "name": "sdk-unmodelled-nested-route",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "secret-derived-immutable-names",
       "annotated": false,
       "scenarios": []
@@ -4398,6 +4403,7 @@
     "schema-v6-to-v7-migration",
     "schema-v7-to-v8-migration",
     "sdk-to-cc-autoroute",
+    "sdk-unmodelled-nested-route",
     "secret-derived-immutable-names",
     "secret-substring-literal",
     "secrets-rotation-schedule",

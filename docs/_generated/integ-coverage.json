@@ -182,7 +182,8 @@
         "api-cognito",
         "apigateway",
         "cc-to-sdk-reroute-common-types-7",
-        "local-start-api"
+        "local-start-api",
+        "sdk-unmodelled-nested-route"
       ],
       "signals": {
         "api-cognito": [
@@ -198,6 +199,10 @@
         ],
         "local-start-api": [
           "l2"
+        ],
+        "sdk-unmodelled-nested-route": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -340,6 +345,7 @@
         "local-invoke-nested-stack-from-state",
         "noecho-restapi-body-mac",
         "schema-v16-to-v17-migration",
+        "sdk-unmodelled-nested-route",
         "wafv2"
       ],
       "signals": {
@@ -382,6 +388,10 @@
           "literal"
         ],
         "schema-v16-to-v17-migration": [
+          "l1",
+          "literal"
+        ],
+        "sdk-unmodelled-nested-route": [
           "l1",
           "literal"
         ],
@@ -1126,7 +1136,8 @@
         "local-engine-role-identity",
         "local-start-cloudfront",
         "local-start-cloudfront-from-state",
-        "s3-cloudfront"
+        "s3-cloudfront",
+        "sdk-unmodelled-nested-route"
       ],
       "signals": {
         "bench-cdk-sample": [
@@ -1152,6 +1163,10 @@
         ],
         "s3-cloudfront": [
           "l2",
+          "literal"
+        ],
+        "sdk-unmodelled-nested-route": [
+          "l1",
           "literal"
         ]
       }
@@ -8986,7 +9001,8 @@
         "cc-to-sdk-reroute-hosted-zone",
         "ec2-vpc",
         "route53",
-        "route53-drift-import"
+        "route53-drift-import",
+        "sdk-unmodelled-nested-route"
       ],
       "signals": {
         "cc-to-sdk-reroute-hosted-zone": [
@@ -9002,6 +9018,10 @@
         ],
         "route53-drift-import": [
           "l2"
+        ],
+        "sdk-unmodelled-nested-route": [
+          "l1",
+          "literal"
         ]
       }
     },

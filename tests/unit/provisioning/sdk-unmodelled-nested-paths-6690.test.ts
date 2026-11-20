@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   ProviderRegistry,
+  STICKY_CC_MIGRATION_EXEMPT,
   wouldReturnToSdkProvider,
 } from '../../../src/provisioning/provider-registry.js';
 import { CloudFrontDistributionProvider } from '../../../src/provisioning/providers/cloudfront-distribution-provider.js';
@@ -61,6 +62,8 @@ describe('the declaration', () => {
       const coverage = getPropertyCoverage(type);
       expect(coverage, type).toBeDefined();
       expect(coverage!.ccRouteUnavailable, type).toBe(false);
+      // Otherwise a routed resource never returns once the SDK models it.
+      expect(STICKY_CC_MIGRATION_EXEMPT.get(type)?.mode, type).toBe('sdk-coverage');
       for (const path of declared) {
         const [top, ...rest] = path.split('.');
         expect(coverage!.handled.has(top!), path).toBe(true);
@@ -167,6 +170,23 @@ describe('routing', () => {
     );
     expect(line).not.toContain('does not yet wire');
     expect(line).toContain(`--prefer-sdk-route ${DISTRIBUTION}:DistributionConfig`);
+  });
+
+  it('warns when --prefer-sdk-route keeps the resource where the member is dropped', () => {
+    const r = registry();
+    const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
+    (r as unknown as { logger: typeof logger }).logger = logger;
+    r.allowUnsupportedProperties([`${DISTRIBUTION}:DistributionConfig`]);
+    expect(r.getProviderFor({ resourceType: DISTRIBUTION, properties: HTTP2 }).provisionedBy).toBe('sdk');
+    r.reportSdkUnwiredDecisions([
+      { logicalId: 'Dist', resourceType: DISTRIBUTION, properties: HTTP2 },
+      { logicalId: 'Plain', resourceType: DISTRIBUTION, properties: PLAIN },
+    ]);
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const line = logger.warn.mock.calls[0]![0] as string;
+    expect(line).toContain('Dist (AWS::CloudFront::Distribution): --prefer-sdk-route keeps');
+    expect(line).toContain('OriginHttpVersion is not modelled');
   });
 
   it('keeps a Cloud-Control-recorded resource there until BOTH bags drop the member', () => {

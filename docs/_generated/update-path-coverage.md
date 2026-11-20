@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **145**
-- Handled properties classified: **1544**
-- Read on the update path: **1129**
+- Handled properties classified: **1545**
+- Read on the update path: **1130**
 - Replacement: **397**
 - Allow-listed (does NOT block CI): **18**
 - Handled names outside the schema's writable properties (not classified): **13**
@@ -48,7 +48,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | Type | Provider | Update | Replacement |
 | --- | --- | --- | --- |
 | `AWS::ApiGateway::Account` | `ApiGatewayProvider` | CloudWatchRoleArn |  |
-| `AWS::ApiGateway::Authorizer` | `ApiGatewayProvider` | AuthorizerCredentials, AuthorizerResultTtlInSeconds, AuthorizerUri, AuthType, IdentitySource, IdentityValidationExpression, Name, ProviderARNs, Type | RestApiId |
+| `AWS::ApiGateway::Authorizer` | `ApiGatewayProvider` | AuthorizerCredentials, AuthorizerResultTtlInSeconds, AuthorizerUri, AuthType, IdentitySource, IdentityValidationExpression, JwtConfiguration, Name, ProviderARNs, Type | RestApiId |
 | `AWS::ApiGateway::Deployment` | `ApiGatewayProvider` | Description | RestApiId |
 | `AWS::ApiGateway::Method` | `ApiGatewayProvider` | ApiKeyRequired, AuthorizationScopes, AuthorizationType, AuthorizerId, Integration, MethodResponses, OperationName, RequestModels, RequestParameters, RequestValidatorId | HttpMethod, ResourceId, RestApiId |
 | `AWS::ApiGateway::Resource` | `ApiGatewayProvider` |  | ParentId, PathPart, RestApiId |
