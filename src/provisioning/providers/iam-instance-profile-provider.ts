@@ -22,6 +22,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { markNotGone } from '../not-gone.js';
+import { assertRecordedIdentity, RecordedIdentityError } from '../recorded-identity.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -328,8 +329,12 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
 
       return {
         physicalId: instanceProfileName,
+        // go-to-k/cdkd#6655: the InstanceProfileId CreateInstanceProfile
+        // answered with (an adopted profile's, read from it), which a later
+        // delete compares.
         attributes: {
           Arn: profile?.Arn,
+          ...definedAttributes({ InstanceProfileId: createdProfileIdentity }),
         },
       };
     } catch (error) {
@@ -497,8 +502,15 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
+        // go-to-k/cdkd#6655: the InstanceProfileId too, which a record without
+        // one acquires (a recorded one is kept by the engine).
         attributes: {
           Arn: getResponse.InstanceProfile?.Arn,
+          ...definedAttributes({
+            InstanceProfileId: instanceProfileIdentityToken(
+              getResponse.InstanceProfile?.InstanceProfileId
+            ),
+          }),
         },
       };
     } catch (error) {
@@ -557,16 +569,41 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     let stripped = false;
 
     try {
-      // Get current instance profile to find attached roles
+      // Get current instance profile to find attached roles, and
+      // (go-to-k/cdkd#6655) confirm it is the profile cdkd created: a record
+      // holding an `InstanceProfileId` refuses a holder of the name with
+      // another one before any role is removed. No `InstanceProfileId`
+      // recorded: the by-name delete as before.
       let roles: string[] = [];
       try {
-        const response = await this.iamClient.send(
-          new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
-        );
-        roles =
-          response.InstanceProfile?.Roles?.map((r) => r.RoleName).filter(
-            (name): name is string => !!name
-          ) || [];
+        const readProfile = async () => {
+          const response = await this.iamClient.send(
+            new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+          );
+          // The last read's: after a re-read, the profile it answered for.
+          roles =
+            response.InstanceProfile?.Roles?.map((r) => r.RoleName).filter(
+              (name): name is string => !!name
+            ) || [];
+          // A response naming another profile carries no id of this one:
+          // with an id recorded, that refuses rather than compares. Compared
+          // ignoring case: profile names are unique regardless of case and
+          // `GetInstanceProfile` answers the stored spelling, so a record
+          // holding another case (an import) names this very profile.
+          return response.InstanceProfile?.InstanceProfileName?.toLowerCase() ===
+            physicalId.toLowerCase()
+            ? response.InstanceProfile.InstanceProfileId
+            : undefined;
+        };
+        await assertRecordedIdentity({
+          label: 'IAM instance profile',
+          resourceType,
+          logicalId,
+          physicalId,
+          liveId: await readProfile(),
+          reread: readProfile,
+          context,
+        });
       } catch (error) {
         if (error instanceof NoSuchEntityException) {
           const clientRegion = await this.iamClient.config.region();
@@ -620,6 +657,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         this.logGoneOnDelete(logicalId, physicalId, context, log);
         return;
       }
+      // The identity refusals: already worded (no AWS text) and marked.
+      if (error instanceof RecordedIdentityError) throw error;
       const cause = error instanceof Error ? error : undefined;
       // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
       const { mask } = log;
@@ -844,9 +883,16 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         );
         // Issue #3627: the `Arn` `create()` records. The resolver's arm builds
         // `instance-profile/<name>` and drops a non-`/` `Path`, silently.
+        // The `InstanceProfileId` too (go-to-k/cdkd#6655): an adopted record
+        // compares it on delete.
         return {
           physicalId: explicit,
-          attributes: definedAttributes({ Arn: resp.InstanceProfile?.Arn }),
+          attributes: definedAttributes({
+            Arn: resp.InstanceProfile?.Arn,
+            InstanceProfileId: instanceProfileIdentityToken(
+              resp.InstanceProfile?.InstanceProfileId
+            ),
+          }),
         };
       } catch (err) {
         if (err instanceof NoSuchEntityException) return null;

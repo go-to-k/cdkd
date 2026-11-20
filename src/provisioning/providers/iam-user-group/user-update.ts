@@ -22,7 +22,8 @@ import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../t
 import type { MaskedLogSinks } from '../../masked-retry-logger.js';
 import { SECRET_DERIVED_READ_LIVE } from '../../iam-policy-targets.js';
 import type { InlinePolicyClaimed, ResourceUpdateResult } from '../../../types/resource.js';
-import { readPrincipalSides, iamPathOf } from './shared.js';
+import { readPrincipalSides, iamPathOf, userOrGroupIdentityToken } from './shared.js';
+import { definedAttributes } from '../../attribute-map.js';
 
 export async function updateUser(
   this: IAMUserGroupProvider,
@@ -188,8 +189,11 @@ export async function updateUser(
     return {
       physicalId,
       wasReplaced: false,
+      // go-to-k/cdkd#6655: the UserId too, which a record without one
+      // acquires (a recorded one is kept by the engine).
       attributes: {
         Arn: getUserResponse.User?.Arn,
+        ...definedAttributes({ UserId: userOrGroupIdentityToken(getUserResponse.User?.UserId) }),
       },
     };
   } catch (error) {

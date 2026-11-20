@@ -105,7 +105,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['updateGroup', 'group', 'updateGroup', 7],
   ['deleteGroup', 'group', 'deleteGroup', 4],
   ['detachAllGroupPolicies', 'group', 'detachAllGroupPolicies', 3],
-  ['removeAllUsersFromGroup', 'group', 'removeAllUsersFromGroup', 3],
+  ['removeAllUsersFromGroup', 'group', 'removeAllUsersFromGroup', 4],
   ['updateGroupManagedPolicies', 'group', 'updateGroupManagedPolicies', 4],
   ['deleteAllGroupInlinePolicies', 'group', 'deleteAllGroupInlinePolicies', 3],
   ['updateGroupInlinePolicies', 'group', 'updateGroupInlinePolicies', 5],

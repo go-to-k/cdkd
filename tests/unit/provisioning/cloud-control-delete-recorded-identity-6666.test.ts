@@ -321,7 +321,10 @@ describe('Cloud Control delete compares a recorded AWS-minted id (issue #6666)',
     ['AWS::SQS::Queue', { QueueUrl: 'u', Arn: 'a' }],
     // CC's model has no TableId, so a recorded one (an SDK-shaped key) is not read.
     ['AWS::DynamoDB::Table', { TableId: 'abc', Arn: 'a' }],
+    // Nor UserId / GroupId / InstanceProfileId (go-to-k/cdkd#6655's SDK ids).
     ['AWS::IAM::User', { UserId: 'AIDA0', Arn: 'a' }],
+    ['AWS::IAM::Group', { GroupId: 'AGPA0', Arn: 'a' }],
+    ['AWS::IAM::InstanceProfile', { InstanceProfileId: 'AIPA0', Arn: 'a' }],
   ])('%s: a type with no listed id gets no extra call', async (type, recordedAttributes) => {
     wire(new Error('GetResource must not be sent'));
 
@@ -408,7 +411,15 @@ describe('Cloud Control delete compares a recorded AWS-minted id (issue #6666)',
     expect(readOnly('AWS::IAM::InstanceProfile')).not.toContain('InstanceProfileId');
     // Derived from the shared table: every entry but the types CC omits.
     expect(SURVIVOR_IDENTITY_ATTRIBUTES['AWS::DynamoDB::Table']).toBe('TableId');
-    expect(CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES.has('AWS::DynamoDB::Table')).toBe(false);
+    for (const omitted of [
+      'AWS::DynamoDB::Table',
+      'AWS::IAM::User',
+      'AWS::IAM::Group',
+      'AWS::IAM::InstanceProfile',
+    ]) {
+      expect(SURVIVOR_IDENTITY_ATTRIBUTES[omitted]).toBeDefined();
+      expect(CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES.has(omitted)).toBe(false);
+    }
     expect(
       recordedCcDeleteIdentity('AWS::IAM::Role', { recordedAttributes: { RoleId: 'AROA1' } })
     ).toEqual({ key: 'RoleId', value: 'AROA1' });

@@ -160,7 +160,7 @@ dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-we
 dynamodb-table-policy-baseline	2026-11-20T15:08:45Z	PASS	187	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
-ec2-instance	2026-11-19T06:17:01Z	PASS	837	verify.sh	rc ok, orph clean
+ec2-instance	2026-11-20T16:58:26Z	PASS	772	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-instance-volume-attachment-drift	2026-11-20T10:54:34Z	PASS	255	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 ec2-route-targets	2026-11-19T18:50:43Z	PASS	801	verify.sh	#6640 regression 84223153c: rc ok, orph clean
@@ -230,19 +230,19 @@ healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	r
 iam-access-key	2026-11-06T19:55:55Z	PASS	80	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
 iam-managed-policy	2026-11-20T11:06:50Z	PASS	130	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
-iam-profile-policy-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
+iam-profile-policy-fix-forward-orphan	2026-11-20T16:58:26Z	PASS	130	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
-iam-recreate-reattach	2026-11-20T14:40:31Z	PASS	283	verify.sh	rc ok, orph clean; 3 AFTER runs, role CC delete GetResource-compared (#6675)
+iam-recreate-reattach	2026-11-20T16:58:26Z	PASS	255	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-role-policies-drift-clean	2026-11-20T12:24:42Z	PASS	446	verify.sh	PR6652 03d784232, IAM::Policy probe all principals ok, rc ok, orph clean
 iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-secret-derived-principals	2026-11-19T11:29:42Z	PASS	161	verify.sh	#6618 HEAD b0fb33e8f: rc ok, destroy 0 errors, orph clean
+iam-secret-derived-principals	2026-11-20T16:58:26Z	PASS	155	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 iam-sibling-managed-policy-drift	2026-11-20T11:50:48Z	PASS	592	verify.sh	PR6652 be63cc056, us-west-2; rc 0, kept identity x5, orph clean
-iam-user-group-fix-forward-orphan	2026-11-06T19:54:23Z	PASS	211	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
+iam-user-group-fix-forward-orphan	2026-11-20T16:58:26Z	PASS	130	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 imagebuilder-infra-update	2026-11-20T10:54:34Z	PASS	155	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
 import-attribute-readback-final	2026-11-04T19:01:45Z	PASS	240	verify.sh	rc ok, orph clean (temp state bucket)
-import-attribute-readback-misc	2026-11-04T06:21:47Z	PASS	261	verify.sh	batch 7; rc ok, orph clean
+import-attribute-readback-misc	2026-11-20T16:58:26Z	PASS	256	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 import-attribute-readback-network	2026-11-20T06:38:06Z	PASS	329	verify.sh	#6670 route53 drift/import fixes: rc ok, orph clean
 import-attributes	2026-11-04T06:21:47Z	PASS	45	verify.sh	batch 7; rc ok, orph clean
 import-auto-mode	2026-11-04T07:51:26Z	PASS	87	verify.sh	rc ok, orph clean (#4607 PR #4608)

@@ -19,6 +19,7 @@ import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
 
 export async function deleteUser(
   this: IAMUserGroupProvider,
@@ -39,11 +40,30 @@ export async function deleteUser(
   let hadBoundary = false;
 
   try {
-    // Check if user exists
+    // Check if user exists, and (go-to-k/cdkd#6655) that it is the user cdkd
+    // created: a record holding a `UserId` refuses a holder of the name with
+    // another one before anything is removed. No `UserId` recorded: the
+    // by-name delete as before.
     try {
-      hadBoundary =
-        (await this.iamClient.send(new GetUserCommand({ UserName: physicalId }))).User
-          ?.PermissionsBoundary !== undefined;
+      const readUser = async () => {
+        const user = (await this.iamClient.send(new GetUserCommand({ UserName: physicalId }))).User;
+        // The last read's: after a re-read, the user it answered for.
+        hadBoundary = user?.PermissionsBoundary !== undefined;
+        // A response naming another user carries no id of this one: with an
+        // id recorded, that refuses rather than compares. IAM user names are
+        // unique regardless of case and `GetUser` answers the stored spelling,
+        // so a record holding another case (an import) names this very user.
+        return user?.UserName?.toLowerCase() === physicalId.toLowerCase() ? user.UserId : undefined;
+      };
+      await assertRecordedIdentity({
+        label: 'IAM user',
+        resourceType,
+        logicalId,
+        physicalId,
+        liveId: await readUser(),
+        reread: readUser,
+        context,
+      });
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
         const clientRegion = await this.iamClient.config.region();
@@ -107,6 +127,8 @@ export async function deleteUser(
 
     log.debug(`Successfully deleted IAM user ${logicalId}`);
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
     const failure = this.wrapMaskedError(
