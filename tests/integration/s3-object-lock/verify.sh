@@ -223,8 +223,8 @@ if [ "${CREATION_P1}" != "${CREATION_P2}" ]; then
 fi
 echo "    bucket identity preserved (CreationDate unchanged) — no replacement"
 
-# No phantom drift after the in-place update, including LateFlagBucket's
-# top-level ObjectLockEnabled, which the bucket cannot take (#5395, #6664).
+# No phantom drift after the in-place update (the README's Phase 2 claim).
+# The #6664 guard is Phase 1b: this deploy captures a baseline.
 DRIFT_P2="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || {
   echo "FAIL: cdkd drift exited non-zero after the Phase 2 update:" >&2
   echo "${DRIFT_P2}" >&2
