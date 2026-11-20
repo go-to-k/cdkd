@@ -141,9 +141,16 @@ export function isNoSuchBucketError(error: unknown): boolean {
  * `readOnlyProperties` lack it), so a Cloud Control-routed record of them
  * never carries the key and no `GetResource` could compare it:
  * `AWS::DynamoDB::Table` (`TableId`; the schema's read-only set is `Arn` /
- * `StreamArn`).
+ * `StreamArn`), and `AWS::IAM::User` / `Group` / `InstanceProfile`
+ * (`UserId` / `GroupId` / `InstanceProfileId`; each schema's read-only set is
+ * `Arn` alone).
  */
-const CC_MODEL_OMITS_IDENTITY: ReadonlySet<string> = new Set(['AWS::DynamoDB::Table']);
+const CC_MODEL_OMITS_IDENTITY: ReadonlySet<string> = new Set([
+  'AWS::DynamoDB::Table',
+  'AWS::IAM::User',
+  'AWS::IAM::Group',
+  'AWS::IAM::InstanceProfile',
+]);
 
 /**
  * go-to-k/cdkd#6666: per type, the attribute a Cloud Control-routed delete

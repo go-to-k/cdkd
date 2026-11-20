@@ -24,6 +24,7 @@ import { reportCreatedResource, retractCreatedResource } from '../../created-res
 import { iamEntityLeftByThisCreate, isEntityAlreadyExists } from '../iam-replay-adopt.js';
 import { readPrincipalLists } from '../../iam-policy-targets.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
+import { definedAttributes } from '../../attribute-map.js';
 import {
   userOrGroupIdentityToken,
   PROFILE_SETTLING_ERROR,
@@ -275,8 +276,11 @@ export async function createUser(
 
     return {
       physicalId: userName,
+      // go-to-k/cdkd#6655: the UserId CreateUser answered with (an adopted
+      // user's, read from it), which a later delete compares.
       attributes: {
         Arn: user?.Arn,
+        ...definedAttributes({ UserId: createdUserIdentity }),
       },
     };
   } catch (error) {

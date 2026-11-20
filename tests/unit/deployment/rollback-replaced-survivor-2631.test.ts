@@ -283,6 +283,9 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
       ['AWS::DynamoDB::Table', 'TableId'],
       ['AWS::RDS::DBInstance', 'DbiResourceId'],
       ['AWS::RDS::DBCluster', 'DBClusterResourceId'],
+      ['AWS::IAM::User', 'UserId'],
+      ['AWS::IAM::Group', 'GroupId'],
+      ['AWS::IAM::InstanceProfile', 'InstanceProfileId'],
     ] as const)('refuses a %s survivor whose live %s differs', async (type, key) => {
       const typedOp = (recorded: string) =>
         op({

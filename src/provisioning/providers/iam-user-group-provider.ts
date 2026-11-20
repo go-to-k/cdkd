@@ -1,4 +1,4 @@
-import { IAMClient } from '@aws-sdk/client-iam';
+import { IAMClient, type User } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -354,9 +354,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
   removeAllUsersFromGroup(
     groupName: string,
     log: MaskedLogSinks,
-    progress?: DeleteProgress
+    progress: DeleteProgress | undefined,
+    users: User[]
   ): Promise<void> {
-    return removeAllUsersFromGroup.call(this, groupName, log, progress);
+    return removeAllUsersFromGroup.call(this, groupName, log, progress, users);
   }
 
   updateGroupManagedPolicies(
