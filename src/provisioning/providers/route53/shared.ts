@@ -513,3 +513,12 @@ export function revertedRecordMode(
   }
   return properties;
 }
+
+/**
+ * Whether a declared `SetIdentifier` can pick one record among its name + type
+ * siblings: a plain string. An unresolved intrinsic or a `{{resolve:...}}`
+ * reference cannot, and the record read falls back to name + type for it.
+ */
+export function isMatchableSetIdentifier(value: unknown): boolean {
+  return typeof value === 'string' && !value.includes('{{resolve:');
+}

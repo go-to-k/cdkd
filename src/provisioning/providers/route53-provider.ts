@@ -570,7 +570,7 @@ export class Route53Provider implements ResourceProvider {
   }
 
   readRecordSetAt(
-    identity: { hostedZoneId: string; name: string; type: string },
+    identity: { hostedZoneId: string; name: string; type: string; zoneMayBeAmbiguous?: true },
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     return readRecordSetAt.call(this, identity, properties);

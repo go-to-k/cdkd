@@ -127,6 +127,33 @@ describe('Route 53 record absence (#6660)', () => {
     ).toBeUndefined();
   });
 
+  it('keeps "cannot tell" for a scalar id whose zone resolved from HostedZoneName (split horizon)', async () => {
+    // Two zones share the name; the lookup picks one, which may not be the
+    // record's, so a miss there proves nothing.
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof ListResourceRecordSetsCommand) {
+        return { ResourceRecordSets: [], IsTruncated: false };
+      }
+      return {
+        HostedZones: [
+          { Id: '/hostedzone/ZPRIVATE', Name: 'example.com.', Config: { PrivateZone: true } },
+          { Id: '/hostedzone/ZPUBLIC', Name: 'example.com.', Config: { PrivateZone: false } },
+        ],
+        IsTruncated: false,
+      };
+    });
+    const { HostedZoneId: _zone, ...props } = recorded();
+    expect(
+      await read({ ...props, HostedZoneName: 'example.com.' }, 'app.example.com.')
+    ).toBeUndefined();
+  });
+
+  it('proves absence for a scalar id whose template names the zone by HostedZoneId', async () => {
+    const empty = { ResourceRecordSets: [], IsTruncated: false };
+    pages(empty, empty);
+    expect(await read(recorded(), 'app.example.com.')).toBe(RESOURCE_NOT_FOUND);
+  });
+
   describe('a record with a SetIdentifier', () => {
     const weighted = (id: string) => ({ Name: 'app.example.com.', Type: 'A', SetIdentifier: id });
 

@@ -217,6 +217,12 @@ describe('Route53 RecordSet physicalId: CloudFormation form vs cdkd composite (i
       expect(
         await provider.import(autoInput({ ...RECORD_PROPS, SetIdentifier: { Ref: 'P' } }))
       ).toBeNull();
+      // A dynamic reference is a string the read cannot match on either.
+      expect(
+        await provider.import(
+          autoInput({ ...RECORD_PROPS, SetIdentifier: '{{resolve:ssm:/id}}', Weight: 10 })
+        )
+      ).toBeNull();
       expect(
         mockSend.mock.calls.some((c) => c[0] instanceof ListResourceRecordSetsCommand)
       ).toBe(false);

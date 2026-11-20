@@ -28,7 +28,7 @@ import {
 import { importNestedStackChildrenRecursive, synthesizeNestedStackArn } from './nested.js';
 import { captureObservedForImportedResources } from './observed-capture.js';
 import { writeRecordedMapping } from './overrides.js';
-import { adoptedRefValue, inRefOrder } from './sibling-refs.js';
+import { dispatchInRefOrder } from './sibling-refs.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
   buildStackState,
@@ -124,25 +124,20 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // The dispatch over every template resource. A closure so the Retain
   // update below can re-run it when CloudFormation REPLACED a resource and
   // the ids it read are stale (issue #4873).
-  const collectRows = async (): Promise<ImportRow[]> => {
-    const collected: ImportRow[] = [];
-    // go-to-k/cdkd#6662: a `Ref` target is dispatched first, and once adopted
-    // its `Ref` value joins the substitution map, so a resource naming its
-    // parent by `Ref` (a Route 53 record's zone) is resolved against it. An
-    // override keeps precedence; rows are reported in template order.
-    const refValues = new Map(overrides);
-    for (const { logicalId, resource } of inRefOrder(resources)) {
+  const collectRows = (): Promise<ImportRow[]> =>
+    // go-to-k/cdkd#6662: `Ref` targets first, each adopted target's `Ref`
+    // value substituted into the rows after it; see `dispatchInRefOrder`.
+    dispatchInRefOrder(resources, overrides, async ({ logicalId, resource }, refValues) => {
       // Selective mode: skip resources not in overrides up front. They
       // never hit the provider, so the summary correctly distinguishes
       // "out of scope" from "AWS not found".
       if (selectiveMode && !overrides.has(logicalId)) {
-        collected.push({
+        return {
           logicalId,
           resourceType: resource.Type,
           outcome: 'skipped-out-of-scope',
           reason: 'not in --resource / --resource-mapping (use --auto to include)',
-        });
-        continue;
+        };
       }
 
       // Nested-stack short-circuit (issue #464): adopt each
@@ -162,7 +157,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
         migrationTree.nested.has(logicalId) &&
         accountIdForNestedSynth
       ) {
-        collected.push({
+        return {
           logicalId,
           resourceType: resource.Type,
           outcome: 'imported',
@@ -172,11 +167,10 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
             stackInfo.stackName,
             logicalId
           ),
-        });
-        continue;
+        };
       }
 
-      const outcome = await importOne({
+      return importOne({
         logicalId,
         resource,
         stackName: stackInfo.stackName,
@@ -185,15 +179,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
         override: overrides.get(logicalId),
         overrides: refValues,
       });
-      collected.push(outcome);
-      const refValue = overrides.has(logicalId) ? undefined : adoptedRefValue(outcome);
-      if (refValue !== undefined) refValues.set(logicalId, refValue);
-    }
-    const templateIndex = new Map(resources.map(({ logicalId }, i) => [logicalId, i]));
-    return collected.sort(
-      (a, b) => (templateIndex.get(a.logicalId) ?? 0) - (templateIndex.get(b.logicalId) ?? 0)
-    );
-  };
+    });
   let rows = await collectRows();
 
   printSummary(rows);

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   adoptedRefValue,
+  dispatchInRefOrder,
   inRefOrder,
 } from '../../../src/cli/commands/import/sibling-refs.js';
+import type { ImportRow } from '../../../src/cli/commands/import/types.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
 
 // go-to-k/cdkd#6662: `cdkd import` dispatches a `Ref` target before the
@@ -66,5 +68,51 @@ describe('adoptedRefValue', () => {
         outcome: 'skipped-not-found',
       })
     ).toBeUndefined();
+  });
+});
+
+describe('dispatchInRefOrder', () => {
+  const zoneType = (logicalId: string) => ({
+    logicalId,
+    resource: { Type: 'AWS::Route53::HostedZone', Properties: {} } as TemplateResource,
+  });
+  const rows = (seen: Array<[string, Record<string, string>]>) =>
+    async (
+      entry: { logicalId: string; resource: TemplateResource },
+      refValues: Map<string, string>
+    ): Promise<ImportRow> => {
+      seen.push([entry.logicalId, Object.fromEntries(refValues)]);
+      return entry.resource.Type === 'AWS::Route53::HostedZone'
+        ? {
+            logicalId: entry.logicalId,
+            resourceType: entry.resource.Type,
+            outcome: 'imported',
+            physicalId: 'ZADOPTED',
+          }
+        : { logicalId: entry.logicalId, resourceType: entry.resource.Type, outcome: 'skipped-not-found' };
+    };
+
+  it('hands a later row the Ref value of a zone adopted before it, and reports template order', async () => {
+    const seen: Array<[string, Record<string, string>]> = [];
+    const out = await dispatchInRefOrder(
+      [res('Record', { HostedZoneId: { Ref: 'Zone' } }), zoneType('Zone')],
+      new Map(),
+      rows(seen)
+    );
+    expect(seen).toEqual([
+      ['Zone', {}],
+      ['Record', { Zone: 'ZADOPTED' }],
+    ]);
+    expect(out.map((r) => r.logicalId)).toEqual(['Record', 'Zone']);
+  });
+
+  it('keeps an override over the adopted value', async () => {
+    const seen: Array<[string, Record<string, string>]> = [];
+    await dispatchInRefOrder(
+      [zoneType('Zone'), res('Record', { HostedZoneId: { Ref: 'Zone' } })],
+      new Map([['Zone', 'ZOVERRIDE']]),
+      rows(seen)
+    );
+    expect(seen[1]).toEqual(['Record', { Zone: 'ZOVERRIDE' }]);
   });
 });

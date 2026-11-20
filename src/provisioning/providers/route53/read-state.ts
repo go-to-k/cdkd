@@ -14,7 +14,9 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { isUsableAttemptedName } from '../../../state/unsettled-properties.js';
 import {
   ACCELERATED_RECOVERY_ON_STATUSES,
+  bareHostedZoneId,
   normalizeRecordName,
+  parseRecordSetCompositeId,
   declaresNoVpcs,
   declaredVpcIds,
 } from './shared.js';
@@ -234,7 +236,18 @@ export async function readRecordSet(
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const identity = await this.resolveRecordSetIdentity(physicalId, properties);
   if (!identity) return undefined;
-  return this.readRecordSetAt(identity, properties);
+  // A zone the id names, or a template `HostedZoneId`, is the record's own.
+  // One resolved from `HostedZoneName` alone may be either side of a
+  // split-horizon pair (the lookup here does not refuse one), so a miss in it
+  // proves nothing about the record (go-to-k/cdkd#6660 review).
+  const zoneIsCertain =
+    identity.hostedZoneId === parseRecordSetCompositeId(physicalId)?.hostedZoneId ||
+    (typeof properties?.['HostedZoneId'] === 'string' &&
+      bareHostedZoneId(properties['HostedZoneId']) === bareHostedZoneId(identity.hostedZoneId));
+  return this.readRecordSetAt(
+    zoneIsCertain ? identity : { ...identity, zoneMayBeAmbiguous: true },
+    properties
+  );
 }
 
 /**
@@ -303,7 +316,7 @@ async function recordProvablyAbsent(
 /** {@link readRecordSet} for an identity already resolved. */
 export async function readRecordSetAt(
   this: Route53Provider,
-  identity: { hostedZoneId: string; name: string; type: string },
+  identity: { hostedZoneId: string; name: string; type: string; zoneMayBeAmbiguous?: true },
   properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const { hostedZoneId, name, type } = identity;
@@ -371,6 +384,7 @@ export async function readRecordSetAt(
   // exited 0 (go-to-k/cdkd#6660).
   if (!recordSet) {
     return matchSetIdentifier &&
+      identity.zoneMayBeAmbiguous !== true &&
       (await recordProvablyAbsent.call(this, hostedZoneId, name, type, setIdentifier))
       ? RESOURCE_NOT_FOUND
       : undefined;

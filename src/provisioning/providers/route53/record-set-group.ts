@@ -36,6 +36,7 @@ import {
   recordedZoneForSwitch,
   refuseCfnUnresolvableZoneName,
   withTemplateAliasConflicts,
+  isMatchableSetIdentifier,
 } from './shared.js';
 import {
   RECORD_SET_GROUP_TYPE,
@@ -828,7 +829,8 @@ export async function readRecordSetGroup(
  * resolves from the template (the import loop substitutes a `Ref` to a zone
  * adopted earlier in the run), and the group is adopted only when EVERY
  * record is live, named by its logical id. Anything less
- * declines (`null`); a lookup failure propagates.
+ * declines (`null`), a failed zone lookup included; a failed record read
+ * propagates.
  */
 async function importRecordSetGroupFromTemplate(
   this: Route53Provider,
@@ -841,7 +843,7 @@ async function importRecordSetGroupFromTemplate(
   // An unresolved SetIdentifier cannot pick one record among its siblings.
   if (
     parsed.records.some(
-      (r) => r['SetIdentifier'] !== undefined && typeof r['SetIdentifier'] !== 'string'
+      (r) => r['SetIdentifier'] !== undefined && !isMatchableSetIdentifier(r['SetIdentifier'])
     )
   ) {
     return null;

@@ -20,6 +20,7 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { isPasteableIdent } from '../../../utils/display-safe.js';
 import {
   HostedZoneNameNotFoundError,
+  isMatchableSetIdentifier,
   parseRecordSetCompositeId,
   recordSetCompositeId,
   templateZoneVisibility,
@@ -270,8 +271,8 @@ export async function importRecordSet(
  * `Type` and, for a routing-policy record, `SetIdentifier` — so it is found
  * by that identity and adopted only when the record is live. Anything the
  * template leaves unresolved, a split-horizon zone name, or a record that is
- * not there declines (`null`), never guesses. A lookup failure propagates,
- * as for the hosted zone's name lookup.
+ * not there declines (`null`), never guesses, a failed zone lookup included.
+ * A failed record read propagates, as for the hosted zone's name lookup.
  */
 async function importRecordSetFromTemplate(
   this: Route53Provider,
@@ -279,8 +280,9 @@ async function importRecordSetFromTemplate(
 ): Promise<ResourceImportResult | null> {
   const { Name: name, Type: type, SetIdentifier: setIdentifier } = input.properties;
   if (typeof name !== 'string' || !name || typeof type !== 'string' || !type) return null;
-  // An unresolved SetIdentifier cannot pick one record among its siblings.
-  if (setIdentifier !== undefined && typeof setIdentifier !== 'string') return null;
+  // An unresolved SetIdentifier cannot pick one record among its siblings,
+  // and neither can a dynamic reference, which the read does not match on.
+  if (setIdentifier !== undefined && !isMatchableSetIdentifier(setIdentifier)) return null;
   const identity = await this.resolveRecordSetIdentity(name, input.properties, {
     requireUnambiguousZoneName: true,
   });

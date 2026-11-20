@@ -12,9 +12,10 @@ import type { ImportRow } from './types.js';
  * the raw intrinsic even when the parent was adopted earlier in the SAME run,
  * and could neither be found in auto mode nor verified under an override.
  *
- * {@link inRefOrder} dispatches a `Ref` target before the resources naming it
- * (template order otherwise), and {@link adoptedRefValue} is the value a later
- * row's `Ref` takes from an adopted one.
+ * {@link dispatchInRefOrder} runs the import loop that way: {@link inRefOrder}
+ * dispatches a `Ref` target before the resources naming it (template order
+ * otherwise), and {@link adoptedRefValue} is the value a later row's `Ref`
+ * takes from an adopted one.
  */
 
 /** The logical ids a value names through `{Ref: <X>}`, at any depth. */
@@ -86,4 +87,32 @@ export function adoptedRefValue(row: ImportRow): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Import every resource with `importRow`, `Ref` targets first. `importRow`
+ * receives the substitution map for that row: the overrides, plus the `Ref`
+ * value of each resource adopted before it that no override names (an
+ * override keeps precedence). Rows come back in TEMPLATE order, as the plan
+ * and `--record-resource-mapping` print them.
+ */
+export async function dispatchInRefOrder<
+  T extends { logicalId: string; resource: TemplateResource },
+>(
+  resources: readonly T[],
+  overrides: ReadonlyMap<string, string>,
+  importRow: (entry: T, refValues: Map<string, string>) => Promise<ImportRow>
+): Promise<ImportRow[]> {
+  const refValues = new Map(overrides);
+  const rows: ImportRow[] = [];
+  for (const entry of inRefOrder(resources)) {
+    const row = await importRow(entry, refValues);
+    rows.push(row);
+    const refValue = overrides.has(entry.logicalId) ? undefined : adoptedRefValue(row);
+    if (refValue !== undefined) refValues.set(entry.logicalId, refValue);
+  }
+  const templateIndex = new Map(resources.map(({ logicalId }, i) => [logicalId, i]));
+  return rows.sort(
+    (a, b) => (templateIndex.get(a.logicalId) ?? 0) - (templateIndex.get(b.logicalId) ?? 0)
+  );
 }
