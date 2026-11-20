@@ -5,7 +5,8 @@ import type { Construct } from 'constructs';
 
 /**
  * Two listener rules whose conditions CDK synthesizes in the
- * `PathPatternConfig` / `HostHeaderConfig` form (go-to-k/cdkd#6663).
+ * `PathPatternConfig` / `HostHeaderConfig` / `HttpHeaderConfig` form
+ * (go-to-k/cdkd#6663).
  * `CDKD_TEST_UPDATE=true` changes RuleA's action and RuleB's priority while
  * the conditions stay the same: the update the Cloud Control read model's
  * duplicate `Values` used to make `ModifyRule` refuse.
@@ -33,7 +34,10 @@ export class AlbListenerRuleUpdateStack extends cdk.Stack {
     new elbv2.ApplicationListenerRule(this, 'RuleA', {
       listener,
       priority: 10,
-      conditions: [elbv2.ListenerCondition.pathPatterns(['/a*'])],
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(['/a*']),
+        elbv2.ListenerCondition.httpHeader('X-Fixture', ['yes']),
+      ],
       action: elbv2.ListenerAction.fixedResponse(200, {
         contentType: 'text/plain',
         messageBody: isUpdate ? 'rule-a-v2' : 'rule-a-v1',
@@ -52,6 +56,7 @@ export class AlbListenerRuleUpdateStack extends cdk.Stack {
       }),
     });
 
+    new cdk.CfnOutput(this, 'VpcId', { value: vpc.vpcId });
     new cdk.CfnOutput(this, 'LoadBalancerArn', { value: lb.loadBalancerArn });
     new cdk.CfnOutput(this, 'ListenerArn', { value: listener.listenerArn });
   }

@@ -42,6 +42,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LB_ARN=""
+VPC_ID=""
 CLEANED_UP=0
 cleanup() {
   [ "${CLEANED_UP}" = 1 ] && return 0
@@ -81,7 +82,7 @@ rule_arn() { # RuleA|RuleB
 live_rule() { # rule ARN
   aws elbv2 describe-rules --region "${REGION}" --rule-arns "$1" --output json |
     jq -r '.Rules[0] | "\(.Priority) \(.Actions[0].FixedResponseConfig.MessageBody) \(
-      [.Conditions[] | (.PathPatternConfig.Values // .HostHeaderConfig.Values // [])[]] | sort | join(","))"'
+      [.Conditions[] | (.PathPatternConfig.Values // .HostHeaderConfig.Values // .HttpHeaderConfig.Values // [])[]] | sort | join(","))"'
 }
 expect_rule() { # rule ARN, expected live_rule line, label
   local got
@@ -107,9 +108,11 @@ echo "==> Deploy the ALB with two listener rules"
 deploy_phase false
 LB_ARN=$(state_json | jq -r '.outputs.LoadBalancerArn')
 case "${LB_ARN}" in arn:aws*:elasticloadbalancing:*:loadbalancer/app/?*) ;; *) echo "FAIL: no load balancer ARN" >&2; exit 1 ;; esac
+VPC_ID=$(state_json | jq -r '.outputs.VpcId')
+case "${VPC_ID}" in vpc-?*) ;; *) echo "FAIL: no VPC id" >&2; exit 1 ;; esac
 RULE_A=$(rule_arn RuleA) || exit 1
 RULE_B=$(rule_arn RuleB) || exit 1
-expect_rule "${RULE_A}" "10 rule-a-v1 /a*" "RuleA after the create"
+expect_rule "${RULE_A}" "10 rule-a-v1 /a*,yes" "RuleA after the create"
 expect_rule "${RULE_B}" "20 rule-b /b*,b.example.com" "RuleB after the create"
 
 echo "==> Change RuleA's action and RuleB's priority, conditions unchanged (#6663)"
@@ -118,7 +121,7 @@ echo "==> Change RuleA's action and RuleB's priority, conditions unchanged (#666
 deploy_phase true
 [ "$(rule_arn RuleA)" = "${RULE_A}" ] || { echo "FAIL: RuleA was replaced" >&2; exit 1; }
 [ "$(rule_arn RuleB)" = "${RULE_B}" ] || { echo "FAIL: RuleB was replaced" >&2; exit 1; }
-expect_rule "${RULE_A}" "10 rule-a-v2 /a*" "RuleA after the update"
+expect_rule "${RULE_A}" "10 rule-a-v2 /a*,yes" "RuleA after the update"
 expect_rule "${RULE_B}" "25 rule-b /b*,b.example.com" "RuleB after the update"
 [ "$(drifted_ids)" = "|0" ] || { echo "FAIL: drift not clean after the update: $(drifted_ids)" >&2; exit 1; }
 echo "    OK: drift is clean after the update"
@@ -132,7 +135,7 @@ RULE_A_ID=$(state_json | jq -r --arg p "${STACK}/RuleA/Resource" '.resources | t
 [ "$(drifted_ids)" = "${RULE_A_ID}|0" ] || { echo "FAIL: drift did not report exactly RuleA: $(drifted_ids)" >&2; exit 1; }
 echo "    OK: drift reports RuleA"
 node "${LOCAL_DIST}" drift "${STACK}" --revert --yes --state-bucket "${STATE_BUCKET}" --region "${REGION}"
-expect_rule "${RULE_A}" "10 rule-a-v2 /a*" "RuleA after drift --revert"
+expect_rule "${RULE_A}" "10 rule-a-v2 /a*,yes" "RuleA after drift --revert"
 [ "$(drifted_ids)" = "|0" ] || { echo "FAIL: drift not clean after --revert: $(drifted_ids)" >&2; exit 1; }
 echo "    OK: drift is clean after --revert"
 
@@ -140,6 +143,7 @@ echo "==> Destroy and verify resources and state are gone"
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --force
 assert_gone "load balancer still exists" aws elbv2 describe-load-balancers --region "${REGION}" --load-balancer-arns "${LB_ARN}"
+assert_gone "VPC still exists" aws ec2 describe-vpcs --region "${REGION}" --vpc-ids "${VPC_ID}"
 assert_gone "state still exists" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 CLEANED_UP=1
 trap - EXIT INT TERM

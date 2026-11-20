@@ -60,6 +60,24 @@ describe('withListenerRuleConditionOps (go-to-k/cdkd#6663)', () => {
     ]);
   });
 
+  it('drops an empty Values beside a config, and an echo in another order', () => {
+    const conditions = [
+      { Field: 'http-header', Values: [], HttpHeaderConfig: { HttpHeaderName: 'X-Hunt', Values: ['yes'] } },
+      { Field: 'path-pattern', Values: ['/b*', '/a*'], PathPatternConfig: { Values: ['/a*', '/b*'] } },
+    ];
+    expect(withListenerRuleConditionOps(RULE, [ACTIONS], { Conditions: conditions })).toEqual([
+      ACTIONS,
+      {
+        op: 'add',
+        path: '/Conditions',
+        value: [
+          { Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'X-Hunt', Values: ['yes'] } },
+          { Field: 'path-pattern', PathPatternConfig: { Values: ['/a*', '/b*'] } },
+        ],
+      },
+    ]);
+  });
+
   it('keeps a legacy Values-only condition and a Values differing from its config', () => {
     const conditions = [
       { Field: 'path-pattern', Values: ['/legacy*'] },

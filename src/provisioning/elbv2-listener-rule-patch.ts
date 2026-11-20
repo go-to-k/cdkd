@@ -7,20 +7,29 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function sortedStrings(value: unknown): unknown {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string')
+    ? [...(value as string[])].sort()
+    : value;
+}
+
 /**
  * One condition without its legacy top-level `Values` when a `*Config`
- * member holds the same `Values` (the read-back echo). Anything else,
- * including a `Values` that differs from the config's, is returned as is.
+ * member sits beside it and the `Values` is empty or holds the config's
+ * `Values` in any order (the read-back echo). Anything else, including a
+ * `Values` that differs from the config's, is returned as is.
  */
 function withoutEchoedValues(condition: unknown): unknown {
   if (!isPlainObject(condition) || !Object.prototype.hasOwnProperty.call(condition, 'Values')) {
     return condition;
   }
+  const values = condition['Values'];
+  const isEmpty = Array.isArray(values) && values.length === 0;
   const echoed = Object.entries(condition).some(
     ([key, value]) =>
       key.endsWith('Config') &&
       isPlainObject(value) &&
-      isDeepStrictEqual(value['Values'], condition['Values'])
+      (isEmpty || isDeepStrictEqual(sortedStrings(value['Values']), sortedStrings(values)))
   );
   if (!echoed) return condition;
   const { Values: _echo, ...rest } = condition;
