@@ -105,8 +105,10 @@ export async function readCurrentState(
   if (resp.environmentVariables !== undefined) {
     result['EnvironmentVariables'] = resp.environmentVariables;
   }
-  // Placeholders for an unset field, so a value added outside cdkd is seen
-  // by drift (docs/provider-rules.md#readcurrentstate-for-drift-detection);
+  // Placeholders for an unset field (docs/provider-rules.md). A value added
+  // outside cdkd is drift only where the template DECLARES the key: an
+  // undeclared key captured as `{}` / `[]` is skipped by the comparator
+  // (`undeclaredEmptyObservedKeys`, CloudFormation parity).
   // `writeSharedRuntimeMembers` leaves each placeholder off the wire.
   result['RequestHeaderConfiguration'] =
     resp.requestHeaderConfiguration !== undefined
