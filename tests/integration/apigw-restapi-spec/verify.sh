@@ -88,8 +88,10 @@ cleanup() {
   set +eu
   [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   local n id
-  rm -f "${REVERT_WORK:-}/revert-ids-3-before" "${REVERT_WORK:-}/revert-ids-3-after" "${REVERT_WORK:-}/revert-3.log"
-  [ -n "${REVERT_WORK:-}" ] && rmdir "${REVERT_WORK}" 2>/dev/null
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-3-before" "${REVERT_WORK}/revert-ids-3-after" "${REVERT_WORK}/revert-3.log"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   for n in "${INLINE_NAME}" "${ASSET_NAME}" "${CLONE_NAME}" "${PLAIN_NAME}" "${PLAIN_RENAMED}" "${POLICY_KEPT_NAME}"; do
     for id in $(api_ids_named "${n}"); do
       # DeleteRestApi allows one call per 30 s per account.

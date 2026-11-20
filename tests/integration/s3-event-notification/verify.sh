@@ -83,6 +83,7 @@ cd "$(dirname "$0")"
 
 # revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
 . ../revert-identity.sh
+REVERT_DIR=""
 
 STACK="CdkdS3EventNotificationExample"
 REGION="${AWS_REGION:-us-east-1}"

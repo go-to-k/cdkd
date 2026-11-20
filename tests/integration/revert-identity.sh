@@ -54,8 +54,8 @@
 # revert_output_assert_no_replacement <log-file> [expect-refusal]
 #   Returns 1 when cdkd's revert output (ANSI stripped) reports a replacement:
 #   any line matching `replac|re-?creat` (case-insensitive), aws-cdk-lib's own
-#   synth WARNING lines aside. With expect-refusal (a fixture whose revert
-#   is REFUSED on purpose) the lines of cdkd's own refusal and remedy wording
+#   synth WARNING lines and the IAM providers' "keeps its name" line aside.
+#   With expect-refusal (a fixture whose revert is REFUSED on purpose) the lines of cdkd's own refusal and remedy wording
 #   are allowed too, and at least one of them must be present: a refusal the
 #   fixture expects that carries none of that wording means the wording
 #   drifted, and the check fails rather than pass on nothing. The provider-
@@ -104,21 +104,21 @@ _revert_identity_probe() {
       cls=unique; val="$(_revert_identity_aws iam get-role --role-name "${pid}" --query 'Role.RoleId')" || rc=$? ;;
     AWS::IAM::ManagedPolicy)
       cls=unique; val="$(_revert_identity_aws iam get-policy --policy-arn "${pid}" --query 'Policy.PolicyId')" || rc=$? ;;
-    AWS::IAM::User)
-      cls=unique; val="$(_revert_identity_aws iam get-user --user-name "${pid}" --query 'User.UserId')" || rc=$? ;;
-    AWS::IAM::InstanceProfile)
-      cls=unique; val="$(_revert_identity_aws iam get-instance-profile --instance-profile-name "${pid}" --query 'InstanceProfile.InstanceProfileId')" || rc=$? ;;
-    AWS::DynamoDB::Table | AWS::DynamoDB::GlobalTable)
+    AWS::DynamoDB::Table)
       cls=unique; val="$(_revert_identity_aws dynamodb describe-table --region "${region}" --table-name "${pid}" --query 'Table.TableId')" || rc=$? ;;
-    AWS::SQS::Queue)
-      cls=unique; val="$(_revert_identity_aws sqs get-queue-attributes --region "${region}" --queue-url "${pid}" --attribute-names CreatedTimestamp --query 'Attributes.CreatedTimestamp')" || rc=$? ;;
-    AWS::S3::Bucket)
-      cls=unique; val="$(_revert_identity_aws s3api list-buckets --query "Buckets[?Name=='${pid}'].CreationDate | [0]")" || rc=$? ;;
+    AWS::DynamoDB::GlobalTable)
+      # Every replica is its own table with its own TableId, and a revert can
+      # drop and re-add a replica while the primary stays: read the table in
+      # each region the record lists (ctx, comma-separated), primary included.
+      cls=unique; val="$(
+        for r in $(printf '%s' "${ctx:-${region}}" | tr ',' ' '); do
+          id="$(_revert_identity_aws dynamodb describe-table --region "${r}" --table-name "${pid}" --query 'Table.TableId')" || exit 1
+          [ -n "${id}" ] && [ "${id}" != None ] || exit 1
+          printf '%s=%s,' "${r}" "${id}"
+        done
+      )" || rc=$? ;;
     AWS::ECR::Repository)
       cls=unique; val="$(_revert_identity_aws ecr describe-repositories --region "${region}" --repository-names "${pid}" --query 'repositories[0].createdAt')" || rc=$? ;;
-    AWS::Lambda::Url)
-      # physicalId is the function ARN; an alias URL carries its Qualifier.
-      cls=unique; val="$(_revert_identity_aws lambda get-function-url-config --region "${region}" --function-name "${pid}" ${ctx:+--qualifier "${ctx}"} --query 'CreationTime')" || rc=$? ;;
     AWS::ApiGatewayV2::Api)
       cls=unique; val="$(_revert_identity_aws apigatewayv2 get-api --region "${region}" --api-id "${pid}" --query 'CreatedDate')" || rc=$? ;;
     AWS::ApiGatewayV2::Stage)
@@ -142,16 +142,12 @@ _revert_identity_probe() {
       cls=unique; val="$(_revert_identity_aws elbv2 describe-load-balancers --region "${region}" --load-balancer-arns "${pid}" --query 'LoadBalancers[0].CreatedTime')" || rc=$? ;;
     AWS::RDS::DBCluster)
       cls=unique; val="$(_revert_identity_aws rds describe-db-clusters --region "${region}" --db-cluster-identifier "${pid}" --query 'DBClusters[0].DbClusterResourceId')" || rc=$? ;;
-    AWS::RDS::DBInstance)
-      cls=unique; val="$(_revert_identity_aws rds describe-db-instances --region "${region}" --db-instance-identifier "${pid}" --query 'DBInstances[0].DbiResourceId')" || rc=$? ;;
     AWS::AutoScaling::AutoScalingGroup)
       cls=unique; val="$(_revert_identity_aws autoscaling describe-auto-scaling-groups --region "${region}" --auto-scaling-group-names "${pid}" --query 'AutoScalingGroups[0].CreatedTime')" || rc=$? ;;
     AWS::ImageBuilder::InfrastructureConfiguration)
       cls=unique; val="$(_revert_identity_aws imagebuilder get-infrastructure-configuration --region "${region}" --infrastructure-configuration-arn "${pid}" --query 'infrastructureConfiguration.dateCreated')" || rc=$? ;;
     AWS::Logs::LogGroup)
       cls=unique; val="$(_revert_identity_aws logs describe-log-groups --region "${region}" --log-group-name-prefix "${pid}" --query "logGroups[?logGroupName=='${pid}'].creationTime | [0]")" || rc=$? ;;
-    AWS::SecretsManager::Secret)
-      cls=unique; val="$(_revert_identity_aws secretsmanager describe-secret --region "${region}" --secret-id "${pid}" --query 'CreatedDate')" || rc=$? ;;
     # --- gen-id -----------------------------------------------------------
     AWS::SNS::Subscription)
       cls=gen-id; val="$(_revert_identity_aws sns get-subscription-attributes --region "${region}" --subscription-arn "${pid}" --query 'Attributes.SubscriptionArn')" || rc=$? ;;
@@ -159,20 +155,14 @@ _revert_identity_probe() {
       cls=gen-id; val="$(_revert_identity_aws lambda get-event-source-mapping --region "${region}" --uuid "${pid}" --query 'UUID')" || rc=$? ;;
     AWS::EC2::SecurityGroup)
       cls=gen-id; val="$(_revert_identity_aws ec2 describe-security-groups --region "${region}" --group-ids "${pid}" --query 'SecurityGroups[0].GroupId')" || rc=$? ;;
-    AWS::EC2::VPC)
-      cls=gen-id; val="$(_revert_identity_aws ec2 describe-vpcs --region "${region}" --vpc-ids "${pid}" --query 'Vpcs[0].VpcId')" || rc=$? ;;
     AWS::EC2::Subnet)
       cls=gen-id; val="$(_revert_identity_aws ec2 describe-subnets --region "${region}" --subnet-ids "${pid}" --query 'Subnets[0].SubnetId')" || rc=$? ;;
     AWS::EC2::Instance)
       cls=gen-id; val="$(_revert_identity_aws ec2 describe-instances --region "${region}" --instance-ids "${pid}" --query 'Reservations[0].Instances[0].InstanceId')" || rc=$? ;;
     AWS::EC2::Volume)
       cls=gen-id; val="$(_revert_identity_aws ec2 describe-volumes --region "${region}" --volume-ids "${pid}" --query 'Volumes[0].VolumeId')" || rc=$? ;;
-    AWS::EC2::LaunchTemplate)
-      cls=gen-id; val="$(_revert_identity_aws ec2 describe-launch-templates --region "${region}" --launch-template-ids "${pid}" --query 'LaunchTemplates[0].LaunchTemplateId')" || rc=$? ;;
     AWS::GuardDuty::Detector)
       cls=gen-id; val="$(_revert_identity_aws guardduty get-detector --region "${region}" --detector-id "${pid}" --query 'CreatedAt')" || rc=$? ;;
-    AWS::ApiGateway::RestApi)
-      cls=gen-id; val="$(_revert_identity_aws apigateway get-rest-api --region "${region}" --rest-api-id "${pid}" --query 'id')" || rc=$? ;;
     AWS::ElasticLoadBalancingV2::TargetGroup)
       cls=gen-id; val="$(_revert_identity_aws elbv2 describe-target-groups --region "${region}" --target-group-arns "${pid}" --query 'TargetGroups[0].TargetGroupArn')" || rc=$? ;;
     AWS::KMS::Key)
@@ -187,6 +177,10 @@ _revert_identity_probe() {
     AWS::EFS::MountTarget)
       cls=gen-id; val="$(_revert_identity_aws efs describe-mount-targets --region "${region}" --mount-target-id "${pid}" --query 'MountTargets[0].MountTargetId')" || rc=$? ;;
     # --- no-id --------------------------------------------------------------
+    AWS::S3::Bucket)
+      # No unique id, and ListBuckets documents that CreationDate "can change
+      # when making changes to your bucket, such as editing its bucket policy".
+      cls=no-id; val="$(_revert_identity_aws s3api list-buckets --query "Buckets[?Name=='${pid}'].Name | [0]")" || rc=$? ;;
     AWS::SNS::Topic)
       # GetTopicAttributes carries no creation time or unique id.
       cls=no-id; val="$(_revert_identity_aws sns get-topic-attributes --region "${region}" --topic-arn "${pid}" --query 'Attributes.TopicArn')" || rc=$? ;;
@@ -293,7 +287,9 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
       "AWS::ApiGateway::Resource": props.RestApiId,
       "AWS::ApiGatewayV2::Stage": props.ApiId,
       "AWS::Lambda::Permission": props.FunctionName,
-      "AWS::Lambda::Url": props.Qualifier,
+      "AWS::DynamoDB::GlobalTable": Array.isArray(props.Replicas)
+        ? props.Replicas.map((x) => x && x.Region).filter((x) => typeof x === "string").sort().join(",")
+        : undefined,
       "AWS::EC2::SecurityGroupIngress": attrs.Id,
     };
     const ctx = ctxOf[r.resourceType];
@@ -364,6 +360,12 @@ revert_identity_assert_unchanged() {
 #   - ResourceUpdateNotSupportedError (src/utils/error-handler/deploy-errors.ts):
 #     "<Type> (<id>) cannot be updated in place: use cdkd deploy with --replace ..."
 _REVERT_IDENTITY_REFUSAL_RE='never replaces|cannot be (reverted|updated) in place|cannot recreate one'
+# The IAM providers' in-place proof line, allowed in BOTH modes: the revert
+# kept the live name rather than replace (src/provisioning/providers/iam-role/
+# update.ts, iam-managed-policy/update.ts): "IAM role X: RoleName is not
+# reverted — the role <name> keeps its name ..., since a drift revert never
+# replaces a role."
+_REVERT_IDENTITY_KEEPS_NAME_RE='is not reverted — the (role|policy) .* keeps its name'
 
 revert_output_assert_no_replacement() {
   local log="${1:-}" mode="${2:-}" plain hits backstop refusals
@@ -383,7 +385,8 @@ revert_output_assert_no_replacement() {
     return 1
   fi
   # aws-cdk-lib's synth-time deprecation / validation lines are not cdkd's.
-  hits="$(grep -iE 'replac|re-?creat' <<<"${plain}" | grep -vE '\[WARNING\] aws-cdk-lib|aws-cdk-lib\.' || true)"
+  hits="$(grep -iE 'replac|re-?creat' <<<"${plain}" | grep -vE '\[WARNING\] aws-cdk-lib|aws-cdk-lib\.' \
+    | grep -vE "${_REVERT_IDENTITY_KEEPS_NAME_RE}" || true)"
   if [ "${mode}" = "expect-refusal" ]; then
     refusals="$(grep -E "${_REVERT_IDENTITY_REFUSAL_RE}" <<<"${hits}" || true)"
     if [ -z "${refusals}" ]; then

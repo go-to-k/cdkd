@@ -73,6 +73,7 @@ cd "$(dirname "$0")"
 
 # revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
 . ../revert-identity.sh
+REVERT_DIR=""
 # Phases 1-4 deploy the default (Features) shape; 5 and 6 set it per command.
 unset CDKD_TEST_SHAPE
 

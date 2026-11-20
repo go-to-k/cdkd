@@ -130,6 +130,11 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('kept the identity of all 2 resource(s)');
+    // `--output text` on every read: without it the CLI prints JSON `null`,
+    // which no None guard catches and two snapshots would agree on.
+    const calls = readFileSync(awsLog, 'utf8').trimEnd().split('\n');
+    expect(calls.length).toBe(4);
+    for (const call of calls) expect(call.endsWith('--output text')).toBe(true);
     const rows = readFileSync(before(), 'utf8').trimEnd().split('\n');
     expect(rows).toEqual([
       'Role1\tAWS::IAM::Role\tStack-Role1\tunique:AROAEXAMPLEUNIQUE1',
@@ -284,17 +289,23 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
               physicalId: 'sg-1|tcp|443|443',
               attributes: { Id: 'sgr-0123' },
             },
+            Res1: {
+              resourceType: 'AWS::ApiGateway::Resource',
+              physicalId: 'res9',
+              properties: { RestApiId: 'rest42' },
+            },
           },
         },
       })
     );
     setAwsValue('2026-11-20T00:00:00Z\n');
-    const r = run(`revert_identity_snapshot "${before()}" Stack Stage1 Rule1`);
+    const r = run(`revert_identity_snapshot "${before()}" Stack Stage1 Rule1 Res1`);
     expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
     const calls = readFileSync(awsLog, 'utf8');
     expect(calls).toContain('apigatewayv2 get-stage --region us-east-1 --api-id abc123 --stage-name $default');
     expect(calls).toContain('--security-group-rule-ids sgr-0123');
+    expect(calls).toContain('apigateway get-resource --region us-east-1 --rest-api-id rest42 --resource-id res9');
   });
 
   it('FAILS when a type needing an extra read value has none recorded', () => {
@@ -323,10 +334,73 @@ describe('revert_identity_snapshot + revert_identity_assert_unchanged', () => {
     const ok = run(`revert_identity_snapshot "${before()}" Stack Perm1`);
     expect(ok.status).toBe(0);
     expect(readFileSync(before(), 'utf8')).toContain('\tno-id:sid-1\n');
+    expect(readFileSync(awsLog, 'utf8')).toContain('lambda get-policy --region us-east-1 --function-name fn ');
     setAwsValue(JSON.stringify({ Statement: [{ Sid: 'other' }] }));
     const gone = run(`revert_identity_snapshot "${after()}" Stack Perm1 || exit 1`);
     expect(gone.status).toBe(1);
     expect(gone.stderr).toContain('probe of');
+  });
+
+  it('reads a global table in every replica region the record lists', () => {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        state: {
+          resources: {
+            Gt1: {
+              resourceType: 'AWS::DynamoDB::GlobalTable',
+              physicalId: 'tbl',
+              properties: { Replicas: [{ Region: 'us-west-2' }, { Region: 'us-east-1' }] },
+            },
+          },
+        },
+      })
+    );
+    setAwsValue('tid-1\n');
+    const r = run(`revert_identity_snapshot "${before()}" Stack Gt1`);
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(readFileSync(before(), 'utf8')).toContain('\tunique:us-east-1=tid-1,us-west-2=tid-1,\n');
+    const calls = readFileSync(awsLog, 'utf8');
+    expect(calls).toContain('describe-table --region us-east-1 --table-name tbl');
+    expect(calls).toContain('describe-table --region us-west-2 --table-name tbl');
+    setAwsValue('None\n');
+    const gone = run(`revert_identity_snapshot "${after()}" Stack Gt1 || exit 1`);
+    expect(gone.status).toBe(1);
+  });
+
+  it('classes an S3 bucket no-id (its CreationDate moves on a policy edit)', () => {
+    writeState({ B1: { resourceType: 'AWS::S3::Bucket', physicalId: 'bkt' } });
+    setAwsValue('bkt\n');
+    const r = run(`revert_identity_snapshot "${before()}" Stack B1`);
+    expect(r.status).toBe(0);
+    expect(readFileSync(before(), 'utf8')).toContain('\tno-id:bkt\n');
+    expect(readFileSync(awsLog, 'utf8')).not.toContain('CreationDate');
+  });
+
+  it('prefers ${CDKD} over ${CLI}', () => {
+    const r = run(`revert_identity_snapshot "${before()}" Stack Role1 || exit 1`, {
+      CDKD: join(sandbox, 'bin', 'nope-cdkd'),
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("'state show Stack' failed");
+  });
+
+  it.each([
+    ['no region', { REGION: '' }, 'needs a region'],
+    ['no state bucket', { STATE_BUCKET: '' }, 'needs a region'],
+    ['no cdkd invocation', { CLI: '' }, 'no ${CDKD} / ${CLI} / ${LOCAL_DIST}'],
+  ])('FAILS with %s', (_label, env, needle) => {
+    const r = run(`revert_identity_snapshot "${before()}" Stack Role1 || exit 1`, env);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(needle);
+  });
+
+  it('FAILS when state show prints something other than JSON', () => {
+    writeFileSync(statePath, 'not json');
+    const r = run(`revert_identity_snapshot "${before()}" Stack Role1 || exit 1`);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('is not JSON');
   });
 
   it('FAILS a snapshot with no logical ids', () => {
@@ -363,6 +437,14 @@ describe('revert_output_assert_no_replacement', () => {
     const r = check(
       '[WARNING] aws-cdk-lib.aws_x.Foo#bar is deprecated. replaced by baz\n  ✓ reverted\n'
     );
+    expect(r.status).toBe(0);
+  });
+
+  it("allows the IAM providers' keeps-its-name line in the default mode", () => {
+    const r = check(
+      "IAM role Role1: RoleName is not reverted — the role legacy-Role1 keeps its name (the reverted properties derive Stack-Role1), since a drift revert never replaces a role. 'cdkd drift' keeps reporting the name\n"
+    );
+    expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
   });
 
