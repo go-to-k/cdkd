@@ -67,14 +67,19 @@ export async function applyTagDiff(
       new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove })
     );
     // The post-write capture re-reads only tags this update wrote (#6609).
-    recordTagWrite('AWS::DynamoDB::Table', tableArn);
+    recordTagWrite('AWS::DynamoDB::Table', tableArn, [], tagsToRemove);
     this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from DynamoDB table ${tableArn}`);
   }
   if (tagsToAdd.length > 0) {
     await this.dynamoDBClient.send(
       new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
     );
-    recordTagWrite('AWS::DynamoDB::Table', tableArn);
+    recordTagWrite(
+      'AWS::DynamoDB::Table',
+      tableArn,
+      tagsToAdd.map((t) => [t.Key, t.Value] as const),
+      []
+    );
     // A malformed recorded tag list cannot say which keys are new: record none
     // (a missing name only keeps a tag, never removes one).
     let recordedKeys: Set<string> | undefined;

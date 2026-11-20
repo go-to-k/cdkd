@@ -3,7 +3,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import { requireConfigString } from '../../config-shape.js';
 import type { ResourceUpdateResult, UpdateContext, SecretMasker } from '../../../types/resource.js';
-import { clearTagWrites } from '../../tags-own-write-baseline.js';
+import { clearTagWrites, isDynamoDBTableArnIn } from '../../tags-own-write-baseline.js';
 import { planVectorIndexUpdates, vectorIndexesShapeDetail } from '../../dynamodb-vector-indexes.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
 import { hasUsableTableCapacity } from './capacity.js';
@@ -43,7 +43,15 @@ export async function update(
 ): Promise<ResourceUpdateResult> {
   // go-to-k/cdkd#6609: a note an earlier, failed update left (no capture
   // followed it) must not make this update's capture re-read.
-  clearTagWrites('AWS::DynamoDB::Table', (arn) => arn.endsWith(`:table/${physicalId}`));
+  // Only this table in this client's region: a same-named table elsewhere
+  // (`deploy --all`) keeps its note. A region that cannot be resolved drops
+  // the note in every region (it only costs that capture its re-reads).
+  const region = await this.dynamoDBClient.config.region().catch(() => undefined);
+  clearTagWrites('AWS::DynamoDB::Table', (arn) =>
+    region === undefined
+      ? isDynamoDBTableArnIn(arn, physicalId, new Set([arn.split(':')[3] ?? '']))
+      : isDynamoDBTableArnIn(arn, physicalId, new Set([region]))
+  );
   // go-to-k/cdkd#5487: before each call that changes the table, so a
   // failure from there on (the ACTIVE / SSE / Kinesis waits, the deadline,
   // a later call) leaves the key unsettled for the next deploy to converge.

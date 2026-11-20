@@ -292,6 +292,9 @@ P2R_PATHS="$(jq -c --arg id "${LIT_ID}" '[.[].drifted[] | select(.logicalId == $
   printf '%s\n' "${P2R_DRIFT}" >&2
   exit 1
 }
+# Only the literal secret may have drifted: --revert pushes EVERY drifted resource.
+P2R_DRIFTED="$(jq -c '[.[].drifted[].logicalId] | unique' <<<"${P2R_DRIFT}")"
+assert_eq "Phase 2r drifted resources (only the out-of-band untagged secret)" "[\"${LIT_ID}\"]" "${P2R_DRIFTED}"
 case "${P2R_PATHS}" in
   *Tags*) echo "    drift reports the out-of-band untag (${P2R_PATHS})" ;;
   *) echo "FAIL: Phase 2r: drift did not report Tags on ${LIT_ID} (paths: ${P2R_PATHS})" >&2; printf '%s\n' "${P2R_DRIFT}" >&2; exit 1 ;;

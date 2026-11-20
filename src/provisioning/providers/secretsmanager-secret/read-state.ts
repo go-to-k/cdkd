@@ -2,10 +2,10 @@ import type { SecretsManagerSecretProvider } from '../secretsmanager-secret-prov
 import { DescribeSecretCommand, ResourceNotFoundException } from '@aws-sdk/client-secrets-manager';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import {
-  declaredTagsReadback,
   type ReadTag,
   settleWrittenTags,
   takeTagWrite,
+  type TagWrite,
 } from '../../tags-own-write-baseline.js';
 import { warnUnsettledMember } from '../../settle-after-own-write.js';
 import {
@@ -45,14 +45,14 @@ export async function readCurrentState(
   context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   // go-to-k/cdkd#6609: on the capture right after an update that SENT a tag
-  // call (`recordTagWrite`), the tags are re-read until they show the
-  // declared set (`tags-own-write-baseline.ts`). The note is consumed here.
+  // call (`recordTagWrite`), the tags are re-read until they show what that
+  // call wrote (`tags-own-write-baseline.ts`). The note is consumed here.
   const tagsWritten =
-    context?.afterOwnWrite === true && takeTagWrite('AWS::SecretsManager::Secret', physicalId);
-  const tagsDeclared =
-    tagsWritten && properties !== undefined && Object.keys(properties).length > 0
-      ? declaredTagsReadback(properties['Tags'])
+    context?.afterOwnWrite === true
+      ? takeTagWrite('AWS::SecretsManager::Secret', physicalId)
       : undefined;
+  const tagsSettle =
+    properties !== undefined && Object.keys(properties).length > 0 ? tagsWritten : undefined;
   try {
     const resp = await this.smClient.send(new DescribeSecretCommand({ SecretId: physicalId }));
     const result: Record<string, unknown> = {};
@@ -68,9 +68,9 @@ export async function readCurrentState(
     // Tags from the same DescribeSecret response.
     const tags = normalizeAwsTagsToCfn(resp.Tags);
     result['Tags'] =
-      tagsDeclared === undefined
+      tagsSettle === undefined
         ? tags
-        : await this.settleSecretTags(physicalId, logicalId, tags, tagsDeclared);
+        : await this.settleSecretTags(physicalId, logicalId, tags, tagsSettle);
     // `Type`: emit-when-present. AWS returns undefined for the typical
     // (non-partner-managed) secret; emitting a `''` placeholder would
     // force a guaranteed drift on every clean run for the common case.
@@ -84,16 +84,18 @@ export async function readCurrentState(
 
 /**
  * The post-write capture's `Tags` (go-to-k/cdkd#6609): `first` (from the
- * resource's `DescribeSecret`) unless it is not `declared`, then
- * `DescribeSecret` re-asked until it shows `declared`, else `declared`. One
- * matching answer settles it: the measured misses were single reads.
+ * resource's `DescribeSecret`) unless it does not show what the update's tag
+ * calls wrote, then `DescribeSecret` re-asked until it does, else the newest
+ * answer with that write overlaid. One matching answer settles it: the
+ * measured misses were single reads. A first `DescribeSecret` that throws
+ * fails the resource read, as before.
  */
 export async function settleSecretTags(
   this: SecretsManagerSecretProvider,
   physicalId: string,
   logicalId: string,
   first: ReadTag[],
-  declared: ReadTag[]
+  written: TagWrite
 ): Promise<ReadTag[]> {
   // Positional, not an options literal: `gen-nested-key-coverage` reads an
   // object literal in a readCurrentState path as reverse-map keys.
@@ -103,7 +105,7 @@ export async function settleSecretTags(
       normalizeAwsTagsToCfn(
         (await this.smClient.send(new DescribeSecretCommand({ SecretId: physicalId }))).Tags
       ),
-    declared,
+    written,
     this.tagsBaselineRereadDelaysMs,
     () => warnUnsettledMember(this.logger, logicalId, 'AWS::SecretsManager::Secret', 'Tags')
   );

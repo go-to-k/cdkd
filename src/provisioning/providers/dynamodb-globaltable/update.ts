@@ -10,7 +10,11 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
-import { clearTagWrites, recordTagWrite } from '../../tags-own-write-baseline.js';
+import {
+  clearTagWrites,
+  isDynamoDBTableArnIn,
+  recordTagWrite,
+} from '../../tags-own-write-baseline.js';
 import { planTagDiff, tagPlanWarning } from '../../tag-list.js';
 import {
   coerceCfnBoolean,
@@ -95,7 +99,16 @@ export async function update(
 ): Promise<ResourceUpdateResult> {
   // go-to-k/cdkd#6609: a note an earlier, failed update left (no capture
   // followed it) must not make this update's capture re-read.
-  clearTagWrites('AWS::DynamoDB::GlobalTable', (arn) => arn.endsWith(`:table/${physicalId}`));
+  // Only this table's replicas (a GlobalTable lists every replica region,
+  // its own included): a same-named table elsewhere keeps its note. No region
+  // is resolved here, before the guards that must refuse without one.
+  const replicaRegions = new Set<string>([
+    ...declaredReplicaRegions(properties),
+    ...declaredReplicaRegions(previousProperties),
+  ]);
+  clearTagWrites('AWS::DynamoDB::GlobalTable', (arn) =>
+    isDynamoDBTableArnIn(arn, physicalId, replicaRegions)
+  );
   // go-to-k/cdkd#5487: the sends below are spread over many helpers (some
   // shared with create / delete), so the update's marks reach them through
   // an async-local scope rather than a parameter on each: only a send made
@@ -788,8 +801,9 @@ export async function applyTagDiffOnClient(
 
   if (tagsToRemove.length > 0) {
     await client.send(new UntagResourceCommand({ ResourceArn: tableArn, TagKeys: tagsToRemove }));
-    // The post-write capture re-reads only tags this update wrote (#6609).
-    recordTagWrite('AWS::DynamoDB::GlobalTable', tableArn);
+    // The post-write capture re-reads only tags this update wrote, and only
+    // a call that succeeded is noted (#6609).
+    recordTagWrite('AWS::DynamoDB::GlobalTable', tableArn, [], tagsToRemove);
     // Masked: the table ARN carries the table name, which can be
     // secret-derived.
     this.logger.debug(
@@ -798,7 +812,12 @@ export async function applyTagDiffOnClient(
   }
   if (tagsToAdd.length > 0) {
     await client.send(new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd }));
-    recordTagWrite('AWS::DynamoDB::GlobalTable', tableArn);
+    recordTagWrite(
+      'AWS::DynamoDB::GlobalTable',
+      tableArn,
+      tagsToAdd.map((t) => [t.Key, t.Value] as const),
+      []
+    );
     // go-to-k/cdkd#5498: AFTER the call resolved, the keys it added that the
     // record lacked. A malformed recorded list cannot say which: none.
     if (region !== undefined && REGION_SEGMENT.test(region)) {
@@ -819,4 +838,15 @@ export async function applyTagDiffOnClient(
       maskSecrets(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB GlobalTable ${tableArn}`)
     );
   }
+}
+
+/** The `Region` of every `Replicas` entry a bag declares as a string. */
+function declaredReplicaRegions(bag: Record<string, unknown>): string[] {
+  const replicas = bag['Replicas'];
+  if (!Array.isArray(replicas)) return [];
+  return replicas.flatMap((r: unknown) => {
+    const region =
+      typeof r === 'object' && r !== null ? (r as Record<string, unknown>)['Region'] : undefined;
+    return typeof region === 'string' ? [region] : [];
+  });
 }

@@ -116,8 +116,8 @@ import {
 } from './dynamodb-table/table-settings.js';
 import { update } from './dynamodb-table/update.js';
 import {
-  type ReadTag,
   settleWrittenTags,
+  type TagWrite,
   TAGS_BASELINE_REREAD_DELAYS_MS,
 } from '../tags-own-write-baseline.js';
 import { warnUnsettledMember } from '../settle-after-own-write.js';
@@ -762,11 +762,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
   protected tagsBaselineRereadDelaysMs: readonly number[] = TAGS_BASELINE_REREAD_DELAYS_MS;
   /**
    * The post-write capture's `Tags` (go-to-k/cdkd#6609): `readTableTags`
-   * re-asked until it shows `declared`, else `declared`.
+   * re-asked until it shows what the update's tag calls wrote, else the
+   * newest answer with that write overlaid (`settleWrittenTags`).
    */
   readTableTagsBaseline(
     tableArn: string,
-    declared: ReadTag[],
+    written: TagWrite,
     logicalId: string
   ): ReturnType<typeof readTableTags> {
     const read = (): ReturnType<typeof readTableTags> => this.readTableTags(tableArn);
@@ -775,7 +776,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
     return settleWrittenTags(
       read,
       read,
-      declared,
+      written,
       this.tagsBaselineRereadDelaysMs,
       () => warnUnsettledMember(this.logger, logicalId, 'AWS::DynamoDB::Table', 'Tags'),
       (answer) => answer === RESOURCE_NOT_FOUND

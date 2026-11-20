@@ -160,7 +160,7 @@ export async function update(
         })
       );
       // The post-write capture re-reads only tags this update wrote (#6609).
-      recordTagWrite('AWS::SecretsManager::Secret', physicalId);
+      recordTagWrite('AWS::SecretsManager::Secret', physicalId, [], tagPlan.remove);
     }
     if (tagPlan.set.size > 0) {
       await this.smClient.send(
@@ -169,7 +169,7 @@ export async function update(
           Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
         })
       );
-      recordTagWrite('AWS::SecretsManager::Secret', physicalId);
+      recordTagWrite('AWS::SecretsManager::Secret', physicalId, [...tagPlan.set], []);
     }
     if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
       log.debug(`Updated tags for secret ${v(physicalId)}`);

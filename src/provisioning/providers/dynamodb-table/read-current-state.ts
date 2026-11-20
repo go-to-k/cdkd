@@ -12,7 +12,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
-import { declaredTagsReadback, takeTagWrite } from '../../tags-own-write-baseline.js';
+import { takeTagWrite } from '../../tags-own-write-baseline.js';
 import {
   CONTRIBUTOR_INSIGHTS_KEY,
   indexDeclaresContributorInsights,
@@ -277,22 +277,19 @@ export async function readCurrentState(
     const tableArn = table.TableArn;
     // go-to-k/cdkd#6609: on the capture right after an update that SENT a
     // tag call (`recordTagWrite`), the tag read is re-asked until it shows
-    // the declared tags (`tags-own-write-baseline.ts`). Every other read takes
-    // the first answer. The note is consumed here.
+    // what that call wrote (`tags-own-write-baseline.ts`). Every other read
+    // takes the first answer. The note is consumed here.
     const tagsWritten =
-      context?.afterOwnWrite === true &&
-      tableArn !== undefined &&
-      takeTagWrite('AWS::DynamoDB::Table', tableArn);
-    const tagsDeclared =
-      tagsWritten && properties !== undefined && bagInformative
-        ? declaredTagsReadback(properties['Tags'])
+      context?.afterOwnWrite === true && tableArn !== undefined
+        ? takeTagWrite('AWS::DynamoDB::Table', tableArn)
         : undefined;
+    const tagsSettle = properties !== undefined && bagInformative ? tagsWritten : undefined;
     const [tags, pitr, ttl, resourcePolicy, kinesis, contributorInsights] = await Promise.all([
       // Tags via ListTagsOfResource — needs the table ARN we just got back.
       tableArn
-        ? tagsDeclared === undefined
+        ? tagsSettle === undefined
           ? this.readTableTags(tableArn)
-          : this.readTableTagsBaseline(tableArn, tagsDeclared, logicalId)
+          : this.readTableTagsBaseline(tableArn, tagsSettle, logicalId)
         : Promise.resolve(undefined),
       this.readPointInTimeRecovery(physicalId),
       this.readTimeToLive(physicalId),
