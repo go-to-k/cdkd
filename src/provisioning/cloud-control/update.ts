@@ -32,6 +32,7 @@ import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
+  getWriteOnlyKeysKeptWhenOmitted,
 } from '../write-only-properties.js';
 import {
   getReadOnlyPropertyPaths,
@@ -209,6 +210,10 @@ export async function updateInIdLogScope(
     // read, unchanged or not. A CHANGED one is still re-added -- Cloud
     // Control refuses that too (no patch can express it), and the `add`
     // gets its refusal naming the create-only path (go-to-k/cdkd#4423).
+    //
+    // go-to-k/cdkd#6709: nor is an UNCHANGED key the type's handler keeps
+    // without it and acts on when re-sent (a Lambda function's `Code`, which
+    // made the handler call `UpdateFunctionCode` on an update that left it alone).
     // See `create()`: started alongside the update, awaited at its end.
     const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
     const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
@@ -217,10 +222,11 @@ export async function updateInIdLogScope(
         resourceType,
         cleanProperties
       );
+      const keptWhenOmitted = getWriteOnlyKeysKeptWhenOmitted(resourceType);
       const previousWithoutWriteOnly = { ...cleanPreviousProperties };
       for (const propertyName of writeOnlyProperties) {
         if (
-          keptOnPreviousSide.has(propertyName) &&
+          (keptOnPreviousSide.has(propertyName) || keptWhenOmitted.has(propertyName)) &&
           isDeepStrictEqual(cleanPreviousProperties[propertyName], cleanProperties[propertyName])
         ) {
           continue;

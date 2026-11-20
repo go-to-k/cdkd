@@ -451,7 +451,12 @@ unchanged write-only property whose value holds a create-only path
 overlapping a write-only one (`AWS::Cognito::ManagedLoginBranding.ClientId`,
 `AWS::CodePipeline::CustomActionType.Settings`): Cloud Control refuses any
 patch bringing such a value in, even unchanged, so it stays on the
-previous side and sends no op (issue #4416). If `DescribeType` is
+previous side and sends no op (issue #4416). A second exception is an
+unchanged write-only property the type's handler keeps when the patch omits
+it and acts on when the patch re-sends it: a Lambda function's `Code`, whose
+unchanged re-send made the handler call `UpdateFunctionCode` (issue #6709).
+These are listed per type in `getWriteOnlyKeysKeptWhenOmitted`, each from a
+measurement of that handler. If `DescribeType` is
 unavailable (missing permission, throttling), cdkd warns and falls back to
 the minimal patch.
 

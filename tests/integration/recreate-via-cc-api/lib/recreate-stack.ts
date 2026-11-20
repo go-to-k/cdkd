@@ -31,6 +31,11 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * across recreates (the destroy+create reuses the user-supplied name, so the
  * physical-id is identical post-recreate); the new Lambda instance is
  * witnessed by `LastModified` updating, not by the physical-id changing.
+ *
+ *   Phase 2b (go-to-k/cdkd#6709, env `CDKD_INTEG_CONFIG_ONLY_UPDATE=true` on
+ *   top of the Phase 2 template): the function, now on the Cloud Control
+ *   route, gains a `Timeout` and nothing else. The update must not re-send the
+ *   unchanged `Code`: the patch carries no `/Code` and `CodeSha256` stays.
  */
 export class RecreateViaCcApiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -47,6 +52,8 @@ export class RecreateViaCcApiStack extends cdk.Stack {
 
     const includeSdkUnwired =
       process.env['CDKD_INTEG_USE_SDK_UNWIRED'] === 'true';
+    const configOnlyUpdate =
+      process.env['CDKD_INTEG_CONFIG_ONLY_UPDATE'] === 'true';
 
     const fn = new lambda.CfnFunction(this, 'RecreateProbe', {
       functionName: 'cdkd-recreate-via-cc-api-probe',
@@ -65,6 +72,8 @@ export class RecreateViaCcApiStack extends cdk.Stack {
       ...(includeSdkUnwired
         ? { runtimeManagementConfig: { updateRuntimeOn: 'FunctionUpdate' } }
         : {}),
+      // Phase 2b: a configuration-only change; `code` above is untouched.
+      ...(configOnlyUpdate ? { timeout: 10 } : {}),
     });
 
     fn.addDependency(role.node.defaultChild as cdk.CfnElement);

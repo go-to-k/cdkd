@@ -16,9 +16,12 @@
  * `/properties/Foo/Bar` strips to `Foo` — re-adding the whole containing
  * property is sufficient and matches terraform-provider-awscc's approach of
  * clearing write-only attribute paths in the prior state so the patch
- * generator always emits `add` ops for them). An unchanged key whose value
- * holds a create-only path overlapping a write-only one is the exception
- * ({@link getTopLevelKeysHoldingUnreadableCreateOnly}, go-to-k/cdkd#4416).
+ * generator always emits `add` ops for them). Two kinds of UNCHANGED key are
+ * the exception: one whose value holds a create-only path overlapping a
+ * write-only one ({@link getTopLevelKeysHoldingUnreadableCreateOnly},
+ * go-to-k/cdkd#4416), and one the type's handler keeps without it and acts on
+ * when it is re-sent ({@link getWriteOnlyKeysKeptWhenOmitted},
+ * go-to-k/cdkd#6709).
  *
  * Only SUCCESSFUL lookups are cached per resource type for the process
  * (deploy) lifetime — `cloudformation:DescribeType` is throttled per-account,
@@ -263,6 +266,34 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
     if (holdsValueAt(properties, path)) result.add(path[0]!);
   }
   return result;
+}
+
+/**
+ * go-to-k/cdkd#6709: write-only top-level keys the type's update handler keeps
+ * when a patch omits them, and ACTS ON when a patch re-sends them unchanged.
+ * `AWS::Lambda::Function` `Code`: a patch without it left the code in place,
+ * while one re-adding the same value made the handler call
+ * `UpdateFunctionCode` (measured on a container image on Lambda Managed
+ * Instances and on an inline zip). A CloudFormation stack update of the same
+ * shape made no such call, so leaving the key out serves parity and speed
+ * alike.
+ *
+ * An entry is a MEASUREMENT of one type's handler, never a guess from the
+ * schema: for most types an omitted write-only key is lost (issue #809).
+ */
+const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['AWS::Lambda::Function', new Set(['Code'])],
+]);
+
+const NO_KEYS: ReadonlySet<string> = new Set();
+
+/**
+ * The write-only top-level keys of `resourceType` that
+ * `CloudControlProvider.update` must not re-add while UNCHANGED
+ * (go-to-k/cdkd#6709). A changed one is still re-added: that is the update.
+ */
+export function getWriteOnlyKeysKeptWhenOmitted(resourceType: string): ReadonlySet<string> {
+  return WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType) ?? NO_KEYS;
 }
 
 /**
