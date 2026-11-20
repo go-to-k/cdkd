@@ -200,13 +200,18 @@ async function runQueuedNestedCleanup(
             (record) =>
               typeof record === 'object' &&
               record !== null &&
-              record.physicalId === entry.physicalId
+              record.physicalId === entry.physicalId &&
+              record.resourceType === entry.resourceType
           )
         ) {
           // go-to-k/cdkd#6445: an in-memory deferral has no superseded entry for
           // the re-read to vouch for, and the child's lock was released since
-          // its deploy. A record of the child naming the id now (a rollback or
-          // another deploy took it back) is a live resource: never deleted.
+          // its deploy. A record of the child's own type naming the id now (a
+          // rollback or another deploy took it back) is a live resource: never
+          // deleted. A record of another type naming the same string (a queue
+          // policy recorded under the queue URL, or a role and a function both
+          // named `foo`) was deferred with it (go-to-k/cdkd#6712) and does not
+          // hold it, as the top-level cleanup pass never asks.
           run.deferredReplacedDeletes?.delete(logicalId);
           engine.logger.warn(
             safeMsg`  ⚠ Old ${logicalId} of nested stack ${display} (${entry.physicalId}) was not deleted: a record of that stack names its physical id again, and cdkd never deletes an id a record names`

@@ -279,11 +279,10 @@ describe('DeployEngine - NoEcho round 8', () => {
     },
   } as CloudFormationTemplate;
 
-  it('reports a create-first replacement whose old-resource delete was skipped as a PARTIAL update, line and summary alike (CODE m1)', async () => {
-    // Another record holds the old physical id, so the old delete stays
-    // INLINE, inside the row whose line this case reads, rather than waiting
-    // for the cleanup phase (go-to-k/cdkd#6374, #6445 case 4). (A NoEcho mask
-    // no longer keeps it inline: go-to-k/cdkd#6445.)
+  it('reports a create-first replacement whose old-resource delete was skipped as a PARTIAL update (CODE m1)', async () => {
+    // Another record holds the old physical id. Its delete waits for the
+    // cleanup phase in memory only (go-to-k/cdkd#6712), whose skip turns the
+    // row into a partial update in the summary and names the survivor.
     const state = replacementState();
     state.resources['Topic']!.noEchoLeaves = [['DisplayName']];
     const alias = { Name: '/app/alias', Type: 'String', Value: 'v' };
@@ -314,11 +313,7 @@ describe('DeployEngine - NoEcho round 8', () => {
       events.some((e) => e['eventType'] === 'RESOURCE_SKIPPED' && e['logicalId'] === 'Topic')
     ).toBe(true);
     const warned = lines(logger.warn!).join('\n');
-    expect(warned).toContain('replaced');
-    expect(warned).toContain('partial (');
-    expect(lines(logger.info!).some((l) => l.includes('replaced') && l.includes('Topic'))).toBe(
-      false
-    );
+    expect(warned).toContain('cdkd did not confirm Topic');
   });
 
   it("threads the replaced record's noEchoLeaves into the old resource's delete context (go-to-k/cdkd#4043)", async () => {

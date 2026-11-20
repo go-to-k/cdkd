@@ -34,15 +34,11 @@ A failed deploy takes no snapshot of the old resource. Both copies stay in
 AWS, and are billed, until the deploy ends, and writes that reach the old copy
 meanwhile are in its snapshot.
 
-Two cases delete the old resource right after the new one is created:
-
-| Case | Why |
-| --- | --- |
-| An IAM inline policy | Both policies attached until the deploy ends would grant the union of their permissions. Nothing is lost: the rollback re-creates the policy document exactly. |
-| An old physical id another resource of the stack now records | The other resource must be able to move off the id, and cdkd never leaves a delete pending for an id a record names. |
-
-The rollback re-creates the old resource of these, and of a delete-first
-replacement, from the properties the journal saved.
+An IAM inline policy is the one case whose old copy is deleted right after the
+new one is created: both policies attached until the deploy ends would grant
+the union of their permissions. Nothing is lost: the rollback re-creates the
+old policy, as it does the old resource of a delete-first replacement, from the
+properties the journal saved.
 
 > [!WARNING]
 > For a type that holds data (DynamoDB, RDS, S3 and so on), an old resource
@@ -52,12 +48,18 @@ replacement, from the properties the journal saved.
 
 A waiting delete is kept in state, so a deploy that stops before its end
 leaves the old resource for the next `cdkd deploy` or `cdkd destroy` to
-delete. A custom resource or nested stack whose delete needs a NoEcho value
-is the exception: cdkd never writes that value to state, so its delete waits
-in memory only. A deploy killed before its end (SIGKILL, a power loss) leaves
-that old custom resource's physical id, or that old nested stack, in AWS,
-untracked; a deploy that fails or is stopped with Ctrl-C says so in its
-output.
+delete. Two cases wait in memory only, and are never written to state:
+
+| Case | Why it is not written to state |
+| --- | --- |
+| A custom resource or nested stack whose delete needs a NoEcho value | cdkd never writes that value to state. |
+| An old physical id another resource of the stack also records, such as a queue whose queue policy is recorded under the queue URL | A later run would delete the other record's resource. |
+
+A deploy killed before its end (SIGKILL, a power loss) leaves such an old
+resource in AWS, untracked; a deploy that fails or is stopped with Ctrl-C says
+so in its output. After a failed deploy run with `--no-rollback`, `cdkd rollback`
+adopts the old resource again; a later `cdkd deploy` does not track it, so
+delete it by hand if you deploy forward instead.
 
 Under `UpdateReplacePolicy: Snapshot`, that later delete takes the promised
 snapshot first:
