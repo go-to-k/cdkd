@@ -60,6 +60,7 @@ import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
+import { buildSignalReceiver } from './signal-receiver.js';
 import { createNoEchoValueMacs } from '../noecho-value-macs.js';
 import {
   healSlashedSsmParameterNames,
@@ -739,6 +740,19 @@ export async function doDeployWithPrefetch(
     const progress = { current: 0, total: totalOperations };
 
     clock.lap('first-deploy instance id, name guard');
+    // go-to-k/cdkd#6705: a CREATE declaring a CreationPolicy or cfn-init
+    // metadata gets a CloudFormation signal receiver, made lazily by its first
+    // create; a deploy creating none makes no CloudFormation call.
+    engine.signalReceiver = buildSignalReceiver(
+      engine,
+      stackName,
+      [
+        ...createChanges,
+        // A replacement creates the resource anew, as CloudFormation's does.
+        ...updateChanges.filter((c) => c.propertyChanges?.some((pc) => pc.requiresReplacement)),
+      ],
+      effectiveTemplate
+    );
     // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
     const {
       state: newState,
@@ -919,6 +933,9 @@ export async function doDeployWithPrefetch(
     // client, on every path, not only the success settle that awaits the
     // purge. Neither rejects.
     await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch, finalSaveCleanup]);
+    // go-to-k/cdkd#6705: the signal receiver goes with the deploy, on every
+    // path. Never throws.
+    await engine.signalReceiver?.dispose();
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed

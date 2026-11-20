@@ -54,6 +54,7 @@ export function deploy(
   this.unsettledItemMarks = new Map();
   this.resumedCreates = new Map();
   this.generatedNameGuard = undefined;
+  this.signalReceiver = undefined;
   this.liveTaskLabels = new Map();
   // Replaces all ten Outputs-pass fields at once (`OutputsRunState`): the
   // per-deploy reset. `resolvedExportNames` and `carriedExportAliasRefusal`

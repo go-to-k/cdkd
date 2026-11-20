@@ -9,7 +9,7 @@ import {
 } from '../../../provisioning/resource-name.js';
 import { replacementNameGeneration } from '../../../state/name-generation.js';
 import { updateInPlace } from '../update-in-place.js';
-import { warnUnhonoredCreationPolicy } from '../update-policy.js';
+import { honorCreationPolicy } from '../update-policy.js';
 import { extractAllDependencies } from '../record-shape.js';
 import { CdkdError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../retryable-errors.js';
@@ -250,11 +250,19 @@ export async function finishUpdate(
         nameGenerationFields,
         policyReplacement: policyReplacement === true,
       });
+    const replaceStartedAt = Date.now();
     const replaced = await (nextGeneration === undefined
       ? replace()
       : withNameGeneration({ logicalId, generation: nextGeneration }, replace));
-    // go-to-k/cdkd#6437: the replacement created the resource anew.
-    warnUnhonoredCreationPolicy(engine.logger, logicalId, template?.Resources?.[logicalId]);
+    // go-to-k/cdkd#6437 / #6705: the replacement created the resource anew;
+    // its CreationPolicy signals are waited on when the receiver covers it.
+    await honorCreationPolicy(
+      engine.logger,
+      engine.signalReceiver,
+      logicalId,
+      template?.Resources?.[logicalId],
+      replaceStartedAt
+    );
     return markRestored(replaced);
   }
   // go-to-k/cdkd#4749: the plan refused every ServiceToken change it could

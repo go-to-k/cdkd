@@ -14,6 +14,7 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import type { ResourceChange } from '../../types/state.js';
+import type { SignalReceiver } from './signal-receiver.js';
 import {
   INSTANCE_REFRESH_TRIGGER_PROPERTIES,
   REPLACEMENT_TRIGGER_PROPERTIES,
@@ -254,6 +255,42 @@ function stringLeaves(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(stringLeaves);
   if (isObject(value)) return Object.values(value).flatMap(stringLeaves);
   return [];
+}
+
+/**
+ * After a create (or a replacement's create): wait for the resource's
+ * `CreationPolicy` signals through the deploy's signal receiver when it covers
+ * the resource (go-to-k/cdkd#6705), else warn that the policy is not waited on.
+ * `startedAt` is when the create began; the declared `Timeout` counts from it.
+ */
+export async function honorCreationPolicy(
+  logger: UpdatePolicyLogger,
+  receiver: SignalReceiver | undefined,
+  logicalId: string,
+  resource: TemplateResource | undefined,
+  startedAt: number
+): Promise<void> {
+  if (receiver?.isCovered(logicalId) === true) {
+    await receiver.awaitSignals(logicalId, startedAt);
+    return;
+  }
+  warnUnhonoredCreationPolicy(logger, logicalId, resource);
+}
+
+/** {@link honorCreationPolicy} for a deploy engine's own logger and receiver. */
+export function honorCreationPolicyFor(
+  engine: { logger: UpdatePolicyLogger; signalReceiver: SignalReceiver | undefined },
+  logicalId: string,
+  template: { Resources?: Record<string, TemplateResource> } | undefined,
+  startedAt: number
+): Promise<void> {
+  return honorCreationPolicy(
+    engine.logger,
+    engine.signalReceiver,
+    logicalId,
+    template?.Resources?.[logicalId],
+    startedAt
+  );
 }
 
 /**

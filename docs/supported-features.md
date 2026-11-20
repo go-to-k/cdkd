@@ -20,7 +20,7 @@ locally.
 | Feature | Status | What cdkd does |
 | --- | --- | --- |
 | `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (the Auto Scaling group policies and `CodeDeployLambdaAliasUpdate`) |
-| `CreationPolicy` | ⚠️ Not waited on | Creates or replaces the resource and logs a warning |
+| `CreationPolicy` | ✅ | Waits for `cfn-signal` through a transient signal receiver stack; see [`CreationPolicy` and `cfn-init`](#creationpolicy-and-cfn-init) |
 | A resource type with no SDK provider and no Cloud Control support | Not supported | Fails the deploy with an error naming the type |
 
 ### `UpdatePolicy` is opt-in
@@ -249,13 +249,38 @@ replacing update, one that changes a property listed above, and for
 `CodeDeployLambdaAliasUpdate`, one that changes the alias's
 `FunctionVersion`.
 
-### `CreationPolicy` is not waited on
+### `CreationPolicy` and `cfn-init`
 
-`cfn-signal` sends its signal to a CloudFormation stack, and a cdkd deploy has
-none. When cdkd creates or replaces a resource that declares a
-`CreationPolicy`, it logs a warning and treats the resource as created
-without waiting for signals. The warning does not change the exit code or
-fail `--strict`.
+`cfn-signal --stack <name> --resource <id>` and `cfn-init --stack <name>
+--resource <id>` talk to the CloudFormation API, which only a CloudFormation
+stack can answer. When a deploy creates or replaces a resource that declares a
+`CreationPolicy` `ResourceSignal` or `AWS::CloudFormation::Init` metadata, cdkd
+creates a small **signal receiver** CloudFormation stack under the cdkd stack's
+name for the length of the deploy:
+
+| Step | What happens |
+| --- | --- |
+| Before the resource is created | The receiver holds a wait condition under the resource's logical id, with its signal count and resolved `Metadata` |
+| At the instance's boot | `cfn-init` reads the metadata and `cfn-signal` signals the receiver, as under CloudFormation |
+| After the resource is created | cdkd waits until the signals arrive; a `FAILURE` signal or the policy's `Timeout` fails the deploy and rolls the resource back |
+| When the deploy ends | cdkd deletes the receiver (on success, failure and Ctrl-C) |
+
+A deploy whose resources declare neither makes no CloudFormation call. In
+these cases cdkd creates the resource without waiting and logs a warning, as
+before; the warning does not change the exit code or fail `--strict`:
+
+- A CloudFormation stack with the cdkd stack's name already exists (for
+  example the same app deployed with the AWS CDK CLI). cdkd never touches it.
+- The credentials may not call `cloudformation:CreateStack`.
+- The resource is in a nested stack (its name cannot be a CloudFormation
+  stack's).
+- The resource's `Metadata` refers to something not created yet when the
+  receiver is made.
+
+Signals must name the stack by `${AWS::StackName}`, as CDK's
+`applyCloudFormationInit` and `signals` do; a `--stack ${AWS::StackId}` does
+not reach the receiver. An Auto Scaling group's `MinSuccessfulInstancesPercent`
+is not applied: the receiver waits for the full `Count`.
 
 ### Waiting for slow resources
 
@@ -352,7 +377,7 @@ routed.
 | DeletionPolicy: Retain | ✅ | Skips deletion of the retained resource |
 | UpdateReplacePolicy: Retain | ✅ | Keeps the old resource on replacement |
 | UpdatePolicy | ⚠️ Opt-in, partial | See [`UpdatePolicy` is opt-in](#updatepolicy-is-opt-in) |
-| CreationPolicy | ⚠️ Not waited on | See [`CreationPolicy` is not waited on](#creationpolicy-is-not-waited-on) |
+| CreationPolicy | ✅ | See [`CreationPolicy` and `cfn-init`](#creationpolicy-and-cfn-init) |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
 | Custom Resources (CDK Provider) | ✅ | `isCompleteHandler` / `onEventHandler` async pattern detection |
 

@@ -1,5 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import type { GeneratedNameGuard } from './generated-name-guard.js';
+import type { SignalReceiver } from './deploy-engine/signal-receiver.js';
 import { IntrinsicFunctionResolver } from './intrinsic-function-resolver.js';
 import { type RecordedSecretValues } from './secret-redaction.js';
 import { KEEP_REFERENCE_PROVENANCE } from './reference-provenance-record.js';
@@ -422,6 +423,14 @@ export class DeployEngine {
    */
   /** @internal */
   generatedNameGuard: GeneratedNameGuard | undefined;
+
+  /**
+   * go-to-k/cdkd#6705: this deploy's CloudFormation signal receiver, when it
+   * creates a resource declaring a `CreationPolicy` or cfn-init metadata.
+   * Reset per deploy.
+   */
+  /** @internal */
+  signalReceiver: SignalReceiver | undefined;
 
   /**
    * The live-progress label `provisionResource` gave each resource, and whether

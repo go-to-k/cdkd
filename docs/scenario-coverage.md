@@ -195,6 +195,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`cognito-userpool-user-ref`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cognito-userpool-user-ref/)
 - [`connect-instance`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/connect-instance/)
 - [`created-before-failure-revert`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/created-before-failure-revert/)
+- [`creation-policy-cfn-init`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/creation-policy-cfn-init/)
 - [`cross-backend-same-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-backend-same-stack/)
 - [`cross-backend-same-stack-migration`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-backend-same-stack-migration/)
 - [`cross-region-concurrent-stacks`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cross-region-concurrent-stacks/)
