@@ -9111,6 +9111,7 @@
         "codebuild-project",
         "composite-stack",
         "conditions",
+        "connect-instance",
         "context-test",
         "cross-stack-export-in-use",
         "cross-stack-references",
@@ -9220,6 +9221,9 @@
         ],
         "conditions": [
           "l1",
+          "l2"
+        ],
+        "connect-instance": [
           "l2"
         ],
         "context-test": [
@@ -11433,6 +11437,8 @@
     "AWS::Cognito::UserPoolGroup",
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
+    "AWS::Connect::Instance",
+    "AWS::Connect::InstanceStorageConfig",
     "AWS::DSQL::Cluster",
     "AWS::DataSync::LocationS3",
     "AWS::DataSync::Task",
