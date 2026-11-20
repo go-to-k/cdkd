@@ -106,9 +106,10 @@ accepts only one of the two in a request. Drift ignores that echo beside the
 expression, and `--revert` sends the expression alone.
 
 For a resource managed through Cloud Control, `--revert` also sends the
-template's value of every write-only field, which AWS never returns on a read,
-as a deploy does. Without it Cloud Control would apply each field's default or
-reject the update:
+template's value of every write-only field, which AWS never returns on a read.
+A deploy does the same, except that it leaves out a Lambda function's `Code`
+when the template did not change it. Without these values Cloud Control would
+apply each field's default or reject the update:
 
 - a rotation schedule's `RotateImmediatelyOnUpdate: false` would become `true`
   and rotate the secret;

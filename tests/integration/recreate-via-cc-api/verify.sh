@@ -236,6 +236,9 @@ if ! node "${LOCAL_DIST}" deploy "${STACK}" \
   exit 1
 fi
 unset CDKD_INTEG_USE_SDK_UNWIRED
+TIMEOUT_2B=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'Timeout' --output text)
+CODE_SHA_2B=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'CodeSha256' --output text)
+echo "    Post-update CodeSha256: ${CODE_SHA_2B}  Timeout: ${TIMEOUT_2B}"
 
 # The patch cdkd generated for the function, read off the provider's debug
 # line. A missing line fails here rather than reading as "no /Code".
@@ -255,12 +258,10 @@ if echo "${PATCH_LINE}" | grep -qF '"path":"/Code"'; then
 fi
 echo "    OK: the patch carries /Timeout and no /Code"
 
-TIMEOUT_2B=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'Timeout' --output text)
 if [ "${TIMEOUT_2B}" != "10" ]; then
   echo "FAIL: Timeout is '${TIMEOUT_2B}' after the configuration-only update, expected 10" >&2
   exit 1
 fi
-CODE_SHA_2B=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'CodeSha256' --output text)
 if [ "${CODE_SHA_2B}" != "${CODE_SHA_2}" ]; then
   echo "FAIL: CodeSha256 changed across a configuration-only update ('${CODE_SHA_2}' -> '${CODE_SHA_2B}'): the function code was updated (go-to-k/cdkd#6709)" >&2
   exit 1
