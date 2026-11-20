@@ -15,7 +15,7 @@ import {
   deleteReplacedAfterCreate,
   retryDeferredReplacedDeletes,
 } from '../../../src/deployment/deploy-engine/replacement.js';
-import { journaledHolderRead } from '../../../src/deployment/deploy-engine/replacement/delete-replaced.js';
+import { journaledHolderRead } from '../../../src/deployment/journaled-holder.js';
 import { SUPERSEDED_KEPT_REMEDY } from '../../../src/deployment/superseded-resources.js';
 import type { ResourceProvider, SurvivorIdentityRead } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
@@ -131,6 +131,47 @@ describe('the cleanup pass compares a replaced bucket holder before deleting it 
   }
 
   const warned = () => printed.warn.join('\n');
+
+  // go-to-k/cdkd#6668: the deferral puts the generation on the superseded
+  // entry too, before the row's save, for a later run's carried delete.
+  it('records the journaled generation on the superseded entry, and none when the read did not answer', async () => {
+    const ctx = inDeploy();
+    const record = old();
+    await deleteReplacedAfterCreate(
+      ctx.run,
+      ctx.engine.replacementDeps(),
+      'Bucket',
+      record.resourceType,
+      record,
+      provider,
+      record.properties,
+      undefined,
+      undefined,
+      new Map(),
+      'cc-api'
+    );
+    expect(ctx.host.supersededResources).toHaveLength(1);
+    expect(ctx.host.supersededResources![0]!.identity).toBe(`us-east-1|${D1}`);
+    expect(ctx.run.supersededEntries.get('Bucket')!.identity).toBe(`us-east-1|${D1}`);
+
+    holder = async () => ({ kind: 'unknown' });
+    const other = inDeploy();
+    await deleteReplacedAfterCreate(
+      other.run,
+      other.engine.replacementDeps(),
+      'Bucket',
+      record.resourceType,
+      record,
+      provider,
+      record.properties,
+      undefined,
+      undefined,
+      new Map(),
+      'cc-api'
+    );
+    expect(other.host.supersededResources).toHaveLength(1);
+    expect('identity' in other.host.supersededResources![0]!).toBe(false);
+  });
 
   it('deletes the bucket the deferral journaled', async () => {
     const ctx = inDeploy();
@@ -290,7 +331,7 @@ describe('the cleanup pass compares a replaced bucket holder before deleting it 
     });
     expect(cleanupReads).toBe(1);
     expect(provider.delete).not.toHaveBeenCalled();
-    expect(warned()).toContain('the deploy was interrupted before cdkd could read what holds that name now');
+    expect(warned()).toContain('the run was interrupted before cdkd could read what holds that name now');
     expect(ctx.host.supersededResources ?? []).toHaveLength(1);
   });
 
