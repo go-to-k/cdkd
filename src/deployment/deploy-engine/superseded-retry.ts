@@ -94,6 +94,11 @@ export async function retryCarriedSupersededResources(
             // One attempt unless this deploy released a possible user: an
             // entry still in use must not slow every deploy.
             once: options.waitInUse !== true,
+            // go-to-k/cdkd#6668: the TYPE's provider reads who holds the name
+            // of an entry carrying `identity`.
+            holderProvider: () => engine.providerRegistry.getProvider(resourceType),
+            warn: (message) =>
+              engine.logger.warn(safeMsg`  ⚠ Old ${logicalId} (${physicalId}): ${message}`),
             // go-to-k/cdkd#6463: an entry owing its pre-delete snapshot.
             preDeleteSnapshot: {
               clients: engine.options.finalSnapshotClients ?? getAwsClients(),
@@ -120,6 +125,19 @@ export async function retryCarriedSupersededResources(
         }
         removeSuperseded(host, entry);
         changed = true;
+        // go-to-k/cdkd#6668: nothing was sent; the old resource left the name.
+        if (outcome.kind === 'gone') {
+          engine.logger.info(
+            safeMsg`  ${green('✓')} Old ${logicalId} (${physicalId}) is already gone; no delete was sent`
+          );
+          return;
+        }
+        if (outcome.kind === 'notOurs') {
+          engine.logger.warn(
+            safeMsg`  ⚠ Old ${logicalId} (${physicalId}) was not deleted: ${outcome.cause}. The replaced resource is gone, and cdkd no longer tracks it in state.`
+          );
+          return;
+        }
         if (outcome.kind === 'notDeleted') {
           engine.logger.warn(
             safeMsg`  ⚠ ${deleteSkippedMessage(logicalId, physicalId, outcome.reason, 'while cleaning up the superseded resource', { commandFreeLine: true })}. Delete it manually — it is no longer tracked in state.`

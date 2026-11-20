@@ -566,6 +566,10 @@ export async function destroyStackUnderLock({
                 ...(ctx.stackDestroy === true && { stackDestroy: true }),
                 maskSecrets: createUnionSecretMasker([bag]),
                 stop: () => lock.interrupted,
+                // go-to-k/cdkd#6668: the TYPE's provider reads the holder.
+                holderProvider: () => destroyProviderRegistry.getProvider(resourceType),
+                warn: (m) =>
+                  logger.warn(safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType}: ${m}`),
                 // go-to-k/cdkd#6463: an entry owing its pre-delete snapshot.
                 preDeleteSnapshot: {
                   clients: destroyAwsClients ?? ctx.baseAwsClients,
@@ -580,6 +584,18 @@ export async function destroyStackUnderLock({
           result.deletedCount++;
           drop();
           logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
+          return false;
+        }
+        // go-to-k/cdkd#6668: nothing was sent; the old resource left the name.
+        if (outcome.kind === 'gone' || outcome.kind === 'notOurs') {
+          drop();
+          if (outcome.kind === 'gone') {
+            logger.info(safeMsg`  ✓ ${logicalId}'s superseded ${resourceType} is already gone`);
+          } else {
+            logger.warn(
+              safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${outcome.cause}. The replaced resource is gone, and cdkd no longer tracks it in state.`
+            );
+          }
           return false;
         }
         // go-to-k/cdkd#6463: its snapshot was taken, so a re-run owes none.

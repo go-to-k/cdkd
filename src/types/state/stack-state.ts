@@ -582,6 +582,18 @@ export interface SupersededResourceRecord {
    */
   finalSnapshotIdentifier?: string;
 
+  /**
+   * go-to-k/cdkd#6668: the old resource's generation read when its delete was
+   * deferred (`readDeferralIdentity`, go-to-k/cdkd#6621), without the
+   * physical id (an S3 bucket's `<region>|<CreationDate ISO>`). A carried
+   * delete reads who holds the name first and sends nothing to a holder not
+   * proven the stack's. Absent (an entry written before it, a type outside
+   * `SURVIVOR_LIVE_READ_TYPES`, a deferral read that did not answer): the
+   * by-name delete as before. No schema bump: an older cdkd ignores it and
+   * deletes by name, as it always did.
+   */
+  identity?: string;
+
   /** The replacement ran under `--force-stateful-recreation`. */
   forceDataDelete?: true;
 
