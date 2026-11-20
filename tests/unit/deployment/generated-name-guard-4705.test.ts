@@ -775,7 +775,8 @@ describe('review round CB2', () => {
       Object.assign(new Error(name), { name, $metadata: { httpStatusCode: code } });
     it.each([
       ['a validation 400', status(400, 'InvalidParameterValue'), true],
-      ['AlreadyExists 409', status(409, 'AlreadyExistsException'), true],
+      // go-to-k/cdkd#6655: a collision may be a replay meeting its own first create.
+      ['AlreadyExists 409', status(409, 'AlreadyExistsException'), false],
       ['AccessDenied 403', status(403, 'AccessDenied'), true],
       ['wrapped under a provider error', Object.assign(new Error('wrap'), { cause: status(400, 'ValidationError') }), true],
       ['a throttle', status(400, 'ThrottlingException'), false],

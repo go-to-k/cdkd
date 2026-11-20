@@ -54,6 +54,7 @@ import {
   probeFoundSameId,
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
+import { withLicensedNameHolder } from '../../provisioning/licensed-name-holder.js';
 import { markNonRetryable, markRedactedCause } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
@@ -292,7 +293,7 @@ export async function provisionCreate(
   } else {
     // go-to-k/cdkd#4705: likewise a resource already holding the name cdkd
     // GENERATES for it, unless this stack's own evidence names that resource.
-    await refuseUnlicensedGeneratedName(engine, {
+    const licensedHolder = await refuseUnlicensedGeneratedName(engine, {
       logicalId,
       resourceType,
       stackName,
@@ -323,17 +324,19 @@ export async function provisionCreate(
           // `NestedStackProvider` can seed it into the child engine it
           // builds. Inside the retry arrow, so every attempt is scoped.
           withCurrentResourceSecrets(createSecrets, () =>
-            createProvider.create(logicalId, resourceType, createProps, {
-              // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
-              // so a `{{resolve:secretsmanager:...}}` property is plaintext by
-              // now; a provider that echoes one into its own warn is outside
-              // both existing masking boundaries (this engine's error/reason
-              // text and the resolver's debug line). Give it the capability
-              // rather than the bag — see `SecretMaskingContext`.
-              maskSecrets: createSecretMasker(createSecrets),
-              // go-to-k/cdkd#6309: which values keep their JSON type.
-              ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
-            })
+            withLicensedNameHolder(licensedHolder, () =>
+              createProvider.create(logicalId, resourceType, createProps, {
+                // Issue #1932 item 3. The bag handed to the provider is RESOLVED,
+                // so a `{{resolve:secretsmanager:...}}` property is plaintext by
+                // now; a provider that echoes one into its own warn is outside
+                // both existing masking boundaries (this engine's error/reason
+                // text and the resolver's debug line). Give it the capability
+                // rather than the bag — see `SecretMaskingContext`.
+                maskSecrets: createSecretMasker(createSecrets),
+                // go-to-k/cdkd#6309: which values keep their JSON type.
+                ...(typedPayloadLeaves !== undefined && { typedPayloadLeaves }),
+              })
+            )
           ),
         logicalId,
         undefined,
@@ -484,11 +487,11 @@ export async function guardedReplacementCreate<T>(
   if (input.keepsName === true || guard?.candidate(input.logicalId) === undefined) {
     return create();
   }
-  await refuseUnlicensedGeneratedName(engine, input);
+  const licensedHolder = await refuseUnlicensedGeneratedName(engine, input);
   guard.noteSent(input.logicalId);
   let result: T;
   try {
-    result = await create();
+    result = await withLicensedNameHolder(licensedHolder, create);
   } catch (error) {
     guard.noteFailed(input.logicalId, error);
     throw error;
@@ -506,6 +509,9 @@ export async function guardedReplacementCreate<T>(
  * this create before it is sent -- CloudFormation fails a create whose name is
  * taken with "already exists", and cdkd's create of these types would instead
  * take the resource over and record it as this stack's.
+ *
+ * Returns the licensed holder's physical id, which the create is run with
+ * (`withLicensedNameHolder`, go-to-k/cdkd#6655), else `undefined`.
  */
 async function refuseUnlicensedGeneratedName(
   engine: DeployEngine,
@@ -516,7 +522,7 @@ async function refuseUnlicensedGeneratedName(
     createdVia: ProvisionedBy | undefined;
     resolvedProps: Record<string, unknown>;
   }
-): Promise<void> {
+): Promise<string | undefined> {
   const { logicalId, resourceType } = input;
   const asked = engine.generatedNameGuard?.candidate(logicalId);
   // Routed to Cloud Control at create time after all: its handlers refuse an
@@ -529,9 +535,14 @@ async function refuseUnlicensedGeneratedName(
   // properties (go-to-k/cdkd#6100), so read it again after `admit`.
   const checked = engine.generatedNameGuard!.candidate(logicalId) ?? asked;
   const named = `the cdkd-generated ${checked.property ?? 'name'} ${displaySafe(checked.name)}`;
-  const adoptsText =
-    `its create API hands back or overwrites an existing resource of that name instead of ` +
-    `refusing it`;
+  // go-to-k/cdkd#6655: a log group's create refuses a taken name itself (except
+  // a holder the generated-name guard licensed); it is checked for that license
+  // and for the `cdkd import` advice, so its refusals say so instead.
+  const refusesItself = resourceType === 'AWS::Logs::LogGroup';
+  const adoptsText = refusesItself
+    ? `cdkd checks a log group's name before its create, as CloudFormation refuses a taken one`
+    : `its create API hands back or overwrites an existing resource of that name instead of ` +
+      `refusing it`;
   const refuse = (message: string): never => {
     throw markNonRetryable(
       markRefusedBeforeApplying(new CdkdError(message, 'GENERATED_NAME_HELD'))
@@ -539,8 +550,11 @@ async function refuseUnlicensedGeneratedName(
   };
   switch (verdict.kind) {
     case 'free':
-    case 'licensed':
       return;
+    case 'licensed':
+      // go-to-k/cdkd#6655: a create that refuses an existing name (a log
+      // group) takes back this holder and no other.
+      return verdict.holder;
     case 'unchecked':
       engine.logger.warn(
         safeMsg`${subject} is created with ${named} without checking whether another resource already ` +
@@ -599,7 +613,10 @@ async function refuseUnlicensedGeneratedName(
             `(${displaySafe(verdict.holder)}) already holds. This stack's create-token ledger ` +
             `records that ${why} sent this name, but this type reports no creation time, so cdkd ` +
             `cannot tell that resource is the one it made rather than another deployment's ` +
-            `created since. Since ${adoptsText}, creating it would take that resource over. ` +
+            `created since. ` +
+            (refusesItself
+              ? ''
+              : `Since ${adoptsText}, creating it would take that resource over. `) +
             `${displaySafe(logicalId)} was not created. The likely cause: the resource is this ` +
             `stack's own, from that deploy. If it is, ${importLine} and re-run; if it is not, ` +
             `this stack is also deployed under another state backend.`
@@ -609,8 +626,11 @@ async function refuseUnlicensedGeneratedName(
         `${subject} would be created with ${named}, which an existing resource ` +
           `(${displaySafe(verdict.holder)}) already holds, and nothing this stack records names ` +
           `that resource: not its state, its rollback journal or create-token ledger, nor what a ` +
-          `destroy of it under this state prefix kept. Since ${adoptsText}, creating it would take ` +
-          `that resource over, as CloudFormation refuses with "already exists". ` +
+          `destroy of it under this state prefix kept. ` +
+          (refusesItself
+            ? `CloudFormation refuses it with "already exists". `
+            : `Since ${adoptsText}, creating it would take that resource over, as CloudFormation ` +
+              `refuses with "already exists". `) +
           `${displaySafe(logicalId)} was not created. The likely cause: this stack is also deployed under another state backend ` +
           `(another --state-prefix, --state-bucket or account), where cdkd generates the same ` +
           `names. One stack name per account and region is supported: ` +
@@ -675,9 +695,14 @@ async function refuseTakenCreateName(
   const shown = (value: string): string => displaySafe(maskName(value));
   const subject = `${displaySafe(logicalId)} (${displaySafe(resourceType)})`;
   const named = `${question.property} ${shown(question.desiredName)}`;
-  const adoptsText =
-    `its create API hands back or overwrites an existing resource of that name instead of ` +
-    `refusing it`;
+  // go-to-k/cdkd#6655: a log group's create refuses a taken name itself (except
+  // a holder the generated-name guard licensed); it is checked for that license
+  // and for the `cdkd import` advice, so its refusals say so instead.
+  const refusesItself = resourceType === 'AWS::Logs::LogGroup';
+  const adoptsText = refusesItself
+    ? `cdkd checks a log group's name before its create, as CloudFormation refuses a taken one`
+    : `its create API hands back or overwrites an existing resource of that name instead of ` +
+      `refusing it`;
   // Marked refused-before-applying (go-to-k/cdkd#4356): every arm refuses
   // BEFORE the create call, so nothing was created, and the deploy then
   // journals no failed op the rollback could misdescribe.
@@ -781,9 +806,12 @@ async function refuseTakenCreateName(
     return refuse(
       `${subject} is created with ${named}, which this stack's ${displaySafe(ownHolder[0])} ` +
         `(${shown(holderId)}) already holds — a construct moved or renamed keeps its explicit ` +
-        `name under a new logical id. Since ${adoptsText}, the create would hand back that ` +
-        `resource and the removal of ${displaySafe(ownHolder[0])} would then delete it. Nothing ` +
-        `was created. Give the new resource another name, or deploy the removal of ` +
+        `name under a new logical id. ` +
+        (refusesItself
+          ? ''
+          : `Since ${adoptsText}, the create would hand back that resource and the removal of ` +
+            `${displaySafe(ownHolder[0])} would then delete it. `) +
+        `Nothing was created. Give the new resource another name, or deploy the removal of ` +
         `${displaySafe(ownHolder[0])} first. Do not delete or import that resource: it is ` +
         `already this stack's.`
     );
@@ -820,9 +848,12 @@ async function refuseTakenCreateName(
         `'<logicalId>=<physicalId>', shell-quoted.`;
   return refuse(
     `${subject} is created with ${named}, and an existing resource ` +
-      `(${shown(holderId)}) already holds that name. Since ${adoptsText}, ` +
-      `creating it would take that resource over and record it as this stack's, for a later ` +
-      `\`cdkd destroy\` to delete. Nothing was created. Choose a name no other resource holds; ` +
+      `(${shown(holderId)}) already holds that name. ` +
+      (refusesItself
+        ? `A log group's create refuses a taken name, as CloudFormation's does. `
+        : `Since ${adoptsText}, creating it would take that resource over and record it as ` +
+          `this stack's, for a later \`cdkd destroy\` to delete. `) +
+      `Nothing was created. Choose a name no other resource holds; ` +
       ownRemedy +
       holeNote +
       (adopt === undefined

@@ -416,6 +416,11 @@
       "scenarios": []
     },
     {
+      "name": "alb-listener-rule-update",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "api-cognito",
       "annotated": true,
       "scenarios": []
@@ -4131,6 +4136,7 @@
   "unannotatedFixtures": [
     "access-key-cloudmap-fix-forward-orphan",
     "acm-certificate",
+    "alb-listener-rule-update",
     "apigatewayv2-update-removal",
     "apigw-restapi-spec",
     "apigw-stage-props",

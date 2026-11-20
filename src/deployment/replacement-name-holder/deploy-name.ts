@@ -100,10 +100,14 @@ export function replacementRequestsDifferentName(input: {
  * API reference) or
  * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or the
  * provider reads the refusal as success and configures the existing resource
- * (CloudWatch Logs' `ResourceAlreadyExistsException`; S3's
- * `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200 for a generated
- * bucket name only -- an explicit one is refused by the provider too,
- * go-to-k/cdkd#4684). A replacement renamed onto such a name "succeeds" with
+ * (S3's `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200 for a
+ * generated bucket name only -- an explicit one is refused by the provider
+ * too, go-to-k/cdkd#4684). `AWS::Logs::LogGroup`'s create REFUSES a taken name
+ * since go-to-k/cdkd#6655, except the holder the generated-name guard
+ * licensed (`licensed-name-holder.ts`): it stays a member so that guard asks
+ * about it (its take-back after a crash depends on it), and so an explicit
+ * name is refused before the create with the `cdkd import` advice. A
+ * replacement renamed onto such a name "succeeds" with
  * someone else's resource, which the deploy then records as its own and a
  * later destroy deletes (go-to-k/cdkd#3937); a plain CREATE under such a name
  * does the same (go-to-k/cdkd#4180). The create cannot tell a fresh

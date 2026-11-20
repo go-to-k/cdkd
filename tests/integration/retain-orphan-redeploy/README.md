@@ -50,9 +50,8 @@ believed in.
 Both are load-bearing. Without `roleName` the physical name is cdkd's
 `{stackName}-{logicalId}-{suffix}` derivation — the advice deliberately refuses a name
 cdkd did not derive, so a template-named resource would assert nothing. And
-`AWS::IAM::Role` REFUSES a duplicate name; `AWS::S3::Bucket`,
-`AWS::Logs::LogGroup` and `AWS::SNS::Topic` silently adopt an existing
-resource, so a fixture built on one of those would redeploy green.
+`AWS::IAM::Role` REFUSES a duplicate name; `AWS::S3::Bucket` and
+`AWS::SNS::Topic` silently adopt an existing resource, so a fixture built on one of those would redeploy green.
 
 `cdkd state orphan --resource` manufactures the orphan rather than an injected rollback:
 it reaches the same end state (resource live, record gone) deterministically,

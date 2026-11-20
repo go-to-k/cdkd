@@ -3115,6 +3115,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         inPlace?: boolean;
         prevType?: string;
         prevPhysicalId?: string;
+        prevAttributes?: Record<string, unknown>;
         engineOptions?: Record<string, unknown>;
       } = {}
     ) {
@@ -3137,6 +3138,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
           B: {
             ...prevB(opts.prevType ?? type),
             ...(opts.prevPhysicalId !== undefined && { physicalId: opts.prevPhysicalId }),
+            ...(opts.prevAttributes !== undefined && { attributes: opts.prevAttributes }),
           },
         },
         ...(opts.engineOptions && { engineOptions: opts.engineOptions }),
@@ -3422,6 +3424,71 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
       expect(ops).toHaveLength(1);
       expect(ops[0]).toMatchObject({ changeType: 'UPDATE', oldDeletedBeforeCreate: true });
       expect(ops[0]).not.toHaveProperty('replacementOrphaned');
+    });
+
+    // go-to-k/cdkd#6655: the delete-first deleted the resource the record
+    // names, so its AWS-minted id is dead. Kept, it would refuse the delete
+    // of the same-name resource the failed create made (destroy, or the
+    // revert's record): the saved record drops it, keeping the rest.
+    it('a failed delete-first replacement saves the record without the dead identity id', async () => {
+      const ROLE = 'AWS::IAM::Role';
+      const { engine, provider, saveState } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', ROLE, 'b-old'),
+        { inPlace: true, type: ROLE, prevAttributes: { Arn: 'arn-old', RoleId: 'role-id-old' } }
+      );
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate(ROLE))).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-old']);
+      const saved = saveState.mock.calls.at(-1)![2] as { resources: Record<string, ResourceState> };
+      expect(saved.resources['B']!.physicalId).toBe('b-old');
+      expect(saved.resources['B']!.attributes).toEqual({ Arn: 'arn-old' });
+    });
+
+    it('a failed delete-first replacement records the id its create reported for the same-name resource', async () => {
+      const ROLE = 'AWS::IAM::Role';
+      const { engine, provider, saveState } = replacingEngine(
+        markCreatedBeforeFailure(new Error('x'), 'B', ROLE, 'b-old', 'role-id-made'),
+        { inPlace: true, type: ROLE, prevAttributes: { Arn: 'arn-old', RoleId: 'role-id-old' } }
+      );
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate(ROLE))).rejects.toThrow();
+      const saved = saveState.mock.calls.at(-1)![2] as { resources: Record<string, ResourceState> };
+      expect(saved.resources['B']!.attributes).toEqual({ Arn: 'arn-old', RoleId: 'role-id-made' });
+    });
+
+    // go-to-k/cdkd#6655: the adopt / ambiguous paths. A create that adopted a
+    // prior attempt's role (`iam-replay-adopt`) or timed out reports nothing,
+    // so no mark names the same-name resource: the dead id is dropped, and
+    // the record falls back to main's by-name delete rather than refusing it.
+    it('a failed delete-first replacement whose create left no mark drops the dead id', async () => {
+      const ROLE = 'AWS::IAM::Role';
+      const { engine, provider, saveState } = replacingEngine(new Error('create failed after adopting'), {
+        inPlace: true,
+        type: ROLE,
+        prevAttributes: { Arn: 'arn-old', RoleId: 'role-id-old' },
+      });
+      (provider as unknown as { update: ReturnType<typeof vi.fn> }).update.mockRejectedValue(
+        Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' })
+      );
+      await expect(engine.deploy(stackName, replaceTemplate(ROLE))).rejects.toThrow();
+      expect(provider.delete.mock.calls.map((c: unknown[]) => c[1])).toEqual(['b-old']);
+      const saved = saveState.mock.calls.at(-1)![2] as { resources: Record<string, ResourceState> };
+      expect(saved.resources['B']!.attributes).toEqual({ Arn: 'arn-old' });
+    });
+
+    it('a failed create-first replacement keeps the record identity id (its resource is alive)', async () => {
+      const ROLE = 'AWS::IAM::Role';
+      const { engine, saveState } = replacingEngine(new Error('create rejected'), {
+        type: ROLE,
+        prevAttributes: { Arn: 'arn-old', RoleId: 'role-id-old' },
+      });
+      await expect(engine.deploy(stackName, replaceTemplate(ROLE))).rejects.toThrow();
+      const saved = saveState.mock.calls.at(-1)![2] as { resources: Record<string, ResourceState> };
+      expect(saved.resources['B']!.attributes).toEqual({ Arn: 'arn-old', RoleId: 'role-id-old' });
     });
 
     it('stamps no failed create-first UPDATE', async () => {

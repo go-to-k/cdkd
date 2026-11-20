@@ -17,6 +17,7 @@ import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-lo
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
 import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
 
 /**
  * Delete an IAM role
@@ -45,9 +46,22 @@ export async function deleteImpl(
   const progress: DeleteProgress = { stripped: false };
 
   try {
-    // Check if role exists
+    // Check if role exists, and (go-to-k/cdkd#6655) that it is the role cdkd
+    // created: a record holding a `RoleId` refuses a holder of the name with
+    // another one before anything is detached. No `RoleId` recorded: the
+    // by-name delete as before.
     try {
-      await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
+      const readRoleId = async () =>
+        (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role?.RoleId;
+      await assertRecordedIdentity({
+        label: 'IAM role',
+        resourceType,
+        logicalId,
+        physicalId,
+        liveId: await readRoleId(),
+        reread: readRoleId,
+        context,
+      });
     } catch (error) {
       if (error instanceof NoSuchEntityException) {
         const clientRegion = await this.iamClient.config.region();
@@ -87,6 +101,8 @@ export async function deleteImpl(
 
     log.debug(`Successfully deleted IAM role ${logicalId}`);
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     const failure = this.wrapMaskedError(
       log.mask,

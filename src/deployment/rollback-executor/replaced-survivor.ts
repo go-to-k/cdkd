@@ -18,6 +18,8 @@ import type { ProviderRegistry } from '../../provisioning/provider-registry.js';
 import { withReplayDeletePrinting, type ReplayOpScope } from './replay-scope.js';
 import { resolveReplacementOldType } from './plan/classify.js';
 import type { CompletedOperation, RollbackExecutorContext } from './types.js';
+import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../recorded-identity-attributes.js';
+import { recordedIdentityId } from '../../provisioning/recorded-identity.js';
 
 /**
  * go-to-k/cdkd#2631: whether a replaced resource's failed delete was refused
@@ -204,18 +206,13 @@ async function liveSurvivorRead(
 }
 
 /**
- * go-to-k/cdkd#6393: per type, the recorded attribute holding the identity
- * AWS mints per resource (so a same-named successor carries another one),
- * whose value is exactly the token that type's SDK provider's
- * `resourceIdentity` reads live (#4655). A type whose physical id is already
- * AWS-minted (a KMS key id) needs none; one whose every id is name-derived
- * (an SNS topic ARN) has none to compare. Add a type only when its SDK
- * provider records the attribute at create and its `resourceIdentity` token
- * equals it.
+ * go-to-k/cdkd#6393 / #6655: the recorded identity attribute per type, read
+ * by {@link identityVerdict}. The table lives in a leaf
+ * (`../recorded-identity-attributes.ts`), whose JSDoc says, per type, why its
+ * recorded value equals the `resourceIdentity` token: the provider deletes
+ * and the deploy's attribute heal read it too.
  */
-export const SURVIVOR_IDENTITY_ATTRIBUTES: Readonly<Record<string, string>> = {
-  'AWS::IAM::Role': 'RoleId',
-};
+export { SURVIVOR_IDENTITY_ATTRIBUTES };
 
 /** How often a running read checks for an interrupted rollback. */
 const INTERRUPT_POLL_MS = 250;
@@ -396,10 +393,12 @@ async function identityVerdict(
   physicalId: string,
   oldType: string
 ): Promise<'exists' | 'gone' | 'foreign'> {
-  const key = SURVIVOR_IDENTITY_ATTRIBUTES[oldType];
-  if (key === undefined) return 'exists';
-  const recorded = s.op.previousState?.attributes?.[key];
-  if (typeof recorded !== 'string' || recorded === '' || recorded.includes('***')) return 'exists';
+  // A masked or secret-reference value is no id (`recordedIdentityId`, the
+  // delete's own reading of the record).
+  const recorded = recordedIdentityId(oldType, {
+    recordedAttributes: s.op.previousState?.attributes,
+  })?.value;
+  if (recorded === undefined) return 'exists';
   try {
     const provider = s.ctx.providerRegistry.getProvider(oldType);
     if (typeof provider.resourceIdentity !== 'function') return 'exists';

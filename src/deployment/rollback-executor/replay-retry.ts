@@ -28,6 +28,7 @@ import {
   splitUnhandledRemovals,
 } from '../unsettled-convergence.js';
 import { type RollbackExecutorContext } from './types.js';
+import { keepRecordedIdentity } from '../recorded-identity-attributes.js';
 import { safe } from './messages.js';
 
 /**
@@ -320,10 +321,12 @@ export async function createWithRollbackRetry(
  */
 export function recordAfterRollbackUpdate(
   restored: ResourceState,
-  result: ResourceUpdateResult | undefined
+  result: ResourceUpdateResult | undefined,
+  /** go-to-k/cdkd#6655: told when the update answered another identity id than the recorded one (kept). */
+  onDiffering?: (attribute: string) => void
 ): ResourceState {
   return withoutNoEchoValueMacs(
-    withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result))
+    withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result, onDiffering))
   );
 }
 
@@ -341,7 +344,8 @@ function withoutNoEchoValueMacs(record: ResourceState): ResourceState {
 
 function recordAfterRollbackUpdateUnsettled(
   restored: ResourceState,
-  result: ResourceUpdateResult | undefined
+  result: ResourceUpdateResult | undefined,
+  onDiffering?: (attribute: string) => void
 ): ResourceState {
   // The optional `result` mirrors the same tolerance `drift.ts`'s capture
   // applies — a provider that resolves `undefined` must not crash a recovery
@@ -370,7 +374,18 @@ function recordAfterRollbackUpdateUnsettled(
       properties: copyClaimingProviderBag(result.effectiveProperties),
     }),
     ...(returned !== undefined && {
-      attributes: result.wasReplaced ? { ...returned } : { ...restored.attributes, ...returned },
+      // go-to-k/cdkd#6655: an in-place revert keeps the recorded identity id.
+      attributes: result.wasReplaced
+        ? { ...returned }
+        : keepRecordedIdentity(
+            restored.resourceType,
+            restored.attributes,
+            {
+              ...restored.attributes,
+              ...returned,
+            },
+            onDiffering
+          ),
     }),
   };
 }

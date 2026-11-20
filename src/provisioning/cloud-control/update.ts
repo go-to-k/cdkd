@@ -12,6 +12,7 @@ import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { quietS3Logger } from '../../utils/sdk-call-log.js';
 import { displaySafe } from '../../utils/display-safe.js';
 import { withGuardDutyDetectorReadBackOps } from '../guardduty-detector-patch.js';
+import { withListenerRuleConditionOps } from '../elbv2-listener-rule-patch.js';
 import {
   hasCcReadBackEmptyKeys,
   withCcReadBackEmptyKeyRemovals,
@@ -245,6 +246,10 @@ export async function updateInIdLogScope(
       cleanProperties,
       context?.desiredFromAwsReadback === true ? { previous: cleanPreviousProperties } : undefined
     );
+
+    // go-to-k/cdkd#6663: a listener rule's read model spells each path /
+    // host condition twice, which `ModifyRule` refuses; see the helper.
+    patch = withListenerRuleConditionOps(resourceType, patch, cleanProperties);
 
     // go-to-k/cdkd#6569: some read models spell "not set" as an empty
     // collection the update API refuses (an Image Builder infrastructure

@@ -2,6 +2,7 @@
  * `cdkd drift`: `--revert`: one resource's `provider.update` and the state record it leaves.
  * Split out of `../drift.ts`, which re-exports the public names.
  */
+import { differingIdentityWarning } from '../../../provisioning/recorded-identity.js';
 import { ResourceUpdateNotSupportedError } from '../../../utils/error-handler.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { updatePartialReason, updatePartialMessage } from '../../../deployment/update-outcome.js';
@@ -461,7 +462,10 @@ function recordReturnedIdentity(
       // replay register it, or a custom resource's masked `Data`
       // lands in `state.json` in the clear.
       const noEchoDeclared = recordNoEchoAttributeValues(updateResult, secrets, newProperties);
-      const next = recordAfterRollbackUpdate(stateResource, updateResult);
+      // go-to-k/cdkd#6655: a recorded identity id is kept; another one answered is warned.
+      const next = recordAfterRollbackUpdate(stateResource, updateResult, (key) =>
+        logger.warn(differingIdentityWarning(outcome.logicalId, outcome.resourceType, key))
+      );
       // The attributes alone are scrubbed, by value, with the
       // revert's resolved secrets — `scrubResourceRecord`'s
       // `attributes` arm. The rest of the record is the one state

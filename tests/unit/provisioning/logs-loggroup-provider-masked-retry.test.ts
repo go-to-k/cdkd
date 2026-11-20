@@ -226,8 +226,9 @@ describe('LogsLogGroupProvider: AWS failure text stays out of the thrown message
   });
 
   it('restates an "already exists" from CreateLogGroup', async () => {
-    // Not the typed `ResourceAlreadyExistsException`, which `create()` adopts
-    // before any wrap: a collision AWS words under another class.
+    // A collision AWS words under another class; the typed
+    // `ResourceAlreadyExistsException` is pinned in
+    // `logs-loggroup-create-refuses-taken-name-6655.test.ts`.
     rejectOn(
       CreateLogGroupCommand,
       Object.assign(new Error('The specified log group already exists'), {

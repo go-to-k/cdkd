@@ -200,7 +200,9 @@ They return or overwrite the resource that already holds it. Without the
 check, cdkd would record someone else's resource as the stack's own, and a
 later `cdkd destroy` would delete it. The types are SQS queues, SNS topics,
 Step Functions state machines, ECS clusters, ELBv2 load balancers and target
-groups, EventBridge rules, CloudWatch alarms, log groups and S3 buckets.
+groups, EventBridge rules, CloudWatch alarms, log groups and S3 buckets. A log
+group's create itself fails on a taken name, as CloudFormation's does; the
+check refuses first, with the command to adopt the log group.
 
 For those types on cdkd's SDK providers, cdkd looks an explicit name up before
 it creates anything. What it does when the name is taken, or when the lookup

@@ -10,7 +10,7 @@ import {
   ResourceAlreadyExistsException,
 } from '@aws-sdk/client-cloudwatch-logs';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { displaySafe } from '../../../utils/display-safe.js';
+import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
@@ -20,6 +20,8 @@ import type { CreateContext, ResourceCreateResult } from '../../../types/resourc
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import { isAbsentRetention, assertUsableRetention } from './shared.js';
+import { licensedNameHolder } from '../../licensed-name-holder.js';
+import { createLogGroupLatch, logGroupCreateClient, ownReplayedGroup } from './own-replay.js';
 
 /**
  * Create a CloudWatch Logs log group
@@ -41,7 +43,7 @@ export async function create(
   const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
   // go-to-k/cdkd#4583: set once THIS call created the log group (never on the
-  // ResourceAlreadyExists adoption); cleared when the cleanup deleted it.
+  // licensed take-back); cleared when the cleanup deleted it.
   let leftBehind = false;
   try {
     const createParams: import('@aws-sdk/client-cloudwatch-logs').CreateLogGroupCommandInput = {
@@ -63,23 +65,60 @@ export async function create(
       createParams.tags = Object.fromEntries(desiredTags.map((t) => [t.Key, t.Value]));
     }
 
-    // Track whether THIS call actually created the log group (vs hit the
-    // idempotent `ResourceAlreadyExists` fallback). Only the truly-
-    // created case is eligible for partial-failure cleanup — deleting a
-    // pre-existing log group would destroy CloudWatch logs the user
-    // cared about. AlreadyExists handling is INLINE here (rather than
-    // at the outer catch) so the outer catch only ever sees genuine
-    // failures, and the inner-cleanup branch below can rely on the
-    // flag to decide whether to clean up.
+    // Track whether THIS call actually created the log group (vs took back
+    // the licensed holder below). Only the truly-created case is eligible
+    // for partial-failure cleanup — deleting a pre-existing log group would
+    // destroy CloudWatch logs the user cared about.
+    //
+    // go-to-k/cdkd#6655: a log group already holding the name is REFUSED, as
+    // CloudFormation refuses it ("already exists"): the raw
+    // `ResourceAlreadyExistsException` reaches the outer wrap as its cause, so
+    // `isNameCollisionErrorFrom` sees the collision (a rollback re-create's
+    // delete-new-first, `--replace`). Adopting it instead recorded whatever
+    // group held the name as this stack's, and a later destroy deleted it.
+    // Two exceptions: the holder the generated-name guard licensed from this
+    // stack's own evidence (go-to-k/cdkd#4705: a crash's ledger intent, a
+    // group it kept), and only when the name is that holder's; and THIS
+    // create's own group, made by an earlier attempt whose answer was lost
+    // ({@link ownReplayedGroup}).
     let createdNewLogGroup = false;
+    const carried = createLogGroupLatch.take(logicalId);
+    const attemptStartMs = Date.now();
     try {
-      await this.logsClient.send(new CreateLogGroupCommand(createParams));
+      await (
+        await logGroupCreateClient(this.logsClient)
+      ).send(new CreateLogGroupCommand(createParams));
       createdNewLogGroup = true;
       leftBehind = true;
       reportCreatedResource(logicalId, resourceType, logGroupName);
     } catch (createError) {
-      if (createError instanceof ResourceAlreadyExistsException) {
-        this.logger.debug(`Log group ${logGroupName} already exists, using existing`);
+      if (!(createError instanceof ResourceAlreadyExistsException)) {
+        createLogGroupLatch.noteFailure(logicalId, createError, attemptStartMs, carried);
+        throw createError;
+      }
+      const shownName = maskerOrIdentity(context?.maskSecrets)(logGroupName);
+      if (licensedNameHolder() === logGroupName) {
+        this.logger.debug(
+          safeMsg`Log group ${shownName} already exists and is this stack's own: taking it back`
+        );
+      } else if (
+        await ownReplayedGroup.call(
+          this,
+          logGroupName,
+          createError,
+          carried,
+          attemptStartMs,
+          shownName
+        )
+      ) {
+        // Ours: created by this create's earlier attempt, so it is cleaned up
+        // and reported like one this call made.
+        createdNewLogGroup = true;
+        leftBehind = true;
+        reportCreatedResource(logicalId, resourceType, logGroupName);
+        this.logger.debug(
+          safeMsg`Log group ${shownName} was created by an earlier attempt of this create whose answer was lost: using it`
+        );
       } else {
         throw createError;
       }

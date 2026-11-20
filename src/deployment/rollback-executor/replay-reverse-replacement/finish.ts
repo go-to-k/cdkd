@@ -1,3 +1,4 @@
+import { newCopyDeleteAttributes } from '../../recorded-identity-attributes.js';
 import { withReplayDeletePrinting } from '../replay-scope.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { withNameGenerationReached } from '../../../state/name-generation.js';
@@ -315,7 +316,16 @@ export async function finishReverseReplacement(
               ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
-              recordedAttributes: current.attributes,
+              // go-to-k/cdkd#6655: never the deleted old resource's dead id. Reached
+              // for a delete-first op only when its delete-first route is blocked
+              // (`deleteFirstBlocker`); the record then names the new copy, whose id
+              // its create recorded, so the dead-id arm is a guard that cannot fire.
+              recordedAttributes: newCopyDeleteAttributes(
+                op.resourceType,
+                current.attributes,
+                op.oldDeletedBeforeCreate,
+                op.previousState?.attributes
+              ),
               recordedCreateOnlyDrops: current.acceptedCreateOnlyDrops,
               // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
               recordedNoEchoLeaves: current.noEchoLeaves,

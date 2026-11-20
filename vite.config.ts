@@ -552,6 +552,16 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-ref-segment-coverage.ts --check',
         cache: false,
       },
+      // Issue #6656: every property change an SDK provider's update() meets by
+      // replacing the resource is a replacement in `cdkd diff` too.
+      'gen:provider-replace-branches': {
+        command: 'node --experimental-strip-types scripts/gen-provider-replace-branches.ts',
+        cache: false,
+      },
+      'audit:provider-replace-branches:check': {
+        command: 'node --experimental-strip-types scripts/gen-provider-replace-branches.ts --check',
+        cache: false,
+      },
       // Re-captures tests/fixtures/cfn-primary-identifiers.json from AWS's
       // public schema bundle (network, no AWS identity). NOT in CI or
       // gen:all-matrices: the capture is the oracle the critic reads.
@@ -709,6 +719,7 @@ export default defineConfig({
           'vp run gen:update-wrap-coverage',
           'vp run gen:update-path-coverage',
           'vp run gen:ref-segment-coverage',
+          'vp run gen:provider-replace-branches',
           'vp run gen:nested-key-coverage',
           'vp run gen:getatt-attributes',
           // Not a matrix, but the same class of CI guard: a rebase can

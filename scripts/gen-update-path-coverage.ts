@@ -365,7 +365,7 @@ export class ModuleIndex {
  * with anything else (a referenced resource's `Type`) says nothing about which
  * type this update serves, and narrowing on it would skip a live branch.
  */
-function isResourceTypeOperand(e: ts.Expression): boolean {
+export function isResourceTypeOperand(e: ts.Expression): boolean {
   const name = ts.isIdentifier(e) ? e.text : ts.isPropertyAccessExpression(e) ? e.name.text : null;
   return name === 'resourceType' || name === 'type';
 }
@@ -401,7 +401,7 @@ function typeComparison(expr: ts.Expression): { literal: string; equal: boolean 
  * null when the condition does not test the resource type. `&&` / `||` chains
  * narrow through a resource-type comparison in either operand.
  */
-function branchReach(
+export function branchReach(
   expr: ts.Expression,
   resourceType: string
 ): { then: boolean; else: boolean } | null {
@@ -427,7 +427,7 @@ function branchReach(
 }
 
 /** Does a case clause's statement list end the switch (a braced body included)? */
-function endsClause(statements: ts.NodeArray<ts.Statement> | readonly ts.Statement[]): boolean {
+export function endsClause(statements: ts.NodeArray<ts.Statement> | readonly ts.Statement[]): boolean {
   const last = statements[statements.length - 1];
   if (!last) return false;
   if (ts.isBlock(last)) return endsClause(last.statements);
@@ -506,7 +506,7 @@ const DECLARATIVE_FIELDS: ReadonlySet<string> = new Set([
  * `extends` that resolves through the module index, nearest declaration
  * first, each with the file its body must resolve identifiers in.
  */
-function classMembers(
+export function classMembers(
   cls: ts.ClassDeclaration,
   file: string,
   index: ModuleIndex
