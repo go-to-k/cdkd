@@ -82,6 +82,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdEcrScanningExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -398,6 +400,7 @@ echo "==> Phase 3d: cdkd drift --revert restores the declared policy"
 PID_BEFORE="$(state_physical_id)"
 AWSID_BEFORE="$(aws_repo_identity)"
 [ -n "${PID_BEFORE}" ] && valid_identity "${AWSID_BEFORE}" || { echo "FAIL: Phase 3d premise: empty identity before the revert (physicalId '${PID_BEFORE}', AWS '${AWSID_BEFORE}')" >&2; exit 1; }
+revert_identity_snapshot "${WORK_DIR}/revert-ids-1-before" "${STACK}" "${REPO_LID}" || exit 1
 node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   >"${WORK_DIR}/revert3d.log" 2>&1 || { echo "FAIL: Phase 3d: drift --revert failed" >&2; cat "${WORK_DIR}/revert3d.log" >&2; exit 1; }
 cat "${WORK_DIR}/revert3d.log"
@@ -407,6 +410,9 @@ if grep -qiE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log"; then
   grep -iE 'replac|recreat|re-creat' "${WORK_DIR}/revert3d.log" >&2
   exit 1
 fi
+revert_output_assert_no_replacement "${WORK_DIR}/revert3d.log" || exit 1
+revert_identity_snapshot "${WORK_DIR}/revert-ids-1-after" "${STACK}" "${REPO_LID}" || exit 1
+revert_identity_assert_unchanged "${WORK_DIR}/revert-ids-1-before" "${WORK_DIR}/revert-ids-1-after" 1 || exit 1
 PID_AFTER="$(state_physical_id)"
 AWSID_AFTER="$(aws_repo_identity)"
 [ -n "${PID_AFTER}" ] && valid_identity "${AWSID_AFTER}" || { echo "FAIL: Phase 3d: empty identity after the revert (physicalId '${PID_AFTER}', AWS '${AWSID_AFTER}')" >&2; exit 1; }

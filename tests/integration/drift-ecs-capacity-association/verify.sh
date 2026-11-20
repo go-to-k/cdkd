@@ -62,6 +62,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
 
 STACK="CdkdDriftEcsCapacityAssociationExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -70,6 +71,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 unset CDKD_TEST_UPDATE
 DRIFT_LOG=""
 CLUSTER=""
+REVERT_WORK=""
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -78,6 +80,10 @@ cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
   rm -f "${DRIFT_LOG:-}"
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
@@ -227,7 +233,12 @@ if grep -qE "CapacityProviders|DefaultCapacityProviderStrategy" "${DRIFT_LOG}"; 
   echo "FAIL: Phase 4: the drift report names the association-owned capacity providers" >&2
   exit 1
 fi
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-4-before" "${STACK}" Cluster || exit 1
 run_drift --revert -y
+revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-4-after" "${STACK}" Cluster || exit 1
+revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-4-before" "${REVERT_WORK}/revert-ids-4-after" 1 || exit 1
 expect_drift_rc 0 "Phase 4 (--revert)"
 expect_insights "Phase 4 (after --revert)" "disabled"
 expect_providers "Phase 4 (after --revert)" "FARGATE FARGATE_SPOT"

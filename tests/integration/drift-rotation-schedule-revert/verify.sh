@@ -62,12 +62,15 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdDriftRotationScheduleRevertExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 SCHEDULE_ID="SecretSchedule18F2CB66"
 DRIFT_LOG=""
+REVERT_DIR="$(mktemp -d)"
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -76,6 +79,8 @@ cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
   rm -f "${DRIFT_LOG:-}"
+  rm -f "${REVERT_DIR:-/nonexistent}"/revert-ids-* 2>/dev/null
+  rmdir "${REVERT_DIR:-/nonexistent}" 2>/dev/null
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
@@ -186,8 +191,12 @@ if ! grep -qF "${SCHEDULE_ID} (AWS::SecretsManager::RotationSchedule)" "${DRIFT_
 fi
 
 echo "==> Phase 5: cdkd drift --revert -y reverts the schedule without rotating"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${SCHEDULE_ID}" || exit 1
 run_drift --revert -y
 expect_drift_rc 0 "Phase 5"
+revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${SCHEDULE_ID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
 SCHEDULE="$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" \
   --query RotationRules.ScheduleExpression --output text)"
 if [ "${SCHEDULE}" != "rate(60 days)" ]; then

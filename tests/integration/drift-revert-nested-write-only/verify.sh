@@ -71,6 +71,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 cd "$(dirname "$0")"
 # shellcheck source=../s3-versions.sh
 . ../s3-versions.sh
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdDriftRevertNestedWriteOnlyExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -79,6 +81,7 @@ PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 PLAIN_ID="PlainConnConnection082B58BA"
 SECRET_ID="SecretConnConnection8E194AA8"
 DRIFT_LOG=""
+REVERT_DIR="$(mktemp -d)"
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -87,6 +90,8 @@ cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
   rm -f "${DRIFT_LOG:-}"
+  rm -f "${REVERT_DIR:-/nonexistent}"/revert-ids-* 2>/dev/null
+  rmdir "${REVERT_DIR:-/nonexistent}" 2>/dev/null
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
@@ -240,8 +245,12 @@ for id in "${PLAIN_ID}" "${SECRET_ID}"; do
 done
 
 echo "==> Phase 5: cdkd drift --revert -y reverts both, keys intact"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${PLAIN_ID}" "${SECRET_ID}" || exit 1
 run_drift --revert -y
 expect_drift_rc 0 "Phase 5"
+revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${PLAIN_ID}" "${SECRET_ID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 2 || exit 1
 if grep -q 'secret-key-1\|plain-key-1' "${DRIFT_LOG}"; then
   echo "FAIL: Phase 5: the revert output prints an API key" >&2
   exit 1
@@ -259,8 +268,12 @@ set_plain_key_name x-oob
 expect_plain_key_name x-oob "Phase 7"
 run_drift
 expect_drift_rc 1 "Phase 7"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" "${PLAIN_ID}" || exit 1
 run_drift --revert -y
 expect_drift_rc 0 "Phase 7"
+revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" "${PLAIN_ID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
 expect_plain_key_name x-api-key "Phase 7"
 expect_stored_key "${PLAIN_NAME}" plain-key-1 "Phase 7"
 
@@ -271,8 +284,12 @@ expect_drift_rc 0 "Phase 8 (accept)"
 run_drift
 expect_drift_rc 0 "Phase 8 (after accept)"
 set_plain_key_name x-third
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-3-before" "${STACK}" "${PLAIN_ID}" || exit 1
 run_drift --revert -y
 expect_drift_rc 0 "Phase 8 (revert)"
+revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-3-after" "${STACK}" "${PLAIN_ID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-3-before" "${REVERT_DIR}/revert-ids-3-after" 1 || exit 1
 expect_plain_key_name x-accepted "Phase 8"
 expect_stored_key "${PLAIN_NAME}" plain-key-1 "Phase 8"
 run_drift

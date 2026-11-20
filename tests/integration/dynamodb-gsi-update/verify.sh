@@ -111,6 +111,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdDynamodbGsiUpdateExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -152,6 +154,10 @@ DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-1931-destroy.$$.log"
 VECTOR_DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-5574-vector-destroy.$$.log"
 # The Phase V3m deploy log, read by the go-to-k/cdkd#5606 assertion; removed by cleanup().
 VECTOR_MALFORMED_LOG="${TMPDIR:-/tmp}/cdkd-5606-vector-malformed.$$.log"
+# Phase I3's revert log and identity snapshots (go-to-k/cdkd#6639); removed by cleanup().
+REVERT_LOG="${TMPDIR:-/tmp}/cdkd-6639-revert.$$.log"
+REVERT_IDS_BEFORE="${TMPDIR:-/tmp}/cdkd-6639-ids-before.$$.tsv"
+REVERT_IDS_AFTER="${TMPDIR:-/tmp}/cdkd-6639-ids-after.$$.tsv"
 
 # Re-entrancy guard for `cleanup`. The INT / TERM traps run `cleanup` and then
 # `exit`, and that `exit` re-fires the EXIT trap — so without this flag every
@@ -216,7 +222,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}" "${VECTOR_DESTROY_LOG}" "${VECTOR_MALFORMED_LOG}"
+  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}" "${VECTOR_DESTROY_LOG}" "${VECTOR_MALFORMED_LOG}" "${REVERT_LOG}" "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -1005,8 +1011,12 @@ case " ${INSIGHTS_DRIFT_PATHS} " in
     ;;
 esac
 echo "    out-of-band DISABLE reported as drift on: ${INSIGHTS_DRIFT_PATHS}"
+revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${INSIGHTS_STACK}" "${INSIGHTS_LID}" || exit 1
 node "${LOCAL_DIST}" drift "${INSIGHTS_STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --revert --yes
+  --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}"
+revert_output_assert_no_replacement "${REVERT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_IDS_AFTER}" "${INSIGHTS_STACK}" "${INSIGHTS_LID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 || exit 1
 wait_insights_status "${INSIGHTS_TABLE}" giA ENABLED "re-enabled by drift --revert"
 assert_insights_drift_clean "after --revert"
 

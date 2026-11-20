@@ -194,6 +194,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # `cleanup` can fire.
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 . "${REPO_ROOT}/tests/integration/s3-versions.sh"
+. "${REPO_ROOT}/tests/integration/revert-identity.sh"
 
 cd "$(dirname "$0")"
 
@@ -245,6 +246,8 @@ EVENT_KEYS_2B=""
 EVENTS_2B=""
 # Phase 1a's captured drift --revert output (issue #5707), likewise.
 REVERT_1A_LOG=""
+# Phase 1a's revert identity snapshots (go-to-k/cdkd#6639), removed by cleanup.
+REVERT_1A_DIR=""
 # Phase 1c's captured deploy output (issue #4087), removed by cleanup likewise.
 DEPLOY_1C_LOG=""
 # Phase 2's captured deploy output (issue #1160 DBProxy arm), likewise.
@@ -349,6 +352,7 @@ cleanup() {
   [ -n "${EVENTS_2B}" ] && rm -f "${EVENTS_2B}"
   [ -n "${DEPLOY_1C_LOG}" ] && rm -f "${DEPLOY_1C_LOG}"
   [ -n "${REVERT_1A_LOG}" ] && rm -f "${REVERT_1A_LOG}"
+  [ -n "${REVERT_1A_DIR}" ] && rm -rf "${REVERT_1A_DIR}"
   [ -n "${DEPLOY_2_LOG}" ] && rm -f "${DEPLOY_2_LOG}"
   [ -n "${DEPLOY_2C_LOG}" ] && rm -f "${DEPLOY_2C_LOG}"
   if [ -n "${OOB_INSTANCE_ID}" ]; then
@@ -1247,11 +1251,12 @@ fi
 # The stack was drift-clean above, so the SecurityCluster is the only row the
 # revert touches and it must succeed outright.
 REVERT_1A_LOG="$(mktemp)"
+REVERT_1A_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-before" "${STACK}" "${SEC_LOGICAL}" || exit 1
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes >"${REVERT_1A_LOG}" 2>&1 || REVERT_RC=$?
 REVERT_1A_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_1A_LOG}")"
-rm -f "${REVERT_1A_LOG}"
 if [ "${REVERT_RC}" -ne 0 ]; then
   printf '%s\n' "${REVERT_1A_PLAIN}" >&2
   echo "FAIL: #5707: drift --revert exited ${REVERT_RC}, want 0" >&2
@@ -1267,6 +1272,9 @@ if grep -qF 'does not turn the Data API' <<<"${REVERT_1A_PLAIN}"; then
   echo "FAIL: #5707: drift --revert withheld the Data API the template declares" >&2
   exit 1
 fi
+revert_output_assert_no_replacement "${REVERT_1A_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_1A_DIR}/revert-ids-1-after" "${STACK}" "${SEC_LOGICAL}" || exit 1
+revert_identity_assert_unchanged "${REVERT_1A_DIR}/revert-ids-1-before" "${REVERT_1A_DIR}/revert-ids-1-after" 1 || exit 1
 wait_http_endpoint "true available"
 POST_ROW=$(sec_drift_row)
 if [ "${POST_ROW}" != "clean" ]; then

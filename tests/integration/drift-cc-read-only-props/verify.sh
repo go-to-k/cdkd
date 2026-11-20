@@ -58,6 +58,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
 
 STACK="CdkdDriftCcReadOnlyPropsExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -65,6 +66,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TRACKER="CdkdIntegDriftRoTracker"
 COLLECTION="CdkdIntegDriftRoGeo"
 DRIFT_LOG=""
+REVERT_WORK=""
 
 # We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
@@ -73,6 +75,10 @@ cleanup() {
   echo "==> Cleanup: destroying any leftover stack + state"
   set +eu
   rm -f "${DRIFT_LOG:-}"
+  if [ -n "${REVERT_WORK:-}" ]; then
+    rm -f "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after"
+    rmdir "${REVERT_WORK}" 2>/dev/null
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" \
       --region "${REGION}" --force >/dev/null 2>&1
@@ -183,7 +189,12 @@ if grep -q 'UpdateTime' "${DRIFT_LOG}"; then
 fi
 
 echo "==> Phase 5: cdkd drift --revert -y reverts both descriptions"
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-before" "${STACK}" Tracker Geo || exit 1
 run_drift --revert -y
+revert_output_assert_no_replacement "${DRIFT_LOG}" || exit 1
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-5-after" "${STACK}" Tracker Geo || exit 1
+revert_identity_assert_unchanged "${REVERT_WORK}/revert-ids-5-before" "${REVERT_WORK}/revert-ids-5-after" 2 || exit 1
 expect_drift_rc 0 "Phase 5"
 expect_descriptions integ "Phase 5"
 

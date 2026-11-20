@@ -87,6 +87,9 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+
 STACK="LaunchTemplateAsgInplaceStack"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -108,6 +111,7 @@ cleanup() {
   for tmp in "${STATE_ORIG:-}" "${STATE_LEGACY:-}" "${DRIFT_JSON:-}" "${DRIFT_ERR:-}"; do
     [ -n "${tmp}" ] && rm -f "${tmp}"
   done
+  rm -rf "${REVERT_DIR:-}"
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -578,12 +582,19 @@ if [ "${OOB_CHANGES}" = "0" ]; then
   exit 1
 fi
 echo "    OK: Phase 3: cdkd drift reports the out-of-band MetricsCollection change"
+REVERT_DIR="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" Asg || exit 1
 if ! node "${LOCAL_DIST}" drift "${STACK}" --revert -y --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" 2>"${DRIFT_ERR}"; then
+  --region "${REGION}" >"${REVERT_DIR}/revert-1.log" 2>"${DRIFT_ERR}"; then
   echo "FAIL: Phase 3: cdkd drift --revert failed:" >&2
   tail -30 "${DRIFT_ERR}" >&2
   exit 1
 fi
+cat "${DRIFT_ERR}" >>"${REVERT_DIR}/revert-1.log"
+cat "${REVERT_DIR}/revert-1.log"
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" Asg || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
 wait_enabled_metrics "GroupDesiredCapacity GroupMinSize" "Phase 3 (after drift --revert, issue #4013)"
 echo "    OK: Phase 3: drift --revert restored EnabledMetrics == GroupDesiredCapacity GroupMinSize (issue #4013)"
 aws s3 cp "${STATE_ORIG}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null

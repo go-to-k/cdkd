@@ -81,6 +81,9 @@ await_value() { # usage: await_value <expected> aws <service> <read-verb> [args.
 
 cd "$(dirname "$0")"
 
+# revert_identity_* : prove a drift --revert kept every resource it touched (#6639).
+. ../revert-identity.sh
+
 STACK="CdkdS3EventNotificationExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
@@ -140,6 +143,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${CONSUMER}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  rm -rf "${REVERT_DIR:-}"
   set -eu
 }
 
@@ -231,6 +235,16 @@ echo "    OK: cdkd drift is clean"
 # out-of-band tag gives the revert a real write on the bucket, and the S3
 # provider then receives the whole bag (the template declares only the
 # autoDeleteObjects tag, which is put back with the injected one).
+# The state logical id of the AWS::S3::Bucket whose physical id is $1 (an L2
+# bucket's id carries a hash suffix); fails unless exactly one record matches.
+bucket_lid() {
+  local lid
+  lid="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg p "$1" \
+    '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3::Bucket" and .value.physicalId == $p) | .key] | if length == 1 then .[0] else "" end')" || return 1
+  [ -n "${lid}" ] || { echo "FAIL: no single AWS::S3::Bucket state record with physical id $1" >&2; return 1; }
+  printf '%s' "${lid}"
+}
+REVERT_DIR="$(mktemp -d)"
 echo "==> Phase 1c: cdkd drift --revert of a tag keeps the bucket notification (#5736)"
 aws s3api put-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" \
   --tagging 'TagSet=[{Key=aws-cdk:auto-delete-objects,Value=true},{Key=cdkd-integ-5736,Value=injected}]'
@@ -239,8 +253,18 @@ if ! await_value 1 aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --regi
   echo "FAIL: the injected tag never became visible on ${BUCKET_NAME}" >&2
   exit 1
 fi
+BUCKET_LID="$(bucket_lid "${BUCKET_NAME}")" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-before" "${STACK}" "${BUCKET_LID}" || exit 1
 node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-1.log" 2>&1 || {
+  cat "${REVERT_DIR}/revert-1.log"
+  echo "FAIL: cdkd drift --revert (Phase 1c) failed" >&2
+  exit 1
+}
+cat "${REVERT_DIR}/revert-1.log"
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-1.log" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-1-after" "${STACK}" "${BUCKET_LID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-1-before" "${REVERT_DIR}/revert-ids-1-after" 1 || exit 1
 if ! INJECTED_AFTER="$(await_value 0 aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" \
     --region "${REGION}" --query "length(TagSet[?Key=='cdkd-integ-5736'])" --output text)"; then
   echo "FAIL: drift --revert did not remove the injected tag (count ${INJECTED_AFTER}) -- the revert never wrote the bucket" >&2
@@ -266,8 +290,18 @@ if ! await_value Suspended aws s3api get-bucket-versioning --bucket "${SHARED_BU
   echo "FAIL: the out-of-band versioning suspend never became visible on ${SHARED_BUCKET}" >&2
   exit 1
 fi
+SHARED_LID="$(bucket_lid "${SHARED_BUCKET}")" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-before" "${STACK}" "${SHARED_LID}" || exit 1
 node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2.log" 2>&1 || {
+  cat "${REVERT_DIR}/revert-2.log"
+  echo "FAIL: cdkd drift --revert (Phase 1d) failed" >&2
+  exit 1
+}
+cat "${REVERT_DIR}/revert-2.log"
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-2.log" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2-after" "${STACK}" "${SHARED_LID}" || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-2-before" "${REVERT_DIR}/revert-ids-2-after" 1 || exit 1
 if ! VERSIONING_AFTER="$(await_value Enabled aws s3api get-bucket-versioning \
     --bucket "${SHARED_BUCKET}" --region "${REGION}" --query Status --output text)"; then
   echo "FAIL: drift --revert did not restore the shared bucket's versioning (${VERSIONING_AFTER}) -- the revert never wrote the bucket" >&2

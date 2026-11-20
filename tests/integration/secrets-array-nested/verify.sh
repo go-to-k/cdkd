@@ -144,6 +144,7 @@ cd "$(dirname "$0")"
 # Measured 2026-08-20: 5 of the 7 surviving versions of this stack's state.json
 # carried cdkd-array-nested-pw-789, after runs that all exited 0.
 . ../s3-versions.sh
+. ../revert-identity.sh
 
 STACK="CdkdSecretsArrayNestedExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -347,7 +348,9 @@ cleanup() {
   # Both are exact NAMES, not a listed prefix, so there is no scope to widen.
   aws codebuild delete-project --name "${DRIFT_PROJECT}" --region "${REGION}" >/dev/null 2>&1
   aws iam delete-role --role-name "${DRIFT_ROLE}" >/dev/null 2>&1
-  if [ -n "${DRIFT_ERR_FILE:-}" ]; then rm -f "${DRIFT_ERR_FILE}"; fi
+  if [ -n "${DRIFT_ERR_FILE:-}" ]; then
+    rm -f "${DRIFT_ERR_FILE}" "${DRIFT_ERR_FILE}-revert-out" "${DRIFT_ERR_FILE}-ids-before" "${DRIFT_ERR_FILE}-ids-after"
+  fi
   if [ -n "${SECRET_VALUE_FILE:-}" ]; then rm -f "${SECRET_VALUE_FILE}"; fi
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
@@ -909,7 +912,14 @@ echo "    OK: --accept refused the array and left the expression in state"
 # (c): --revert must RE-RESOLVE the expression before handing it to the
 # provider; shipping the literal token is the live-breakage half of #1914.
 echo "==> Reverting the injected drift"
+# Prove the revert updated the project in place (go-to-k/cdkd#6639). The
+# snapshot files live beside DRIFT_ERR_FILE, which cleanup removes.
+revert_identity_snapshot "${DRIFT_ERR_FILE}-ids-before" "${STACK}" ArrayDriftProject || exit 1
 run_drift --revert --yes
+printf '%s\n' "${DRIFT_OUT}" > "${DRIFT_ERR_FILE}-revert-out"
+revert_output_assert_no_replacement "${DRIFT_ERR_FILE}-revert-out" || exit 1
+revert_identity_snapshot "${DRIFT_ERR_FILE}-ids-after" "${STACK}" ArrayDriftProject || exit 1
+revert_identity_assert_unchanged "${DRIFT_ERR_FILE}-ids-before" "${DRIFT_ERR_FILE}-ids-after" 1 || exit 1
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: 'cdkd drift --revert' failed (rc=${DRIFT_RC})" >&2
   diag_masked "${DRIFT_OUT}"
