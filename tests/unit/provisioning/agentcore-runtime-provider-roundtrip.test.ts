@@ -59,9 +59,9 @@ describe('AgentCoreRuntimeProvider read-update round-trip', () => {
     // Mechanical guard for the 3 latent bug classes documented in
     // docs/provider-rules.md#readcurrentstate-for-drift-detection.
     //
-    //   - Truthy gate: empty Description ('') from readCurrentState
-    //     must reach UpdateAgentRuntime input (the field is optional,
-    //     and AWS accepts '' as the clear-the-description form).
+    //   - Empty Description ('') from readCurrentState is left off the
+    //     UpdateAgentRuntime input: AWS refuses '' (length >= 1), and the
+    //     full replace clears an omitted description (go-to-k/cdkd#6651).
     //   - Class 1: agentcore has no top-level discriminator-dependent
     //     properties — every top-level CFn key is independent. The
     //     check below documents that intent: no FIFO-style
@@ -115,10 +115,8 @@ describe('AgentCoreRuntimeProvider read-update round-trip', () => {
     expect(updateCall).toBeDefined();
     const input = updateCall![0].input as Record<string, unknown>;
 
-    // Truthy-gate: empty Description must reach AWS as '' (not dropped,
-    // not coerced). Verifies `if (properties['Description'] !==
-    // undefined)` in update() is honoured on the round-trip path.
-    expect(input['description']).toBe('');
+    // go-to-k/cdkd#6651: the '' placeholder is not sent (AWS refuses it).
+    expect(input).not.toHaveProperty('description');
 
     // Class 1 sentinel: agentcore has no top-level discriminator-only
     // attributes. If a future PR adds one (mirroring SQS
@@ -200,10 +198,11 @@ describe('AgentCoreRuntimeProvider read-update round-trip', () => {
     expect(input['lifecycleConfiguration']).toBeUndefined();
   });
 
-  it('truthy-gate — empty-string Description from observedProperties reaches UpdateAgentRuntime as ""', async () => {
-    // Direct guard: the IAM-Role-style "use !== undefined, not truthy"
-    // contract must hold so `cdkd drift --revert` can clear an
-    // AWS-side description by pushing '' back.
+  it('an empty-string Description from observedProperties is left off UpdateAgentRuntime (go-to-k/cdkd#6651)', async () => {
+    // `cdkd drift --revert` sends the readback's '' placeholder back. AWS
+    // refuses '' ("Member must have length greater than or equal to 1",
+    // measured us-east-1); omitting it clears the description on this full
+    // replace, which is what '' means.
     mockSend.mockResolvedValueOnce({
       agentRuntimeId: RUNTIME_ID,
       agentRuntimeArn: `arn:aws:bedrock-agentcore:us-east-1:123:runtime/${RUNTIME_ID}`,
@@ -234,6 +233,6 @@ describe('AgentCoreRuntimeProvider read-update round-trip', () => {
     );
     expect(updateCall).toBeDefined();
     const input = updateCall![0].input as Record<string, unknown>;
-    expect(input['description']).toBe('');
+    expect(input).not.toHaveProperty('description');
   });
 });

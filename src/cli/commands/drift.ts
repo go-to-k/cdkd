@@ -21,6 +21,7 @@ export { DRIFT_READ_FAILURE_BREAKER_THRESHOLD } from './drift/read-failure.js';
 export { maskMarkedNoEchoBaseline } from './drift/redaction.js';
 export {
   undeclaredUncomparedDriftKeys,
+  undeclaredEmptyComparedDriftKeys,
   preFixBaselineUncomparedDriftKeys,
   declaredEmptyProperties,
   declaredTrueProperties,

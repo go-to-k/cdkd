@@ -2415,6 +2415,8 @@ the small additional call is reasonable to add.
 
 If the provider omits the key on the empty path (e.g. `if (cfg.Environment?.Variables) result['Environment'] = ...`), then on a resource that was deployed WITHOUT that key in its template, `state.observedProperties` never carries the key — and the comparator's state-keys-only walk skips the field forever. A user adding the property in the AWS console after deploy is **silently invisible** to drift.
 
+The placeholder makes such an add visible only for a scalar placeholder (`''`, `false`, a default), for a key the template declares, or for a key listed in `UNDECLARED_EMPTY_COMPARED_KEYS` (`src/cli/commands/drift/baseline-keys.ts`). An undeclared key captured as an empty container (`[]`, `{}`, `null`) is otherwise skipped (`undeclaredEmptyObservedKeys`, issue [#1498](https://github.com/go-to-k/cdkd/issues/1498)): keys another resource or AWS fills after the deploy would drift forever, and `--revert` would strip that other writer's configuration. A key joins that table only when it is measured that nothing else writes it and that a revert from the empty baseline clears it (issue [#6651](https://github.com/go-to-k/cdkd/issues/6651)).
+
 Use these placeholders consistently:
 
 | Type | Placeholder | Example |
