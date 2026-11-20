@@ -190,6 +190,8 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
       updateReplacePolicy?: string;
       /** go-to-k/cdkd#6621: a CREATE beside Endpoint (a bucket policy). */
       orphanCreate?: boolean;
+      /** go-to-k/cdkd#6712: Endpoint is recorded under the old revision's id (a queue policy's shape). */
+      endpointHoldsOldId?: boolean;
     } = {}
   ): Promise<{ completedOperations: CompletedOperation[]; state: StackState }> {
     const engine = opts.engine ?? makeEngine();
@@ -227,7 +229,10 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
           ...record('rev-old', type, { FunctionName: 'todo-api', Code: 'v1' }),
           ...opts.oldRecord,
         },
-        Endpoint: record('prod', ENDPOINT, { FunctionName: 'todo-api', RevisionId: 'rev-old' }),
+        Endpoint: record(opts.endpointHoldsOldId === true ? 'rev-old' : 'prod', ENDPOINT, {
+          FunctionName: 'todo-api',
+          RevisionId: 'rev-old',
+        }),
       },
       outputs: {},
       lastModified: 0,
@@ -508,6 +513,30 @@ describe('a create-first replacement deletes the old resource in the cleanup pha
     ).toBe(true);
     // Nothing went wrong with the old revision: no warning names it.
     expect(printed.warn.some((l) => l.includes('rev-old'))).toBe(false);
+  });
+
+  describe('an old id another record holds (go-to-k/cdkd#6712)', () => {
+    it('a successful deploy deletes it only after the holder moved, and never records it', async () => {
+      const result = await deploy({ endpointHoldsOldId: true });
+
+      expect(order.filter((o) => o !== 'save')).toEqual(['create rev-new', 'update rev-old', 'delete rev-old']);
+      expect(saved.every((s) => s.supersededResources === undefined)).toBe(true);
+      expect(supersededResourcesOf(result.state)).toEqual([]);
+    });
+
+    it('a deploy failing after the replacement sends no old delete, and the rollback re-adopts it', async () => {
+      endpointFails = true;
+      const engine = makeEngine({ noRollback: false });
+
+      await expect(deploy({ engine, endpointHoldsOldId: true })).rejects.toThrow();
+
+      expect(oldDeletes()).toBe(0);
+      expect(revisionOp(journaled[0]!).oldResourceMaySurvive).toBe('deferred');
+      expect(vi.mocked(provider.delete).mock.calls.map((c) => c[1])).toEqual(['rev-new']);
+      expect([...live]).toEqual(['rev-old']);
+      expect(saved.at(-1)!.resources['Revision']!.physicalId).toBe('rev-old');
+      expect(saved.every((s) => s.supersededResources === undefined)).toBe(true);
+    });
   });
 
   // The post-rollback save's ETag retry writes the same answer: the re-adopted

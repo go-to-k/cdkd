@@ -450,7 +450,7 @@ tables, so a namespace rename (a replacement a plain `cdkd deploy` reaches with
 no flag) cannot take a table with it. The replacement creates the new
 namespace first; if the old one still holds tables, its delete is refused. That
 delete is the post-deploy cleanup; the retry cdkd makes for the cases that
-delete right away (an IAM inline policy, an old physical id another resource records) does not apply to it,
+delete right away (an IAM inline policy) does not apply to it,
 and the next deploy retries it. cdkd warns `Failed to delete old resource` and carries on. The old namespace
 and its tables stay in AWS, no longer tracked in state, for you to move or
 delete by hand. A delete-first replacement (`--recreate-via-*`, or `--replace`

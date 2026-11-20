@@ -58,6 +58,8 @@ describe('SNSSubscriptionProvider.readCurrentState', () => {
         SubscriptionArn: SUB_ARN,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN }] });
 
     const result = await provider.readCurrentState(SUB_ARN, 'L', 'AWS::SNS::Subscription');
 
@@ -89,6 +91,8 @@ describe('SNSSubscriptionProvider.readCurrentState', () => {
         SubscriptionArn: SUB_ARN,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN }] });
 
     const result = await provider.readCurrentState(SUB_ARN, 'L', 'AWS::SNS::Subscription');
     expect(result).toEqual({
@@ -113,6 +117,8 @@ describe('SNSSubscriptionProvider.readCurrentState', () => {
         SubscriptionArn: SUB_ARN,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN }] });
 
     const result = await provider.readCurrentState(SUB_ARN, 'L', 'AWS::SNS::Subscription');
     expect(result).not.toHaveProperty('FilterPolicyScope');

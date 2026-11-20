@@ -9613,6 +9613,7 @@
         "composite-stack",
         "drift-sns-sibling-subscription",
         "noecho-named-producer",
+        "replaced-queue-topic-failed-rollback",
         "secret-derived-immutable-names",
         "sns-event-source",
         "sns-inline-subscription",
@@ -9630,6 +9631,9 @@
         ],
         "noecho-named-producer": [
           "l1",
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
           "literal"
         ],
         "secret-derived-immutable-names": [
@@ -9696,6 +9700,7 @@
         "perf-cross-backend-check",
         "refactor-command",
         "refactor-move",
+        "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -9853,6 +9858,10 @@
         "refactor-move": [
           "l2"
         ],
+        "replaced-queue-topic-failed-rollback": [
+          "l2",
+          "literal"
+        ],
         "replacement-fanout": [
           "l2",
           "literal"
@@ -9954,6 +9963,7 @@
         "iam-propagation-stress",
         "local-aws-emulator",
         "migrate-from-cfn",
+        "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "s3-lifecycle",
         "sns-sqs-event"
@@ -9977,6 +9987,9 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
           "literal"
         ],
         "replacement-fanout": [
@@ -10058,6 +10071,7 @@
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
         "replace-snapshot-failed-rollback",
+        "replaced-queue-topic-failed-rollback",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
@@ -10306,6 +10320,10 @@
           "l1",
           "literal"
         ],
+        "replaced-queue-topic-failed-rollback": [
+          "l2",
+          "literal"
+        ],
         "replacement-rename-onto-holder": [
           "l1",
           "literal"
@@ -10435,6 +10453,7 @@
         "iam-propagation-stress",
         "local-aws-emulator",
         "migrate-from-cfn",
+        "replaced-queue-topic-failed-rollback",
         "secret-derived-immutable-names",
         "sns-subscription-filter"
       ],
@@ -10453,6 +10472,9 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
           "literal"
         ],
         "secret-derived-immutable-names": [
@@ -10559,6 +10581,7 @@
         "refactor-move",
         "remove-protection-journaled-orphan",
         "rename-refactor",
+        "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-immutable-name",
         "retain-orphan-redeploy",
@@ -10917,6 +10940,10 @@
         ],
         "rename-refactor": [
           "l2",
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
+          "l1",
           "literal"
         ],
         "replacement-fanout": [
