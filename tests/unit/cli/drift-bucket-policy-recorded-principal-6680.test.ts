@@ -12,6 +12,7 @@ import type { ResourceState, StackState } from '../../../src/types/state.js';
  */
 
 const mockIamSend = vi.hoisted(() => vi.fn());
+const warnSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   reserveStdoutForPayload: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
     setLevel: vi.fn(),
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: warnSpy,
     error: vi.fn(),
     child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }),
@@ -180,6 +181,7 @@ describe('cdkd drift on a bucket policy whose recorded principal is not the live
     mockListStacks.mockReset();
     mockRegistryGetProvider.mockReset();
     mockIamSend.mockReset();
+    warnSpy.mockReset();
     // `GetRole` answers the role's real unique id.
     mockIamSend.mockResolvedValue({ Role: { Arn: ROLE_ARN, RoleId: ROLE_UNIQUE_ID } });
     live = policy(ROLE_ARN);
@@ -231,6 +233,24 @@ describe('cdkd drift on a bucket policy whose recorded principal is not the live
       expect(code).toBe(1);
       expect(out).toContain('DriftBucketPolicy');
     });
+  });
+
+  it('a principal the lookup answers for another account is drift, explained once at warn without the ARN', async () => {
+    // `GetRole` takes a name, so it answers about this account's same-named role.
+    mockIamSend.mockResolvedValue({
+      Role: { Arn: ROLE_ARN.replace('123456789012', '999999999999'), RoleId: ROLE_UNIQUE_ID },
+    });
+    mockGetState.mockResolvedValue(stateWith(policy(ROLE_UNIQUE_ID)));
+
+    const { code, out } = await runDrift([]);
+
+    expect(code).toBe(1);
+    expect(out).toContain('DriftBucketPolicy');
+    const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+    const explained = warned.filter((w) => w.includes('cannot be matched'));
+    expect(explained).toHaveLength(1);
+    expect(explained[0]).toContain('cdkd drift --accept');
+    expect(explained[0]).not.toContain('arn:aws:iam::');
   });
 
   describe('an out-of-band change to the live policy (blast radius)', () => {

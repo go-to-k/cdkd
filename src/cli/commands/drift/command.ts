@@ -745,6 +745,7 @@ function resolveTargetRefs(
 function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUniqueIdResolver {
   const cache = new Map<string, string | undefined>();
   let warnedOnDenied = false;
+  let warnedOnOtherEntity = false;
   return async (arn: string): Promise<string | undefined> => {
     if (cache.has(arn)) return cache.get(arn);
     let uniqueId: string | undefined;
@@ -772,6 +773,23 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
         if (entityArn !== undefined && entityArn.toLowerCase() === arn.toLowerCase()) {
           uniqueId = entityId;
         } else {
+          // go-to-k/cdkd#6680: otherwise the drift this leaves (a unique id
+          // against an ARN) is explained only at debug. Once per run, naming
+          // no principal: the ARN is untrusted policy text (the debug line
+          // below sanitizes it).
+          if (!warnedOnOtherEntity) {
+            warnedOnOtherEntity = true;
+            getLogger().warn(
+              `A resource policy principal ARN names another account or IAM path, or a principal ` +
+                `that no longer exists, so its unique id (AROA…/AIDA…) cannot be matched to it; a ` +
+                `drift between the two spellings is reported as is. If the principal is the ` +
+                `intended one, \`cdkd drift --accept\` records the ARN form and clears it` +
+                verboseAwareText(
+                  '; re-run with --verbose to see which principal.',
+                  ' (the principal is named in the debug output).'
+                )
+            );
+          }
           // `arn` is a principal ARN lifted out of a RESOURCE POLICY — the
           // user's template, or AWS's readback of one — so it is untrusted text
           // on its way to a terminal (issue go-to-k/cdkd#3397). `entityArn` is
