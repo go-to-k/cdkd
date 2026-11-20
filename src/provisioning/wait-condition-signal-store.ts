@@ -198,9 +198,12 @@ export class WaitConditionSignalStore {
   /**
    * Issue a handle URL for a new key. `expiresAt` is when the URL stops
    * working: 12 hours, or sooner when the signing credentials are temporary
-   * and expire first (SigV4 cannot outlive its session).
+   * and expire first (SigV4 cannot outlive its session) — then
+   * `limitedByCredentials` is set.
    */
-  async issueSignalUrl(logicalId: string): Promise<{ url: string; key: string; expiresAt: Date }> {
+  async issueSignalUrl(
+    logicalId: string
+  ): Promise<{ url: string; key: string; expiresAt: Date; limitedByCredentials: boolean }> {
     const bucket = this.requireBucket();
     const client = await this.client();
     const key = signalKeyFor(logicalId);
@@ -208,6 +211,7 @@ export class WaitConditionSignalStore {
       expiresIn: SIGNAL_URL_EXPIRES_IN_SECONDS,
     });
     let expiresAt = new Date(Date.now() + SIGNAL_URL_EXPIRES_IN_SECONDS * 1000);
+    let limitedByCredentials = false;
     try {
       const provider = (client as { config?: { credentials?: unknown } }).config?.credentials;
       const creds =
@@ -216,11 +220,12 @@ export class WaitConditionSignalStore {
           : undefined;
       if (creds?.expiration instanceof Date && creds.expiration < expiresAt) {
         expiresAt = creds.expiration;
+        limitedByCredentials = true;
       }
     } catch {
       // The URL is already signed; its lifetime is only reported.
     }
-    return { url, key, expiresAt };
+    return { url, key, expiresAt, limitedByCredentials };
   }
 
   /**

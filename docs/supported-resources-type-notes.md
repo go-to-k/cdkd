@@ -221,8 +221,12 @@ Limits:
   needs to signal it.
 
 Changed in v0.359.0: a handle's `Ref` is a signal URL. A handle deployed by an
-earlier release gets one on the next deploy when another resource references
-it; an unreferenced one keeps its placeholder id.
+earlier release keeps its placeholder id until a wait condition in the
+template waits on it; that deploy issues its URL and updates the resources
+embedding it (an EC2 instance's `UserData` change stops and starts it). An
+instance that already booted does not run its user data again, so it signals
+the new URL only once it is replaced, as under CloudFormation when a wait
+condition is added to a running stack.
 
 ## Glue table Iceberg support (`IcebergTableInput` is refused)
 

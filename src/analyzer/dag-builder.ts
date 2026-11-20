@@ -374,8 +374,9 @@ export class DagBuilder {
 
   /**
    * Add implicit edges to each `AWS::CloudFormation::WaitCondition` from every
-   * other resource that references its `Handle` (go-to-k/cdkd#6704): the
-   * instance whose user data signals the handle URL.
+   * other resource downstream of its `Handle` (go-to-k/cdkd#6704): the
+   * instance whose user data signals the handle URL, or the Auto Scaling group
+   * launching from a launch template that embeds it.
    *
    * A waiting WaitCondition holds a `--concurrency` slot for up to its
    * `Timeout`. With no edge — CloudFormation needs none, having no concurrency
@@ -404,19 +405,16 @@ export class DagBuilder {
     }
     if (waits.length === 0) return 0;
 
-    // Each resource's property references, read once for every wait.
-    const referencesOf = new Map<string, Set<string>>();
-    for (const id of resourceIds) {
-      const resource = this.parser.getResource(template, id);
-      referencesOf.set(id, this.parser.extractReferences(resource?.Properties ?? {}));
-    }
-
     let added = 0;
     for (const wait of waits) {
+      if (!graph.hasNode(wait.handleId)) continue;
+      // Every resource downstream of the handle, not only its direct readers:
+      // an Auto Scaling group launching from a launch template that embeds the
+      // handle is the signaller there, one hop away.
+      const signallers = this.getAllDependents(graph, wait.handleId);
       const downstream = this.getAllDependents(graph, wait.id);
-      for (const id of resourceIds) {
-        if (id === wait.id || id === wait.handleId) continue;
-        if (!referencesOf.get(id)?.has(wait.handleId)) continue;
+      for (const id of signallers) {
+        if (id === wait.id) continue;
         if (graph.hasEdge(id, wait.id)) continue;
         if (downstream.has(id)) {
           this.logger.debug(

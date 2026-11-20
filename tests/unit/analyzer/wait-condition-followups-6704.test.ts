@@ -31,6 +31,8 @@ import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { LEGACY_HANDLE_HEAL_REASON } from '../../../src/analyzer/diff-calculator/legacy-handle-heal.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { StackState } from '../../../src/types/state.js';
+import { renderDiffTree } from '../../../src/cli/commands/diff-recursive/render.js';
+import type { DiffTreeNode } from '../../../src/cli/commands/diff-recursive/types.js';
 
 const userData = (handle: string) => ({
   'Fn::Base64': {
@@ -71,6 +73,32 @@ describe('DAG: a WaitCondition runs after its signallers (#6704)', () => {
     expect(builder.getDirectDependencies(builder.buildGraph(t), 'Wait').sort()).toEqual([
       'Handle',
       'Instance',
+    ]);
+  });
+
+  it('also orders the wait after a signaller one hop away (ASG via launch template)', () => {
+    const t: CloudFormationTemplate = {
+      Resources: {
+        Handle: { Type: 'AWS::CloudFormation::WaitConditionHandle' },
+        Lt: {
+          Type: 'AWS::EC2::LaunchTemplate',
+          Properties: { LaunchTemplateData: { UserData: userData('Handle') } },
+        },
+        Asg: {
+          Type: 'AWS::AutoScaling::AutoScalingGroup',
+          Properties: { LaunchTemplate: { LaunchTemplateId: { Ref: 'Lt' } }, MinSize: '1', MaxSize: '1' },
+        },
+        Wait: {
+          Type: 'AWS::CloudFormation::WaitCondition',
+          Properties: { Handle: { Ref: 'Handle' }, Timeout: '600' },
+        },
+      },
+    };
+    const builder = new DagBuilder();
+    expect(builder.getDirectDependencies(builder.buildGraph(t), 'Wait').sort()).toEqual([
+      'Asg',
+      'Handle',
+      'Lt',
     ]);
   });
 
@@ -138,33 +166,45 @@ const resolverFor =
     return walk(value);
   };
 
-/** The instance's user data is the handle's `Ref` itself, so the record compares exactly. */
-function templateWithoutWait(): CloudFormationTemplate {
+/**
+ * The instance's user data is the handle's `Ref` itself, so the record compares
+ * exactly. `withWait` adds the WaitCondition a pre-#6694 deploy could not have
+ * held (it was refused), as a CREATE.
+ */
+function diffTemplate(withWait: boolean): CloudFormationTemplate {
   const t = template();
-  delete t.Resources['Wait'];
+  if (!withWait) delete t.Resources['Wait'];
   (t.Resources['Instance']!.Properties as Record<string, unknown>)['UserData'] = { Ref: 'Handle' };
   return t;
 }
 
-describe('diff: a referenced legacy handle is re-issued (#6704)', () => {
+describe('diff: a legacy handle a wait condition waits on is re-issued (#6704)', () => {
   it('turns the handle into a provider re-create and promotes its reader', async () => {
     const s = state(LEGACY_ID);
-    const changes = await new DiffCalculator().calculateDiff(s, templateWithoutWait(), resolverFor(s));
+    const changes = await new DiffCalculator().calculateDiff(s, diffTemplate(true), resolverFor(s));
     const handle = changes.get('Handle')!;
     expect(handle.changeType).toBe('UPDATE');
     expect(handle.providerReplacement).toBe(LEGACY_HANDLE_HEAL_REASON);
     expect(handle.propertyChanges).toEqual([]);
     expect(changes.get('Instance')!.changeType).toBe('UPDATE');
+    expect(changes.get('Wait')!.changeType).toBe('CREATE');
   });
 
   it('leaves a handle that already holds a URL alone', async () => {
     const s = state(URL_ID);
-    const changes = await new DiffCalculator().calculateDiff(s, templateWithoutWait(), resolverFor(s));
+    const changes = await new DiffCalculator().calculateDiff(s, diffTemplate(true), resolverFor(s));
     expect(changes.get('Handle')!.changeType).toBe('NO_CHANGE');
     expect(changes.get('Instance')!.changeType).toBe('NO_CHANGE');
   });
 
-  it('re-issues a handle only an output exposes', async () => {
+  it('leaves a legacy handle only user data references alone (no instance stop/start)', async () => {
+    const s = state(LEGACY_ID);
+    const changes = await new DiffCalculator().calculateDiff(s, diffTemplate(false), resolverFor(s));
+    expect(changes.get('Handle')!.changeType).toBe('NO_CHANGE');
+    expect(changes.get('Instance')!.changeType).toBe('NO_CHANGE');
+  });
+
+  it('leaves a legacy handle only an output exposes alone', async () => {
     const s = state(LEGACY_ID);
     delete s.resources['Instance'];
     const t: CloudFormationTemplate = {
@@ -172,7 +212,7 @@ describe('diff: a referenced legacy handle is re-issued (#6704)', () => {
       Outputs: { HandleUrl: { Value: { Ref: 'Handle' } } },
     };
     const changes = await new DiffCalculator().calculateDiff(s, t, resolverFor(s));
-    expect(changes.get('Handle')!.providerReplacement).toBe(LEGACY_HANDLE_HEAL_REASON);
+    expect(changes.get('Handle')!.providerReplacement).toBeUndefined();
   });
 
   it('leaves an unreferenced legacy handle (a placeholder resource) alone', async () => {
@@ -184,5 +224,41 @@ describe('diff: a referenced legacy handle is re-issued (#6704)', () => {
     const changes = await new DiffCalculator().calculateDiff(s, t, resolverFor(s));
     expect(changes.get('Handle')!.changeType).toBe('NO_CHANGE');
     expect(changes.get('Handle')!.providerReplacement).toBeUndefined();
+  });
+});
+
+describe('cdkd diff renders the re-issue without claiming a delete (#6704)', () => {
+  it('names the new physical id, not "deleted, then created again"', () => {
+    const node = {
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      changes: new Map([
+        [
+          'Handle',
+          {
+            logicalId: 'Handle',
+            changeType: 'UPDATE',
+            resourceType: 'AWS::CloudFormation::WaitConditionHandle',
+            propertyChanges: [],
+            providerReplacement: LEGACY_HANDLE_HEAL_REASON,
+          },
+        ],
+      ]),
+      ccApiRoutes: new Map(),
+      outputChanges: [],
+      adoptedOrphans: [],
+      blocking: [],
+      unreadable: [],
+      unreadableContainers: [],
+      unreadableOrphans: [],
+      destructiveChanges: [],
+      children: [],
+    } as unknown as DiffTreeNode;
+    const lines: string[] = [];
+    renderDiffTree(node, true, (m) => lines.push(m));
+    const header = lines.findIndex((l) => l.includes('[~] Handle'));
+    expect(lines[header + 1]).toBe(`      [new physical id: ${LEGACY_HANDLE_HEAL_REASON}]`);
+    expect(lines.join('\n')).not.toContain('deleted, then created again');
   });
 });

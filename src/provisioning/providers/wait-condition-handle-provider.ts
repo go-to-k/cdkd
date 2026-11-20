@@ -15,9 +15,6 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 
-/** Warn when a handle URL stops working sooner than the longest wait condition (12 h). */
-const SHORT_URL_LIFETIME_MS = 12 * 60 * 60 * 1000;
-
 /**
  * AWS::CloudFormation::WaitConditionHandle Provider (go-to-k/cdkd#6694).
  *
@@ -29,10 +26,10 @@ const SHORT_URL_LIFETIME_MS = 12 * 60 * 60 * 1000;
  * waits on — e.g. `cdk-multi-region-stack`'s empty-stack placeholder (#1020)
  * — is just an unused URL.
  *
- * A handle recorded before #6694 keeps its non-URL placeholder id
- * (`cdkd-wait-condition-handle-<logicalId>-<uuid>`): the type has no
- * properties, so no deploy re-creates it, and the wait condition provider
- * refuses it with the remedy.
+ * A handle recorded before #6694 holds a non-URL placeholder id
+ * (`cdkd-wait-condition-handle-<logicalId>-<uuid>`). When a wait condition
+ * in the template waits on it, the diff routes it to `update()`, which issues
+ * the URL (#6704); otherwise it keeps the placeholder.
  */
 export class WaitConditionHandleProvider implements ResourceProvider {
   private logger = getLogger().child('WaitConditionHandleProvider');
@@ -76,7 +73,7 @@ export class WaitConditionHandleProvider implements ResourceProvider {
     this.logger.debug(
       safeMsg`Issued WaitConditionHandle ${logicalId} signal URL for ${issued.key}`
     );
-    if (issued.expiresAt.getTime() - Date.now() < SHORT_URL_LIFETIME_MS) {
+    if (issued.limitedByCredentials) {
       this.logger.warn(
         safeMsg`WaitConditionHandle ${logicalId}: its signal URL is signed with temporary credentials and stops accepting signals at ${issued.expiresAt.toISOString()}. Deploy with longer-lived credentials if anything signals it later than that.`
       );
@@ -88,7 +85,7 @@ export class WaitConditionHandleProvider implements ResourceProvider {
    * The type has no properties, so there is nothing to update — keep the
    * existing physical id (and its URL). The one exception (go-to-k/cdkd#6704):
    * a placeholder id an earlier cdkd recorded, which the diff routes here when
-   * something references the handle, is replaced by a signal URL. Nothing
+   * a wait condition waits on the handle, is replaced by a signal URL. Nothing
    * exists behind the placeholder, so there is nothing to retire.
    *
    * go-to-k/cdkd#2613: `context` is accepted but no region guard runs: the
@@ -104,8 +101,10 @@ export class WaitConditionHandleProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     if (isLegacyHandleId(physicalId)) {
       const created = await this.create(logicalId, resourceType, properties);
-      this.logger.info(
-        safeMsg`WaitConditionHandle ${logicalId}: issued a signal URL in place of its placeholder id`
+      // The readers embedding the old placeholder (EC2 UserData) are updated
+      // next, and user data runs only at first boot: say both.
+      this.logger.warn(
+        safeMsg`WaitConditionHandle ${logicalId}: issued a signal URL in place of the placeholder id an earlier cdkd recorded. Resources embedding the handle are updated to the new URL in this deploy (an EC2 instance's UserData change stops and starts it), and an instance that already booted does not run its user data again, so it signals only once it is replaced.`
       );
       return { physicalId: created.physicalId, wasReplaced: true, attributes: {} };
     }

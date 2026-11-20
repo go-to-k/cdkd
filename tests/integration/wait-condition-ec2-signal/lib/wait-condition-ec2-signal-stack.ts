@@ -34,7 +34,11 @@ export class WaitConditionEc2SignalStack extends cdk.Stack {
       `curl -sSf -X PUT -H 'Content-Type:' --data-binary '{"Status":"SUCCESS","UniqueId":"app","Data":"ready","Reason":"app up"}' '${handle.ref}'`
     );
 
-    const instance = new ec2.Instance(this, 'Instance', {
+    // CDKD_TEST_NEW_INSTANCE=true (issue #6704, verify.sh Phase 2): a new
+    // construct id, so the instance is re-created and runs its user data
+    // again against the re-issued handle URL.
+    const instanceId = process.env.CDKD_TEST_NEW_INSTANCE === 'true' ? 'Instance2' : 'Instance';
+    const instance = new ec2.Instance(this, instanceId, {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),

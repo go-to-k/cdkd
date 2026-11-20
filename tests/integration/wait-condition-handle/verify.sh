@@ -145,7 +145,7 @@ HANDLE_ID2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | node 
   || { echo "FAIL: handle physical id changed on update (${HANDLE_ID} -> ${HANDLE_ID2})" >&2; exit 1; }
 echo "    OK: handle physical id stable across update"
 
-echo "==> Phase 3: a handle recorded before #6694 (placeholder id) gets a URL (#6704)"
+echo "==> Phase 3: a placeholder handle no wait condition waits on is left alone (#6704)"
 # A pre-#6694 handle had no signal object: remove phase 1's versions first.
 VERS_JSON=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "${SIGNAL_KEY}" \
   --region "${REGION}" --output json)
@@ -190,28 +190,17 @@ HANDLE_ID3=$(printf '%s' "${STATE_JSON}" | node -e '
     );
     process.stdout.write(r ? r.physicalId : "");
   });')
-case "${HANDLE_ID3}" in
-  https://*X-Amz-Signature=*) echo "    OK: the placeholder was replaced by a signal URL" ;;
-  *) echo "FAIL: handle physical id after the heal is not a pre-signed URL" >&2; exit 1 ;;
-esac
-[ "${HANDLE_ID3}" != "${HANDLE_ID}" ] || { echo "FAIL: the heal reused the phase 1 URL" >&2; exit 1; }
+# Only a wait condition re-issues a placeholder (the re-issue updates every
+# reader); this stack has none, so the record must keep it, as
+# cdk-multi-region-stack's bare handle does.
+[ "${HANDLE_ID3}" = "${LEGACY_ID}" ] \
+  || { echo "FAIL: a placeholder handle no wait condition waits on was re-issued" >&2; exit 1; }
+echo "    OK: the placeholder handle is left as it was"
 OUTPUT_REF3=$(printf '%s' "${STATE_JSON}" | node -e '
   let d = ""; process.stdin.on("data", (c) => (d += c));
   process.stdin.on("end", () => process.stdout.write(JSON.parse(d).outputs?.HandleRef ?? ""));')
-[ "${OUTPUT_REF3}" = "${HANDLE_ID3}" ] \
-  || { echo "FAIL: HandleRef output was not re-resolved to the new URL" >&2; exit 1; }
-echo "    OK: the output that exposes the handle carries the new URL"
-SIGNAL_KEY=$(printf '%s' "${HANDLE_ID3}" | node -e '
-  let d = ""; process.stdin.on("data", (c) => (d += c));
-  process.stdin.on("end", () => {
-    const p = decodeURIComponent(new URL(d).pathname);
-    const at = p.indexOf("/wait-condition-signals/");
-    process.stdout.write(at < 0 ? "" : p.slice(at + 1));
-  });')
-curl -sSf -X PUT -H 'Content-Type:' \
-  --data-binary '{"Status":"SUCCESS","UniqueId":"host","Data":"d","Reason":"r"}' "${HANDLE_ID3}" >/dev/null \
-  || { echo "FAIL: PUT to the re-issued handle URL was refused" >&2; exit 1; }
-echo "    OK: the re-issued URL accepts a signal"
+[ "${OUTPUT_REF3}" = "${LEGACY_ID}" ] \
+  || { echo "FAIL: HandleRef output moved off the placeholder" >&2; exit 1; }
 
 echo "==> Phase 4: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
