@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 145,
+    "classifiedCount": 146,
     "enriched": 50,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 77,
-    "allowListedTypes": 88
+    "sdkFallbackGap": 78,
+    "allowListedTypes": 89
   },
   "types": [
     {
@@ -651,6 +651,30 @@
         "ParentId",
         "RootId",
         "StackStatus"
+      ]
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitCondition",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "Data",
+        "Id"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "Data",
+          "status": "gap"
+        },
+        {
+          "name": "Id",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
+      "gaps": [
+        "Data"
       ]
     },
     {

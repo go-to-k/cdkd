@@ -56,6 +56,16 @@ export function resolvedResourceTimeoutMs(resourceType: string): number | undefi
   return resolved.perTypeMs?.[resourceType] ?? resolved.globalMs;
 }
 
+/**
+ * The user's `--resource-timeout <TYPE>=<duration>` for `resourceType` alone,
+ * `undefined` when none: the one value that can set a per-resource deadline
+ * BELOW a provider's `getMinResourceTimeoutMs`, so a provider whose own wait
+ * outlasts it caps itself here.
+ */
+export function resolvedPerTypeResourceTimeoutMs(resourceType: string): number | undefined {
+  return resolved?.perTypeMs?.[resourceType];
+}
+
 /** Test-only: reset to the unseeded state. */
 export function clearResolvedResourceTimeouts(): void {
   resolved = undefined;

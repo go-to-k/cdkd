@@ -10,9 +10,9 @@
     }
   ],
   "summary": {
-    "classifiedCount": 145,
+    "classifiedCount": 146,
     "covered": 76,
-    "noArnAttr": 69,
+    "noArnAttr": 70,
     "gap": 0,
     "knownGap": 0,
     "refused": 2
@@ -237,6 +237,12 @@
     },
     {
       "resourceType": "AWS::CloudFormation::Stack",
+      "bucket": "no-arn-attr",
+      "arnAttributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitCondition",
       "bucket": "no-arn-attr",
       "arnAttributes": [],
       "gaps": []

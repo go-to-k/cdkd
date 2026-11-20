@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { safeStringify } from '../../utils/aws-failure-text.js';
+import { markNonRetryable } from '../../deployment/retryable-errors/marks.js';
+import {
+  classifyHandleUrl,
+  LEGACY_HANDLE_ID_PREFIX,
+  WaitConditionSignalStore,
+} from '../wait-condition-signal-store.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -10,22 +18,24 @@ import type {
   ResourceImportResult,
 } from '../../types/resource.js';
 
+/** Warn when a handle URL stops working sooner than the longest wait condition (12 h). */
+const SHORT_URL_LIFETIME_MS = 12 * 60 * 60 * 1000;
+
 /**
- * AWS::CloudFormation::WaitConditionHandle Provider (no-op placeholder).
+ * AWS::CloudFormation::WaitConditionHandle Provider (go-to-k/cdkd#6694).
  *
  * In CloudFormation this resource's physical id is a pre-signed S3 URL that
- * `cfn-signal` posts to, backed by CloudFormation's own internal signal
- * bucket. That URL cannot exist outside a CloudFormation deployment, so cdkd
- * provisions the handle as a pure no-op: no AWS API is called, and the
- * physical id is a synthesized opaque placeholder.
+ * `cfn-signal` posts to. cdkd issues the same kind of URL against its own
+ * state bucket (`WaitConditionSignalStore`), so user data that signals the
+ * handle succeeds, and `AWS::CloudFormation::WaitCondition`
+ * (`WaitConditionProvider`) waits on what arrives there. A handle nothing
+ * waits on — e.g. `cdk-multi-region-stack`'s empty-stack placeholder (#1020)
+ * — is just an unused URL.
  *
- * This matches how the type is used in practice by CDK constructs — most
- * notably `cdk-multi-region-stack`, which emits a bare
- * `CfnWaitConditionHandle` only so a sibling stack never has zero resources
- * (CloudFormation rejects empty templates). Actual wait-condition signaling
- * (`AWS::CloudFormation::WaitCondition`, which blocks on signals sent to the
- * handle URL) remains unsupported — that semantic fundamentally requires
- * CloudFormation itself.
+ * A handle recorded before #6694 keeps its non-URL placeholder id
+ * (`cdkd-wait-condition-handle-<logicalId>-<uuid>`): the type has no
+ * properties, so no deploy re-creates it, and the wait condition provider
+ * refuses it with the remedy.
  */
 export class WaitConditionHandleProvider implements ResourceProvider {
   private logger = getLogger().child('WaitConditionHandleProvider');
@@ -37,29 +47,52 @@ export class WaitConditionHandleProvider implements ResourceProvider {
     ['AWS::CloudFormation::WaitConditionHandle', new Set<string>([])],
   ]);
 
-  /**
-   * "Create" the handle: synthesize a unique placeholder physical id.
-   * `Ref` on the handle resolves to this id. It is deliberately NOT
-   * URL-shaped — a consumer that tries to `cfn-signal` it should fail
-   * loudly rather than post to a URL that nothing polls.
-   */
+  private readonly signals: WaitConditionSignalStore;
+
+  constructor(signals: WaitConditionSignalStore = new WaitConditionSignalStore()) {
+    this.signals = signals;
+  }
+
+  /** Issue the handle's signal URL; `Ref` on the handle resolves to it. */
   async create(
     logicalId: string,
-    _resourceType: string,
+    resourceType: string,
     _properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
-    const physicalId = `cdkd-wait-condition-handle-${logicalId}-${randomUUID()}`;
-    this.logger.debug(`Created no-op WaitConditionHandle placeholder ${logicalId} (${physicalId})`);
-    return { physicalId, attributes: {} };
+    let issued: Awaited<ReturnType<WaitConditionSignalStore['issueSignalUrl']>>;
+    try {
+      issued = await this.signals.issueSignalUrl(logicalId);
+    } catch (error) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Failed to issue the signal URL for WaitConditionHandle ${logicalId}: ${
+            error instanceof Error ? error.message : safeStringify(error)
+          }`,
+          resourceType,
+          logicalId,
+          undefined,
+          error instanceof Error ? error : undefined
+        )
+      );
+    }
+    // The key only: the URL is a bearer credential.
+    this.logger.debug(
+      safeMsg`Issued WaitConditionHandle ${logicalId} signal URL for ${issued.key}`
+    );
+    if (issued.expiresAt.getTime() - Date.now() < SHORT_URL_LIFETIME_MS) {
+      this.logger.warn(
+        safeMsg`WaitConditionHandle ${logicalId}: its signal URL is signed with temporary credentials and stops accepting signals at ${issued.expiresAt.toISOString()}. Deploy with longer-lived credentials if anything signals it later than that.`
+      );
+    }
+    return { physicalId: issued.url, attributes: {} };
   }
 
   /**
    * The type has no properties, so there is nothing to update — keep the
-   * existing physical id.
+   * existing physical id (and its URL).
    *
-   * go-to-k/cdkd#2613: `context` is accepted but no region guard runs. The
-   * handle is a local placeholder with no AWS client, so there is neither a
-   * call to misdirect nor a client region to compare.
+   * go-to-k/cdkd#2613: `context` is accepted but no region guard runs: the
+   * handle addresses the state bucket, not a resource in the deploy region.
    */
   async update(
     logicalId: string,
@@ -73,9 +106,27 @@ export class WaitConditionHandleProvider implements ResourceProvider {
     return { physicalId, wasReplaced: false, attributes: {} };
   }
 
-  /** Nothing was created in AWS, so there is nothing to delete. */
-  async delete(logicalId: string, _physicalId: string, _resourceType: string): Promise<void> {
-    this.logger.debug(`No-op delete for WaitConditionHandle ${logicalId}`);
+  /**
+   * Remove the signals this handle received. A legacy placeholder or a URL
+   * cdkd did not issue (CloudFormation's, after an import) has nothing of
+   * cdkd's behind it.
+   */
+  async delete(logicalId: string, physicalId: string, _resourceType: string): Promise<void> {
+    let bucket: string;
+    try {
+      bucket = this.signals.requireBucket();
+    } catch {
+      this.logger.debug(
+        `No state bucket configured; nothing to remove for WaitConditionHandle ${logicalId}`
+      );
+      return;
+    }
+    const verdict = classifyHandleUrl(physicalId, bucket);
+    if (verdict.kind !== 'ours') {
+      this.logger.debug(`No cdkd signal object behind WaitConditionHandle ${logicalId}`);
+      return;
+    }
+    await this.signals.deleteSignals(verdict.key);
   }
 
   /**
@@ -112,7 +163,7 @@ export class WaitConditionHandleProvider implements ResourceProvider {
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     const physicalId =
-      input.knownPhysicalId ?? `cdkd-wait-condition-handle-${input.logicalId}-${randomUUID()}`;
+      input.knownPhysicalId ?? `${LEGACY_HANDLE_ID_PREFIX}${input.logicalId}-${randomUUID()}`;
     return { physicalId, attributes: {} };
   }
 }

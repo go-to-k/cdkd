@@ -31,6 +31,8 @@ const LISTING_FILES = [
   // The backend's other listings, moved out of `s3-state-backend.ts` (go-to-k/cdkd#5835).
   'src/state/s3-state-backend/listing.ts',
   'src/state/s3-noncurrent-version-purge.ts',
+  // The wait-condition signal versions (go-to-k/cdkd#6694).
+  'src/provisioning/wait-condition-signal-versions.ts',
   'src/state/earlier-state-versions.ts',
   // `cdkd gc`'s listings, moved out of `gc.ts` (go-to-k/cdkd#5835).
   'src/cli/commands/gc/candidates.ts',

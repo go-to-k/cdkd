@@ -12,11 +12,11 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **145**
-- Handled properties classified: **1544**
+- SDK provider types: **146**
+- Handled properties classified: **1547**
 - Read on the update path: **1129**
 - Replacement: **397**
-- Allow-listed (does NOT block CI): **18**
+- Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
 - **Gaps (blocks CI): 0**
 
@@ -27,6 +27,9 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::ApiGateway::RestApi` | `CloneFrom` | allow-listed | `ApiGatewayProvider` | create-time input: CreateRestApi clones from it and no UpdateRestApi patch path takes it; CloudFormation documents No interruption (unmeasured) |
 | `AWS::AppConfig::Environment` | `DeletionProtectionCheck` | allow-listed | `AppConfigEnvironmentProvider` | delete-time input: DeleteEnvironment (#5875) reads it from the record the update rewrites |
 | `AWS::CloudFormation::Stack` | `TemplateURL` | allow-listed | `NestedStackProvider` | informational: the update deploys the child from the assembly's local template (Metadata['aws:asset:path']), so a changed child template is applied without reading the URL |
+| `AWS::CloudFormation::WaitCondition` | `Count` | allow-listed | `WaitConditionProvider` | never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs (update() waits again; #6694) |
+| `AWS::CloudFormation::WaitCondition` | `Handle` | allow-listed | `WaitConditionProvider` | never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs (update() waits again; #6694) |
+| `AWS::CloudFormation::WaitCondition` | `Timeout` | allow-listed | `WaitConditionProvider` | never sent to AWS: it parameterizes the S3 signal poll, which a change re-runs (update() waits again; #6694) |
 | `AWS::CodeCommit::Repository` | `Code` | allow-listed | `CodeCommitRepositoryProvider` | create-time seed commit: CloudFormation documents that Code is used only at creation and ignored on update |
 | `AWS::DocDB::DBCluster` | `RestoreToTime` | allow-listed | `DocDBProvider` | restore-time input read by the create alone; CloudFormation's update sends nothing for it (measured, #5628) |
 | `AWS::DocDB::DBCluster` | `RestoreType` | allow-listed | `DocDBProvider` | restore-time input read by the create alone; CloudFormation's update sends nothing for it (measured, #5628) |
@@ -73,6 +76,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::Budgets::Budget` | `BudgetsBudgetProvider` | Budget, NotificationsWithSubscribers, ResourceTags |  |
 | `AWS::CertificateManager::Certificate` | `ACMCertificateProvider` | CertificateTransparencyLoggingPreference, Tags | CertificateAuthorityArn, CertificateExport, DomainName, DomainValidationOptions, KeyAlgorithm, SubjectAlternativeNames, ValidationMethod |
 | `AWS::CloudFormation::Stack` | `NestedStackProvider` | Parameters |  |
+| `AWS::CloudFormation::WaitCondition` | `WaitConditionProvider` |  |  |
 | `AWS::CloudFormation::WaitConditionHandle` | `WaitConditionHandleProvider` |  |  |
 | `AWS::CloudFront::CloudFrontOriginAccessIdentity` | `CloudFrontOAIProvider` | CloudFrontOriginAccessIdentityConfig |  |
 | `AWS::CloudFront::Distribution` | `CloudFrontDistributionProvider` | DistributionConfig, Tags |  |

@@ -12,7 +12,7 @@ describe('unsupported-types helpers', () => {
   it('NON_PROVISIONABLE_TYPES is non-empty and contains known tier3 types', () => {
     expect(NON_PROVISIONABLE_TYPES.size).toBeGreaterThan(0);
     expect(NON_PROVISIONABLE_TYPES.has('AWS::AppMesh::Mesh')).toBe(true);
-    expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::WaitCondition')).toBe(true);
+    expect(NON_PROVISIONABLE_TYPES.has('AWS::CloudFormation::Macro')).toBe(true);
   });
 
   it('isNonProvisionable mirrors the generated set', () => {

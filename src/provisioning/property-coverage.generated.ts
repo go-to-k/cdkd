@@ -749,6 +749,17 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::CloudFormation::WaitCondition',
+    {
+      handled: new Set<string>(['Count', 'Handle', 'Timeout']),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['Data', 'Id']),
+      primaryIdentifier: new Set<string>(['Id']),
+      ccRouteUnavailable: true,
+    },
+  ],
+  [
     'AWS::CloudFormation::WaitConditionHandle',
     {
       handled: new Set<string>(),

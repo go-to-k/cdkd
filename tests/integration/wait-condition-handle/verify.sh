@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# verify.sh — cdkd WaitConditionHandle no-op provider integ (issue #1020).
+# verify.sh — cdkd WaitConditionHandle integ (issues #1020, #6694).
 # A stack carrying a bare AWS::CloudFormation::WaitConditionHandle failed
 # cdkd's pre-flight ("not supported by Cloud Control API and no SDK provider
 # is registered") — the type is emitted by cdk-multi-region-stack as an
 # empty-template placeholder. Phases: deploy (pre-flight must pass, handle
-# gets a placeholder physical id, Ref resolves into the output) -> UPDATE
-# (sibling SSM param changes; handle physical id must be stable) -> destroy.
+# gets a pre-signed signal URL that accepts a PUT, Ref resolves into the output) -> UPDATE
+# (sibling SSM param changes; handle physical id must be stable) -> destroy
+# (the signal object is removed with the handle).
 
 set -euo pipefail
 
@@ -90,10 +91,28 @@ HANDLE_ID=$(printf '%s' "${STATE_JSON}" | node -e '
     );
     process.stdout.write(r ? r.physicalId : "");
   });')
+# Issue #6694: the handle is a pre-signed PUT URL into the state bucket.
 case "${HANDLE_ID}" in
-  cdkd-wait-condition-handle-*) echo "    OK: handle in state with placeholder id (${HANDLE_ID})" ;;
-  *) echo "FAIL: handle physical id is '${HANDLE_ID}'" >&2; exit 1 ;;
+  https://*X-Amz-Signature=*) echo "    OK: handle in state with a pre-signed signal URL" ;;
+  *) echo "FAIL: handle physical id is not a pre-signed URL" >&2; exit 1 ;;
 esac
+SIGNAL_KEY=$(printf '%s' "${HANDLE_ID}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const p = decodeURIComponent(new URL(d).pathname);
+    const at = p.indexOf("/wait-condition-signals/");
+    process.stdout.write(at < 0 ? "" : p.slice(at + 1));
+  });')
+case "${SIGNAL_KEY}" in
+  wait-condition-signals/Placeholder-*.json) echo "    OK: signal key ${SIGNAL_KEY}" ;;
+  *) echo "FAIL: unexpected signal key '${SIGNAL_KEY}'" >&2; exit 1 ;;
+esac
+# Anything holding the URL can signal it, as under CloudFormation.
+curl -sSf -X PUT -H 'Content-Type:' \
+  --data-binary '{"Status":"SUCCESS","UniqueId":"host","Data":"d","Reason":"r"}' "${HANDLE_ID}" >/dev/null \
+  || { echo "FAIL: PUT to the handle URL was refused" >&2; exit 1; }
+aws s3api head-object --bucket "${STATE_BUCKET}" --key "${SIGNAL_KEY}" --region "${REGION}" >/dev/null
+echo "    OK: a signal PUT to the handle URL landed at the signal key"
 OUTPUT_REF=$(printf '%s' "${STATE_JSON}" | node -e '
   let d = ""; process.stdin.on("data", (c) => (d += c));
   process.stdin.on("end", () => {
@@ -133,5 +152,16 @@ assert_gone "SSM param still exists after destroy" aws ssm get-parameter --name 
 echo "    OK: SSM param gone"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
+assert_gone "signal object remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${SIGNAL_KEY}" --region "${REGION}"
+VERSIONS_JSON=$(aws s3api list-object-versions --bucket "${STATE_BUCKET}" --prefix "${SIGNAL_KEY}" \
+  --region "${REGION}" --output json)
+LEFT=$(printf '%s' "${VERSIONS_JSON}" | node -e '
+  let d = ""; process.stdin.on("data", (c) => (d += c));
+  process.stdin.on("end", () => {
+    const r = d.trim() === "" ? {} : JSON.parse(d);
+    process.stdout.write(String((r.Versions ?? []).concat(r.DeleteMarkers ?? []).length));
+  });')
+[ "${LEFT}" = "0" ] || { echo "FAIL: ${LEFT} signal version(s) or marker(s) left after destroy" >&2; exit 1; }
+echo "    OK: signal versions and the delete marker removed with the handle"
 echo ""
 echo "==> wait-condition-handle test passed"

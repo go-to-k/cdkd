@@ -2,6 +2,7 @@ import type { ResourceProvider } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 import { CloudControlProvider } from './cloud-control-provider.js';
 import { CustomResourceProvider } from './providers/custom-resource-provider.js';
+import { WaitConditionSignalStore } from './wait-condition-signal-store.js';
 import { getLogger } from '../utils/logger.js';
 import { hasNoCloudControlHandlers, NO_CC_HANDLERS_REASON } from './unsupported-types.js';
 import { findActionableSdkUnwired } from './property-coverage.js';
@@ -408,6 +409,8 @@ export class ProviderRegistry {
   cloudControlProvider: CloudControlProvider;
   /** @internal */
   customResourceProvider: CustomResourceProvider;
+  /** @internal The state bucket the wait-condition providers sign and poll (#6694). */
+  readonly waitConditionSignals = new WaitConditionSignalStore();
   private skipResourceTypes = new Set<string>();
   /** @internal */
   allowedUnsupportedTypes = new Set<string>();
@@ -480,6 +483,7 @@ export class ProviderRegistry {
    */
   setCustomResourceResponseBucket(bucket: string): void {
     this.customResourceProvider.setResponseBucket(bucket);
+    this.waitConditionSignals.setBucket(bucket);
     this.logger.debug(`Custom resource response bucket set to: ${bucket}`);
   }
 

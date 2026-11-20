@@ -120,6 +120,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     ASGProvider,
     NestedStackProvider,
     WaitConditionHandleProvider,
+    WaitConditionProvider,
     ACMCertificateProvider,
   } = classes;
 
@@ -403,11 +404,14 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   // set around their DeployEngine.deploy / runDestroyForStack call.
   registry.register('AWS::CloudFormation::Stack', new NestedStackProvider());
 
-  // WaitConditionHandle is a no-op placeholder outside CloudFormation (its
-  // real physical id is a CloudFormation-internal pre-signed URL). Registered
-  // so stacks that carry one — e.g. cdk-multi-region-stack's empty-twin
-  // placeholder — pass pre-flight and deploy (issue #1020). Note:
-  // AWS::CloudFormation::WaitCondition (the blocking signal-wait) remains
-  // unsupported.
-  registry.register('AWS::CloudFormation::WaitConditionHandle', new WaitConditionHandleProvider());
+  // A WaitConditionHandle's Ref is a pre-signed URL into the state bucket, and
+  // a WaitCondition polls it (#6694); both share the registry's bucket.
+  registry.register(
+    'AWS::CloudFormation::WaitConditionHandle',
+    new WaitConditionHandleProvider(registry.waitConditionSignals)
+  );
+  registry.register(
+    'AWS::CloudFormation::WaitCondition',
+    new WaitConditionProvider(registry.waitConditionSignals)
+  );
 }
