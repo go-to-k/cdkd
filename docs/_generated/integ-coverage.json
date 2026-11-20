@@ -1794,6 +1794,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -1888,6 +1889,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -2163,6 +2167,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -2251,6 +2256,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -2548,6 +2556,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -2639,6 +2648,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -2906,6 +2918,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -2999,6 +3012,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -3573,6 +3589,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -3677,6 +3694,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -4002,6 +4022,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -4090,6 +4111,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -4346,6 +4370,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -4458,6 +4483,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -4810,6 +4838,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
         "asg-update-policy",
@@ -4902,6 +4931,9 @@
           "l2"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
@@ -5754,6 +5786,7 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "cc-to-sdk-reroute-common-types-4",
         "deletion-ordering-complex",
@@ -5779,6 +5812,9 @@
           "literal"
         ],
         "alb-advanced": [
+          "l2"
+        ],
+        "alb-listener-rule-update": [
           "l2"
         ],
         "apigw-vpclink-integration-target": [
