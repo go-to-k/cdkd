@@ -120,6 +120,24 @@ describe('Fn::GetAtt of a recorded identity id CloudFormation does not expose (#
     }
   );
 
+  it('an Fn::Sub reading an unexposed id is refused too, not kept as literal text', async () => {
+    const context: ResolverContext = {
+      template: { Resources: { X: { Type: 'AWS::DynamoDB::Table', Properties: {} } } },
+      resources: {
+        X: {
+          physicalId: 'phys-x',
+          resourceType: 'AWS::DynamoDB::Table',
+          properties: {},
+          attributes: { TableId: 'tid' },
+          dependencies: [],
+        },
+      },
+    };
+    await expect(
+      new IntrinsicFunctionResolver('us-east-1').resolve({ 'Fn::Sub': 'id-${X.TableId}' }, context)
+    ).rejects.toBeInstanceOf(IntrinsicResolutionRefusalError);
+  });
+
   it('a non-identity recorded attribute of a type with an unexposed id is served as before', async () => {
     await expect(
       resolveAttr('AWS::DynamoDB::Table', 'StreamArn', { TableId: 'tid', StreamArn: 'arn:s' })

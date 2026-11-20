@@ -9,7 +9,7 @@ import type { ResourceState } from '../../types/state.js';
 import { StaleAttributeMissSignal } from '../stale-attribute-heal.js';
 import { getPropertyCoverage } from '../../provisioning/property-coverage.js';
 import { WRITABLE_GETATT_ATTRIBUTES } from '../../provisioning/getatt-attributes.generated.js';
-import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../recorded-identity-attributes.js';
+import { isRecordedIdentityAttribute } from '../recorded-identity-attributes.js';
 import {
   healWithheld,
   staleRecordRemedy,
@@ -570,7 +570,7 @@ function committedGetAttListsAttribute(
 
 /**
  * go-to-k/cdkd#6655: the AWS-minted identity id cdkd records for its own
- * delete and re-adopt checks ({@link SURVIVOR_IDENTITY_ATTRIBUTES}) is NOT
+ * delete and re-adopt checks (`SURVIVOR_IDENTITY_ATTRIBUTES`) is NOT
  * always a CloudFormation attribute. `AWS::DynamoDB::Table` exposes only `Arn`
  * and `StreamArn`, so CloudFormation rejects `Fn::GetAtt [Table, TableId]`;
  * served from the record, the same template deployed under cdkd, and a missing
@@ -594,8 +594,7 @@ export function refuseUnexposedRecordedIdentity(
   context: ResolverContext | undefined
 ): void {
   if (
-    !Object.hasOwn(SURVIVOR_IDENTITY_ATTRIBUTES, resourceType) ||
-    SURVIVOR_IDENTITY_ATTRIBUTES[resourceType] !== attributeName ||
+    !isRecordedIdentityAttribute(resourceType, attributeName) ||
     committedGetAttListsAttribute(resourceType, attributeName) !== false
   ) {
     return;
