@@ -106,6 +106,14 @@ _revert_identity_probe() {
     # --- unique -----------------------------------------------------------
     AWS::IAM::Role)
       cls=unique; val="$(_revert_identity_aws iam get-role --role-name "${pid}" --query 'Role.RoleId')" || rc=$? ;;
+    AWS::IAM::InstanceProfile)
+      cls=unique; val="$(_revert_identity_aws iam get-instance-profile --instance-profile-name "${pid}" --query 'InstanceProfile.InstanceProfileId')" || rc=$? ;;
+    AWS::IAM::User)
+      cls=unique; val="$(_revert_identity_aws iam get-user --user-name "${pid}" --query 'User.UserId')" || rc=$? ;;
+    AWS::IAM::Group)
+      cls=unique; val="$(_revert_identity_aws iam get-group --group-name "${pid}" --query 'Group.GroupId')" || rc=$? ;;
+    AWS::Events::EventBus)
+      cls=unique; val="$(_revert_identity_aws events describe-event-bus --region "${region}" --name "${pid}" --query 'CreationTime')" || rc=$? ;;
     AWS::IAM::ManagedPolicy)
       cls=unique; val="$(_revert_identity_aws iam get-policy --policy-arn "${pid}" --query 'Policy.PolicyId')" || rc=$? ;;
     AWS::DynamoDB::Table)
@@ -185,6 +193,16 @@ _revert_identity_probe() {
       # No unique id, and ListBuckets documents that CreationDate "can change
       # when making changes to your bucket, such as editing its bucket policy".
       cls=no-id; val="$(_revert_identity_aws s3api list-buckets --query "Buckets[?Name=='${pid}'].Name | [0]")" || rc=$? ;;
+    AWS::S3::BucketPolicy)
+      # The physicalId is the bucket name; a policy has no id of its own and its
+      # document is what a revert rewrites, so only its PRESENCE is recorded.
+      cls=no-id; val="$(_revert_identity_aws s3api get-bucket-policy --bucket "${pid}" --query 'Policy' >/dev/null && printf 'policy-on:%s' "${pid}")" || rc=$? ;;
+    AWS::Events::EventBusPolicy)
+      # The physicalId is `<EventBusName>|<StatementId>` (the Cloud Control
+      # identifier); a statement has no id beyond its Sid, so the probe proves
+      # it is still on the bus.
+      cls=no-id; val="$(_revert_identity_aws events describe-event-bus --region "${region}" --name "${pid%%|*}" --query 'Policy' \
+        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const sid=process.argv[1].split("|").pop();const st=(JSON.parse(s).Statement||[]).find(x=>x.Sid===sid);if(st)process.stdout.write(st.Sid);});' "${pid}")" || rc=$? ;;
     AWS::SNS::Topic)
       # GetTopicAttributes carries no creation time or unique id.
       cls=no-id; val="$(_revert_identity_aws sns get-topic-attributes --region "${region}" --topic-arn "${pid}" --query 'Attributes.TopicArn')" || rc=$? ;;

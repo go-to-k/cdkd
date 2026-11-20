@@ -76,6 +76,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../revert-identity.sh
+REVERT_DIR=""
 
 STACK="CdkdIamSiblingManagedPolicyDriftExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -117,6 +119,7 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   rm -f "${DRIFT_LOG:-}" "${PLANT_FILE:-}"
+  [ -n "${REVERT_DIR:-}" ] && rm -rf "${REVERT_DIR}"
   for arn in $(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
       --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
     aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${arn}" >/dev/null 2>&1
@@ -190,6 +193,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+REVERT_DIR="$(mktemp -d)"
 
 attached() { # usage: attached role|user|group <name> -> its attached policy ARNs, sorted, space-joined
   local out
@@ -284,6 +288,30 @@ state_json() { aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -; }
 lid_of() { # usage: lid_of <resourceType> <physicalId>
   state_json | jq -r --arg t "$1" --arg p "$2" \
     '.resources | to_entries[] | select(.value.resourceType == $t and .value.physicalId == $p) | .key'
+}
+# go-to-k/cdkd#6639: the logical ids a revert touches, for the revert-identity
+# helpers. Top level only (it sets REVERT_LIDS), so an unresolved id ends the RUN.
+revert_lids() { # usage: revert_lids <resourceType>=<physicalId>...
+  local pair lid
+  REVERT_LIDS=()
+  for pair in "$@"; do
+    lid="$(lid_of "${pair%%=*}" "${pair#*=}")" || { echo "FAIL: could not read the state for ${pair}" >&2; exit 1; }
+    [ -n "${lid}" ] || { echo "FAIL: no state record for ${pair}" >&2; exit 1; }
+    REVERT_LIDS+=("${lid}")
+  done
+}
+# The identities across one revert: revert_ids_before right before it,
+# revert_ids_after right after it (before any assertion on its exit code).
+revert_ids_before() { # usage: revert_ids_before <tag> <resourceType>=<physicalId>...
+  local tag="$1"
+  shift
+  revert_lids "$@"
+  revert_identity_snapshot "${REVERT_DIR}/revert-ids-${tag}-before" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
+}
+revert_ids_after() { # usage: revert_ids_after <tag> <log-file> <literal N>; the lids are REVERT_LIDS from revert_ids_before
+  revert_output_assert_no_replacement "$2" || exit 1
+  revert_identity_snapshot "${REVERT_DIR}/revert-ids-$1-after" "${STACK}" "${REVERT_LIDS[@]}" || exit 1
+  revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-$1-before" "${REVERT_DIR}/revert-ids-$1-after" "$3" || exit 1
 }
 assert_observed_member() { # usage: assert_observed_member <logical-id> <jq path into observedProperties> <live JSON> <label>
   local recorded live
@@ -435,7 +463,9 @@ echo "    AWSDenyAll is reported on each principal; the sibling policy is not"
 
 # --- Phase 5: --revert detaches the out-of-band ARN only -----------------
 echo "==> Phase 5: cdkd drift --revert -y (expect exit 0)"
+revert_ids_before 5 "AWS::IAM::Role=${ROLE_NAME}" "AWS::IAM::User=${USER_NAME}" "AWS::IAM::Group=${GROUP_NAME}" "AWS::IAM::ManagedPolicy=${MP_ARN}" "AWS::IAM::User=${ADD_U3}" "AWS::IAM::Role=${ATTACHER_NAME}" "AWS::IAM::Group=${ADD_GROUP}"
 run_drift --revert -y
+revert_ids_after 5 "${DRIFT_LOG}" 7
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC}" >&2
   exit 1
@@ -537,7 +567,9 @@ if [ "${DRIFT_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "==> Phase 8: cdkd drift --revert -y (expect exit 0)"
+revert_ids_before 8 "AWS::IAM::User=${ADD_U1}" "AWS::IAM::User=${ADD_U2}" "AWS::IAM::User=${ADD_U3}" "AWS::IAM::Group=${ADD_GROUP}"
 run_drift --revert -y
+revert_ids_after 8 "${DRIFT_LOG}" 4
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC} after the shrink" >&2
   exit 1
@@ -657,7 +689,12 @@ assert_member_drifted "${DRIFT_9B}" AWS::IAM::Role Policies "an out-of-band put-
 assert_member_drifted "${DRIFT_9B}" AWS::IAM::ManagedPolicy PolicyDocument "an out-of-band default policy version"
 assert_member_drifted "${DRIFT_9B}" AWS::IAM::User PermissionsBoundary "an out-of-band boundary removal"
 assert_member_drifted "${DRIFT_9B}" AWS::IAM::Group ManagedPolicyArns "an out-of-band attach"
-run_revert
+revert_ids_before 9b "AWS::IAM::Role=${ROLE_NAME}" "AWS::IAM::User=${ADD_U3}" "AWS::IAM::Group=${GROUP_NAME}" "AWS::IAM::ManagedPolicy=${MP_ARN}"
+REVERT_9B_RC=0
+run_revert >"${REVERT_DIR}/revert-9b.log" 2>&1 || REVERT_9B_RC=$?
+sed 's/^/    | /' "${REVERT_DIR}/revert-9b.log"
+revert_ids_after 9b "${REVERT_DIR}/revert-9b.log" 4
+[ "${REVERT_9B_RC}" -eq 0 ] || { echo "FAIL: Phase 9b: cdkd drift --revert exited ${REVERT_9B_RC}, want 0" >&2; exit 1; }
 GOT_INLINE="$(aws iam list-role-policies --role-name "${ROLE_NAME}" --query "join(' ', sort(PolicyNames || \`[]\`))" --output text)"
 [ "${GOT_INLINE}" = "cdkd-6609-inline" ] || { echo "FAIL: ${ROLE_NAME}'s inline policies after the revert: '${GOT_INLINE}'" >&2; exit 1; }
 [ "$(mp_default_doc)" = "${MP_DOC_BEFORE}" ] || { echo "FAIL: ${MP_ARN}'s default document is not the template's after the revert" >&2; exit 1; }
@@ -698,7 +735,9 @@ if [ "${DRIFT_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "==> Phase 9: cdkd drift --revert -y (expect exit 0)"
+revert_ids_before 9 "AWS::IAM::Role=${ATTACHER_NAME}" "AWS::IAM::User=${ADD_U3}" "AWS::IAM::ManagedPolicy=${MP_ARN}" "AWS::IAM::Group=${ADD_GROUP}"
 run_drift --revert -y
+revert_ids_after 9 "${DRIFT_LOG}" 4
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC} after the drop" >&2
   exit 1
@@ -762,7 +801,9 @@ if [ "${DRIFT_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "==> Phase 10: cdkd drift --revert -y (expect exit 0)"
+revert_ids_before 10 "AWS::IAM::Role=${ROLE_NAME}" "AWS::IAM::ManagedPolicy=${MP2_ARN}"
 run_drift --revert -y
+revert_ids_after 10 "${DRIFT_LOG}" 2
 if [ "${DRIFT_RC}" -ne 0 ]; then
   echo "FAIL: cdkd drift --revert -y exited ${DRIFT_RC} after the rename; it tried to re-attach the deleted policy (go-to-k/cdkd#6343)" >&2
   exit 1

@@ -64,6 +64,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 }
 # ---------------------------------------------------------------------------
 cd "$(dirname "$0")"
+. ../revert-identity.sh
+REVERT_DIR=""
 
 STACK="CdkdEventbusPolicyExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -79,6 +81,7 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  [ -n "${REVERT_DIR:-}" ] && rm -rf "${REVERT_DIR}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -113,6 +116,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+REVERT_DIR="$(mktemp -d)"
 
 # go-to-k/cdkd#6609 (slice C): the baseline captured right after cdkd's own
 # write must hold the member the deploy just wrote. `cdkd drift` alone cannot
@@ -263,7 +267,19 @@ if ! grep -qF "✓ ${STACK} (${REGION}): no drift detected (3 resources checked,
 fi
 
 echo "==> Phase 3a: cdkd drift --revert keeps the live Condition (#6323)"
-node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+# The revert compares all three resources (Bus, BusPolicy, PolicyPropBus); the
+# Bus is an L2, so its logical id is `Bus<hash>`: the EventBus that is not PolicyPropBus.
+BUS_LID="$(state_lids AWS::Events::EventBus | grep -vx PolicyPropBus || true)"
+case "${BUS_LID}" in Bus?*) ;; *) echo "FAIL: #6323: no Bus<hash> EventBus logical id in state: '${BUS_LID}'" >&2; exit 1 ;; esac
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-3a-before" "${STACK}" "${BUS_LID}" BusPolicy PolicyPropBus || exit 1
+REVERT_3A_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes \
+  >"${REVERT_DIR}/revert-3a.log" 2>&1 || REVERT_3A_RC=$?
+cat "${REVERT_DIR}/revert-3a.log"
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-3a.log" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-3a-after" "${STACK}" "${BUS_LID}" BusPolicy PolicyPropBus || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-3a-before" "${REVERT_DIR}/revert-ids-3a-after" 3 || exit 1
+[ "${REVERT_3A_RC}" -eq 0 ] || { echo "FAIL: #6323: cdkd drift --revert exited ${REVERT_3A_RC}, want 0" >&2; exit 1; }
 POLICY_P3A="$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
 for token in '"Condition"' 'cdkd.integ'; do
@@ -346,7 +362,14 @@ OOB_POLICY="$(jq -cn --arg a "${ACCOUNT_ID}" --arg r "${REGION}" --arg b "${POLI
 aws events put-permission --event-bus-name "${POLICY_BUS_NAME}" --region "${REGION}" --policy "${OOB_POLICY}"
 DRIFT_3C="$(revert_drift_json "${P3C_ENV[@]}")" || exit 1
 assert_member_drifted "${DRIFT_3C}" AWS::Events::EventBus Policy "an out-of-band put-permission"
-run_revert "${P3C_ENV[@]}"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-3c-before" "${STACK}" PolicyPropBus || exit 1
+REVERT_3C_RC=0
+run_revert "${P3C_ENV[@]}" >"${REVERT_DIR}/revert-3c.log" 2>&1 || REVERT_3C_RC=$?
+cat "${REVERT_DIR}/revert-3c.log"
+revert_output_assert_no_replacement "${REVERT_DIR}/revert-3c.log" || exit 1
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-3c-after" "${STACK}" PolicyPropBus || exit 1
+revert_identity_assert_unchanged "${REVERT_DIR}/revert-ids-3c-before" "${REVERT_DIR}/revert-ids-3c-after" 1 || exit 1
+[ "${REVERT_3C_RC}" -eq 0 ] || { echo "FAIL: Phase 3c: cdkd drift --revert exited ${REVERT_3C_RC}, want 0" >&2; exit 1; }
 PROP_POLICY_P3C="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
 [ "$(jq -cS . <<<"${PROP_POLICY_P3C}")" = "$(jq -cS . <<<"${PROP_POLICY_P3B}")" ] \
