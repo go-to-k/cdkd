@@ -170,6 +170,44 @@ describe('cdkd drift on an AgentCore runtime key set outside cdkd (go-to-k/cdkd#
     exitSpy.mockRestore();
   });
 
+  it('plain drift reports the listed key and not an unlisted captured-empty key', async () => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(
+      stateWith({ AgentRuntimeName: 'rt', RoleArn: BASELINE.RoleArn, PlatformVersion: 'V2' })
+    );
+    const update = vi.fn();
+    mockRegistryGetProvider.mockReturnValue({
+      readCurrentState: async () => ({
+        ...BASELINE,
+        ResourceConfigurations: [{ MinimumMemoryInMiB: 4096 }],
+        CapacityProviderConfiguration: { CapacityProviderArn: 'arn:cp' },
+      }),
+      update,
+    });
+
+    const written: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      const cmd = createDriftCommand();
+      cmd.exitOverride();
+      await cmd.parseAsync(['TestStack', '--json'], { from: 'user' });
+    } catch {
+      // The command exits through the stubbed `process.exit`.
+    } finally {
+      process.stdout.write = original;
+    }
+
+    const report = written.join('');
+    expect(report).toContain('ResourceConfigurations');
+    expect(report).toContain('MinimumMemoryInMiB');
+    expect(report).not.toContain('CapacityProviderConfiguration');
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('--revert sends the empty baseline for each listed key the template does not declare', async () => {
     const update = vi.fn().mockResolvedValue({ physicalId: 'rt-1' });
     mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
