@@ -226,6 +226,7 @@ of the report.
 | A tag whose key starts with `aws:` | CDK and AWS add these. |
 | An ELBv2 attribute AWS stopped returning | AWS changes that set on its own. |
 | A name with the stack-name prefix | It is the same name. |
+| An IAM user's `PasswordResetRequired` cleared where the template sets `true` | IAM clears it when the user sets a new password at sign-in. The reverse is still drift. |
 
 ### Keys recorded empty
 

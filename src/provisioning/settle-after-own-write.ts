@@ -352,6 +352,8 @@ export const LAMBDA_PERMISSION_STATEMENT_KEYS = [
   'SourceArn',
   'SourceAccount',
   'PrincipalOrgID',
+  'EventSourceToken',
+  'FunctionUrlAuthType',
   'InvokedViaFunctionUrl',
 ] as const;
 

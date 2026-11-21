@@ -586,6 +586,9 @@ export class LambdaPermissionProvider implements ResourceProvider {
    *   - `Condition.ArnLike.AWS:SourceArn` → `SourceArn`.
    *   - `Condition.StringEquals.AWS:SourceAccount` → `SourceAccount`.
    *   - `Condition.StringEquals.aws:PrincipalOrgID` → `PrincipalOrgID`.
+   *   - `Condition.StringEquals.lambda:EventSourceToken` → `EventSourceToken`.
+   *   - `Condition.StringEquals.lambda:FunctionUrlAuthType` →
+   *     `FunctionUrlAuthType`.
    *   - `Condition.Bool.lambda:InvokedViaFunctionUrl == "true"` →
    *     `InvokedViaFunctionUrl: true` (AWS encodes the CFn boolean by
    *     injecting a `Bool` condition keyed on the `lambda:InvokedViaFunctionUrl`
@@ -707,6 +710,17 @@ export class LambdaPermissionProvider implements ResourceProvider {
       const orgId = condition['StringEquals']?.['aws:PrincipalOrgID'];
       if (orgId !== undefined) {
         result['PrincipalOrgID'] = Array.isArray(orgId) ? orgId[0] : orgId;
+      }
+      // go-to-k/cdkd#6758: `AddPermission` writes these two as `StringEquals`
+      // conditions on the `lambda:` context keys (the AWS Lambda developer
+      // guide's function URL and Alexa skill permission examples).
+      const token = condition['StringEquals']?.['lambda:EventSourceToken'];
+      if (token !== undefined) {
+        result['EventSourceToken'] = Array.isArray(token) ? token[0] : token;
+      }
+      const urlAuthType = condition['StringEquals']?.['lambda:FunctionUrlAuthType'];
+      if (urlAuthType !== undefined) {
+        result['FunctionUrlAuthType'] = Array.isArray(urlAuthType) ? urlAuthType[0] : urlAuthType;
       }
       // AWS encodes `InvokedViaFunctionUrl: true` by injecting a
       // `Bool` condition keyed on `lambda:InvokedViaFunctionUrl` into the

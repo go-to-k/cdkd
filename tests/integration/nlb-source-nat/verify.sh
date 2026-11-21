@@ -158,6 +158,37 @@ if [[ "${EN_SGS_P1}" != "1" ]]; then
 fi
 echo "    EnablePrefixForIpv6SourceNat=on (2 subnets), Enforce...PrivateLinkTraffic=off (1 SG) (✓)"
 
+# go-to-k/cdkd#6756: the drift readback returns a declared `SubnetMappings`.
+# The deploy-time baseline must hold it (one entry per attached subnet, each
+# echoing the declared `SourceNatIpv6Prefix: auto_assigned` while AWS reports
+# a prefix), and a drift run right after the deploy must compare it clean.
+assert_mappings_drift_clean() { # usage: assert_mappings_drift_clean <label> <expected entries> <expected auto_assigned count>
+  local state body id drift_json rc=0 bucket
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+  id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ElasticLoadBalancingV2::LoadBalancer") | select(.key | startswith("NlbSourceNat")) | .key] | first // ""')
+  [ -n "${id}" ] || { echo "FAIL: $1: no NlbSourceNat load balancer in state"; exit 1; }
+  body=$(echo "${state}" | jq -c --arg id "${id}" '.resources[$id].observedProperties.SubnetMappings // null')
+  if [ "$(echo "${body}" | jq 'if type == "array" then length else -1 end')" != "$2" ] ||
+    [ "$(echo "${body}" | jq '[.[] | select(.SourceNatIpv6Prefix == "auto_assigned")] | length')" != "$3" ]; then
+    echo "FAIL: $1: the deploy-time baseline's SubnetMappings is ${body}, expected $2 entries, $3 with SourceNatIpv6Prefix auto_assigned (go-to-k/cdkd#6756)"
+    exit 1
+  fi
+  drift_json=$(mktemp)
+  ${CDKD} drift ${STACK} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --json >"${drift_json}" || rc=$?
+  bucket=$(jq -r --arg id "${id}" '[.[0] | to_entries[] | select((.value | type) == "array") | .key as $b | .value[]? | objects | select(.logicalId == $id) | $b] | join(",")' "${drift_json}")
+  if [ "${bucket}" != "clean" ]; then
+    echo "FAIL: $1: ${id} is '${bucket}' in drift (rc=${rc}), expected clean with SubnetMappings compared:"
+    jq --arg id "${id}" '.[0].drifted[]? | select(.logicalId == $id)' "${drift_json}"
+    rm -f "${drift_json}"
+    exit 1
+  fi
+  rm -f "${drift_json}"
+  echo "    OK: $1: SubnetMappings is in the baseline (${body}) and drift compares it clean"
+}
+echo ""
+echo "==> Assert the deploy-time SubnetMappings baseline compares clean (go-to-k/cdkd#6756)"
+assert_mappings_drift_clean "phase 1" 2 2
+
 echo ""
 echo "==> Phase 2: re-deploy with CDKD_TEST_REMOVAL=true"
 echo "    (each flag DROPPED in the same deploy that changes its companion property,"
@@ -231,6 +262,12 @@ if [[ "${PREFIXES_P2}" != "auto_assigned auto_assigned auto_assigned" ]]; then
   exit 1
 fi
 echo "    all 3 subnets hold auto_assigned, incl. the newly added one (✓)"
+
+echo ""
+echo "==> Assert the removal deploy's SubnetMappings baseline compares clean (go-to-k/cdkd#6756)"
+# Three mappings now, none declaring a prefix, so the readback echoes none
+# even though AWS still reports one per subnet.
+assert_mappings_drift_clean "phase 2" 3 0
 
 echo ""
 echo "==> Phase 3: re-deploy unchanged — must be a clean no-op (phantom-drift guard)"

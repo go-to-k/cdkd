@@ -1806,6 +1806,18 @@ if [ "${P1H_USERDATA}" != "${P1H_WANT_USERDATA}" ]; then
   exit 1
 fi
 echo "    OK: #5446 same instance ${INSTANCE_ID} is t3.small, in ${UPDATE_SG_ID} only, running, with the template's user data"
+# go-to-k/cdkd#6754: the drift readback now returns a declared UserData, so
+# the capture right after this update records it in the drift baseline, equal
+# to the base64 text the template declares and EC2 stores. Before #6754 the
+# baseline had no UserData at all; a spelling that differed would be drift on
+# every later run.
+P1H_OBSERVED_USERDATA=$(echo "${P1H_STATE}" | jq -r --arg pid "${INSTANCE_ID}" \
+  '[.resources[] | select(.resourceType == "AWS::EC2::Instance" and .physicalId == $pid) | .observedProperties.UserData // "<absent>"] | first // "<no record>"')
+if [ "${P1H_OBSERVED_USERDATA}" != "${P1H_WANT_USERDATA}" ]; then
+  echo "FAIL: go-to-k/cdkd#6754 -- instance ${INSTANCE_ID}'s drift baseline UserData is '${P1H_OBSERVED_USERDATA}', expected '${P1H_WANT_USERDATA}' (the template's and EC2's value)" >&2
+  exit 1
+fi
+echo "    OK: #6754 the drift baseline reads the instance's UserData back as declared"
 # Issue #5630: the same deploy changes InstanceInitiatedShutdownBehavior
 # terminate -> stop; the instance id check above proves it was in place.
 P1H_SHUTDOWN=$(aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" \
