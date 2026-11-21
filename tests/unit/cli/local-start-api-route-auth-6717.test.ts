@@ -60,7 +60,6 @@ const h = vi.hoisted(() => {
       },
     },
     region: 'eu-west-1',
-    pseudoParameters: { region: 'eu-west-1', accountId: '123456789012', partition: 'aws' },
   };
   const wsApi = {
     apiLogicalId: 'WsApi',
@@ -127,7 +126,8 @@ vi.mock('../../../src/local/websocket-route-discovery.js', async (importOriginal
 }));
 vi.mock('../../../src/cli/commands/local-start-api/state.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  // No `pseudoParameters`: the region must come from `bundle.region`.
+  // No `pseudoParameters`, as for a stack whose only state need is an
+  // authorizer: the pool's region must come from `bundle.region`.
   loadStateForRoutedStacks: vi.fn(async () => new Map([['StackA', h.bundle]])),
 }));
 vi.mock('../../../src/local/api-server-grouping.js', async (importOriginal) => ({

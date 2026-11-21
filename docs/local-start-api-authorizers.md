@@ -95,6 +95,10 @@ from the deployed stack:
 | `--from-state` or `--from-cfn-stack` | The deployed pool's JWKS: an invalid token is denied |
 | No state source | Nothing: cdkd warns once per route at startup and accepts every token |
 
+If the state source has no record of the pool (the stack's state did not load,
+or the pool is not in it), cdkd treats it as no state source: it warns and
+accepts every token.
+
 ## JWT authorizer (HTTP API)
 
 Declared with `AuthorizerType: 'JWT'`.
@@ -130,8 +134,10 @@ checks are skipped for a token accepted because the JWKS was unreachable
 ## Settings cdkd does not enforce
 
 cdkd still serves a route that carries one of these settings, but it does
-not check it. It warns once per route at startup, naming the route and the
-setting, so nothing is dropped silently:
+not check it. It warns at startup, naming the route and the setting, so
+nothing is dropped silently. The warning prints once per route per run,
+except a WebSocket route's `ApiKeyRequired`, which prints again on each
+`--watch` reload:
 
 | Setting | When it is not enforced |
 | --- | --- |

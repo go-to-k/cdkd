@@ -131,6 +131,56 @@ describe('loadStateForRoutedStacks with a JWT authorizer waiting on state (#6419
     expect(loaded).toEqual(['Api']);
   });
 
+  it.each([
+    [
+      'AuthorizationScopes',
+      {
+        scopes: {
+          state: 'unresolved',
+          stackName: 'Api',
+          raw: [{ 'Fn::Join': ['', [{ Ref: 'Server' }, '/read']] }],
+          reason: 'no state source',
+        },
+      },
+    ],
+    [
+      'IdentityValidationExpression',
+      {
+        identityValidation: {
+          state: 'unresolved',
+          stackName: 'Api',
+          raw: { Ref: 'Pattern' },
+          reason: 'no state source',
+        },
+      },
+    ],
+  ])(
+    "loads the stack while a REST v1 Cognito authorizer's intrinsic %s waits on state (#6717)",
+    async (_setting, extra) => {
+      const loaded: string[] = [];
+      provide(loaded);
+      const pool = {
+        userPoolArn: 'arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_AbC123',
+        region: 'us-east-1',
+        userPoolId: 'us-east-1_AbC123',
+      };
+      // A literal pool: no `pending`, so only the setting can trigger the load.
+      const entry = {
+        route: { declaredAt: 'Api/Method', serviceIntegration: true } as never,
+        authorizer: {
+          kind: 'cognito',
+          logicalId: 'Auth',
+          pools: [pool],
+          ...pool,
+          declaredAt: 'Api/Method',
+          ...extra,
+        },
+      } as unknown as RouteWithAuth;
+      await loadStateForRoutedStacks([apiStack], [], [entry], { fromState: true } as never);
+      expect(loaded).toEqual(['Api']);
+    }
+  );
+
   it('does not load a stack whose JWT authorizer is all literal', async () => {
     const loaded: string[] = [];
     provide(loaded);
