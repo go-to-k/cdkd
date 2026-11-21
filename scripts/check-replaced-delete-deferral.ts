@@ -672,6 +672,33 @@ export const RECORDABILITY_FUNCTIONS: readonly { file: string; name: string }[] 
   { file: 'src/deployment/superseded-resources.ts', name: 'canRecordSuperseded' },
 ];
 
+/**
+ * The inline-policy exception covers exactly these types (#6445). A type
+ * added to `INLINE_POLICY_TYPES` would delete inline through that listed
+ * exit, so the set is pinned here.
+ */
+export const INLINE_POLICY_TYPES_REVIEWED: readonly string[] = [
+  'AWS::IAM::GroupPolicy',
+  'AWS::IAM::Policy',
+  'AWS::IAM::RolePolicy',
+  'AWS::IAM::UserPolicy',
+];
+
+/** The string literals of `const INLINE_POLICY_TYPES = new Set([...])`, sorted. */
+export function inlinePolicyTypesOf(text: string): string[] | undefined {
+  const source = parse('superseded-resources.ts', text);
+  let found: string[] | undefined;
+  walk(source, (n) => {
+    if (!ts.isVariableDeclaration(n) || !ts.isIdentifier(n.name) || n.name.text !== 'INLINE_POLICY_TYPES') return;
+    const types: string[] = [];
+    walk(n, (m) => {
+      if (ts.isStringLiteral(m)) types.push(m.text);
+    });
+    found = types.sort();
+  });
+  return found;
+}
+
 /** `deferral-exit` sites of one recordability function; throws when it moved. */
 export function scanRecordability(file: string, text: string, name: string): Site[] {
   const source = parse(file, text);
@@ -853,6 +880,13 @@ export function scanTree(root: string = REPO_ROOT, rows?: readonly SiteRow[]): T
     const at = files.find((f) => f.file === file);
     if (at === undefined) throw new Error(`${file} is missing: update this check`);
     sites.push(...scanRecordability(file, at.text, name));
+  }
+  const supersededFile = files.find((f) => f.file === 'src/deployment/superseded-resources.ts');
+  const inlineTypes = supersededFile && inlinePolicyTypesOf(supersededFile.text);
+  if (JSON.stringify(inlineTypes) !== JSON.stringify(INLINE_POLICY_TYPES_REVIEWED)) {
+    throw new Error(
+      `INLINE_POLICY_TYPES in superseded-resources.ts is ${JSON.stringify(inlineTypes)}, the reviewed inline-policy exception covers ${JSON.stringify(INLINE_POLICY_TYPES_REVIEWED)}: a type added there deletes its replaced copy inline (#6445)`
+    );
   }
   let replaceRows = rows;
   if (replaceRows === undefined) {

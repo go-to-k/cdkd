@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
-import type { SiteRow } from '../../../scripts/gen-provider-replace-branches.ts';
+import { type SiteRow, loadReport } from '../../../scripts/gen-provider-replace-branches.ts';
 import {
   EXCEPTIONS,
   FLOORS,
@@ -27,6 +27,8 @@ import {
   scanRecordability,
   scanTree,
   RECORDABILITY_FUNCTIONS,
+  INLINE_POLICY_TYPES_REVIEWED,
+  inlinePolicyTypesOf,
 } from '../../../scripts/check-replaced-delete-deferral.ts';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.ts';
 
@@ -206,6 +208,28 @@ describe('replaced-delete-deferral: unreached replace rows do not cover their fu
     // As scanTree builds the covered set: from reached rows only.
     const reached = new Set(rows.filter(deployReaches).map((r) => `${r.file}:${r.function}`));
     expect(scanProviderOwnDeletes(file, text, reached).sites.map((s) => s.key)).toEqual([`${file}:update`]);
+  });
+
+  it(
+    'scanTree: an SNS replace row the deploy no longer reaches leaves its this.delete( an own-delete site',
+    () => {
+      const sns = 'src/provisioning/providers/sns-subscription-provider.ts';
+      const rows = loadReport().report.sites.map((r) =>
+        r.file === sns ? { ...r, triggers: [{ property: 'TopicArn', verdict: 'replacement' as const }] } : r
+      );
+      const scan = scanTree(REPO_ROOT, rows);
+      expect(scan.sites.filter((s) => s.shape === 'provider-own-delete').map((s) => s.key)).toContain(
+        `${sns}:replace`
+      );
+    },
+    CONTENDED_CASE_TIMEOUT_MS
+  );
+
+  it('reads the inline-policy type set, and the real one is the reviewed one', () => {
+    expect(inlinePolicyTypesOf("const INLINE_POLICY_TYPES = new Set(['B', 'A']);")).toEqual(['A', 'B']);
+    expect(inlinePolicyTypesOf('const OTHER = 1;')).toBeUndefined();
+    const real = readFileSync(join(REPO_ROOT, 'src/deployment/superseded-resources.ts'), 'utf8');
+    expect(inlinePolicyTypesOf(real)).toEqual([...INLINE_POLICY_TYPES_REVIEWED]);
   });
 });
 
