@@ -439,18 +439,18 @@ export async function deleteTableBucket(
     // that fails or shows nothing leaves the original error to its classifiers.
     const held = allowEmpty
       ? undefined
-      : await listTableBucketContents.call(this, physicalId).catch(() => undefined);
+      : await confirmedTableBucketContents.call(this, physicalId).catch(() => undefined);
     if (held && (held.namespaces.length > 0 || held.tables.length > 0)) {
       const mask = context?.maskSecrets ?? ((text: string) => text);
       throw markNonRetryable(
         new ProvisioningError(
           mask(
             `Failed to delete S3 Table Bucket ${logicalId}: table bucket ${physicalId} is not ` +
-              `empty: it holds ${describeTableBucketContents(held)}. The stack's own tables and ` +
-              `namespaces are deleted before the bucket, so these were created outside the ` +
-              `stack. Matching CloudFormation, cdkd does not delete them. Delete them first ` +
-              `(aws s3tables delete-table, then aws s3tables delete-namespace) and destroy ` +
-              `again; a replacement deletes them only under --force-stateful-recreation.`
+              `empty: it holds ${describeTableBucketContents(held)}. This operation did not ` +
+              `delete them: they were created outside the stack, or retained by a ` +
+              `DeletionPolicy. Matching CloudFormation, cdkd does not delete them. Delete them ` +
+              `first (aws s3tables delete-table, then aws s3tables delete-namespace) and retry ` +
+              `the operation; a replacement deletes them only under --force-stateful-recreation.`
           ),
           resourceType,
           logicalId,
@@ -491,36 +491,59 @@ interface TableBucketContents {
 }
 
 /**
+ * How long a not-empty refusal waits before listing the bucket a second time.
+ * A listing right after the stack's own `DeleteTable` / `DeleteNamespace` may
+ * still show what was just deleted, so only what BOTH listings show is named,
+ * and the delete is refused only when that is non-empty.
+ */
+const HELD_RECHECK_MS = 2000;
+
+/**
  * Up to {@link HELD_NAME_LIMIT} namespaces and tables of a table bucket, for a
- * not-empty refusal: the listing stops once the limit is reached, so a large
- * bucket is never walked in full.
+ * not-empty refusal: one page of each listing, so a large bucket is never
+ * walked in full.
  */
 async function listTableBucketContents(
   this: S3TablesProvider,
   tableBucketARN: string
 ): Promise<TableBucketContents> {
-  const held: TableBucketContents = { namespaces: [], tables: [], truncated: false };
   const namespaces = await this.getClient().send(new ListNamespacesCommand({ tableBucketARN }));
-  const names = (namespaces.namespaces ?? [])
+  const namespaceNames = (namespaces.namespaces ?? [])
     .map((ns) => ns.namespace?.[0])
     .filter((name): name is string => !!name);
-  held.truncated = names.length > HELD_NAME_LIMIT || !!namespaces.continuationToken;
-  held.namespaces = names.slice(0, HELD_NAME_LIMIT);
-  for (const namespace of held.namespaces) {
-    const tables = await this.getClient().send(
-      new ListTablesCommand({ tableBucketARN, namespace })
-    );
-    for (const table of tables.tables ?? []) {
-      if (!table.name) continue;
-      if (held.tables.length === HELD_NAME_LIMIT) {
-        held.truncated = true;
-        return held;
-      }
-      held.tables.push(`${namespace}.${table.name}`);
-    }
-    if (tables.continuationToken) held.truncated = true;
-  }
-  return held;
+  // No `namespace`: one listing of the whole bucket.
+  const tables = await this.getClient().send(new ListTablesCommand({ tableBucketARN }));
+  const tableNames = (tables.tables ?? [])
+    .filter((table) => !!table.name)
+    .map((table) => `${table.namespace?.[0] ?? '?'}.${table.name}`);
+  return {
+    namespaces: namespaceNames.slice(0, HELD_NAME_LIMIT),
+    tables: tableNames.slice(0, HELD_NAME_LIMIT),
+    truncated:
+      namespaceNames.length > HELD_NAME_LIMIT ||
+      tableNames.length > HELD_NAME_LIMIT ||
+      !!namespaces.continuationToken ||
+      !!tables.continuationToken,
+  };
+}
+
+/**
+ * What the bucket holds in two listings {@link HELD_RECHECK_MS} apart, or
+ * undefined (with no wait) when the first shows nothing.
+ */
+async function confirmedTableBucketContents(
+  this: S3TablesProvider,
+  tableBucketARN: string
+): Promise<TableBucketContents | undefined> {
+  const first = await listTableBucketContents.call(this, tableBucketARN);
+  if (first.namespaces.length === 0 && first.tables.length === 0) return undefined;
+  await new Promise((resolve) => setTimeout(resolve, HELD_RECHECK_MS));
+  const second = await listTableBucketContents.call(this, tableBucketARN);
+  return {
+    namespaces: second.namespaces.filter((name) => first.namespaces.includes(name)),
+    tables: second.tables.filter((name) => first.tables.includes(name)),
+    truncated: second.truncated,
+  };
 }
 
 function describeTableBucketContents(held: TableBucketContents): string {

@@ -506,18 +506,18 @@ export class S3VectorsProvider implements ResourceProvider {
       // to its classifiers.
       const held = allowEmpty
         ? undefined
-        : await this.listHeldIndexes(physicalId).catch(() => undefined);
+        : await this.confirmedHeldIndexes(physicalId).catch(() => undefined);
       if (held && held.names.length > 0) {
         throw markNonRetryable(
           new ProvisioningError(
             maskerOrIdentity(context?.maskSecrets)(
               `Failed to delete S3 VectorBucket ${logicalId}: vector bucket ${physicalId} is not ` +
                 `empty: it holds vector index(es) ${held.names.join(', ')}` +
-                `${held.truncated ? ', and more' : ''}. The stack's own indexes are deleted ` +
-                `before the bucket, so these were created outside the stack. Matching ` +
-                `CloudFormation, cdkd does not delete them. Delete them first ` +
-                `(aws s3vectors delete-index) and destroy again; a replacement deletes them ` +
-                `only under --force-stateful-recreation.`
+                `${held.truncated ? ', and more' : ''}. This operation did not delete them: ` +
+                `they were created outside the stack, or retained by a DeletionPolicy. ` +
+                `Matching CloudFormation, cdkd does not delete them. Delete them first ` +
+                `(aws s3vectors delete-index) and retry the operation; a replacement deletes ` +
+                `them only under --force-stateful-recreation.`
             ),
             resourceType,
             logicalId,
@@ -563,6 +563,27 @@ export class S3VectorsProvider implements ResourceProvider {
     return {
       names: names.slice(0, limit),
       truncated: names.length > limit || !!page.nextToken,
+    };
+  }
+
+  /** How long a not-empty refusal waits before listing the indexes again. */
+  private static readonly HELD_RECHECK_MS = 2000;
+
+  /**
+   * The indexes two listings {@link S3VectorsProvider.HELD_RECHECK_MS} apart both show, or
+   * undefined (with no wait) when the first shows none: a listing right after
+   * the stack's own `DeleteIndex` may still show the index just deleted.
+   */
+  private async confirmedHeldIndexes(
+    vectorBucketName: string
+  ): Promise<{ names: string[]; truncated: boolean } | undefined> {
+    const first = await this.listHeldIndexes(vectorBucketName);
+    if (first.names.length === 0) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, S3VectorsProvider.HELD_RECHECK_MS));
+    const second = await this.listHeldIndexes(vectorBucketName);
+    return {
+      names: second.names.filter((name) => first.names.includes(name)),
+      truncated: second.truncated,
     };
   }
 

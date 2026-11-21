@@ -94,11 +94,11 @@ cdkd destroy MyStack
 An `AWS::S3Tables::TableBucket` that still holds a table or a namespace, or an
 `AWS::S3Vectors::VectorBucket` that still holds a vector index, fails its
 delete too. The stack's own tables, namespaces and indexes are deleted before
-their bucket, so what is left was created outside the stack, for example by
-Firehose, Athena or Spark. The error names up to five of each. These types have
-no opt-in: delete the content by hand (`aws s3tables delete-table`, then
-`aws s3tables delete-namespace`, or `aws s3vectors delete-index`) and run the
-destroy again. A replacement under `--force-stateful-recreation` empties the
+their bucket, so what is left was created outside the stack (for example by
+Firehose, Athena or Spark) or kept by a `DeletionPolicy: Retain`. The error
+names up to five of each. These types have no opt-in: delete the content by
+hand (`aws s3tables delete-table`, then `aws s3tables delete-namespace`, or
+`aws s3vectors delete-index`) and run the destroy again. A replacement under `--force-stateful-recreation` empties the
 old bucket first.
 
 ### Compared with other tools

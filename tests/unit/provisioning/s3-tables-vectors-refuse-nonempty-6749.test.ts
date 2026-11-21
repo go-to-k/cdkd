@@ -90,9 +90,13 @@ function tablesAnswer(answers: {
       });
     }
     if (cmd instanceof ListTablesCommand) {
-      const ns = (cmd.input as { namespace: string }).namespace;
+      // The refusal lists the whole bucket (no `namespace`); the
+      // forceDataDelete emptying lists one namespace at a time.
+      const only = (cmd.input as { namespace?: string }).namespace;
       return Promise.resolve({
-        tables: (answers.tables?.[ns] ?? []).map((name) => ({ name })),
+        tables: Object.entries(answers.tables ?? {})
+          .filter(([ns]) => only === undefined || ns === only)
+          .flatMap(([ns, names]) => names.map((name) => ({ name, namespace: [ns] }))),
       });
     }
     return Promise.resolve({});
@@ -106,7 +110,13 @@ const notEmpty = () => {
 describe('S3 Tables table bucket delete refuses a non-empty bucket (#6749)', () => {
   let provider: S3TablesProvider;
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+    // The recheck's wait runs at once; its duration is asserted where it matters.
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) => {
+      fn();
+      return 0;
+    }) as unknown as typeof setTimeout);
     provider = new S3TablesProvider();
   });
 
@@ -157,8 +167,11 @@ describe('S3 Tables table bucket delete refuses a non-empty bucket (#6749)', () 
     const message = (error as Error).message;
     expect(message).toContain('table(s) n1.a, n1.b, n2.a, n2.b, n3.a in namespace(s) n1, n2, n3, n4, n5, and more');
     expect(message).not.toContain('n6');
-    // Stopped at the fifth table: n3 was the last namespace listed.
-    expect(sent(tablesSend, ListTablesCommand)).toHaveLength(3);
+    // One bucket-wide ListTables per listing, two listings.
+    expect(sent(tablesSend, ListTablesCommand).map((c) => c[0].input)).toEqual([
+      { tableBucketARN: TABLE_BUCKET_ARN },
+      { tableBucketARN: TABLE_BUCKET_ARN },
+    ]);
   });
 
   it('says there is more when the namespace listing has another page', async () => {
@@ -210,6 +223,53 @@ describe('S3 Tables table bucket delete refuses a non-empty bucket (#6749)', () 
     expect(isMarkedNonRetryable(error)).toBe(false);
   });
 
+  it('lists twice, 2s apart, and names only what both listings show', async () => {
+    let listing = 0;
+    tablesSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof DeleteTableBucketCommand) return Promise.resolve().then(notEmpty);
+      if (cmd instanceof ListNamespacesCommand) {
+        listing++;
+        return Promise.resolve({
+          namespaces: (listing === 1 ? ['own', 'kept'] : ['kept']).map((ns) => ({ namespace: [ns] })),
+        });
+      }
+      if (cmd instanceof ListTablesCommand) {
+        return Promise.resolve({
+          tables:
+            listing === 1
+              ? [{ name: 'gone', namespace: ['own'] }, { name: 't', namespace: ['kept'] }]
+              : [{ name: 't', namespace: ['kept'] }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await expect(
+      provider.delete('Bucket', TABLE_BUCKET_ARN, 'AWS::S3Tables::TableBucket')
+    ).rejects.toThrow(/it holds table\(s\) kept\.t in namespace\(s\) kept\. /);
+    expect(vi.mocked(setTimeout).mock.calls.map((c) => c[1])).toContain(2000);
+  });
+
+  it('content gone by the second listing (a read lagging the stack\'s own deletes) keeps the original error, retryable', async () => {
+    let listing = 0;
+    tablesSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof DeleteTableBucketCommand) return Promise.resolve().then(notEmpty);
+      if (cmd instanceof ListNamespacesCommand) {
+        listing++;
+        return Promise.resolve({ namespaces: listing === 1 ? [{ namespace: ['own'] }] : [] });
+      }
+      return Promise.resolve({ tables: [] });
+    });
+
+    const error = await provider
+      .delete('Bucket', TABLE_BUCKET_ARN, 'AWS::S3Tables::TableBucket')
+      .then(() => undefined, (e: unknown) => e);
+
+    expect(listing).toBe(2);
+    expect((error as Error).message).not.toContain('it holds');
+    expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
   it('under forceDataDelete, empties the bucket first and never refuses', async () => {
     tablesAnswer({
       deleteBucket: () => ({}),
@@ -256,7 +316,13 @@ const vectorsNotEmpty = () => {
 describe('S3 Vectors vector bucket delete refuses a non-empty bucket (#6749)', () => {
   let provider: S3VectorsProvider;
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+    // The recheck's wait runs at once; its duration is asserted where it matters.
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) => {
+      fn();
+      return 0;
+    }) as unknown as typeof setTimeout);
     provider = new S3VectorsProvider();
   });
 
@@ -328,6 +394,27 @@ describe('S3 Vectors vector bucket delete refuses a non-empty bucket (#6749)', (
       .delete('Bucket', VECTOR_BUCKET, 'AWS::S3Vectors::VectorBucket')
       .then(() => undefined, (e: unknown) => e);
 
+    expect((error as Error).message).not.toContain('it holds');
+    expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
+  it('an index gone by the second listing is not named; none left keeps the original error', async () => {
+    let listing = 0;
+    vectorsSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof DeleteVectorBucketCommand) return Promise.resolve().then(vectorsNotEmpty);
+      if (cmd instanceof ListIndexesCommand) {
+        listing++;
+        return Promise.resolve({ indexes: listing === 1 ? [{ indexName: 'own' }] : [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const error = await provider
+      .delete('Bucket', VECTOR_BUCKET, 'AWS::S3Vectors::VectorBucket')
+      .then(() => undefined, (e: unknown) => e);
+
+    expect(listing).toBe(2);
+    expect(vi.mocked(setTimeout).mock.calls.map((c) => c[1])).toContain(2000);
     expect((error as Error).message).not.toContain('it holds');
     expect(isMarkedNonRetryable(error)).toBe(false);
   });

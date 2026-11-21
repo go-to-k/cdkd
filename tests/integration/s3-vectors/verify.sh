@@ -263,10 +263,12 @@ echo "    OK: nameless VectorBucket kept its generated name across the update"
 # --- Phase 1.9: an out-of-stack index refuses the destroy (#6749) ------
 # CloudFormation's delete handler holds only s3vectors:DeleteVectorBucket, so a
 # bucket still holding an index the stack did not create fails its delete.
-# Before #6749 cdkd deleted every index first and the destroy succeeded.
+# Before #6749 cdkd deleted every index first and the destroy succeeded. The
+# index goes in the SSE-S3 nameless bucket: the named one's CMK key policy is
+# CDK's default, which grants the S3 Vectors indexing service nothing.
 echo "==> Phase 1.9: destroy refuses a vector bucket holding an out-of-stack index (issue #6749)"
-OOB_INDEX_BUCKET="${BUCKET_NAME}"
-aws s3vectors create-index --vector-bucket-name "${BUCKET_NAME}" --index-name "${OOB_INDEX}" \
+OOB_INDEX_BUCKET="${NAMELESS_NAME}"
+aws s3vectors create-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
   --data-type float32 --dimension 4 --distance-metric cosine --region "${REGION}" >/dev/null
 set +e
 REFUSE_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -277,22 +279,22 @@ refuse_rc=$?
 set -e
 REFUSE_PLAIN="$(printf '%s' "${REFUSE_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
 if [ "${refuse_rc}" -eq 0 ]; then
-  echo "FAIL: destroy succeeded although VectorBucket '${BUCKET_NAME}' held the out-of-stack index '${OOB_INDEX}' (issue #6749)" >&2
+  echo "FAIL: destroy succeeded although VectorBucket '${NAMELESS_NAME}' held the out-of-stack index '${OOB_INDEX}' (issue #6749)" >&2
   exit 1
 fi
-NEEDLE="vector bucket ${BUCKET_NAME} is not empty: it holds vector index(es) ${OOB_INDEX}."
+NEEDLE="vector bucket ${NAMELESS_NAME} is not empty: it holds vector index(es) ${OOB_INDEX}."
 if ! grep -qF -- "${NEEDLE}" <<<"${REFUSE_PLAIN}"; then
   echo "FAIL: the refused destroy does not name the out-of-stack index (expected: ${NEEDLE})" >&2
   printf '%s\n' "${REFUSE_PLAIN}" | tail -20 >&2
   exit 1
 fi
-aws s3vectors get-index --vector-bucket-name "${BUCKET_NAME}" --index-name "${OOB_INDEX}" \
+aws s3vectors get-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
   --region "${REGION}" >/dev/null || {
   echo "FAIL: the out-of-stack index '${OOB_INDEX}' did not survive the refused destroy (issue #6749)" >&2
   exit 1
 }
 echo "    OK: destroy refused, naming the out-of-stack index, and the index survived"
-aws s3vectors delete-index --vector-bucket-name "${BUCKET_NAME}" --index-name "${OOB_INDEX}" \
+aws s3vectors delete-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
   --region "${REGION}"
 OOB_INDEX_BUCKET=""
 
