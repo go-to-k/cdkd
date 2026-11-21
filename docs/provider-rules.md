@@ -850,6 +850,31 @@ clean up -- only a file system whose `CreationTime` is no earlier than that
 token's first send in this process, on AWS's clock, and refuses any other
 ([#4428](https://github.com/go-to-k/cdkd/issues/4428)).
 
+## Preparing a delete the way CloudFormation's handler does
+
+CloudFormation's delete handler for some types removes what blocks the delete
+first: an IAM role's policies, a secret's replica regions, an Auto Scaling
+group's instances, an Elastic IP's association. A `delete()` that sends only
+the plain delete call fails there, or leaves the resource, while the AWS CDK
+CLI succeeds ([#6715](https://github.com/go-to-k/cdkd/issues/6715)).
+
+[`src/provisioning/delete-blocker-inventory.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/delete-blocker-inventory.ts)
+lists, per SDK-provider type, what the handler removes, its source, and how
+`delete()` meets each one:
+
+| Disposition | Meaning | Checked by the unit test |
+| --- | --- | --- |
+| `handled` | `delete()` removes it first | the site holds the named call; the named unit test exists |
+| `refused` | `delete()` refuses, naming the blocker and the next step | the site holds the refusal text |
+| `open` | not met yet | an issue number |
+| no blockers | the handler removes nothing first | a cited source |
+
+Every registered type is a row or on the shrink-only unaudited list, so a new
+provider fails `delete-blocker-inventory.test.ts` until its type's handler is
+read. Run the preparation only when the blocker is present (one read on the
+delete path, or none until the plain call refuses), and never remove more than
+the handler does; a step that does goes in the row's `beyondCfn`.
+
 ## Reporting a skipped delete
 
 Written for issue [#1752](https://github.com/go-to-k/cdkd/issues/1752).
