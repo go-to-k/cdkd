@@ -123,6 +123,9 @@ export async function deleteMarkedRecreate(
     const outcome = await withReplayDeletePrinting(s, () =>
       s.provider.delete(s.op.logicalId, madeId, s.oldType, s.properties, {
         expectedRegion: s.region,
+        // go-to-k/cdkd#6770: the failed re-create made it, so whatever holds
+        // it is this rollback's.
+        stackHoldersStillAttached: true,
         deletionPolicy: 'Delete',
         // go-to-k/cdkd#2007: the mask `id` above is rendered with.
         maskSecrets: s.mask,

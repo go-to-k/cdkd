@@ -518,6 +518,9 @@ export async function replayFailedOperationsUnbound(
                 op.attemptedProperties,
                 {
                   expectedRegion: ctx.region,
+                  // go-to-k/cdkd#6770: the failed run created it, so whatever
+                  // holds it is that run's.
+                  stackHoldersStillAttached: true,
                   ...(removeProtection && { removeProtection: true }),
                   ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),

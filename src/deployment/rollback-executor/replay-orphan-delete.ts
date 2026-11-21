@@ -280,6 +280,9 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     withReplayDeletePrinting(s, () =>
       provider.delete(op.logicalId, physicalId, op.resourceType, op.properties, {
         expectedRegion: ctx.region,
+        // go-to-k/cdkd#6770: the rolled-back run created it, so whatever holds
+        // it is that run's (a membership a failed or unordered op added).
+        stackHoldersStillAttached: true,
         ...(removeProtection && { removeProtection: true }),
         ...(createRollbackClaimed && { inlinePolicyClaimed: createRollbackClaimed }),
         ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),

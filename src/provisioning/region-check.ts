@@ -312,12 +312,17 @@ export interface DeleteContext extends SecretMaskingContext {
    * the rollback's delete-new-first in
    * `replay-reverse-replacement/recreate.ts`), and the role provider's own
    * old-role delete in a `RoleName` update, which runs before the profile's
-   * update (go-to-k/cdkd#4461). The role and group deletes then remove the
-   * resource from every holder before deleting it.
+   * update (go-to-k/cdkd#4461); and every rollback delete of what the
+   * rolled-back run created (`replay-orphan-delete.ts`, `replay-failed.ts`,
+   * `replay-revert.ts`, `replay-reverse-replacement/finish.ts` /
+   * `failures.ts`), whose holders are that run's: a membership a failed
+   * create already added, or one no dependency edge orders first. The role
+   * and group deletes then remove the resource from every holder before
+   * deleting it.
    *
    * ABSENT on every other delete — a destroy, a template removal, a nested
-   * child's teardown, a replaced copy's cleanup-phase delete, a rollback's
-   * delete of a created copy — and there those deletes refuse a holder the
+   * child's teardown, a replaced copy's cleanup-phase or superseded delete —
+   * and there those deletes refuse a holder the
    * run did not remove, as CloudFormation's delete handler (which holds no
    * `iam:RemoveRoleFromInstanceProfile` / `iam:RemoveUserFromGroup`) fails
    * with `DeleteConflict`. Absent is the safe side: a new delete site that

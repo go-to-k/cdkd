@@ -150,9 +150,9 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     expect(bags[0]).toEqual({ QueueName: `${STACK}-Q` });
     expect(state['Q']?.physicalId).toBe('old-q');
     // go-to-k/cdkd#6770: the new copy deleted after the old one is back is
-    // no delete-first, so it refuses an out-of-stack holder.
+    // the rolled-back run's, so its holders are too: they are stripped.
     expect(del).toHaveBeenCalledTimes(1);
-    expect(del.mock.calls[0]![4]).not.toHaveProperty('stackHoldersStillAttached');
+    expect(del.mock.calls[0]![4]).toHaveProperty('stackHoldersStillAttached', true);
   });
 
   it('delete-new-first arm: the post-delete re-create gets it too', async () => {

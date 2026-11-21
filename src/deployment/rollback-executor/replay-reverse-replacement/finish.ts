@@ -361,6 +361,9 @@ export async function finishReverseReplacement(
             current.properties,
             {
               expectedRegion: ctx.region,
+              // go-to-k/cdkd#6770: the new copy is the rolled-back run's, so
+              // whatever holds it is that run's.
+              stackHoldersStillAttached: true,
               ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
               ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
               deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),

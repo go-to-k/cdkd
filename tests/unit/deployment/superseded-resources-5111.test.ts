@@ -25,6 +25,7 @@ import {
   retryWhileInUse,
   supersededInUseRetry,
   supersededResourcesOf,
+  supersededDependentsFirst,
 } from '../../../src/deployment/superseded-resources.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction/log-only.js';
 import { recordCanOwnResources } from '../../../src/state/cross-prefix-stack-scan.js';
@@ -517,6 +518,37 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     ).toBeUndefined();
   });
 
+  it('deletes carried entries dependents first: a replaced profile before its replaced role (go-to-k/cdkd#6770)', async () => {
+    const engine = makeEngine();
+    const role: SupersededResourceRecord = {
+      logicalId: 'Role',
+      supersededAt: 1,
+      state: record('old-role', 'AWS::IAM::Role', {}),
+    };
+    const profile: SupersededResourceRecord = {
+      logicalId: 'Profile',
+      supersededAt: 2,
+      state: { ...record('old-profile', 'AWS::IAM::InstanceProfile', {}), dependencies: ['Role'] },
+    };
+    const host = {
+      version: 13,
+      stackName: 'MyStack',
+      region: 'us-east-1',
+      resources: {},
+      supersededResources: [role, profile],
+      outputs: {},
+      lastModified: 0,
+    } as unknown as StackState;
+
+    // Completion order (the role's replacement finished first) is the wrong one.
+    await retryCarriedSupersededResources(engine, host, [role, profile], {});
+
+    expect(vi.mocked(provider.delete).mock.calls.map((call) => call[1])).toEqual([
+      'old-profile',
+      'old-role',
+    ]);
+  });
+
   it("masks the OLD record's secret-derived name, judged on its own record", async () => {
     // The old copy's name came from a secret the new copy no longer uses.
     const secretName = 'tg-s3cr3t-v1';
@@ -778,5 +810,40 @@ describe('the supersededResources field travels with the record (#5111)', () => 
     } finally {
       Object.assign(supersededInUseRetry, defaults);
     }
+  });
+});
+
+describe('supersededDependentsFirst (go-to-k/cdkd#6770)', () => {
+  const row = (logicalId: string, dependencies?: unknown): SupersededResourceRecord =>
+    ({
+      logicalId,
+      supersededAt: 1,
+      state: { ...record(`old-${logicalId}`, 'AWS::IAM::Role', {}), dependencies },
+    }) as SupersededResourceRecord;
+
+  it('puts a dependent before what it depends on, across waves', () => {
+    const order = supersededDependentsFirst([
+      row('Group'),
+      row('Role'),
+      row('Addition', ['Group']),
+      row('Profile', ['Role']),
+    ]).map((entry) => entry.logicalId);
+    expect(order).toEqual(['Addition', 'Profile', 'Group', 'Role']);
+  });
+
+  it('keeps the order where nothing orders it, a cycle included', () => {
+    expect(supersededDependentsFirst([row('A'), row('B')]).map((e) => e.logicalId)).toEqual([
+      'A',
+      'B',
+    ]);
+    expect(
+      supersededDependentsFirst([row('A', ['B']), row('B', ['A'])]).map((e) => e.logicalId)
+    ).toEqual(['A', 'B']);
+  });
+
+  it('ignores a dependency outside the set and a malformed list', () => {
+    expect(
+      supersededDependentsFirst([row('A', ['Elsewhere']), row('B', 'A')]).map((e) => e.logicalId)
+    ).toEqual(['A', 'B']);
   });
 });

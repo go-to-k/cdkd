@@ -291,6 +291,30 @@ describe('runDestroyForStack deletes the superseded resources too (#5111)', () =
     expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('no longer tracked'))).toBe(true);
   });
 
+  it('deletes superseded rows dependents first: a replaced profile before its replaced role (go-to-k/cdkd#6770)', async () => {
+    mockProviderDelete.mockResolvedValue(undefined);
+    const role: SupersededResourceRecord = {
+      logicalId: 'Role',
+      supersededAt: 1,
+      state: { ...res([], { physicalId: 'old-role', resourceType: 'AWS::IAM::Role' }) },
+    };
+    const profile: SupersededResourceRecord = {
+      logicalId: 'Profile',
+      supersededAt: 2,
+      state: {
+        ...res(['Role'], { physicalId: 'old-profile', resourceType: 'AWS::IAM::InstanceProfile' }),
+      },
+    };
+    const state = makeState({}, { supersededResources: [role, profile] });
+
+    await runDestroyForStack('TestStack', state, makeCtx(state));
+
+    expect(mockProviderDelete.mock.calls.map((call) => call[1])).toEqual([
+      'old-profile',
+      'old-role',
+    ]);
+  });
+
   it('passes --remove-protection to the delete', async () => {
     mockProviderDelete.mockResolvedValue(undefined);
     const state = makeState({}, { supersededResources: [entry] });

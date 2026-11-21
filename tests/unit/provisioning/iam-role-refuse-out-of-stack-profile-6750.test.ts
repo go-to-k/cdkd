@@ -356,6 +356,57 @@ describe('every other deploy-side delete refuses like a stack destroy (#6770)', 
     expect(sent).not.toContain('RemoveRoleFromInstanceProfileCommand');
   });
 
+  describe('the retry after a drained settle is held to the RoleId step 0 read', () => {
+    const drained = (roleIds: Array<string | 'gone'>): Record<string, Handler> => {
+      let reads = 0;
+      return {
+        ...base,
+        GetRoleCommand: () => {
+          const id = roleIds[Math.min(reads++, roleIds.length - 1)]!;
+          if (id === 'gone') throw new NoSuchEntityException({ $metadata: {}, message: 'gone' });
+          return { Role: { RoleName: 'my-role', RoleId: id } };
+        },
+        ListInstanceProfilesForRoleCommand: profiles(['stack-profile'], []),
+      };
+    };
+
+    it('another role under the name: refused by identity, with no second DeleteRole', async () => {
+      drive(drained(['AROA-OURS', 'AROA-OTHER']));
+
+      const error = await new IAMRoleProvider()
+        .delete('Role', 'my-role', 'AWS::IAM::Role')
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect((error as Error).message).toContain('its RoleId differs');
+      expect((error as Error).message).not.toContain('AROA');
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(sent.filter((n) => n === 'DeleteRoleCommand')).toHaveLength(1);
+    });
+
+    it('the same role: DeleteRole is sent again', async () => {
+      let deletes = 0;
+      drive({
+        ...drained(['AROA-OURS']),
+        DeleteRoleCommand: () => (deletes++ === 0 ? conflict() : {}),
+      });
+
+      await new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role');
+
+      expect(deletes).toBe(2);
+    });
+
+    it('the role gone by the re-read: deleted, with no second DeleteRole', async () => {
+      drive(drained(['AROA-OURS', 'gone']));
+
+      await new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role');
+
+      expect(sent.filter((n) => n === 'DeleteRoleCommand')).toHaveLength(1);
+    });
+  });
+
   it('masks a secret-derived profile name in the non-destroy wording too', async () => {
     drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['SECRET-profile']) });
 

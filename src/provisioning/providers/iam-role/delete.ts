@@ -16,6 +16,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { assertRegionMatch, holderRefusalRun, type DeleteContext } from '../../region-check.js';
 import { markNotGone } from '../../not-gone.js';
+import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
 import type { ResourceDeleteResult } from '../../../types/resource.js';
@@ -50,14 +51,23 @@ export async function deleteImpl(
   // `DeleteRole` is never read as a whole survivor.
   const progress: DeleteProgress = { stripped: false };
 
+  // The `RoleId` step 0's last read answered: the second `DeleteRole` after a
+  // settle is held to it (go-to-k/cdkd#6770), as the group's is to its
+  // `GroupId`.
+  let stepZeroRoleId: string | undefined;
   try {
     // Check if role exists, and (go-to-k/cdkd#6655) that it is the role cdkd
     // created: a record holding a `RoleId` refuses a holder of the name with
     // another one before anything is detached. No `RoleId` recorded: the
     // by-name delete as before.
     try {
-      const readRoleId = async () =>
-        (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role?.RoleId;
+      const readRoleId = async () => {
+        const id = (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role
+          ?.RoleId;
+        // The last read's: after a re-read, the role it answered for.
+        stepZeroRoleId = id;
+        return id;
+      };
       await assertRecordedIdentity({
         label: 'IAM role',
         resourceType,
@@ -132,7 +142,37 @@ export async function deleteImpl(
           );
           return undefined;
         });
-        if (held === 'empty') continue;
+        if (held === 'empty') {
+          // The retry deletes by name: hold it to the role step 0 read. A
+          // role gone meanwhile is deleted; another role under the name is
+          // refused, with nothing sent to it.
+          let liveId: string | undefined;
+          try {
+            liveId = (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }))).Role
+              ?.RoleId;
+          } catch (readError) {
+            if (readError instanceof NoSuchEntityException) break;
+            throw readError;
+          }
+          if (stepZeroRoleId !== undefined && liveId !== stepZeroRoleId) {
+            const refusal = markNonRetryable(
+              new RecordedIdentityError(
+                log.mask(
+                  `Failed to delete IAM role ${logicalId}: DeleteRole on ${physicalId} was refused ` +
+                    `(DeleteConflict), and the role now holding that name is not the one this ` +
+                    `delete read before it (its RoleId differs). cdkd sends it no delete and keeps ` +
+                    `the record. Leave that role alone; if the role cdkd created is gone, drop ` +
+                    `the record with ${stateOrphanRecordRemedy(context, logicalId)}.`
+                ),
+                resourceType,
+                logicalId,
+                physicalId
+              )
+            );
+            throw progress.stripped ? markDeleteStarted(refusal) : refusal;
+          }
+          continue;
+        }
         if (held === undefined) throw error;
         const run = holderRefusalRun(context);
         const refusal = markNonRetryable(
