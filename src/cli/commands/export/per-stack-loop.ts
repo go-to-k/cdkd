@@ -439,7 +439,7 @@ export async function runPerStackImportLoop(args: {
 
   // ---- Pre-flight: every CFn name in the tree must be free ----
   for (const plan of perStackPlans) {
-    await assertCfnStackAbsent(deps.cfnClient, plan.cfnName);
+    await assertCfnStackAbsent(deps.cfnClient, plan.cfnName, plan.cdkdName);
   }
 
   // ---- Dry-run: return now (before any lock / AWS mutation) ----

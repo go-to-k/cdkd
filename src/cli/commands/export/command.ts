@@ -1,3 +1,4 @@
+import { deleteSignalReceiver } from '../../../deployment/deploy-engine/signal-receiver.js';
 import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage } from '../../../utils/display-safe.js';
 import {
@@ -288,7 +289,7 @@ export async function exportCommand(
     // CreateChangeSet either creates a new stack (CHANGE_SET_TYPE=IMPORT
     // against a non-existent stack) or attaches imports to an existing
     // one; mixing the two cases silently would surprise users.
-    await assertCfnStackAbsent(awsClients.cloudFormation, cfnStackName);
+    await assertCfnStackAbsent(awsClients.cloudFormation, cfnStackName, resolvedStackName);
 
     // Load cdkd state for the target stack.
     const stateData = await stateBackend.getState(resolvedStackName, targetRegion);
@@ -917,6 +918,11 @@ export async function exportCommand(
       // phase-2 failure leaves state intact for recovery (see catch above).
       // The lock is still held; we release it inside the outer `finally`.
       await removeExportedStackRecord(stateBackend, resolvedStackName, targetRegion, logger);
+      // go-to-k/cdkd#6705: a receiver the IMPORT did not replace (exported
+      // under another `--cfn-stack-name`) goes with the record.
+      if (typeof state.signalReceiverStackId === 'string') {
+        await deleteSignalReceiver(awsClients.cloudFormation, state.signalReceiverStackId, logger);
+      }
       logger.info(
         `cdkd state for ${quotedOrNotShown(resolvedStackName)} (${quotedRegion(targetRegion)}) removed. ` +
           `Manage the stack with 'cdk deploy' or 'aws cloudformation' from here on.`

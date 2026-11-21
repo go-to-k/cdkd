@@ -139,15 +139,24 @@ export function parseTemplateFile(path: string): {
 
 export async function assertCfnStackAbsent(
   cfnClient: AwsClients['cloudFormation'],
-  stackName: string
+  stackName: string,
+  cdkdStackName?: string
 ): Promise<void> {
   try {
     const resp = await cfnClient.send(new DescribeStacksCommand({ StackName: stackName }));
     const stack = resp.Stacks?.[0];
     if (!stack) return;
-    // go-to-k/cdkd#6705: the cdkd stack's own signal receiver holds its name;
-    // it is deleted right before the IMPORT changeset takes the name.
-    if (stack.StackStatus !== 'DELETE_COMPLETE' && isReceiver(stack)) return;
+    // go-to-k/cdkd#6705: the exported cdkd stack's OWN signal receiver holds
+    // its name (a receiver is named exactly as its cdkd stack); it is deleted
+    // right before the IMPORT changeset takes the name. Another cdkd stack's
+    // receiver (`--cfn-stack-name <other>`) is refused like any stack.
+    if (
+      stackName === cdkdStackName &&
+      stack.StackStatus !== 'DELETE_COMPLETE' &&
+      isReceiver(stack)
+    ) {
+      return;
+    }
     // REVIEW_IN_PROGRESS comes from a failed CreateChangeSet IMPORT that
     // was never deleted; surfacing it lets the user clean up before retry.
     throw new Error(

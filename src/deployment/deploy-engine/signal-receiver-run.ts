@@ -10,6 +10,8 @@ import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/stringify.js';
+import { isCustomResourceType } from '../../provisioning/custom-resource-secure-references.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { buildResolverContext } from './resolver-context.js';
@@ -164,6 +166,20 @@ export async function resolveTemplateMetadata(
       throw new Error(`${logicalId}'s Metadata reads a NoEcho value`);
     }
   }
+  // A credential attribute (an access key's `SecretAccessKey`, a client
+  // secret, an API key) is recorded in plaintext and carries no NoEcho mark,
+  // and a custom resource's `Data` certifies nothing: CloudFormation keeps
+  // such a read unresolved in its template, so cdkd refuses to resolve one.
+  for (const [ref, attribute] of getAttReadsOf(metadata)) {
+    const type = template.Resources?.[ref]?.Type;
+    if (
+      isSensitiveAttributeName(attribute) ||
+      isSecretValuedAttribute(type, attribute) ||
+      (type !== undefined && isCustomResourceType(type))
+    ) {
+      throw new Error(`${logicalId}'s Metadata reads a credential-bearing attribute`);
+    }
+  }
   const context = buildResolverContext(
     engine.resolverContextDeps(),
     {
@@ -222,4 +238,38 @@ export function refuseUnservedSignalWait(
       logicalId
     )
   );
+}
+
+/** Every `[logicalId, attribute]` an `Fn::GetAtt` or `Fn::Sub` in `value` reads. */
+export function getAttReadsOf(value: unknown): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) {
+      v.forEach(walk);
+      return;
+    }
+    if (v === null || typeof v !== 'object') return;
+    for (const [key, inner] of Object.entries(v as Record<string, unknown>)) {
+      if (key === 'Fn::GetAtt') {
+        const parts =
+          typeof inner === 'string'
+            ? [inner.slice(0, inner.indexOf('.')), inner.slice(inner.indexOf('.') + 1)]
+            : Array.isArray(inner)
+              ? inner
+              : [];
+        if (typeof parts[0] === 'string' && typeof parts[1] === 'string') {
+          out.push([parts[0], parts[1]]);
+        }
+      } else if (key === 'Fn::Sub') {
+        const text =
+          typeof inner === 'string' ? inner : Array.isArray(inner) ? inner[0] : undefined;
+        if (typeof text === 'string') {
+          for (const m of text.matchAll(/\$\{([^!}.][^}.]*)\.([^}]+)\}/g)) out.push([m[1]!, m[2]!]);
+        }
+      }
+      walk(inner);
+    }
+  };
+  walk(value);
+  return out;
 }

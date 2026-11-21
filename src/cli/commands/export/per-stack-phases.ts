@@ -1,3 +1,4 @@
+import { deleteSignalReceiver } from '../../../deployment/deploy-engine/signal-receiver.js';
 import { releaseRegistryMarkerQuietly } from '../registry-release.js';
 import { recordRetainedForReadoption } from '../../../deployment/retained-readoption.js';
 import { pasteableCommand } from '../../../utils/pasteable-command.js';
@@ -601,6 +602,13 @@ export async function runPerStackImportPhases(
   for (const node of leafFirst) {
     try {
       await removeExportedStackRecord(deps.stateBackend, node.stackName, node.region, logger);
+      // go-to-k/cdkd#6705: a receiver the IMPORT did not replace (exported
+      // under another `--cfn-stack-name`) goes with the record.
+      const receiverId = perStackPlans.find((p) => p.cdkdName === node.stackName)?.state
+        .signalReceiverStackId;
+      if (typeof receiverId === 'string') {
+        await deleteSignalReceiver(deps.cfnClient, receiverId, logger);
+      }
       // Same record-derived pair as the warn below, and the same rule: a
       // planted newline in a logical id forges a line here too.
       logger.info(
