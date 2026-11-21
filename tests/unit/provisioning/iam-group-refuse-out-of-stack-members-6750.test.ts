@@ -1,0 +1,255 @@
+/**
+ * go-to-k/cdkd#6750 (group half): on a stack destroy, an IAM group a user is
+ * still in is refused (CloudFormation's handler has no
+ * `iam:RemoveUserFromGroup`, and `DeleteGroup` answers `DeleteConflict`)
+ * instead of the user being removed from it. A deploy's delete keeps the
+ * removal: a same-name re-create relies on it (go-to-k/cdkd#4461).
+ */
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { DeleteConflictException, NoSuchEntityException } from '@aws-sdk/client-iam';
+
+const mockSend = vi.fn();
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    iam: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+  }),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
+  };
+  logger.child.mockReturnValue(logger);
+  return { getLogger: () => logger };
+});
+
+import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
+
+type Handler = (input: Record<string, unknown>) => unknown;
+let sent: string[];
+
+function drive(handlers: Record<string, Handler>): void {
+  mockSend.mockImplementation(
+    async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const name = command.constructor.name;
+      sent.push(name);
+      const handler = handlers[name];
+      return handler ? handler(command.input) : {};
+    }
+  );
+}
+
+const conflict = (): never => {
+  throw new DeleteConflictException({
+    $metadata: {},
+    message: 'Cannot delete entity, must remove users from group first.',
+  });
+};
+
+/** Members per `GetGroup`, in order (step 0's read first); the last repeats. */
+function members(...reads: string[][]): Handler {
+  let call = 0;
+  return () => {
+    const names = reads[Math.min(call++, reads.length - 1)]!;
+    return {
+      Group: { GroupName: 'my-group', GroupId: 'AGPA' },
+      Users: names.map((UserName) => ({ UserName })),
+    };
+  };
+}
+
+const base: Record<string, Handler> = {
+  ListAttachedGroupPoliciesCommand: () => ({ AttachedPolicies: [] }),
+  ListGroupPoliciesCommand: () => ({ PolicyNames: [] }),
+  // Every user read is still in the group unless a case says otherwise.
+  ListGroupsForUserCommand: () => ({ Groups: [{ GroupName: 'my-group' }] }),
+  DeleteGroupCommand: conflict,
+};
+
+const destroy = (maskSecrets?: (text: string) => string) =>
+  new IAMUserGroupProvider()
+    .delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
+      stackDestroy: true,
+      ...(maskSecrets && { maskSecrets }),
+    })
+    .then(
+      () => undefined,
+      (e: unknown) => e
+    );
+
+const count = (name: string) => sent.filter((n) => n === name).length;
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  mockSend.mockReset();
+  sent = [];
+  // The settle's waits run at once; their duration is asserted where it matters.
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) => {
+    fn();
+    return 0;
+  }) as unknown as typeof setTimeout);
+});
+
+describe('IAM group delete on a stack destroy (#6750)', () => {
+  it('refuses a group an out-of-stack user is in, non-retryably, naming the user, and never removes it', async () => {
+    drive({ ...base, GetGroupCommand: members(['outsider']) });
+
+    const error = await destroy();
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    const message = (error as Error).message;
+    expect(message).toContain(
+      'group my-group still has user(s) outsider, whose membership this destroy did not remove'
+    );
+    expect(message).toContain('aws iam remove-user-from-group');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).cause).toBeInstanceOf(DeleteConflictException);
+    expect(sent).not.toContain('RemoveUserFromGroupCommand');
+    // Step 0's read, then five unchanged reads.
+    expect(count('GetGroupCommand')).toBe(1 + 5);
+    expect(count('DeleteGroupCommand')).toBe(1);
+    expect(vi.mocked(setTimeout).mock.calls.map((c) => c[1])).toContain(2000);
+  });
+
+  it("the stack's own member still shown for a few reads, then gone: DeleteGroup is retried and succeeds", async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      GetGroupCommand: members(['own'], ['own'], ['own'], []),
+      DeleteGroupCommand: () => {
+        deletes++;
+        if (deletes === 1) conflict();
+        return {};
+      },
+    });
+
+    await expect(destroy()).resolves.toBeUndefined();
+    expect(deletes).toBe(2);
+    expect(sent).not.toContain('RemoveUserFromGroupCommand');
+  });
+
+  it('waits while the members drain, then refuses with who stays', async () => {
+    drive({ ...base, GetGroupCommand: members(['own', 'kept'], ['own', 'kept'], ['kept']) });
+
+    const message = ((await destroy()) as Error).message;
+    expect(message).toContain('still has user(s) kept, whose');
+    expect(message).not.toContain('own');
+  });
+
+  it('a user ListGroupsForUser shows gone, or out of the group, is the read lagging', async () => {
+    drive({
+      ...base,
+      GetGroupCommand: members(['deleted', 'left', 'kept']),
+      ListGroupsForUserCommand: (input) => {
+        if (input['UserName'] === 'deleted') {
+          throw new NoSuchEntityException({ $metadata: {}, message: 'not found' });
+        }
+        return { Groups: input['UserName'] === 'kept' ? [{ GroupName: 'my-group' }] : [] };
+      },
+    });
+
+    expect(((await destroy()) as Error).message).toContain('still has user(s) kept, whose');
+  });
+
+  it("none confirmed: DeleteGroup is tried once more and AWS's error surfaces", async () => {
+    drive({
+      ...base,
+      GetGroupCommand: members(['deleted']),
+      ListGroupsForUserCommand: () => {
+        throw new NoSuchEntityException({ $metadata: {}, message: 'not found' });
+      },
+    });
+
+    const error = await destroy();
+    expect((error as Error).message).toMatch(/^Failed to delete IAM group Group: /);
+    expect((error as Error).message).not.toContain('still has user');
+    expect(isMarkedNonRetryable(error)).toBe(false);
+    expect(count('DeleteGroupCommand')).toBe(2);
+  });
+
+  it('names at most five users and says there are more', async () => {
+    drive({ ...base, GetGroupCommand: members(['u1', 'u2', 'u3', 'u4', 'u5', 'u6']) });
+
+    expect(((await destroy()) as Error).message).toContain(
+      'still has user(s) u1, u2, u3, u4, u5, and more, whose'
+    );
+  });
+
+  it('a member list that keeps changing is refused at the cap with who it shows last', async () => {
+    let call = 0;
+    drive({
+      ...base,
+      GetGroupCommand: () => ({
+        Group: { GroupName: 'my-group' },
+        Users: [{ UserName: `u${++call}` }],
+      }),
+    });
+
+    expect(((await destroy()) as Error).message).toContain('still has user(s) u31, whose');
+    expect(call).toBe(31);
+  });
+
+  it('a DeleteGroup that succeeds reads the members only once (step 0)', async () => {
+    drive({ ...base, GetGroupCommand: members(['outsider']), DeleteGroupCommand: () => ({}) });
+
+    await expect(destroy()).resolves.toBeUndefined();
+    expect(count('GetGroupCommand')).toBe(1);
+    expect(sent).not.toContain('RemoveUserFromGroupCommand');
+  });
+
+  it("another DeleteGroup failure keeps AWS's error and reads nothing more", async () => {
+    drive({
+      ...base,
+      GetGroupCommand: members(['outsider']),
+      DeleteGroupCommand: () => {
+        throw Object.assign(new Error('denied'), { name: 'AccessDenied', $metadata: {} });
+      },
+    });
+
+    const error = await destroy();
+    expect((error as Error).message).not.toContain('still has user');
+    expect(count('GetGroupCommand')).toBe(1);
+  });
+
+  it('a policy detached before the refusal marks it delete-started', async () => {
+    drive({
+      ...base,
+      ListAttachedGroupPoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
+      }),
+      GetGroupCommand: members(['outsider']),
+    });
+
+    const error = await destroy();
+    expect((error as Error).message).toContain('still has user(s) outsider,');
+    expect(isDeleteStarted(error)).toBe(true);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('masks a secret-derived user name', async () => {
+    drive({ ...base, GetGroupCommand: members(['SECRET-user']) });
+
+    const error = await destroy((text) => text.split('SECRET').join('***'));
+    expect((error as Error).message).toContain('user(s) ***-user');
+    expect((error as Error).message).not.toContain('SECRET');
+  });
+});
+
+describe('IAM group delete outside a stack destroy keeps removing its members (#4461)', () => {
+  it('removes each member, then deletes the group', async () => {
+    drive({ ...base, GetGroupCommand: members(['member']), DeleteGroupCommand: () => ({}) });
+
+    await new IAMUserGroupProvider().delete('Group', 'my-group', 'AWS::IAM::Group');
+
+    expect(sent).toContain('RemoveUserFromGroupCommand');
+    expect(sent.at(-1)).toBe('DeleteGroupCommand');
+  });
+});
