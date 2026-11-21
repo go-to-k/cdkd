@@ -426,32 +426,20 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   none('AWS::S3::Bucket', perms('s3:DeleteBucket, s3:ListBucket (a non-empty bucket is refused)')),
   none('AWS::S3::BucketPolicy', perms('s3:GetBucketPolicy, s3:DeleteBucketPolicy')),
   none('AWS::S3Express::DirectoryBucket', perms('s3express:DeleteBucket')),
-  {
-    type: 'AWS::S3Tables::TableBucket',
-    source: perms('s3tables:DeleteTableBucket'),
-    blockers: [
-      // Data the handler refuses over: emptied only under --force-stateful-recreation (#6749).
-      refused(
-        'tables and namespaces it holds',
-        `${P}s3-tables/table-bucket.ts`,
-        'delete them: they were created outside the stack, or retained by a '
-      ),
-    ],
-  },
+  none(
+    'AWS::S3Tables::TableBucket',
+    perms(
+      's3tables:DeleteTableBucket (a bucket holding tables or namespaces is refused, as cdkd refuses one since #6766, emptying it only under --force-stateful-recreation)'
+    )
+  ),
   none('AWS::S3Tables::Namespace', perms('s3tables:DeleteNamespace')),
   none('AWS::S3Tables::Table', perms('s3tables:GetTable, s3tables:DeleteTable')),
-  {
-    type: 'AWS::S3Vectors::VectorBucket',
-    source: perms('s3vectors:GetVectorBucket, s3vectors:DeleteVectorBucket'),
-    blockers: [
-      // Data the handler refuses over: emptied only under --force-stateful-recreation (#6749).
-      refused(
-        'vector indexes it holds',
-        `${P}s3-vectors-provider.ts`,
-        'they were created outside the stack, or retained by a DeletionPolicy. '
-      ),
-    ],
-  },
+  none(
+    'AWS::S3Vectors::VectorBucket',
+    perms(
+      's3vectors:GetVectorBucket, s3vectors:DeleteVectorBucket (a bucket holding vector indexes is refused, as cdkd refuses one since #6766, emptying it only under --force-stateful-recreation)'
+    )
+  ),
   none('AWS::SQS::Queue', perms('sqs:DeleteQueue, sqs:GetQueueAttributes')),
   none('AWS::SQS::QueuePolicy', perms('sqs:SetQueueAttributes (the delete itself)')),
   none(
