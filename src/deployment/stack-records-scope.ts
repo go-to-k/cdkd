@@ -21,7 +21,12 @@ import { shouldRetainResource, type ResourceState } from '../types/state.js';
  *   live-policy comparison normalizes principals against.
  * - `AWS::IAM::Policy` (`providers/iam-policy/principal-identity.ts`): the
  *   recorded identity id of each in-stack principal the inline policy names,
- *   compared before the policy is removed from it by name (go-to-k/cdkd#6655).
+ *   compared before the policy is removed from it by name (go-to-k/cdkd#6655),
+ *   or put on it by name (go-to-k/cdkd#6722, where a deploy's
+ *   `writtenFreshThisRun` spares the read of a principal this deploy created
+ *   or replaced). The
+ *   `AWS::IAM::ManagedPolicy` provider asks the same of the principals it
+ *   attaches to or detaches from (go-to-k/cdkd#6722).
  *
  * WHY AN ASYNC-LOCAL STORE rather than a `CreateContext` / `DeleteContext`
  * field: few providers read it, and the delete is reached from
@@ -53,6 +58,48 @@ export interface StackRecordsView {
   readonly inFlight?: () => Iterable<InFlightWrite>;
   /** The logical ids of this view's writes now waiting on a sibling. */
   readonly waiting?: Set<string>;
+  /**
+   * Whether THIS operation's own create of `logicalId`, or an update of it
+   * that answered `wasReplaced`, succeeded (go-to-k/cdkd#6722): its record's
+   * AWS-minted id is the one that create answered. Known from what the
+   * engine dispatched, never inferred from the record's ids. Only a deploy
+   * knows it: a destroy and a rollback replay leave it unset, and their
+   * readers treat every record as written before them.
+   */
+  readonly writtenFreshThisRun?: (logicalId: string) => boolean;
+  /**
+   * The object one run's views share, keying the run's
+   * {@link verifiedIdentityCache}: a destroy's and a replay's records bag
+   * (their per-call views share it), a deploy's own fresh object (built once
+   * per run, and distinct from the bag its auto-rollback replays over). A
+   * view without one caches nothing.
+   */
+  readonly runKey?: object;
+}
+
+const verifiedIdentityCaches = new WeakMap<object, Map<string, Promise<void>>>();
+
+/**
+ * go-to-k/cdkd#6722: the identity compares that MATCHED during the run `view`
+ * belongs to, by a key naming the principal and its recorded ids, so each
+ * in-stack principal is read at most once per deploy, destroy or rollback
+ * replay. Only a match stays: a caller deletes an entry whose compare
+ * rejected (a mismatch, an unreadable or denied read), so the next attempt
+ * reads again; callers racing on one principal share its in-flight compare.
+ * Keyed by the run's records bag ({@link StackRecordsView.runKey}): a new run
+ * (a new bag) starts empty, and a nested stack's own bag has its own.
+ */
+export function verifiedIdentityCache(
+  view: StackRecordsView | undefined
+): Map<string, Promise<void>> | undefined {
+  const key = view?.runKey;
+  if (key === undefined) return undefined;
+  let cache = verifiedIdentityCaches.get(key);
+  if (cache === undefined) {
+    cache = new Map();
+    verifiedIdentityCaches.set(key, cache);
+  }
+  return cache;
 }
 
 /** A create or update the deploy has dispatched and not yet settled. */
@@ -125,12 +172,17 @@ export function deployStackRecordsView(
   before: Record<string, ResourceState>,
   deleting: ReadonlySet<string>,
   unsettled: (logicalId: string) => boolean = () => false,
-  inFlight?: () => Iterable<InFlightWrite>
+  inFlight?: () => Iterable<InFlightWrite>,
+  writtenFresh?: (logicalId: string) => boolean
 ): StackRecordsView {
   const settled = (): Array<[string, ResourceState]> =>
     Object.entries(records).filter(([lid]) => !unsettled(lid));
   return {
     ...(inFlight && { inFlight, waiting: new Set<string>() }),
+    ...(writtenFresh && { writtenFreshThisRun: writtenFresh }),
+    // Its own key, not the bag: the deploy's auto-rollback replays over the
+    // SAME bag, and must not inherit the deploy's matches (it re-reads).
+    runKey: {},
     live: settled,
     survivors: () => [
       ...settled().filter(([lid]) => !deleting.has(lid)),
@@ -147,6 +199,7 @@ export function deployStackRecordsView(
  */
 export function destroyStackRecordsView(records: Record<string, ResourceState>): StackRecordsView {
   return {
+    runKey: records,
     live: () => Object.entries(records),
     survivors: () =>
       Object.entries(records).filter(([, record]) => shouldRetainResource(record.deletionPolicy)),
@@ -171,6 +224,7 @@ export function replayStackRecordsView(
     ([lid, record]) => record.deletionPolicy === 'Retain' || orphanLogicalIds.has(lid)
   );
   return {
+    runKey: records,
     live: () => Object.entries(records),
     survivors: () => [
       ...Object.entries(records),

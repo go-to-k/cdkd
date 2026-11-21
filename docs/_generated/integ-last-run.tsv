@@ -231,17 +231,17 @@ glue-update-hardening	2026-11-10T16:06:52Z	PASS	335	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc056, rc ok, no pre-existing detector, revert-identity kept x2, orph clean (eu-west-1)
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-access-key	2026-11-06T19:55:55Z	PASS	80	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
-iam-managed-policy	2026-11-20T23:48:27Z	PASS	223	verify.sh	PR6727 d8353e94d, step 3b2 one detach, identity kept, probe RED at 3b2, rc ok, orph clean
+iam-managed-policy	2026-11-21T06:16:00Z	PASS	222	verify.sh	PR6737 22576bbcc; rc ok, orph clean
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-11-20T16:58:26Z	PASS	130	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean, 3x AFTER at 92e003a70 (#6703); destroy span med 15587ms vs BEFORE 15546ms
-iam-recreate-reattach	2026-11-20T20:50:16Z	PASS	260	verify.sh	rc ok, orph clean, own state bucket, head 92e003a70 (#6703)
+iam-recreate-reattach	2026-11-21T06:16:00Z	PASS	263	verify.sh	PR6737 22576bbcc; rc ok, orph clean; own bucket
 iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-role-policies-drift-clean	2026-11-20T23:48:27Z	PASS	444	verify.sh	PR6727 d8353e94d, own state bucket, rc ok, orph clean
+iam-role-policies-drift-clean	2026-11-21T06:16:00Z	PASS	458	verify.sh	PR6737 22576bbcc; 3x AFTER rc ok, orph clean; own bucket
 iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-secret-derived-principals	2026-11-20T16:58:26Z	PASS	155	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
-iam-sibling-managed-policy-drift	2026-11-20T23:48:27Z	PASS	574	verify.sh	PR6727 d8353e94d, own state bucket, rc ok, orph clean
-iam-user-group-fix-forward-orphan	2026-11-20T16:58:26Z	PASS	130	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
+iam-secret-derived-principals	2026-11-21T06:16:00Z	PASS	163	verify.sh	PR6737 22576bbcc; rc ok, orph clean
+iam-sibling-managed-policy-drift	2026-11-21T06:16:00Z	PASS	608	verify.sh	PR6737 22576bbcc; rc ok, orph clean; own bucket
+iam-user-group-fix-forward-orphan	2026-11-21T06:16:00Z	PASS	137	verify.sh	PR6737 22576bbcc; rc ok, orph clean; own bucket
 imagebuilder-infra-update	2026-11-20T10:54:34Z	PASS	155	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
 import-attribute-readback-final	2026-11-04T19:01:45Z	PASS	240	verify.sh	rc ok, orph clean (temp state bucket)
