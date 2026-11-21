@@ -287,6 +287,27 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
     expect(sent).not.toContain('ListGroupsForUserCommand');
   });
 
+  it('the identity refusal after a policy detach is marked delete-started', async () => {
+    let reads = 0;
+    drive({
+      ...base,
+      ListAttachedGroupPoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
+      }),
+      GetGroupCommand: () => {
+        reads++;
+        return {
+          Group: { GroupName: 'my-group', GroupId: reads === 1 ? 'AGPAORIGINAL' : 'AGPASUCCESSOR' },
+          Users: [{ UserName: 'outsider' }],
+        };
+      },
+    });
+
+    const error = await destroy();
+    expect(error).toBeInstanceOf(RecordedIdentityError);
+    expect(isDeleteStarted(error)).toBe(true);
+  });
+
   it('a step 0 read with no GroupId holds no later read to one', async () => {
     let reads = 0;
     drive({
