@@ -636,6 +636,13 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-provider-error-cause.ts',
         cache: false,
       },
+      // Issue #6713 — a replaced resource's old copy is deleted only in the
+      // deploy's cleanup phase, or at a site on the reviewed exception list.
+      // `cache: false` for the sibling critics' reason.
+      'audit:replaced-delete-deferral:check': {
+        command: 'node --experimental-strip-types scripts/check-replaced-delete-deferral.ts',
+        cache: false,
+      },
       // Issue #2053 — every `withRetry` under `src/provisioning/**` must thread
       // `isInterrupted` / `onInterrupted`. `withRetry` is the ONLY thing that
       // polls an interrupt DURING a backoff (the engine, `destroy-runner.ts`
