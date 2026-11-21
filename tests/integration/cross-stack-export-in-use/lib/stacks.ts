@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -30,6 +31,17 @@ export class ConsumerStack extends cdk.Stack {
     new ssm.StringParameter(this, 'QueueUrl', {
       parameterName: '/cdkd-integ/export-in-use/queue-url',
       stringValue: props.queue.queueUrl,
+    });
+    // Named after the imported queue name: the producer's replacement replaces
+    // it, which `cdkd diff` over both stacks must show (go-to-k/cdkd#6796).
+    new iam.CfnRole(this, 'NamedByQueue', {
+      roleName: `cdkd-integ-eiu-${props.queue.queueName}`,
+      assumeRolePolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          { Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' }, Action: 'sts:AssumeRole' },
+        ],
+      },
     });
   }
 }

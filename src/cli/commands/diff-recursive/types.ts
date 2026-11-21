@@ -1,4 +1,5 @@
 import type { MovedTo, RefactorSides } from '../../../analyzer/refactor-hints.js';
+import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 import type { CreateRouteOf } from '../../../deployment/deploy-engine/update-policy.js';
 import type { NoEchoMacCache } from './noecho-macs.js';
 import type { MacWriteOnlyLookups } from '../../../deployment/deploy-engine/update/noecho-macs.js';
@@ -343,6 +344,14 @@ export interface ComputeStackDiffOptions {
   producerLookup?: ProducerLookup;
   /** The stack's synthesized account, named by that reference's refusal. */
   consumerAccount?: string;
+  /**
+   * go-to-k/cdkd#6796: the run's previewed producer values. Every node's
+   * resolver reads it; a node with {@link recordCrossStackPreview} also adds
+   * the exports and outputs its own deploy changes.
+   */
+  crossStackPreview?: CrossStackPreview;
+  /** True on a top-level stack, whose exports other stacks import. */
+  recordCrossStackPreview?: boolean;
   /**
    * go-to-k/cdkd#6146: a caller diffing one stack several times in one run
    * (`cdkd refactor`) shares its NoEcho value MACs here, so they are made once.

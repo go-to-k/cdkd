@@ -6,7 +6,8 @@
 #
 # Stacks (lib/stacks.ts):
 #   CdkdExportInUseProd        SQS queue; CDK auto-exports its ARN and URL.
-#   CdkdExportInUseCons        two SSM parameters importing them.
+#   CdkdExportInUseCons        two SSM parameters importing them, and one named
+#                              IAM role named after the imported queue name.
 #   CdkdExportInUseEmbraceProd SSM parameter, plus (phase 1) an S3 bucket whose
 #                              name CDK auto-exports.
 #   CdkdExportInUseEmbraceCons SSM parameter importing it (phase 1) or holding
@@ -18,6 +19,9 @@
 #      "change"; q1 still exists and q2 was never created.
 #   3. Phase 2, the embrace producer ALONE: refused, exit 1, naming its
 #      consumer and "remove"; the bucket still exists.
+#   3b. Phase 2 `cdkd diff` of producer + consumer, --fail-on destructive:
+#      exit 1, listing the consumer's queue-named parameter as replaced and its
+#      two parameters as changed (go-to-k/cdkd#6796); nothing is deployed.
 #   4. Phase 2 deploy --all: succeeds; the consumer parameters hold q2's ARN /
 #      URL, q1 is gone, the embrace consumer holds the literal and the bucket
 #      is gone.
@@ -77,6 +81,8 @@ P_ARN="/cdkd-integ/export-in-use/queue-arn"
 P_URL="/cdkd-integ/export-in-use/queue-url"
 P_EMBRACE="/cdkd-integ/export-in-use/embrace-bucket"
 P_KEEP="/cdkd-integ/export-in-use/embrace-keep"
+R_NAMED1="cdkd-integ-eiu-${Q1}"
+R_NAMED2="cdkd-integ-eiu-${Q2}"
 
 cleanup() {
   local rc=$?
@@ -92,6 +98,9 @@ cleanup() {
   done
   for p in "${P_ARN}" "${P_URL}" "${P_EMBRACE}" "${P_KEEP}"; do
     aws ssm delete-parameter --name "${p}" --region "${AWS_REGION}" >/dev/null 2>&1
+  done
+  for r in "${R_NAMED1}" "${R_NAMED2}"; do
+    aws iam delete-role --role-name "${r}" >/dev/null 2>&1
   done
   # The embrace bucket's name is generated; Step 1 records it.
   case "${BUCKET:-}" in
@@ -156,11 +165,35 @@ echo "==> Step 3: the embrace producer alone, removing the exported bucket, is r
 expect_refusal "${EPROD}" "${ECONS}" "remove"
 aws s3api head-bucket --bucket "${BUCKET}" --region "${AWS_REGION}"
 
+echo "==> Step 3b: phase 2 diff of producer + consumer previews the consumer's changes"
+DIFF_RC=0
+DIFF_OUT=$(CDKD_TEST_UPDATE=true ${CDKD} diff "${PROD}" "${CONS}" --fail-on destructive \
+  --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1) || DIFF_RC=$?
+echo "${DIFF_OUT}" | tail -25
+expect_eq "exit code of the destructive diff" "${DIFF_RC}" "1"
+# Sentinel independent of the parsed rows: the --fail-on summary line.
+if ! grep -q "destructive change(s) (--fail-on=destructive)" <<<"${DIFF_OUT}"; then
+  echo "FAIL: the --fail-on=destructive summary sentinel is missing" >&2
+  exit 1
+fi
+if ! grep -qE "^  ${CONS}: AWS::IAM::Role .*NamedByQueue.* will be replaced" <<<"${DIFF_OUT}"; then
+  echo "FAIL: the diff does not list ${CONS}'s NamedByQueue as replaced" >&2
+  exit 1
+fi
+if grep -q "No changes detected for stack ${CONS}" <<<"${DIFF_OUT}"; then
+  echo "FAIL: the diff previews ${CONS} as unchanged" >&2
+  exit 1
+fi
+assert_gone "the diff created ${Q2}" aws sqs get-queue-url --queue-name "${Q2}" --region "${AWS_REGION}"
+aws iam get-role --role-name "${R_NAMED1}" --query Role.RoleName --output text >/dev/null
+
 echo "==> Step 4: phase 2 deploy --all goes through"
 CDKD_TEST_UPDATE=true ${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
 expect_eq "consumer's queue ARN" "$(param "${P_ARN}")" "$(queue_arn "${Q2}")"
 expect_eq "consumer's queue URL" "$(param "${P_URL}")" "$(queue_url "${Q2}")"
 assert_gone "${Q1} survived its replacement" aws sqs get-queue-url --queue-name "${Q1}" --region "${AWS_REGION}"
+aws iam get-role --role-name "${R_NAMED2}" --query Role.RoleName --output text >/dev/null
+assert_gone "role ${R_NAMED1} survived its replacement" aws iam get-role --role-name "${R_NAMED1}"
 expect_eq "embrace consumer's value" "$(param "${P_EMBRACE}")" "inlined"
 assert_gone "bucket ${BUCKET} survived its removal" aws s3api head-bucket --bucket "${BUCKET}" --region "${AWS_REGION}"
 
@@ -174,6 +207,7 @@ assert_gone "${Q2} survived destroy" aws sqs get-queue-url --queue-name "${Q2}" 
 for p in "${P_ARN}" "${P_URL}" "${P_EMBRACE}" "${P_KEEP}"; do
   assert_gone "parameter ${p} survived destroy" aws ssm get-parameter --name "${p}" --region "${AWS_REGION}"
 done
+assert_gone "role ${R_NAMED2} survived destroy" aws iam get-role --role-name "${R_NAMED2}"
 
 trap - EXIT INT TERM
 echo ""
