@@ -24,7 +24,7 @@ apigw-vpclink-integration-target	2026-11-12T11:22:31Z	PASS	346	verify.sh	rc ok, 
 app-autoscaling-recreate	2026-11-19T14:40:15Z	PASS	122	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
 appconfig	2026-11-09T08:45:43Z	PASS	70	verify.sh	maintainer merge-gate rerun of PR 6065 (head 4647d5ac3); Environment on SDK provider, 0 errors, 0 orphans
 appconfig-environment-delete-protection	2026-11-10T07:11:19Z	PASS	91	verify.sh	3 consecutive PASS after #6074 settle wait (95/91/91s); APPLY control refused each run, 0 errors, 0 orphans
-appsync	2026-11-17T03:42:27Z	PASS	240	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
+appsync	2026-11-21T13:07:53Z	PASS	246	verify.sh	rc ok, orph clean; #6779 schema-definition
 asg-destroy-running-instances	2026-11-17T03:39:15Z	PASS	305	verify.sh	rc ok, orph clean (#6437 PR #6469)
 asg-rolling-signals	2026-11-21T05:04:54Z	PASS	1167	verify.sh	rc 0, 4 phases, metadata restored, orph clean (us-east-1)
 asg-update-policy	2026-11-17T09:08:06Z	PASS	782	verify.sh	rc ok, orph clean (#6437 PR #6483); us-west-2
