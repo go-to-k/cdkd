@@ -384,7 +384,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::EFS::FileSystem',
     source: perms(
-      'elasticfilesystem:DeleteReplicationConfiguration, elasticfilesystem:DescribeReplicationConfigurations (#6751 probe: DeleteFileSystem refuses a replication source with FileSystemInUse; the handler deleted the configuration, polled until ReplicationNotFound, then deleted the file system)'
+      'elasticfilesystem:DeleteReplicationConfiguration, elasticfilesystem:DescribeReplicationConfigurations (#6751 probe, with the replication configuration added out of band, since a declared ReplicationConfiguration routes the type to Cloud Control: DeleteFileSystem refuses a replication source with FileSystemInUse; the handler deleted the configuration, polled until ReplicationNotFound, then deleted the file system, leaving the destination standing. A destination-only file system was not probed)'
     ),
     blockers: [
       // Only the configuration it is the SOURCE of; a destination's refusal stands.
@@ -552,7 +552,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::EMR::InstanceGroupConfig',
     source: perms(
-      "elasticmapreduce:ModifyInstanceGroups, elasticmapreduce:RemoveAutoScalingPolicy (#6751 probe: CloudTrail shows the handler sending RemoveAutoScalingPolicy, then ModifyInstanceGroups to 0. Without the removal the scale-in still succeeds, but the policy's alarm and scaling target outlive the group)"
+      "elasticmapreduce:ModifyInstanceGroups, elasticmapreduce:RemoveAutoScalingPolicy (#6751 probe: CloudTrail shows the handler sending RemoveAutoScalingPolicy, then ModifyInstanceGroups to 0. Without the removal the scale-in still succeeds, but the policy's alarm and scaling target outlive the group. cdkd removes only a declared AutoScalingPolicy; one attached out of band stays)"
     ),
     blockers: [
       handled(
