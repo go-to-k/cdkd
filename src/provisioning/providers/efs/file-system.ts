@@ -22,6 +22,7 @@ import {
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { markDeleteStarted } from '../../delete-started.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult } from '../../../types/resource.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
@@ -438,7 +439,7 @@ async function deleteOwnReplication(this: EFSProvider, fileSystemId: string): Pr
     if ((error as { name?: unknown } | null)?.name !== 'ReplicationNotFound') throw error;
   }
   this.logger.debug(
-    `Deleted the replication configuration of EFS FileSystem ${fileSystemId} before deleting it`
+    safeMsg`Deleted the replication configuration of EFS FileSystem ${fileSystemId} before deleting it`
   );
   return true;
 }
