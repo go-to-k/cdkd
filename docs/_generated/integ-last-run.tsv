@@ -45,8 +45,8 @@ bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 
 budgets	2026-11-20T10:54:34Z	PASS	140	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 cache-streaming	2026-10-30T13:07:14Z	PASS	3339	verify.sh	rc ok, #5558 AZ-removal replacement verified (probe red at the zone-list removal assertion), orph clean
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
-cc-api-fallback	2026-11-21T02:43:57Z	PASS	207	verify.sh	PR6738 e22f0ed07; rc ok, orph clean
-cc-api-fallback-transitions	2026-11-18T12:47:19Z	PASS	130	verify.sh	rc ok, orph clean (#6553 PR #6554 r2)
+cc-api-fallback	2026-11-21T08:55:26Z	PASS	230	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
+cc-api-fallback-transitions	2026-11-21T08:55:26Z	PASS	115	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
 cc-api-lookup	2026-11-18T08:37:35Z	PASS	85	verify.sh	rc ok, orph clean; #6542 cc-api arrays + stale-entry heal + cdk synth --no-lookups parity
 cc-final-snapshot-handlers	2026-11-06T12:35:19Z	PASS	867	verify.sh	rc ok, destroy 0 errors, orph clean (#5846 a87a46584)
 cc-getatt-readback	2026-11-04T21:32:32Z	PASS	90	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
@@ -403,7 +403,7 @@ recreate-nested-logical-id-collision	2026-11-04T19:21:11Z	PASS	113	verify.sh	rc 
 recreate-parent-child-permission	2026-11-20T11:22:10Z	PASS	115	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 recreate-renamed-logs-delivery	2026-11-19T04:14:06Z	PASS	115	verify.sh	rc ok, orph clean
 recreate-target-readers	2026-11-19T03:20:45Z	PASS	85	verify.sh	rc ok, orph clean
-recreate-via-cc-api	2026-11-19T03:20:45Z	PASS	141	verify.sh	rc ok, orph clean
+recreate-via-cc-api	2026-11-21T08:55:26Z	PASS	176	verify.sh	rc 0, Phase 2b patch Timeout-only no /Code, CodeSha256 unchanged, orph clean (PR 6721 9efccc8+main)
 recreate-via-sdk-provider	2026-11-19T03:20:45Z	PASS	110	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-11-04T20:42:09Z	PASS	91	verify.sh	rc ok; #3952 redacted ApiId skip + clean destroy; us-east-1; orph clean
 redshift-cluster-getatt	2026-11-04T07:36:26Z	PASS	301	verify.sh	rc ok, orph clean (own state bucket, wrasse)
