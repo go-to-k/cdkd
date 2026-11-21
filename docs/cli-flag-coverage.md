@@ -227,6 +227,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--description`
 - `--desired-state`
 - `--destination-cidr-block`
+- `--destinations`
 - `--destroy`
 - `--detach`
 - `--detector-id`
@@ -279,6 +280,5 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--filters`
 - `--finding-publishing-frequency`
 - `--force-delete`
-- `--force-delete-without-recovery`
 
 _(417 more entries truncated — see `docs/_generated/cli-flag-coverage.json` for the full list.)_
