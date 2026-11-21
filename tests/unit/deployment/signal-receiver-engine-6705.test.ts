@@ -124,9 +124,18 @@ const REGION = 'us-east-1';
 const RECEIVER_ID = 'arn:aws:cloudformation:us-east-1:123456789012:stack/rcv/receiver-id';
 const CREATION_POLICY = { ResourceSignal: { Count: 1, Timeout: 'PT5M' } };
 
+/** User data sending A's signal SIGNED (`--role`): only then is A armed. */
+const SIGNED_SIGNAL_A = {
+  'Fn::Base64': '#!/bin/bash\n/opt/aws/bin/cfn-signal -e 0 --stack S --resource A --role R\n',
+};
+
 const topic = (extra: Record<string, unknown> = {}, props: Record<string, unknown> = {}) => ({
   Type: 'AWS::SNS::Topic',
-  Properties: { DisplayName: 'x', ...props },
+  Properties: {
+    DisplayName: 'x',
+    ...(extra['CreationPolicy'] !== undefined && { UserData: SIGNED_SIGNAL_A }),
+    ...props,
+  },
   ...extra,
 });
 

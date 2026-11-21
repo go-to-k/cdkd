@@ -114,15 +114,28 @@ export function signalCandidatesOf(template: CloudFormationTemplate): Map<string
   return signalPlanOf(template).candidates;
 }
 
+/** How the template's user data calls `cfn-init` / `cfn-signal` for one resource. */
+export interface BootstrapCalls {
+  signedSignal: boolean;
+  signedInit: boolean;
+  /** A call naming the resource without credentials (`--role` etc.). */
+  unsigned: boolean;
+}
+
 /**
- * The receiver's candidates, and the resources it cannot serve because their
- * user data calls `cfn-init` / `cfn-signal` WITHOUT credentials (CDK's
- * default, `initOptions.includeRole: false`). CloudFormation answers such an
- * unsigned call only from an instance that is a resource of its own stack, so
- * no receiver can: those keep the warn-and-proceed behavior. A resource whose
- * user data holds no `cfn-*` call (signals sent some other way, e.g. a signed
- * `aws cloudformation signal-resource`) is served; one with only cfn-init
- * metadata is served only when a signed `cfn-init` reads it.
+ * The receiver's candidates, and the resources it cannot serve because a
+ * `cfn-init` / `cfn-signal` naming them runs WITHOUT credentials (the AWS
+ * CDK default, `initOptions.includeRole: false`): CloudFormation answers an
+ * unsigned call only from an instance that is a resource of its own stack,
+ * which no cdkd-made instance is (measured).
+ *
+ * FAIL SAFE: a wrongly armed resource waits until its `Timeout` and fails the
+ * deploy, a wrongly unarmed one only keeps the warn-and-proceed behavior. So
+ * a `ResourceSignal` resource is armed only when the template's user data
+ * holds a SIGNED `cfn-signal --resource <it>` (or `aws cloudformation
+ * signal-resource --logical-resource-id <it>`) and no unsigned call naming
+ * it; a metadata-only resource only when a signed `cfn-init --resource <it>`
+ * reads it.
  */
 export function signalPlanOf(template: CloudFormationTemplate): {
   candidates: Map<string, SignalCandidate>;
@@ -131,90 +144,151 @@ export function signalPlanOf(template: CloudFormationTemplate): {
   const candidates = new Map<string, SignalCandidate>();
   const unsigned: string[] = [];
   const resources = template.Resources ?? {};
+  const calls = bootstrapCallsByResource(resources);
   for (const [id, resource] of Object.entries(resources)) {
     const candidate = signalCandidateOf(resource);
     if (candidate === undefined) continue;
-    const calls = bootstrapCallsOf(resources, id);
-    if (calls === 'unsigned') {
+    const call = calls.get(id);
+    if (call?.unsigned === true) {
       unsigned.push(id);
       continue;
     }
-    if (candidate.count === 0 && calls !== 'signed') continue;
-    candidates.set(id, candidate);
+    if (candidate.count > 0 ? call?.signedSignal === true : call?.signedInit === true) {
+      candidates.set(id, candidate);
+    }
   }
   return { candidates, unsigned };
 }
 
-// A command word (`/opt/aws/bin/cfn-init -v`), not a file name (`cfn-init.log`).
-const BOOTSTRAP_CALL = /(?<=^|[\s/"'(;&|]|\\n)cfn-(?:init|signal)(?=\s)/g;
-const CREDENTIAL_FLAG = /\s(?:--role|--access-key|--credential-file|-f)[\s=]/;
+/** Every `cfn-init` / `cfn-signal` call in the template's user data, by the resource it names. */
+export function bootstrapCallsByResource(
+  resources: Record<string, unknown>
+): Map<string, BootstrapCalls> {
+  const out = new Map<string, BootstrapCalls>();
+  for (const script of userDataScriptsOf(resources)) {
+    for (const command of commandsOf(script)) {
+      const call = parseBootstrapCall(command);
+      if (call === undefined) continue;
+      const entry = out.get(call.resource) ?? {
+        signedSignal: false,
+        signedInit: false,
+        unsigned: false,
+      };
+      if (!call.signed) entry.unsigned = true;
+      else if (call.kind === 'signal') entry.signedSignal = true;
+      else entry.signedInit = true;
+      out.set(call.resource, entry);
+    }
+  }
+  return out;
+}
+
+const TOKEN_PLACEHOLDER = '__CDKD_TOKEN__';
+const CREDENTIAL_FLAGS = new Set(['--role', '--access-key', '--credential-file', '-f']);
+
+/** Every `UserData` value in the template (instances, launch templates, launch configurations), as script text. */
+function userDataScriptsOf(resources: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > 12 || value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v, depth + 1);
+      return;
+    }
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'UserData') out.push(renderScript(inner, true));
+      else walk(inner, depth + 1);
+    }
+  };
+  for (const resource of Object.values(resources)) {
+    if (resource !== null && typeof resource === 'object') {
+      walk((resource as { Properties?: unknown }).Properties, 0);
+    }
+  }
+  return out;
+}
+
+/** The text a user-data value renders to; every unresolved reference becomes a placeholder. */
+function renderScript(value: unknown, topLevel = false): string {
+  if (typeof value === 'string') {
+    if (topLevel && /^[A-Za-z0-9+/=\s]+$/.test(value) && value.length >= 8) {
+      const decoded = Buffer.from(value, 'base64').toString('utf8');
+      if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(decoded)) return decoded;
+    }
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return TOKEN_PLACEHOLDER;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length !== 1) return TOKEN_PLACEHOLDER;
+  const [fn, arg] = entries[0]!;
+  if (fn === 'Fn::Base64') return renderScript(arg);
+  if (
+    fn === 'Fn::Join' &&
+    Array.isArray(arg) &&
+    typeof arg[0] === 'string' &&
+    Array.isArray(arg[1])
+  ) {
+    return (arg[1] as unknown[]).map((part) => renderScript(part)).join(arg[0]);
+  }
+  if (fn === 'Fn::Sub') {
+    const body = typeof arg === 'string' ? arg : Array.isArray(arg) ? arg[0] : undefined;
+    if (typeof body === 'string') return body.replace(/\$\{[^!][^}]*\}/g, TOKEN_PLACEHOLDER);
+  }
+  return TOKEN_PLACEHOLDER;
+}
+
+/** The script's commands: line continuations joined, split at newlines and `;` `&&` `||` `|`. */
+function commandsOf(script: string): string[] {
+  return script
+    .replace(/\\\r?\n/g, ' ')
+    .split(/\r?\n|;|&&|\|\||\|/)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+}
 
 /**
- * How `logicalId`'s user data (its own, or its launch template's or launch
- * configuration's) calls `cfn-init` / `cfn-signal`: `signed` when every call
- * passes credentials (`--role`, `--access-key`, `--credential-file`),
- * `unsigned` when any does not, `none` when it calls neither.
+ * A `cfn-init` / `cfn-signal` (Linux path or `.exe`) or `aws cloudformation
+ * signal-resource` command: which resource it names and whether it passes
+ * credentials. `undefined` for anything else, or one naming no resource.
  */
-export function bootstrapCallsOf(
-  resources: Record<string, unknown>,
-  logicalId: string
-): 'signed' | 'unsigned' | 'none' {
-  const text = userDataTextOf(resources, logicalId);
-  if (text === undefined) return 'none';
-  let found = false;
-  for (const match of text.matchAll(BOOTSTRAP_CALL)) {
-    found = true;
-    const rest = text.slice(match.index + match[0].length);
-    const end = rest.search(/\\n|\n|;|&&|\|\|/);
-    const call = ` ${end === -1 ? rest : rest.slice(0, end)} `;
-    if (!CREDENTIAL_FLAG.test(call)) return 'unsigned';
+export function parseBootstrapCall(
+  command: string
+): { kind: 'init' | 'signal'; resource: string; signed: boolean } | undefined {
+  const tokens = command
+    .split(/\s+/)
+    .map((t) => t.replace(/^[\[("',]+|[\]),"']+$/g, ''))
+    .filter((t) => t.length > 0);
+  const at = tokens.findIndex((t) => /(?:^|[/\\])cfn-(?:init|signal)(?:\.exe)?$/i.test(t));
+  if (at !== -1) {
+    const kind = /init(?:\.exe)?$/i.test(tokens[at]!) ? 'init' : 'signal';
+    const args = tokens.slice(at + 1);
+    const resource = flagValue(args, ['--resource', '-r']);
+    if (resource === undefined) return undefined;
+    const signed = args.some((t) => CREDENTIAL_FLAGS.has(t.split('=')[0]!));
+    return { kind, resource, signed };
   }
-  return found ? 'signed' : 'none';
+  const aws = tokens.findIndex(
+    (t, i) =>
+      /(?:^|[/\\])aws(?:\.exe)?$/i.test(t) &&
+      tokens[i + 1] === 'cloudformation' &&
+      tokens[i + 2] === 'signal-resource'
+  );
+  if (aws !== -1) {
+    const resource = flagValue(tokens.slice(aws + 3), ['--logical-resource-id']);
+    return resource === undefined ? undefined : { kind: 'signal', resource, signed: true };
+  }
+  return undefined;
 }
 
-function propertiesOf(
-  resources: Record<string, unknown>,
-  id: unknown
-): Record<string, unknown> | undefined {
-  if (typeof id !== 'string') return undefined;
-  const resource = resources[id];
-  if (resource === null || typeof resource !== 'object') return undefined;
-  const props = (resource as { Properties?: unknown }).Properties;
-  return props !== null && typeof props === 'object'
-    ? (props as Record<string, unknown>)
-    : undefined;
-}
-
-function refOf(value: unknown): unknown {
-  return value !== null && typeof value === 'object'
-    ? (value as Record<string, unknown>)['Ref']
-    : undefined;
-}
-
-/** The user data's template text (a literal base64 string decoded), or `undefined`. */
-function userDataTextOf(resources: Record<string, unknown>, logicalId: string): string | undefined {
-  const props = propertiesOf(resources, logicalId);
-  if (props === undefined) return undefined;
-  let userData = props['UserData'];
-  if (userData === undefined) {
-    const lt = props['LaunchTemplate'] as Record<string, unknown> | undefined;
-    const ltProps = propertiesOf(
-      resources,
-      refOf(lt?.['LaunchTemplateId']) ?? refOf(lt?.['LaunchTemplateName'])
-    );
-    userData = (ltProps?.['LaunchTemplateData'] as Record<string, unknown> | undefined)?.[
-      'UserData'
-    ];
+function flagValue(args: string[], names: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const [flag, inline] = args[i]!.split('=', 2) as [string, string | undefined];
+    if (!names.includes(flag)) continue;
+    const value = inline ?? args[i + 1];
+    return value === undefined || value.includes(TOKEN_PLACEHOLDER) ? undefined : value;
   }
-  if (userData === undefined) {
-    userData = propertiesOf(resources, refOf(props['LaunchConfigurationName']))?.['UserData'];
-  }
-  if (userData === undefined) return undefined;
-  if (typeof userData === 'string') {
-    const decoded = Buffer.from(userData, 'base64').toString('utf8');
-    return /cfn-/.test(decoded) ? decoded : userData;
-  }
-  return JSON.stringify(userData);
+  return undefined;
 }
 
 /** Whether a CloudFormation stack can carry this name (a nested child's cannot). */
@@ -497,7 +571,7 @@ export class SignalReceiver {
         // A FAILURE signal fails the waiter and CloudFormation rolls the
         // receiver's update back, which removes it: between two polls only
         // its events still say why.
-        reason ??= await this.failureReasonOf(client, logicalId);
+        reason ??= await this.failureReasonOf(client, logicalId, startedAt);
         throw new Error(
           reason !== undefined && /FAILURE signal/i.test(reason)
             ? safeMsg`${logicalId} received a FAILURE signal (CreationPolicy): ${reason}`
@@ -649,12 +723,17 @@ export class SignalReceiver {
   /** The latest `CREATE_FAILED` reason the receiver's events give for `logicalId`. */
   private async failureReasonOf(
     client: CloudFormationClient,
-    logicalId: string
+    logicalId: string,
+    since: number
   ): Promise<string | undefined> {
     try {
       const out = await client.send(new DescribeStackEventsCommand({ StackName: this.stackId }));
       return out.StackEvents?.find(
-        (e) => e.LogicalResourceId === logicalId && e.ResourceStatus === 'CREATE_FAILED'
+        (e) =>
+          e.LogicalResourceId === logicalId &&
+          e.ResourceStatus === 'CREATE_FAILED' &&
+          // Not an earlier deploy's waiter under the same logical id.
+          (e.Timestamp?.getTime() ?? 0) >= since
       )?.ResourceStatusReason;
     } catch {
       return undefined;
@@ -701,6 +780,19 @@ export async function deleteSignalReceiver(
     const stack = out.Stacks?.[0];
     if (stack === undefined || stack.StackStatus === 'DELETE_COMPLETE') return;
     if (!isReceiver(stack)) return;
+    // A receiver a killed deploy left waiting refuses DeleteStack until its
+    // update is cancelled (its waiters time out only after 12 hours).
+    if (stack.StackStatus === 'UPDATE_IN_PROGRESS') {
+      await client.send(new CancelUpdateStackCommand({ StackName: stackId }));
+      const deadline = Date.now() + SETTLE_WAIT_MS;
+      for (;;) {
+        const status = (await client.send(new DescribeStacksCommand({ StackName: stackId })))
+          .Stacks?.[0]?.StackStatus;
+        if (status === undefined || !status.endsWith('_IN_PROGRESS') || Date.now() >= deadline)
+          break;
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      }
+    }
     await client.send(new DeleteStackCommand({ StackName: stackId }));
     logger.info(
       safeMsg`Deleting the CloudFormation signal receiver stack ${stack.StackName ?? stackId}`

@@ -17,12 +17,7 @@ import { TemplateParser } from '../../analyzer/template-parser.js';
 import { buildResolverContext } from './resolver-context.js';
 import { noEchoParameterNamesOf } from './noecho.js';
 import { warnUnhonoredCreationPolicy } from './update-policy.js';
-import {
-  bootstrapCallsOf,
-  canReceiveFor,
-  SignalReceiver,
-  signalPlanOf,
-} from './signal-receiver.js';
+import { canReceiveFor, SignalReceiver, signalPlanOf } from './signal-receiver.js';
 import { safeMsg } from '../../utils/display-safe.js';
 
 // Built on first use: a module-level construction runs at import time, under
@@ -148,7 +143,7 @@ export function warnUnwaitedCreationPolicy(
   ) {
     return;
   }
-  if (bootstrapCallsOf(template?.Resources ?? {}, logicalId) === 'unsigned') {
+  if (template !== undefined && signalPlanOf(template).unsigned.includes(logicalId)) {
     engine.logger.warn(
       safeMsg`${logicalId}: CreationPolicy is not honored; its user data calls cfn-init / cfn-signal without credentials, which CloudFormation answers only for its own stacks' instances. Pass --role (CDK: initOptions.includeRole: true) and cdkd waits for the signals.`
     );

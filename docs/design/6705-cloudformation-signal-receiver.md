@@ -51,11 +51,17 @@ the receiver, and no IAM change is needed.
 for an instance that is a resource of its stack, which a cdkd-made instance
 never is. With `--role` (CDK `includeRole: true`) the calls are signed with
 the instance role and the receiver works (measured: signal received, deploy
-rc 0). So a resource whose user data (own, launch template's or launch
-configuration's) calls `cfn-init` / `cfn-signal` without `--role` /
-`--access-key` / `--credential-file` is not a candidate: it warns, naming
-`includeRole: true`. No `cfn-*` call in the user data (a signed `aws
-cloudformation signal-resource`, a handle-less wait condition) is served.
+rc 0). Detection is FAIL SAFE, since a wrongly armed resource waits out its
+`Timeout` and fails the deploy while a wrongly unarmed one only keeps the
+warning: every `UserData` in the template is rendered to its script
+(`Fn::Base64`, `Fn::Join` separators, `Fn::Sub` bodies, a literal base64
+body; line continuations joined), split into commands, and each `cfn-init` /
+`cfn-signal` (`.exe` too) or `aws cloudformation signal-resource` is parsed
+for the resource it names (`--resource` / `-r`, `--logical-resource-id`) and
+its credentials (`--role`, `--access-key`, `--credential-file`). A
+`ResourceSignal` resource is armed only when a signed signal names it and no
+unsigned call does; a metadata-only one only when a signed `cfn-init` names
+it. An unsigned call naming it warns, naming `includeRole: true`.
 
 **When.** Only a stack whose template declares a `CreationPolicy`
 `ResourceSignal` or `AWS::CloudFormation::Init` metadata, read by signed

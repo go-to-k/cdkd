@@ -302,7 +302,9 @@ receiver: the handle's URL is answered by cdkd's state bucket.
 In these cases cdkd creates the resource without waiting and logs a warning;
 the warning does not change the exit code or fail `--strict`:
 
-- `cfn-init` / `cfn-signal` in its user data run without `--role` (above).
+- `cfn-init` / `cfn-signal` in its user data run without `--role` (above),
+  or no user data in the template sends it a signed `cfn-signal --resource`
+  (or `aws cloudformation signal-resource`).
 
 - A CloudFormation stack with the cdkd stack's name already exists and is not
   a receiver (for example the same app deployed with the AWS CDK CLI). cdkd

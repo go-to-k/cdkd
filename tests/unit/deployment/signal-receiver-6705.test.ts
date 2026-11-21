@@ -87,7 +87,11 @@ describe('signal candidates (go-to-k/cdkd#6705)', () => {
   });
 
   it('lists only resources asking for something', () => {
-    const map = signalCandidatesOf({ Resources: { I: instance, B: { Type: 'AWS::S3::Bucket' } } } as never);
+    const signed = {
+      ...instance,
+      Properties: { UserData: { 'Fn::Base64': 'cfn-init --resource I --role R\ncfn-signal --resource I --role R' } },
+    };
+    const map = signalCandidatesOf({ Resources: { I: signed, B: { Type: 'AWS::S3::Bucket' } } } as never);
     expect([...map.keys()]).toEqual(['I']);
   });
 
