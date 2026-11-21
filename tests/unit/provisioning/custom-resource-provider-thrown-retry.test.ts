@@ -1096,6 +1096,7 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "The operator role is invalid or doesn't have sufficient permissions",
       "doesn't have permission to perform ec2:DescribeSecurityGroups",
       "One or more security group IDs are invalid",
+      "due to invalid ConnectorOperatorRole permissions",
       "permissions required to assume the role",
       "does not have a trust relationship allowing",
       "does not have permission to publish with SNS",
@@ -1202,12 +1203,18 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // `Publish`: opens with DataSync's own sentence, which no CR `Invoke` or
       // SNS `Publish` failure carries.
       'DataSync location access test failed',
+      // Issue #6775, argument (a) for both `Invoke` and `Publish`. The Lambda
+      // NetworkConnector's SDK create (`CreateNetworkConnector`) rejecting a
+      // seconds-old same-stack operator role. Unreachable here:
+      // the substring names `ConnectorOperatorRole`, the connector resource's
+      // own property, which no CR `Invoke` or SNS `Publish` failure carries.
+      'due to invalid ConnectorOperatorRole permissions',
     ];
     // Cardinality FIRST, and asserted rather than derived: an empty list
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(10);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(11);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);
