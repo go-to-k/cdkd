@@ -1110,6 +1110,7 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "KMS key is invalid for CreateGrant",
       "Policy contains a statement with one or more invalid principals",
       "Invalid IAM Instance Profile",
+      "Invalid IamInstanceProfile",
       "Invalid InstanceProfile",
       "Failed to authorize instance profile",
       "is not a valid role to allow SNS",

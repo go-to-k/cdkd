@@ -585,7 +585,7 @@ export async function runInstanceRefresh(
             await signals.awaitAll((preferences.InstanceWarmup ?? 300) * 1000);
           } catch (error) {
             throw wrapRefreshError(
-              `the replaced instances' WaitOnResourceSignals signals: ${error instanceof Error ? error.message : String(error)}`
+              `the replaced instances' WaitOnResourceSignals signals: ${describeAwsFailure(error).detail}`
             );
           }
         }
