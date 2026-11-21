@@ -35,6 +35,7 @@ minimumReleaseAgeExclude:
   # per version — they are third-party and get no such treatment.
   - 'cdk-local'
   - '@aws-sdk/client-lambda-microvms@3.1092.0'
+  - '@aws-sdk/client-route-53@3.1174.0'
   - '@aws-sdk/core@3.976.0'
   - '@aws-sdk/credential-provider-env@3.972.60'
   - '@aws-sdk/credential-provider-http@3.972.62'

@@ -31,9 +31,6 @@
     ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
-    ],
-    "AWS::Route53::RecordSet": [
-      "AZAffinity"
     ]
   },
   "bogusTolerated": {

@@ -612,6 +612,15 @@ const RECORD_BAGS: {
     }),
   },
   {
+    name: 'az affinity',
+    bag: record({
+      TTL: '60',
+      ResourceRecords: ['192.0.2.1'],
+      SetIdentifier: 'aza-1',
+      AZAffinity: { LocationType: 'AvailabilityZone', LocationId: 'use1-az1' },
+    }),
+  },
+  {
     name: 'multivalue',
     bag: record({
       TTL: '60',

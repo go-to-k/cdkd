@@ -558,8 +558,21 @@ if [ "${GROUP_DRIFT_BUCKET}" != "clean" ]; then
   rm -f "${PIPE_DRIFT_JSON}"
   exit 1
 fi
+# Issue #6719: the same run reads the AZ-affinity record back, AZAffinity
+# included; a readback that drops it reports the record drifted.
+AZA_DRIFT_BUCKET=$(jq -r '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == "AzAffinityRecord") | $bucket] | join(",")' \
+  "${PIPE_DRIFT_JSON}" 2>/dev/null || true)
+if [ "${AZA_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report AzAffinityRecord clean (bucket '${AZA_DRIFT_BUCKET}', rc=${PIPE_DRIFT_RC}) -- the AZAffinity readback disagrees with its baseline (#6719):" >&2
+  cat "${PIPE_DRIFT_JSON}" >&2
+  rm -f "${PIPE_DRIFT_JSON}"
+  exit 1
+fi
 rm -f "${PIPE_DRIFT_JSON}"
 echo "    OK: cdkd drift read PipeRecord back and reported it clean"
+echo "    OK: cdkd drift read AzAffinityRecord back and reported it clean (#6719)"
 echo "    OK: cdkd drift read the RecordSetGroup back and reported it clean (#6530)"
 echo "    OK: cdkd drift reported hosted zone ${DRIFT_ZONE_ID} clean (#2762)"
 
@@ -615,6 +628,45 @@ if [ "${ACTUAL_CIDR_LOCATION}" != "${EXPECTED_CIDR_LOCATION}" ]; then
   exit 1
 fi
 echo "    OK: CidrRoutingConfig reached AWS (CollectionId='${ACTUAL_CIDR_COLLECTION}', LocationName='${ACTUAL_CIDR_LOCATION}') — silent-drop CLOSED by #609"
+
+# --- Assertion: AZAffinity reached AWS on the SDK route (issue #6719) ----
+# Before #6719 the SDK provider did not wire AZAffinity, so the record routed
+# through Cloud Control: the value still reached AWS, which is why the routing
+# layer is asserted too. The live read goes through the SDK: the aws CLI
+# (2.38.4) does not model AZAffinity and drops it from its output.
+# usage: assert_az_affinity <state json> <LocationType> <LocationId> <phase label>
+assert_az_affinity() {
+  local state="$1" want_type="$2" want_id="$3" phase="$4"
+  local by live
+  by=$(echo "${state}" | jq -r '.resources.AzAffinityRecord.provisionedBy // "<absent>"')
+  if [ "${by}" != "sdk" ]; then
+    echo "FAIL: ${phase}: AzAffinityRecord routing layer is '${by}', expected 'sdk' (AZAffinity still routes it to Cloud Control, #6719)" >&2
+    exit 1
+  fi
+  live=$(node --input-type=module -e '
+    import { createRequire } from "node:module";
+    const r53 = createRequire(process.argv[1])("@aws-sdk/client-route-53");
+    const [region, HostedZoneId, StartRecordName] = process.argv.slice(2);
+    const client = new r53.Route53Client({ region });
+    const out = await client.send(new r53.ListResourceRecordSetsCommand({
+      HostedZoneId, StartRecordName, StartRecordType: "A" }));
+    const hits = (out.ResourceRecordSets ?? []).filter(
+      (r) => r.Name.startsWith("aza.") && r.SetIdentifier === "aza-1");
+    console.log(JSON.stringify(hits.map((r) => r.AZAffinity
+      ? { LocationType: r.AZAffinity.LocationType, LocationId: r.AZAffinity.LocationId }
+      : null)));
+  ' "${PWD}/../../../package.json" "${REGION}" "${ZONE_ID}" "aza.cdkd-test-${ACCOUNT_ID}.internal") || {
+    echo "FAIL: ${phase}: the SDK read of the AZ-affinity record failed (#6719)" >&2
+    exit 1
+  }
+  local want="[{\"LocationType\":\"${want_type}\",\"LocationId\":\"${want_id}\"}]"
+  if [ "${live}" != "${want}" ]; then
+    echo "FAIL: ${phase}: live AZAffinity of aza.* / aza-1 is ${live}, expected ${want} (#6719)" >&2
+    exit 1
+  fi
+  echo "    OK: ${phase}: AZAffinity ${want_type} / ${want_id} is live on the SDK route (#6719)"
+}
+assert_az_affinity "${STATE}" Region "${REGION}" "Phase 1"
 
 # --- Assertion: HostedZoneFeatures.EnableAcceleratedRecovery reached AWS
 # The fixture's `hostedZoneFeatures: { enableAcceleratedRecovery: true }`
@@ -747,6 +799,11 @@ if [ "${REMOVAL_ACCEL}" != "DISABLED" ]; then
   exit 1
 fi
 echo "    OK: AcceleratedRecoveryStatus == 'DISABLED' when the removal redeploy returned (#5465)"
+
+# Issue #6719: the removal phase changes the record's AZAffinity in place
+# (Region -> Global on the same SetIdentifier), so the update must UPSERT it.
+REMOVAL_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+assert_az_affinity "${REMOVAL_STATE}" Global global "Phase 2 update"
 
 # --- Phase 2.5: the IMPORT path records NameServers too (issue #1875) ------
 # Everything above adopts the deploy-CREATED record. `importHostedZone` is a
@@ -1422,4 +1479,4 @@ assert_gone "reusable delegation set ${CDKD_TEST_DELEGATION_SET_ID} still exists
 echo "    OK: reusable delegation set is gone"
 
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + #2762 DelegationSetId + #6549 protected record fails destroy + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig + AZAffinity backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + #2762 DelegationSetId + #6549 protected record fails destroy + clean destroy)"
