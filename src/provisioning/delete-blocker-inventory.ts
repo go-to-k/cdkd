@@ -147,9 +147,11 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       ),
       // The handler cannot remove it either: CloudFormation fails with DeleteConflict.
       refused(
-        'an instance profile outside the stack still holding the role (stack destroy)',
+        // go-to-k/cdkd#6770: every delete but a same-name re-create's
+        // delete-first or a rollback's; the wording names the run.
+        'an instance profile outside the stack still holding the role (destroy, removal, replacement)',
         `${P}iam-role/delete.ts`,
-        'which this destroy did not delete (a profile created outside the stack, or'
+        'did not delete (a profile created outside the stack, or'
       ),
     ],
     beyondCfn: [
@@ -262,9 +264,10 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       ),
       // The handler cannot remove it either: CloudFormation fails with DeleteConflict.
       refused(
-        'a user outside the stack still in the group (stack destroy)',
+        // go-to-k/cdkd#6770: as the role's.
+        'a user outside the stack still in the group (destroy, removal, replacement)',
         `${P}iam-user-group/group.ts`,
-        'membership this destroy did not remove (a user added outside the stack, one '
+        'did not remove (a user added outside the stack, one '
       ),
     ],
     beyondCfn: [
