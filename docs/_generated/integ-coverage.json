@@ -10110,6 +10110,7 @@
         "drift-sns-sibling-subscription",
         "drift-verbatim-readback",
         "dynamodb-globaltable",
+        "dynamodb-stream-filter",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -10269,6 +10270,9 @@
         ],
         "dynamodb-globaltable": [
           "l1"
+        ],
+        "dynamodb-stream-filter": [
+          "l2"
         ],
         "event-driven": [
           "l2"
