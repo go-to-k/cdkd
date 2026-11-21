@@ -270,6 +270,20 @@ echo "==> Phase 1.9: destroy refuses a vector bucket holding an out-of-stack ind
 OOB_INDEX_BUCKET="${NAMELESS_NAME}"
 aws s3vectors create-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
   --data-type float32 --dimension 4 --distance-metric cosine --region "${REGION}" >/dev/null
+# Premise: the bucket holds exactly the in-stack StackIndex and the
+# out-of-stack index, so the destroy below really has the stack's own index to
+# delete first. StackIndex's record names it by ARN (Cloud Control's primary
+# identifier) or by bare name.
+STACK_INDEX_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.StackIndex.physicalId // empty')"
+[ -n "${STACK_INDEX_ID}" ] || { echo "FAIL: state records no physical id for StackIndex (premise, issue #6749)" >&2; exit 1; }
+STACK_INDEX_NAME="${STACK_INDEX_ID##*/index/}"
+PRE_INDEXES="$(aws s3vectors list-indexes --vector-bucket-name "${NAMELESS_NAME}" --region "${REGION}" \
+  --query 'indexes[].indexName' --output json | jq -r 'sort | join(" ")')"
+WANT_INDEXES="$(printf '%s\n%s\n' "${OOB_INDEX}" "${STACK_INDEX_NAME}" | sort | paste -sd' ' -)"
+if [ "${PRE_INDEXES}" != "${WANT_INDEXES}" ]; then
+  echo "FAIL: before the destroy the bucket lists '${PRE_INDEXES}', expected exactly '${WANT_INDEXES}' (StackIndex and the out-of-stack index; premise, issue #6749)" >&2
+  exit 1
+fi
 set +e
 REFUSE_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -288,7 +302,7 @@ if ! grep -qF -- "${NEEDLE}" <<<"${REFUSE_PLAIN}"; then
   # out-of-stack index means the in-stack StackIndex was still listed when the
   # bucket delete ran, i.e. its Cloud Control delete returned before the
   # bucket's listing cleared.
-  HELD_LINE="$(grep -oE "vector bucket ${NAMELESS_NAME} is not empty: it holds vector index\(es\) [^.]*" <<<"${REFUSE_PLAIN}" | head -1)"
+  HELD_LINE="$(grep -F "vector bucket ${NAMELESS_NAME} is not empty: it holds vector index(es) " <<<"${REFUSE_PLAIN}" | head -1)"
   if [ -n "${HELD_LINE}" ]; then
     echo "FAIL: the bucket delete was refused with the in-stack index still listed (${HELD_LINE}); the Cloud Control index delete returned before the listing cleared (issue #6749)" >&2
   else
