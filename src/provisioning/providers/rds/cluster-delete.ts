@@ -20,6 +20,7 @@ import {
   recordedIdentityId,
   RecordedIdentityError,
 } from '../../recorded-identity.js';
+import { deniedIdentityReadRefusal } from '../../identity-read-denied.js';
 import {
   deleteWithProtectionCompensation,
   observeThenDisableProtection,
@@ -648,8 +649,9 @@ export async function deleteAfterProtectionFlip(
  * No usable `DBClusterResourceId` recorded (a legacy, masked or
  * secret-reference value): `undefined` with NO read, the by-identifier delete
  * as before. The not-found fault propagates to the delete's idempotent
- * not-found path; any other failure to the retry classifiers. A response with
- * no cluster of this identifier carries no id, and refuses
+ * not-found path; a denied read is the non-retryable
+ * `deniedIdentityReadRefusal`; any other failure to the retry classifiers. A
+ * response with no cluster of this identifier carries no id, and refuses
  * (`assertRecordedIdentity`).
  */
 export async function readRecordedClusterIdentity(
@@ -661,7 +663,23 @@ export async function readRecordedClusterIdentity(
 ): Promise<DBCluster | undefined> {
   if (recordedIdentityId(resourceType, context) === undefined) return undefined;
   const read = async (): Promise<DBCluster | undefined> => {
-    const cluster = await this.describeDBCluster(physicalId);
+    let cluster: DBCluster | undefined;
+    try {
+      cluster = await this.describeDBCluster(physicalId);
+    } catch (error) {
+      // go-to-k/cdkd#6655: a denied read refuses, non-retryably, naming the
+      // permission; every other failure keeps its path.
+      throw (
+        deniedIdentityReadRefusal(error, {
+          label: 'RDS DB cluster',
+          permission: 'rds:DescribeDBClusters',
+          resourceType,
+          logicalId,
+          physicalId,
+          context,
+        }) ?? error
+      );
+    }
     return cluster?.DBClusterIdentifier?.toLowerCase() === physicalId.toLowerCase()
       ? cluster
       : undefined;

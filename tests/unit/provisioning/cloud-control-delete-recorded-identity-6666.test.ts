@@ -48,7 +48,10 @@ import {
   recordedCcDeleteIdentity,
 } from '../../../src/provisioning/cloud-control/delete-guards.js';
 import type { DeleteContext } from '../../../src/provisioning/region-check.js';
-import { RECORDED_IDENTITY_REREAD_DELAY_MS } from '../../../src/provisioning/recorded-identity.js';
+import {
+  RECORDED_IDENTITY_REREAD_DELAY_MS,
+  RecordedIdentityError,
+} from '../../../src/provisioning/recorded-identity.js';
 import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../../../src/deployment/recorded-identity-attributes.js';
 
 const REGION = 'us-east-1';
@@ -360,12 +363,96 @@ describe('Cloud Control delete compares a recorded AWS-minted id (issue #6666)',
     expect(sent()).toEqual(['GetResourceCommand']);
   });
 
-  it('a denied read throws, never falling back to the by-name delete', async () => {
-    wire(awsError('AccessDeniedException', 'not authorized to perform cloudformation:GetResource'));
+  /**
+   * go-to-k/cdkd#6655: measured on Cloud Control, both a denied
+   * `cloudformation:GetResource` and the read handler's own denied call answer
+   * `AccessDeniedException` (400), AWS's text naming the caller.
+   */
+  const deniedRead = (message: string): Error =>
+    Object.assign(new Error(message), {
+      name: 'AccessDeniedException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+  const PERMISSION = `cloudformation:GetResource (with the ${ROLE} read handler's permissions)`;
+
+  function expectDenied(error: unknown): void {
+    expect(error).toBeInstanceOf(RecordedIdentityError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(isMarkedNotGone(error)).toBe(true);
+    const message = (error as Error).message;
+    expect(message).toContain(`AWS refused the ${PERMISSION} read`);
+    expect(message).toContain('(AccessDeniedException)');
+    expect(message).toContain(`Allow ${PERMISSION} for the identity running cdkd`);
+    expect(message).toContain('--resource MyRes');
+    expect(message).not.toContain('123456789012');
+    expect(message).not.toContain('READ failed');
+    expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+  }
+
+  it.each([
+    [
+      'cloudformation:GetResource denied',
+      'User: arn:aws:sts::123456789012:assumed-role/D/s is not authorized to perform: cloudformation:GetResource',
+    ],
+    [
+      "the read handler's own call denied",
+      'AWS::IAM::Role Handler returned status FAILED: User: arn:aws:sts::123456789012:assumed-role/D/s is not authorized to perform: iam:GetRole (Service: Iam, Status Code: 403) (HandlerErrorCode: AccessDenied)',
+    ],
+  ])('%s: refused non-retryably naming the permissions, never the by-name delete', async (_label, message) => {
+    wire(deniedRead(message));
 
     const error = await del(ROLE, 'my-role', { recordedAttributes: { RoleId: RECORDED_ROLE_ID } });
 
-    expect(error).toBeInstanceOf(Error);
+    expectDenied(error);
+    expect(sent()).toEqual(['GetResourceCommand']);
+  });
+
+  it('a denied re-read after a mismatch: the denied refusal, nothing deleted', async () => {
+    let reads = 0;
+    mockCloudControlSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name !== 'GetResourceCommand') return Promise.resolve({});
+      reads += 1;
+      if (reads > 1) return Promise.reject(deniedRead('not authorized'));
+      return Promise.resolve({
+        ResourceDescription: { Properties: JSON.stringify({ RoleId: OTHER_ROLE_ID }) },
+      });
+    });
+
+    const error = await del(ROLE, 'my-role', { recordedAttributes: { RoleId: RECORDED_ROLE_ID } });
+
+    expectDenied(error);
+    expect(sent()).toEqual(['GetResourceCommand', 'GetResourceCommand']);
+  });
+
+  it('a denied read of an RDS instance is refused before the SDK hand-off', async () => {
+    wire(deniedRead('not authorized'));
+    mockRdsDelete.mockReset();
+
+    const error = await del('AWS::RDS::DBInstance', 'my-db', {
+      recordedAttributes: { DbiResourceId: 'db-RECORDED' },
+      deletionPolicy: 'Delete',
+    });
+
+    expect(error).toBeInstanceOf(RecordedIdentityError);
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect((error as Error).message).toContain('Allow cloudformation:GetResource');
+    expect(mockRdsDelete).not.toHaveBeenCalled();
+    expect(sent()).toEqual(['GetResourceCommand']);
+  });
+
+  it('a credential failure on the read keeps the wrapped path, not a missing permission', async () => {
+    wire(
+      Object.assign(new Error('The security token included in the request is expired'), {
+        name: 'ExpiredTokenException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+      })
+    );
+
+    const error = await del(ROLE, 'my-role', { recordedAttributes: { RoleId: RECORDED_ROLE_ID } });
+
+    expect(error).not.toBeInstanceOf(RecordedIdentityError);
     expect((error as Error).message).toContain('READ failed for MyRes');
     expect(sent()).toEqual(['GetResourceCommand']);
   });

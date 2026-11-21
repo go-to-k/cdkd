@@ -19,6 +19,7 @@ import {
   CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES,
 } from './delete-guards.js';
 import { assertRecordedIdentity } from '../recorded-identity.js';
+import { deniedIdentityReadRefusal } from '../identity-read-denied.js';
 
 /**
  * Refuse a Cloud Control call whose target region cannot be shown to be the
@@ -133,9 +134,11 @@ export async function assertRecordedRegionAgainstClient(
  *    the `DeleteResource` below reaches its region-checked already-deleted
  *    arm, exactly as today. A same-name re-create between this read and that
  *    delete is not caught: no read-then-delete by name can close that window;
- *  - a read fails -> throw it, wrapped as every Cloud Control error is, so the
- *    callers' retry classifiers decide; once they give up, the delete fails.
- *    It never falls back to a by-name delete;
+ *  - a read AWS denies -> the non-retryable `deniedIdentityReadRefusal`,
+ *    naming the permissions and `cdkd state orphan`;
+ *  - any other read failure -> throw it, wrapped as every Cloud Control error
+ *    is, so the callers' retry classifiers decide; once they give up, the
+ *    delete fails. It never falls back to a by-name delete;
  *  - the model answers without the id -> the shared not-gone
  *    `RecordedIdentityError`, left to the retry classifiers.
  */
@@ -159,6 +162,20 @@ export async function assertRecordedIdentityBeforeCcDelete(
       if ((error as { name?: unknown } | null | undefined)?.name === 'ResourceNotFoundException') {
         return ABSENT;
       }
+      // go-to-k/cdkd#6655: a denied read refuses, non-retryably, naming the
+      // permissions. Measured: Cloud Control answers `AccessDeniedException`
+      // both for `cloudformation:GetResource` itself and for its read
+      // handler's own denied call (`HandlerErrorCode: AccessDenied`), and the
+      // name alone does not say which, so both are named.
+      const denied = deniedIdentityReadRefusal(error, {
+        label: resourceType,
+        permission: `cloudformation:GetResource (with the ${resourceType} read handler's permissions)`,
+        resourceType,
+        logicalId,
+        physicalId,
+        context,
+      });
+      if (denied !== undefined) throw denied;
       try {
         // 'READ': the delete was never sent, and the message must not say so.
         this.handleError(error, 'READ', resourceType, logicalId, physicalId);
