@@ -230,9 +230,10 @@ echo "    OK: physical id stable across the in-place update"
 # handlers, but the SDK provider (no `readCurrentState`) records a metric
 # descriptor as the physicalId, which Cloud Control's `GetResource` refuses with
 # a ValidationException. Drift deny-lists the type off its Cloud Control
-# fallback, so the row reports drift unknown and the run exits 0; without the
-# entry every run reported a read failure and exited 2 (measured live
-# 2026-10-07). Beside it sits an SQS queue drift CAN compare.
+# fallback, so the row reports drift unknown (`?`); without the entry every run
+# reported a read failure (`!`, measured live 2026-10-07). Both exit 2 since
+# go-to-k/cdkd#6696, so the row's glyph is the discriminator. Beside it sits an
+# SQS queue drift CAN compare.
 #
 # The go-to-k/cdkd#2151 arm this phase used to carry (a fallback that THROWS for
 # a type with no READ handler) is unit-tested only: no deployable type reaches
@@ -256,6 +257,12 @@ if ! grep -q '? Detector (AWS::CloudWatch::AnomalyDetector)' "${DRIFT_OUT}"; the
   exit 1
 fi
 echo "    OK: Detector reported rather than aborting the run"
+# Exactly that one drift-unknown row (go-to-k/cdkd#6696): the SQS queue reading
+# as drift unknown too would hide behind the detector's exit 2.
+if [ "$(grep -cE '^ +\? ' "${DRIFT_OUT}" || true)" != 1 ]; then
+  echo "FAIL: drift reported a drift-unknown row other than Detector (go-to-k/cdkd#6696)" >&2
+  exit 1
+fi
 
 # 2. The SIBLING was compared. This is the assertion the issue is actually
 #    about: one unreadable resource must not cost the other one its comparison.
@@ -264,20 +271,22 @@ echo "    OK: Detector reported rather than aborting the run"
 # The FULL parenthetical, anchored. A bare `1 resource checked` is a SUBSTRING of
 # the `0 of 1 resource checked` the go-to-k/cdkd#2154 warning branch prints, so
 # the loose spelling passed on exactly the output that means nothing was
-# compared -- the opposite of what this assertion is for.
-if ! grep -qF '(1 resource checked, 1 unsupported)' "${DRIFT_OUT}"; then
-  echo "FAIL: the ordinary SQS queue was not compared -- expected '(1 resource checked, 1 unsupported)' (go-to-k/cdkd#4668)" >&2
+# compared -- the opposite of what this assertion is for. go-to-k/cdkd#6696
+# reworded the drift-unknown summary to a ⚠ line naming what was not compared.
+if ! grep -qF 'no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)' "${DRIFT_OUT}"; then
+  echo "FAIL: the ordinary SQS queue was not compared -- expected 'no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)' (go-to-k/cdkd#4668, go-to-k/cdkd#6696)" >&2
   exit 1
 fi
 echo "    OK: the sibling SQS queue was still compared"
 
-# 3. EXIT 0, not 2: the descriptor can never address Cloud Control, so a
-#    read failure here would fail this stack's CI forever.
-if [ "${DRIFT_RC}" -ne 0 ]; then
-  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a deny-listed type is not an actionable failure (go-to-k/cdkd#4668)" >&2
+# 3. EXIT 2 (go-to-k/cdkd#6696): drift unknown is an incomplete comparison, so
+#    nothing drifted but not everything was compared. Never 1 (drift) and never
+#    0, which is what made an unreadable type a passing CI run.
+if [ "${DRIFT_RC}" -ne 2 ]; then
+  echo "FAIL: drift exited ${DRIFT_RC}, expected 2 -- a drift-unknown type makes the comparison incomplete (go-to-k/cdkd#6696)" >&2
   exit 1
 fi
-echo "    OK: exit 0 (no-read-path is reported, not charged to the exit code)"
+echo "    OK: exit 2 (drift unknown is an incomplete comparison)"
 
 # 4. ...and NOT reported as a read failure -- the exact output this fixture
 #    measured before the deny-list entry.
@@ -287,13 +296,19 @@ if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
 fi
 echo "    OK: classified as drift unknown, not as a read failure"
 
-# 5. go-to-k/cdkd#2154: something WAS compared here, so the reassuring glyph is
-#    correct on this stack (negative control for the glyph rule).
+# 5. go-to-k/cdkd#2154: something WAS compared here, so this is not the
+#    NOTHING-compared line (negative control for that rule). Since
+#    go-to-k/cdkd#6696 the line is the drift-unknown ⚠, never the ✓.
 if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
   echo "FAIL: the stack warned 'NOTHING was compared' although the queue was compared (go-to-k/cdkd#2154)" >&2
   exit 1
 fi
-echo "    OK: the ✓ glyph is kept for a stack where something WAS compared"
+echo "    OK: not reported as NOTHING compared, since the queue was compared"
+if grep -qF "✓ ${STACK}" "${DRIFT_OUT}"; then
+  echo "FAIL: the stack got the ✓ line although the detector is drift unknown (go-to-k/cdkd#6696)" >&2
+  exit 1
+fi
+echo "    OK: no ✓ over a drift-unknown resource"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"

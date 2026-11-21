@@ -36,7 +36,9 @@ The consequences:
 
 The parent's template has one `AWS::CloudFormation::Stack` resource per nested
 stack. In the parent's block that resource is counted as skipped, because the
-nested stack's own block reports on it.
+nested stack's own block reports on it. A skipped nested stack row does not
+change the exit code, and the parent's summary line does not list it as left
+out, since it was compared.
 
 A parent that holds nothing but nested stacks prints:
 

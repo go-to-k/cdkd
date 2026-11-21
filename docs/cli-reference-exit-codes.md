@@ -76,9 +76,11 @@ What counts as a partial failure depends on the command:
 - **`cdkd state refresh-observed`.** Reading a resource back from AWS failed,
   or AWS reports the resource as not found. Those resources keep the
   properties recorded for them before.
-- **`cdkd drift`.** Nothing drifted, but at least one comparison did not
-  happen, for a reason you can act on. Whether running again clears the code
-  depends on the cause. With `--accept` or `--revert`, exit `2` also means the
+- **`cdkd drift`.** Nothing drifted, but the comparison was incomplete: a
+  read failed or was refused, or a resource type cdkd cannot read yet (drift
+  unknown) is in the stack. Running again clears some causes and not others,
+  so a job that accepts a known gap can treat `2` as a pass and still fail on
+  `1`. With `--accept` or `--revert`, exit `2` also means the
   run refused a resource deleted outside cdkd, or left one not reverted. See
   [`cdkd drift`](cli-drift.md).
 

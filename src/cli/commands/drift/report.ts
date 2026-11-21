@@ -392,6 +392,18 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
     // same list prints a few lines down.
     const notCompared = notComparedOutcomes(report);
     const checked = inspected - notCompared.length;
+    // go-to-k/cdkd#6696: the `Custom::*` / `AWS::CloudFormation::CustomResource`
+    // rows (`skipped` minus the nested rows their own block compares). #323
+    // keeps them off the per-resource listing; the summary line still says
+    // they were left out, so a clean line never claims to cover them. Appended
+    // AFTER the counts, so a reader matching `(N resources checked, M
+    // unsupported)` keeps matching.
+    const customExcluded = skippedCount - nestedCoveredCount;
+    const customExcludedClause =
+      customExcluded > 0
+        ? ` — excludes ${customExcluded} custom resource${customExcluded === 1 ? '' : 's'}, ` +
+          `which cdkd does not drift-check`
+        : '';
 
     if (drifted.length === 0 && deleted.length === 0) {
       // The glyph follows THIS REPORT's question — "was everything actually
@@ -440,10 +452,9 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
         // ACTIONABLE, which is an argument for keeping it out of the counts --
         // it still is -- not for claiming it was checked.
         //
-        // The EXIT CODE is untouched: `unsupported` and `skipped` both still
-        // report `none` in `outcomeExitSignal`, so this stack still exits 0.
-        // Only the claim printed about coverage changes, which is the same
-        // split the ⚠ branch below already makes.
+        // The EXIT CODE follows `outcomeExitSignal`, not this line: a
+        // `skipped`-only stack exits 0, and one holding an `unsupported`
+        // resource exits 2 (go-to-k/cdkd#6696).
         //
         // `report.outcomes.length > 0` keeps a genuinely EMPTY stack on the ✓:
         // there was nothing to compare, so "everything was compared" is
@@ -479,12 +490,29 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
             (notCompared.some((n) => !ANY_OF_IT_COMPARED[n.cause])
               ? `(${notCompared.length} not fully compared), `
               : `(${notCompared.length} only partially compared), `) +
-            `${unsupported.length} unsupported\n`
+            `${unsupported.length} unsupported${customExcludedClause}\n`
+        );
+      } else if (unsupported.length > 0) {
+        // go-to-k/cdkd#6696: drift UNKNOWN is not "no drift". The ✓ used to
+        // print here over a stack whose only out-of-band change sat on a type
+        // no provider can read (#6660), with the `drift unknown` block below
+        // the only hint. `unsupported` is outside `inspected` (#2141), so the
+        // two counts are stated side by side rather than as `N of M`.
+        process.stdout.write(
+          `⚠ ${reportHeading(report)}: no drift detected in ` +
+            `${checked} resource${checked === 1 ? '' : 's'} checked, but ` +
+            `${unsupported.length} resource${unsupported.length === 1 ? '' : 's'} could not be ` +
+            `compared (${unsupported.length} unsupported, drift unknown)${customExcludedClause}\n`
         );
       } else {
+        // Byte-identical to the pre-#6696 line for a stack with no custom
+        // resource: everything in it was compared. A `Custom::*` resource
+        // keeps #323's no-per-resource-line rule, but the line says it was
+        // left out, so `no drift detected` never claims more than was compared.
         process.stdout.write(
           `✓ ${reportHeading(report)}: no drift detected ` +
-            `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)\n`
+            `(${checked} resource${checked === 1 ? '' : 's'} checked, ${unsupported.length} unsupported)` +
+            `${customExcludedClause}\n`
         );
       }
     } else {

@@ -260,7 +260,7 @@ enabled_metrics() {
 # `cdkd drift --json` for this stack into ${DRIFT_JSON}, refusing a report that
 # would make the assertions below vacuous (no parseable JSON, no stack). The
 # exit status is not the assertion: drift exits 1 on ANY drifted resource, and
-# a "drift unknown" resource exits 0.
+# a "drift unknown" resource exits 2 (go-to-k/cdkd#6696).
 run_drift_json() { # $1 = label
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
     --region "${REGION}" --json >"${DRIFT_JSON}" 2>"${DRIFT_ERR}" || true

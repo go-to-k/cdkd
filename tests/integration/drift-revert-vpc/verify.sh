@@ -61,7 +61,7 @@ cleanup() {
   fi
   rm -f "${REVERT_DIR:-/nonexistent}"/revert-ids-* "${REVERT_DIR:-/nonexistent}"/revert-*.log 2>/dev/null || true
   rmdir "${REVERT_DIR:-/nonexistent}" 2>/dev/null || true
-  rm -f "${STATE_TMP:-}" "${DEPLOY_LOG:-}" "${STATE_ORIG:-}" "${STATE_PLANT:-}" "${DRIFT_JSON:-}"
+  rm -f "${STATE_TMP:-}" "${DEPLOY_LOG:-}" "${STATE_ORIG:-}" "${STATE_PLANT:-}" "${DRIFT_JSON:-}" "${STEP6_OUT:-}"
   [ -n "${DRIFT_JSON:-}" ] && rm -f "${DRIFT_JSON}.err"
   if [ "${TG2_ATTACHED:-0}" = 1 ]; then
     aws autoscaling detach-load-balancer-target-groups --auto-scaling-group-name "${ASG_NAME}" \
@@ -255,8 +255,34 @@ echo "[verify] step 5b ok: rule ${OLD_INGRESS_ID} kept its id, its description i
 # this step reports it as LoadBalancerAttributes drift, since one read cannot
 # tell it from an out-of-band value. Re-run the fixture. The opposite direction
 # (captured, then absent) is not drift (#4144).
-echo "[verify] step 6: cdkd drift again (expect exit 0)"
-${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+# Exit 0 with nothing drift unknown (go-to-k/cdkd#6696 makes a drift-unknown
+# row exit 2). The LaunchTemplate is Cloud Control-routed, and Cloud Control's
+# own read compares it: the drift deny-list only stops the fallback for an SDK
+# provider that has no read-back, so it never applies here.
+echo "[verify] step 6: cdkd drift again (expect exit 0, every resource compared)"
+STEP6_OUT="$(mktemp)"
+set +e
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" >"${STEP6_OUT}" 2>&1
+rc=$?
+set -e
+cat "${STEP6_OUT}"
+if [ "${rc}" -ne 0 ]; then
+  rm -f "${STEP6_OUT}"
+  echo "[verify] FAIL: step 6: expected drift exit 0, got ${rc}"
+  exit 1
+fi
+if ! grep -qE 'no drift detected \([0-9]+ resources checked, 0 unsupported\)' "${STEP6_OUT}"; then
+  rm -f "${STEP6_OUT}"
+  echo "[verify] FAIL: step 6: exit 0 without the fully-compared summary line"
+  exit 1
+fi
+if [ "$(grep -cE '^ +\? ' "${STEP6_OUT}" || true)" != 0 ]; then
+  rm -f "${STEP6_OUT}"
+  echo "[verify] FAIL: step 6: a drift-unknown row appeared (a reader regressing to no read-back?)"
+  exit 1
+fi
+rm -f "${STEP6_OUT}"
+echo "[verify] step 6 ok: exit 0, every resource compared, nothing drift unknown"
 
 # go-to-k/cdkd#3948: `cdkd import`'s raw-template fallback can record an
 # unresolved intrinsic in a list. A malformed RECORDED TargetGroupARNs must be

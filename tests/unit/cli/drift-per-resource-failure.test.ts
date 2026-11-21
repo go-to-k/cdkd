@@ -304,8 +304,8 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
    *
    * Reports `unsupported`, NOT `readFailed`. The condition is permanent by
    * construction -- the type will not grow a handler because this run failed --
-   * so routing it to the exit code would fail such a stack's CI forever, which
-   * is the same argument `unresolvedToken` is excluded on. It is also the SAME
+   * so it is drift unknown rather than a failed read. Both exit 2 since
+   * go-to-k/cdkd#6696, so the `?` row is the discriminator. It is also the SAME
    * condition the fallback signals by returning `undefined`, and AWS picks which
    * spelling it sends.
    */
@@ -333,10 +333,13 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('? Detector (AWS::IAM::UserToGroupAddition)');
     expect(output).toContain('drift unknown');
     // The sibling was compared -- the whole point of the guard.
-    expect(output).toContain('(1 resource checked, 1 unsupported)');
-    // Permanent condition -> exit 0, and no throw escaped the command.
-    expect(error).toBeUndefined();
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(output).toContain('no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)');
+    // Drift unknown is an incomplete comparison -> exit 2 (go-to-k/cdkd#6696),
+    // and no throw escaped the command as a crash (that would be exit 1).
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
     // NOT routed to the actionable bucket.
     expect(output).not.toContain('NOT fully compared');
     // The downgrade SAYS SO at debug. This arm is the one place the guard is
@@ -350,9 +353,9 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   /**
    * go-to-k/cdkd#4668: AWS gave AnomalyDetector Cloud Control handlers, but the
    * SDK provider's physicalId is a cdkd-derived descriptor, so GetResource
-   * refuses it on every run. The deny-list keeps the row `unsupported` (exit 0)
-   * instead of a permanent `readFailed` (exit 2), and Cloud Control is never
-   * asked.
+   * refuses it on every run. The deny-list keeps the row `unsupported` (drift
+   * unknown) instead of a permanent `readFailed`, and Cloud Control is never
+   * asked. Both exit 2 since go-to-k/cdkd#6696.
    */
   it('an AnomalyDetector row is deny-listed off the Cloud Control fallback and reports unsupported', async () => {
     mockGetState.mockResolvedValue(
@@ -373,10 +376,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     expect(mockCcReadCurrentState).not.toHaveBeenCalled();
     expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
-    expect(output).toContain('(1 resource checked, 1 unsupported)');
+    expect(output).toContain('no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)');
     expect(output).not.toContain('NOT fully compared');
-    expect(error).toBeUndefined();
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
   });
 
   /**
@@ -457,8 +462,8 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
    * go-to-k/cdkd#5179's sweep: both EMR config types gained Cloud Control
    * handlers keyed by a composite primaryIdentifier, and the SDK providers
    * record the bare fleet / group id, so GetResource refuses it on every run
-   * (the #4668 class). Deny-listed, the row is `unsupported` (exit 0), not a
-   * permanent `readFailed` (exit 2).
+   * (the #4668 class). Deny-listed, the row is `unsupported` (drift unknown),
+   * not a permanent `readFailed`; both exit 2 since go-to-k/cdkd#6696.
    */
   it.each([
     ['AWS::EMR::InstanceFleetConfig', 'if-ABCDEFGHIJKLM', '[/properties/ClusterId, /properties/InstanceFleetId]'],
@@ -480,10 +485,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
 
     expect(mockCcReadCurrentState).not.toHaveBeenCalled();
     expect(output).toContain(`? Group (${type})`);
-    expect(output).toContain('(1 resource checked, 1 unsupported)');
+    expect(output).toContain('no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)');
     expect(output).not.toContain('NOT fully compared');
-    expect(error).toBeUndefined();
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
   });
 
   /**
@@ -610,7 +617,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
    * The wrapped spelling. `CloudControlProvider.handleError` turns the same two
    * SDK error names into a `ProvisioningError` and keeps the original as
    * `cause`, so a detection that only read the TOP-LEVEL `name` would route this
-   * to `readFailed` and exit 2 forever for a type that simply has no read path.
+   * to `readFailed` for a type that simply has no read path.
    */
   it('an UnsupportedActionException wrapped in another error is still recognized through the cause chain', async () => {
     mockGetState.mockResolvedValue(
@@ -633,8 +640,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     const { output, error } = await runDrift(ARGS);
 
     expect(output).toContain('? Detector (AWS::IAM::UserToGroupAddition)');
-    expect(error).toBeUndefined();
-    expect(exitSpy).not.toHaveBeenCalled();
+    // The discriminator from `readFailed`, now that both exit 2.
+    expect(output).not.toContain('NOT fully compared');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
   });
 
   /**
@@ -664,10 +675,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     // Anchored: a bare `1 resource checked` is a SUBSTRING of the
     // `0 of 1 resource checked` the #2154 warning branch prints, so the loose
     // spelling passes on exactly the output that means nothing was compared.
-    expect(output).toContain('(1 resource checked, 1 unsupported)');
+    expect(output).toContain('no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)');
     expect(output).not.toContain('NOT fully compared');
-    expect(error).toBeUndefined();
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
   });
 
   /**
@@ -695,7 +708,8 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     const { output, error } = await runDrift(ARGS);
 
     expect(output).toContain('? Detector (AWS::IAM::UserToGroupAddition)');
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(output).not.toContain('NOT fully compared');
+    expect(exitSpy).toHaveBeenCalledWith(2);
     void error;
   });
 
@@ -1246,11 +1260,13 @@ describe('a stack in which NOTHING was compared does not get the ✓ glyph (#215
   });
 
   /**
-   * A stack where SOMETHING was compared keeps the ✓, even alongside an
-   * unsupported resource. This is the case the new branch must not steal: the
-   * condition is "nothing was compared", not "something was unsupported".
+   * A stack where SOMETHING was compared is not the NOTHING-was-compared case,
+   * even alongside an unsupported resource: the condition is "nothing was
+   * compared", not "something was unsupported". Since go-to-k/cdkd#6696 it no
+   * longer gets the ✓ either: drift unknown is not "no drift", so the line names
+   * the uncompared resource and the run exits 2.
    */
-  it('a stack with one compared resource and one unsupported keeps the ✓ glyph', async () => {
+  it('a stack with one compared resource and one unsupported is not NOTHING-compared, and gets no ✓', async () => {
     mockGetState.mockResolvedValue(
       makeState({
         Queue: resource(QUEUE, { QueueName: 'ok' }),
@@ -1263,10 +1279,94 @@ describe('a stack in which NOTHING was compared does not get the ✓ glyph (#215
 
     const { output, error } = await runDrift(ARGS);
 
-    expect(output).toContain('✓ TestStack (us-east-1): no drift detected');
-    expect(output).toContain('1 resource checked, 1 unsupported');
+    expect(output).toContain('⚠ TestStack (us-east-1): no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)\n');
+    expect(output).not.toContain('✓ TestStack');
     expect(output).not.toContain('NOTHING was compared');
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
+  });
+
+  /** go-to-k/cdkd#6696: drift (1) still outranks drift unknown (2). */
+  it('a drifted resource beside an unsupported one exits 1, not 2', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+        Other: resource('AWS::Some::Type', {}),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? { readCurrentState: async () => ({ QueueName: 'changed' }) } : {}
+    );
+
+    const { output, error } = await runDrift(ARGS);
+
+    expect(output).toContain('drift detected on 1 resource');
+    expect(output).toContain('? Other (AWS::Some::Type)');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(exitSpy).not.toHaveBeenCalledWith(2);
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
+  });
+
+  /**
+   * go-to-k/cdkd#6696 leaves `--accept` / `--revert` exit codes alone: a
+   * remediation run over a stack whose only uncompared resource is drift
+   * unknown still exits 0, but no longer says `No drift detected`.
+   */
+  it('--accept over a drift-unknown-only gap exits 0 and reports the comparison incomplete', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+        Other: resource('AWS::Some::Type', {}),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? { readCurrentState: async () => ({ QueueName: 'ok' }) } : {}
+    );
+
+    const { error } = await runDrift([...ARGS, '--accept', '--yes']);
+
+    expect(infoText()).toContain(
+      'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
+        '1 of 2 resource(s) could not be compared.'
+    );
+    expect(infoText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: their provider does not support drift detection yet.'
+    );
+    expect(infoText()).not.toContain('No drift detected — nothing to accept.');
+    expect(exitSpy).not.toHaveBeenCalled();
     expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
+  });
+
+  /** The `--revert` twin of the `--accept` case above: exit unchanged at 0. */
+  it('--revert over a drift-unknown-only gap exits 0 and reports the comparison incomplete', async () => {
+    mockGetState.mockResolvedValue(
+      makeState({
+        Queue: resource(QUEUE, { QueueName: 'ok' }),
+        Other: resource('AWS::Some::Type', {}),
+      })
+    );
+    mockRegistryGetProvider.mockImplementation((type: string) =>
+      type === QUEUE ? { readCurrentState: async () => ({ QueueName: 'ok' }) } : {}
+    );
+
+    const { error } = await runDrift([...ARGS, '--revert', '--yes']);
+
+    expect(infoText()).toContain(
+      'Comparison INCOMPLETE — nothing to revert, and that is NOT a clean bill of health: ' +
+        '1 of 2 resource(s) could not be compared.'
+    );
+    expect(infoText()).toContain(
+      'cdkd does not know whether these drifted — ' +
+        '1 not compared AT ALL: their provider does not support drift detection yet.'
+    );
+    expect(infoText()).not.toContain('No drift detected — nothing to revert.');
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(error).toBeUndefined();
+    expect(mockSaveState).not.toHaveBeenCalled();
   });
 });
 
@@ -1570,10 +1670,11 @@ describe('a remediation run that compared nothing does not report no drift (#220
    * COMMONEST member of this population in real CDK stacks, so it was the one
    * arm most likely to be seen and the only one nothing checked.
    *
-   * It is also what fences the per-KIND split: `skipped` and `unsupported` must
-   * land under the by-design lead with no uncertainty claim attached, because
-   * issue #323's position on a `Custom::*` resource is that drift is not
-   * APPLICABLE -- not that cdkd is unsure about it.
+   * It is also what fences the per-KIND split: `skipped` must land under the
+   * by-design lead with no uncertainty claim attached, because issue #323's
+   * position on a `Custom::*` resource is that drift is not APPLICABLE -- not
+   * that cdkd is unsure about it. `unsupported` lands on the uncertain side
+   * (go-to-k/cdkd#6696): no provider could read it, so cdkd does not know.
    */
   it('counts and labels EVERY uncompared resource, each by its own reason and claim', async () => {
     mockGetState.mockResolvedValue(
@@ -1614,19 +1715,20 @@ describe('a remediation run that compared nothing does not report no drift (#220
       'Comparison INCOMPLETE — nothing to accept, and that is NOT a clean bill of health: ' +
         '4 of 5 resource(s) could not be compared.'
     );
-    // The two cdkd genuinely cannot vouch for, in emit order.
+    // The three cdkd genuinely cannot vouch for, in emit order. `unsupported`
+    // joined this side in go-to-k/cdkd#6696: drift unknown is uncertainty.
     expect(infoText()).toContain(
       'cdkd does not know whether these drifted — ' +
         '1 not compared AT ALL: the read or comparison failed; ' +
+        '1 not compared AT ALL: their provider does not support drift detection yet; ' +
         '1 only PARTIALLY compared: their state records a `{{resolve:...}}` spelling cdkd ' +
         'resolves for nobody, which no re-run can clear.'
     );
-    // ...and the two it was never going to look at, under a lead that makes no
-    // uncertainty claim about them. `Custom::*` is not a resource cdkd is
+    // ...and the one it was never going to look at, under a lead that makes no
+    // uncertainty claim about it. `Custom::*` is not a resource cdkd is
     // unsure about; it is one cdkd does not drift-check (issue #323).
     expect(infoText()).toContain(
       'Not drift-checked by cdkd at all, which is a coverage limit rather than uncertainty — ' +
-        '1 not compared AT ALL: their provider does not support drift detection yet; ' +
         '1 not compared AT ALL: cdkd does not drift-check the type.'
     );
     // The old blanket tail claimed uncertainty about every member of `N`,
