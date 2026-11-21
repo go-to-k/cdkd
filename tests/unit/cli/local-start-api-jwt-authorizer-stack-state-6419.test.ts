@@ -59,6 +59,32 @@ describe('loadStateForRoutedStacks with a JWT authorizer waiting on state (#6419
     expect([...bundles.keys()]).toEqual(['Api']);
   });
 
+  it("loads a REST v1 Cognito authorizer's stack while its ProviderARNs wait on state (#6717)", async () => {
+    const loaded: string[] = [];
+    provide(loaded);
+    const pool = {
+      userPoolArn: 'arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdkdplaceholderAuth',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_cdkdplaceholderAuth',
+    };
+    const entry = {
+      route: { declaredAt: 'Api/Method', serviceIntegration: true } as never,
+      authorizer: {
+        kind: 'cognito',
+        logicalId: 'Auth',
+        pools: [pool],
+        ...pool,
+        pending: { stackName: 'Api', providerArns: [{ 'Fn::GetAtt': ['Pool', 'Arn'] }] },
+        declaredAt: 'Api/Method',
+      },
+    } as RouteWithAuth;
+    const bundles = await loadStateForRoutedStacks([apiStack], [], [entry], {
+      fromState: true,
+    } as never);
+    expect(loaded).toEqual(['Api']);
+    expect([...bundles.keys()]).toEqual(['Api']);
+  });
+
   it('does not load a stack whose JWT authorizer is all literal', async () => {
     const loaded: string[] = [];
     provide(loaded);

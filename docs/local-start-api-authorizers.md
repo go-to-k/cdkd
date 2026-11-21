@@ -68,6 +68,15 @@ signature against the user pool's JWKS, the public keys the pool publishes.
   `event.requestContext.authorizer.claims`.
 - **Denied:** 403.
 
+A `CognitoUserPoolsAuthorizer` names its user pool by reference
+(`Fn::GetAtt <Pool>.Arn`), so the template holds no pool id. cdkd reads it
+from the deployed stack:
+
+| How you run it | What the authorizer checks |
+| --- | --- |
+| `--from-state` or `--from-cfn-stack` | The deployed pool's JWKS: an invalid token is denied |
+| No state source | Nothing: cdkd warns once per route at startup and accepts every token |
+
 ## JWT authorizer (HTTP API)
 
 Declared with `AuthorizerType: 'JWT'`.
@@ -91,6 +100,19 @@ values. cdkd reads them from the deployed stack:
 
 If the issuer resolves but an audience entry does not, cdkd warns and checks
 the signature, issuer and expiry without the audience.
+
+## Settings cdkd does not enforce
+
+cdkd still serves a route that carries one of these settings, but it does
+not check it. It warns once per route at startup, naming the route and the
+setting, so nothing is dropped silently:
+
+| Setting | Declared on |
+| --- | --- |
+| `ApiKeyRequired` | A REST v1 method or a WebSocket route: API keys live in the deployed API |
+| `AuthorizationScopes` | A REST v1 method or an HTTP API route |
+| `IdentityValidationExpression` | A REST v1 TOKEN authorizer |
+| `Policy` | A REST v1 `AWS::ApiGateway::RestApi` (resource policy) |
 
 ## Result caching
 

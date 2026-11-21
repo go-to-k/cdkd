@@ -136,12 +136,13 @@ export async function loadStateForRoutedStacks(
     }
   }
   // A JWT authorizer whose Issuer / Audience waits on state
-  // (go-to-k/cdkd#6419) needs its own stack's state even when no Lambda there
+  // (go-to-k/cdkd#6419), or a REST v1 Cognito authorizer whose ProviderARNs do
+  // (go-to-k/cdkd#6717), needs its own stack's state even when no Lambda there
   // is routed (an HTTP_PROXY or service-integration route, or a Lambda in
   // another stack).
   const jwtAuthorizerStacks = new Set<string>();
   for (const { authorizer } of routesWithAuth) {
-    if (authorizer?.kind === 'jwt' && authorizer.pending) {
+    if ((authorizer?.kind === 'jwt' || authorizer?.kind === 'cognito') && authorizer.pending) {
       jwtAuthorizerStacks.add(authorizer.pending.stackName);
       reachableStackNames.add(authorizer.pending.stackName);
     }

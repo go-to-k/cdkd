@@ -36,6 +36,7 @@ import { createFileWatcher, type FileWatcher } from '../../../local/file-watcher
 import {
   attachAuthorizers,
   resolveJwtAuthorizerIntrinsics,
+  warnUnenforcedRouteAuthSettings,
 } from '../../../local/authorizer-resolver.js';
 import { derivePseudoParametersFromRegion } from '../../../local/intrinsic-image.js';
 import type { AuthorizerCache } from '../../../local/authorizer-cache.js';
@@ -293,7 +294,7 @@ export async function localStartApiCommand(
    * resulting `RouteWithAuth[]` carries every route's authorizer info.
    * Hot reload picks up authorizer-config changes via this re-run.
    */
-  // The JWT authorizer intrinsic warnings, once per run across `--watch` reloads.
+  // The per-route auth-setting warnings, once per run across `--watch` reloads.
   const jwtIntrinsicWarned = new Set<string>();
   const synthesizeAndBuild = async (): Promise<NextStateMaterial> => {
     logger.info(synthesisStatusMessage(appCmd, 'Synthesizing CDK app...'));
@@ -477,8 +478,10 @@ export async function localStartApiCommand(
       ? await loadStateForRoutedStacks(targetStacks, routes, routesWithAuth, options)
       : new Map<string, StackStateBundle>();
     // An HTTP API JWT authorizer's intrinsic Issuer / Audience
-    // (`HttpUserPoolAuthorizer`, go-to-k/cdkd#6419) resolves from state;
-    // without it the authorizer stays in JWKS pass-through, warned.
+    // (`HttpUserPoolAuthorizer`, go-to-k/cdkd#6419) and a REST v1 Cognito
+    // authorizer's intrinsic ProviderARNs (`CognitoUserPoolsAuthorizer`,
+    // go-to-k/cdkd#6717) resolve from state; what stays unresolved is warned
+    // per route.
     routesWithAuth = resolveJwtAuthorizerIntrinsics(
       routesWithAuth,
       (stackName) => {
@@ -494,6 +497,10 @@ export async function localStartApiCommand(
       },
       jwtIntrinsicWarned
     );
+    // An auth setting the local server does not enforce (a REST method's
+    // ApiKeyRequired, a RestApi Policy, ...) is warned per route, never
+    // dropped silently (go-to-k/cdkd#6717).
+    warnUnenforcedRouteAuthSettings(targetStacks, routesWithAuth, jwtIntrinsicWarned);
 
     // Issue #654: resolve `--profile <p>` to a concrete credential set
     // ONCE at boot for forwarding into every Lambda container that
