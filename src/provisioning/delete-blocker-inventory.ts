@@ -122,7 +122,6 @@ const GROUP_STRIP = '%s, then DeleteGroup refused: unconfirmed';
  * provider cannot join it unnoticed. #6751 settles these by live probe.
  */
 export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = [
-  'AWS::DocDB::DBCluster',
   'AWS::FSx::FileSystem',
 ];
 
@@ -351,6 +350,13 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
     perms('rds:DescribeDBProxyEndpoints, rds:DeleteDBProxyEndpoint')
   ),
   none('AWS::RDS::DBProxyTargetGroup', perms('rds:DeregisterDBProxyTargets (the delete itself)')),
+  none(
+    'AWS::DocDB::DBCluster',
+    'https://docs.aws.amazon.com/documentdb/latest/developerguide/API_DeleteDBCluster.html (no registry delete permissions. #6751 probe, from CloudTrail: with an out-of-band member instance the handler sent only DescribeDBClusters and DeleteDBCluster, and the stack delete failed with "Cluster can\'t be deleted. It still contains DB instances". For a global-cluster member it sent DeleteDBCluster with no RemoveFromGlobalCluster)',
+    [
+      'detaches a cluster recording a GlobalClusterIdentifier from its global cluster before DeleteDBCluster, which the handler does not',
+    ]
+  ),
   none('AWS::DocDB::DBSubnetGroup', perms('rds:DeleteDBSubnetGroup')),
   none('AWS::DocDB::DBInstance', perms('rds:DeleteDBInstance, rds:DescribeDBInstances')),
   none('AWS::Neptune::DBSubnetGroup', perms('rds:DeleteDBSubnetGroup, rds:DescribeDBSubnetGroups')),
