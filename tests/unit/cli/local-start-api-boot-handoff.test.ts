@@ -32,7 +32,12 @@ const h = vi.hoisted(() => {
     template: { Resources: {} },
     region: 'us-west-2',
   };
-  const route = { stackName: 'StackA', logicalId: 'Route', lambdaLogicalId: 'Fn' };
+  const route = {
+    stackName: 'StackA',
+    logicalId: 'Route',
+    lambdaLogicalId: 'Fn',
+    declaredAt: 'StackA/Route',
+  };
   const wsApi = {
     apiLogicalId: 'WsApi',
     apiStackName: 'StackA',
