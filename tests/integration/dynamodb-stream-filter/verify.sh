@@ -197,11 +197,11 @@ echo "    OK: on-failure destination == the DLQ on AWS"
 wait_esm_enabled() { # $1 = label
   local state=""
   for _ in $(seq 1 60); do
-    state="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
-      --query State --output text)" || {
+    if ! state="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+      --query State --output text)"; then
       echo "FAIL: could not read the State of ESM ${ESM_UUID} ($1)" >&2
       exit 1
-    }
+    fi
     [ "${state}" = "Enabled" ] && return 0
     sleep 5
   done
