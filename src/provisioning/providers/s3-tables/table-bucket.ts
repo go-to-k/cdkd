@@ -452,7 +452,7 @@ export async function deleteTableBucket(
       // listing that fails leaves the original error to its classifiers.
       const held = await settledTableBucketContents.call(this, physicalId).catch((listError) => {
         this.logger.debug(
-          `Could not list S3 Table Bucket ${logicalId} after its delete failed: ${listError instanceof Error ? listError.name : typeof listError}`
+          safeMsg`Could not list S3 Table Bucket ${logicalId} after its delete failed: ${listError instanceof Error ? listError.name : typeof listError}`
         );
         return undefined;
       });

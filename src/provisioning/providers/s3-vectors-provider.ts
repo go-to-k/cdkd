@@ -505,7 +505,7 @@ export class S3VectorsProvider implements ResourceProvider {
         // classifiers.
         const held = await this.settledHeldIndexes(physicalId).catch((listError) => {
           this.logger.debug(
-            `Could not list S3 VectorBucket ${logicalId}'s indexes after its delete failed: ${listError instanceof Error ? listError.name : typeof listError}`
+            safeMsg`Could not list S3 VectorBucket ${logicalId}'s indexes after its delete failed: ${listError instanceof Error ? listError.name : typeof listError}`
           );
           return undefined;
         });
