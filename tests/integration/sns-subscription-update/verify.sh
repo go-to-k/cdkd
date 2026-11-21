@@ -499,7 +499,17 @@ if [ "${FILTER_2R}" != "None" ] && [ -n "${FILTER_2R}" ]; then
   echo "FAIL: phase 2r: the redeploy of the 2b template left FilterPolicy '${FILTER_2R}' on (#6731)" >&2
   exit 1
 fi
-echo "    OK: the rollback adopted ${SUB_ARN_2R} and recorded its policy; the redeploy cleared it"
+if [ "$(raw_delivery_of "$(sub_arn)")" != "true" ]; then
+  echo "FAIL: phase 2r: RawMessageDelivery changed, expected the untouched 'true'" >&2
+  exit 1
+fi
+DRIFT_RC_2R=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" </dev/null >/dev/null 2>&1 || DRIFT_RC_2R=$?
+if [ "${DRIFT_RC_2R}" -ne 0 ]; then
+  echo "FAIL: phase 2r: cdkd drift exited ${DRIFT_RC_2R} after the redeploy (expected 0, no drift)" >&2
+  exit 1
+fi
+echo "    OK: the rollback adopted ${SUB_ARN_2R} and recorded its policy; the redeploy cleared it; drift clean"
 # 2c reads the subscription the arm left.
 SUB_ARN_1=$(sub_arn)
 

@@ -5,6 +5,7 @@ import { withNameGenerationReached } from '../../../state/name-generation.js';
 import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { equalIdNamesSameResource } from '../../type-change-guard.js';
+import { isCustomResource } from '../../../provisioning/provider-registry.js';
 import { acceptedCreateOnlyDropsEvidence } from '../../../provisioning/property-coverage.js';
 import { replacementDeletePolicy } from '../../../provisioning/final-snapshot.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
@@ -182,9 +183,35 @@ export async function finishReverseReplacement(
   // necessarily the value the deleted copy's `NoEcho` value MACs describe, so
   // they are dropped: the next deploy finds no MAC and re-sends once.
   const { observedProperties: _staleObserved, noEchoValueMacs: _staleMacs, ...prevRecord } = prev;
-  if (adoptedLiveNewResource) {
-    // go-to-k/cdkd#6731: what AWS holds, as persisted (already redacted).
-    stateResources[op.logicalId] = current;
+  // go-to-k/cdkd#6731: the adopted resource is what AWS holds, so state keeps
+  // its record (as persisted, already redacted), never one rebuilt from the
+  // pre-deploy properties. Its template-level fields stay the pre-deploy
+  // record's, as the rolled-back template declares them: a destroy before the
+  // next deploy honours that DeletionPolicy, not the failed deploy's. Not for
+  // the custom-resource family across a Type change: there the re-create
+  // really ran the old handler with the old properties (`equalIdNamesSameResource`),
+  // so the record rebuilt below is the true one.
+  const keepLiveRecord =
+    adoptedLiveNewResource && oldType === op.resourceType && !isCustomResource(oldType);
+  if (keepLiveRecord) {
+    const {
+      deletionPolicy: _failedDeletionPolicy,
+      updateReplacePolicy: _failedUpdateReplacePolicy,
+      dependencies: _failedDependencies,
+      metadata: _failedMetadata,
+      constructPath: _failedConstructPath,
+      ...live
+    } = current;
+    stateResources[op.logicalId] = {
+      ...live,
+      ...(prev.deletionPolicy !== undefined && { deletionPolicy: prev.deletionPolicy }),
+      ...(prev.updateReplacePolicy !== undefined && {
+        updateReplacePolicy: prev.updateReplacePolicy,
+      }),
+      ...(prev.dependencies !== undefined && { dependencies: prev.dependencies }),
+      ...(prev.metadata !== undefined && { metadata: prev.metadata }),
+      ...(prev.constructPath !== undefined && { constructPath: prev.constructPath }),
+    };
   }
   // Redact resolved secret plaintext back out (GHSA fix): the create
   // result's `effectiveProperties` can echo the value we resolved for the
@@ -200,7 +227,7 @@ export async function finishReverseReplacement(
   // generation, and the record remembers the one the deleted copy reached, so
   // the next replacement never asks for that name again.
   const restoredProperties = recordedPropertiesAfterReplayCreate(prevRecord, createResult);
-  if (!adoptedLiveNewResource)
+  if (!keepLiveRecord)
     stateResources[op.logicalId] = redactRollbackRecord(
       {
         ...withNameGenerationReached(prevRecord, op.logicalId, op.nameGeneration),

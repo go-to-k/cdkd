@@ -1707,10 +1707,44 @@ describe('replayRollback', () => {
     // deploy's properties, which AWS holds), so the next deploy diffs the
     // template against them and re-applies it. The previous properties would
     // have diffed as no change.
-    expect(state.B).toBe(liveRecord);
+    expect(state.B).toMatchObject({ ...liveRecord });
     expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 2 } });
     expect(afterOp).toHaveBeenCalledWith('B');
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('reverse-replacement same-id ADOPT keeps the pre-deploy DeletionPolicy, metadata and dependencies (go-to-k/cdkd#6731)', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-new', attributes: {} });
+    const { ctx } = makeCtx({ create, delete: vi.fn() });
+    const prev = res({
+      resourceType: 'AWS::Some::NamedType',
+      physicalId: 'phys-old',
+      properties: { a: 1 },
+      deletionPolicy: 'Retain',
+      dependencies: ['Old'],
+      constructPath: 'S/B-old',
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({
+        resourceType: 'AWS::Some::NamedType',
+        physicalId: 'phys-new',
+        properties: { a: 2 },
+        deletionPolicy: 'Delete',
+        dependencies: ['New'],
+        constructPath: 'S/B-new',
+      }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(state.B).toMatchObject({
+      physicalId: 'phys-new',
+      properties: { a: 2 },
+      deletionPolicy: 'Retain',
+      dependencies: ['Old'],
+      constructPath: 'S/B-old',
+    });
   });
 
   it('reverse-replacement same-id after delete-new-first is the EXPECTED outcome — no warning (issue #1247 exemption)', async () => {

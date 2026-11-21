@@ -363,6 +363,11 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
       expect(result.failures).toBe(0);
       expect(result.warnings).toBe(1);
       expect(shared.delete).not.toHaveBeenCalled();
+      // go-to-k/cdkd#6731: the re-create ran the old handler with the old
+      // properties, so the record is the rebuilt old one, never the live new
+      // record a same-type adopt keeps.
+      expect(state['Thing']?.properties).toEqual(customOp().previousState!.properties);
+      expect(state['Thing']?.properties).not.toEqual({ TopicName: 't' });
     });
 
     it('ONE instance serving two NON-custom types: the new resource IS deleted', async () => {
