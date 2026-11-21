@@ -22,7 +22,8 @@ import type { EC2Provider } from '../ec2-provider.js';
  * `Tags` key, so a template declaring none is not compared against `[]`.
  *
  * Right after cdkd's own write (`afterOwnWrite`, go-to-k/cdkd#4112) a read
- * whose tags differ from the declared list keeps the declared one: a create
+ * whose tags differ from the declared list keeps the declared one, and a
+ * template declaring none records no `Tags`: a create
  * whose `TagSpecifications` were refused tags the resource with a later
  * `CreateTags`, and an update writes them with `CreateTags` / `DeleteTags`, so
  * the capture can read the tags before the write lands. Frozen into the drift
@@ -35,6 +36,9 @@ export function readbackEc2Tags(
 ): unknown[] | undefined {
   const tags = normalizeAwsTagsToCfn(awsTags);
   const declared = properties?.['Tags'];
+  // A template declaring no tags had its last ones removed by this write
+  // (`DeleteTags`), so a read still showing them is the lag too.
+  if (afterOwnWrite && properties !== undefined && declared == null) return undefined;
   const bag =
     afterOwnWrite && Array.isArray(declared) && !tagListsMatch(tags, declared) ? declared : tags;
   return bag.length > 0 ? bag : undefined;

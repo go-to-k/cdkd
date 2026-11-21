@@ -232,13 +232,17 @@ export async function updateLoadBalancer(
   // AWS ever diverges per arm, the integ will not catch the `Subnets` side.
   const ipv6SourceNatChanged =
     newIpv6SourceNat !== undefined && newIpv6SourceNat !== oldIpv6SourceNat;
+  // go-to-k/cdkd#6756: the drift readback carries a declared SubnetMappings
+  // beside Subnets, so a `drift --revert` of a Subnets change alone (a baseline
+  // captured before SubnetMappings was read back) holds the LIVE mappings: the
+  // mappings are sent only when they changed or Subnets did not.
+  const sendMappings =
+    newMappings !== undefined && newMappings.length > 0 && (mappingsChanged || !subnetsChanged);
   if (subnetsChanged || mappingsChanged || ipv6SourceNatChanged) {
     await this.getClient().send(
       new SetSubnetsCommand({
         LoadBalancerArn: physicalId,
-        ...(newMappings && newMappings.length > 0
-          ? { SubnetMappings: newMappings }
-          : { Subnets: newSubnets }),
+        ...(sendMappings ? { SubnetMappings: newMappings } : { Subnets: newSubnets }),
         ...(newIpv6SourceNat !== undefined && {
           EnablePrefixForIpv6SourceNat: newIpv6SourceNat,
         }),

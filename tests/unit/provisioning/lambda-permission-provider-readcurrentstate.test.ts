@@ -325,6 +325,19 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
       });
     });
 
+    it('reads the first value of a condition given as a list', async () => {
+      const result = await readWith({
+        StringEquals: {
+          'lambda:FunctionUrlAuthType': ['AWS_IAM'],
+          'lambda:EventSourceToken': ['amzn1.ask.skill.2'],
+        },
+      });
+      expect(result).toMatchObject({
+        FunctionUrlAuthType: 'AWS_IAM',
+        EventSourceToken: 'amzn1.ask.skill.2',
+      });
+    });
+
     it('omits both when the statement carries no such condition', async () => {
       const result = await readWith(undefined);
       expect(result).not.toHaveProperty('FunctionUrlAuthType');

@@ -106,11 +106,11 @@ How drift reports it depends on where the mask came from:
 | Source of the mask | Effect on drift |
 | --- | --- |
 | A `NoEcho` custom-resource response value used in a property | Drifted on every run |
-| The `Fn::Base64` encoding of a secret, such as `UserData` | Drifted on every run |
+| The `Fn::Base64` encoding of a secret, such as a `UserData` script | Drifted on every run |
 | A `NoEcho` template parameter | Listed as `noEchoParameter` |
 
-An EC2 instance's `UserData` holding the mask is the exception to the second
-row: drift does not read it back and does not compare it.
+An EC2 instance's own `UserData` holding the mask is the exception to the
+second row: drift does not read it back and does not compare it.
 
 ### A mask that is reported as drift on every run
 

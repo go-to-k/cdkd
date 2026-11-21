@@ -96,6 +96,7 @@ list_keys() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DRIFT_OUT:-}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -237,7 +238,7 @@ if [ "$(printf '%s' "${STATE}" | jq -c --arg id "${USER_ID}" '.resources[$id].ob
   exit 1
 fi
 aws iam update-login-profile --user-name "${USER_NAME}" --password-reset-required
-wait_reset_required true
+wait_reset_required true || { echo "FAIL: get-login-profile ${USER_NAME} failed while waiting for PasswordResetRequired=true" >&2; exit 1; }
 BUCKET=$(user_drift)
 if [ "${BUCKET}" != "drifted" ] ||
   ! jq -e --arg id "${USER_ID}" '[.[0].drifted[]? | select(.logicalId == $id) | .changes[]?.path] | index("LoginProfile.PasswordResetRequired") != null' "${DRIFT_OUT}" >/dev/null; then
@@ -247,7 +248,7 @@ if [ "${BUCKET}" != "drifted" ] ||
 fi
 echo "    OK: the flipped PasswordResetRequired is drift at LoginProfile.PasswordResetRequired"
 aws iam update-login-profile --user-name "${USER_NAME}" --no-password-reset-required
-wait_reset_required false
+wait_reset_required false || { echo "FAIL: get-login-profile ${USER_NAME} failed while waiting for PasswordResetRequired=false" >&2; exit 1; }
 BUCKET=$(user_drift)
 [ "${BUCKET}" = "clean" ] || { echo "FAIL: ${USER_ID} is '${BUCKET}' once PasswordResetRequired is flipped back, expected clean" >&2; exit 1; }
 unset LOGIN_PW

@@ -307,6 +307,9 @@ function readbackUserTags(
 ): unknown[] | undefined {
   const tags = normalizeAwsTagsToCfn(awsTags);
   const declared = properties?.['Tags'];
+  // A template declaring no tags had its last ones removed by this write, so
+  // a read still showing them is the lag too: no baseline key, not the old tags.
+  if (afterOwnWrite && properties !== undefined && declared == null) return undefined;
   const bag =
     afterOwnWrite && Array.isArray(declared) && !sameTagSet(tags, declared) ? declared : tags;
   return bag.length > 0 ? bag : undefined;
@@ -334,7 +337,9 @@ function sameTagSet(a: readonly unknown[], b: readonly unknown[]): boolean {
  * profile (`NoSuchEntityException`), so a profile deleted out of band reads
  * as the declared one gone; any other failure throws, since omitting the key
  * would read as that deletion. On the capture right after cdkd's own write a
- * profile not visible yet keeps the declared shape, as the tags do.
+ * profile not visible yet, or one whose flag differs from the declared one
+ * (`UpdateLoginProfile` not visible yet), keeps the declared shape, as the
+ * tags do.
  */
 async function readLoginProfile(
   this: IAMUserGroupProvider,
@@ -342,15 +347,21 @@ async function readLoginProfile(
   properties: Record<string, unknown>,
   afterOwnWrite: boolean
 ): Promise<Record<string, unknown> | undefined> {
+  const declared = properties['LoginProfile'] as Record<string, unknown>;
+  const declaredShape = {
+    PasswordResetRequired: coerceCfnBoolean(declared['PasswordResetRequired']) === true,
+  };
+  let read: Record<string, unknown> | undefined;
   try {
     const resp = await this.iamClient.send(new GetLoginProfileCommand({ UserName: userName }));
-    return { PasswordResetRequired: resp.LoginProfile?.PasswordResetRequired === true };
+    read = { PasswordResetRequired: resp.LoginProfile?.PasswordResetRequired === true };
   } catch (err) {
     if (!(err instanceof NoSuchEntityException)) throw err;
   }
-  if (!afterOwnWrite) return undefined;
-  const declared = properties['LoginProfile'] as Record<string, unknown>;
-  return { PasswordResetRequired: coerceCfnBoolean(declared['PasswordResetRequired']) === true };
+  if (!afterOwnWrite) return read;
+  return read?.['PasswordResetRequired'] === declaredShape.PasswordResetRequired
+    ? read
+    : declaredShape;
 }
 
 /**

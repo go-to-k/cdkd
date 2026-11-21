@@ -224,6 +224,7 @@ W1=()
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  rm -f "${DRIFT_JSON:-}"
   local destroy_rc=1 destroy_out=""
   if [ -f "${LOCAL_DIST}" ]; then
     destroy_out=$(node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes 2>&1)
@@ -406,6 +407,25 @@ wait_user_tag() { # usage: wait_user_tag <present|absent>
   echo "FAIL: user ${TAG_USER}'s probe tag is not ${1} 60s after the write" >&2
   exit 1
 }
+# EC2 tag reads lag the tag writes: wait until every probed resource shows the
+# probe tag (present) or none does (absent) before drift reads them.
+wait_probe_tags() { # usage: wait_probe_tags <present|absent> <resource-id>...
+  local want="$1" seen n _i
+  shift
+  for _i in $(seq 1 12); do
+    seen=$(aws ec2 describe-tags --region "${REGION}" \
+      --filters Name=key,Values=cdkd-drift-probe "Name=resource-id,Values=$(IFS=,; echo "$*")" \
+      --query 'Tags[].ResourceId' --output text) || return 1
+    n=0
+    [ -z "${seen}" ] || [ "${seen}" = "None" ] || n=$(wc -w <<<"${seen}" | tr -d ' ')
+    if { [ "${want}" = present ] && [ "${n}" -eq "$#" ]; } || { [ "${want}" = absent ] && [ "${n}" -eq 0 ]; }; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL: the probe tag is not ${want} on every probed resource 60s after the write (${n} of $# tagged)" >&2
+  exit 1
+}
 tag_drift_buckets() { # usage: tag_drift_buckets <expected rc>; fills DRIFT_JSON
   DRIFT_JSON=$(mktemp)
   set +e
@@ -422,7 +442,8 @@ tag_drift_buckets() { # usage: tag_drift_buckets <expected rc>; fills DRIFT_JSON
 aws ec2 create-tags --region "${REGION}" --resources "${TAG_EC2_IDS[@]}" \
   --tags Key=cdkd-drift-probe,Value=out-of-band
 aws iam tag-user --user-name "${TAG_USER}" --tags Key=cdkd-drift-probe,Value=out-of-band
-wait_user_tag present
+wait_probe_tags present "${TAG_EC2_IDS[@]}" || { echo "FAIL: describe-tags failed while waiting for the probe tag" >&2; exit 1; }
+wait_user_tag present || { echo "FAIL: get-user ${TAG_USER} failed while waiting for its probe tag" >&2; exit 1; }
 tag_drift_buckets 1
 for id in "${TAG_SUBJECTS[@]}"; do
   if ! jq -e --arg id "${id}" '[.[0].drifted[]? | select(.logicalId == $id) | .changes[]?.path] | index("Tags") != null' "${DRIFT_JSON}" >/dev/null; then
@@ -435,7 +456,8 @@ rm -f "${DRIFT_JSON}"
 echo "    OK: all ${#TAG_SUBJECTS[@]} tagged resources are drifted at Tags"
 aws ec2 delete-tags --region "${REGION}" --resources "${TAG_EC2_IDS[@]}" --tags Key=cdkd-drift-probe
 aws iam untag-user --user-name "${TAG_USER}" --tag-keys cdkd-drift-probe
-wait_user_tag absent
+wait_probe_tags absent "${TAG_EC2_IDS[@]}" || { echo "FAIL: describe-tags failed while waiting for the probe tag to go" >&2; exit 1; }
+wait_user_tag absent || { echo "FAIL: get-user ${TAG_USER} failed while waiting for its probe tag to go" >&2; exit 1; }
 tag_drift_buckets 0
 rm -f "${DRIFT_JSON}"
 echo "    OK: removing the tag makes the stack drift-clean again"

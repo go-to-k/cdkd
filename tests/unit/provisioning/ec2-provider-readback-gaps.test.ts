@@ -148,6 +148,23 @@ describe('EC2 drift readback gaps (go-to-k/cdkd#6754)', () => {
           const declared = [{ Key: 'Name', Value: 'new' }];
           expect((await read(TAGS, { Tags: declared }, false))['Tags']).toEqual(CFN_TAGS);
         });
+
+        it('records no Tags on that capture when the template declares none (the removal lags)', async () => {
+          expect(await read(TAGS, {}, true)).not.toHaveProperty('Tags');
+          // Outside the capture an undeclared live tag is reported as is.
+          expect((await read(TAGS, {}, false))['Tags']).toEqual(CFN_TAGS);
+        });
+
+        it('keeps the live list on that capture when it is the declared set in another order', async () => {
+          // The readback lists tags by key; the declared list is in another
+          // order, so the result shows which of the two was returned.
+          const live = [
+            { Key: 'a', Value: '1' },
+            { Key: 'b', Value: '2' },
+          ];
+          const declared = [live[1], live[0]];
+          expect((await read(live, { Tags: declared }, true))['Tags']).toEqual(live);
+        });
       });
     }
   });
@@ -211,6 +228,27 @@ describe('EC2 drift readback gaps (go-to-k/cdkd#6754)', () => {
       );
       expect(result['SecondaryPrivateIpAddressCount']).toBe(1);
       expect(result).not.toHaveProperty('SecondaryPrivateIpAddresses');
+    });
+
+    it('leaves out a secondary address being removed or one AWS failed to add', async () => {
+      const result = await read(
+        [
+          primary,
+          { AllocationId: 'eipalloc-a', PrivateIp: '10.0.0.6', Status: 'succeeded' },
+          { AllocationId: 'eipalloc-b', PrivateIp: '10.0.0.7', Status: 'disassociating' },
+          { AllocationId: 'eipalloc-c', PrivateIp: '10.0.0.8', Status: 'failed' },
+          { AllocationId: 'eipalloc-d', PrivateIp: '10.0.0.9', Status: 'unassigning' },
+          { AllocationId: 'eipalloc-e', PrivateIp: '10.0.0.10', Status: 'associating' },
+        ],
+        {
+          SecondaryAllocationIds: ['eipalloc-a', 'eipalloc-e'],
+          SecondaryPrivateIpAddresses: ['10.0.0.6', '10.0.0.10'],
+          SecondaryPrivateIpAddressCount: 2,
+        }
+      );
+      expect(result['SecondaryAllocationIds']).toEqual(['eipalloc-a', 'eipalloc-e']);
+      expect(result['SecondaryPrivateIpAddresses']).toEqual(['10.0.0.6', '10.0.0.10']);
+      expect(result['SecondaryPrivateIpAddressCount']).toBe(2);
     });
 
     it('reads a declared key as empty when no secondary address is live', async () => {

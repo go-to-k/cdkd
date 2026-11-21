@@ -406,10 +406,31 @@ for tag_type in VPC Subnet RouteTable InternetGateway NatGateway; do
   TAG_PROBE_IDS="${TAG_PROBE_IDS} ${tag_id}"
   TAG_PROBE_PHYSICAL="${TAG_PROBE_PHYSICAL} ${tag_phys}"
 done
+# EC2 tag reads lag the tag writes: wait until every probed resource shows the
+# probe tag (present) or none does (absent) before drift reads them.
+wait_probe_tags() { # usage: wait_probe_tags <present|absent> <resource-id>...
+  local want="$1" seen n _i
+  shift
+  for _i in $(seq 1 12); do
+    seen=$(aws ec2 describe-tags --region "${REGION}" \
+      --filters Name=key,Values=cdkd-drift-probe "Name=resource-id,Values=$(IFS=,; echo "$*")" \
+      --query 'Tags[].ResourceId' --output text) || return 1
+    n=0
+    [ -z "${seen}" ] || [ "${seen}" = "None" ] || n=$(wc -w <<<"${seen}" | tr -d ' ')
+    if { [ "${want}" = present ] && [ "${n}" -eq "$#" ]; } || { [ "${want}" = absent ] && [ "${n}" -eq 0 ]; }; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL: the probe tag is not ${want} on every probed resource 60s after the write (${n} of $# tagged)" >&2
+  exit 1
+}
 echo "==> Phase 1b2: tag${TAG_PROBE_PHYSICAL} out of band, then drift"
 # shellcheck disable=SC2086 # one resource id per word
 aws ec2 create-tags --region "${REGION}" --resources ${TAG_PROBE_PHYSICAL} \
   --tags Key=cdkd-drift-probe,Value=out-of-band
+# shellcheck disable=SC2086 # one resource id per word
+wait_probe_tags present ${TAG_PROBE_PHYSICAL} || { echo "FAIL: describe-tags failed while waiting for the probe tag" >&2; exit 1; }
 DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")
 if [ "${DRIFT_RC}" -ne 1 ]; then
   echo "FAIL: drift after the out-of-band tag exited ${DRIFT_RC}, expected 1 (drifted)" >&2
@@ -427,6 +448,8 @@ echo "    OK: every tagged resource is drifted at Tags"
 # shellcheck disable=SC2086 # one resource id per word
 aws ec2 delete-tags --region "${REGION}" --resources ${TAG_PROBE_PHYSICAL} \
   --tags Key=cdkd-drift-probe
+# shellcheck disable=SC2086 # one resource id per word
+wait_probe_tags absent ${TAG_PROBE_PHYSICAL} || { echo "FAIL: describe-tags failed while waiting for the probe tag to go" >&2; exit 1; }
 DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")
 for tag_id in ${TAG_PROBE_IDS}; do
   if ! jq -e --arg id "${tag_id}" '[.[0].clean[]?.logicalId] | index($id) != null' "${DRIFT_JSON_FILE}" >/dev/null; then

@@ -93,6 +93,30 @@ describe('IAM user readback: Tags and LoginProfile (go-to-k/cdkd#6755)', () => {
       expect(result['Tags']).toEqual(declared);
     });
 
+    it('records no Tags on that capture when the template declares none (the removal lags)', async () => {
+      const result = await read({
+        tags: [{ Key: 'team', Value: 'a' }],
+        properties: {},
+        afterOwnWrite: true,
+      });
+      expect(result).not.toHaveProperty('Tags');
+    });
+
+    it('keeps the live list on that capture when it is the declared set in another order', async () => {
+      // The readback lists tags by key; the declared list is in another order,
+      // so the result shows which of the two was returned.
+      const live = [
+        { Key: 'a', Value: '1' },
+        { Key: 'b', Value: '2' },
+      ];
+      const result = await read({
+        tags: live,
+        properties: { Tags: [live[1], live[0]] },
+        afterOwnWrite: true,
+      });
+      expect(result['Tags']).toEqual(live);
+    });
+
     it('reports the live tags outside that capture', async () => {
       const result = await read({
         tags: [{ Key: 'team', Value: 'a' }],
@@ -131,6 +155,23 @@ describe('IAM user readback: Tags and LoginProfile (go-to-k/cdkd#6755)', () => {
         afterOwnWrite: true,
       });
       expect(result['LoginProfile']).toEqual({ PasswordResetRequired: true });
+    });
+
+    it('keeps the declared flag when the capture still reads the old one', async () => {
+      // UpdateLoginProfile not visible yet: freezing the old flag would make
+      // every later run drift, and --revert would set it back.
+      const result = await read({
+        profile: { PasswordResetRequired: false },
+        properties: { LoginProfile: { Password: 'pw', PasswordResetRequired: true } },
+        afterOwnWrite: true,
+      });
+      expect(result['LoginProfile']).toEqual({ PasswordResetRequired: true });
+      // Outside the capture the live flag is what drift compares.
+      const live = await read({
+        profile: { PasswordResetRequired: false },
+        properties: { LoginProfile: { Password: 'pw', PasswordResetRequired: true } },
+      });
+      expect(live['LoginProfile']).toEqual({ PasswordResetRequired: false });
     });
 
     it('throws on a failed read rather than reading it as deleted', async () => {

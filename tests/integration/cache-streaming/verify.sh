@@ -91,6 +91,7 @@ cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
   set +e
+  rm -f "${DRIFT_OUT:-}"
   # A failed replacement step (4f/4h/4i) can leave a Memcached cluster on the
   # subnet group that cdkd state does not own; it would block the subnet-group
   # delete and orphan it. Delete every cluster on that group first and wait.
@@ -284,6 +285,21 @@ assert_cache_clean() { # usage: assert_cache_clean <logicalId> <when>
 }
 SLOW_LOG_GROUP=$(cc_field "LogDeliveryConfigurations[?LogType=='slow-log'].DestinationDetails.CloudWatchLogsDetails.LogGroup | [0]")
 case "${SLOW_LOG_GROUP}" in "" | None) echo "FAIL: no slow-log destination log group on ${CACHE_ID}" >&2; exit 1 ;; esac
+# The baseline must HOLD both keys, or the clean checks below compare nothing:
+# a binary without #6757 records neither and reads clean all the same.
+CACHE_BASELINE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
+if ! echo "${CACHE_BASELINE}" | jq -e '
+  (.resources.MemcachedCluster.observedProperties.PreferredAvailabilityZones // null) as $read
+  | $read != null and $read == .resources.MemcachedCluster.properties.PreferredAvailabilityZones' >/dev/null; then
+  echo "FAIL: MemcachedCluster's drift baseline does not hold its declared PreferredAvailabilityZones (go-to-k/cdkd#6757):" >&2
+  echo "${CACHE_BASELINE}" | jq -c '.resources.MemcachedCluster | {declared: .properties.PreferredAvailabilityZones, baseline: .observedProperties.PreferredAvailabilityZones}' >&2
+  exit 1
+fi
+if ! echo "${CACHE_BASELINE}" | jq -e '[.resources.RedisCluster.observedProperties.LogDeliveryConfigurations[]? | select(.LogType == "slow-log")] | length == 1' >/dev/null; then
+  echo "FAIL: RedisCluster's drift baseline holds no slow-log LogDeliveryConfigurations entry (go-to-k/cdkd#6757)" >&2
+  exit 1
+fi
+echo "    OK: the drift baseline holds the declared zone list and the slow-log delivery"
 run_cache_drift
 assert_cache_clean RedisCluster "right after the deploy"
 assert_cache_clean MemcachedCluster "right after the deploy"

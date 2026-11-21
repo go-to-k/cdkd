@@ -295,7 +295,6 @@ describe('ElastiCache CacheCluster readback gaps (go-to-k/cdkd#6757)', () => {
             LogFormat: 'text',
             Status: 'active',
           },
-          { LogType: 'other', Status: 'disabling' },
         ],
       },
       { LogDeliveryConfigurations: [{ LogType: 'slow-log' }, { LogType: 'engine-log' }] }
@@ -313,6 +312,18 @@ describe('ElastiCache CacheCluster readback gaps (go-to-k/cdkd#6757)', () => {
         DestinationDetails: { KinesisFirehoseDetails: { DeliveryStream: 'ds' } },
         LogFormat: 'json',
       },
+    ]);
+  });
+
+  it('leaves out a delivery being turned off', async () => {
+    const result = await read({
+      LogDeliveryConfigurations: [
+        { LogType: 'slow-log', DestinationType: 'cloudwatch-logs', Status: 'active' },
+        { LogType: 'engine-log', DestinationType: 'cloudwatch-logs', Status: 'disabling' },
+      ],
+    });
+    expect(result['LogDeliveryConfigurations']).toEqual([
+      { LogType: 'slow-log', DestinationType: 'cloudwatch-logs' },
     ]);
   });
 
