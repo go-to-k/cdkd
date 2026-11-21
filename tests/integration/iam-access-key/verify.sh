@@ -17,6 +17,9 @@
 #     create-time attributes on update). The same update moves the user and a
 #     group from `/` to `/cdkd-moved/` (#3723): IAM must hold the new path and
 #     state the ARN read after the move.
+#   Phase 2b (issue #6750): add a user created out of band to the group, and
+#     assert `cdkd destroy` refuses the group naming that user (as
+#     CloudFormation's DeleteConflict does) and leaves the membership.
 #   Phase 3 (destroy): tear down; assert the key, user, secret, and state
 #     file are gone.
 #
@@ -77,6 +80,8 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 
 USER_NAME="cdkd-iam-access-key-user"
 GROUP_NAME="cdkd-iam-access-key-group"
+# Issue #6750: the out-of-stack user Phase 2b adds to the group.
+OOB_USER="cdkd-iam-access-key-oob-6750"
 MOVED_PATH="/cdkd-moved/"
 SECRET_NAME="cdkd-iam-access-key-secret"
 
@@ -95,6 +100,9 @@ list_keys() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # First: a user still in the group refuses its destroy (#6750).
+  aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${OOB_USER}" >/dev/null 2>&1
+  aws iam delete-user --user-name "${OOB_USER}" >/dev/null 2>&1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -242,6 +250,48 @@ for want in "user${MOVED_PATH}${USER_NAME}" "group${MOVED_PATH}${GROUP_NAME}"; d
   fi
 done
 echo "    OK: user and group moved to ${MOVED_PATH} in place, and state records their new ARNs"
+
+# --- Phase 2b: an out-of-stack member refuses the destroy (#6750) ---------
+# CloudFormation's delete handler holds no iam:RemoveUserFromGroup, so
+# DeleteGroup answers DeleteConflict while a user is still in the group. Before
+# #6750 cdkd removed the user from the group and the destroy succeeded.
+echo "==> Phase 2b: destroy refuses a group an out-of-stack user is in (issue #6750)"
+aws iam create-user --user-name "${OOB_USER}" >/dev/null
+aws iam add-user-to-group --group-name "${GROUP_NAME}" --user-name "${OOB_USER}"
+# IAM is eventually consistent: wait until the group lists the user, so the
+# destroy below meets the membership.
+for _ in $(seq 1 15); do
+  OOB_LISTED="$(aws iam get-group --group-name "${GROUP_NAME}" \
+    --query "length(Users[?UserName=='${OOB_USER}'])" --output text)"
+  [ "${OOB_LISTED}" = "1" ] && break
+  sleep 2
+done
+[ "${OOB_LISTED}" = "1" ] || { echo "FAIL: ${GROUP_NAME} never listed ${OOB_USER} (premise)" >&2; exit 1; }
+set +e
+REFUSE_2B_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+refuse_2b_rc=$?
+set -e
+REFUSE_2B_PLAIN="$(printf '%s' "${REFUSE_2B_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${refuse_2b_rc}" -eq 0 ]; then
+  echo "FAIL: destroy succeeded although the out-of-stack user ${OOB_USER} was in ${GROUP_NAME} (issue #6750)" >&2
+  exit 1
+fi
+NEEDLE_2B="group ${GROUP_NAME} still has user(s) ${OOB_USER}, whose membership this destroy did not remove"
+if ! grep -qF -- "${NEEDLE_2B}" <<<"${REFUSE_2B_PLAIN}"; then
+  echo "FAIL: the refused destroy does not name the out-of-stack user (expected: ${NEEDLE_2B})" >&2
+  printf '%s\n' "${REFUSE_2B_PLAIN}" >&2
+  exit 1
+fi
+OOB_MEMBER="$(aws iam get-group --group-name "${GROUP_NAME}" \
+  --query "length(Users[?UserName=='${OOB_USER}'])" --output text)"
+if [ "${OOB_MEMBER}" != "1" ]; then
+  echo "FAIL: the refused destroy removed ${OOB_USER} from ${GROUP_NAME} (member count ${OOB_MEMBER}, expected 1; issue #6750)" >&2
+  exit 1
+fi
+echo "    OK: destroy refused, naming ${OOB_USER}, which is still in the group"
+aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${OOB_USER}"
+aws iam delete-user --user-name "${OOB_USER}"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"
