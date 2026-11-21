@@ -1867,6 +1867,11 @@
       ]
     },
     {
+      "name": "lambda-accelerator-config",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "lambda-alias-provisioned-concurrency",
       "annotated": false,
       "scenarios": []
@@ -4316,6 +4321,7 @@
     "iot-topic-rule-role",
     "kinesis-esm-filter",
     "kinesis-stream-mode-switch",
+    "lambda-accelerator-config",
     "lambda-alias-provisioned-concurrency",
     "lambda-arch-switch",
     "lambda-capacity-provider-default-name",
