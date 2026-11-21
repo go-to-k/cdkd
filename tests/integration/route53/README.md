@@ -14,6 +14,7 @@ Note: Creates a real hosted zone ($0.50/month if left running). Always destroy a
 - Route53 HostedZone creation through the SDK provider
 - DNS A record management (RecordSet)
 - Resource dependencies (RecordSet depends on HostedZone)
+- RecordSet `AZAffinity` on the SDK route (issue #6719): created as `Region`, changed in place to `Global` by the removal phase, read back through the SDK (the aws CLI does not model it)
 - RecordSet renames (`CDKD_TEST_RENAME`, issue #3741): a Name, a SetIdentifier and an A -> CNAME Type change each delete the old record
 - `Fn::GetAtt` for outputs (HostedZoneId)
 - `Fn::Join` over the list-valued HostedZone `NameServers` attribute

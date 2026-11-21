@@ -34,6 +34,7 @@ export const RECORD_VALUE_FIELDS = [
   'GeoLocation',
   'GeoProximityLocation',
   'CidrRoutingConfig',
+  'AZAffinity',
 ] as const;
 
 export function recordSetGroupCompositeId(hostedZoneId: string, groupName: string): string {

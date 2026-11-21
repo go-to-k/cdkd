@@ -366,6 +366,7 @@ describe('Route 53: every field the DELETE sends is an address', () => {
     ['GeoLocation', { GeoLocation: { CountryCode: SECRET_MASK } }],
     ['GeoProximityLocation', { GeoProximityLocation: { AWSRegion: SECRET_MASK } }],
     ['CidrRoutingConfig', { CidrRoutingConfig: { CollectionId: SECRET_MASK } }],
+    ['AZAffinity', { AZAffinity: { LocationType: 'Region', LocationId: SECRET_MASK } }],
     ['AliasTarget', { AliasTarget: { DNSName: SECRET_MASK, HostedZoneId: 'Z2' } }],
     ['HostedZoneId', { HostedZoneId: SECRET_MASK }],
   ])('%s', async (field, patch) => {
