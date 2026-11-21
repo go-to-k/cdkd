@@ -134,6 +134,9 @@ export async function replaceDeleteFirstAndRecreate(
           forceDataDelete: deps.options.forceStatefulRecreation === true,
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           ...replacementDeleteContext(deps, updateReplacePolicy),
+          // go-to-k/cdkd#6770: the stack's own profile or membership still
+          // holds the old copy, and re-attaches the re-created one.
+          stackHoldersStillAttached: true,
           recordedAttributes: currentResource.attributes,
           recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.

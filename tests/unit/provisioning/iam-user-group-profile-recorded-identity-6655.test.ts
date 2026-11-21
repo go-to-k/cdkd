@@ -212,8 +212,13 @@ afterEach(() => {
 });
 
 describe.each(CASES)('$type delete compares the recorded $key (go-to-k/cdkd#6655)', (t) => {
+  // A same-name re-create's delete-first, so a group's members are removed
+  // as these sequences expect (go-to-k/cdkd#6770; the user and profile
+  // deletes do not read the field).
   const del = (context?: DeleteContext) =>
-    t.provider().delete('E', NAME, t.type, undefined, context);
+    t
+      .provider()
+      .delete('E', NAME, t.type, undefined, { stackHoldersStillAttached: true, ...context });
   const recorded = (value: unknown): DeleteContext => ({ recordedAttributes: { [t.key]: value } });
 
   it('the live holder carries the recorded id: deleted as before, the same calls', async () => {

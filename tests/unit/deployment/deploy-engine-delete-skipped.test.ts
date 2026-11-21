@@ -608,4 +608,62 @@ describe('DeployEngine — a provider-reported delete skip (#1762)', () => {
       expect(provider.create).toHaveBeenCalledTimes(2);
     });
   });
+
+  // go-to-k/cdkd#6770: only a same-name re-create's delete-first tells the
+  // provider the stack's own holders (an instance profile, a group
+  // membership) still hold the old copy; every other delete site leaves it
+  // absent, so a role or group delete refuses an out-of-stack holder there.
+  describe('stackHoldersStillAttached on every delete site (#6770)', () => {
+    function holdersFlag(): unknown {
+      const del = provider.delete as ReturnType<typeof vi.fn>;
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(del.mock.calls[0]?.[1]).toBe('api1|Query|field');
+      return (del.mock.calls[0]?.[4] as Record<string, unknown>)['stackHoldersStillAttached'];
+    }
+
+    beforeEach(() => {
+      (provider.create as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        const failure = createFailures.shift();
+        if (failure) throw failure;
+        return { physicalId: 'new-pid', attributes: {} };
+      });
+    });
+
+    it('template-DELETE branch: absent', async () => {
+      await invokeTemplateDelete(makeEngine(), freshCounts());
+      expect(holdersFlag()).toBeUndefined();
+    });
+
+    it('create-first cleanup: absent', async () => {
+      await invokeReplacingUpdate(makeEngine(), { requiresReplacement: true });
+      expect(holdersFlag()).toBeUndefined();
+    });
+
+    it('UPDATE-not-supported replacement (delete-first): set', async () => {
+      (provider.update as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new ResourceUpdateNotSupportedError(TYPE, 'MyResource', 'no update API')
+      );
+      await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: false });
+      expect(holdersFlag()).toBe(true);
+    });
+
+    it('--recreate-via-cc-api (delete-first): set', async () => {
+      await invokeReplacingUpdate(makeEngine({ recreateViaCcApi: true }), {
+        requiresReplacement: false,
+      });
+      expect(holdersFlag()).toBe(true);
+    });
+
+    it('--replace delete-first fallback: set', async () => {
+      createFailures = [
+        ccAlreadyExistsError(
+          `CREATE failed for MyResource: Resource of type '${TYPE}' with identifier ` +
+            `'api1|Query|field' already exists.`
+        ),
+      ];
+      await invokeReplacingUpdate(makeEngine({ replace: true }), { requiresReplacement: true });
+      expect(holdersFlag()).toBe(true);
+      expect(provider.create).toHaveBeenCalledTimes(2);
+    });
+  });
 });

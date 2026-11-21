@@ -735,6 +735,21 @@ describe('the supersededResources field travels with the record (#5111)', () => 
     expect(del.mock.calls[1]![4]).toHaveProperty('skipFinalSnapshot', true);
   });
 
+  it('never tells the delete the stack still holds the old copy (go-to-k/cdkd#6770)', async () => {
+    // A superseded role or group's in-stack holders already moved to its
+    // replacement, so its delete refuses an out-of-stack holder instead of
+    // stripping it.
+    const del = vi.fn(async (..._args: unknown[]) => undefined);
+    const provider = { delete: del } as unknown as ResourceProvider;
+    await deleteSupersededEntry(entry, {
+      provider,
+      region: 'us-east-1',
+      maskSecrets: (t: string) => t,
+      stop: () => false,
+    });
+    expect(del.mock.calls[0]![4]).not.toHaveProperty('stackHoldersStillAttached');
+  });
+
   it('the in-use wait stops on an interrupt during the wait, sending nothing more', async () => {
     const defaults = { ...supersededInUseRetry };
     supersededInUseRetry.delayMs = 0;

@@ -237,6 +237,17 @@ describe('DeployEngine DELETE branch — DeletionPolicy: Snapshot (#1352)', () =
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();
   });
 
+  it.each(['AWS::IAM::Role', 'AWS::IAM::Group'])(
+    'a template removal of an %s never tells it the stack still holds it (go-to-k/cdkd#6770)',
+    async (resourceType) => {
+      // Absent, the role / group delete refuses an out-of-stack holder
+      // instead of stripping it; only a same-name delete-first sets it.
+      await invokeDelete(makeEngine(), resourceType);
+      expect(deleteContextArg()).not.toHaveProperty('stackHoldersStillAttached');
+      expect(deleteContextArg()).not.toHaveProperty('stackDestroy');
+    }
+  );
+
   it('policy Delete / absent — no identifier (default polarity unchanged)', async () => {
     await invokeDelete(makeEngine(), 'AWS::RDS::DBInstance', { deletionPolicy: 'Delete' });
     expect(deleteContextArg()['finalSnapshotIdentifier']).toBeUndefined();

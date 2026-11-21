@@ -390,7 +390,8 @@ describe('DeployEngine — --replace wire-through', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ forceDataDelete: true })
+      // go-to-k/cdkd#6770: the update fallback's delete-first strips holders.
+      expect.objectContaining({ forceDataDelete: true, stackHoldersStillAttached: true })
     );
   });
 

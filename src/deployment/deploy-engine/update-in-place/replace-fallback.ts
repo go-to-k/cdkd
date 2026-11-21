@@ -402,6 +402,8 @@ export async function replaceFallbackFor(
             finalSnapshotIdentifier: fallbackFinalSnapshotId,
           }),
           ...replacementDeleteContext(engine.replacementDeps(), fallbackUpdateReplacePolicy),
+          // go-to-k/cdkd#6770: a same-name re-create's delete-first.
+          stackHoldersStillAttached: true,
           recordedAttributes: currentResource.attributes,
           recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
           // go-to-k/cdkd#4043: where the record holds a NoEcho mask.

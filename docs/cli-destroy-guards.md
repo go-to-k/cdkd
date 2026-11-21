@@ -102,7 +102,12 @@ force-detached. An IAM role that an instance profile outside the stack still
 holds is the exception: CloudFormation's delete cannot remove a role from a
 profile, so `cdkd destroy` refuses the role, naming the profile. So is an IAM
 group that a user outside the stack is still in: `cdkd destroy` refuses the
-group, naming the user, rather than removing the user from it.
+group, naming the user, rather than removing the user from it. A `cdkd deploy`
+refuses both the same way when it deletes the role or group because the
+template no longer has it, a nested stack holding it was removed, or it was
+replaced. Only a same-name re-create (`--recreate-via-*`, `--replace`'s
+delete-first) still removes them, since the stack's own profile or membership
+adds the new copy back.
 
 ## `DeletionPolicy: Snapshot`: final snapshots on delete (`--skip-final-snapshot`)
 

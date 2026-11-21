@@ -301,6 +301,9 @@ describe('DeployEngine — same-name replacement with a name-idempotent Create A
         expectedRegion: 'us-east-1',
         forceDataDelete: false,
         deletionPolicy: 'Delete',
+        // go-to-k/cdkd#6770: only the delete-first strips the holders; the
+        // create-first delete above carries no such field.
+        stackHoldersStillAttached: true,
         recordedAttributes: {},
         maskSecrets: expect.any(Function),
       }

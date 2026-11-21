@@ -115,7 +115,12 @@ beforeEach(() => {
 });
 
 describe('AWS::IAM::Role delete (go-to-k/cdkd#4946)', () => {
-  const del = () => new IAMRoleProvider().delete('R', 'my-role', 'AWS::IAM::Role');
+  // A same-name re-create's delete-first, the one delete that still removes
+  // the role from its instance profiles (go-to-k/cdkd#6770).
+  const del = () =>
+    new IAMRoleProvider().delete('R', 'my-role', 'AWS::IAM::Role', undefined, {
+      stackHoldersStillAttached: true,
+    });
   const empty: Record<string, Handler> = {
     GetRoleCommand: () => ({ Role: { RoleName: 'my-role' } }),
     ListAttachedRolePoliciesCommand: () => ({ AttachedPolicies: [] }),
@@ -360,7 +365,12 @@ describe('AWS::IAM::User delete (go-to-k/cdkd#4946)', () => {
 });
 
 describe('AWS::IAM::Group delete (go-to-k/cdkd#4946)', () => {
-  const del = () => new IAMUserGroupProvider().delete('G', 'eng', 'AWS::IAM::Group');
+  // A same-name re-create's delete-first, the one delete that still removes
+  // the group's members (go-to-k/cdkd#6770).
+  const del = () =>
+    new IAMUserGroupProvider().delete('G', 'eng', 'AWS::IAM::Group', undefined, {
+      stackHoldersStillAttached: true,
+    });
   const empty: Record<string, Handler> = {
     ListAttachedGroupPoliciesCommand: () => ({ AttachedPolicies: [] }),
     ListGroupPoliciesCommand: () => ({ PolicyNames: [] }),

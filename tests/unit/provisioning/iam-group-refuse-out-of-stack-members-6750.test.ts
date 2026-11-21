@@ -2,8 +2,9 @@
  * go-to-k/cdkd#6750 (group half): on a stack destroy, an IAM group a user is
  * still in is refused (CloudFormation's handler has no
  * `iam:RemoveUserFromGroup`, and `DeleteGroup` answers `DeleteConflict`)
- * instead of the user being removed from it. A deploy's delete keeps the
- * removal: a same-name re-create relies on it (go-to-k/cdkd#4461).
+ * instead of the user being removed from it. go-to-k/cdkd#6770: so is every
+ * other delete but a same-name re-create's delete-first
+ * (`stackHoldersStillAttached`), which keeps the removal (go-to-k/cdkd#4461).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeleteConflictException, NoSuchEntityException } from '@aws-sdk/client-iam';
@@ -406,13 +407,103 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
   });
 });
 
-describe('IAM group delete outside a stack destroy keeps removing its members (#4461)', () => {
+describe("a same-name re-create's delete-first keeps removing its members (#4461, #6770)", () => {
   it('removes each member, then deletes the group', async () => {
     drive({ ...base, GetGroupCommand: members(['member']), DeleteGroupCommand: () => ({}) });
 
-    await new IAMUserGroupProvider().delete('Group', 'my-group', 'AWS::IAM::Group');
+    await new IAMUserGroupProvider().delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
+      stackHoldersStillAttached: true,
+    });
 
     expect(sent).toContain('RemoveUserFromGroupCommand');
     expect(sent.at(-1)).toBe('DeleteGroupCommand');
+  });
+
+  it("a DeleteConflict after the removal is AWS's error, with no settle and no second DeleteGroup", async () => {
+    drive({ ...base, GetGroupCommand: members(['member']) });
+
+    const error = await new IAMUserGroupProvider()
+      .delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
+        stackHoldersStillAttached: true,
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect((error as Error).message).not.toContain('whose membership this');
+    expect(count('DeleteGroupCommand')).toBe(1);
+    expect(count('GetGroupCommand')).toBe(1);
+  });
+});
+
+describe('every other deploy-side delete refuses like a stack destroy (#6770)', () => {
+  // A template removal, a nested child's teardown from a deploy, a replaced
+  // group's cleanup-phase delete (its in-stack members already moved to the
+  // new group) and a rollback delete all reach the provider without
+  // `stackHoldersStillAttached`, most without `stackDestroy` either.
+  const contexts = {
+    'no context at all': undefined,
+    'a template removal / superseded cleanup context': {
+      expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
+    },
+    'an explicit false': { stackHoldersStillAttached: false },
+  } as const;
+
+  for (const [label, context] of Object.entries(contexts)) {
+    it(`${label}: refuses an out-of-stack user and never removes them`, async () => {
+      drive({ ...base, GetGroupCommand: members(['outsider']) });
+
+      const error = await new IAMUserGroupProvider()
+        .delete('Group', 'my-group', 'AWS::IAM::Group', undefined, context)
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      const message = (error as Error).message;
+      expect(message).toContain(
+        'group my-group still has user(s) outsider, whose membership this run did not remove'
+      );
+      expect(message).toContain(
+        "If a named user is one of this stack's users, run the command again once its delete finishes."
+      );
+      expect(message).toContain('--user-name <user>), then run the command again.');
+      expect(message).not.toContain('destroy');
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(sent).not.toContain('RemoveUserFromGroupCommand');
+    });
+  }
+
+  it("the stack's own membership drained by the run's earlier update: DeleteGroup is retried and succeeds", async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      GetGroupCommand: members(['stack-user'], []),
+      DeleteGroupCommand: () => (deletes++ === 0 ? conflict() : {}),
+    });
+
+    await new IAMUserGroupProvider().delete('Group', 'my-group', 'AWS::IAM::Group');
+
+    expect(deletes).toBe(2);
+    expect(sent).not.toContain('RemoveUserFromGroupCommand');
+  });
+
+  it('masks a secret-derived user name in the non-destroy wording too', async () => {
+    drive({ ...base, GetGroupCommand: members(['SECRET-user']) });
+
+    const error = await new IAMUserGroupProvider()
+      .delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
+        maskSecrets: (text) => text.split('SECRET').join('***'),
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect((error as Error).message).toContain('user(s) ***-user, whose membership this run');
+    expect((error as Error).message).not.toContain('SECRET');
   });
 });

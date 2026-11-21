@@ -14,7 +14,7 @@ import {
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
-import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { assertRegionMatch, holderRefusalRun, type DeleteContext } from '../../region-check.js';
 import { markNotGone } from '../../not-gone.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
@@ -28,8 +28,9 @@ import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-id
  * Before deleting, performs full cleanup:
  * 1. Detach all managed policies
  * 2. Delete all inline policies
- * 3. Remove role from all instance profiles (not on a stack destroy, which
- *    refuses a role a profile still holds instead: go-to-k/cdkd#6750)
+ * 3. Remove role from all instance profiles, only on a same-name re-create's
+ *    delete-first (`stackHoldersStillAttached`); every other delete refuses a
+ *    role a profile still holds instead (go-to-k/cdkd#6750, #6770)
  * 4. Delete the role itself
  */
 export async function deleteImpl(
@@ -97,29 +98,30 @@ export async function deleteImpl(
     // Step 2: Delete all inline policies
     await this.deleteAllInlinePolicies(physicalId, log, progress);
 
-    // Step 3: Remove role from all instance profiles — except on a stack
-    // destroy (go-to-k/cdkd#6750). CloudFormation's delete handler holds no
+    // Step 3: Remove role from all instance profiles — only where the
+    // stack's own profile may still hold it and is pointed at its
+    // replacement afterwards (`stackHoldersStillAttached`: a same-name
+    // re-create's delete-first, go-to-k/cdkd#4461). Every other delete — a
+    // destroy (go-to-k/cdkd#6750), a template removal, a nested child's
+    // teardown, a replaced copy's cleanup (go-to-k/cdkd#6770) — leaves the
+    // profiles alone: CloudFormation's delete handler holds no
     // `iam:RemoveRoleFromInstanceProfile`, so `DeleteRole` fails with
-    // `DeleteConflict` while a profile still holds the role; and a destroy
-    // deletes the stack's own `AWS::IAM::InstanceProfile`s before their role,
-    // so a profile left here is not this destroy's to change. A deploy's
-    // delete keeps the removal: a same-name re-create (`--recreate-via-*`,
-    // `--replace`'s delete-first fallback) deletes the role while the stack's
-    // own profile still holds it and adds it back afterwards
-    // (go-to-k/cdkd#4461), and the provider cannot tell that delete from a
-    // template removal.
-    const stackDestroy = context?.stackDestroy === true;
-    if (!stackDestroy) await this.removeFromAllInstanceProfiles(physicalId, log, progress);
+    // `DeleteConflict` while a profile still holds the role, and the run
+    // deletes or updates the stack's own profiles before this delete, so a
+    // profile left here is not this run's to change.
+    const stripHolders = context?.stackHoldersStillAttached === true;
+    if (stripHolders) await this.removeFromAllInstanceProfiles(physicalId, log, progress);
 
-    // Step 4: Delete the role. Two attempts at most on a stack destroy: the
-    // second only after the settle below saw no profile still holding it,
-    // i.e. what refused the first was the stack's own profile being deleted.
+    // Step 4: Delete the role. Two attempts at most where step 3 left the
+    // profiles alone: the second only after the settle below saw no profile
+    // still holding it, i.e. what refused the first was the stack's own
+    // profile being deleted.
     for (let attempt = 1; ; attempt++) {
       try {
         await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
         break;
       } catch (error) {
-        if (!stackDestroy || attempt > 1 || !(error instanceof DeleteConflictException)) {
+        if (stripHolders || attempt > 1 || !(error instanceof DeleteConflictException)) {
           throw error;
         }
         // Read only after the refusal, so a delete that succeeds costs no
@@ -132,16 +134,17 @@ export async function deleteImpl(
         });
         if (held === 'empty') continue;
         if (held === undefined) throw error;
+        const run = holderRefusalRun(context);
         const refusal = markNonRetryable(
           new ProvisioningError(
             log.mask(
               `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
                 `instance profile(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, ` +
-                `which this destroy did not delete (a profile created outside the stack, or ` +
+                `which this ${run.noun} did not delete (a profile created outside the stack, or ` +
                 `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
                 `does not remove the role from them. If nothing still needs the role there, ` +
                 `remove it (aws iam remove-role-from-instance-profile --instance-profile-name ` +
-                `<profile> --role-name <role>) or delete the profile, then destroy again.`
+                `<profile> --role-name <role>) or delete the profile, then ${run.again}.`
             ),
             resourceType,
             logicalId,
@@ -186,7 +189,7 @@ export async function deleteImpl(
 }
 
 /**
- * A stack destroy's refusals of a role an instance profile still holds
+ * The refusals of a role an instance profile still holds
  * (go-to-k/cdkd#6750), passed through the delete's wrap unchanged. A set, not a
  * subclass: `ProvisioningError` resets its prototype, so `instanceof` on a
  * subclass of it never holds.

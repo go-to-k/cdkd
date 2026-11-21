@@ -161,7 +161,11 @@ describe('IAMRoleProvider moved bodies send the SDK command the delegator names'
       if (command instanceof GetRoleCommand) return { Role: { RoleName: 'my-role' } };
       return {};
     });
-    await new IAMRoleProvider().delete('MyRole', 'my-role', 'AWS::IAM::Role');
+    // A delete-first's: the only delete that lists the instance profiles
+    // up front (go-to-k/cdkd#6770).
+    await new IAMRoleProvider().delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, {
+      stackHoldersStillAttached: true,
+    });
     expect(sent(ListAttachedRolePoliciesCommand)).toEqual([{ RoleName: 'my-role' }]);
     expect(sent(ListRolePoliciesCommand)).toEqual([{ RoleName: 'my-role' }]);
     expect(sent(ListInstanceProfilesForRoleCommand)).toEqual([{ RoleName: 'my-role' }]);

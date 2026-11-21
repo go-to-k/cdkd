@@ -2,9 +2,10 @@
  * go-to-k/cdkd#6750: on a stack destroy, an IAM role an instance profile still
  * holds is refused (CloudFormation's handler has no
  * `iam:RemoveRoleFromInstanceProfile`, and `DeleteRole` answers
- * `DeleteConflict`) instead of being removed from that profile. A deploy's
- * delete (template removal, replacement) keeps the removal: a same-name
- * re-create relies on it (go-to-k/cdkd#4461).
+ * `DeleteConflict`) instead of being removed from that profile.
+ * go-to-k/cdkd#6770: so is every other delete but a same-name re-create's
+ * delete-first (`stackHoldersStillAttached`), which keeps the removal
+ * (go-to-k/cdkd#4461).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeleteConflictException, NoSuchEntityException } from '@aws-sdk/client-iam';
@@ -273,7 +274,7 @@ describe('IAM role delete on a stack destroy (#6750)', () => {
   });
 });
 
-describe('IAM role delete outside a stack destroy keeps removing it from its profiles (#4461)', () => {
+describe("a same-name re-create's delete-first keeps removing it from its profiles (#4461, #6770)", () => {
   it('removes the role from each profile, then deletes it', async () => {
     drive({
       ...base,
@@ -281,9 +282,93 @@ describe('IAM role delete outside a stack destroy keeps removing it from its pro
       ListInstanceProfilesForRoleCommand: profiles(['stack-profile']),
     });
 
-    await new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role');
+    await new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role', undefined, {
+      stackHoldersStillAttached: true,
+    });
 
     expect(sent).toContain('RemoveRoleFromInstanceProfileCommand');
     expect(sent.at(-1)).toBe('DeleteRoleCommand');
+  });
+
+  it("a DeleteConflict after the removal is AWS's error, with no settle and no second DeleteRole", async () => {
+    drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['stack-profile']) });
+
+    const error = await new IAMRoleProvider()
+      .delete('Role', 'my-role', 'AWS::IAM::Role', undefined, { stackHoldersStillAttached: true })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect((error as Error).message).not.toContain('which this');
+    expect(sent.filter((n) => n === 'DeleteRoleCommand')).toHaveLength(1);
+    expect(sent).not.toContain('GetInstanceProfileCommand');
+  });
+});
+
+describe('every other deploy-side delete refuses like a stack destroy (#6770)', () => {
+  // A template removal, a nested child's teardown from a deploy, a replaced
+  // copy's cleanup-phase delete and a rollback delete all reach the provider
+  // without `stackHoldersStillAttached`, most without `stackDestroy` either.
+  const contexts = {
+    'no context at all': undefined,
+    'a template removal / superseded cleanup context': {
+      expectedRegion: 'us-east-1',
+      deletionPolicy: 'Delete',
+    },
+    'an explicit false': { stackHoldersStillAttached: false },
+  } as const;
+
+  for (const [label, context] of Object.entries(contexts)) {
+    it(`${label}: refuses an out-of-stack profile and never removes the role from it`, async () => {
+      drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['other-stack-profile']) });
+
+      const error = await new IAMRoleProvider()
+        .delete('Role', 'my-role', 'AWS::IAM::Role', undefined, context)
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+      expect(error).toBeInstanceOf(ProvisioningError);
+      const message = (error as Error).message;
+      expect(message).toContain(
+        'role my-role is still in instance profile(s) other-stack-profile, which this run did not delete'
+      );
+      expect(message).toContain('or delete the profile, then run the command again.');
+      expect(message).not.toContain('destroy');
+      expect(isMarkedNonRetryable(error)).toBe(true);
+      expect(sent).not.toContain('RemoveRoleFromInstanceProfileCommand');
+    });
+  }
+
+  it("the stack's own profile drained by the run's earlier delete: DeleteRole is retried and succeeds", async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      DeleteRoleCommand: () => (deletes++ === 0 ? conflict() : {}),
+      ListInstanceProfilesForRoleCommand: profiles(['stack-profile'], []),
+    });
+
+    await new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role');
+
+    expect(deletes).toBe(2);
+    expect(sent).not.toContain('RemoveRoleFromInstanceProfileCommand');
+  });
+
+  it('masks a secret-derived profile name in the non-destroy wording too', async () => {
+    drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['SECRET-profile']) });
+
+    const error = await new IAMRoleProvider()
+      .delete('Role', 'my-role', 'AWS::IAM::Role', undefined, {
+        maskSecrets: (text) => text.split('SECRET').join('***'),
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect((error as Error).message).toContain('instance profile(s) ***-profile, which this run');
+    expect((error as Error).message).not.toContain('SECRET');
   });
 });

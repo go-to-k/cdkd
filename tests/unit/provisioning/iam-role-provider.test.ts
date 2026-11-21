@@ -43,6 +43,12 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../src/utils/error-handler.js';
 
+// The delete cases below drive the full cleanup sequence, instance-profile
+// removal included, which only a same-name re-create's delete-first runs
+// (go-to-k/cdkd#6770); every other delete's refusal is
+// iam-role-refuse-out-of-stack-profile-6750.test.ts's.
+const DELETE_FIRST = { stackHoldersStillAttached: true } as const;
+
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
 
@@ -57,7 +63,7 @@ describe('IAMRoleProvider', () => {
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
       );
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
@@ -82,7 +88,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(7);
 
@@ -110,7 +116,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(7);
 
@@ -140,7 +146,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(7);
 
@@ -175,7 +181,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       // Total: GetRole + ListAttached + Detach + ListInline + DeleteInline + ListProfiles + RemoveFromProfile + DeleteRole = 8
       expect(mockSend).toHaveBeenCalledTimes(8);
@@ -206,7 +212,7 @@ describe('IAMRoleProvider', () => {
       mockSend.mockResolvedValueOnce({});
 
       // Should not throw
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(6);
     });
@@ -227,7 +233,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(6);
     });
@@ -250,7 +256,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(6);
     });
@@ -268,7 +274,7 @@ describe('IAMRoleProvider', () => {
       mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
       await expect(
-        provider.delete('MyRole', 'my-role', 'AWS::IAM::Role')
+        provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST)
       ).rejects.toThrow('Failed to delete IAM role MyRole');
     });
 
@@ -285,7 +291,7 @@ describe('IAMRoleProvider', () => {
       mockSend.mockRejectedValueOnce(new Error('DeleteConflict'));
 
       await expect(
-        provider.delete('MyRole', 'my-role', 'AWS::IAM::Role')
+        provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST)
       ).rejects.toThrow('Failed to delete IAM role MyRole');
     });
 
@@ -301,7 +307,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       // GetRole + 3 list calls + DeleteRole = 5
       expect(mockSend).toHaveBeenCalledTimes(5);
@@ -321,7 +327,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role');
+      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
 
       expect(mockSend).toHaveBeenCalledTimes(5);
     });
@@ -530,6 +536,27 @@ describe('IAMRoleProvider', () => {
       expect(result.reason).toContain('DeleteConflict');
       // go-to-k/cdkd#4911: never kept, since `delete()` strips the role first.
       expect(result.outcome === 'partial' && result.oldResourceSurvivor).toBeUndefined();
+    });
+
+    it("deletes the old role as one the stack's profile still holds (go-to-k/cdkd#6770)", async () => {
+      // The profile's own update, which points it at the new role, runs only
+      // after this row: the old role's delete must still remove it from it.
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      });
+      const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
+
+      await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } }
+      );
+
+      expect(del).toHaveBeenCalledTimes(1);
+      expect(del.mock.calls[0]![1]).toBe('old-role');
+      expect(del.mock.calls[0]![4]).toHaveProperty('stackHoldersStillAttached', true);
     });
 
     // `reason` here is PERSISTED as the row's `outcome: 'partial'` text, so the

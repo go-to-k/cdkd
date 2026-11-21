@@ -149,6 +149,10 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
     // THE DISCRIMINATOR: before the fix this bag was `{}`.
     expect(bags[0]).toEqual({ QueueName: `${STACK}-Q` });
     expect(state['Q']?.physicalId).toBe('old-q');
+    // go-to-k/cdkd#6770: the new copy deleted after the old one is back is
+    // no delete-first, so it refuses an out-of-stack holder.
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del.mock.calls[0]![4]).not.toHaveProperty('stackHoldersStillAttached');
   });
 
   it('delete-new-first arm: the post-delete re-create gets it too', async () => {
@@ -176,6 +180,10 @@ describe('the Cloud Control replay-CREATE receives a generated name (#3199)', ()
 
     expect(result.failures).toBe(0);
     expect(del).toHaveBeenCalledTimes(1);
+    // go-to-k/cdkd#6770: this delete frees the name while the stack's own
+    // holders still hold the copy, so it strips them, as a forward
+    // delete-first does.
+    expect(del.mock.calls[0]![4]).toHaveProperty('stackHoldersStillAttached', true);
     expect(create).toHaveBeenCalledTimes(2);
     // BOTH creates carry it — the collision arm re-enters through the same
     // helper, so a fix applied to only one site reds exactly this line.

@@ -94,6 +94,10 @@ export async function recreateOldResource(
           ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),
+          // go-to-k/cdkd#6770: both routes free the name the old copy is
+          // re-created under, while the stack's own profile or membership
+          // still holds it.
+          stackHoldersStillAttached: true,
           // go-to-k/cdkd#6655: never the deleted old resource's dead id.
           recordedAttributes: newCopyDeleteAttributes(
             op.resourceType,

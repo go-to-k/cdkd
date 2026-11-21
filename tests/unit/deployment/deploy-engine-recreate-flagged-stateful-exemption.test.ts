@@ -232,6 +232,12 @@ describe('the property-driven stateful guard exempts a --recreate-via-* target (
         expect.anything(),
         expect.objectContaining({ forceDataDelete: false })
       );
+      // go-to-k/cdkd#6770: a rename replaces create-first, so the old copy's
+      // delete is no delete-first: it refuses an out-of-stack holder rather
+      // than stripping it.
+      expect(vi.mocked(provider.delete).mock.calls[0]![4]).not.toHaveProperty(
+        'stackHoldersStillAttached'
+      );
     });
   }
 });

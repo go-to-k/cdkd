@@ -303,6 +303,29 @@ export interface DeleteContext extends SecretMaskingContext {
   stackDestroy?: boolean | undefined;
 
   /**
+   * The stack's own holders of this resource may still hold it at this
+   * delete, and are pointed at its replacement afterwards
+   * (go-to-k/cdkd#6770): an `AWS::IAM::InstanceProfile` holding a role, a
+   * user's membership in a group. Set only where that is so: a same-name
+   * re-create's delete-first (`replacement/delete-first.ts`,
+   * `update-replace/recreate.ts`, `update-in-place/replace-fallback.ts`, and
+   * the rollback's delete-new-first in
+   * `replay-reverse-replacement/recreate.ts`), and the role provider's own
+   * old-role delete in a `RoleName` update, which runs before the profile's
+   * update (go-to-k/cdkd#4461). The role and group deletes then remove the
+   * resource from every holder before deleting it.
+   *
+   * ABSENT on every other delete — a destroy, a template removal, a nested
+   * child's teardown, a replaced copy's cleanup-phase delete, a rollback's
+   * delete of a created copy — and there those deletes refuse a holder the
+   * run did not remove, as CloudFormation's delete handler (which holds no
+   * `iam:RemoveRoleFromInstanceProfile` / `iam:RemoveUserFromGroup`) fails
+   * with `DeleteConflict`. Absent is the safe side: a new delete site that
+   * forgets it refuses rather than changing a resource outside the stack.
+   */
+  stackHoldersStillAttached?: boolean | undefined;
+
+  /**
    * The delete removes what a CREATE proved it made before failing
    * (go-to-k/cdkd#1710): no state record ever held it, and `properties` is the
    * ATTEMPTED bag. Set only by the rollback executor's failed-CREATE delete
@@ -340,6 +363,22 @@ export interface DeleteContext extends SecretMaskingContext {
         properties?: unknown;
       }>
     | undefined;
+}
+
+/**
+ * How a role or group delete's holder refusal (go-to-k/cdkd#6750, #6770)
+ * names the run it refused in, and the step after the fix: a destroy's
+ * wording only on a destroy, since the same refusal also fires on a deploy's
+ * removal and on a rollback.
+ */
+export function holderRefusalRun(context: DeleteContext | undefined): {
+  noun: string;
+  again: string;
+  rerun: string;
+} {
+  return context?.stackDestroy === true
+    ? { noun: 'destroy', again: 'destroy again', rerun: 'run the destroy again' }
+    : { noun: 'run', again: 'run the command again', rerun: 'run the command again' };
 }
 
 /**
