@@ -186,8 +186,7 @@ function destinationConfigForUpdate(
   if (holdsDestination(value)) return value as LambdaDestinationConfig;
   if (!isPlainObject(value)) return value as LambdaDestinationConfig;
   const onFailure = value['OnFailure'];
-  if (onFailure !== undefined && !isPlainObject(onFailure))
-    return value as LambdaDestinationConfig;
+  if (onFailure !== undefined && !isPlainObject(onFailure)) return value as LambdaDestinationConfig;
   return holdsDestination(previous) ? clearedDestinationConfig() : undefined;
 }
 
