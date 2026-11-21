@@ -660,13 +660,11 @@ export async function applyUpdate(
     );
   }
 
-  const arn = await this.buildArn(physicalId);
-
+  // go-to-k/cdkd#6665: with `LogGroupIdentity`, which a record lacking one
+  // acquires here (a recorded one is kept by the engine).
   return {
     physicalId,
     wasReplaced: false,
-    attributes: {
-      Arn: arn,
-    },
+    attributes: await this.createdAttributes(physicalId),
   };
 }

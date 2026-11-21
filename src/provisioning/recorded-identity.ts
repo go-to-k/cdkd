@@ -84,15 +84,32 @@ export class RecordedIdentityMismatchError extends RecordedIdentityError {
      * `cdkd state orphan` step. Absent: the IAM wording.
      */
     replacedBy?: string | undefined;
+    /**
+     * go-to-k/cdkd#6665: how AWS ITSELF re-creates a resource of the type
+     * under its fixed name for a resource of the stack (`Lambda writing to
+     * its /aws/lambda/<function> group`): static text, never a value. When
+     * set (and `replacedBy` is not), the message names that benign cause
+     * with {@link reAdoptRemedy} and deleting it by hand, before the
+     * `cdkd state orphan` step for any other holder.
+     */
+    recreatedBy?: string | undefined;
   }) {
     const { label, resourceType, logicalId, physicalId, attribute, context, replacedBy } = params;
+    const { recreatedBy } = params;
     super(
-      replacedBy === undefined
-        ? `Cannot delete ${label} ${logicalId}: the ${label} holding the name cdkd recorded is not ` +
+      replacedBy === undefined && recreatedBy !== undefined
+        ? `Cannot delete ${label} ${logicalId}: the ${label} now holding the name cdkd recorded ` +
+            `is not the one cdkd created (its ${attribute} differs from the recorded one), so cdkd ` +
+            `sent no delete and kept the record. If AWS re-created it for this stack's own ` +
+            `resource (${recreatedBy}), adopt it with ${reAdoptRemedy(logicalId)} and re-run, or ` +
+            `delete it yourself and re-run. Otherwise leave that ${label} alone and drop the ` +
+            `record with ${stateOrphanRecordRemedy(context, logicalId)}.`
+        : replacedBy === undefined
+          ? `Cannot delete ${label} ${logicalId}: the ${label} holding the name cdkd recorded is not ` +
             `the one cdkd created (its ${attribute} differs from the recorded one), so cdkd sent no ` +
             `delete and kept the record. Leave that ${label} alone; if the one cdkd created is gone, ` +
             `drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`
-        : `Cannot delete ${label} ${logicalId}: the ${label} now holding the name cdkd recorded is ` +
+          : `Cannot delete ${label} ${logicalId}: the ${label} now holding the name cdkd recorded is ` +
             `not the one cdkd recorded (its ${attribute} differs from the recorded one), so cdkd ` +
             `sent no delete and kept the record; the recorded one may still exist under another ` +
             `name. If you replaced it yourself (${replacedBy}), adopt the new one with ` +
@@ -164,6 +181,8 @@ export async function assertRecordedIdentity(params: {
   context: DeleteContext | undefined;
   /** {@link RecordedIdentityMismatchError}'s `replacedBy`. */
   replacedBy?: string | undefined;
+  /** {@link RecordedIdentityMismatchError}'s `recreatedBy`. */
+  recreatedBy?: string | undefined;
 }): Promise<void> {
   const recorded = recordedIdentityId(params.resourceType, params.context);
   if (recorded === undefined) return;
@@ -195,6 +214,7 @@ export async function assertRecordedIdentity(params: {
     attribute: recorded.key,
     context,
     replacedBy: params.replacedBy,
+    recreatedBy: params.recreatedBy,
   });
 }
 

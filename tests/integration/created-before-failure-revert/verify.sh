@@ -16,13 +16,15 @@
 #         repository EXISTS with no lifecycle policy (proof the failing call
 #         was PutLifecyclePolicy, after the create returned); state has no
 #         record of it; the journal's failed op carries physicalId = the
-#         repository name and physicalIdRecoveredFromError = true.
-#     E2. `cdkd rollback --force --revert-failed`: exit 2. An ECR repository's
-#         provider journals no creation identity, so nothing proves the
-#         repository under the name is the one the failed CREATE made
-#         (go-to-k/cdkd#4658): the rollback KEEPS it and warns naming it, and
-#         the journal and state.json are gone (initial-deploy rollback). The
-#         fixture then deletes the repository by hand.
+#         repository name and physicalIdRecoveredFromError = true, and
+#         (go-to-k/cdkd#6665) createdResourceIdentity = the repository's
+#         `createdAt` in whole seconds, from CreateRepository's answer.
+#     E2. `cdkd rollback --force --revert-failed`: exit 0. The live
+#         repository's `createdAt` equals the journaled identity, so it is
+#         proven the one the failed CREATE made (go-to-k/cdkd#6665; before,
+#         the ECR provider journaled none and the rollback kept it, #4658):
+#         the rollback DELETES it, and the journal and state.json are gone
+#         (initial-deploy rollback).
 #   PHASE S (SNS, the provider deletes what it made, and the delete succeeds):
 #     S1. Deploy the SNS stack (--verbose): CreateTopic succeeds, SNS rejects
 #         the data protection policy, the provider's catch deletes the topic
@@ -40,8 +42,11 @@
 #     N2. Deploy it again with NESTED_ORPHAN=1 --no-rollback: the child's
 #         update creates the ECR arm's repository and fails at its lifecycle
 #         policy, so the CHILD's journal names the repository.
-#     N3. `cdkd destroy` the parent: exit 2, the repository is KEPT (nothing
-#         proves it is the one the failed CREATE made), the child's state is
+#     N2b. The fixture deletes the repository and creates it again under the
+#         same name (2 s later: the identity is whole seconds), so the
+#         journaled identity no longer matches the holder of the name.
+#     N3. `cdkd destroy` the parent: exit 2, the re-created repository is
+#         KEPT (its identity differs from the journaled one), the child's state is
 #         deleted, and -- the fix -- the parent's state is deleted in the SAME
 #         run, with the `Child` row reported as deleted leaving 1 resource in
 #         AWS and no "State preserved" claim. Before the fix the parent kept
@@ -430,34 +435,44 @@ if [ "${ECR_OP_FIELDS}" != "CREATE ${REPO_NAME} true" ]; then
   echo "${ECR_OP}" | jq . | sed 's/^/  /' >&2
   exit 1
 fi
-echo "[verify] phase E1 ok: repository created, its lifecycle policy rejected, the journal names it (recovered from the error)"
+# go-to-k/cdkd#6665: the journaled identity is the live repository's
+# createdAt, ISO UTC at whole seconds (what the provider's resourceIdentity
+# answers), taken from CreateRepository's answer. The CLI prints ISO, or
+# epoch seconds under `cli_timestamp_format = none`.
+E1_LIVE_CREATED="$(aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${REGION}" \
+  --query 'repositories[0].createdAt' --output text)" || { echo "[verify] FAIL: phase E1: could not read ${REPO_NAME}'s createdAt" >&2; exit 1; }
+E1_LIVE_ID="$(node -e 'const v = process.argv[1]; const d = /^[0-9]+(\.[0-9]+)?$/.test(v) ? new Date(Number(v) * 1000) : new Date(v); if (Number.isNaN(d.getTime())) process.exit(1); d.setUTCMilliseconds(0); console.log(d.toISOString().replace(/\.000Z$/, "Z"))' "${E1_LIVE_CREATED}")" \
+  || { echo "[verify] FAIL: phase E1: ${REPO_NAME}'s createdAt '${E1_LIVE_CREATED}' is not a timestamp" >&2; exit 1; }
+E1_JOURNALED_ID="$(printf '%s' "${ECR_OP}" | jq -r '.createdResourceIdentity // "<absent>"')"
+if [ "${E1_JOURNALED_ID}" != "${E1_LIVE_ID}" ]; then
+  echo "[verify] FAIL: phase E1: the journal's createdResourceIdentity for OrphanRepo is '${E1_JOURNALED_ID}' (expected the live createdAt '${E1_LIVE_ID}', go-to-k/cdkd#6665)" >&2
+  exit 1
+fi
+echo "[verify] phase E1 ok: repository created, its lifecycle policy rejected, the journal names it (recovered from the error) with its identity ${E1_JOURNALED_ID}"
 
-echo "[verify] phase E2: cdkd rollback ${ECR_STACK} --force --revert-failed (expect exit 2, the repository KEPT)"
+echo "[verify] phase E2: cdkd rollback ${ECR_STACK} --force --revert-failed (expect exit 0, the proven repository DELETED)"
 E2_RC="$(run_rollback "${ECR_STACK}" "${LOG_DIR}/e2.log")"
-if [ "${E2_RC}" -ne 2 ]; then
-  echo "[verify] FAIL: phase E2: the rollback exited ${E2_RC} (expected 2: the repository is kept unproven -- output above)" >&2
+if [ "${E2_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: phase E2: the rollback exited ${E2_RC} (expected 0: the repository is proven by its journaled identity and deleted -- output above)" >&2
   exit 1
 fi
-if ! grep -q "Skipping failed CREATE of OrphanRepo.*the journal recorded no identity for it" "${LOG_DIR}/e2.log"; then
-  echo "[verify] FAIL: phase E2: the rollback did not warn that nothing proves OrphanRepo is the repository the failed CREATE made" >&2
+# The symptom go-to-k/cdkd#6665 removes: the ECR provider journaled no
+# identity, so the rollback kept its own repository.
+if grep -q "Skipping failed CREATE of OrphanRepo" "${LOG_DIR}/e2.log"; then
+  echo "[verify] FAIL: phase E2: the rollback kept OrphanRepo although its journaled identity proves it (go-to-k/cdkd#6665)" >&2
   exit 1
 fi
-if grep -qF "deleting partially-created OrphanRepo" "${LOG_DIR}/e2.log"; then
-  echo "[verify] FAIL: phase E2: the rollback deleted a repository it had no identity for (go-to-k/cdkd#4658)" >&2
+if ! grep -qF "deleting partially-created OrphanRepo" "${LOG_DIR}/e2.log"; then
+  echo "[verify] FAIL: phase E2: the rollback did not say it deletes OrphanRepo (or the wording drifted)" >&2
   exit 1
 fi
-if ! aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${REGION}" >/dev/null; then
-  echo "[verify] FAIL: phase E2: ${REPO_NAME} is gone after the rollback that warned it was kept" >&2
-  exit 1
-fi
+# shellcheck disable=SC2046
+wait_gone "phase E2: ${REPO_NAME} still exists after the rollback that deleted it" $(repo_probe)
 assert_gone "phase E2: the rollback journal is still present" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ECR_JOURNAL_KEY}"
 assert_gone "phase E2: state.json is still present after the initial-deploy rollback" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${ECR_STATE_KEY}"
-aws ecr delete-repository --repository-name "${REPO_NAME}" --force --region "${REGION}" >/dev/null
-# shellcheck disable=SC2046
-wait_gone "phase E2: ${REPO_NAME} still exists after the fixture deleted it" $(repo_probe)
-echo "[verify] phase E2 ok: the unproven repository was kept and warned about (exit 2), journal and state gone"
+echo "[verify] phase E2 ok: the proven repository was deleted (exit 0), journal and state gone"
 
 # ---------------------------------------------------------------------------
 # PHASE S: SNS — the provider deletes its own topic; nothing to journal or delete
@@ -569,7 +584,18 @@ if [ "${CHILD_OP_FIELDS}" != "CREATE ${NESTED_REPO_NAME} true" ]; then
 fi
 echo "[verify] phase N2 ok: the child's journal names the repository its failed CREATE made"
 
-echo "[verify] phase N3: cdkd destroy ${NESTED_STACK} --force (expect exit 2, the repository KEPT, BOTH states deleted in one run)"
+# go-to-k/cdkd#6665: the child's journal now proves its own repository, which
+# a destroy would delete; the name is reused outside cdkd instead, so the
+# orphan is kept as another resource's and the #4738 skip below still happens.
+echo "[verify] phase N2b: ${NESTED_REPO_NAME} deleted and created again under the same name"
+aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null
+# shellcheck disable=SC2046
+wait_gone "phase N2b: ${NESTED_REPO_NAME} still exists after the fixture deleted it" $(nested_repo_probe)
+# The identity is whole seconds: a re-create in the same second would match.
+sleep 2
+aws ecr create-repository --repository-name "${NESTED_REPO_NAME}" --region "${REGION}" >/dev/null
+
+echo "[verify] phase N3: cdkd destroy ${NESTED_STACK} --force (expect exit 2, the re-created repository KEPT, BOTH states deleted in one run)"
 N3_RC=0
 node "${LOCAL_DIST}" destroy "${NESTED_STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --force > "${LOG_DIR}/n3.log.raw" 2>&1 || N3_RC=$?
@@ -579,9 +605,9 @@ if [ "${N3_RC}" -ne 2 ]; then
   echo "[verify] FAIL: phase N3: the destroy exited ${N3_RC} (expected 2: the kept repository is a skip)" >&2
   exit 1
 fi
-# PREMISE: the child kept the repository as an unproven journaled orphan.
-if ! grep -q "Skipping failed CREATE of OrphanRepo.*the journal recorded no identity for it" "${LOG_DIR}/n3.log"; then
-  echo "[verify] FAIL: phase N3: the child destroy did not keep OrphanRepo as an unproven journaled orphan" >&2
+# PREMISE: the child kept the re-created repository as another resource.
+if ! grep -q "Skipping failed CREATE of OrphanRepo.*its identity differs from the one the failed deploy recorded" "${LOG_DIR}/n3.log"; then
+  echo "[verify] FAIL: phase N3: the child destroy did not keep the re-created OrphanRepo as another resource" >&2
   exit 1
 fi
 assert_gone "phase N3: the child's state.json is still present" \
@@ -613,7 +639,7 @@ fi
 aws ecr delete-repository --repository-name "${NESTED_REPO_NAME}" --force --region "${REGION}" >/dev/null
 # shellcheck disable=SC2046
 wait_gone "phase N3: ${NESTED_REPO_NAME} still exists after the fixture deleted it" $(nested_repo_probe)
-echo "[verify] phase N3 ok: one destroy deleted both states, kept the unproven repository (exit 2)"
+echo "[verify] phase N3 ok: one destroy deleted both states, kept the re-created repository (exit 2)"
 
 # ---------------------------------------------------------------------------
 # PHASE K: ACM — the deadline drops the marked error; the sink journals it

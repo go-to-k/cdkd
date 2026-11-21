@@ -24,6 +24,13 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
 import { SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
+import { identityTimestamp } from '../../deployment/recorded-identity-attributes.js';
+import {
+  assertRecordedIdentity,
+  recordedIdentityId,
+  RecordedIdentityError,
+} from '../recorded-identity.js';
+import { deniedIdentityReadRefusal } from '../identity-read-denied.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -34,6 +41,7 @@ import type {
   ResourceImportResult,
   ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
@@ -181,10 +189,17 @@ export class StepFunctionsProvider implements ResourceProvider {
       // a failed read omits the attribute rather than failing the create; the
       // #1852 heal fills it on the next deploy.
       let revisionId: string | undefined;
+      // go-to-k/cdkd#6665: the `creationDate` a later delete compares, from
+      // this `DescribeStateMachine` only, the call the delete reads it with
+      // (one source for recorder and comparer). A failed describe records
+      // none: the record is deleted by name until an update or import fills it.
+      let creationDate: Date | undefined;
       try {
-        revisionId = stateMachineRevisionId(
-          await this.getClient().send(new DescribeStateMachineCommand({ stateMachineArn }))
+        const described = await this.getClient().send(
+          new DescribeStateMachineCommand({ stateMachineArn })
         );
+        revisionId = stateMachineRevisionId(described);
+        creationDate = described.creationDate;
       } catch (describeError) {
         this.logger.debug(
           `Could not read the revision id of ${logicalId} after create: ${describeAwsFailure(describeError).detail}`
@@ -197,6 +212,7 @@ export class StepFunctionsProvider implements ResourceProvider {
           Arn: stateMachineArn,
           Name: name,
           StateMachineRevisionId: revisionId,
+          CreationDate: identityTimestamp(creationDate),
         }),
       };
     } catch (error) {
@@ -281,9 +297,47 @@ export class StepFunctionsProvider implements ResourceProvider {
     this.logger.debug(`Deleting Step Functions state machine ${logicalId}: ${physicalId}`);
 
     try {
+      // go-to-k/cdkd#6665: a record holding a `CreationDate` refuses a state
+      // machine of the same ARN created at another time (deleted and created
+      // again under the name), before the delete. One `DescribeStateMachine`,
+      // made only for such a record; its not-found is the typed one below.
+      if (recordedIdentityId(resourceType, context) !== undefined) {
+        const readCreationDate = async () =>
+          identityTimestamp(
+            (
+              await this.getClient().send(
+                new DescribeStateMachineCommand({ stateMachineArn: physicalId })
+              )
+            ).creationDate
+          );
+        try {
+          await assertRecordedIdentity({
+            label: 'Step Functions state machine',
+            resourceType,
+            logicalId,
+            physicalId,
+            liveId: await readCreationDate(),
+            reread: readCreationDate,
+            context,
+          });
+        } catch (readError) {
+          throw (
+            deniedIdentityReadRefusal(readError, {
+              label: 'Step Functions state machine',
+              permission: 'states:DescribeStateMachine',
+              resourceType,
+              logicalId,
+              physicalId,
+              context,
+            }) ?? readError
+          );
+        }
+      }
       await this.getClient().send(new DeleteStateMachineCommand({ stateMachineArn: physicalId }));
       this.logger.debug(`Successfully deleted Step Functions state machine ${logicalId}`);
     } catch (error) {
+      // The identity refusals: already worded (no AWS text) and marked.
+      if (error instanceof RecordedIdentityError) throw error;
       if (error instanceof StateMachineDoesNotExist) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
@@ -522,6 +576,36 @@ export class StepFunctionsProvider implements ResourceProvider {
       new DescribeStateMachineCommand({ stateMachineArn: physicalId })
     );
     return resp.creationDate instanceof Date ? resp.creationDate.getTime() : undefined;
+  }
+
+  /**
+   * go-to-k/cdkd#6665: the state machine's `creationDate` as
+   * {@link identityTimestamp}, the `CreationDate` the create, update and
+   * import record. The ARN is built from the name, so a state machine
+   * created again under it repeats the ARN; the creation date tells the two
+   * apart. `undefined` for another type, an id that is not a state machine
+   * ARN, a client in another region than `expectedRegion`, or a response
+   * without the date; `RESOURCE_NOT_FOUND` on `StateMachineDoesNotExist`.
+   * Any other failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::StepFunctions::StateMachine') return undefined;
+    if (!/^arn:[^:]+:states:[^:]+:\d{12}:stateMachine:[^:]+$/.test(physicalId)) return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    try {
+      const resp = await this.getClient().send(
+        new DescribeStateMachineCommand({ stateMachineArn: physicalId })
+      );
+      return identityTimestamp(resp.creationDate);
+    } catch (error) {
+      if (error instanceof StateMachineDoesNotExist) return RESOURCE_NOT_FOUND;
+      throw error;
+    }
   }
 
   import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

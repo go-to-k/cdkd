@@ -143,13 +143,19 @@ export function isNoSuchBucketError(error: unknown): boolean {
  * `AWS::DynamoDB::Table` (`TableId`; the schema's read-only set is `Arn` /
  * `StreamArn`), and `AWS::IAM::User` / `Group` / `InstanceProfile`
  * (`UserId` / `GroupId` / `InstanceProfileId`; each schema's read-only set is
- * `Arn` alone).
+ * `Arn` alone), and (go-to-k/cdkd#6665) `AWS::Logs::LogGroup`
+ * (`LogGroupIdentity`; read-only `Arn`), `AWS::StepFunctions::StateMachine`
+ * (`CreationDate`; read-only `Arn` / `Name` / `StateMachineRevisionId`) and
+ * `AWS::ECR::Repository` (`CreatedAt`; read-only `Arn` / `RepositoryUri`).
  */
 const CC_MODEL_OMITS_IDENTITY: ReadonlySet<string> = new Set([
   'AWS::DynamoDB::Table',
   'AWS::IAM::User',
   'AWS::IAM::Group',
   'AWS::IAM::InstanceProfile',
+  'AWS::Logs::LogGroup',
+  'AWS::StepFunctions::StateMachine',
+  'AWS::ECR::Repository',
 ]);
 
 /**
