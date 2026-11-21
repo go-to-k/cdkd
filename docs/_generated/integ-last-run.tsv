@@ -232,14 +232,10 @@ iam-access-key	2026-11-06T19:55:55Z	PASS	80	verify.sh	#5906 iam-user-group split
 iam-managed-policy	2026-11-20T23:48:27Z	PASS	223	verify.sh	PR6727 d8353e94d, step 3b2 one detach, identity kept, probe RED at 3b2, rc ok, orph clean
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-11-20T16:58:26Z	PASS	130	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
-iam-propagation-stress	2026-11-05T09:27:11Z	PASS	87	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans; 1 auto-created /aws/lambda log group deleted (2 older pre-existing ones left, not this batch)
-iam-recreate-reattach	2026-11-20T17:29:33Z	PASS	270	verify.sh	a0e4a6b56 rc ok, own state bucket, orph clean
-iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-role-policies-drift-clean	2026-11-20T23:48:27Z	PASS	444	verify.sh	PR6727 d8353e94d, own state bucket, rc ok, orph clean
 iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean, 3x AFTER at 92e003a70 (#6703); destroy span med 15587ms vs BEFORE 15546ms
 iam-recreate-reattach	2026-11-20T20:50:16Z	PASS	260	verify.sh	rc ok, orph clean, own state bucket, head 92e003a70 (#6703)
 iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-role-policies-drift-clean	2026-11-20T20:50:16Z	PASS	451	verify.sh	rc ok, orph clean, own state bucket, head 92e003a70 (#6703)
+iam-role-policies-drift-clean	2026-11-20T23:48:27Z	PASS	444	verify.sh	PR6727 d8353e94d, own state bucket, rc ok, orph clean
 iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
 iam-secret-derived-principals	2026-11-20T16:58:26Z	PASS	155	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 iam-sibling-managed-policy-drift	2026-11-20T23:48:27Z	PASS	574	verify.sh	PR6727 d8353e94d, own state bucket, rc ok, orph clean
