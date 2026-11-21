@@ -110,7 +110,8 @@ process.stdin.on('data', (d) => (s += d)).on('end', () => {
   if (fns.length !== 1) { process.stderr.write('want 1 function in state, got ' + fns.length + '\n'); process.exit(1); }
   const r = fns[0];
   const size = r.properties?.AcceleratorConfig?.AcceleratorMemorySize ?? 'none';
-  process.stdout.write([r.physicalId, r.provisionedBy ?? 'sdk', size].join(' '));
+  // Trailing newline: \`read\` returns 1 at EOF without one, which set -e turns into a silent exit.
+  process.stdout.write([r.physicalId, r.provisionedBy ?? 'sdk', size].join(' ') + '\n');
 });
 "
 }
