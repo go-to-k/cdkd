@@ -79,9 +79,9 @@
  *      position (`includes`, `startsWith`, a Map / Set key) is compared, not
  *      shown, and is not prose.
  *  (5) Part 2 checks key NAMES and runs the redaction's two empty-map
- *      entries (`redactForState`, `scrubResourceRecord`) per row. It does not
- *      prove that every `observedProperties` writer routes through them
- *      (go-to-k/cdkd#6765).
+ *      entries (`redactForState`, `scrubResourceRecord`) per row. That every
+ *      `observedProperties` writer routes through them is
+ *      `check-observed-properties-redaction.ts`'s (go-to-k/cdkd#6765).
  *
  * PART 2: READBACK KEYS
  * ---------------------
