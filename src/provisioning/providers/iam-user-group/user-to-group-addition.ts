@@ -89,11 +89,6 @@ export async function createUserToGroupAddition(
     throw new ProvisioningError(`Users is required for ${logicalId}`, resourceType, logicalId);
   }
 
-  // The users this create has added so far: a failure part way removes them
-  // again (go-to-k/cdkd#6770), since the failed op records no physical id and
-  // its rollback deletes nothing, and a group a destroy or removal deletes
-  // later refuses a member no record holds.
-  const added: string[] = [];
   try {
     await compareMembershipWrites({
       client: this.iamClient,
@@ -105,34 +100,14 @@ export async function createUserToGroupAddition(
       operation: 'update',
       warn: (message) => log.warn(message),
     });
-    try {
-      for (const userName of users) {
-        await this.iamClient.send(
-          new AddUserToGroupCommand({
-            GroupName: groupName,
-            UserName: userName,
-          })
-        );
-        added.push(userName);
-        log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
-      }
-    } catch (addError) {
-      for (const userName of added.reverse()) {
-        try {
-          await this.iamClient.send(
-            new RemoveUserFromGroupCommand({ GroupName: groupName, UserName: userName })
-          );
-          log.debug(
-            `Removed user ${v(userName)} from group ${v(groupName)} after the failed create`
-          );
-        } catch (removeError) {
-          // Best effort: the create's own failure is what surfaces.
-          log.debug(
-            `Could not remove user ${v(userName)} from group ${v(groupName)} after the failed create: ${removeError instanceof Error ? removeError.name : typeof removeError}`
-          );
-        }
-      }
-      throw addError;
+    for (const userName of users) {
+      await this.iamClient.send(
+        new AddUserToGroupCommand({
+          GroupName: groupName,
+          UserName: userName,
+        })
+      );
+      log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
     }
 
     log.debug(`Successfully created IAM UserToGroupAddition ${logicalId}`);
