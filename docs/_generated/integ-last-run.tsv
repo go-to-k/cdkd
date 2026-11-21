@@ -64,7 +64,7 @@ cc-to-sdk-reroute-common-types-2	2026-11-16T19:59:30Z	PASS	431	verify.sh	rc ok, 
 cc-to-sdk-reroute-common-types-3	2026-11-16T19:59:30Z	PASS	321	verify.sh	rc ok, destroy 0 errors, orph clean; at 0d6c5bfc2
 cc-to-sdk-reroute-common-types-4	2026-11-17T05:04:45Z	PASS	466	verify.sh	rc ok, destroy 0 errors, orph clean; at eeb9a6454
 cc-to-sdk-reroute-common-types-5	2026-11-17T06:22:39Z	PASS	240	verify.sh	rc ok, destroy 0 errors, orph clean; at 561a48018
-cc-to-sdk-reroute-common-types-6	2026-11-17T09:19:26Z	PASS	190	verify.sh	rc ok, orph clean (2 AgentCore runtime log groups swept by hand)
+cc-to-sdk-reroute-common-types-6	2026-11-21T18:10:40Z	PASS	376	verify.sh	rc ok, orph clean, ct6 log groups swept by verify
 cc-to-sdk-reroute-common-types-7	2026-11-17T18:14:14Z	PASS	145	verify.sh	rc ok, orph clean, A/B vs 5dacb3645 155-175s
 cc-to-sdk-reroute-common-types-8	2026-11-17T13:07:41Z	PASS	200	verify.sh	rc ok, orph clean
 cc-to-sdk-reroute-ecs-service	2026-11-03T04:12:32Z	PASS	261	verify.sh	rc ok, orph clean, 4750ae2de
