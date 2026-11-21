@@ -78,20 +78,17 @@ describe('S3TablesProvider', () => {
   describe('deleteTableBucket', () => {
     const tableBucketARN = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-table-bucket';
 
-    it('should delete an empty table bucket (no namespaces)', async () => {
-      // ListNamespaces returns empty
-      mockSend.mockResolvedValueOnce({ namespaces: [] });
+    it('deletes the bucket with one DeleteTableBucket and lists nothing (#6749)', async () => {
       // DeleteTableBucket
       mockSend.mockResolvedValueOnce({});
 
       await provider.delete('MyTableBucket', tableBucketARN, 'AWS::S3Tables::TableBucket');
 
-      expect(mockSend).toHaveBeenCalledTimes(2);
-      expect(mockSend).toHaveBeenCalledWith(expect.any(ListNamespacesCommand));
+      expect(mockSend).toHaveBeenCalledTimes(1);
       expect(mockSend).toHaveBeenCalledWith(expect.any(DeleteTableBucketCommand));
     });
 
-    it('should empty table bucket with namespaces and tables before deleting', async () => {
+    it('empties the bucket before deleting it only under forceDataDelete (#6749)', async () => {
       // ListNamespaces returns one namespace
       mockSend.mockResolvedValueOnce({
         namespaces: [{ namespace: ['ns1'] }],
@@ -107,7 +104,9 @@ describe('S3TablesProvider', () => {
       // DeleteTableBucket
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyTableBucket', tableBucketARN, 'AWS::S3Tables::TableBucket');
+      await provider.delete('MyTableBucket', tableBucketARN, 'AWS::S3Tables::TableBucket', undefined, {
+        forceDataDelete: true,
+      });
 
       expect(mockSend).toHaveBeenCalledTimes(5);
       expect(mockSend).toHaveBeenCalledWith(expect.any(ListNamespacesCommand));
@@ -118,7 +117,7 @@ describe('S3TablesProvider', () => {
     });
 
     it('should treat NotFoundException as idempotent success', async () => {
-      // ListNamespaces throws NotFoundException (bucket already gone)
+      // DeleteTableBucket throws NotFoundException (bucket already gone)
       mockSend.mockRejectedValueOnce(
         new NotFoundException({ message: 'Not found', $metadata: {} })
       );

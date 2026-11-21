@@ -23,6 +23,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
 import { markNotGone } from '../../not-gone.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { compositeIdFormatMessage } from '../../composite-id.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
@@ -407,46 +408,204 @@ export async function deleteTableBucket(
 ): Promise<void> {
   this.logger.debug(`Deleting S3 Table Bucket ${logicalId}: ${physicalId}`);
 
-  try {
-    // Must empty all tables and namespaces before deleting the bucket
-    await this.emptyTableBucket(physicalId);
+  // go-to-k/cdkd#6749, CloudFormation parity: CFn's delete handler holds only
+  // `s3tables:DeleteTableBucket`, so it never removes what the bucket holds and
+  // a non-empty bucket fails its delete. The stack's own Table / Namespace
+  // resources are deleted before their bucket by the DAG, so what is left here
+  // was created outside the stack. It is emptied only under the deploy
+  // engine's `--force-stateful-recreation` consent on a replacement delete;
+  // the type has no template-borne opt-in (its registry schema declares none).
+  const allowEmpty = context?.forceDataDelete === true;
 
-    await this.getClient().send(
-      new DeleteTableBucketCommand({
-        tableBucketARN: physicalId,
-      })
-    );
-    this.logger.debug(`Successfully deleted S3 Table Bucket ${logicalId}`);
-  } catch (error) {
-    if (error instanceof NotFoundException) {
-      const clientRegion = await this.getClient().config.region();
-      assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
-      this.logger.debug(`S3 Table Bucket ${physicalId} does not exist, skipping deletion`);
-      return;
+  if (allowEmpty) {
+    try {
+      await this.emptyTableBucket(physicalId);
+    } catch (error) {
+      return failTableBucketDelete.call(this, logicalId, physicalId, resourceType, error, context);
     }
-    const cause = error instanceof Error ? error : undefined;
-    const thrown = this.wrapCaughtError(
-      context?.maskSecrets,
-      error,
-      (text) =>
-        new ProvisioningError(
-          `Failed to delete S3 Table Bucket ${logicalId}: ${text}`,
-          resourceType,
+  }
+  // Two attempts at most: the second only after the settle below saw the
+  // bucket empty, i.e. what refused the first was the stack's own children.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await this.getClient().send(
+        new DeleteTableBucketCommand({
+          tableBucketARN: physicalId,
+        })
+      );
+      this.logger.debug(`Successfully deleted S3 Table Bucket ${logicalId}`);
+      return;
+    } catch (error) {
+      if (error instanceof NotFoundException || allowEmpty || attempt > 1) {
+        return failTableBucketDelete.call(
+          this,
           logicalId,
           physicalId,
-          cause
-        )
-    );
-    // The wrap names an AWS failure by its CLASS, and the delete classifiers
-    // read `NotFoundException` in a message as "already deleted": only the
-    // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
-    throw error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+          resourceType,
+          error,
+          context
+        );
+      }
+      // A failed delete of a bucket that still holds something is refused with
+      // what it holds, and not retried: only the user can empty it. Read only
+      // after a failure, so a delete that succeeds costs no extra call; a
+      // listing that fails leaves the original error to its classifiers.
+      const held = await settledTableBucketContents.call(this, physicalId).catch((listError) => {
+        this.logger.debug(
+          safeMsg`Could not list S3 Table Bucket ${logicalId} after its delete failed: ${listError instanceof Error ? listError.name : typeof listError}`
+        );
+        return undefined;
+      });
+      if (held === 'empty') continue;
+      if (held !== undefined) {
+        const mask = context?.maskSecrets ?? ((text: string) => text);
+        throw markNonRetryable(
+          new ProvisioningError(
+            mask(
+              `Failed to delete S3 Table Bucket ${logicalId}: table bucket ${physicalId} is not ` +
+                `empty: it holds ${describeTableBucketContents(held)}. This operation did not ` +
+                `delete them: they were created outside the stack, or retained by a ` +
+                `DeletionPolicy. Matching CloudFormation, cdkd does not delete them. Delete them ` +
+                `first (aws s3tables delete-table, then aws s3tables delete-namespace) and retry ` +
+                `the operation; a replacement deletes them only under --force-stateful-recreation.`
+            ),
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
+        );
+      }
+      return failTableBucketDelete.call(this, logicalId, physicalId, resourceType, error, context);
+    }
   }
+}
+
+/** A table bucket delete's failure, as every attempt surfaces it. */
+async function failTableBucketDelete(
+  this: S3TablesProvider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  error: unknown,
+  context?: DeleteContext
+): Promise<void> {
+  if (error instanceof NotFoundException) {
+    const clientRegion = await this.getClient().config.region();
+    assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
+    this.logger.debug(`S3 Table Bucket ${physicalId} does not exist, skipping deletion`);
+    return;
+  }
+  const cause = error instanceof Error ? error : undefined;
+  const thrown = this.wrapCaughtError(
+    context?.maskSecrets,
+    error,
+    (text) =>
+      new ProvisioningError(
+        `Failed to delete S3 Table Bucket ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      )
+  );
+  // The wrap names an AWS failure by its CLASS, and the delete classifiers
+  // read `NotFoundException` in a message as "already deleted": only the
+  // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+  throw error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+}
+
+/** At most this many tables and namespaces are named by a not-empty refusal. */
+const HELD_NAME_LIMIT = 5;
+
+interface TableBucketContents {
+  namespaces: string[];
+  /** `<namespace>.<table>` */
+  tables: string[];
+  /** More exists than the names listed. */
+  truncated: boolean;
+}
+
+/**
+ * The not-empty refusal's settle (go-to-k/cdkd#6749): the bucket is listed
+ * every {@link HELD_POLL_MS} until what it holds has stayed the same for
+ * {@link HELD_STABLE_POLLS} listings in a row, or {@link HELD_MAX_POLLS} have
+ * run. The stack's own `DeleteTable` / `DeleteNamespace` return before their
+ * deletion shows in a listing, so right after them the bucket can still list
+ * them; a set that changes is still draining, and one that empties lets the
+ * delete be tried again. Only content that stays put for the whole window
+ * (10 s) is refused; the cap (60 s) bounds a bucket whose content keeps
+ * changing, which is then refused with what it holds last.
+ */
+const HELD_POLL_MS = 2000;
+const HELD_STABLE_POLLS = 5;
+const HELD_MAX_POLLS = 30;
+
+/**
+ * Up to {@link HELD_NAME_LIMIT} namespaces and tables of a table bucket, for a
+ * not-empty refusal: one page of each listing, so a large bucket is never
+ * walked in full.
+ */
+async function listTableBucketContents(
+  this: S3TablesProvider,
+  tableBucketARN: string
+): Promise<TableBucketContents> {
+  const namespaces = await this.getClient().send(new ListNamespacesCommand({ tableBucketARN }));
+  const namespaceNames = (namespaces.namespaces ?? [])
+    .map((ns) => ns.namespace?.[0])
+    .filter((name): name is string => !!name);
+  // No `namespace`: one listing of the whole bucket.
+  const tables = await this.getClient().send(new ListTablesCommand({ tableBucketARN }));
+  const tableNames = (tables.tables ?? [])
+    .filter((table) => !!table.name)
+    .map((table) => `${table.namespace?.[0] ?? '?'}.${table.name}`);
+  return {
+    namespaces: namespaceNames.slice(0, HELD_NAME_LIMIT),
+    tables: tableNames.slice(0, HELD_NAME_LIMIT),
+    truncated:
+      namespaceNames.length > HELD_NAME_LIMIT ||
+      tableNames.length > HELD_NAME_LIMIT ||
+      !!namespaces.continuationToken ||
+      !!tables.continuationToken,
+  };
+}
+
+/**
+ * What the bucket holds once it has settled (see {@link HELD_POLL_MS}), or
+ * `'empty'` when a listing shows nothing (with no wait when the first does).
+ */
+async function settledTableBucketContents(
+  this: S3TablesProvider,
+  tableBucketARN: string
+): Promise<TableBucketContents | 'empty'> {
+  const isEmpty = (held: TableBucketContents) =>
+    held.namespaces.length === 0 && held.tables.length === 0;
+  const key = (held: TableBucketContents) =>
+    JSON.stringify([held.namespaces, held.tables, held.truncated]);
+  let held = await listTableBucketContents.call(this, tableBucketARN);
+  if (isEmpty(held)) return 'empty';
+  let unchanged = 0;
+  for (let poll = 0; poll < HELD_MAX_POLLS && unchanged < HELD_STABLE_POLLS; poll++) {
+    await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
+    const next = await listTableBucketContents.call(this, tableBucketARN);
+    if (isEmpty(next)) return 'empty';
+    unchanged = key(next) === key(held) ? unchanged + 1 : 0;
+    held = next;
+  }
+  return held;
+}
+
+function describeTableBucketContents(held: TableBucketContents): string {
+  const parts: string[] = [];
+  if (held.tables.length > 0) parts.push(`table(s) ${held.tables.join(', ')}`);
+  if (held.namespaces.length > 0) parts.push(`namespace(s) ${held.namespaces.join(', ')}`);
+  return `${parts.join('; ')}${held.truncated ? ', and more' : ''}`;
 }
 
 /**
  * Empty a table bucket by deleting all tables in all namespaces,
- * then deleting all namespaces.
+ * then deleting all namespaces. Called only under
+ * `DeleteContext.forceDataDelete` (go-to-k/cdkd#6749).
  */
 export async function emptyTableBucket(
   this: S3TablesProvider,

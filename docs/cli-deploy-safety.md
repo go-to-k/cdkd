@@ -429,8 +429,10 @@ Some entries are less obvious than a database:
   and the replacement gets a different one.
 - **An EKS or EMR cluster.** The replacement comes back empty: the Kubernetes
   objects you created, or the HDFS volumes on the core nodes, are gone.
-- **A table bucket or a vector bucket.** Deleting one empties it first,
-  whether or not you opted in.
+- **A table bucket or a vector bucket.** A replacement under
+  `--force-stateful-recreation` deletes every table, namespace or vector index
+  it holds. Without that flag, a delete of a bucket that still holds any is
+  refused, as CloudFormation refuses it.
 
 The list only grows, and [the changelog](changelog-cdkd.md) records when each
 type joined. When cdkd cannot know from outside whether a delete destroys

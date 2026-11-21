@@ -465,9 +465,9 @@ reasons, for the categories where the data is not obvious:
 
 - **Data warehouse.** An `AWS::RedshiftServerless::Namespace` owns the
   databases, and a snapshot is a copy of them.
-- **Table / vector storage.** Deleting a table bucket or a vector bucket
-  empties it first, with no opt-in. A namespace is not guarded, as described
-  above.
+- **Table / vector storage.** A replacement under `--force-stateful-recreation`
+  empties a table bucket or a vector bucket before deleting it. A namespace is
+  not guarded, as described above.
 - **Managed compute with local storage.** Terminating an `AWS::EMR::Cluster`
   destroys the HDFS volumes on its core nodes, and the replacement comes back
   empty. `AWS::EKS::Cluster` is guarded for the same reason one level up: the

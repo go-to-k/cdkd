@@ -2,8 +2,12 @@ import type { S3TablesProvider } from '../s3-tables-provider.js';
 import {
   CreateNamespaceCommand,
   DeleteNamespaceCommand,
+  ListNamespacesCommand,
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
+import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
+import { safeMsg } from '../../../utils/display-safe.js';
+import { S3_TABLES_CHILD_GONE_MAX_WAIT_MS, S3_TABLES_CHILD_GONE_POLL_MS } from './table.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNotGone } from '../../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
@@ -141,7 +145,6 @@ export async function deleteNamespace(
         namespace: namespaceName,
       })
     );
-    this.logger.debug(`Successfully deleted S3 Tables Namespace ${logicalId}`);
   } catch (error) {
     if (error instanceof NotFoundException) {
       const clientRegion = await this.getClient().config.region();
@@ -167,4 +170,44 @@ export async function deleteNamespace(
     // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
     throw error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
+  // go-to-k/cdkd#6749: as after `DeleteTable` (`s3-tables/table.ts`), so the
+  // table bucket's delete never sees the stack's own namespace.
+  await waitForGoneAfterDelete({
+    what: safeMsg`S3 Tables Namespace ${physicalId}`,
+    resourceType,
+    describe: () => namespaceStillListed.call(this, tableBucketARN, namespaceName),
+    consequence:
+      "Its table bucket's delete may be refused as not empty while the namespace is still listed; run the destroy again once it is gone.",
+    logger: this.logger,
+    pollIntervalMs: S3_TABLES_CHILD_GONE_POLL_MS,
+    maxWaitMs: S3_TABLES_CHILD_GONE_MAX_WAIT_MS,
+  });
+  this.logger.debug(`Successfully deleted S3 Tables Namespace ${logicalId}`);
+}
+
+/**
+ * `'listed'` while the bucket's `ListNamespaces` still shows the namespace, or
+ * `undefined` once it does not (a bucket gone answers NotFound: gone too).
+ */
+async function namespaceStillListed(
+  this: S3TablesProvider,
+  tableBucketARN: string,
+  namespaceName: string
+): Promise<string | undefined> {
+  let continuationToken: string | undefined;
+  try {
+    do {
+      const page = await this.getClient().send(
+        new ListNamespacesCommand({ tableBucketARN, prefix: namespaceName, continuationToken })
+      );
+      if ((page.namespaces ?? []).some((ns) => ns.namespace?.[0] === namespaceName)) {
+        return 'listed';
+      }
+      continuationToken = page.continuationToken;
+    } while (continuationToken);
+  } catch (error) {
+    if (error instanceof NotFoundException) return undefined;
+    throw error;
+  }
+  return undefined;
 }
