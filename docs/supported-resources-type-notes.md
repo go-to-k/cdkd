@@ -143,7 +143,9 @@ waits until a cluster is `WAITING` or `RUNNING`, and until a group or fleet is
 Deleting an instance group or fleet does not remove it from AWS, because EMR
 releases a group or fleet only when its cluster terminates. cdkd removes the
 state record. For a `TASK` group or fleet it first tries to scale it to 0,
-and continues if that fails.
+and continues if that fails. A `TASK` group that declares an `AutoScalingPolicy`
+has the policy removed before that, as CloudFormation does, so the policy's
+alarm and scaling target do not outlive the group.
 
 `cdkd destroy --remove-protection` turns a cluster's termination protection
 off before it terminates the cluster.
