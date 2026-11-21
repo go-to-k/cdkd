@@ -36,11 +36,8 @@ import type {
 } from '../../../types/resource.js';
 import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './shared.js';
 import { definedAttributes } from '../../attribute-map.js';
-import {
-  assertRecordedIdentity,
-  RecordedIdentityError,
-  RecordedIdentityMismatchError,
-} from '../../recorded-identity.js';
+import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
+import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 
@@ -402,14 +399,25 @@ export async function deleteGroup(
     // holds another group, which the by-name `DeleteGroup` must not reach.
     const sameGroup = (read: GetGroupCommandOutput): void => {
       if (stepZeroGroupId !== undefined && read.Group?.GroupId !== stepZeroGroupId) {
-        throw new RecordedIdentityMismatchError({
-          label: 'IAM group',
-          resourceType,
-          logicalId,
-          physicalId,
-          attribute: 'GroupId',
-          context,
-        });
+        // Worded for this path, not the pre-delete mismatch's: a DeleteGroup
+        // was sent (and refused) and policies may have been detached, and
+        // the id compared is step 0's live one, recorded or not.
+        const refusal = markNonRetryable(
+          new RecordedIdentityError(
+            log.mask(
+              `Failed to delete IAM group ${logicalId}: DeleteGroup on ${physicalId} was refused ` +
+                `(DeleteConflict), and the group now holding that name is not the one this ` +
+                `delete read before it (its GroupId differs). cdkd sends it no delete and keeps ` +
+                `the record. Leave that group alone; if the group cdkd created is gone, drop ` +
+                `the record with ${stateOrphanRecordRemedy(context, logicalId)}.`
+            ),
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+        // Policies detached before the first DeleteGroup: as the member refusal.
+        throw progress.stripped ? markDeleteStarted(refusal) : refusal;
       }
     };
 

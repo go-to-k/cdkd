@@ -32,7 +32,7 @@ import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-us
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
-import { RecordedIdentityMismatchError } from '../../../src/provisioning/recorded-identity.js';
+import { RecordedIdentityError } from '../../../src/provisioning/recorded-identity.js';
 
 type Handler = (input: Record<string, unknown>) => unknown;
 let sent: string[];
@@ -257,10 +257,51 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
 
     const error = await destroy();
 
-    expect(error).toBeInstanceOf(RecordedIdentityMismatchError);
-    expect((error as Error).message).toContain('its GroupId differs from the recorded one');
+    expect(error).toBeInstanceOf(RecordedIdentityError);
+    expect((error as Error).message).toContain(
+      'the group now holding that name is not the one this delete read before it (its GroupId differs)'
+    );
+    expect(isMarkedNonRetryable(error)).toBe(true);
     expect(count('DeleteGroupCommand')).toBe(1);
     expect(sent).not.toContain('ListGroupsForUserCommand');
+  });
+
+  it('a group re-created under the name before the second refusal is refused by identity too', async () => {
+    let reads = 0;
+    drive({
+      ...base,
+      GetGroupCommand: () => {
+        reads++;
+        return {
+          Group: { GroupName: 'my-group', GroupId: reads === 1 ? 'AGPAORIGINAL' : 'AGPASUCCESSOR' },
+          Users: reads === 1 ? [] : [{ UserName: 'outsider' }],
+        };
+      },
+    });
+
+    const error = await destroy();
+
+    expect(error).toBeInstanceOf(RecordedIdentityError);
+    expect((error as Error).message).toContain('(its GroupId differs)');
+    expect(count('DeleteGroupCommand')).toBe(2);
+    expect(sent).not.toContain('ListGroupsForUserCommand');
+  });
+
+  it('a step 0 read with no GroupId holds no later read to one', async () => {
+    let reads = 0;
+    drive({
+      ...base,
+      GetGroupCommand: () => {
+        reads++;
+        return {
+          Group: reads === 1 ? { GroupName: 'my-group' } : { GroupName: 'my-group', GroupId: 'AGPAANY' },
+          Users: [{ UserName: 'outsider' }],
+        };
+      },
+    });
+
+    // No identity refusal: the member refusal, after the full settle.
+    expect(((await destroy()) as Error).message).toContain('still has user(s) outsider, whose');
   });
 
   it("the second attempt's DeleteConflict reads the members once more and names them", async () => {
