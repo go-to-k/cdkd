@@ -15,6 +15,11 @@
 # SDK-unwired routing flip is caught, and that the destroy path cleans up the
 # table, the Kinesis stream, and the cdkd state file.
 #
+# Phase 1.1 disables the first table's Contributor Insights outside cdkd and
+# asserts `cdkd drift` reports it and `cdkd drift --revert` re-enables it
+# (issue go-to-k/cdkd#6778: the post-deploy baseline, read while ENABLING,
+# used to omit the block, so the disable was never reported).
+#
 # Phase 1.56 exercises the REMOVAL direction of the same property (issue
 # go-to-k/cdkd#3373): a fifth table drops one `OnDemandThroughput` member at
 # the TABLE level AND at one of its GSIs while RETAINING the sibling at each,
@@ -337,6 +342,95 @@ if [ "${CI_MODE}" != "${EXPECTED_CI_MODE}" ]; then
   exit 1
 fi
 echo "    OK: ContributorInsightsSpecification.Mode == ${EXPECTED_CI_MODE} on AWS"
+
+# --- Phase 1.1 (issue go-to-k/cdkd#6778): Contributor Insights drift ---------
+# The deploy does not wait for the toggle, so the post-deploy observed baseline
+# is read while AWS reports ENABLING. Before the fix that read omitted the
+# block, the baseline had no ContributorInsightsSpecification key, and a
+# disable made outside cdkd reported NO drift (the comparator walks the
+# baseline's own top-level keys). Now: the baseline records the block, the
+# out-of-band disable is drift (exit 1), and `drift --revert` re-enables it.
+read_ci_status() {
+  aws dynamodb describe-contributor-insights --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'ContributorInsightsStatus' --output text
+}
+wait_ci_status() { # usage: wait_ci_status <status> <label>
+  local now=""
+  for _ in $(seq 1 60); do
+    now=$(read_ci_status)
+    [ "${now}" = "$1" ] && return 0
+    sleep 5
+  done
+  echo "FAIL (issue go-to-k/cdkd#6778, $2): ${TABLE_NAME} ContributorInsightsStatus reads '${now}' after ~5min, expected $1" >&2
+  exit 1
+}
+ci_drift() { # usage: ci_drift <json out>; prints the drift rc
+  local err rc
+  err=$(mktemp)
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json >"$1" 2>"${err}"
+  rc=$?
+  set -e
+  cat "${err}" >&2
+  rm -f "${err}"
+  echo "${rc}"
+}
+CI_LOGICAL_ID=$(echo "${STATE}" | jq -r --arg p "${TABLE_NAME}" \
+  '[.resources | to_entries[] | select(.value.resourceType == "AWS::DynamoDB::Table" and .value.physicalId == $p) | .key] | first // ""')
+if [ -z "${CI_LOGICAL_ID}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#6778): no AWS::DynamoDB::Table record for ${TABLE_NAME} in state" >&2
+  exit 1
+fi
+# The capture half of the fix: the baseline holds the block whatever status the
+# post-deploy read saw. Pre-fix it was absent whenever that read saw ENABLING.
+CI_OBSERVED=$(echo "${STATE}" | jq -c --arg id "${CI_LOGICAL_ID}" \
+  '.resources[$id].observedProperties.ContributorInsightsSpecification // "absent"')
+CI_OBSERVED_OK=$(echo "${STATE}" | jq -r --arg id "${CI_LOGICAL_ID}" --arg m "${EXPECTED_CI_MODE}" \
+  '.resources[$id].observedProperties.ContributorInsightsSpecification == {Enabled: true, Mode: $m}')
+if [ "${CI_OBSERVED_OK}" != "true" ]; then
+  echo "FAIL (issue go-to-k/cdkd#6778): ${CI_LOGICAL_ID} observedProperties.ContributorInsightsSpecification is ${CI_OBSERVED} (post-deploy status was ${CI_STATUS}), expected {\"Enabled\":true,\"Mode\":\"${EXPECTED_CI_MODE}\"}" >&2
+  exit 1
+fi
+echo "    OK (Phase 1.1): the post-deploy baseline records ContributorInsightsSpecification (post-deploy status ${CI_STATUS})"
+wait_ci_status ENABLED "before the out-of-band disable"
+aws dynamodb update-contributor-insights --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --contributor-insights-action DISABLE >/dev/null
+wait_ci_status DISABLED "after the out-of-band disable"
+CI_DRIFT_JSON=$(mktemp)
+CI_DRIFT_RC=$(ci_drift "${CI_DRIFT_JSON}")
+CI_DRIFT_PATHS=$(jq -r --arg id "${CI_LOGICAL_ID}" \
+  '[.[].drifted[]? | select(.logicalId == $id) | .changes[]?.path | select(startswith("ContributorInsightsSpecification"))] | join(",")' \
+  "${CI_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+if [ "${CI_DRIFT_RC}" != "1" ] || [ -z "${CI_DRIFT_PATHS}" ] || [ "${CI_DRIFT_PATHS}" = "unparsable" ]; then
+  echo "FAIL (issue go-to-k/cdkd#6778): expected cdkd drift to report ${CI_LOGICAL_ID} ContributorInsightsSpecification drift with exit 1 after the out-of-band disable (rc=${CI_DRIFT_RC} paths='${CI_DRIFT_PATHS}'):" >&2
+  cat "${CI_DRIFT_JSON}" >&2
+  rm -f "${CI_DRIFT_JSON}"
+  exit 1
+fi
+rm -f "${CI_DRIFT_JSON}"
+echo "    OK (Phase 1.1): the out-of-band disable is drift (${CI_DRIFT_PATHS}, rc=1)"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --revert --yes
+wait_ci_status ENABLED "after drift --revert"
+CI_MODE_AFTER=$(aws dynamodb describe-contributor-insights --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'ContributorInsightsMode' --output text)
+if [ "${CI_MODE_AFTER}" != "${EXPECTED_CI_MODE}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#6778): ContributorInsightsMode reads '${CI_MODE_AFTER}' after drift --revert, expected ${EXPECTED_CI_MODE}" >&2
+  exit 1
+fi
+CI_DRIFT_JSON=$(mktemp)
+CI_DRIFT_RC=$(ci_drift "${CI_DRIFT_JSON}")
+CI_CLEAN=$(jq --arg id "${CI_LOGICAL_ID}" \
+  '[.[].clean[]? | select(.logicalId == $id)] | length' "${CI_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+if [ "${CI_DRIFT_RC}" != "0" ] || [ "${CI_CLEAN}" != "1" ]; then
+  echo "FAIL (issue go-to-k/cdkd#6778): expected cdkd drift CLEAN (exit 0, ${CI_LOGICAL_ID} clean) after drift --revert (rc=${CI_DRIFT_RC} clean=${CI_CLEAN}):" >&2
+  cat "${CI_DRIFT_JSON}" >&2
+  rm -f "${CI_DRIFT_JSON}"
+  exit 1
+fi
+rm -f "${CI_DRIFT_JSON}"
+echo "    OK (Phase 1.1): drift --revert re-enabled Contributor Insights (${EXPECTED_CI_MODE}) and drift reads clean"
 
 # --- Assertion 5: PROVISIONED table initial capacity reached AWS ------
 # A helper that reads the provisioned table's ProvisionedThroughput from AWS

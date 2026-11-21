@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
+  completeTableContributorInsightsBaseline,
   indexDeclaresContributorInsights,
   planContributorInsightsOp,
   planIndexContributorInsightsOps,
@@ -180,7 +181,7 @@ describe('indexDeclaresContributorInsights', () => {
 });
 
 describe('reverseMapTableContributorInsights', () => {
-  it('maps only the terminal statuses, with Mode while enabled', () => {
+  it('maps the terminal statuses, with Mode while enabled', () => {
     expect(reverseMapTableContributorInsights('ENABLED', 'THROTTLED_KEYS')).toEqual({
       Enabled: true,
       Mode: 'THROTTLED_KEYS',
@@ -188,9 +189,63 @@ describe('reverseMapTableContributorInsights', () => {
     expect(reverseMapTableContributorInsights('DISABLED', 'THROTTLED_KEYS')).toEqual({
       Enabled: false,
     });
-    for (const status of ['ENABLING', 'DISABLING', 'FAILED', undefined]) {
-      expect(reverseMapTableContributorInsights(status, undefined)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#6778: the deploy does not wait for the toggle, so the
+  // post-deploy capture reads ENABLING; AWS already reports the mode then.
+  it('reads ENABLING / DISABLING as their target, with the mode AWS reports while enabling', () => {
+    expect(reverseMapTableContributorInsights('ENABLING', 'ACCESSED_AND_THROTTLED_KEYS')).toEqual({
+      Enabled: true,
+      Mode: 'ACCESSED_AND_THROTTLED_KEYS',
+    });
+    expect(reverseMapTableContributorInsights('ENABLING', undefined)).toEqual({ Enabled: true });
+    expect(reverseMapTableContributorInsights('DISABLING', 'THROTTLED_KEYS')).toEqual({
+      Enabled: false,
+    });
+  });
+
+  it('reports nothing for FAILED or an absent status', () => {
+    for (const status of ['FAILED', undefined]) {
+      expect(reverseMapTableContributorInsights(status, 'THROTTLED_KEYS')).toBeUndefined();
     }
+  });
+});
+
+describe('completeTableContributorInsightsBaseline', () => {
+  const KEY = 'ContributorInsightsSpecification';
+  const complete = (baseline: Record<string, unknown>, live: unknown, declared: unknown) =>
+    completeTableContributorInsightsBaseline(
+      baseline,
+      live === undefined ? {} : { [KEY]: live },
+      declared === undefined ? {} : { [KEY]: declared }
+    );
+
+  it('completes a baseline that lacks the key from the declared block', () => {
+    expect(complete({}, { Enabled: false }, { Enabled: true })).toEqual({ Enabled: true });
+    expect(complete({}, { Enabled: true, Mode: 'THROTTLED_KEYS' }, { Enabled: false })).toEqual({
+      Enabled: false,
+    });
+    expect(
+      complete({}, { Enabled: true, Mode: 'THROTTLED_KEYS' }, { Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' })
+    ).toEqual({ Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' });
+  });
+
+  it("takes the live mode for a template declaring none, only while both sides are enabled", () => {
+    expect(
+      complete({}, { Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' }, { Enabled: true })
+    ).toEqual({ Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' });
+    expect(complete({}, { Enabled: false }, { Enabled: 'true' })).toEqual({ Enabled: true });
+  });
+
+  it('leaves a baseline that records the key alone, whatever it holds', () => {
+    expect(complete({ [KEY]: { Enabled: false } }, { Enabled: false }, { Enabled: true })).toBeUndefined();
+  });
+
+  it('completes nothing without a live block or a usable declaration', () => {
+    expect(complete({}, undefined, { Enabled: true })).toBeUndefined();
+    expect(complete({}, 'junk', { Enabled: true })).toBeUndefined();
+    expect(complete({}, { Enabled: false }, undefined)).toBeUndefined();
+    expect(complete({}, { Enabled: false }, { Enabled: 'yes' })).toBeUndefined();
   });
 });
 

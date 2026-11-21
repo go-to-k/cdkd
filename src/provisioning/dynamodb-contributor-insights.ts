@@ -15,6 +15,7 @@
  * Pure, so the write plan and the drift read-back gate cannot answer "does
  * this index declare the block" differently.
  */
+import { hasOwnKey } from '../utils/own-keys.js';
 import { configBooleanRefusal, configStringRefusal, coerceCfnBoolean } from './config-shape.js';
 
 /** The CFn property name, shared by the table-level and the per-index block. */
@@ -216,22 +217,75 @@ function enabledForStatus(
 
 /**
  * Reverse-map the TABLE-level `DescribeContributorInsights` answer to the CFn
- * block, or `undefined` when there is nothing stable to report.
+ * block, or `undefined` when there is nothing to report (`FAILED`, an absent
+ * status).
  *
- * Only the terminal statuses are mapped, and `Mode` is emitted whenever AWS
- * reports one for an enabled table — the block is a TOP-LEVEL key, which the
- * comparator walks by the baseline's own keys. `Mode` is never emitted for a
- * disabled block: it is not sent with `DISABLE`, and a disabled block carrying
- * one is a CFn-invalid placeholder.
+ * `ENABLING` / `DISABLING` read as their TARGET, as the per-index and the
+ * GlobalTable replica reads do (go-to-k/cdkd#6778). The deploy does not wait
+ * for the toggle, so the post-deploy `observedProperties` capture usually sees
+ * `ENABLING`; the block is a TOP-LEVEL key, which the comparator walks by the
+ * baseline's own keys, so omitting it there left the setting uncompared for
+ * the record's whole life. AWS reports the mode already while `ENABLING`
+ * (measured), so `Mode` is emitted whenever AWS reports one for an enabled or
+ * enabling table. `Mode` is never emitted for a disabled block: it is not sent
+ * with `DISABLE`, and a disabled block carrying one is a CFn-invalid
+ * placeholder.
  */
 export function reverseMapTableContributorInsights(
   status: string | undefined,
   mode: string | undefined
 ): Record<string, unknown> | undefined {
-  const enabled = enabledForStatus(status, false);
+  const enabled = enabledForStatus(status, true);
   if (enabled === undefined) return undefined;
   const block: Record<string, unknown> = { Enabled: enabled };
   if (enabled && mode !== undefined) block['Mode'] = mode;
+  return block;
+}
+
+/**
+ * The table-level block an `observedProperties` baseline written before
+ * go-to-k/cdkd#6778 should have held, or `undefined` when the baseline needs
+ * nothing.
+ *
+ * Such a baseline was captured while the toggle read `ENABLING`, so it has no
+ * `ContributorInsightsSpecification` key at all, and a no-change deploy never
+ * re-reads it. Completed only when all three hold:
+ *
+ *  - the baseline lacks the key (any recorded value, an accepted one included,
+ *    is compared as recorded);
+ *  - the template declares a block cdkd acts on (`usable`);
+ *  - the live read reports a block: a failed or `FAILED` read has nothing to
+ *    compare with, and completing the baseline there would report the read
+ *    failure as a removal.
+ *
+ * The completed block is the DECLARED setting, which is what CloudFormation
+ * compares the live table with. `Mode` is the declared one; a template that
+ * declares none takes the live mode while both sides are enabled (AWS applies
+ * its default mode, which the capture would have recorded). `Enabled` is a
+ * boolean, the spelling the reverse-map emits.
+ */
+export function completeTableContributorInsightsBaseline(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  properties: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (hasOwnKey(baseline, CONTRIBUTOR_INSIGHTS_KEY)) return undefined;
+  const live = aws[CONTRIBUTOR_INSIGHTS_KEY];
+  if (typeof live !== 'object' || live === null || Array.isArray(live)) return undefined;
+  const declared = readContributorInsightsSpec(
+    properties[CONTRIBUTOR_INSIGHTS_KEY],
+    CONTRIBUTOR_INSIGHTS_KEY
+  );
+  if (declared.kind !== 'usable') return undefined;
+  const block: Record<string, unknown> = { Enabled: declared.enabled };
+  if (!declared.enabled) return block;
+  const liveBlock = live as Record<string, unknown>;
+  const mode =
+    declared.mode ??
+    (liveBlock['Enabled'] === true && typeof liveBlock['Mode'] === 'string'
+      ? liveBlock['Mode']
+      : undefined);
+  if (mode !== undefined) block['Mode'] = mode;
   return block;
 }
 

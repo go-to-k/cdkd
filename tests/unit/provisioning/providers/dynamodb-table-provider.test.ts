@@ -1537,8 +1537,25 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(state?.['ContributorInsightsSpecification']).toEqual({ Enabled: false });
     });
 
-    it('omits ContributorInsightsSpecification while ENABLING (transient)', async () => {
-      wireReadbacks({ ciStatus: 'ENABLING' });
+    // go-to-k/cdkd#6778: the deploy-time capture reads ENABLING; omitting the
+    // key there left it uncompared for the record's whole life.
+    it('reads ContributorInsightsSpecification while ENABLING as enabled, with the reported Mode', async () => {
+      wireReadbacks({ ciStatus: 'ENABLING', ciMode: 'ACCESSED_AND_THROTTLED_KEYS' });
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
+      expect(state?.['ContributorInsightsSpecification']).toEqual({
+        Enabled: true,
+        Mode: 'ACCESSED_AND_THROTTLED_KEYS',
+      });
+    });
+
+    it('reads ContributorInsightsSpecification while DISABLING as disabled', async () => {
+      wireReadbacks({ ciStatus: 'DISABLING', ciMode: 'THROTTLED_KEYS' });
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
+      expect(state?.['ContributorInsightsSpecification']).toEqual({ Enabled: false });
+    });
+
+    it('omits ContributorInsightsSpecification on a FAILED status', async () => {
+      wireReadbacks({ ciStatus: 'FAILED' });
       const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
       expect(state).not.toHaveProperty('ContributorInsightsSpecification');
     });
