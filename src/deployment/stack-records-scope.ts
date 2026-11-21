@@ -3,18 +3,28 @@ import { shouldRetainResource, type ResourceState } from '../types/state.js';
 
 /**
  * The state records of the stack whose provider call is in flight
- * (go-to-k/cdkd#4492), for a provider whose AWS object can be held by more
- * than one record of the same stack.
+ * (go-to-k/cdkd#4492), for a provider that needs to know what other records
+ * of the same stack hold.
  *
- * Read today only by `AWS::EC2::SecurityGroupIngress`: two of its records
- * (or one plus an inline rule of an `AWS::EC2::SecurityGroup` record) can
- * describe the SAME AWS rule — CDK cannot dedupe a rule whose port is a token,
- * such as an Aurora cluster's `Endpoint.Port` beside an explicit `3306`. AWS
- * holds one rule for both, so a create answers `InvalidPermission.Duplicate`
- * for the second, and a delete of either revokes the rule the other needs.
+ * Read by:
+ * - `AWS::EC2::SecurityGroupIngress` and `AWS::EC2::SecurityGroup`
+ *   (`providers/ec2/sg-ingress-{create,update}.ts`, `security-group.ts`): two
+ *   ingress records (or one plus an inline rule of a security group record)
+ *   can describe the SAME AWS rule — CDK cannot dedupe a rule whose port is a
+ *   token, such as an Aurora cluster's `Endpoint.Port` beside an explicit
+ *   `3306`. AWS holds one rule for both, so a create answers
+ *   `InvalidPermission.Duplicate` for the second, and a delete of either
+ *   revokes the rule the other needs.
+ * - `AWS::S3::BucketPolicy` (`s3-bucket-policy-helpers.ts`,
+ *   `providers/s3-bucket-policy-provider.ts`): another record holding the same
+ *   bucket's policy (go-to-k/cdkd#6109), and the same-stack OAI records its
+ *   live-policy comparison normalizes principals against.
+ * - `AWS::IAM::Policy` (`providers/iam-policy/principal-identity.ts`): the
+ *   recorded identity id of each in-stack principal the inline policy names,
+ *   compared before the policy is removed from it by name (go-to-k/cdkd#6655).
  *
  * WHY AN ASYNC-LOCAL STORE rather than a `CreateContext` / `DeleteContext`
- * field: one provider reads it, on two arms, and the delete is reached from
+ * field: few providers read it, and the delete is reached from
  * over a dozen call sites; binding it once per operation keeps those sites
  * unchanged. ABSENT (a caller outside a deploy, destroy or rollback, such as
  * `cdkd drift --revert`) is "no other record known".
