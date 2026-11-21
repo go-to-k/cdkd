@@ -1,6 +1,7 @@
 import { RecordedIdentityMismatchError } from '../../recorded-identity.js';
 import type { IAMManagedPolicyProvider } from '../iam-managed-policy-provider.js';
 import { CreatePolicyVersionCommand, GetPolicyCommand } from '@aws-sdk/client-iam';
+import { RecordedIdentityError } from '../../recorded-identity.js';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import {
@@ -302,6 +303,15 @@ export async function update(
 
   let createdVersionId: string | undefined;
   try {
+    // go-to-k/cdkd#6722: every attach and detach below is compared before any
+    // write (the version calls included), so a refusal leaves nothing changed.
+    const strangers = await this.comparePrincipalChanges(
+      logicalId,
+      physicalId,
+      newPrincipals.lists,
+      oldLists,
+      log
+    );
     // Update PolicyDocument by creating a new version + setting as default.
     // AWS caps managed policies at 5 versions; prune the oldest non-default
     // before creating a new one when already at the cap.
@@ -337,7 +347,8 @@ export async function update(
       oldLists.Roles,
       newPrincipals.lists.Users,
       oldLists.Users,
-      log
+      log,
+      strangers
     );
 
     // Diff tags.
@@ -414,6 +425,9 @@ export async function update(
       attributes: managedPolicyAttributes(physicalId, readBack),
     };
   } catch (error) {
+    // go-to-k/cdkd#6722: a principal compare's refusal, worded by cdkd
+    // (logical ids only) and marked, is not re-labelled as an AWS failure.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       log.mask,

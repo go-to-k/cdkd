@@ -50,6 +50,7 @@ import { SURVIVOR_IDENTITY_ATTRIBUTES } from '../../../src/deployment/recorded-i
 import { getLogger } from '../../../src/utils/logger.js';
 import { INLINE_POLICY_PRINCIPAL_SPECS } from '../../../src/provisioning/providers/iam-policy/principal-identity.js';
 import {
+  deployStackRecordsView,
   destroyStackRecordsView,
   withStackRecords,
 } from '../../../src/deployment/stack-records-scope.js';
@@ -431,7 +432,12 @@ describe('AWS::IAM::Policy update compares the in-stack principals it removes (g
     desired: Record<string, unknown>,
     context?: UpdateContext
   ) =>
-    withStackRecords(destroyStackRecordsView(records), () =>
+    // A deploy's view in which the staying role `S` was created by this
+    // deploy: its put is not compared (go-to-k/cdkd#6722), so these cases
+    // pin the removal side alone.
+    withStackRecords(
+      deployStackRecordsView(records, records, new Set(), undefined, undefined, (lid) => lid === 'S'),
+      () =>
       new IAMPolicyProvider().update(
         'P',
         'inline',

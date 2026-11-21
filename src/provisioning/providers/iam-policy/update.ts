@@ -16,7 +16,10 @@ import { IAM_POLICY_NAME, readPolicyTargetLists, refusalRepair } from './shared.
 import { isDriftRevert, revertReplacementRefusal } from '../../revert-no-replace.js';
 import { RecordedIdentityError } from '../../recorded-identity.js';
 import { injectiveKey } from '../../../state/record-keys.js';
-import { verifyInlinePolicyPrincipals } from './principal-identity.js';
+import {
+  assertInlinePolicyAttachTargets,
+  verifyInlinePolicyPrincipals,
+} from './principal-identity.js';
 
 /**
  * Update an IAM inline policy
@@ -301,6 +304,22 @@ export async function update(
       policyLogicalId: logicalId,
       physicalId,
       operation: 'update',
+    });
+    // go-to-k/cdkd#6722: every principal the policy is put on is compared too
+    // (one read each for an in-stack principal with a recorded id that this
+    // deploy did not create or replace), and another holder of a name refuses
+    // the update before any write: a put to it would grant the policy to a
+    // stranger. A rollback replaying this method backwards (the recorded bag
+    // as the desired side) re-adds a principal the forward update left as a
+    // mismatch; its replay view keeps no pre-run records, so it is read and
+    // refused the same way.
+    await assertInlinePolicyAttachTargets({
+      client: this.iamClient,
+      principals: kinds.flatMap(({ kind, desired }) =>
+        [...desired].map((name) => [kind, name] as const)
+      ),
+      policyLogicalId: logicalId,
+      physicalId,
     });
     const warned = new Set<string>();
     /** `true` when nothing may be sent to this leaving principal. */

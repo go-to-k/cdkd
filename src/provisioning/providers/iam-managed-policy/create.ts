@@ -87,6 +87,9 @@ export async function create(
   // that read too.
   let createdPolicyIdentity: string | undefined;
   try {
+    // go-to-k/cdkd#6722: the principals are compared before CreatePolicy, so a
+    // stranger under a recorded name refuses with nothing created or attached.
+    await this.assertAttachTargets(logicalId, policyName, principals.lists);
     const createParams: {
       PolicyName: string;
       PolicyDocument: string;
