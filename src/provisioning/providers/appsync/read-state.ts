@@ -131,13 +131,15 @@ export async function canonicalizeSdl(
     }
     const definitions = doc.definitions.filter((def) => {
       if (def.kind !== Kind.SCHEMA_DEFINITION) return true;
-      const listed = new Map(def.operationTypes.map((op) => [op.operation, op.type.name.value]));
+      const listed = new Map<string, string>(
+        def.operationTypes.map((op) => [op.operation, op.type.name.value])
+      );
       const isDefault =
         !def.description &&
         (def.directives?.length ?? 0) === 0 &&
         [...listed].every(([op, name]) => name === DEFAULT_ROOT_TYPE_NAMES[op]) &&
         Object.entries(DEFAULT_ROOT_TYPE_NAMES).every(
-          ([op, name]) => listed.has(op as never) === objectTypeNames.has(name)
+          ([op, name]) => listed.has(op) === objectTypeNames.has(name)
         );
       return !isDefault;
     });
