@@ -10,7 +10,7 @@
  * re-checks every pair with its own diff before writing anything.
  */
 import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceChange } from '../types/state.js';
+import type { ResourceChange, ResourceState } from '../types/state.js';
 import type { DestructiveChange } from './destructive-changes.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
@@ -18,9 +18,19 @@ import {
   changedDependencyOf,
   isPairableType,
   looselyEqual,
+  referencedLogicalIds,
   type RefactorCreateSide,
   type RefactorDeleteSide,
 } from './refactor-pairing.js';
+
+/**
+ * A CREATE row, with the resources it references that stay in the stack
+ * (go-to-k/cdkd#6797): `looselyEqual` cannot compare a `Ref` to one of them.
+ */
+export type HintCreateSide = RefactorCreateSide & { stayingReferences?: readonly string[] };
+
+/** A DELETE row, with the logical ids its record's template referenced. */
+export type HintDeleteSide = RefactorDeleteSide & { recordedDependencies?: readonly string[] };
 
 /** One stack's unpaired rows, and the environment it deploys to. */
 export interface RefactorHintStack {
@@ -29,8 +39,22 @@ export interface RefactorHintStack {
   stackName: string;
   /** Rows pair only within one environment (account and region). */
   env: string;
-  creates: readonly RefactorCreateSide[];
-  deletes: readonly RefactorDeleteSide[];
+  creates: readonly HintCreateSide[];
+  deletes: readonly HintDeleteSide[];
+}
+
+/**
+ * Could the record be the CREATE renamed? A CREATE referencing a resource that
+ * stays in the stack is the record only when the record referenced it too: a
+ * subscription or queue policy now aimed at ANOTHER existing queue is a new
+ * resource (go-to-k/cdkd#6797), as the AWS CDK CLI's digest, which covers what
+ * a resource references, says. A record with no `dependencies` field, or a
+ * reference to a resource the diff creates (itself maybe a rename), stays loose.
+ */
+function referencesAgree(create: HintCreateSide, record: HintDeleteSide): boolean {
+  const staying = create.stayingReferences ?? [];
+  if (staying.length === 0 || record.recordedDependencies === undefined) return true;
+  return staying.every((id) => record.recordedDependencies!.includes(id));
 }
 
 /** Where a removed resource reappears. */
@@ -61,7 +85,8 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
       const matches = deletes.filter(
         (d) =>
           d.row.resourceType === c.row.resourceType &&
-          looselyEqual(c.row.properties, d.row.properties)
+          looselyEqual(c.row.properties, d.row.properties) &&
+          referencesAgree(c.row, d.row)
       );
       matchesOf.set(c, matches);
       for (const d of matches) claims.set(d, (claims.get(d) ?? 0) + 1);
@@ -83,8 +108,8 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
 
 /** One stack's rows as pairing sides. */
 export interface RefactorSides {
-  creates: RefactorCreateSide[];
-  deletes: RefactorDeleteSide[];
+  creates: HintCreateSide[];
+  deletes: HintDeleteSide[];
 }
 
 /**
@@ -118,7 +143,8 @@ export function rollbackOrphanIds(orphans: unknown): Set<string> {
 export function hintSidesOf(
   changes: Iterable<ResourceChange>,
   template: CloudFormationTemplate,
-  exclude: ReadonlySet<string> = new Set()
+  exclude: ReadonlySet<string> = new Set(),
+  records?: Readonly<Record<string, ResourceState>>
 ): RefactorSides {
   const rows = [...changes];
   const deletedTypes = new Set(
@@ -133,24 +159,43 @@ export function hintSidesOf(
       )
       .map((c) => c.logicalId)
   );
-  const creates: RefactorCreateSide[] = [];
-  const deletes: RefactorDeleteSide[] = [];
+  // A resource that stays: an UPDATE or NO_CHANGE row, or a record the diff
+  // does not delete (the approval prompt's rows leave NO_CHANGE out).
+  const deleted = new Set(rows.filter((c) => c.changeType === 'DELETE').map((c) => c.logicalId));
+  const staying = new Set([
+    ...rows
+      .filter((c) => c.changeType === 'UPDATE' || c.changeType === 'NO_CHANGE')
+      .map((c) => c.logicalId),
+    ...Object.keys(records ?? {}).filter((id) => !deleted.has(id)),
+  ]);
+  const creates: HintCreateSide[] = [];
+  const deletes: HintDeleteSide[] = [];
   for (const change of rows) {
     if (exclude.has(change.logicalId)) continue;
     if (change.changeType === 'CREATE') {
       if (changedDependencyOf(template, change.logicalId, (id) => updated.has(id)) !== undefined) {
         continue;
       }
+      const stayingReferences = [...referencedLogicalIds(template, change.logicalId)].filter((id) =>
+        staying.has(id)
+      );
       creates.push({
         logicalId: change.logicalId,
         resourceType: change.resourceType,
         properties: change.desiredProperties ?? {},
+        ...(stayingReferences.length > 0 && { stayingReferences }),
       });
     } else if (change.changeType === 'DELETE') {
+      const record =
+        records && Object.hasOwn(records, change.logicalId) ? records[change.logicalId] : undefined;
+      const dependencies = record?.dependencies as unknown;
       deletes.push({
         logicalId: change.logicalId,
         resourceType: change.resourceType,
         properties: change.currentProperties ?? {},
+        ...(Array.isArray(dependencies) && {
+          recordedDependencies: dependencies.filter((id): id is string => typeof id === 'string'),
+        }),
       });
     }
   }

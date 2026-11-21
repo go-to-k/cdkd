@@ -9832,6 +9832,7 @@
         "partial-create-handback",
         "perf-cross-backend-check",
         "refactor-command",
+        "refactor-lambda-version",
         "refactor-move",
         "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
@@ -9986,6 +9987,9 @@
           "literal"
         ],
         "refactor-command": [
+          "l2"
+        ],
+        "refactor-lambda-version": [
           "l2"
         ],
         "refactor-move": [
@@ -10201,6 +10205,7 @@
         "pipes-fix-forward-orphan",
         "pipes-input-template-removal",
         "refactor-command",
+        "refactor-lambda-version",
         "refactor-move",
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
@@ -10440,6 +10445,9 @@
           "l2"
         ],
         "refactor-command": [
+          "l2"
+        ],
+        "refactor-lambda-version": [
           "l2"
         ],
         "refactor-move": [
