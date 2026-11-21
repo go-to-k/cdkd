@@ -439,7 +439,7 @@ rollback-replacement-retain	2026-11-21T01:28:31Z	PASS	87	verify.sh	PR6710 260d56
 rollback-replay-cc-generated-name	2026-11-20T14:40:31Z	PASS	172	verify.sh	rc ok, orph clean (#6675)
 rollback-replay-effective-props	2026-11-18T06:37:13Z	PASS	326	verify.sh	PR #6531 re-run after rebase onto 40868290f; rc ok, orph clean
 rollback-same-id-recreate	2026-11-21T01:28:31Z	PASS	177	verify.sh	PR6710 260d5664a; rc ok, orph clean; own bucket
-rollback-sqs-cooldown	2026-11-07T12:50:15Z	PASS	158	verify.sh	#6008 rollback split head; rc ok, orph clean
+rollback-sqs-cooldown	2026-11-21T02:46:03Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, head 812542cb9 (#6736)
 route53	2026-11-20T11:10:33Z	PASS	535	verify.sh	#6656 PR #6673 7a9357d after #6682 rebase: rc ok, orph clean
 route53-drift-import	2026-11-20T11:22:10Z	PASS	130	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
@@ -475,7 +475,7 @@ scrub-nested-child	2026-11-04T20:29:26Z	PASS	150	verify.sh	rc 0, destroy 0 error
 sdk-ccapi-crossref	2026-11-18T22:09:14Z	PASS	136	verify.sh	rc ok, destroy 0 errors, orph clean; Discoverer as the CC type; at f07e65185 (#6579)
 sdk-to-cc-autoroute	2026-11-07T08:40:09Z	PASS	235	verify.sh	PR #5946 f7e8b6577 rc ok, orph clean
 sdk-unmodelled-nested-route	2026-11-20T18:04:07Z	PASS	331	verify.sh	rc ok, orph clean; zone+distribution SDK->CC->SDK same ids, JWT authorizer SDK
-secret-derived-immutable-names	2026-11-10T16:28:07Z	PASS	1072	verify.sh	rc ok, orph clean
+secret-derived-immutable-names	2026-11-21T02:46:03Z	PASS	1018	verify.sh	rc ok, orph clean, own state bucket, head 812542cb9 (#6736)
 secret-substring-literal	2026-11-14T17:45:48Z	PASS	100	verify.sh	rc ok, orph clean, versions swept
 secrets-array-nested	2026-11-20T11:22:10Z	PASS	300	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 secrets-dynamic-ref	2026-11-20T11:22:10Z	PASS	721	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
