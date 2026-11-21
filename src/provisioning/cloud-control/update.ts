@@ -216,8 +216,8 @@ export async function updateInIdLogScope(
     // made the handler call `UpdateFunctionCode` on an update that left it alone).
     // It IS re-added when the patch also changes `Architectures`, which Lambda
     // takes on `UpdateFunctionCode`: a patch changing it without `Code` fails
-    // with Lambda's "Please provide a source for function code" (measured,
-    // go-to-k/cdkd#6709).
+    // with Lambda's "Please provide a source for function code" (measured on
+    // an inline zip function, x86_64 -> arm64, go-to-k/cdkd#6709).
     // See `create()`: started alongside the update, awaited at its end.
     const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
     const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
