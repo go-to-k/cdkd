@@ -100,7 +100,8 @@ export async function finishReverseReplacement(
   //   accept that risk; the delete-first route, go-to-k/cdkd#4690, accepts
   //   it only because the deploy itself ran delete-first, and it never
   //   reaches this arm).
-  // State KEEPS the live new resource's record (go-to-k/cdkd#6731): the
+  // State KEEPS the live new resource's record (go-to-k/cdkd#6731, the
+  // same-type arm, `keepLiveRecord`): the
   // properties AWS holds are the failed deploy's, so the next `cdkd deploy`
   // diffs the template against them and re-applies it. A record rebuilt from
   // previousState claimed the old properties while AWS kept the new ones: the
@@ -141,6 +142,11 @@ export async function finishReverseReplacement(
   });
   const adoptedLiveNewResource =
     equalIdIsSameResource && !deletedNewFirst && createResult.physicalId === current.physicalId;
+  // Not for the custom-resource family across a Type change: there the
+  // re-create really ran the old handler with the old properties
+  // (`equalIdNamesSameResource`), so the record rebuilt below is the true one.
+  const keepLiveRecord =
+    adoptedLiveNewResource && oldType === op.resourceType && !isCustomResource(oldType);
   if (adoptedLiveNewResource) {
     // Named only when plain, described otherwise: this line names
     // `cdkd deploy`, and the physical id used to print through the bare
@@ -153,10 +159,17 @@ export async function finishReverseReplacement(
         `one — its ` +
         `Create API is name-idempotent and the new resource still holds the same ` +
         `user-supplied name. Skipping the delete-new step (it would delete that very ` +
-        `resource). The old resource's ORIGINAL properties were NOT re-applied; ` +
-        `state keeps the live resource's record, with the failed deploy's properties, so ` +
-        safeMsg`${proseQuoted(cdkdRemedy('cdkd deploy'))} re-applies the template's, or rename the resource to make the replacement ` +
-        `reversible.${describedPhysicalIdPointer(liveShown)}` +
+        `resource). ` +
+        (keepLiveRecord
+          ? `The old resource's ORIGINAL properties were NOT re-applied; ` +
+            `state keeps the live resource's record, with the failed deploy's properties, so ` +
+            safeMsg`${proseQuoted(cdkdRemedy('cdkd deploy'))} re-applies the template's, or rename the resource to make the replacement ` +
+            `reversible.`
+          : `The old resource's ORIGINAL properties may NOT have been re-applied; ` +
+            `state now records the pre-replacement properties, so inspect the drift and ` +
+            safeMsg`run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to reconcile, or rename the resource to make the replacement ` +
+            `reversible.`) +
+        `${describedPhysicalIdPointer(liveShown)}` +
         // `--stack-region` for the same reason the destroy hints carry
         // it: without it `cdkd drift` resolves every region holding this
         // name. Read-only, so no data loss — but it reports on records
@@ -187,12 +200,7 @@ export async function finishReverseReplacement(
   // its record (as persisted, already redacted), never one rebuilt from the
   // pre-deploy properties. Its template-level fields stay the pre-deploy
   // record's, as the rolled-back template declares them: a destroy before the
-  // next deploy honours that DeletionPolicy, not the failed deploy's. Not for
-  // the custom-resource family across a Type change: there the re-create
-  // really ran the old handler with the old properties (`equalIdNamesSameResource`),
-  // so the record rebuilt below is the true one.
-  const keepLiveRecord =
-    adoptedLiveNewResource && oldType === op.resourceType && !isCustomResource(oldType);
+  // next deploy honours that DeletionPolicy, not the failed deploy's.
   if (keepLiveRecord) {
     const {
       deletionPolicy: _failedDeletionPolicy,
@@ -473,8 +481,11 @@ export async function finishReverseReplacement(
         reason: mask(
           `The re-create returned the live new resource instead of re-creating the old one ` +
             `(its Create API is name-idempotent), so the replacement was NOT fully reversed: ` +
-            `the old resource's original properties were not re-applied. State keeps the live ` +
-            `resource's record, so ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} re-applies the template's.`
+            (keepLiveRecord
+              ? `the old resource's original properties were not re-applied. State keeps the live ` +
+                `resource's record, so ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} re-applies the template's.`
+              : `the old resource's original properties may not have been re-applied. Inspect it ` +
+                `with ${proseQuoted(cdkdRemedy('cdkd drift'), '`')} and run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to reconcile.`)
         ),
       }),
     });

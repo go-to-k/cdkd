@@ -368,6 +368,9 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
       // record a same-type adopt keeps.
       expect(state['Thing']?.properties).toEqual(customOp().previousState!.properties);
       expect(state['Thing']?.properties).not.toEqual({ TopicName: 't' });
+      const warned = vi.mocked(silentLogger.warn).mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('state now records the pre-replacement properties');
+      expect(warned).not.toContain("keeps the live resource's record");
     });
 
     it('ONE instance serving two NON-custom types: the new resource IS deleted', async () => {
