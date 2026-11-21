@@ -1,4 +1,4 @@
-import { warnUnwaitedCreationPolicy } from './signal-receiver-run.js';
+import { rollingSignalsFor, warnUnwaitedCreationPolicy } from './signal-receiver-run.js';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
@@ -493,6 +493,7 @@ export async function updateInPlace(
               ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
               ...(unsettledItems.size > 0 && { unsettledItems }),
               ...updatePolicy,
+              ...rollingSignalsFor(engine, logicalId),
             }
           )
         ),

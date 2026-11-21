@@ -269,6 +269,19 @@ describe('SignalReceiver.arm / awaitSignals / settle', () => {
     await expect(r.awaitSignals('I', 0, () => false)).resolves.toBeUndefined();
   });
 
+  it('arms a rolling update with the count it is handed, and failureOf reads its FAILURE (go-to-k/cdkd#6706)', async () => {
+    let failed = false;
+    const { r, updates } = armedReceiver(() => (failed ? undefined : 'CREATE_IN_PROGRESS'));
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined, new Map([['I', 3]]));
+    expect((updates[0]!['I'] as { CreationPolicy: unknown }).CreationPolicy).toEqual({
+      ResourceSignal: { Count: 3, Timeout: 'PT12H' },
+    });
+    await expect(r.failureOf('I', 0)).resolves.toBeUndefined();
+    failed = true;
+    await expect(r.failureOf('I', 0)).resolves.toBe('Received FAILURE signal with UniqueId i-9');
+  });
+
   it('awaitSignals fails on CREATE_FAILED with the reason', async () => {
     let armingDone = false;
     const { r } = armedReceiver(() => (armingDone ? 'CREATE_FAILED' : 'CREATE_IN_PROGRESS'));

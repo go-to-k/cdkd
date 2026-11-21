@@ -736,6 +736,53 @@ describe('ASGProvider.update instance refresh (go-to-k/cdkd#6437)', () => {
     );
   });
 
+  describe('WaitOnResourceSignals through the signal receiver (go-to-k/cdkd#6706)', () => {
+    const watch = (failures: (string | undefined)[], awaitAll = vi.fn(async () => undefined)) => {
+      const failure = vi.fn(async () => failures.shift());
+      return { failure, awaitAll };
+    };
+
+    it('waits for every replaced instance signal after the refresh, within PauseTime, and does not warn', async () => {
+      arm({ statuses: ['InProgress', 'Successful'] });
+      const rollingSignals = watch([]);
+      await run(changed, {
+        updatePolicy: rolling({ WaitOnResourceSignals: true, PauseTime: 'PT2M' }),
+        rollingSignals,
+      });
+      expect(rollingSignals.awaitAll).toHaveBeenCalledWith(120_000);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining('WaitOnResourceSignals is not honored')
+      );
+    });
+
+    it('cancels the refresh and fails on a FAILURE signal while it runs', async () => {
+      arm({ statuses: ['InProgress', 'InProgress', 'Successful'] });
+      const rollingSignals = watch(['Received FAILURE signal with UniqueId i-9']);
+      const error = await run(changed, {
+        updatePolicy: rolling({ WaitOnResourceSignals: true }),
+        rollingSignals,
+      }).catch((e: unknown) => e);
+      expect((error as Error).message).toContain('Received FAILURE signal with UniqueId i-9');
+      expect(sent(CancelInstanceRefreshCommand)).toHaveLength(1);
+      expect(rollingSignals.awaitAll).not.toHaveBeenCalled();
+    });
+
+    it('fails when the signals do not all arrive after the refresh', async () => {
+      arm({ statuses: ['Successful'] });
+      const rollingSignals = watch(
+        [],
+        vi.fn(async () => {
+          throw new Error('MyAsg did not receive 2 CreationPolicy signal(s) within 300s');
+        })
+      );
+      const error = await run(changed, {
+        updatePolicy: rolling({ WaitOnResourceSignals: true }),
+        rollingSignals,
+      }).catch((e: unknown) => e);
+      expect((error as Error).message).toContain('did not receive 2 CreationPolicy signal(s)');
+    });
+  });
+
   it('routes every refresh line through the masker', async () => {
     const maskSecrets = (text: string) => text.split('MyAsg').join('***');
     await run(changed, { updatePolicy: rolling({ SuspendProcesses: ['x'] }), maskSecrets });

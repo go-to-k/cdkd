@@ -26,6 +26,7 @@ export type {
   SecretMasker,
   SecretMaskingContext,
   UpdateContext,
+  RollingSignalWatch,
   InlinePolicyPrincipalKind,
   InlinePolicyClaimed,
   CreateContext,

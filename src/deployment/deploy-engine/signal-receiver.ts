@@ -57,6 +57,12 @@ export interface SignalCandidate {
   count: number;
   timeoutMs: number;
   hasInitMetadata: boolean;
+  /**
+   * go-to-k/cdkd#6706: an `AutoScalingRollingUpdate` declaring
+   * `WaitOnResourceSignals`: its `PauseTime` (CloudFormation's default 5
+   * minutes when absent), the wait for the replaced instances' signals.
+   */
+  rollingPauseMs?: number;
 }
 
 export interface ReceiverLogger {
@@ -90,8 +96,10 @@ export function signalCandidateOf(resource: unknown): SignalCandidate | undefine
     typeof r.Metadata === 'object' &&
     Object.hasOwn(r.Metadata, 'AWS::CloudFormation::Init');
   const hasPolicy = policy !== undefined && policy !== null && typeof policy === 'object';
-  if (!hasPolicy && !hasInitMetadata) return undefined;
-  if (!hasPolicy) return { count: 0, timeoutMs: 0, hasInitMetadata };
+  const rollingPauseMs = rollingSignalPauseMs(resource);
+  const rolling = rollingPauseMs !== undefined && { rollingPauseMs };
+  if (!hasPolicy && !hasInitMetadata && !rolling) return undefined;
+  if (!hasPolicy) return { count: 0, timeoutMs: 0, hasInitMetadata, ...rolling };
   const p = policy as Record<string, unknown>;
   const rawCount = p['Count'];
   const count =
@@ -106,7 +114,19 @@ export function signalCandidateOf(resource: unknown): SignalCandidate | undefine
     isoDurationMs(p['Timeout']) ?? DEFAULT_SIGNAL_TIMEOUT_MS,
     MAX_SIGNAL_TIMEOUT_MS
   );
-  return { count, timeoutMs, hasInitMetadata };
+  return { count, timeoutMs, hasInitMetadata, ...rolling };
+}
+
+/** An `AutoScalingRollingUpdate` with `WaitOnResourceSignals`: its `PauseTime` in ms. */
+function rollingSignalPauseMs(resource: object): number | undefined {
+  const policy = (resource as { UpdatePolicy?: unknown }).UpdatePolicy;
+  if (policy === null || typeof policy !== 'object') return undefined;
+  const rolling = (policy as Record<string, unknown>)['AutoScalingRollingUpdate'];
+  if (rolling === null || typeof rolling !== 'object') return undefined;
+  const wait = (rolling as Record<string, unknown>)['WaitOnResourceSignals'];
+  if (wait !== true && wait !== 'true') return undefined;
+  const pause = isoDurationMs((rolling as Record<string, unknown>)['PauseTime']);
+  return Math.min(pause ?? DEFAULT_SIGNAL_TIMEOUT_MS, MAX_SIGNAL_TIMEOUT_MS);
 }
 
 /** Every template resource asking the receiver for something. */
@@ -153,7 +173,8 @@ export function signalPlanOf(template: CloudFormationTemplate): {
       unsigned.push(id);
       continue;
     }
-    if (candidate.count > 0 ? call?.signedSignal === true : call?.signedInit === true) {
+    const signalled = candidate.count > 0 || candidate.rollingPauseMs !== undefined;
+    if (signalled ? call?.signedSignal === true : call?.signedInit === true) {
       candidates.set(id, candidate);
     }
   }
@@ -358,6 +379,8 @@ const SETTLED = /(_COMPLETE|_FAILED)$/;
 export class SignalReceiver {
   private stackId: string | undefined;
   private armed = new Set<string>();
+  /** go-to-k/cdkd#6706: the count each rolling-update waiter was armed with. */
+  private armedCounts = new Map<string, number>();
   /** Armed waiters whose signals arrived. */
   private finished = new Set<string>();
   /** Every waiter `arm()` added, disarmed ones included. */
@@ -397,6 +420,32 @@ export class SignalReceiver {
   /** Whether this deploy armed a waiter for `logicalId`. */
   isArmed(logicalId: string): boolean {
     return this.armed.has(logicalId);
+  }
+
+  /**
+   * go-to-k/cdkd#6706: a rolling update's FAILURE so far: the waiter failed
+   * (or the receiver's rollback removed it), with the signal's reason from the
+   * events since `since`. `undefined` while it still waits or completed.
+   */
+  async failureOf(logicalId: string, since: number): Promise<string | undefined> {
+    if (!this.armed.has(logicalId) || this.stackId === undefined) return undefined;
+    const client = this.client();
+    let status: string | undefined;
+    try {
+      const out = await client.send(
+        new DescribeStackResourceCommand({ StackName: this.stackId, LogicalResourceId: logicalId })
+      );
+      status = out.StackResourceDetail?.ResourceStatus;
+    } catch (error) {
+      if (!notFound(error)) return undefined;
+      status = 'GONE';
+    }
+    if (status !== 'CREATE_FAILED' && status !== 'GONE' && status?.startsWith('DELETE') !== true) {
+      return undefined;
+    }
+    return (
+      (await this.failureReasonOf(client, logicalId, since)) ?? `its signal wait ended (${status})`
+    );
   }
 
   /** An armed resource that was not created after all: no wait, cancelled at `settle()`. */
@@ -464,7 +513,9 @@ export class SignalReceiver {
    */
   async arm(
     armIds: ReadonlySet<string>,
-    resolveMetadata: (logicalId: string) => Promise<unknown>
+    resolveMetadata: (logicalId: string) => Promise<unknown>,
+    /** go-to-k/cdkd#6706: a rolling update's signal count (the instances it replaces). */
+    counts: ReadonlyMap<string, number> = new Map()
   ): Promise<ReadonlySet<string>> {
     if (this.stackId === undefined) return new Set();
     try {
@@ -483,8 +534,9 @@ export class SignalReceiver {
           if (current[id] !== undefined) desired[id] = current[id];
           continue;
         }
-        if (armIds.has(id) && candidate.count > 0) {
-          desired[id] = waiterResource(candidate.count, metadata);
+        const count = counts.get(id) ?? candidate.count;
+        if (armIds.has(id) && count > 0) {
+          desired[id] = waiterResource(count, metadata);
           toArm.add(id);
         } else if (candidate.hasInitMetadata) {
           const existing = current[id];
@@ -511,6 +563,7 @@ export class SignalReceiver {
       if (toArm.size > 0) await this.awaitWaiting(client, toArm);
       this.armed = toArm;
       this.armedIds = [...toArm];
+      this.armedCounts = new Map([...counts].filter(([id]) => toArm.has(id)));
       if (toArm.size > 0) {
         this.logger.info(
           safeMsg`Signal receiver ${this.stackName}: waiting for CreationPolicy signals from ${[...toArm].join(', ')}`
@@ -530,13 +583,21 @@ export class SignalReceiver {
    * the receiver rolls the waiter back, and when `stop()` says the deploy is
    * stopping (a sibling failed, or Ctrl-C).
    */
-  async awaitSignals(logicalId: string, startedAt: number, stop: () => boolean): Promise<void> {
+  async awaitSignals(
+    logicalId: string,
+    startedAt: number,
+    stop: () => boolean,
+    /** go-to-k/cdkd#6706: a rolling update's own deadline, in place of the policy's `Timeout`. */
+    deadlineOverride?: number
+  ): Promise<void> {
     const candidate = this.candidates.get(logicalId);
     if (!this.armed.has(logicalId) || candidate === undefined || this.stackId === undefined) return;
     const client = this.client();
-    const deadline = startedAt + candidate.timeoutMs;
+    const deadline = deadlineOverride ?? startedAt + candidate.timeoutMs;
+    const count = this.armedCounts.get(logicalId) ?? candidate.count;
+    const timeoutMs = deadline - startedAt;
     this.logger.info(
-      safeMsg`${logicalId}: waiting for ${candidate.count} CreationPolicy signal(s) (timeout ${Math.round(candidate.timeoutMs / 1000)}s)`
+      safeMsg`${logicalId}: waiting for ${count} CreationPolicy signal(s) (timeout ${Math.round(timeoutMs / 1000)}s)`
     );
     for (;;) {
       if (stop())
@@ -580,7 +641,7 @@ export class SignalReceiver {
       }
       if (this.now() >= deadline) {
         throw new Error(
-          safeMsg`${logicalId} did not receive ${candidate.count} CreationPolicy signal(s) within ${Math.round(candidate.timeoutMs / 1000)}s`
+          safeMsg`${logicalId} did not receive ${count} CreationPolicy signal(s) within ${Math.round(timeoutMs / 1000)}s`
         );
       }
       await this.sleep(Math.min(POLL_INTERVAL_MS, Math.max(deadline - this.now(), 0)));
