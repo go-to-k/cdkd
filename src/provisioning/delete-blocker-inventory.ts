@@ -327,7 +327,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::RDS::DBCluster',
     source:
-      'https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-rds/blob/5a410e843efb90076c1c4d322707bc989e5a058b/aws-rds-dbcluster/src/main/java/software/amazon/rds/dbcluster/DeleteHandler.java#L47-L61 (RemoveFromGlobalCluster when GlobalClusterIdentifier is set; no member-instance delete. The current registry schema also lists rds:DeleteDBInstance, which #6751 settles)',
+      'https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-rds/blob/5a410e843efb90076c1c4d322707bc989e5a058b/aws-rds-dbcluster/src/main/java/software/amazon/rds/dbcluster/DeleteHandler.java#L47-L61 (RemoveFromGlobalCluster when GlobalClusterIdentifier is set; no member-instance delete. The current registry schema also lists rds:DeleteDBInstance, yet in the #6751 probe the stack delete of a cluster with an out-of-band member failed with "Cluster can\'t be deleted. It still contains DB instances in a non-deleting state")',
     blockers: [
       handled(
         'global cluster membership',
