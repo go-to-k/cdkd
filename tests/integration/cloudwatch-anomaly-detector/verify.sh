@@ -13,6 +13,9 @@
 #     property per the registry schema; assert the configuration landed, and
 #     (deployed under TZ=Asia/Tokyo) that the offset-less range landed as UTC
 #     (go-to-k/cdkd#5311).
+#   Phase 2b (drift, go-to-k/cdkd#6769): drift clean with the detector
+#     compared (exit 0) -> an out-of-band Configuration change is drift (exit 1)
+#     -> restored with the AWS CLI, clean again.
 #   Phase 3 (destroy): tear down; assert the detector, queue, and state file
 #     are gone.
 #
@@ -225,90 +228,74 @@ if [ "${PHYS_ID_2}" != "${PHYS_ID_1}" ]; then
 fi
 echo "    OK: physical id stable across the in-place update"
 
-# --- Phase 2b: drift over a deny-listed Cloud Control fallback ------------
-# go-to-k/cdkd#4668: AWS gave `AWS::CloudWatch::AnomalyDetector` Cloud Control
-# handlers, but the SDK provider (no `readCurrentState`) records a metric
-# descriptor as the physicalId, which Cloud Control's `GetResource` refuses with
-# a ValidationException. Drift deny-lists the type off its Cloud Control
-# fallback, so the row reports drift unknown (`?`); without the entry every run
-# reported a read failure (`!`, measured live 2026-10-07). Both exit 2 since
-# go-to-k/cdkd#6696, so the row's glyph is the discriminator. Beside it sits an
-# SQS queue drift CAN compare.
-#
-# The go-to-k/cdkd#2151 arm this phase used to carry (a fallback that THROWS for
-# a type with no READ handler) is unit-tested only: no deployable type reaches
-# that throw any more (go-to-k/cdkd#5179).
-echo "==> Phase 2b: drift reports the deny-listed detector as drift unknown"
+# --- Phase 2b: drift reads the detector back ------------------------------
+# go-to-k/cdkd#6769: the SDK provider reads the detector back through
+# DescribeAnomalyDetectors, filtered by the recorded descriptor (its physicalId
+# is a cdkd descriptor Cloud Control cannot address, #4668). The fresh deploy
+# drifts clean with both rows compared (exit 0); an out-of-band
+# Configuration change (PutAnomalyDetector with another MetricTimezone and no
+# exclusions) is drift (exit 1); putting the deployed Configuration back with
+# the AWS CLI makes it clean again.
+echo "==> Phase 2b: drift compares the detector (clean -> out-of-band change -> restored)"
 # NOT given its own `trap ... EXIT`: bash REPLACES a signal's handler rather
 # than chaining, so a second one would disarm the AWS teardown. The file is
 # removed by `cleanup` instead.
 DRIFT_OUT="$(mktemp)"
-set +e
-node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
-DRIFT_RC=$?
-set -e
-cat "${DRIFT_OUT}"
+run_drift() {
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+  DRIFT_RC=$?
+  set -e
+  cat "${DRIFT_OUT}"
+}
+assert_clean() { # usage: assert_clean <label>
+  # The FULL parenthetical, anchored: a bare `2 resources checked` is a
+  # substring of the `0 of 2 resources checked` warning (go-to-k/cdkd#2154).
+  if [ "${DRIFT_RC}" -ne 0 ] || ! grep -qF "✓ ${STACK} (${REGION}): no drift detected (2 resources checked, 0 unsupported)" "${DRIFT_OUT}"; then
+    echo "FAIL: drift after $1 is not clean with both rows compared (rc=${DRIFT_RC}) (go-to-k/cdkd#6769)" >&2
+    exit 1
+  fi
+  if grep -qE '^ +\? ' "${DRIFT_OUT}"; then
+    echo "FAIL: drift after $1 reported a drift-unknown row; Detector must be compared (go-to-k/cdkd#6769)" >&2
+    exit 1
+  fi
+  echo "    OK: drift clean after $1, Detector and the queue compared"
+}
+DETECTOR_JSON="{\"Namespace\":\"${NAMESPACE}\",\"MetricName\":\"${METRIC}\",\"Stat\":\"Sum\",\"Dimensions\":[{\"Name\":\"QueueName\",\"Value\":\"${QUEUE_NAME}\"}]}"
 
-# 1. The detector is reported as drift unknown.
-if ! grep -q '? Detector (AWS::CloudWatch::AnomalyDetector)' "${DRIFT_OUT}"; then
-  echo "FAIL: drift printed no drift-unknown line for Detector (go-to-k/cdkd#4668)" >&2
-  exit 1
-fi
-echo "    OK: Detector reported rather than aborting the run"
-# Exactly that one drift-unknown row (go-to-k/cdkd#6696): the SQS queue reading
-# as drift unknown too would hide behind the detector's exit 2.
-if [ "$(grep -cE '^ +\? ' "${DRIFT_OUT}" || true)" != 1 ]; then
-  echo "FAIL: drift reported a drift-unknown row other than Detector (go-to-k/cdkd#6696)" >&2
-  exit 1
-fi
+run_drift
+assert_clean "the Configuration update"
 
-# 2. The SIBLING was compared. This is the assertion the issue is actually
-#    about: one unreadable resource must not cost the other one its comparison.
-#    `1 resource checked` is the positive marker -- `0` is what a run that
-#    reported the detector and then gave up would print.
-# The FULL parenthetical, anchored. A bare `1 resource checked` is a SUBSTRING of
-# the `0 of 1 resource checked` the go-to-k/cdkd#2154 warning branch prints, so
-# the loose spelling passed on exactly the output that means nothing was
-# compared -- the opposite of what this assertion is for. go-to-k/cdkd#6696
-# reworded the drift-unknown summary to a ⚠ line naming what was not compared.
-if ! grep -qF 'no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)' "${DRIFT_OUT}"; then
-  echo "FAIL: the ordinary SQS queue was not compared -- expected 'no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)' (go-to-k/cdkd#4668, go-to-k/cdkd#6696)" >&2
+# Out of band: another time zone and no exclusions.
+aws cloudwatch put-anomaly-detector \
+  --single-metric-anomaly-detector "${DETECTOR_JSON}" \
+  --configuration '{"MetricTimezone":"Asia/Tokyo","ExcludedTimeRanges":[]}' \
+  --region "${REGION}"
+TZ_OOB=$(aws cloudwatch describe-anomaly-detectors \
+  --namespace "${NAMESPACE}" --metric-name "${METRIC}" --region "${REGION}" \
+  --query "AnomalyDetectors[?SingleMetricAnomalyDetector.Dimensions[?Name=='QueueName' && Value=='${QUEUE_NAME}']] | [0].Configuration.MetricTimezone" \
+  --output text)
+[ "${TZ_OOB}" = "Asia/Tokyo" ] || { echo "FAIL: premise: the out-of-band put-anomaly-detector did not land (MetricTimezone=${TZ_OOB})" >&2; exit 1; }
+run_drift
+if [ "${DRIFT_RC}" -ne 1 ] || ! grep -qF '~ Detector (AWS::CloudWatch::AnomalyDetector)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift did not report the out-of-band Configuration change on Detector, exit 1 (rc=${DRIFT_RC}) (go-to-k/cdkd#6769)" >&2
   exit 1
 fi
-echo "    OK: the sibling SQS queue was still compared"
+if ! grep -qE '^ +[-+~] Configuration' "${DRIFT_OUT}"; then
+  echo "FAIL: drift did not name Configuration as Detector's drifted property (go-to-k/cdkd#6769)" >&2
+  exit 1
+fi
+echo "    OK: drift reports the out-of-band Configuration change (exit 1)"
 
-# 3. EXIT 2 (go-to-k/cdkd#6696): drift unknown is an incomplete comparison, so
-#    nothing drifted but not everything was compared. Never 1 (drift) and never
-#    0, which is what made an unreadable type a passing CI run.
-if [ "${DRIFT_RC}" -ne 2 ]; then
-  echo "FAIL: drift exited ${DRIFT_RC}, expected 2 -- a drift-unknown type makes the comparison incomplete (go-to-k/cdkd#6696)" >&2
-  exit 1
-fi
-echo "    OK: exit 2 (drift unknown is an incomplete comparison)"
-
-# 4. ...and NOT reported as a read failure -- the exact output this fixture
-#    measured before the deny-list entry.
-if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
-  echo "FAIL: Detector was reported as a read FAILURE; a deny-listed type must report drift unknown (go-to-k/cdkd#4668)" >&2
-  exit 1
-fi
-echo "    OK: classified as drift unknown, not as a read failure"
-
-# 5. go-to-k/cdkd#2154: something WAS compared here, so this is not the
-#    NOTHING-compared line (negative control for that rule). Since
-#    go-to-k/cdkd#6696 the line is the drift-unknown ⚠, never the ✓.
-if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
-  echo "FAIL: the stack warned 'NOTHING was compared' although the queue was compared (go-to-k/cdkd#2154)" >&2
-  exit 1
-fi
-echo "    OK: not reported as NOTHING compared, since the queue was compared"
-if grep -qF "✓ ${STACK}" "${DRIFT_OUT}"; then
-  echo "FAIL: the stack got the ✓ line although the detector is drift unknown (go-to-k/cdkd#6696)" >&2
-  exit 1
-fi
-echo "    OK: no ✓ over a drift-unknown resource"
+# Restore what the deploy put (MetricTimeZone UTC + the two ranges, as UTC instants).
+aws cloudwatch put-anomaly-detector \
+  --single-metric-anomaly-detector "${DETECTOR_JSON}" \
+  --configuration '{"MetricTimezone":"UTC","ExcludedTimeRanges":[{"StartTime":"2026-01-01T00:00:00Z","EndTime":"2026-01-02T00:00:00Z"},{"StartTime":"2026-03-01T00:00:00Z","EndTime":"2026-03-02T00:00:00Z"}]}' \
+  --region "${REGION}"
+run_drift
+assert_clean "the restore"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"

@@ -177,10 +177,6 @@ export const DRIFT_READBACK_BASELINE: ReadonlyMap<string, BaselineEntry> = new M
     `AWS::CloudFormation::WaitCondition#${p}`,
     { reason: 'cdkd-side input to the S3 signal poll: no AWS resource holds it' },
   ]),
-  ...['GroupName', 'Users'].map((p): [string, BaselineEntry] => [
-    `AWS::IAM::UserToGroupAddition#${p}`,
-    { reason: 'readCurrentState returns undefined for the type: drift reports it as drift unknown' },
-  ]),
   ...(
     [
       ['AWS::Lambda::Url', 'Qualifier'],

@@ -9,6 +9,7 @@ import type {
   CreateContext,
   ResourceProvider,
   ResourceCreateResult,
+  ResourceNotFound,
   ResourceUpdateResult,
   UpdateContext,
 } from '../../types/resource.js';
@@ -25,6 +26,7 @@ import {
 import { create, toInstanceFleetConfig } from './emr-instance-fleet-config/create.js';
 import { update } from './emr-instance-fleet-config/update.js';
 import { deleteImpl } from './emr-instance-fleet-config/delete.js';
+import { readCurrentState } from './emr-instance-fleet-config/read-state.js';
 import {
   targetCapacities,
   waitForFleetReady,
@@ -310,6 +312,17 @@ export class EMRInstanceFleetConfigProvider implements ResourceProvider {
     // aws-cdk-lib still read `Id` (`attrId`), so both names are served.
     if (attributeName === 'Id' || attributeName === 'InstanceFleetId') return physicalId;
     return undefined;
+  }
+
+  // ─── Drift read-back (go-to-k/cdkd#6769) ───────────────────────────
+
+  readCurrentState(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
   }
 
   // ─── Lifecycle polling ─────────────────────────────────────────────

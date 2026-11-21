@@ -182,20 +182,17 @@ run_drift() { # $1 = output file
     *) echo "FAIL: cdkd drift exited ${rc}" >&2; exit 1 ;;
   esac
 }
-# A clean run of THIS stack exits 2, never 0 (go-to-k/cdkd#6696): the
-# `ProbeUserToGroupAddition` row has no readback, so it is drift unknown and the
-# comparison is incomplete. Clean = exit 2, nothing deleted or not compared, and
-# that row in `notSupported`; a failed read (also exit 2) lands in
-# `notCompared` and fails here. The caller checks `drifted` itself.
+# A clean run of THIS stack exits 0 with every row compared: the
+# `ProbeUserToGroupAddition` row reads back since go-to-k/cdkd#6769 (before, it
+# was drift unknown and the run exited 2, #6696). Clean = exit 0, nothing
+# deleted, not compared or drift unknown. The caller checks `drifted` itself.
 drift_clean_report() { # $1 = the run_drift output file
-  [ "${DRIFT_RC}" = 2 ] || return 1
+  [ "${DRIFT_RC}" = 0 ] || return 1
   node -e '
     const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-    const ok = r.every((s) => s.deleted.length === 0 && s.notCompared.length === 0) &&
-      // EXACTLY that one row: a reader regressing to undefined on a type this
-      // stack compares today would add a second.
-      JSON.stringify(r.flatMap((s) => s.notSupported.map((u) => [u.logicalId, u.type]))) ===
-        JSON.stringify([["ProbeUserToGroupAddition", "AWS::IAM::UserToGroupAddition"]]);
+    const ok = r.every((s) => s.deleted.length === 0 && s.notCompared.length === 0 &&
+      // No row: a reader regressing to undefined would add one.
+      s.notSupported.length === 0);
     process.exit(ok ? 0 : 1);
   ' "$1"
 }
@@ -212,22 +209,14 @@ KEY_ID=$(node -e '
   process.stdout.write(id ? String(s[id].physicalId) : "");
 ' "${ARTIFACT_DIR}/state-show-deploy.json")
 [ -n "${KEY_ID}" ] || { echo "FAIL: no AWS::KMS::Key physical id in state" >&2; exit 1; }
-# AWS::IAM::UserToGroupAddition has no readback by design (its provider's
-# readCurrentState returns undefined: the membership is read on the user, as
-# its `Groups`), so it alone records none; drift reports it unsupported (drift
-# unknown, exit 2 when nothing drifted: go-to-k/cdkd#6696).
+# Every resource records one, the UserToGroupAddition included since
+# go-to-k/cdkd#6769 (its membership is read per recorded user).
 missing=$(node -e '
   const s = require(process.argv[1]);
-  const noRead = new Set(["AWS::IAM::UserToGroupAddition"]);
-  process.stdout.write(Object.keys(s).filter((k) => !s[k].hasObserved && !noRead.has(s[k].resourceType)).join(" "));
+  process.stdout.write(Object.keys(s).filter((k) => !s[k].hasObserved).join(" "));
 ' "${ARTIFACT_DIR}/summary-deploy.json")
 [ -z "${missing}" ] || { echo "FAIL: no deploy-time readback for: ${missing}" >&2; exit 1; }
-unexpected=$(node -e '
-  const s = require(process.argv[1]);
-  process.stdout.write(Object.keys(s).filter((k) => s[k].resourceType === "AWS::IAM::UserToGroupAddition" && s[k].hasObserved).join(" "));
-' "${ARTIFACT_DIR}/summary-deploy.json")
-[ -z "${unexpected}" ] || { echo "FAIL: ${unexpected} recorded a readback; the UserToGroupAddition exemption above is stale" >&2; exit 1; }
-echo "    OK: every resource recorded a deploy-time readback (UserToGroupAddition has none by design)"
+echo "    OK: every resource recorded a deploy-time readback"
 
 # go-to-k/cdkd#6624: what the drift comparator relies on. These services write
 # `Version: 2008-10-17` (what an omitted Version means) into a document the

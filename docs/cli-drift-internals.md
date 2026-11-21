@@ -579,13 +579,10 @@ the fallback:
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under
    [Nested stacks](cli-drift-nested-stacks.md)),
-   `AWS::CloudWatch::AnomalyDetector` (its physical id is a cdkd-derived
-   descriptor, not the type's identifier),
-   `AWS::EC2::LaunchTemplate` (the response carries version-bumped
-   `LaunchTemplateData` plus a synthetic `LatestVersionNumber`), and
-   `AWS::EMR::InstanceFleetConfig` and `AWS::EMR::InstanceGroupConfig` (the
-   physical id is the bare fleet / group id, and Cloud Control needs the
-   cluster id with it).
+   and `AWS::EMR::InstanceGroupConfig` (the physical id is the bare group id,
+   and Cloud Control needs the cluster id with it). The list gates only the
+   fallback for an SDK provider with no read-back: a type routed to Cloud
+   Control (no SDK provider at all) is read there whatever the list says.
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
    (`CreationDate`, `LastModifiedTime`, `OwnerId`, `RevisionId`, and
    similar) are removed from Cloud Control responses before the comparator

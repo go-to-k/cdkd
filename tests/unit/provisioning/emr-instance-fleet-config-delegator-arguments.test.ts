@@ -34,12 +34,16 @@ vi.mock('../../../src/provisioning/providers/emr-instance-fleet-config/delete.js
 vi.mock('../../../src/provisioning/providers/emr-instance-fleet-config/wait.js', (io) =>
   spyAll(io as () => Promise<Record<string, unknown>>)
 );
+vi.mock('../../../src/provisioning/providers/emr-instance-fleet-config/read-state.js', (io) =>
+  spyAll(io as () => Promise<Record<string, unknown>>)
+);
 
 import { EMRInstanceFleetConfigProvider } from '../../../src/provisioning/providers/emr-instance-fleet-config-provider.js';
 import * as create from '../../../src/provisioning/providers/emr-instance-fleet-config/create.js';
 import * as update from '../../../src/provisioning/providers/emr-instance-fleet-config/update.js';
 import * as del from '../../../src/provisioning/providers/emr-instance-fleet-config/delete.js';
 import * as wait from '../../../src/provisioning/providers/emr-instance-fleet-config/wait.js';
+import * as readState from '../../../src/provisioning/providers/emr-instance-fleet-config/read-state.js';
 
 type Module = Record<string, unknown>;
 
@@ -52,10 +56,11 @@ const DELEGATORS: ReadonlyArray<readonly [string, Module, string, number]> = [
   ['targetCapacities', wait, 'targetCapacities', 1],
   ['waitForFleetReady', wait, 'waitForFleetReady', 8],
   ['findFleetForPoll', wait, 'findFleetForPoll', 4],
+  ['readCurrentState', readState, 'readCurrentState', 4],
 ];
 
 const allSpies = (): ReturnType<typeof vi.fn>[] =>
-  [create, update, del, wait].flatMap((m) =>
+  [create, update, del, wait, readState].flatMap((m) =>
     Object.values(m as Module).filter((v): v is ReturnType<typeof vi.fn> => vi.isMockFunction(v))
   );
 
@@ -86,7 +91,7 @@ describe('EMRInstanceFleetConfigProvider delegators hand every argument to the m
   it('every moved function the companions export is reached by a delegator', () => {
     // A companion function no delegator names would be dead code, or a body
     // reached around the class.
-    for (const mod of [create, update, del, wait] as Module[]) {
+    for (const mod of [create, update, del, wait, readState] as Module[]) {
       const named = DELEGATORS.filter(([, m]) => m === mod).map(([, , fn]) => fn);
       const exported = Object.keys(mod).filter((k) => vi.isMockFunction(mod[k]));
       expect(exported.sort()).toEqual(named.sort());

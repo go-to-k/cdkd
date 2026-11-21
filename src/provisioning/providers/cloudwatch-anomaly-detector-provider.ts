@@ -2,7 +2,10 @@ import {
   CloudWatchClient,
   PutAnomalyDetectorCommand,
   DeleteAnomalyDetectorCommand,
+  DescribeAnomalyDetectorsCommand,
   ResourceNotFoundException,
+  type AnomalyDetector,
+  type DescribeAnomalyDetectorsCommandInput,
   type PutAnomalyDetectorCommandInput,
   type DeleteAnomalyDetectorCommandInput,
   type SingleMetricAnomalyDetector,
@@ -26,7 +29,16 @@ import type {
   ResourceImportResult,
   CreateContext,
   UpdateContext,
+  ReadCurrentStateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
+import {
+  OWN_WRITE_REREAD_DELAYS_MS,
+  reReadUntilSettled,
+  warnUnsettledMember,
+} from '../settle-after-own-write.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markNotGone } from '../not-gone.js';
 import {
@@ -64,7 +76,7 @@ const ID_ATTRIBUTES = ['AnomalyDetectorId', 'Id'] as const;
  * read-only primaryIdentifier (`Id`, published for a while as
  * `AnomalyDetectorId`) is minted
  * only by the Cloud Control handlers, which cdkd does not use for this type
- * (`cdkd drift` deny-lists its CC read for that reason, #4668). cdkd therefore
+ * (`cdkd drift` reads it back by descriptor instead, #4668 / #6769). cdkd therefore
  * derives a DETERMINISTIC physical id from the descriptor (see
  * {@link derivePhysicalId}) — every descriptor field is createOnly in the
  * registry schema, so the id is stable across in-place updates
@@ -362,6 +374,131 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
   }
 
   /**
+   * Read the detector back for `cdkd drift` and the deploy-time baseline
+   * (go-to-k/cdkd#6769). The physical id is a cdkd descriptor, not an AWS id,
+   * so the record's own descriptor addresses it: `DescribeAnomalyDetectors`
+   * (paginated; by `Namespace` + `MetricName` for a single-metric detector, by
+   * type for a metric-math one), filtered to the detector whose descriptor is
+   * the recorded one ({@link findDetector}). None matching is
+   * `RESOURCE_NOT_FOUND`: the descriptor is createOnly, so a detector with
+   * another one is another resource. Any failure throws.
+   *
+   * The descriptor is returned in the record's own form (the top-level tuple,
+   * `SingleMetricAnomalyDetector`, or `MetricMathAnomalyDetector`), from the
+   * matched detector. `Configuration` is always returned, `{}` when nothing is
+   * set, so an exclusion added out of band to a detector declaring none is
+   * drift against the captured baseline; `MetricTimezone` is re-keyed to the
+   * CFn `MetricTimeZone`, and each `ExcludedTimeRanges` time keeps the
+   * record's spelling when it is the same instant (CFn reads an offset-less
+   * time as UTC). `MetricCharacteristics` is returned as read.
+   *
+   * A record whose descriptor holds a redacted or secret-derived value cannot
+   * be matched: `undefined` (drift unknown), with no call.
+   *
+   * On the capture right after cdkd's own write (`context.afterOwnWrite`) a
+   * detector not listed yet, or one whose `Configuration` is not the declared
+   * one yet, is re-read on the settle schedule.
+   */
+  async readCurrentState(
+    _physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>,
+    context?: ReadCurrentStateContext
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::CloudWatch::AnomalyDetector' || !properties) return undefined;
+    const descriptor = {
+      Namespace: properties['Namespace'],
+      MetricName: properties['MetricName'],
+      Stat: properties['Stat'],
+      Dimensions: properties['Dimensions'],
+      SingleMetricAnomalyDetector: properties['SingleMetricAnomalyDetector'],
+      MetricMathAnomalyDetector: properties['MetricMathAnomalyDetector'],
+    };
+    if (holdsSecretDerivedEntry(descriptor)) return undefined;
+    if (!hasDescriptor(buildDeleteParams(properties))) return undefined;
+
+    const readOnce = async (): Promise<Record<string, unknown> | ResourceNotFound> => {
+      const detector = await this.findDetector(properties);
+      return detector === undefined ? RESOURCE_NOT_FOUND : readbackOf(detector, properties);
+    };
+    if (context?.afterOwnWrite !== true) return readOnce();
+    const declared = declaredConfiguration(properties);
+    const { answer, settled } = await reReadUntilSettled(
+      readOnce,
+      (a) => a !== RESOURCE_NOT_FOUND && sameConfiguration(a['Configuration'], declared),
+      this.ownWriteRereadDelaysMs
+    );
+    if (!settled && answer !== RESOURCE_NOT_FOUND) {
+      warnUnsettledMember(this.logger, logicalId, resourceType, 'Configuration');
+    }
+    return answer;
+  }
+
+  /** Waits between the post-write re-reads (`OWN_WRITE_REREAD_DELAYS_MS`; tests shorten it). */
+  ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
+
+  /**
+   * The live detector whose descriptor is the record's, or `undefined`. A
+   * single-metric detector matches on namespace, metric name, stat, the
+   * dimension SET, and the account when the record declares one (preferring
+   * one with no account otherwise); a metric-math one on its query list, each
+   * recorded leaf equal to the live one (scalars compared as strings, a
+   * `Dimensions` list as a set).
+   */
+  private async findDetector(
+    properties: Record<string, unknown>
+  ): Promise<AnomalyDetector | undefined> {
+    const recordedSingle = properties['SingleMetricAnomalyDetector'] as
+      | Record<string, unknown>
+      | undefined;
+    const math = properties['MetricMathAnomalyDetector'] as Record<string, unknown> | undefined;
+    const isMath = math !== undefined && recordedSingle === undefined;
+    const ns = recordedSingle?.['Namespace'] ?? properties['Namespace'];
+    const metric = recordedSingle?.['MetricName'] ?? properties['MetricName'];
+    const input: DescribeAnomalyDetectorsCommandInput = isMath
+      ? { AnomalyDetectorTypes: ['METRIC_MATH'] }
+      : {
+          AnomalyDetectorTypes: ['SINGLE_METRIC'],
+          ...(typeof ns === 'string' && { Namespace: ns }),
+          ...(typeof metric === 'string' && { MetricName: metric }),
+        };
+    const all: AnomalyDetector[] = [];
+    let nextToken: string | undefined;
+    do {
+      const resp = await this.cloudWatchClient.send(
+        new DescribeAnomalyDetectorsCommand({
+          ...input,
+          ...(nextToken && { NextToken: nextToken }),
+        })
+      );
+      all.push(...(resp.AnomalyDetectors ?? []));
+      nextToken = resp.NextToken;
+    } while (nextToken);
+
+    if (isMath) {
+      const queries = math['MetricDataQueries'];
+      return all.find((d) => leavesMatch(queries, d.MetricMathAnomalyDetector?.MetricDataQueries));
+    }
+    const stat = recordedSingle?.['Stat'] ?? properties['Stat'];
+    const dims = recordedSingle?.['Dimensions'] ?? properties['Dimensions'];
+    const account = recordedSingle?.['AccountId'];
+    const matches = all.filter((d) => {
+      const live = liveSingle(d);
+      return (
+        scalarText(live.Namespace) === scalarText(ns) &&
+        scalarText(live.MetricName) === scalarText(metric) &&
+        scalarText(live.Stat) === scalarText(stat) &&
+        leavesMatch(dims ?? [], live.Dimensions ?? []) &&
+        (account === undefined || scalarText(live.AccountId) === scalarText(account))
+      );
+    });
+    return account === undefined
+      ? (matches.find((d) => liveSingle(d).AccountId === undefined) ?? matches[0])
+      : matches[0];
+  }
+
+  /**
    * Adopt an existing anomaly detector into cdkd state.
    *
    * **Explicit override only.** Anomaly detectors are addressed by their
@@ -469,6 +606,190 @@ function buildDeleteParams(properties: Record<string, unknown>): DeleteAnomalyDe
   }
 
   return params;
+}
+
+/**
+ * A single-metric detector's descriptor: `SingleMetricAnomalyDetector`, or the
+ * deprecated top-level fields when AWS answers only those.
+ */
+function liveSingle(d: AnomalyDetector): SingleMetricAnomalyDetector {
+  return (
+    d.SingleMetricAnomalyDetector ?? {
+      Namespace: d.Namespace,
+      MetricName: d.MetricName,
+      Stat: d.Stat,
+      Dimensions: d.Dimensions,
+    }
+  );
+}
+
+/** A `[{Name, Value}]` list, sorted by name so it compares as a set. */
+function isDimensionList(value: unknown): value is Array<Record<string, unknown>> {
+  return (
+    Array.isArray(value) &&
+    value.every((e) => typeof e === 'object' && e !== null && 'Name' in e && 'Value' in e)
+  );
+}
+const byName = (list: Array<Record<string, unknown>>): Array<Record<string, unknown>> =>
+  [...list].sort((a, b) => String(a['Name']).localeCompare(String(b['Name'])));
+
+/**
+ * Whether every leaf `recorded` holds equals the one at the same place in
+ * `live`: scalars as strings (a record may spell `Period` `"300"`), a list
+ * element by element at the same length, a `Dimensions` list as a set. A key
+ * the record does not hold is not compared.
+ */
+function leavesMatch(recorded: unknown, live: unknown): boolean {
+  if (recorded === undefined || recorded === null) return true;
+  if (Array.isArray(recorded)) {
+    if (!Array.isArray(live) || live.length !== recorded.length) return false;
+    const [r, l] =
+      isDimensionList(recorded) && isDimensionList(live)
+        ? [byName(recorded), byName(live)]
+        : [recorded, live as unknown[]];
+    return r.every((entry, i) => leavesMatch(entry, l[i]));
+  }
+  if (typeof recorded === 'object') {
+    if (typeof live !== 'object' || live === null) return false;
+    return Object.entries(recorded as Record<string, unknown>).every(([k, v]) =>
+      leavesMatch(v, (live as Record<string, unknown>)[k])
+    );
+  }
+  return live !== undefined && live !== null && scalarText(recorded) === scalarText(live);
+}
+
+/** A leaf as text (`"300"` and `300` alike); a non-scalar as its JSON, absent as `''`. */
+function scalarText(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * `live` in the shape of `recorded`: each key the record holds, from the live
+ * value at that place (a `Dimensions` list in the record's order, matched by
+ * name). Only called on a match ({@link leavesMatch}), so every key has a live
+ * value.
+ */
+function projectOnto(recorded: unknown, live: unknown): unknown {
+  if (Array.isArray(recorded) && Array.isArray(live)) {
+    if (isDimensionList(recorded) && isDimensionList(live)) {
+      return recorded.map((r) => {
+        const hit = live.find((l) => String(l['Name']) === String(r['Name']));
+        return hit === undefined ? undefined : { Name: hit['Name'], Value: hit['Value'] };
+      });
+    }
+    return recorded.map((entry, i) => projectOnto(entry, live[i]));
+  }
+  if (
+    typeof recorded === 'object' &&
+    recorded !== null &&
+    typeof live === 'object' &&
+    live !== null
+  ) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(recorded)) {
+      const value = (live as Record<string, unknown>)[key];
+      if (value !== undefined)
+        out[key] = projectOnto((recorded as Record<string, unknown>)[key], value);
+    }
+    return out;
+  }
+  return live;
+}
+
+/** A Range time as CFn spells it: the record's spelling when it is the same instant. */
+function rangeTime(live: Date | undefined, recorded: unknown): string | undefined {
+  if (!(live instanceof Date)) return undefined;
+  if (typeof recorded === 'string' && parseCfnTimestamp(recorded).getTime() === live.getTime()) {
+    return recorded;
+  }
+  // CFn's documented `yyyy-MM-dd'T'HH:mm:ss`, read as UTC (issue #5311).
+  return live.toISOString().slice(0, 19);
+}
+
+/** The CFn-shaped `Configuration` of a detector (`{}` when nothing is set). */
+function configurationOf(
+  live: AnomalyDetectorConfiguration | undefined,
+  recorded: unknown
+): Record<string, unknown> {
+  const rec = (recorded ?? {}) as Record<string, unknown>;
+  const recRanges = Array.isArray(rec['ExcludedTimeRanges'])
+    ? (rec['ExcludedTimeRanges'] as Array<Record<string, unknown>>)
+    : [];
+  const out: Record<string, unknown> = {};
+  if (live?.MetricTimezone !== undefined) out['MetricTimeZone'] = live.MetricTimezone;
+  const ranges = live?.ExcludedTimeRanges ?? [];
+  if (ranges.length > 0 || rec['ExcludedTimeRanges'] !== undefined) {
+    out['ExcludedTimeRanges'] = ranges.map((r, i) => ({
+      StartTime: rangeTime(r.StartTime, recRanges[i]?.['StartTime']),
+      EndTime: rangeTime(r.EndTime, recRanges[i]?.['EndTime']),
+    }));
+  }
+  return out;
+}
+
+/** The record's `Configuration`, in the read's shape. */
+function declaredConfiguration(properties: Record<string, unknown>): Record<string, unknown> {
+  const rec = (properties['Configuration'] ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (rec['MetricTimeZone'] !== undefined) out['MetricTimeZone'] = rec['MetricTimeZone'];
+  if (Array.isArray(rec['ExcludedTimeRanges'])) {
+    out['ExcludedTimeRanges'] = rec['ExcludedTimeRanges'];
+  }
+  return out;
+}
+
+/** Whether a read `Configuration` is the declared one (range times compared as instants). */
+function sameConfiguration(read: unknown, declared: Record<string, unknown>): boolean {
+  const r = (read ?? {}) as Record<string, unknown>;
+  if (r['MetricTimeZone'] !== declared['MetricTimeZone']) return false;
+  const instants = (v: unknown): string =>
+    JSON.stringify(
+      (Array.isArray(v) ? (v as Array<Record<string, unknown>>) : []).map((range) =>
+        ['StartTime', 'EndTime'].map((k) =>
+          typeof range[k] === 'string' ? parseCfnTimestamp(range[k]).getTime() : range[k]
+        )
+      )
+    );
+  return instants(r['ExcludedTimeRanges']) === instants(declared['ExcludedTimeRanges']);
+}
+
+/** The matched detector in the record's CFn shape (see `readCurrentState`). */
+function readbackOf(
+  d: AnomalyDetector,
+  properties: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const single = liveSingle(d);
+  if (properties['SingleMetricAnomalyDetector'] !== undefined) {
+    out['SingleMetricAnomalyDetector'] = projectOnto(
+      properties['SingleMetricAnomalyDetector'],
+      single
+    );
+  }
+  if (properties['MetricMathAnomalyDetector'] !== undefined) {
+    out['MetricMathAnomalyDetector'] = projectOnto(
+      properties['MetricMathAnomalyDetector'],
+      d.MetricMathAnomalyDetector
+    );
+  }
+  if (properties['Namespace'] !== undefined) out['Namespace'] = single.Namespace;
+  if (properties['MetricName'] !== undefined) out['MetricName'] = single.MetricName;
+  if (properties['Stat'] !== undefined) out['Stat'] = single.Stat;
+  if (properties['Dimensions'] !== undefined) {
+    out['Dimensions'] = projectOnto(properties['Dimensions'], single.Dimensions ?? []);
+  }
+  out['Configuration'] = configurationOf(d.Configuration, properties['Configuration']);
+  if (d.MetricCharacteristics !== undefined) {
+    out['MetricCharacteristics'] =
+      d.MetricCharacteristics.PeriodicSpikes === undefined
+        ? {}
+        : { PeriodicSpikes: d.MetricCharacteristics.PeriodicSpikes };
+  }
+  return out;
 }
 
 /**

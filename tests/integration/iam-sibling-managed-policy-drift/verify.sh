@@ -276,14 +276,13 @@ run_drift() { # usage: run_drift [extra drift flags...] -> sets DRIFT_RC; output
   set -e
   sed 's/^/    | /' "${DRIFT_LOG}"
 }
-# A detection run with nothing drifted exits 2, never 0 (go-to-k/cdkd#6696):
-# `Add` (AWS::IAM::UserToGroupAddition) has no read path and is drift unknown.
-# Its row and the absence of a not-compared block keep a failed read (also
-# exit 2) from passing. Run after `run_drift` with no flags.
+# A detection run with nothing drifted exits 0 with every row compared: `Add`
+# (AWS::IAM::UserToGroupAddition) reads back since go-to-k/cdkd#6769 (before,
+# it was drift unknown and the run exited 2, #6696). No drift-unknown row and
+# no not-compared block. Run after `run_drift` with no flags.
 drift_ran_clean() {
-  [ "${DRIFT_RC}" -eq 2 ] \
-    && grep -qF '? Add (AWS::IAM::UserToGroupAddition)' "${DRIFT_LOG}" \
-    && [ "$(grep -cE '^ +\? ' "${DRIFT_LOG}" || true)" = 1 ] \
+  [ "${DRIFT_RC}" -eq 0 ] \
+    && ! grep -qE '^ +\? ' "${DRIFT_LOG}" \
     && ! grep -qE 'NOT fully compared|only PARTIALLY compared' "${DRIFT_LOG}"
 }
 # Every principal's block must name AWSDenyAll (header to the next 20 lines).
@@ -419,7 +418,7 @@ echo "    the sibling policy is attached to the role, the user, the group and th
 check_6609_baselines "Phase 1b"
 
 # --- Phase 2: no drift on a fresh stack ----------------------------------
-echo "==> Phase 2: cdkd drift on the fresh stack (expect no drift: exit 2, Add is drift unknown)"
+echo "==> Phase 2: cdkd drift on the fresh stack (expect no drift: exit 0)"
 run_drift
 if ! drift_ran_clean; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} on a freshly deployed stack; a sibling's attachment read as drift (the ManagedPolicy's on a principal, go-to-k/cdkd#6324, or the attacher role's on the ManagedPolicy, go-to-k/cdkd#6328)" >&2
@@ -535,7 +534,7 @@ fi
 echo "    AWSDenyAll detached everywhere; the sibling policy is still attached to the role, the user, the group and the attacher role"
 
 # --- Phase 6: clean again --------------------------------------------------
-echo "==> Phase 6: cdkd drift after the revert (expect no drift: exit 2, Add is drift unknown)"
+echo "==> Phase 6: cdkd drift after the revert (expect no drift: exit 0)"
 run_drift
 if ! drift_ran_clean; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} after the revert" >&2
@@ -579,7 +578,7 @@ U2_BASELINE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
   });')" || U2_BASELINE="<unreadable>"
 # Informational only, so an unreadable state file is not a FAIL.
 echo "    NOTE: ${ADD_U2}'s recorded baseline Groups: ${U2_BASELINE} (names ${ADD_GROUP} only on pre-fix code)"
-echo "==> Phase 8: cdkd drift after the shrink (expect no drift: exit 2, Add is drift unknown)"
+echo "==> Phase 8: cdkd drift after the shrink (expect no drift: exit 0)"
 run_drift
 if ! drift_ran_clean; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} after the UserToGroupAddition dropped ${ADD_U2}; the stale membership read as the user's drift (go-to-k/cdkd#6328)" >&2
@@ -718,7 +717,7 @@ echo "    OK: the revert put the inline policies, the default document, the boun
 assert_same "the role / user / group / policy ids and their state physical ids" "${IDS_BEFORE}" "$(ids_of)"
 run_drift
 if ! drift_ran_clean; then
-  echo "FAIL: Phase 9b (after the revert): cdkd drift exited ${DRIFT_RC}, want 2 with only Add drift unknown" >&2
+  echo "FAIL: Phase 9b (after the revert): cdkd drift exited ${DRIFT_RC}, want 0 with every row compared" >&2
   exit 1
 fi
 echo "    OK: cdkd drift is clean after the phase 9b revert (#6609)"
@@ -740,7 +739,7 @@ if [ "${dropped_ok}" -ne 1 ]; then
   echo "FAIL: premise: after the drop the attacher role holds '${GOT_ATTACHER}' (want none), ${ADD_U3} is in '${GOT_U3}' (want '${GROUP_NAME}')" >&2
   exit 1
 fi
-echo "==> Phase 9: cdkd drift after the drop (expect no drift: exit 2, Add is drift unknown)"
+echo "==> Phase 9: cdkd drift after the drop (expect no drift: exit 0)"
 run_drift
 if ! drift_ran_clean; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} after the siblings stopped writing; a member the stack no longer writes stayed in a DECLARED baseline (go-to-k/cdkd#6343)" >&2
@@ -806,7 +805,7 @@ if [ "${renamed_ok}" -ne 1 ]; then
   echo "FAIL: premise: after the rename the role holds '${GOT_ROLE}', want '${WANT_RENAMED}'" >&2
   exit 1
 fi
-echo "==> Phase 10: cdkd drift after the rename (expect no drift: exit 2, Add is drift unknown)"
+echo "==> Phase 10: cdkd drift after the rename (expect no drift: exit 0)"
 run_drift
 if ! drift_ran_clean; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} after the sibling policy was replaced; the role's baseline kept the OLD ARN (go-to-k/cdkd#6343)" >&2
@@ -959,7 +958,7 @@ if [ "${reverted_ok}" -ne 1 ]; then
   echo "FAIL: after --revert role='${GOT_ROLE}' user='${GOT_USER}' group='${GOT_GROUP}' (want '${WANT_SHED}' each), ${ADD_U3} groups='${GOT_U3}' (want '${KEEP_GROUP}'), role inline='${GOT_ROLE_INLINE}' (want 'cdkd-6609-keep'), role boundary='${GOT_ROLE_BOUNDARY}' (want None)" >&2
   exit 1
 fi
-echo "==> Phase 11: cdkd drift after the revert (expect no drift: exit 2, Add is drift unknown)"
+echo "==> Phase 11: cdkd drift after the revert (expect no drift: exit 0)"
 run_drift
 if ! drift_ran_clean; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} after --revert removed the re-added grants" >&2

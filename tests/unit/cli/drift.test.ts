@@ -857,7 +857,7 @@ describe('cdkd drift', () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          Detector: makeResource({ resourceType: 'AWS::CloudWatch::AnomalyDetector' }),
+          Group: makeResource({ resourceType: 'AWS::EMR::InstanceGroupConfig' }),
         })
       );
       mockRegistryGetProvider.mockReturnValue({});
@@ -4653,11 +4653,11 @@ describe('cdkd drift', () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          // AWS::EC2::LaunchTemplate is in the deny list (version-bumped data).
-          LaunchTemplate1: makeResource({
-            physicalId: 'lt-0123',
-            resourceType: 'AWS::EC2::LaunchTemplate',
-            properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+          // AWS::EMR::InstanceGroupConfig is in the deny list (bare group id).
+          Group1: makeResource({
+            physicalId: 'ig-0123',
+            resourceType: 'AWS::EMR::InstanceGroupConfig',
+            properties: { Name: 'core' },
           }),
         })
       );
@@ -4668,7 +4668,7 @@ describe('cdkd drift', () => {
       // The non-zero exit reached the mocked `process.exit`, nothing else threw.
       expect((error as Error | undefined)?.message).toBe('__exit__');
       expect(mockCcReadCurrentState).not.toHaveBeenCalled();
-      expect(output).toContain('? LaunchTemplate1 (AWS::EC2::LaunchTemplate)');
+      expect(output).toContain('? Group1 (AWS::EMR::InstanceGroupConfig)');
       expect(output).toContain('1 unsupported');
       // Drift unknown is an incomplete comparison (go-to-k/cdkd#6696).
       expect(exitSpy).toHaveBeenCalledWith(2);

@@ -351,13 +351,12 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
   });
 
   /**
-   * go-to-k/cdkd#4668: AWS gave AnomalyDetector Cloud Control handlers, but the
-   * SDK provider's physicalId is a cdkd-derived descriptor, so GetResource
-   * refuses it on every run. The deny-list keeps the row `unsupported` (drift
-   * unknown) instead of a permanent `readFailed`, and Cloud Control is never
-   * asked. Both exit 2 since go-to-k/cdkd#6696.
+   * go-to-k/cdkd#4668 / #6769: AWS gave AnomalyDetector Cloud Control handlers,
+   * but the SDK provider's physicalId is a cdkd-derived descriptor, so
+   * GetResource refuses it on every run. The provider reads it back itself
+   * (by descriptor), so the row is compared and Cloud Control is never asked.
    */
-  it('an AnomalyDetector row is deny-listed off the Cloud Control fallback and reports unsupported', async () => {
+  it('an AnomalyDetector row is compared through its own read-back, never Cloud Control', async () => {
     mockGetState.mockResolvedValue(
       makeState({
         Detector: resource('AWS::CloudWatch::AnomalyDetector', { MetricName: 'm' }),
@@ -365,7 +364,7 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
       })
     );
     mockRegistryGetProvider.mockImplementation((type: string) =>
-      type === QUEUE ? SIBLING_PROVIDER : {}
+      type === QUEUE ? SIBLING_PROVIDER : { readCurrentState: async () => ({ MetricName: 'm' }) }
     );
     // What GetResource answers for a descriptor physicalId today.
     mockCcReadCurrentState.mockRejectedValue(
@@ -375,13 +374,10 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     const { output, error } = await runDrift(ARGS);
 
     expect(mockCcReadCurrentState).not.toHaveBeenCalled();
-    expect(output).toContain('? Detector (AWS::CloudWatch::AnomalyDetector)');
-    expect(output).toContain('no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)');
-    expect(output).not.toContain('NOT fully compared');
-    expect(exitSpy).toHaveBeenCalledWith(2);
-    expect(exitSpy).not.toHaveBeenCalledWith(1);
-    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
-    expect((error as Error | undefined)?.message).toBe('__exit__');
+    expect(output).not.toContain('? Detector');
+    expect(output).toContain('✓ TestStack (us-east-1): no drift detected (2 resources checked, 0 unsupported)');
+    expect(error).toBeUndefined();
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   /**
@@ -463,10 +459,10 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
    * handlers keyed by a composite primaryIdentifier, and the SDK providers
    * record the bare fleet / group id, so GetResource refuses it on every run
    * (the #4668 class). Deny-listed, the row is `unsupported` (drift unknown),
-   * not a permanent `readFailed`; both exit 2 since go-to-k/cdkd#6696.
+   * not a permanent `readFailed`; both exit 2 since go-to-k/cdkd#6696. The
+   * fleet type left the list with its own read-back (go-to-k/cdkd#6769).
    */
   it.each([
-    ['AWS::EMR::InstanceFleetConfig', 'if-ABCDEFGHIJKLM', '[/properties/ClusterId, /properties/InstanceFleetId]'],
     ['AWS::EMR::InstanceGroupConfig', 'ig-ABCDEFGHIJKLM', '[/properties/InstanceGroupId, /properties/JobFlowId]'],
   ])('a %s row is deny-listed off the Cloud Control fallback and reports unsupported', async (type, id, ident) => {
     mockGetState.mockResolvedValue(
@@ -2065,7 +2061,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     base.state.resources['Z1Custom'] = resource('Custom::Thing', { ServiceToken: 'arn' });
     // Deny-listed for the Cloud Control fallback: reported `unsupported`
     // without a read, with or without the breaker.
-    base.state.resources['Z2Api'] = resource('AWS::EC2::LaunchTemplate', { LaunchTemplateName: 'api' });
+    base.state.resources['Z2Api'] = resource('AWS::EMR::InstanceGroupConfig', { Name: 'api' });
     mockGetState.mockResolvedValue(base);
     installProviders();
 
@@ -2127,16 +2123,16 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
 
   it('a deny-listed type whose provider DOES read is aborted like any provider read', async () => {
     const base = stackOf('BBBBB');
-    base.state.resources['Z2Api'] = resource('AWS::EC2::LaunchTemplate', { LaunchTemplateName: 'api' });
+    base.state.resources['Z2Api'] = resource('AWS::EMR::InstanceGroupConfig', { Name: 'api' });
     mockGetState.mockResolvedValue(base);
     installProviders();
     const lambdaProvider = mockRegistryGetProvider.getMockImplementation()!;
     mockRegistryGetProvider.mockImplementation((type: string) =>
-      type === 'AWS::EC2::LaunchTemplate'
+      type === 'AWS::EMR::InstanceGroupConfig'
         ? {
             readCurrentState: async (_p: string, logicalId: string) => {
               reads.push(logicalId);
-              return { LaunchTemplateName: 'api' };
+              return { Name: 'api' };
             },
           }
         : lambdaProvider(type)

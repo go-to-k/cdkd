@@ -113,7 +113,9 @@ async function classesWithReadCurrentState(): Promise<Set<string>> {
  * so an entry whose reader starts reading back fails here and moves to the
  * table.
  */
-const READER_RETURNS_UNDEFINED_BY_DESIGN = new Set(['AWS::IAM::UserToGroupAddition']);
+// Empty since `AWS::IAM::UserToGroupAddition` gained its read-back
+// (go-to-k/cdkd#6769); kept so the next such type has its place.
+const READER_RETURNS_UNDEFINED_BY_DESIGN = new Set<string>();
 
 describe('docs lists derived from source', () => {
   it('cli-drift.md names exactly the types whose provider reads current state', async () => {
