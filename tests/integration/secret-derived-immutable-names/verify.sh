@@ -1300,10 +1300,14 @@ fi
 # restored the policy, so the record read below is the restore's. The
 # breaker's needle is the SSM provider's own failure line, the shape
 # noecho-parameter-masking's NoEchoReject asserts: the bare logical id is also
-# in the plan output, which a deploy that never created it prints too.
+# in the plan output, which a deploy that never created it prints too. The last
+# needle is the clean rollback's warning for a failed CREATE that recorded no
+# physical id (settle.ts unaddressableFailedCreateMessage, go-to-k/cdkd#6207):
+# such a rollback no longer prints "restored the pre-deploy state", and the
+# warning names the failed resource, so it proves the rollback ran and settled.
 for marker in "Failed to create SSM parameter RollbackBreaker" \
   "Rollback: SecretQueueReaderPolicy restored successfully" \
-  "The automatic rollback restored the pre-deploy state."; do
+  "RollbackBreaker (AWS::SSM::Parameter): the failed CREATE recorded no physical id"; do
   if ! grep -qF -- "${marker}" "${DEPLOY_LOG}"; then
     echo "FAIL: premise: the SDIN_ROLLBACK deploy's log has no '${marker}' line (the rollback did not restore the policy, or the wording drifted)" >&2
     log_tail
