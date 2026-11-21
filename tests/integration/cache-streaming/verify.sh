@@ -245,6 +245,68 @@ case "${BASE_ENGINE_VERSION}" in
   *) echo "FAIL: baseline EngineVersion is '${BASE_ENGINE_VERSION}', expected 7.1.x" >&2; exit 1 ;;
 esac
 
+echo "==> Step 4b2: drift reads LogDeliveryConfigurations / PreferredAvailabilityZones (go-to-k/cdkd#6757)"
+# Before #6757 the cluster readback returned neither, so turning the slow-log
+# delivery off out of band read as no drift. The cheapest observable change is
+# that one ModifyCacheCluster (a log-delivery change, no node work): turned
+# off, the Redis cluster must be drifted at LogDeliveryConfigurations; turned
+# back on by hand with the declared destination, clean again. The Memcached
+# cluster's declared `PreferredAvailabilityZones: [az0, az0]` is read from its
+# nodes' zones and must compare clean throughout.
+DRIFT_OUT=$(mktemp)
+drift_bucket() { # usage: drift_bucket <logicalId>; the report bucket holding it in ${DRIFT_OUT}
+  jq -r --arg id "$1" '[.[0] | to_entries[] | select((.value | type) == "array") | .key as $b | .value[]? | objects | select(.logicalId == $id) | $b] | join(",")' "${DRIFT_OUT}"
+}
+run_cache_drift() { # usage: run_cache_drift; fills ${DRIFT_OUT}, rc 0/1/2 accepted
+  local rc=0
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_OUT}" || rc=$?
+  case "${rc}" in 0 | 1 | 2) ;; *) echo "FAIL: cdkd drift exited ${rc}" >&2; cat "${DRIFT_OUT}" >&2; exit 1 ;; esac
+}
+wait_cache_available() { # usage: wait_cache_available <desc>; a modify refuses a cluster that is not available
+  local status="" _i
+  for _i in $(seq 1 60); do
+    status=$(cc_field 'CacheClusterStatus')
+    [ "${status}" = "available" ] && return 0
+    sleep 10
+  done
+  echo "FAIL: cache cluster ${CACHE_ID} is '${status}' 10 min after $1" >&2
+  exit 1
+}
+assert_cache_clean() { # usage: assert_cache_clean <logicalId> <when>
+  local bucket
+  bucket=$(drift_bucket "$1")
+  if [ "${bucket}" != "clean" ]; then
+    echo "FAIL: $1 is '${bucket}' in drift $2, expected clean:" >&2
+    jq --arg id "$1" '.[0].drifted[]? | select(.logicalId == $id)' "${DRIFT_OUT}" >&2
+    exit 1
+  fi
+  echo "    OK: $1 compares clean $2"
+}
+SLOW_LOG_GROUP=$(cc_field "LogDeliveryConfigurations[?LogType=='slow-log'].DestinationDetails.CloudWatchLogsDetails.LogGroup | [0]")
+case "${SLOW_LOG_GROUP}" in "" | None) echo "FAIL: no slow-log destination log group on ${CACHE_ID}" >&2; exit 1 ;; esac
+run_cache_drift
+assert_cache_clean RedisCluster "right after the deploy"
+assert_cache_clean MemcachedCluster "right after the deploy"
+aws elasticache modify-cache-cluster --cache-cluster-id "${CACHE_ID}" --region "${REGION}" \
+  --apply-immediately --log-delivery-configurations 'LogType=slow-log,Enabled=false' >/dev/null
+wait_cache_available "turning the slow-log delivery off"
+run_cache_drift
+if ! jq -e '[.[0].drifted[]? | select(.logicalId == "RedisCluster") | .changes[]?.path] | index("LogDeliveryConfigurations") != null' "${DRIFT_OUT}" >/dev/null; then
+  echo "FAIL: RedisCluster with its slow-log delivery turned off out of band is not drifted at LogDeliveryConfigurations (go-to-k/cdkd#6757):" >&2
+  jq '.[0] | {drifted, notSupported, notCompared}' "${DRIFT_OUT}" >&2
+  exit 1
+fi
+echo "    OK: the slow-log delivery turned off out of band is drift at LogDeliveryConfigurations"
+aws elasticache modify-cache-cluster --cache-cluster-id "${CACHE_ID}" --region "${REGION}" \
+  --apply-immediately --log-delivery-configurations \
+  "$(jq -cn --arg g "${SLOW_LOG_GROUP}" '[{LogType: "slow-log", DestinationType: "cloudwatch-logs", DestinationDetails: {CloudWatchLogsDetails: {LogGroup: $g}}, LogFormat: "json", Enabled: true}]')" >/dev/null
+wait_cache_available "turning the slow-log delivery back on"
+assert_cc "slow-log delivery status after turning it back on" "LogDeliveryConfigurations[?LogType=='slow-log'].Status | [0]" "active"
+run_cache_drift
+assert_cache_clean RedisCluster "once the delivery is back on"
+assert_cache_clean MemcachedCluster "once the delivery is back on"
+rm -f "${DRIFT_OUT}"
+
 echo "==> Step 4c: REMOVAL deploy -- drop the four properties, change PreferredMaintenanceWindow"
 # CDKD_TEST_REMOVAL=true synthesizes a cluster template that LACKS
 # SnapshotRetentionLimit / AutoMinorVersionUpgrade / NotificationTopicArn /
