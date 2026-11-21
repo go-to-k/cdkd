@@ -37,13 +37,13 @@
  * each update simply re-warns and re-falls-back.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import {
   describeTypeWithThrottleRetry,
   hasNoRegistrySchema,
   isAwsEmulatorRegistryMiss,
   reportAwsEmulatorRegistryMiss,
 } from './describe-type.js';
-import { isDeepStrictEqual } from 'node:util';
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
