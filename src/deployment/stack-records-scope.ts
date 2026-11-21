@@ -26,13 +26,15 @@ import { shouldRetainResource, type ResourceState } from '../types/state.js';
  *   `writtenFreshThisRun` spares the read of a principal this deploy created
  *   or replaced). The
  *   `AWS::IAM::ManagedPolicy` provider asks the same of the principals it
- *   attaches to or detaches from (go-to-k/cdkd#6722).
+ *   attaches to or detaches from (go-to-k/cdkd#6722). These are the only
+ *   readers a `cdkd drift --revert` reaches (go-to-k/cdkd#6734).
  *
  * WHY AN ASYNC-LOCAL STORE rather than a `CreateContext` / `DeleteContext`
  * field: few providers read it, and the delete is reached from
  * over a dozen call sites; binding it once per operation keeps those sites
- * unchanged. ABSENT (a caller outside a deploy, destroy or rollback, such as
- * `cdkd drift --revert`) is "no other record known".
+ * unchanged. ABSENT (a caller outside a deploy, destroy, rollback or drift
+ * revert) is "no other record known". `cdkd drift --revert` binds a view of
+ * its IAM principal records alone ({@link revertStackRecordsView}).
  */
 export interface StackRecordsView {
   /**
@@ -63,14 +65,14 @@ export interface StackRecordsView {
    * that answered `wasReplaced`, succeeded (go-to-k/cdkd#6722): its record's
    * AWS-minted id is the one that create answered. Known from what the
    * engine dispatched, never inferred from the record's ids. Only a deploy
-   * knows it: a destroy and a rollback replay leave it unset, and their
-   * readers treat every record as written before them.
+   * knows it: a destroy, a rollback replay and a drift revert leave it unset,
+   * and their readers treat every record as written before them.
    */
   readonly writtenFreshThisRun?: (logicalId: string) => boolean;
   /**
    * The object one run's views share, keying the run's
-   * {@link verifiedIdentityCache}: a destroy's and a replay's records bag
-   * (their per-call views share it), a deploy's own fresh object (built once
+   * {@link verifiedIdentityCache}: a destroy's, a replay's and a drift
+   * revert's records bag (their per-call views share it), a deploy's own fresh object (built once
    * per run, and distinct from the bag its auto-rollback replays over). A
    * view without one caches nothing.
    */
@@ -231,4 +233,43 @@ export function replayStackRecordsView(
       ...kept.filter(([lid]) => !Object.hasOwn(records, lid)),
     ],
   };
+}
+
+/**
+ * The record types a drift revert's view holds (go-to-k/cdkd#6734): the IAM
+ * principals an `AWS::IAM::Policy` / `AWS::IAM::ManagedPolicy` update reads
+ * and compares by recorded id before it puts, attaches, removes or detaches
+ * its policy by name.
+ */
+export const REVERT_VIEW_RECORD_TYPES: ReadonlySet<string> = new Set([
+  'AWS::IAM::Role',
+  'AWS::IAM::Group',
+  'AWS::IAM::User',
+]);
+
+/**
+ * A `cdkd drift --revert` view over `records`, the stack's state as the
+ * revert read it (go-to-k/cdkd#6734). Without one, an IAM policy's revert
+ * saw every principal as outside the stack and put its policy on, or removed
+ * it from, whoever holds the name.
+ *
+ * It holds the {@link REVERT_VIEW_RECORD_TYPES} records ALONE, so the IAM
+ * principal compare is the only reader that sees anything. The others keep
+ * their unbound behavior on a revert: the security group ingress and inline
+ * rule holders would otherwise skip a description or rule a revert changes
+ * today (the revert passes the group its own `siblingSgRuleIds` instead,
+ * go-to-k/cdkd#6641), and the S3 bucket policy readers run on a create only,
+ * which a revert never sends.
+ *
+ * Nothing is written fresh by a revert (`writtenFreshThisRun` unset), so each
+ * in-stack principal with a recorded id is read; once per revert run, as the
+ * records bag keys the run's {@link verifiedIdentityCache}. Nothing is
+ * deleted, so every record survives.
+ */
+export function revertStackRecordsView(records: Record<string, ResourceState>): StackRecordsView {
+  const principals = (): Array<[string, ResourceState]> =>
+    Object.entries(records).filter(([, record]) =>
+      REVERT_VIEW_RECORD_TYPES.has(record.resourceType)
+    );
+  return { runKey: records, live: principals, survivors: principals };
 }

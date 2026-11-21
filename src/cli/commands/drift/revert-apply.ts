@@ -9,6 +9,10 @@ import { updatePartialReason, updatePartialMessage } from '../../../deployment/u
 import { safeMsg } from '../../../utils/display-safe.js';
 import { recordAfterRollbackUpdate } from '../../../deployment/rollback-executor/replay-retry.js';
 import { withRetry } from '../../../deployment/retry.js';
+import {
+  revertStackRecordsView,
+  withStackRecords,
+} from '../../../deployment/stack-records-scope.js';
 import { maskingRetryLogger } from '../../../deployment/masking-retry-logger.js';
 import {
   createSecretMasker,
@@ -42,8 +46,20 @@ import type { ResourceUpdateResult } from '../../../types/resource.js';
 /**
  * The `provider.update` half of {@link revertDriftedOutcome}: send the revert
  * payload, then record what the update returned.
+ *
+ * go-to-k/cdkd#6734: under a view of the stack's IAM principal records, so an
+ * IAM policy's revert compares each in-stack principal's recorded id before
+ * it puts, attaches, removes or detaches its policy by name, as a deploy
+ * does. Only the principal records: every other reader of the scope keeps
+ * its unbound behavior ({@link revertStackRecordsView}).
  */
-export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<void> {
+export function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<void> {
+  return withStackRecords(revertStackRecordsView(args.report.state.resources), () =>
+    applyRevertUpdateInScope(args)
+  );
+}
+
+async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<void> {
   const {
     logger,
     tally,
