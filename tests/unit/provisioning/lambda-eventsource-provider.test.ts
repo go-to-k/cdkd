@@ -461,20 +461,75 @@ describe('LambdaEventSourceMappingProvider', () => {
       expect(input['ScalingConfig']).toEqual({});
     });
 
-    it('sends DestinationConfig: {} when DestinationConfig is removed', async () => {
+    // Issue #6777 (measured on a DynamoDB stream mapping): Lambda ignores
+    // `DestinationConfig: {}` and keeps the destination, refuses
+    // `{ OnFailure: {} }`, and clears it on an empty `Destination`.
+    const DDB_STREAM_ARN =
+      'arn:aws:dynamodb:us-east-1:123456789012:table/T/stream/2026-11-21T00:00:00.000';
+    const DLQ_ARN = 'arn:aws:sqs:us-east-1:123456789012:dlq';
+
+    it('clears a removed on-failure destination with an empty Destination (#6777)', async () => {
       await provider.update(
         'L',
         UUID,
         'AWS::Lambda::EventSourceMapping',
-        { FunctionName: 'fn', EventSourceArn: SQS_ARN },
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN },
         {
           FunctionName: 'fn',
-          EventSourceArn: SQS_ARN,
-          DestinationConfig: { OnFailure: { Destination: 'arn:aws:sqs:us-east-1:123:dlq' } },
+          EventSourceArn: DDB_STREAM_ARN,
+          DestinationConfig: { OnFailure: { Destination: DLQ_ARN } },
         }
       );
 
-      expect(getUpdateInput()['DestinationConfig']).toEqual({});
+      expect(getUpdateInput()['DestinationConfig']).toEqual({
+        OnFailure: { Destination: '' },
+      });
+    });
+
+    it('sends a read-back cleared OnFailure as the clearing shape on a drift revert (#6777)', async () => {
+      const bag = {
+        FunctionName: 'fn',
+        EventSourceArn: DDB_STREAM_ARN,
+        BatchSize: 10,
+        DestinationConfig: { OnFailure: {} },
+      };
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        bag,
+        { ...bag, BatchSize: 50 },
+        { desiredFromAwsReadback: true }
+      );
+
+      const input = getUpdateInput();
+      expect(input['BatchSize']).toBe(10);
+      expect(input['DestinationConfig']).toEqual({ OnFailure: { Destination: '' } });
+    });
+
+    it('sends a declared on-failure destination as it is (#6777)', async () => {
+      const declared = { OnFailure: { Destination: DLQ_ARN } };
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN, DestinationConfig: declared },
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN }
+      );
+
+      expect(getUpdateInput()['DestinationConfig']).toEqual(declared);
+    });
+
+    it('sends no DestinationConfig when neither side declares one (#6777)', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN, BatchSize: 10 },
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN, BatchSize: 50 }
+      );
+
+      expect(getUpdateInput()['DestinationConfig']).toBeUndefined();
     });
 
     it('sends MetricsConfig: { Metrics: [] } when MetricsConfig is removed', async () => {

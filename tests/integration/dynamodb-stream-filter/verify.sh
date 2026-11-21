@@ -9,7 +9,17 @@
 # Phases:
 #   1. Deploy. Read the ESM back via get-event-source-mapping and assert the
 #      filter pattern, bisect flag and response types all reached AWS.
-#   2. Destroy + assert the table, the ESM and the state file are gone.
+#      It also declares an on-failure destination (an SQS DLQ): assert it
+#      reached AWS.
+#   2. Redeploy with CDKD_TEST_UPDATE=true, which removes the on-failure
+#      destination: assert AWS no longer holds one (issue #6777 — cdkd sent
+#      `DestinationConfig: {}`, which Lambda ignores, so the destination stayed
+#      live while state recorded none; CloudFormation clears it).
+#   3. Change BatchSize out of band, then `cdkd drift --revert`: assert it
+#      succeeds and BatchSize is back (issue #6777 — the destination-less
+#      mapping reads back `DestinationConfig: {"OnFailure": {}}`, the revert
+#      sent that back, and Lambda refused the whole update).
+#   4. Destroy + assert the table, the queue, the ESM and the state file are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -50,11 +60,18 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdDynamodbStreamFilterExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 TABLE_NAME="cdkd-ddb-stream-filter"
+DLQ_NAME="cdkd-ddb-stream-filter-dlq"
+# Phase 3's revert log and identity snapshots; removed by cleanup().
+REVERT_LOG="${TMPDIR:-/tmp}/cdkd-6777-revert.$$.log"
+REVERT_IDS_BEFORE="${TMPDIR:-/tmp}/cdkd-6777-ids-before.$$.tsv"
+REVERT_IDS_AFTER="${TMPDIR:-/tmp}/cdkd-6777-ids-after.$$.tsv"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -72,10 +89,16 @@ sweep_log_groups() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${REVERT_LOG}" "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws dynamodb delete-table --table-name "${TABLE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  DLQ_URL_SWEEP="$(aws sqs get-queue-url --queue-name "${DLQ_NAME}" --region "${REGION}" \
+    --query QueueUrl --output text 2>/dev/null)"
+  if [ -n "${DLQ_URL_SWEEP}" ] && [ "${DLQ_URL_SWEEP}" != "None" ]; then
+    aws sqs delete-queue --queue-url "${DLQ_URL_SWEEP}" --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   sweep_log_groups
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -156,8 +179,90 @@ if [ "${RESP_TYPES}" != '["ReportBatchItemFailures"]' ]; then
 fi
 echo "    OK: FunctionResponseTypes == [ReportBatchItemFailures] on AWS"
 
-# --- Phase 2: destroy --------------------------------------------------
-echo "==> Phase 2: destroy"
+# --- Assertion 4: the on-failure destination reached AWS (issue #6777) -
+DLQ_ARN="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.DlqArn')"
+if [ -z "${DLQ_ARN}" ] || [ "${DLQ_ARN}" = "null" ]; then
+  echo "FAIL: could not resolve DlqArn output after deploy" >&2
+  exit 1
+fi
+DEST="$(echo "${ESM}" | jq -r '.DestinationConfig.OnFailure.Destination // empty')"
+if [ "${DEST}" != "${DLQ_ARN}" ]; then
+  echo "FAIL: ESM on-failure destination is '${DEST}', expected '${DLQ_ARN}'" >&2
+  exit 1
+fi
+echo "    OK: on-failure destination == the DLQ on AWS"
+
+# UpdateEventSourceMapping refuses a call (ResourceInUseException) while the
+# mapping is still Creating / Updating from the previous one: wait for it.
+wait_esm_enabled() { # $1 = label
+  local state=""
+  for _ in $(seq 1 60); do
+    state="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+      --query State --output text)"
+    [ "${state}" = "Enabled" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: ESM ${ESM_UUID} is '${state}', not Enabled, after 5 min ($1)" >&2
+  exit 1
+}
+
+# --- Phase 2: remove the on-failure destination (issue #6777) ---------
+echo "==> Phase 2: redeploy without the on-failure destination"
+wait_esm_enabled "before the Phase 2 deploy"
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+ESM_UUID_2="$(aws lambda list-event-source-mappings --function-name "${FN_NAME}" --region "${REGION}" \
+  --query 'EventSourceMappings[0].UUID' --output text)"
+if [ "${ESM_UUID_2}" != "${ESM_UUID}" ]; then
+  echo "FAIL: removing the destination replaced the ESM (${ESM_UUID} -> ${ESM_UUID_2})" >&2
+  exit 1
+fi
+wait_esm_enabled "after the Phase 2 deploy"
+DEST_2="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+  | jq -r '.DestinationConfig.OnFailure.Destination // empty')"
+if [ -n "${DEST_2}" ]; then
+  echo "FAIL (issue #6777): the on-failure destination was removed from the template but AWS still holds '${DEST_2}'" >&2
+  exit 1
+fi
+echo "    OK: the removed on-failure destination is cleared on AWS"
+
+# --- Phase 3: out-of-band BatchSize change, restored by drift --revert -
+echo "==> Phase 3: out-of-band BatchSize change, then drift --revert"
+aws lambda update-event-source-mapping --uuid "${ESM_UUID}" --batch-size 50 \
+  --region "${REGION}" >/dev/null
+wait_esm_enabled "after the out-of-band change"
+OOB_BATCH="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+  --query BatchSize --output text)"
+if [ "${OOB_BATCH}" != "50" ]; then
+  echo "FAIL: the out-of-band BatchSize change did not land (BatchSize ${OOB_BATCH})" >&2
+  exit 1
+fi
+ESM_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+  | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .key] | if length == 1 then .[0] else "" end')"
+if [ -z "${ESM_LID}" ]; then
+  echo "FAIL: the state record does not hold exactly one AWS::Lambda::EventSourceMapping" >&2
+  exit 1
+fi
+revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${STACK}" "${ESM_LID}" || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}" || REVERT_RC=$?
+revert_identity_verify "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 "${REVERT_LOG}" || exit 1
+if [ "${REVERT_RC}" -ne 0 ]; then
+  echo "FAIL (issue #6777): drift --revert exited ${REVERT_RC}, expected 0" >&2
+  exit 1
+fi
+wait_esm_enabled "after drift --revert"
+REVERTED_BATCH="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+  --query BatchSize --output text)"
+if [ "${REVERTED_BATCH}" != "10" ]; then
+  echo "FAIL (issue #6777): drift --revert left BatchSize at ${REVERTED_BATCH}, expected 10" >&2
+  exit 1
+fi
+echo "    OK: drift --revert restored BatchSize 10 on the destination-less mapping"
+
+# --- Phase 4: destroy --------------------------------------------------
+echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -176,10 +281,13 @@ if [ "${TBL_STATUS}" != "GONE" ] && [ "${TBL_STATUS}" != "DELETING" ]; then
 fi
 echo "    OK: table deleted (status: ${TBL_STATUS})"
 
+assert_gone "queue ${DLQ_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${DLQ_NAME}" --region "${REGION}"
+echo "    OK: DLQ deleted"
+
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: cdkd state removed"
 
 sweep_log_groups
 echo "    OK: lambda log groups swept"
 
-echo "[verify] PASS — DynamoDB stream FilterCriteria/bisect/responseTypes reached AWS, clean destroy"
+echo "[verify] PASS — DynamoDB stream FilterCriteria/bisect/responseTypes/destination reached AWS, the removed destination cleared, drift --revert restored BatchSize, clean destroy"
