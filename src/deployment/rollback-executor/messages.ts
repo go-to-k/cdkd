@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import {
   cdkdRemedy,
   commandHole,
@@ -77,7 +78,14 @@ export function throwIfDeleteSkipped(
   recordRollbackDeleteGuards(result, logicalId, physicalId, guardScope);
   const reason = deleteSkipReason(result);
   if (reason === undefined) return;
-  throw new Error(deleteSkippedMessage(logicalId, physicalId, reason, duringClause));
+  throw new Error(
+    deleteSkippedMessage(
+      logicalId,
+      displayPhysicalId(guardScope.resourceType, physicalId),
+      reason,
+      duringClause
+    )
+  );
 }
 
 /** What a rollback delete arm hands {@link throwIfDeleteSkipped} to record a guard row. */

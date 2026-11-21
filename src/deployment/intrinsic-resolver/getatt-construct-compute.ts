@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { cdkdRemedy } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
@@ -199,7 +200,7 @@ export async function constructAttributeForComputeTypes(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, VpcId] for AWS::EC2::SecurityGroup: the ` +
-                `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+                `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
                 `is not a security group id (sg-<hex>), so cdkd will not look it up. Repair the ` +
                 `record (cdkd import, or re-create the security group) and deploy again.`
             )
@@ -571,7 +572,7 @@ export async function constructAttributeForComputeTypes(
         // beside it already was: a state-record id is not always
         // AWS-assigned (see the VPC `Ipv6CidrBlocks` arm).
         resolver.logger.warn(
-          `DescribeLaunchTemplates(${displayMasked(resolver, physicalId, context)}) failed for ${displayMasked(resolver, attributeName, context)}: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+          `DescribeLaunchTemplates(${displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context)}) failed for ${displayMasked(resolver, attributeName, context)}: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
         );
       }
       // Fallback to "$Latest" / "$Default" — both are AWS-accepted
@@ -615,7 +616,7 @@ export async function constructAttributeForComputeTypes(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DomainName] for AWS::CloudFront::Distribution: the ` +
-                `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+                `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
                 `is not a distribution id (upper-case alphanumerics), so cdkd will not look it up. Repair the ` +
                 `record (cdkd import, or re-create the distribution) and deploy again.`
             )
@@ -695,7 +696,7 @@ export async function constructAttributeForComputeTypes(
         new IntrinsicResolutionRefusalError(
           `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for ${resourceType}: ` +
             `the state record holds no VpcId for it (the read-back that would have recorded it reported none), ` +
-            `and the physical id ${quotedRender(displayMasked(resolver, physicalId, context), '"')} is a name, not a VPC id, so cdkd ` +
+            `and the physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context), '"')} is a name, not a VPC id, so cdkd ` +
             `refuses to substitute it. ` +
             `${staleRecordRemedy(resolver, vpcIdHealOutcome, context)} Referencing the VPC directly also works.`
         )
@@ -775,7 +776,7 @@ async function readSubnetAttributeLive(
     throw markNonRetryable(
       new IntrinsicResolutionRefusalError(
         `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, ${displayMasked(resolver, attributeName, context)}] for AWS::EC2::Subnet: the ` +
-          `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+          `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
           `is not a subnet id (subnet-<hex>), so cdkd will not look it up. Repair the ` +
           `record (cdkd import, or re-create the subnet) and deploy again.`
       )
@@ -837,7 +838,7 @@ async function readSubnetAttributeLive(
     );
 
   if (attributeName === 'Ipv6CidrBlocks') {
-    const loggedId = displayMasked(resolver, physicalId, context);
+    const loggedId = displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context);
     const { attempts, delayMs } = subnetIpv6AttributeWait;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const subnet = (await describe()) ?? notFound();

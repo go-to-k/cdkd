@@ -151,7 +151,9 @@ export async function finishReverseReplacement(
     // Named only when plain, described otherwise: this line names
     // `cdkd deploy`, and the physical id used to print through the bare
     // denylist, where even a `;` ran when pasted (go-to-k/cdkd#4214).
-    const liveShown = refusalPhysicalId(mask(current.physicalId));
+    const liveShown = refusalPhysicalId(
+      mask(String(displayPhysicalId(current.resourceType, current.physicalId)))
+    );
     logger.warn(
       `  ⚠ ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}): ` +
         `the re-create returned the LIVE new ` +
@@ -330,9 +332,11 @@ export async function finishReverseReplacement(
       const survivorMessages = retainedSurvivorMessages(
         op.logicalId,
         op.resourceType,
-        survivorId ?? 'no recorded id',
+        survivorId === undefined
+          ? 'no recorded id'
+          : String(displayPhysicalId(current.resourceType, survivorId)),
         `State records the re-created old resource ` +
-          `(${stateResources[op.logicalId]?.physicalId ?? prev.physicalId}).`,
+          `(${displayPhysicalId(prev.resourceType, stateResources[op.logicalId]?.physicalId ?? prev.physicalId)}).`,
         mask
       );
       logger.warn(survivorMessages.warn);
@@ -403,7 +407,7 @@ export async function finishReverseReplacement(
         logger.warn(
           mask(
             `  Rollback: old ${safe(op.logicalId)} re-created, but deleting the new resource ` +
-              `(${displaySafe(mask(current.physicalId))}) failed: ` +
+              `(${displaySafe(mask(String(displayPhysicalId(current.resourceType, current.physicalId))))}) failed: ` +
               `${displaySafe(describeAwsFailure(deleteError).detail)}. ` +
               (recordSuperseded
                 ? `${SUPERSEDED_KEPT_REMEDY}.`
@@ -427,7 +431,7 @@ export async function finishReverseReplacement(
         // failure is named by its class; the warn above carries AWS's text.
         const survivorFailure = embeddedFailureText(deleteError).text;
         survivorReason =
-          `The replacement's new ${op.resourceType} (${current.physicalId}) could not be ` +
+          `The replacement's new ${op.resourceType} (${displayPhysicalId(current.resourceType, current.physicalId)}) could not be ` +
           `deleted after the old resource was re-created: ` +
           `${survivorFailure}${survivorFailure.endsWith('.') ? '' : '.'} ` +
           (recordSuperseded
@@ -499,7 +503,7 @@ export async function finishReverseReplacement(
     logger.warn(
       mask(
         `  Rollback: old ${safe(op.logicalId)} re-created, but the new resource ` +
-          `(${displaySafe(mask(current.physicalId))}) was not deleted: ${reason}. ` +
+          `(${displaySafe(mask(String(displayPhysicalId(current.resourceType, current.physicalId))))}) was not deleted: ${reason}. ` +
           `${SUPERSEDED_KEPT_REMEDY}.`
       )
     );
@@ -514,7 +518,7 @@ export async function finishReverseReplacement(
       ...(current.provisionedBy && { provisionedBy: current.provisionedBy }),
       physicalId: current.physicalId,
       reason: mask(
-        `The old resource was re-created; the new one (${current.physicalId}) was not deleted: ` +
+        `The old resource was re-created; the new one (${displayPhysicalId(current.resourceType, current.physicalId)}) was not deleted: ` +
           `${reason}. ${SUPERSEDED_KEPT_REMEDY}.`
       ),
     });
@@ -522,7 +526,7 @@ export async function finishReverseReplacement(
   if (deferral !== undefined) {
     logger.info(
       safeMsg`  Rollback: old ${safe(op.logicalId)} re-created first; the new resource ` +
-        safeMsg`(${mask(current.physicalId)}) is deleted once the resources that reference it ` +
+        safeMsg`(${mask(String(displayPhysicalId(current.resourceType, current.physicalId)))}) is deleted once the resources that reference it ` +
         `are reverted`
     );
     deferral.defer(
@@ -536,7 +540,7 @@ export async function finishReverseReplacement(
           if (holder !== undefined) {
             logger.warn(
               safeMsg`  Rollback: not deleting the new ${shownLogicalId(op.logicalId)} ` +
-                safeMsg`(${mask(current.physicalId)}): a record of this stack now holds its ` +
+                safeMsg`(${mask(String(displayPhysicalId(current.resourceType, current.physicalId)))}): a record of this stack now holds its ` +
                 safeMsg`physical id. Check it with ${cdkdRemedy('cdkd drift')}.`
             );
             result.warnings++;
@@ -548,7 +552,7 @@ export async function finishReverseReplacement(
               resourceType: op.resourceType,
               ...(op.provisionedBy && { provisionedBy: op.provisionedBy }),
               reason: mask(
-                `The old resource was re-created; the new one (${current.physicalId}) was not ` +
+                `The old resource was re-created; the new one (${displayPhysicalId(current.resourceType, current.physicalId)}) was not ` +
                   `deleted because a record of this stack now holds its physical id.`
               ),
             });

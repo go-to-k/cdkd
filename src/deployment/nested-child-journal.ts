@@ -38,6 +38,7 @@
  */
 import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
 import { withPrintingSecrets } from './resource-secrets-scope.js';
+import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import {
   completedReplayEntries,
   journaledOrphanPrintingBag,
@@ -180,7 +181,13 @@ export function nestedPendingSnapshot(
 export function displacedPhysicalIdShown(
   op: DisplacedOp,
   logger: Logger,
-  physicalId: string | undefined = journalOpPhysicalId(op)
+  physicalId: string | undefined = journalOpPhysicalId(op),
+  /**
+   * The type of the resource `physicalId` names, which decides how a secret
+   * id is shown (go-to-k/cdkd#6716): the op's own by default, the OLD
+   * record's for a replacement's old id.
+   */
+  idType: unknown = op.resourceType
 ): string | undefined {
   if (physicalId === undefined) return undefined;
   const masker = createOpMasker(logger, new Map());
@@ -195,7 +202,7 @@ export function displacedPhysicalIdShown(
   }
   // `displaySafe` strips control characters and never truncates, so a long
   // ARN is named whole.
-  return displaySafe(String(masker.mask(physicalId)));
+  return displaySafe(String(masker.mask(String(displayPhysicalId(idType, physicalId)))));
 }
 
 /** A journal op as the displaced-op lines read it. */
@@ -226,7 +233,12 @@ export function displacedOpClause(
 ): string {
   const retainedOld = retainedOldPhysicalId(op);
   if (retainedOld !== undefined && marks.some((m) => isMarkFor(m, op))) {
-    const shownOld = displacedPhysicalIdShown(op, logger, retainedOld);
+    const shownOld = displacedPhysicalIdShown(
+      op,
+      logger,
+      retainedOld,
+      op.previousState?.resourceType ?? op.resourceType
+    );
     // Only a completed op of a current binary records whether it kept the old
     // resource (`retainedOldPhysicalId`); otherwise say it MAY have.
     const kept =

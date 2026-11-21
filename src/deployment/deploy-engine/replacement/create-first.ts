@@ -3,6 +3,7 @@
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
  * re-exports every symbol it exported, so no importer changes.
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import type { NoEchoDeleteValues } from '../../noecho-delete-reresolution.js';
 import { printingSecretsFor, secretNameBagFor } from '../masking.js';
 import type { ProvisionedBy } from '../../../provisioning/provider-registry.js';
@@ -167,7 +168,7 @@ export async function createFirstThenDeleteOld(
           `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
             `(${input.trigger}), and cdkd created the new resource first because its name ` +
             `differs, but the create collided: ${createMsg}. If the collision is on the ` +
-            `requested name: ${renderReplacementNameChange(input.change, input.createProps)}. Nothing was deleted` +
+            `requested name: ${renderReplacementNameChange(input.change, input.createProps, input.oldResourceType)}. Nothing was deleted` +
             (retainOld ? ` (UpdateReplacePolicy: Retain keeps the old resource in place)` : '') +
             `. Choose a name no other resource holds, or delete the resource holding it if it ` +
             `is yours.` +
@@ -176,6 +177,7 @@ export async function createFirstThenDeleteOld(
               logicalId,
               change: input.change,
               oldPhysicalId: currentResource.physicalId,
+              oldResourceType: currentResource.resourceType,
               // The printing bag too: the old name can be secret-derived.
               mask: (text: string) =>
                 maskName(
@@ -199,7 +201,7 @@ export async function createFirstThenDeleteOld(
         maskName(
           `${displaySafe(logicalId)} (${displaySafe(resourceType)}) requires replacement ` +
             `(${input.trigger}) under a new name, but the create returned the resource being ` +
-            `replaced (${displaySafe(currentResource.physicalId)}) instead of a new one, so ` +
+            `replaced (${displaySafe(displayPhysicalId(currentResource.resourceType, currentResource.physicalId))}) instead of a new one, so ` +
             `cdkd cannot tell which name it holds. Nothing was deleted. Delete that resource ` +
             `by hand if it is yours, then re-run the deploy.`
         ),

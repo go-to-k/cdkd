@@ -69,7 +69,7 @@ describe('Route53 RecordSet revert keeps the recorded id (#6638)', () => {
       .flatMap((c) => c.input.ChangeBatch?.Changes?.map((x) => x.Action) ?? []);
     expect(changes).toEqual(['UPSERT']);
     expect(result).toMatchObject({ physicalId: SCALAR_ID, wasReplaced: false });
-    expect(revertReplacementOf(SCALAR_ID, result)).toBeUndefined();
+    expect(revertReplacementOf(SCALAR_ID, result, 'AWS::Route53::RecordSet')).toBeUndefined();
   });
 
   it('deploy still records the composite id', async () => {

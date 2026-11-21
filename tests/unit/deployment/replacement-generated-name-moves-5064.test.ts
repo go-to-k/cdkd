@@ -131,6 +131,7 @@ describe('generatedReplacementHolderAdvice', () => {
     logicalId: 'Table',
     change: { desiredName: 'App-Table-abc', generated: true as const },
     oldPhysicalId: 'App-Table-old',
+    oldResourceType: 'AWS::DynamoDB::Table',
     mask: (text: string) => text,
   };
   it('names the import command for a top-level stack', () => {

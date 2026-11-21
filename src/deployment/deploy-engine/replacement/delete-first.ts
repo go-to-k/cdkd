@@ -4,6 +4,7 @@
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
  * re-exports every symbol it exported, so no importer changes.
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import type { NoEchoDeleteValues } from '../../noecho-delete-reresolution.js';
 import { InterruptedError } from '../../deploy-engine.js';
 import { printingSecretsFor, secretNameBagFor } from '../masking.js';
@@ -193,7 +194,7 @@ export async function replaceDeleteFirstAndRecreate(
         // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676): a
         // flattened newline inside a secret would no longer match its needle.
         safeMsg`Failed to delete old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
-        safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
+        safeMsg`(${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}) ` +
         `during the --replace delete-first fallback: ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
@@ -223,7 +224,7 @@ export async function replaceDeleteFirstAndRecreate(
     throw new Error(
       deleteSkippedMessage(
         logicalId,
-        currentResource.physicalId,
+        displayPhysicalId(currentResource.resourceType, currentResource.physicalId),
         replaceSkipReason,
         'during the --replace delete-first fallback'
       )
@@ -329,7 +330,7 @@ export async function replaceDeleteFirstAndRecreate(
       shownSecrets,
       (failure) =>
         safeMsg`Failed to re-create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
-        safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}). ` +
+        safeMsg`--replace delete-first fallback already deleted the old resource (${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}). ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
         safeMsg`Re-run the deploy to create it fresh. Cause: ${asIsMessage(failure)}`

@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage } from '../../../utils/display-safe.js';
 import { getLogger } from '../../../utils/logger.js';
@@ -305,7 +306,7 @@ export function restApiChildSplitter(options: {
     if (parts.length > 2) {
       throw new Error(
         `expected a bare ${childField} or '${compositeShape}', got ${parts.length} parts: ` +
-          `${showRecordValue(physicalId)}`
+          `${showRecordValue(displayPhysicalId(resourceType, physicalId))}`
       );
     }
 
@@ -314,7 +315,9 @@ export function restApiChildSplitter(options: {
     if (parts.length === 2) {
       const [a, b] = parts as [string, string];
       if (!a || !b) {
-        throw new Error(`empty part in '${compositeShape}': ${showRecordValue(physicalId)}`);
+        throw new Error(
+          `empty part in '${compositeShape}': ${showRecordValue(displayPhysicalId(resourceType, physicalId))}`
+        );
       }
       [restApiId, childValue] = childFirstInCompositeId ? [b, a] : [a, b];
     } else {

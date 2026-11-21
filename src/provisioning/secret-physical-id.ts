@@ -26,6 +26,18 @@ export const APPSYNC_APIKEY_ARN_RESOURCE_PATH = /^apis\/([^/|]+)\/apikeys?\/([^/
 /** An AppSync ARN, its resource path in group 2. */
 const APPSYNC_ARN = /^arn:[^:]+:appsync:[^:]*:[^:]*:(.+)$/;
 
+/**
+ * The types {@link secretPhysicalIdSegment} declares a secret segment for. A
+ * new type joins here AND in that function; `secret-physical-id-log.test.ts`
+ * fails when the two disagree. Every engine and CLI line rendering a physical
+ * id masks it through {@link displayPhysicalId}
+ * (`scripts/check-secret-physical-id-log.ts`, go-to-k/cdkd#6716).
+ */
+export const SECRET_PHYSICAL_ID_TYPES: ReadonlySet<string> = new Set([
+  'AWS::AppSync::ApiKey',
+  'AWS::CloudFormation::WaitConditionHandle',
+]);
+
 /** Shortest segment matched INSIDE a longer value; a shorter one only whole. */
 const SUBSTRING_FLOOR = 4;
 
@@ -49,6 +61,9 @@ export function secretPhysicalIdSegment(
   physicalId: unknown
 ): string | undefined {
   if (typeof physicalId !== 'string' || physicalId === '') return undefined;
+  if (typeof resourceType !== 'string' || !SECRET_PHYSICAL_ID_TYPES.has(resourceType)) {
+    return undefined;
+  }
   if (resourceType === 'AWS::CloudFormation::WaitConditionHandle') {
     // A pre-signed signal URL (#6694): its query string is the signature that
     // authorizes the PUT. A legacy placeholder id carries none.

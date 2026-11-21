@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ResourceState, StackState, SupersededResourceRecord } from '../../types/state.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -68,7 +69,7 @@ export async function retryCarriedSupersededResources(
       }
       withPrintingSecrets(bag, () =>
         engine.logger.debug(
-          safeMsg`Superseded ${logicalId} (${physicalId}) is held by a record again; not deleting it`
+          safeMsg`Superseded ${logicalId} (${displayPhysicalId(resourceType, physicalId)}) is held by a record again; not deleting it`
         )
       );
       continue;
@@ -76,7 +77,7 @@ export async function retryCarriedSupersededResources(
     await withPrintingSecrets(bag, () =>
       withStackRecords(view, async () => {
         engine.logger.info(
-          safeMsg`  Deleting old ${logicalId} (${physicalId}), superseded by an earlier deploy...`
+          safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(resourceType, physicalId)}), superseded by an earlier deploy...`
         );
         let outcome;
         try {
@@ -98,7 +99,9 @@ export async function retryCarriedSupersededResources(
             // of an entry carrying `identity`.
             holderProvider: () => engine.providerRegistry.getProvider(resourceType),
             warn: (message) =>
-              engine.logger.warn(safeMsg`  ⚠ Old ${logicalId} (${physicalId}): ${message}`),
+              engine.logger.warn(
+                safeMsg`  ⚠ Old ${logicalId} (${displayPhysicalId(resourceType, physicalId)}): ${message}`
+              ),
             // go-to-k/cdkd#6463: an entry owing its pre-delete snapshot.
             preDeleteSnapshot: {
               clients: engine.options.finalSnapshotClients ?? getAwsClients(),
@@ -119,7 +122,7 @@ export async function retryCarriedSupersededResources(
           }
           const detail = maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
           engine.logger.warn(
-            safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${physicalId}): ${detail}. ${SUPERSEDED_KEPT_REMEDY}.`
+            safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(resourceType, physicalId)}): ${detail}. ${SUPERSEDED_KEPT_REMEDY}.`
           );
           return;
         }
@@ -128,23 +131,25 @@ export async function retryCarriedSupersededResources(
         // go-to-k/cdkd#6668: nothing was sent; the old resource left the name.
         if (outcome.kind === 'gone') {
           engine.logger.info(
-            safeMsg`  ${green('✓')} Old ${logicalId} (${physicalId}) is already gone; no delete was sent`
+            safeMsg`  ${green('✓')} Old ${logicalId} (${displayPhysicalId(resourceType, physicalId)}) is already gone; no delete was sent`
           );
           return;
         }
         if (outcome.kind === 'notOurs') {
           engine.logger.warn(
-            safeMsg`  ⚠ Old ${logicalId} (${physicalId}) was not deleted: ${outcome.cause}. The replaced resource is gone, and cdkd no longer tracks it in state.`
+            safeMsg`  ⚠ Old ${logicalId} (${displayPhysicalId(resourceType, physicalId)}) was not deleted: ${outcome.cause}. The replaced resource is gone, and cdkd no longer tracks it in state.`
           );
           return;
         }
         if (outcome.kind === 'notDeleted') {
           engine.logger.warn(
-            safeMsg`  ⚠ ${deleteSkippedMessage(logicalId, physicalId, outcome.reason, 'while cleaning up the superseded resource', { commandFreeLine: true })}. Delete it manually — it is no longer tracked in state.`
+            safeMsg`  ⚠ ${deleteSkippedMessage(logicalId, displayPhysicalId(resourceType, physicalId), outcome.reason, 'while cleaning up the superseded resource', { commandFreeLine: true })}. Delete it manually — it is no longer tracked in state.`
           );
           return;
         }
-        engine.logger.info(safeMsg`  ${green('✓')} Old ${logicalId} (${physicalId}) deleted`);
+        engine.logger.info(
+          safeMsg`  ${green('✓')} Old ${logicalId} (${displayPhysicalId(resourceType, physicalId)}) deleted`
+        );
       })
     );
   }

@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { hasNoCloudControlHandlers } from '../../../provisioning/unsupported-types.js';
 import { ccBrokenReason } from '../../../provisioning/provider-registry.js';
 import { lostChildActions, survivesParent } from '../../child-of-recreated-parent.js';
@@ -121,7 +122,10 @@ export async function settleFailedDeployRecords(run: DeployRun): Promise<void> {
     // live on the parent, and once its record is gone nothing removes it.
     // The parent is named with its physical id too: that is what a hand
     // removal in AWS has to look up.
-    const parentPhysicalId = newResources[lost.parent]?.physicalId;
+    const parentPhysicalId = displayPhysicalId(
+      newResources[lost.parent]?.resourceType,
+      newResources[lost.parent]?.physicalId
+    );
     const parentShown =
       parentPhysicalId !== undefined && parentPhysicalId !== ''
         ? safeMsg`${lost.parent} (${parentPhysicalId})`

@@ -1269,15 +1269,24 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       .filter(([i]) => /logger\.(info|warn|error|debug)\(/.test(statementAround(lines, i)))
       .map(([i, l]) => `${familyLocation(i + 1)}: ${l.trim()}`);
     expect(bareOnLog).toEqual([]);
-    // And the fence sees its input: the bare form exists -- the `stateClause`
-    // argument to `retainedSurvivorMessages`, which wraps its warn copy itself.
-    expect(lines.filter((l) => /\$\{prev\.physicalId\}/.test(l)).length).toBeGreaterThanOrEqual(1);
+    // And the fence sees its input: the id interpolated into the `stateClause`
+    // argument to `retainedSurvivorMessages`, which wraps its warn copy itself
+    // (shown through `displayPhysicalId` since go-to-k/cdkd#6716).
+    expect(
+      lines.filter((l) => /\$\{displayPhysicalId\(prev\.resourceType, prev\.physicalId\)\}/.test(l))
+        .length
+    ).toBeGreaterThanOrEqual(1);
     // The thrown collision message -- the one carrying the pasted `--orphan`
     // remedy -- names both physical ids only when plain, describing them
     // otherwise (go-to-k/cdkd#4214), never through the denylist. Masked first
     // (issue #4037), so the test reads the MASKED id.
-    expect(src).toContain('const oldShown = refusalPhysicalId(mask(prev.physicalId));');
-    expect(src).toContain('const newShown = refusalPhysicalId(mask(current.physicalId));');
+    // A secret id is shown by its display form first (go-to-k/cdkd#6716).
+    expect(src).toContain(
+      'const oldShown = refusalPhysicalId(\n          mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))'
+    );
+    expect(src).toContain(
+      'const newShown = refusalPhysicalId(\n          mask(String(displayPhysicalId(current.resourceType, current.physicalId)))'
+    );
     expect(src).toContain('(${oldShown}) collided with the');
     expect(src).toContain('(${newShown}), and');
     // And the helper's warn half wraps its parameters.

@@ -192,7 +192,11 @@ export async function replaceCreateFirst(
     // (Snapshot is not special-cased HERE — the old resource is
     // still deleted so the name frees up; the delete-first helper
     // takes its final snapshot first, issue #1354.)
-    const nameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
+    const nameOrigin = replacementNameOrigin(
+      logicalId,
+      currentResource.physicalId,
+      currentResource.resourceType
+    );
     // Issue #2668: across a Type change the old resource can hold the
     // name only where the two types share a name space; every other
     // pair is refused by the #3979 holder proof below, whose
@@ -218,7 +222,7 @@ export async function replaceCreateFirst(
       throw markNonRetryable(
         new CdkdError(
           safeMsg`${logicalId} (${resourceType}) requires replacement, but the create-first ` +
-            safeMsg`attempt collided: ${createSentence}. ${renderNameHeldElsewhere(nameHeldElsewhere)}` +
+            safeMsg`attempt collided: ${createSentence}. ${renderNameHeldElsewhere(nameHeldElsewhere, currentResource.resourceType)}` +
             (engine.options.replace === true
               ? ` — so --replace was NOT applied and nothing was deleted.`
               : updateReplacePolicy === 'Retain'
@@ -299,6 +303,7 @@ export async function replaceCreateFirst(
                 logicalId,
                 change: nameChange,
                 oldPhysicalId: currentResource.physicalId,
+                oldResourceType: currentResource.resourceType,
                 // The printing bag too: the old name can be secret-derived.
                 mask: (value) =>
                   maskSecretsInText(
@@ -353,7 +358,7 @@ export async function replaceCreateFirst(
     // being told it was theirs (issue #1636).
     engine.logger.info(
       `  Create-first collided with the existing resource's name and --replace is ` +
-        safeMsg`set — deleting old ${logicalId} (${currentResource.physicalId}) first...`
+        safeMsg`set — deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) first...`
     );
     deletedOldFirst = true;
     createResult = await replaceDeleteFirstAndRecreate(
@@ -397,12 +402,16 @@ export async function replaceCreateFirst(
     !deletedOldFirst &&
     createResult.physicalId === currentResource.physicalId
   ) {
-    const idempotentNameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
+    const idempotentNameOrigin = replacementNameOrigin(
+      logicalId,
+      currentResource.physicalId,
+      currentResource.resourceType
+    );
     if (updateReplacePolicy === 'Retain') {
       throw new CdkdError(
         safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
           `name-idempotent: the create-first attempt returned the existing resource ` +
-          safeMsg`(${currentResource.physicalId}) instead of creating a new one, and ` +
+          safeMsg`(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) instead of creating a new one, and ` +
           `UpdateReplacePolicy: Retain pins that resource in place. ` +
           safeMsg`${idempotentNameOrigin.descriptor}. ${idempotentNameOrigin.remedy} — with ` +
           `Retain, the old resource keeps the name, so a same-name replacement can ` +
@@ -414,7 +423,7 @@ export async function replaceCreateFirst(
       throw new CdkdError(
         safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create API is ` +
           `name-idempotent: the create-first attempt returned the EXISTING resource ` +
-          safeMsg`(${currentResource.physicalId}) instead of creating a new one, so deleting ` +
+          safeMsg`(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) instead of creating a new one, so deleting ` +
           `the "old" resource would silently destroy the resource the deploy just ` +
           safeMsg`reported as created. ${idempotentNameOrigin.descriptor}; ` +
           safeMsg`${idempotentNameOrigin.remedy}, or re-run with ` +
@@ -433,7 +442,7 @@ export async function replaceCreateFirst(
     engine.logger.info(
       `  Create-first returned the existing resource (name-idempotent Create API) ` +
         safeMsg`and --replace is set — deleting old ${logicalId} ` +
-        safeMsg`(${currentResource.physicalId}) first...`
+        safeMsg`(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) first...`
     );
     deletedOldFirst = true;
     createResult = await replaceDeleteFirstAndRecreate(
@@ -505,7 +514,7 @@ export async function replaceCreateFirst(
       // is whole and a rollback may re-adopt it.
       engine.replacementRun.replacedOldMaySurvive.set(logicalId, 'kept');
       engine.logger.warn(
-        safeMsg`  ⚠ Final snapshot for old ${logicalId} (${currentResource.physicalId}) ` +
+        safeMsg`  ⚠ Final snapshot for old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) ` +
           safeMsg`failed: ${asIsMessage(describeAwsFailure(snapshotError).detail)}. ` +
           `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot) — delete it ` +
           `manually once you have a snapshot; it is no longer tracked in state.`

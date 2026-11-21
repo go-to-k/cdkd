@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import {
   performRollback,
   recoveryHint,
@@ -442,7 +443,7 @@ export async function rollbackFailedDeploy(
           () =>
             engine.logger.warn(
               safeMsg`  ${entry.logicalId}'s new ${entry.state.resourceType} ` +
-                safeMsg`(${entry.state.physicalId}) the rollback left to delete is NOT recorded: ` +
+                safeMsg`(${displayPhysicalId(entry.state.resourceType, entry.state.physicalId)}) the rollback left to delete is NOT recorded: ` +
                 'delete it manually.'
             )
         );
