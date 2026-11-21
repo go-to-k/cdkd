@@ -46,6 +46,7 @@ import { generatedNameFor } from '../resource-name.js';
 import {
   wrapMaskedAwsError,
   markRedactedCause,
+  markNonRetryable,
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
 
@@ -465,11 +466,19 @@ export class S3VectorsProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting S3 VectorBucket ${logicalId}: ${physicalId}`);
 
-    try {
-      // Step 1: Delete all indexes in the vector bucket
-      await this.emptyVectorBucket(logicalId, physicalId);
+    // go-to-k/cdkd#6749, CloudFormation parity: CFn's delete handler holds only
+    // `s3vectors:GetVectorBucket` / `s3vectors:DeleteVectorBucket`, so it never
+    // deletes an index and a bucket that still holds one fails its delete. The
+    // stack's own `AWS::S3Vectors::Index` resources are deleted before their
+    // bucket by the DAG, so what is left here was created outside the stack. It
+    // is deleted only under the deploy engine's `--force-stateful-recreation`
+    // consent on a replacement delete; the type has no template-borne opt-in
+    // (its registry schema declares none).
+    const allowEmpty = context?.forceDataDelete === true;
 
-      // Step 2: Delete the vector bucket itself
+    try {
+      if (allowEmpty) await this.emptyVectorBucket(logicalId, physicalId);
+
       await this.getClient().send(
         new DeleteVectorBucketCommand({
           vectorBucketName: physicalId,
@@ -489,6 +498,33 @@ export class S3VectorsProvider implements ResourceProvider {
         );
         this.logger.debug(`S3 VectorBucket ${physicalId} does not exist, skipping deletion`);
         return;
+      }
+      // A failed delete of a bucket that still holds an index is refused with
+      // the indexes it holds, and not retried: only the user can delete them.
+      // Read only after a failure, so a delete that succeeds costs no extra
+      // call; a listing that fails or shows nothing leaves the original error
+      // to its classifiers.
+      const held = allowEmpty
+        ? undefined
+        : await this.listHeldIndexes(physicalId).catch(() => undefined);
+      if (held && held.names.length > 0) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            maskerOrIdentity(context?.maskSecrets)(
+              `Failed to delete S3 VectorBucket ${logicalId}: vector bucket ${physicalId} is not ` +
+                `empty: it holds vector index(es) ${held.names.join(', ')}` +
+                `${held.truncated ? ', and more' : ''}. The stack's own indexes are deleted ` +
+                `before the bucket, so these were created outside the stack. Matching ` +
+                `CloudFormation, cdkd does not delete them. Delete them first ` +
+                `(aws s3vectors delete-index) and destroy again; a replacement deletes them ` +
+                `only under --force-stateful-recreation.`
+            ),
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
+        );
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
@@ -513,8 +549,27 @@ export class S3VectorsProvider implements ResourceProvider {
   }
 
   /**
+   * Up to five index names of a vector bucket, for a not-empty refusal: one
+   * page, so a large bucket is never walked in full.
+   */
+  private async listHeldIndexes(
+    vectorBucketName: string
+  ): Promise<{ names: string[]; truncated: boolean }> {
+    const limit = 5;
+    const page = await this.getClient().send(new ListIndexesCommand({ vectorBucketName }));
+    const names = (page.indexes ?? [])
+      .map((index) => index.indexName)
+      .filter((name): name is string => !!name);
+    return {
+      names: names.slice(0, limit),
+      truncated: names.length > limit || !!page.nextToken,
+    };
+  }
+
+  /**
    * Empty a vector bucket by listing and deleting all indexes.
-   * Paginates through all indexes using NextToken.
+   * Paginates through all indexes using NextToken. Called only under
+   * `DeleteContext.forceDataDelete` (go-to-k/cdkd#6749).
    */
   private async emptyVectorBucket(logicalId: string, vectorBucketName: string): Promise<void> {
     let nextToken: string | undefined;

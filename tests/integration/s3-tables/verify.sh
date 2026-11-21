@@ -39,6 +39,9 @@
 #      Cloud Control routing) before #6167, is sent by PutTableBucketLogging:
 #      Phase 1 reads it back from AWS, Phase 1b changes it in place, Phase 1c
 #      removes it and asserts logging is off.
+#   9. (issue #6749) Phase 1f creates a namespace and table outside the stack
+#      in its TableBucket and asserts `cdkd destroy` is refused naming them,
+#      as CloudFormation refuses it, and that the table survives.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -106,8 +109,21 @@ LOG_BUCKET=""
 # leaves it behind (#3885).
 . ../cr-log-groups.sh
 
+# Issue #6749: the out-of-stack namespace and table Phase 1f creates, deleted
+# here first when a run stops before the phase deletes them, or the destroy
+# below is refused.
+OOB_NS="cdkd_oob_ns_6749"
+OOB_TABLE="cdkd_oob_table_6749"
+OOB_BUCKET_ARN=""
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
+  if [ -n "${OOB_BUCKET_ARN}" ]; then
+    aws s3tables delete-table --table-bucket-arn "${OOB_BUCKET_ARN}" --namespace "${OOB_NS}" \
+      --name "${OOB_TABLE}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws s3tables delete-namespace --table-bucket-arn "${OOB_BUCKET_ARN}" --namespace "${OOB_NS}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   # Pass --state-bucket explicitly (PR #735 / #738 retrospective: the
   # cdk.json placeholder otherwise poisons state destroy). Do NOT silence
   # stderr — a partial-failure on the deeply-nested TableBucket → Namespace
@@ -882,6 +898,48 @@ if [ "${POST_IMPORT_1E_ARN}" != "${EXPECTED_ICEBERG_ARN}" ]; then
   exit 1
 fi
 echo "    OK: diff warns and deploy refuses the replacement without touching IcebergTable; cdkd import clears the evidence and the redeploy is clean (issue #5572)"
+
+# --- Phase 1f: an out-of-stack table refuses the destroy (#6749) ------
+# CloudFormation's delete handler holds only s3tables:DeleteTableBucket, so a
+# bucket still holding a table the stack did not create fails its delete.
+# Before #6749 cdkd deleted every table and namespace first and the destroy
+# succeeded.
+echo "==> Phase 1f: destroy refuses a table bucket holding an out-of-stack table (issue #6749)"
+[ -n "${TABLE_BUCKET_ARN}" ] || { echo "FAIL: TableBucketArn output is empty; Phase 1f needs it" >&2; exit 1; }
+OOB_BUCKET_ARN="${TABLE_BUCKET_ARN}"
+aws s3tables create-namespace --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace "${OOB_NS}" \
+  --region "${REGION}" >/dev/null
+aws s3tables create-table --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace "${OOB_NS}" \
+  --name "${OOB_TABLE}" --format ICEBERG --region "${REGION}" >/dev/null
+set +e
+REFUSE_1F_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force 2>&1)"
+refuse_1f_rc=$?
+set -e
+REFUSE_1F_PLAIN="$(printf '%s' "${REFUSE_1F_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${refuse_1f_rc}" -eq 0 ]; then
+  echo "FAIL: destroy succeeded although TableBucket ${TABLE_BUCKET_ARN} held the out-of-stack table ${OOB_NS}.${OOB_TABLE} (issue #6749)" >&2
+  exit 1
+fi
+NEEDLE_1F="table bucket ${TABLE_BUCKET_ARN} is not empty: it holds table(s) ${OOB_NS}.${OOB_TABLE} in namespace(s) ${OOB_NS}."
+if ! grep -qF -- "${NEEDLE_1F}" <<<"${REFUSE_1F_PLAIN}"; then
+  echo "FAIL: the refused destroy does not name the out-of-stack table (expected: ${NEEDLE_1F})" >&2
+  printf '%s\n' "${REFUSE_1F_PLAIN}" | tail -20 >&2
+  exit 1
+fi
+aws s3tables get-table --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace "${OOB_NS}" \
+  --name "${OOB_TABLE}" --region "${REGION}" >/dev/null || {
+  echo "FAIL: the out-of-stack table ${OOB_NS}.${OOB_TABLE} did not survive the refused destroy (issue #6749)" >&2
+  exit 1
+}
+echo "    OK: destroy refused, naming the out-of-stack table, and the table survived"
+aws s3tables delete-table --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace "${OOB_NS}" \
+  --name "${OOB_TABLE}" --region "${REGION}"
+aws s3tables delete-namespace --table-bucket-arn "${TABLE_BUCKET_ARN}" --namespace "${OOB_NS}" \
+  --region "${REGION}"
+OOB_BUCKET_ARN=""
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

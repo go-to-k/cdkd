@@ -105,8 +105,7 @@
  * pass over 1371 types could not have.
  *
  * Neither fence can see a provider whose delete destroys data with NO opt-in
- * at all — an unconditional empty (`S3TablesProvider.deleteTableBucket`,
- * `S3VectorsProvider.deleteVectorBucket`) or a plainly destructive API call
+ * at all — a plainly destructive API call
  * (`KMSProvider`'s `ScheduleKeyDeletion`,
  * `CodeCommitRepositoryProvider`'s `DeleteRepository`). Those types are
  * hand-added with the reason at the entry, and a provider added that way
@@ -170,10 +169,10 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // emptiness must not read as empty, which is stricter than its
   // general-purpose sibling gets there and deliberately so.
   'AWS::S3Express::DirectoryBucket',
-  // S3 Tables. `S3TablesProvider.deleteTableBucket` calls `emptyTableBucket`
-  // UNCONDITIONALLY — no `forceDataDelete`, no tag opt-in — which walks every
-  // namespace and `DeleteTable`s every table in it. So a replacement of the
-  // BUCKET destroys every Iceberg table it holds with no flag at all, and a
+  // S3 Tables. `S3TablesProvider.deleteTableBucket` empties the bucket (every
+  // table in every namespace) under `forceDataDelete` and refuses a non-empty
+  // bucket otherwise (go-to-k/cdkd#6749). So a replacement of the BUCKET
+  // destroys every Iceberg table it holds once consented to, and a
   // replacement of a TABLE starts an empty one (an S3 Tables table holds the
   // rows themselves, unlike the `AWS::Glue::Table` catalog entry already on
   // this list).
@@ -198,8 +197,8 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // region or partition whose `DeleteNamespace` cascaded would be the
   // residual. The type was guarded until then on the fail-safe side of that
   // open question.
-  // S3 Vectors. Same shape as the table bucket: `deleteVectorBucket` calls
-  // `emptyVectorBucket` unconditionally, deleting every vector index in it.
+  // S3 Vectors. Same shape as the table bucket: `deleteVectorBucket` deletes
+  // every vector index in it under `forceDataDelete`, and refuses otherwise.
   'AWS::S3Vectors::VectorBucket',
   'AWS::ECR::Repository',
   // An EBS volume carries a filesystem; DELETE+CREATE loses every byte and
