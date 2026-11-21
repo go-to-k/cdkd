@@ -3400,6 +3400,7 @@
     "--resource-request-status-filter",
     "--resource-type",
     "--resource-type-filters",
+    "--resources",
     "--rest-api-id",
     "--retain-resources",
     "--retention-in-days",

@@ -476,7 +476,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
   }
 
   getDriftUnknownPaths(resourceType: string): string[] {
-    return getDriftUnknownPaths(resourceType);
+    return getDriftUnknownPaths.call(this, resourceType);
   }
 
   readCurrentState(

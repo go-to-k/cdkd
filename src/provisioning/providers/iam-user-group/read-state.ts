@@ -357,7 +357,7 @@ async function readLoginProfile(
  * Drift paths no read answers: a user's `LoginProfile.Password`, write-only in
  * IAM (go-to-k/cdkd#6755).
  */
-export function getDriftUnknownPaths(resourceType: string): string[] {
+export function getDriftUnknownPaths(this: IAMUserGroupProvider, resourceType: string): string[] {
   return resourceType === 'AWS::IAM::User' ? ['LoginProfile.Password'] : [];
 }
 
