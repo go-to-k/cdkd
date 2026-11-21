@@ -153,6 +153,14 @@ rm -f "${LOG3}"
 LT_AFTER=$(state_field 'JSON.stringify(Object.values(s.resources).find((r) => r.resourceType === "AWS::AutoScaling::AutoScalingGroup")?.properties.LaunchTemplate ?? null)')
 [ "${LT_AFTER}" = "${LT_VERSION}" ] || { echo "FAIL: the group's launch template was not rolled back (${LT_VERSION} -> ${LT_AFTER})" >&2; exit 1; }
 echo "    OK: the FAILURE signal failed the update (rc=${RC3}) and the group was rolled back"
+# The receiver serves the rolled-back group's metadata again (Phase 2's file
+# content), so an instance the rollback launched can run cfn-init.
+ASG_ID=$(state_field 'Object.entries(s.resources).find(([, r]) => r.resourceType === "AWS::AutoScaling::AutoScalingGroup")?.[0]')
+SERVED=$(aws cloudformation describe-stack-resource --stack-name "${STACK}" --logical-resource-id "${ASG_ID}" \
+  --region "${REGION}" --query 'StackResourceDetail.Metadata' --output text) || { echo "FAIL: the receiver does not serve ${ASG_ID}" >&2; exit 1; }
+grep -q 'v2' <<<"${SERVED}" || { echo "FAIL: the receiver serves ${ASG_ID} without its pre-deploy metadata: ${SERVED}" >&2; exit 1; }
+if grep -q 'v3' <<<"${SERVED}"; then echo "FAIL: the receiver still serves the failed deploy's metadata: ${SERVED}" >&2; exit 1; fi
+echo "    OK: the receiver serves ${ASG_ID}'s pre-deploy cfn-init metadata after the rollback"
 
 echo "==> Phase 4: Destroy"
 VPC_ID=$(state_field 'Object.values(s.resources).find((x) => x.resourceType === "AWS::EC2::VPC")?.physicalId')

@@ -305,8 +305,19 @@ export function rollingSignalsFor(
         return receiver.armRolling(logicalId, count);
       },
       failure: () => receiver.failureOf(logicalId, since),
-      awaitAll: (withinMs) =>
-        receiver.awaitSignals(logicalId, since, () => engine.interrupted, Date.now() + withinMs),
+      awaitAll: async (withinMs) => {
+        try {
+          await receiver.awaitSignals(
+            logicalId,
+            since,
+            () => engine.interrupted,
+            Date.now() + withinMs
+          );
+        } catch (error) {
+          await receiver.restoreAfterFailure(logicalId);
+          throw error;
+        }
+      },
     },
   };
 }

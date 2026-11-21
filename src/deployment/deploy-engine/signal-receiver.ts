@@ -254,6 +254,12 @@ const SETTLED = /(_COMPLETE|_FAILED)$/;
 export class SignalReceiver {
   private stackId: string | undefined;
   private armed = new Set<string>();
+  /**
+   * The receiver's resources before this deploy changed them: what a
+   * failure restores (CloudFormation rolls a served resource's metadata back
+   * with the deploy, and so does cdkd's rollback).
+   */
+  private prior: TemplateResources | undefined;
   /** The resolved metadata each served resource was last sent with (to restore it). */
   private metadataById = new Map<string, unknown>();
   /** Serializes the receiver updates this deploy's rolling updates make. */
@@ -313,7 +319,15 @@ export class SignalReceiver {
       if (this.stackId === undefined || count <= 0) return false;
       try {
         const client = this.client();
-        const status = (await this.describe(client, this.stackId))?.StackStatus;
+        let status = (await this.describe(client, this.stackId))?.StackStatus;
+        // This deploy's own metadata update (no waiter pending) settles in
+        // seconds: wait for it rather than refusing.
+        if (
+          status?.endsWith('_IN_PROGRESS') === true &&
+          this.armedIds.every((id) => this.finished.has(id))
+        ) {
+          status = await this.awaitSettled(client);
+        }
         if (status === undefined || status.endsWith('_IN_PROGRESS')) {
           this.logger.warn(
             safeMsg`${logicalId}: the CloudFormation signal receiver is busy with another wait of this deploy (${status ?? 'gone'}), so this rolling update waits for no signal`
@@ -321,6 +335,7 @@ export class SignalReceiver {
           return false;
         }
         const current = await this.currentResources(client);
+        this.prior ??= current;
         const metadata = current[logicalId]?.['Metadata'] ?? this.metadataById.get(logicalId);
         if (current[logicalId] !== undefined) {
           // A waiter or holder of the same logical id cannot become a fresh
@@ -378,9 +393,32 @@ export class SignalReceiver {
     if (status !== 'CREATE_FAILED' && status !== 'GONE' && status?.startsWith('DELETE') !== true) {
       return undefined;
     }
-    return (
-      (await this.failureReasonOf(client, logicalId, since)) ?? `its signal wait ended (${status})`
-    );
+    const reason =
+      (await this.failureReasonOf(client, logicalId, since)) ?? `its signal wait ended (${status})`;
+    await this.restoreAfterFailure(logicalId);
+    return reason;
+  }
+
+  /**
+   * go-to-k/cdkd#6706: a rolling update's wait failed. Before the provider
+   * fails the update (and cdkd's rollback launches instances on the restored
+   * configuration), put the group's pre-deploy metadata back on a holder:
+   * CloudFormation's rollback of the receiver left a template without it.
+   * An unfinished wait is cancelled first. Never throws.
+   */
+  async restoreAfterFailure(logicalId: string): Promise<void> {
+    if (this.stackId === undefined) return;
+    try {
+      const client = this.client();
+      if ((await this.describe(client, this.stackId))?.StackStatus === 'UPDATE_IN_PROGRESS') {
+        await client.send(new CancelUpdateStackCommand({ StackName: this.stackId }));
+      }
+      await this.restoreServed(client);
+    } catch (error) {
+      this.logger.warn(
+        safeMsg`${logicalId}: could not restore its cfn-init metadata in the CloudFormation signal receiver (${describeAwsFailure(error).summary}); instances launched before the next deploy may not find it`
+      );
+    }
   }
 
   /** An armed resource that was not created after all: no wait, cancelled at `settle()`. */
@@ -456,6 +494,7 @@ export class SignalReceiver {
     try {
       const client = this.client();
       const current = await this.currentResources(client);
+      this.prior ??= current;
       const desired: TemplateResources = { [ANCHOR_ID]: anchorResource() };
       const toArm = new Set<string>();
       for (const [id, candidate] of this.candidates) {
@@ -531,7 +570,7 @@ export class SignalReceiver {
     const client = this.client();
     const deadline = deadlineOverride ?? startedAt + candidate.timeoutMs;
     const count = this.armedCounts.get(logicalId) ?? candidate.count;
-    const timeoutMs = deadline - startedAt;
+    const timeoutMs = deadlineOverride !== undefined ? deadline - this.now() : deadline - startedAt;
     this.logger.info(
       safeMsg`${logicalId}: waiting for ${count} CreationPolicy signal(s) (timeout ${Math.round(timeoutMs / 1000)}s)`
     );
@@ -617,10 +656,13 @@ export class SignalReceiver {
   private async restoreServed(client: CloudFormationClient): Promise<void> {
     if ((await this.awaitSettled(client)) === undefined) return;
     const current = await this.currentResources(client);
-    const missing = [...this.metadataById].filter(([id]) => current[id] === undefined);
+    const served = new Set([...Object.keys(this.prior ?? {}), ...this.metadataById.keys()]);
+    const missing = [...served].filter((id) => current[id] === undefined);
     if (missing.length === 0) return;
     const restored: TemplateResources = { [ANCHOR_ID]: anchorResource(), ...current };
-    for (const [id, metadata] of missing) restored[id] = holderResource(metadata);
+    for (const id of missing) {
+      restored[id] = holderResource(this.prior?.[id]?.['Metadata'] ?? this.metadataById.get(id));
+    }
     await this.update(client, restored);
     await this.awaitSettled(client);
   }

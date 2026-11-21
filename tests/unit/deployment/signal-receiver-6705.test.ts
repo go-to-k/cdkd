@@ -350,6 +350,50 @@ describe('SignalReceiver.arm / awaitSignals / settle', () => {
     });
   });
 
+  it('failureOf restores the pre-deploy metadata before it reports, so a rollback-launched instance finds it', async () => {
+    let status = 'UPDATE_COMPLETE';
+    let template: Record<string, unknown> = { I: { Type: 'AWS::CloudFormation::WaitConditionHandle', Metadata: { v: 'before' } } };
+    const sentTemplates: Record<string, unknown>[] = [];
+    let resourceStatus: string | undefined = 'CREATE_IN_PROGRESS';
+    const { client: c } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => ({ Stacks: [receiverStack(status)] })],
+        [GetTemplateCommand, () => ({ TemplateBody: JSON.stringify({ Resources: template }) })],
+        [
+          UpdateStackCommand,
+          (cmd) => {
+            const resources = JSON.parse((cmd as UpdateStackCommand).input.TemplateBody!).Resources;
+            sentTemplates.push(resources);
+            const { CdkdSignalReceiverAnchor: _a, ...rest } = resources;
+            template = rest;
+            return {};
+          },
+        ],
+        [
+          DescribeStackResourceCommand,
+          () => {
+            if (resourceStatus === undefined) throw new Error('Resource I does not exist for stack App');
+            return { StackResourceDetail: { ResourceStatus: resourceStatus } };
+          },
+        ],
+        [DescribeStackEventsCommand, () => ({ StackEvents: [] })],
+      ])
+    );
+    const r = new SignalReceiver('App', new Map([['I', signalCandidateOf(instance)!]]), () => c, logger(), clock());
+    await r.ensure(ARN);
+    await r.armRolling('I', 2);
+    // A FAILURE signal: CloudFormation rolls the receiver back to the stripped template.
+    const { I: _i, ...stripped } = template;
+    template = stripped;
+    resourceStatus = undefined;
+    status = 'UPDATE_ROLLBACK_COMPLETE';
+    await expect(r.failureOf('I', 0)).resolves.toBe('its signal wait ended (GONE)');
+    expect(sentTemplates.at(-1)!['I']).toEqual({
+      Type: 'AWS::CloudFormation::WaitConditionHandle',
+      Metadata: { v: 'before' },
+    });
+  });
+
   it('awaitSignals fails on CREATE_FAILED with the reason', async () => {
     let armingDone = false;
     const { r } = armedReceiver(() => (armingDone ? 'CREATE_FAILED' : 'CREATE_IN_PROGRESS'));

@@ -14,9 +14,10 @@ import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
  * so the launch template's user data changes and the rolling update replaces
  * both instances; each signals SUCCESS.
  *
- * CDKD_TEST_UPDATE=fail (verify.sh Phase 3): the init command exits 1, so the
- * replaced instances signal FAILURE: the refresh is cancelled, the deploy
- * fails and rolls the group back to the Phase 2 launch template.
+ * CDKD_TEST_UPDATE=fail (verify.sh Phase 3): the init file says v3 and the
+ * command exits 1, so the replaced instances signal FAILURE: the refresh is
+ * cancelled, the deploy fails and rolls the group back to the Phase 2 launch
+ * template, and the receiver serves Phase 2's (v2) metadata again.
  */
 export class AsgRollingSignalsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -29,7 +30,7 @@ export class AsgRollingSignalsStack extends cdk.Stack {
     });
 
     const mode = process.env.CDKD_TEST_UPDATE ?? '';
-    const content = mode === '' ? 'v1' : 'v2';
+    const content = mode === '' ? 'v1' : mode === 'fail' ? 'v3' : 'v2';
     const check =
       mode === 'fail' ? 'exit 1' : `grep -q ${content} /tmp/cdkd-6706.txt`;
 

@@ -437,7 +437,18 @@ export async function runInstanceRefresh(
       signals =
         replaced > 0 && (await run.rollingSignals.arm(replaced)) ? run.rollingSignals : undefined;
     }
-    if (waitsOnSignals && signals === undefined && !run.replayingState) {
+    if (
+      waitsOnSignals &&
+      signals === undefined &&
+      !run.replayingState &&
+      run.rollingSignals !== undefined
+    ) {
+      provider.logger.warn(
+        mask(
+          `${logicalId}: UpdatePolicy AutoScalingRollingUpdate WaitOnResourceSignals is not honored this time (the signal receiver could not take the wait, or no instance is in service); cdkd waits PauseTime after each new instance is in service instead.`
+        )
+      );
+    } else if (waitsOnSignals && signals === undefined && !run.replayingState) {
       provider.logger.warn(
         mask(
           `${logicalId}: UpdatePolicy AutoScalingRollingUpdate WaitOnResourceSignals is not honored (no signed cfn-signal --resource for it reaches the stack's CloudFormation signal receiver; CDK: initOptions.includeRole: true); cdkd waits PauseTime after each new instance is in service instead.`

@@ -196,7 +196,7 @@ capacity); an update that runs no refresh never touches the receiver:
 
 | Signal outcome | Result |
 | --- | --- |
-| A `FAILURE` signal while the refresh runs | The refresh is cancelled and the update fails; the deploy's rollback reverts the group |
+| A `FAILURE` signal while the refresh runs | The refresh is cancelled and the update fails; the receiver serves the group's pre-deploy `cfn-init` metadata again, and the deploy's rollback reverts the group |
 | Not every signal within `PauseTime` (`PT5M` when unset) after the refresh finished | The update fails and is rolled back |
 
 The batches still advance after `InstanceWarmup` (`PauseTime`), as in a
