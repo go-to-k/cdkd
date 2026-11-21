@@ -155,11 +155,13 @@ start_server() {
   CDKD_PID=$!
   local booted=0
   for _ in $(seq 1 480); do
-    if grep -q 'Server listening' "${logfile}"; then booted=1; break; fi
+    # The line after the LAST ready banner: the stack serves two APIs, and each
+    # server's banner is its own write.
+    if grep -q '\^C to stop' "${logfile}"; then booted=1; break; fi
     kill -0 "${CDKD_PID}" 2>/dev/null || fail "start-api exited before it was ready (port ${port})"
     sleep 0.5
   done
-  [ "${booted}" = 1 ] || fail "start-api did not print 'Server listening' in time (port ${port})"
+  [ "${booted}" = 1 ] || fail "start-api did not print '^C to stop' in time (port ${port})"
 }
 
 # server_port <logfile> <label>: the port of the server whose ready banner
@@ -182,6 +184,8 @@ http_code() {
 http_path_code() {
   local port="$1" path="$2"
   shift 2
+  # Emptied first, so a failed curl never reports the previous response's body.
+  : > "${BODY_FILE}"
   local -a hdrs=()
   local h
   for h in "$@"; do hdrs+=(-H "${h}"); done
@@ -274,6 +278,9 @@ grep -q 'ApiKeyRequired is not enforced by cdkd local start-api' "${OUT_FILE}" \
   || fail "no-state boot did not warn 'ApiKeyRequired is not enforced' for GET /rest-secure"
 grep -q 'ApiKeyRequired is not enforced .*so route GET /rest-secure is served without an x-api-key check' "${OUT_FILE}" \
   || fail "the ApiKeyRequired warning does not name route GET /rest-secure (reworded?)"
+# Once per route: the warned-key set is shared with the JWT warnings.
+N_APIKEY="$(grep -c 'ApiKeyRequired is not enforced' "${OUT_FILE}" || true)"
+[ "${N_APIKEY}" = "1" ] || fail "expected one ApiKeyRequired warning, got ${N_APIKEY}"
 REST_NOSTATE="$(server_port "${OUT_FILE}" 'REST API v1')"
 echo "    REST, no state: garbage token -> 200 (JWKS pass-through, warned; cold boot: retry)"
 CODE=""
@@ -339,8 +346,13 @@ echo "    client-B token (valid signature, audience not allowed) -> 401"
 CODE="$(http_code "${HTTP_STATE}" "Authorization: Bearer ${TOKEN_B}")" || CODE="curl-failed"
 [ "${CODE}" = "401" ] || fail "client-B token: expected 401 (Audience resolved), got ${CODE}"
 
-echo "    REST client-A ID token -> 200 (pool resolved from state)"
-CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer ${TOKEN_A}")" || CODE="curl-failed"
+echo "    REST client-A ID token -> 200 (pool resolved from state; cold boot: retry)"
+CODE=""
+for _ in $(seq 1 10); do
+  CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer ${TOKEN_A}")" || CODE="curl-failed"
+  [ "${CODE}" = "200" ] && break
+  sleep 3
+done
 [ "${CODE}" = "200" ] || fail "REST client-A token: expected 200, got ${CODE} (body: $(cat "${BODY_FILE}"))"
 BODY="$(cat "${BODY_FILE}")"
 GOT_SUB="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sub))' "${BODY}")" \
@@ -351,6 +363,11 @@ UNAUTH='{"message":"Unauthorized"}'
 expect_rest "${REST_STATE}" "Bearer garbage" 401 "${UNAUTH}" "REST garbage token"
 expect_rest "${REST_STATE}" "" 401 "${UNAUTH}" "REST no Authorization"
 expect_rest "${REST_STATE}" "Bearer ${TOKEN_A_TAMPERED}" 403 '{"Message":"Access Denied"}' "REST tampered signature"
+# A REST v1 Cognito authorizer checks the pool, not the app client (as
+# deployed), so the HTTP route's resolved audience must not leak onto it.
+echo "    REST client-B ID token -> 200 (no audience check on a REST Cognito authorizer)"
+CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer ${TOKEN_B}")" || CODE="curl-failed"
+[ "${CODE}" = "200" ] || fail "REST client-B token: expected 200, got ${CODE} (body: $(cat "${BODY_FILE}"))"
 
 stop_server
 orphans="$(docker ps -a --filter 'name=cdkd-local-' --format '{{.Names}}')" \
