@@ -25,6 +25,10 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *   standalone ingress, whose delete revokes the rule.
  * - `CDKD_TEST_UPDATE=nofrom` (go-to-k/cdkd#6609) then drops the inline 8443
  *   ingress again, so the group's update REVOKES a rule.
+ * - SgC (go-to-k/cdkd#6761) is an L1 group declaring no `SecurityGroupEgress`,
+ *   so it keeps the allow-all egress rule AWS creates with every group, as
+ *   CloudFormation's group does. Revoking that rule out of band, or adding an
+ *   egress rule, is drift (it used to be filtered out of the readback).
  *
  * covers: AWS::EC2::SecurityGroup
  * covers: AWS::EC2::SecurityGroupIngress
@@ -64,8 +68,14 @@ export class DriftSgSiblingRulesStack extends cdk.Stack {
     }
     a.connections.allowTo(b, ec2.Port.tcp(8080), 'to B');
 
+    const c = new ec2.CfnSecurityGroup(this, 'SgC', {
+      groupDescription: 'cdkd 6761 group C',
+      vpcId: vpc.vpcId,
+    });
+
     new cdk.CfnOutput(this, 'GroupA', { value: a.securityGroupId });
     new cdk.CfnOutput(this, 'GroupB', { value: b.securityGroupId });
+    new cdk.CfnOutput(this, 'GroupC', { value: c.attrGroupId });
     new cdk.CfnOutput(this, 'VpcId', { value: vpc.vpcId });
   }
 }

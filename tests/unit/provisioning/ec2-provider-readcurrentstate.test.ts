@@ -443,7 +443,7 @@ describe('EC2Provider.readCurrentState', () => {
       ]);
     });
 
-    it('filters AWS auto-default egress when state did not template SecurityGroupEgress', async () => {
+    it('reads back AWS auto-default egress when state did not template SecurityGroupEgress (#6761)', async () => {
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [
           {
@@ -466,9 +466,10 @@ describe('EC2Provider.readCurrentState', () => {
         'AWS::EC2::SecurityGroup'
       ));
 
-      // Default egress filtered out — emit empty array placeholder so
-      // observedProperties still has the key for future drift detection.
-      expect(result?.['SecurityGroupEgress']).toEqual([]);
+      // go-to-k/cdkd#6761: the default rule is the group's configuration
+      // (CloudFormation's group carries it too), so the baseline records it and
+      // an out-of-band revoke of it reads as drift.
+      expect(result?.['SecurityGroupEgress']).toEqual([{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }]);
     });
 
     it('keeps AWS auto-default egress when state DID template egress (state owns the list)', async () => {
@@ -494,10 +495,8 @@ describe('EC2Provider.readCurrentState', () => {
         { SecurityGroupEgress: [{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }] }
       ));
 
-      // State templated egress — even if the rule shape matches the
-      // AWS-default tuple, surface it as-is. The filter only fires on
-      // state-undefined to avoid stripping a user-defined rule that
-      // happens to match the default.
+      // State templated egress — a rule matching the AWS-default tuple is
+      // surfaced as-is, as it is on an undeclared list (#6761).
       expect(result?.['SecurityGroupEgress']).toEqual([{ IpProtocol: '-1', CidrIp: '0.0.0.0/0' }]);
     });
 

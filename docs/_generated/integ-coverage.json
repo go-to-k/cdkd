@@ -3512,6 +3512,7 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l1",
           "l2",
           "literal"
         ],
