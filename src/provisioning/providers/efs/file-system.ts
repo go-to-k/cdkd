@@ -8,6 +8,8 @@ import {
   PutFileSystemPolicyCommand,
   DeleteFileSystemPolicyCommand,
   UpdateFileSystemProtectionCommand,
+  DescribeReplicationConfigurationsCommand,
+  DeleteReplicationConfigurationCommand,
   FileSystemNotFound,
   type ThroughputMode,
   type LifecyclePolicy,
@@ -19,6 +21,7 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { markDeleteStarted } from '../../delete-started.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult } from '../../../types/resource.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
@@ -398,6 +401,48 @@ export async function applyFileSystemProtection(
   );
 }
 
+/**
+ * How long a delete waits for a deleted replication configuration to finish
+ * tearing down: DeleteFileSystem keeps refusing until it has (CloudFormation's
+ * handler polled for about six minutes in the #6751 probe). Mutable for tests.
+ */
+export const REPLICATION_TEARDOWN_WAIT = { intervalMs: 15_000, attempts: 60 };
+
+/** DeleteFileSystem's refusal of a file system that is in a replication. */
+function isReplicationRefusal(error: unknown): boolean {
+  const e = error as { name?: unknown; message?: unknown } | null;
+  return (
+    e?.name === 'FileSystemInUse' && typeof e.message === 'string' && /replication/i.test(e.message)
+  );
+}
+
+/**
+ * Delete the replication configuration `fileSystemId` is the SOURCE of, as
+ * CloudFormation's handler does before DeleteFileSystem (#6751). A file
+ * system that is only a DESTINATION belongs to another source's
+ * configuration, so its refusal stands. Returns whether one was deleted.
+ */
+async function deleteOwnReplication(this: EFSProvider, fileSystemId: string): Promise<boolean> {
+  // A failed read leaves the delete's own refusal as the reported cause.
+  const resp = await this.getClient()
+    .send(new DescribeReplicationConfigurationsCommand({ FileSystemId: fileSystemId }))
+    .catch(() => undefined);
+  const own = (resp?.Replications ?? []).some((r) => r.SourceFileSystemId === fileSystemId);
+  if (!own) return false;
+  try {
+    await this.getClient().send(
+      new DeleteReplicationConfigurationCommand({ SourceFileSystemId: fileSystemId })
+    );
+  } catch (error) {
+    // Already gone (a concurrent teardown): DeleteFileSystem is retried anyway.
+    if ((error as { name?: unknown } | null)?.name !== 'ReplicationNotFound') throw error;
+  }
+  this.logger.debug(
+    `Deleted the replication configuration of EFS FileSystem ${fileSystemId} before deleting it`
+  );
+  return true;
+}
+
 export async function deleteFileSystem(
   this: EFSProvider,
   logicalId: string,
@@ -407,12 +452,30 @@ export async function deleteFileSystem(
 ): Promise<void> {
   this.logger.debug(`Deleting EFS FileSystem ${logicalId}: ${physicalId}`);
 
+  const send = (): Promise<unknown> =>
+    this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: physicalId }));
+  // Set once cdkd deleted the replication configuration: a later refusal
+  // then leaves a file system that is no longer as recorded (#4946).
+  let replicationDeleted = false;
   try {
-    await this.getClient().send(
-      new DeleteFileSystemCommand({
-        FileSystemId: physicalId,
-      })
-    );
+    try {
+      await send();
+    } catch (error) {
+      if (!isReplicationRefusal(error)) throw error;
+      replicationDeleted = await deleteOwnReplication.call(this, physicalId);
+      if (!replicationDeleted) throw error;
+      for (let attempt = 1; ; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, REPLICATION_TEARDOWN_WAIT.intervalMs));
+        try {
+          await send();
+          break;
+        } catch (retryError) {
+          if (!isReplicationRefusal(retryError) || attempt >= REPLICATION_TEARDOWN_WAIT.attempts) {
+            throw retryError;
+          }
+        }
+      }
+    }
     this.logger.debug(`Successfully deleted EFS FileSystem ${logicalId}`);
   } catch (error) {
     if (error instanceof FileSystemNotFound) {
@@ -423,17 +486,23 @@ export async function deleteFileSystem(
     }
     const cause = error instanceof Error ? error : undefined;
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    throw this.wrapDeleteError(
+    const step =
+      replicationDeleted && isReplicationRefusal(error)
+        ? ' (cdkd deleted its replication configuration, and the teardown had not finished;' +
+          ' re-run destroy once it has)'
+        : '';
+    const thrown = this.wrapDeleteError(
       log,
       error,
       (text) =>
         new ProvisioningError(
-          `Failed to delete EFS FileSystem ${logicalId}: ${text}`,
+          `Failed to delete EFS FileSystem ${logicalId}: ${text}${step}`,
           resourceType,
           logicalId,
           physicalId,
           cause
         )
     );
+    throw replicationDeleted ? markDeleteStarted(thrown) : thrown;
   }
 }

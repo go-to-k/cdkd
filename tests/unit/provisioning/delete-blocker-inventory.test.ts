@@ -26,8 +26,8 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * the literal, and a new provider cannot join the unaudited list without
  * raising it, which a reviewer sees. Literals, never derived from the lists.
  */
-const UNAUDITED_COUNT = 14;
-const OPEN_COUNT = 3;
+const UNAUDITED_COUNT = 3;
+const OPEN_COUNT = 1;
 
 const registry = new ProviderRegistry();
 registerAllProviders(registry, await loadProviderClasses());

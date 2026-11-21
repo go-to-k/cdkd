@@ -122,20 +122,9 @@ const GROUP_STRIP = '%s, then DeleteGroup refused: unconfirmed';
  * provider cannot join it unnoticed. #6751 settles these by live probe.
  */
 export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = [
-  'AWS::Lambda::Function',
-  'AWS::Kinesis::Stream',
-  'AWS::Logs::DeliveryDestination',
-  'AWS::Glue::Database',
-  'AWS::CodeBuild::Project',
   'AWS::Neptune::DBCluster',
   'AWS::DocDB::DBCluster',
   'AWS::FSx::FileSystem',
-  'AWS::BedrockAgentCore::Browser',
-  'AWS::BedrockAgentCore::CodeInterpreter',
-  'AWS::AppConfig::Environment',
-  'AWS::CloudFormation::Stack',
-  'AWS::CloudFormation::WaitCondition',
-  'AWS::CloudFormation::WaitConditionHandle',
 ];
 
 export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
@@ -325,6 +314,13 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   },
   none('AWS::DynamoDB::Table', perms('dynamodb:DeleteTable, dynamodb:DescribeTable')),
   none(
+    'AWS::Kinesis::Stream',
+    'https://docs.aws.amazon.com/kinesis/latest/APIReference/API_DeleteStream.html (#6751 probe: with a consumer registered out of band, the stack delete failed with "DeleteStream can\'t delete ... because there are consumers associated with this data stream", so the handler does not set EnforceConsumerDeletion)',
+    [
+      'deletes every registered consumer (EnforceConsumerDeletion), which the handler refuses over; a consumer cannot outlive its stream',
+    ]
+  ),
+  none(
     'AWS::Kinesis::StreamConsumer',
     perms('kinesis:DeregisterStreamConsumer (the delete itself)')
   ),
@@ -373,9 +369,18 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::EFS::FileSystem',
     source: perms(
-      'elasticfilesystem:DeleteReplicationConfiguration, elasticfilesystem:DescribeReplicationConfigurations'
+      'elasticfilesystem:DeleteReplicationConfiguration, elasticfilesystem:DescribeReplicationConfigurations (#6751 probe: DeleteFileSystem refuses a replication source with FileSystemInUse; the handler deleted the configuration, polled until ReplicationNotFound, then deleted the file system)'
     ),
-    blockers: [open('a replication configuration', 6751)],
+    blockers: [
+      // Only the configuration it is the SOURCE of; a destination's refusal stands.
+      handled(
+        'the replication configuration it is the source of',
+        `${P}efs/file-system.ts`,
+        'DeleteReplicationConfigurationCommand',
+        `${T}efs-delete-replication-6751.test.ts`,
+        'deletes its own replication configuration after a FileSystemInUse refusal, waits for the teardown, then deletes'
+      ),
+    ],
   },
   none('AWS::EFS::MountTarget', perms('elasticfilesystem:DeleteMountTarget')),
   none('AWS::EFS::AccessPoint', perms('elasticfilesystem:DeleteAccessPoint')),
@@ -536,14 +541,30 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
     'AWS::EMR::InstanceFleetConfig',
     perms('elasticmapreduce:ModifyInstanceFleet (the resize to 0 is the delete)')
   ),
-  {
-    type: 'AWS::BedrockAgentCore::Runtime',
-    source: perms(
-      'bedrock-agentcore:DeleteAgentRuntime, bedrock-agentcore:DeleteAgentRuntimeEndpoint, bedrock-agentcore:DeleteWorkloadIdentity'
-    ),
-    blockers: [open('its endpoints and workload identity', 6751)],
-  },
+  none(
+    'AWS::BedrockAgentCore::Runtime',
+    perms(
+      'bedrock-agentcore:DeleteAgentRuntime, bedrock-agentcore:DeleteAgentRuntimeEndpoint, bedrock-agentcore:DeleteWorkloadIdentity (#6751 probe: with an endpoint added out of band, the stack delete failed with "This agent has endpoints that must be deleted before the agent can be removed", as a plain DeleteAgentRuntime does; the service deleted the workload identity with the runtime)'
+    )
+  ),
+  none(
+    'AWS::BedrockAgentCore::Browser',
+    `${SCHEMA} (NON_PROVISIONABLE: a read-only schema of the AWS-owned default browser, with no delete handler)`
+  ),
+  none(
+    'AWS::BedrockAgentCore::CodeInterpreter',
+    `${SCHEMA} (NON_PROVISIONABLE: a read-only schema of the AWS-owned default code interpreter, with no delete handler)`
+  ),
   none('AWS::BedrockAgentCore::Evaluator', perms('bedrock-agentcore:DeleteEvaluator')),
+  none(
+    'AWS::Lambda::Function',
+    perms(
+      'lambda:DeleteFunction, lambda:GetFunction, ec2:DescribeNetworkInterfaces (#6751 probe: deleting a VPC function, the handler only polled DescribeNetworkInterfaces until Lambda itself deleted the ENI, then completed; CloudTrail shows no handler DeleteNetworkInterface)'
+    ),
+    [
+      "detaches the VPC config, then deletes the function's ENIs Lambda leaves behind, where the handler waits for Lambda to release them",
+    ]
+  ),
   none('AWS::Lambda::Permission', perms('lambda:RemovePermission (the delete itself)')),
   none('AWS::Lambda::Url', perms('lambda:DeleteFunctionUrlConfig')),
   none(
@@ -592,6 +613,10 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   ),
   none('AWS::Logs::DeliverySource', perms('logs:DeleteDeliverySource')),
   none('AWS::Logs::Delivery', perms('logs:DeleteDelivery')),
+  none(
+    'AWS::Logs::DeliveryDestination',
+    'https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DeleteDeliveryDestination.html (#6751 probe: DeleteDeliveryDestination succeeded with a delivery destination policy attached, and the policy went with it; the handler\'s logs:DeleteDeliveryDestinationPolicy clears nothing the delete needs)'
+  ),
   none('AWS::CloudWatch::Alarm', perms('cloudwatch:DeleteAlarms')),
   none(
     'AWS::CloudWatch::AnomalyDetector',
@@ -711,13 +736,44 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       ),
     ],
   },
+  none(
+    'AWS::Glue::Database',
+    perms(
+      'glue:DeleteDatabase, glue:GetDatabase, glue:DeleteConnection, glue:GetConnection (#6751 probe: with a table added out of band, CloudTrail shows the handler sending only GetDatabase and DeleteDatabase. A FederatedDatabase needs a federation-capable connection and was not probed)'
+    )
+  ),
   none('AWS::Glue::Table', perms('glue:DeleteTable, glue:GetTable')),
   none('AWS::Glue::Workflow', perms('glue:DeleteWorkflow')),
   none('AWS::Glue::SecurityConfiguration', perms('glue:DeleteSecurityConfiguration')),
   none('AWS::Glue::Job', perms('glue:DeleteJob')),
   none('AWS::Glue::Connection', perms('glue:DeleteConnection')),
   none('AWS::Glue::Trigger', perms('glue:DeleteTrigger')),
+  none(
+    'AWS::CodeBuild::Project',
+    perms(
+      'codebuild:DeleteProject, codebuild:BatchGetProjects, codebuild:DeleteWebhook (#6751 probe: with a webhook attached, CloudTrail shows the handler sending only BatchGetProjects and DeleteProject, and DeleteProject succeeds with a webhook)'
+    )
+  ),
   none('AWS::CodeCommit::Repository', perms('codecommit:DeleteRepository')),
+  none(
+    'AWS::AppConfig::Environment',
+    perms(
+      'appconfig:GetEnvironment, appconfig:DeleteEnvironment (#6751 probe: CloudTrail shows the handler\'s DeleteEnvironment carrying no DeletionProtectionCheck, so the account default applies, as when cdkd sends none)'
+    )
+  ),
+  none(
+    'AWS::CloudFormation::Stack',
+    perms('cloudformation:DescribeStacks, cloudformation:DeleteStack (the delete itself)')
+  ),
+  none(
+    'AWS::CloudFormation::WaitCondition',
+    `${SCHEMA} (NON_PROVISIONABLE: no delete handler; nothing exists in AWS to remove)`
+  ),
+  none(
+    'AWS::CloudFormation::WaitConditionHandle',
+    `${SCHEMA} (NON_PROVISIONABLE: no delete handler; the handle is a presigned URL)`,
+    ['deletes the signal object cdkd keeps in its state bucket for the handle']
+  ),
   none(
     'AWS::Cognito::UserPool',
     perms(
