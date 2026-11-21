@@ -115,9 +115,9 @@ const GROUP_STRIP = '%s, then DeleteGroup refused: unconfirmed';
 
 /**
  * Types not yet audited. SHRINK-ONLY: the test pins its length, so a new
- * provider cannot join it unnoticed. #6751 settles these by live probe.
+ * provider cannot join it unnoticed. Empty since #6751's live probes.
  */
-export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = ['AWS::FSx::FileSystem'];
+export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = [];
 
 export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   // --- IAM ---
@@ -387,6 +387,10 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       ),
     ],
   },
+  none(
+    'AWS::FSx::FileSystem',
+    'https://docs.aws.amazon.com/fsx/latest/APIReference/API_DeleteFileSystem.html (no registry delete handler. #6751 probe: for a PERSISTENT_2 Lustre file system with a data repository association added out of band, CloudTrail shows the handler sending only DeleteFileSystem with no per-type configuration, and the delete succeeded. ONTAP, Windows and OpenZFS were not probed)'
+  ),
   none('AWS::EFS::MountTarget', perms('elasticfilesystem:DeleteMountTarget')),
   none('AWS::EFS::AccessPoint', perms('elasticfilesystem:DeleteAccessPoint')),
   {
