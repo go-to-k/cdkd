@@ -45,8 +45,21 @@ the receiver, and no IAM change is needed.
 `--stack ${AWS::StackName}`. Tagged `cdkd:signal-receiver=true` with a fixed
 `Description`; a stack holding the name without BOTH is never touched.
 
+**Signed calls only (measured).** Without credentials, `cfn-init` /
+`cfn-signal` call CloudFormation unsigned (CloudTrail: identity `Unknown`,
+`ThrottlingException` / `AccessDenied`); CloudFormation answers those only
+for an instance that is a resource of its stack, which a cdkd-made instance
+never is. With `--role` (CDK `includeRole: true`) the calls are signed with
+the instance role and the receiver works (measured: signal received, deploy
+rc 0). So a resource whose user data (own, launch template's or launch
+configuration's) calls `cfn-init` / `cfn-signal` without `--role` /
+`--access-key` / `--credential-file` is not a candidate: it warns, naming
+`includeRole: true`. No `cfn-*` call in the user data (a signed `aws
+cloudformation signal-resource`, a handle-less wait condition) is served.
+
 **When.** Only a stack whose template declares a `CreationPolicy`
-`ResourceSignal` or `AWS::CloudFormation::Init` metadata. Created at the first
+`ResourceSignal` or `AWS::CloudFormation::Init` metadata, read by signed
+calls (above). Created at the first
 deploy that needs it, before the diff, so `AWS::StackId` resolves to its ARN
 from then on. Its StackId is recorded in state (`signalReceiverStackId`, no
 schema bump). Kept while the cdkd stack exists, even if the template stops

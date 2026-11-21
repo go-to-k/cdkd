@@ -110,12 +110,110 @@ export function signalCandidateOf(resource: unknown): SignalCandidate | undefine
 
 /** Every template resource asking the receiver for something. */
 export function signalCandidatesOf(template: CloudFormationTemplate): Map<string, SignalCandidate> {
-  const out = new Map<string, SignalCandidate>();
-  for (const [id, resource] of Object.entries(template.Resources ?? {})) {
+  return signalPlanOf(template).candidates;
+}
+
+/**
+ * The receiver's candidates, and the resources it cannot serve because their
+ * user data calls `cfn-init` / `cfn-signal` WITHOUT credentials (CDK's
+ * default, `initOptions.includeRole: false`). CloudFormation answers such an
+ * unsigned call only from an instance that is a resource of its own stack, so
+ * no receiver can: those keep the warn-and-proceed behavior. A resource whose
+ * user data holds no `cfn-*` call (signals sent some other way, e.g. a signed
+ * `aws cloudformation signal-resource`) is served; one with only cfn-init
+ * metadata is served only when a signed `cfn-init` reads it.
+ */
+export function signalPlanOf(template: CloudFormationTemplate): {
+  candidates: Map<string, SignalCandidate>;
+  unsigned: string[];
+} {
+  const candidates = new Map<string, SignalCandidate>();
+  const unsigned: string[] = [];
+  const resources = template.Resources ?? {};
+  for (const [id, resource] of Object.entries(resources)) {
     const candidate = signalCandidateOf(resource);
-    if (candidate !== undefined) out.set(id, candidate);
+    if (candidate === undefined) continue;
+    const calls = bootstrapCallsOf(resources, id);
+    if (calls === 'unsigned') {
+      unsigned.push(id);
+      continue;
+    }
+    if (candidate.count === 0 && calls !== 'signed') continue;
+    candidates.set(id, candidate);
   }
-  return out;
+  return { candidates, unsigned };
+}
+
+// A command word (`/opt/aws/bin/cfn-init -v`), not a file name (`cfn-init.log`).
+const BOOTSTRAP_CALL = /(?<=^|[\s/"'(;&|]|\\n)cfn-(?:init|signal)(?=\s)/g;
+const CREDENTIAL_FLAG = /\s(?:--role|--access-key|--credential-file|-f)[\s=]/;
+
+/**
+ * How `logicalId`'s user data (its own, or its launch template's or launch
+ * configuration's) calls `cfn-init` / `cfn-signal`: `signed` when every call
+ * passes credentials (`--role`, `--access-key`, `--credential-file`),
+ * `unsigned` when any does not, `none` when it calls neither.
+ */
+export function bootstrapCallsOf(
+  resources: Record<string, unknown>,
+  logicalId: string
+): 'signed' | 'unsigned' | 'none' {
+  const text = userDataTextOf(resources, logicalId);
+  if (text === undefined) return 'none';
+  let found = false;
+  for (const match of text.matchAll(BOOTSTRAP_CALL)) {
+    found = true;
+    const rest = text.slice(match.index + match[0].length);
+    const end = rest.search(/\\n|\n|;|&&|\|\|/);
+    const call = ` ${end === -1 ? rest : rest.slice(0, end)} `;
+    if (!CREDENTIAL_FLAG.test(call)) return 'unsigned';
+  }
+  return found ? 'signed' : 'none';
+}
+
+function propertiesOf(
+  resources: Record<string, unknown>,
+  id: unknown
+): Record<string, unknown> | undefined {
+  if (typeof id !== 'string') return undefined;
+  const resource = resources[id];
+  if (resource === null || typeof resource !== 'object') return undefined;
+  const props = (resource as { Properties?: unknown }).Properties;
+  return props !== null && typeof props === 'object'
+    ? (props as Record<string, unknown>)
+    : undefined;
+}
+
+function refOf(value: unknown): unknown {
+  return value !== null && typeof value === 'object'
+    ? (value as Record<string, unknown>)['Ref']
+    : undefined;
+}
+
+/** The user data's template text (a literal base64 string decoded), or `undefined`. */
+function userDataTextOf(resources: Record<string, unknown>, logicalId: string): string | undefined {
+  const props = propertiesOf(resources, logicalId);
+  if (props === undefined) return undefined;
+  let userData = props['UserData'];
+  if (userData === undefined) {
+    const lt = props['LaunchTemplate'] as Record<string, unknown> | undefined;
+    const ltProps = propertiesOf(
+      resources,
+      refOf(lt?.['LaunchTemplateId']) ?? refOf(lt?.['LaunchTemplateName'])
+    );
+    userData = (ltProps?.['LaunchTemplateData'] as Record<string, unknown> | undefined)?.[
+      'UserData'
+    ];
+  }
+  if (userData === undefined) {
+    userData = propertiesOf(resources, refOf(props['LaunchConfigurationName']))?.['UserData'];
+  }
+  if (userData === undefined) return undefined;
+  if (typeof userData === 'string') {
+    const decoded = Buffer.from(userData, 'base64').toString('utf8');
+    return /cfn-/.test(decoded) ? decoded : userData;
+  }
+  return JSON.stringify(userData);
 }
 
 /** Whether a CloudFormation stack can carry this name (a nested child's cannot). */
@@ -263,7 +361,7 @@ export class SignalReceiver {
         );
         this.stackId = out.StackId;
         this.logger.info(
-          safeMsg`Created the CloudFormation signal receiver stack ${this.stackName}: cfn-signal and cfn-init reach it, and AWS::StackId resolves to it for as long as this stack exists`
+          safeMsg`Created the CloudFormation signal receiver stack ${this.stackName} (tag cdkd:signal-receiver=true): this stack declares CreationPolicy signals or cfn-init metadata, which only a CloudFormation stack can answer. It holds no resources of yours, AWS::StackId resolves to it, and cdkd destroy deletes it.`
         );
       } else {
         this.stackId = stack.StackId;

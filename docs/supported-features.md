@@ -254,7 +254,8 @@ replacing update, one that changes a property listed above, and for
 `cfn-signal --stack <name> --resource <id>` and `cfn-init --stack <name>
 --resource <id>` talk to the CloudFormation API, which only a CloudFormation
 stack can answer. A stack whose template declares a `CreationPolicy`
-`ResourceSignal` or `AWS::CloudFormation::Init` metadata gets a small
+`ResourceSignal` or `AWS::CloudFormation::Init` metadata, read by signed
+`cfn-init` / `cfn-signal` calls, gets a small
 **signal receiver**: a CloudFormation stack with the cdkd stack's exact name,
 tagged `cdkd:signal-receiver=true`, that lives as long as the cdkd stack.
 
@@ -280,8 +281,28 @@ updates it only when it creates, replaces or changes a resource that declares
 a signal or `cfn-init` metadata. Secret dynamic references in `Metadata` stay
 `{{resolve:...}}` tokens in the receiver's template, as in CloudFormation's.
 
+> [!IMPORTANT]
+> `cfn-init` and `cfn-signal` must sign their calls: pass `--role` (with the
+> AWS CDK, `initOptions: { includeRole: true }`). Without it they call
+> CloudFormation unsigned, which it answers only for instances of its own
+> stacks, so cdkd cannot serve them: such a resource warns and is created
+> without waiting, and does not get a receiver.
+
+```ts
+new ec2.Instance(this, 'Web', {
+  // ...
+  init: ec2.CloudFormationInit.fromElements(/* ... */),
+  initOptions: { includeRole: true, timeout: Duration.minutes(10) },
+});
+```
+
+A `WaitConditionHandle` with a `WaitCondition` that names it never needs a
+receiver: the handle's URL is answered by cdkd's state bucket.
+
 In these cases cdkd creates the resource without waiting and logs a warning;
 the warning does not change the exit code or fail `--strict`:
+
+- `cfn-init` / `cfn-signal` in its user data run without `--role` (above).
 
 - A CloudFormation stack with the cdkd stack's name already exists and is not
   a receiver (for example the same app deployed with the AWS CDK CLI). cdkd

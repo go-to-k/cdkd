@@ -111,15 +111,22 @@ DEPLOY_LOG=$(mktemp)
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 grep -q 'Created the CloudFormation signal receiver stack' "${DEPLOY_LOG}" \
   || { echo "FAIL: the deploy did not create a signal receiver" >&2; exit 1; }
-grep -q 'Instance[0-9A-F]*: received its CreationPolicy signal' "${DEPLOY_LOG}" \
+grep -qE '(^|[^d])Instance[0-9A-Fa-f]+: received its CreationPolicy signal' "${DEPLOY_LOG}" \
   || { echo "FAIL: the deploy did not wait for the instance's signal" >&2; exit 1; }
 # Sentinel: the fallback warning's other half without "not honored" is a reword.
 if grep -q 'cfn-signal success signals' "${DEPLOY_LOG}" && ! grep -q 'CreationPolicy is not honored' "${DEPLOY_LOG}"; then
   echo "FAIL: the fallback warning was reworded; update this check" >&2
   exit 1
 fi
-if grep -q 'CreationPolicy is not honored' "${DEPLOY_LOG}"; then
-  echo "FAIL: the deploy fell back to not waiting" >&2
+if grep -qE '(^|[^d])Instance[0-9A-Fa-f]+: CreationPolicy is not honored' "${DEPLOY_LOG}"; then
+  echo "FAIL: the deploy fell back to not waiting for the signed Instance" >&2
+  exit 1
+fi
+# UnsignedInstance (CDK's default, no --role): warned and created without a wait.
+grep -qE 'UnsignedInstance[0-9A-Fa-f]+: CreationPolicy is not honored; its user data calls cfn-init / cfn-signal without credentials' "${DEPLOY_LOG}" \
+  || { echo "FAIL: UnsignedInstance was not warned as an unsigned bootstrap" >&2; exit 1; }
+if grep -qE 'UnsignedInstance[0-9A-Fa-f]+: waiting for' "${DEPLOY_LOG}"; then
+  echo "FAIL: the deploy waited for UnsignedInstance" >&2
   exit 1
 fi
 # Phase 2 asserts the ABSENCE of these two lines; prove here they still read so.
@@ -134,7 +141,7 @@ POLICY_ARNS=$(state_field 'JSON.stringify(Object.values(s.resources).filter((r) 
 grep -qF "${RECEIVER_ID}" <<<"${POLICY_ARNS}" \
   || { echo "FAIL: no instance-role policy names the receiver's ARN" >&2; exit 1; }
 echo "    OK: the instance-role grant names the receiver's ARN"
-INSTANCE_ID=$(state_field 'Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && !id.startsWith("FailingInstance"))?.[1].physicalId')
+INSTANCE_ID=$(state_field 'Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && id.startsWith("Instance"))?.[1].physicalId')
 [ -n "${INSTANCE_ID}" ] || { echo "FAIL: no instance in state" >&2; exit 1; }
 VPC_ID=$(state_field 'Object.values(s.resources).find((x) => x.resourceType === "AWS::EC2::VPC")?.physicalId')
 
@@ -153,10 +160,10 @@ echo "    OK: same receiver, no wait"
 echo "==> Phase 3: a replaced instance waits for its own signal"
 REPLACE_LOG=$(mktemp)
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${REPLACE_LOG}"
-grep -q 'Instance[0-9A-F]*: received its CreationPolicy signal' "${REPLACE_LOG}" \
+grep -qE '(^|[^d])Instance[0-9A-Fa-f]+: received its CreationPolicy signal' "${REPLACE_LOG}" \
   || { echo "FAIL: the replacement did not wait for its signal" >&2; exit 1; }
 rm -f "${REPLACE_LOG}"
-NEW_INSTANCE_ID=$(state_field 'Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && !id.startsWith("FailingInstance"))?.[1].physicalId')
+NEW_INSTANCE_ID=$(state_field 'Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && id.startsWith("Instance"))?.[1].physicalId')
 [ -n "${NEW_INSTANCE_ID}" ] && [ "${NEW_INSTANCE_ID}" != "${INSTANCE_ID}" ] \
   || { echo "FAIL: the instance was not replaced (${INSTANCE_ID} -> ${NEW_INSTANCE_ID})" >&2; exit 1; }
 [ "$(assert_receiver_recorded)" = "${RECEIVER_ID}" ] || { echo "FAIL: the receiver changed" >&2; exit 1; }

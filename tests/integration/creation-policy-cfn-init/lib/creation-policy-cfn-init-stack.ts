@@ -3,7 +3,9 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 
 /**
- * Issue #6705: an EC2 instance using CDK's `init` (`applyCloudFormationInit`).
+ * Issue #6705: an EC2 instance using CDK's `init` (`applyCloudFormationInit`)
+ * with `includeRole: true`, so cfn-init / cfn-signal sign their calls with
+ * the instance role.
  * CDK emits a `CreationPolicy` `ResourceSignal`, `AWS::CloudFormation::Init`
  * metadata, and user data running `cfn-init --stack ${AWS::StackName}
  * --resource <id>` then `cfn-signal -e $? --stack ... --resource <id>`. Both
@@ -14,6 +16,10 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  *
  * The init config writes a file and runs a command that checks it, so a
  * SUCCESS signal proves cfn-init read the metadata from the receiver.
+ *
+ * `UnsignedInstance` keeps CDK's default (`includeRole: false`): its unsigned
+ * calls are answered only for CloudFormation's own instances, so cdkd warns
+ * and creates it without waiting (verify.sh Phase 1 asserts both).
  *
  * CDKD_TEST_UPDATE=true (verify.sh Phase 3): Amazon Linux 2 instead of 2023,
  * so the instance is REPLACED and its replacement waits for a fresh signal.
@@ -41,7 +47,7 @@ export class CreationPolicyCfnInitStack extends cdk.Stack {
           ? ec2.MachineImage.latestAmazonLinux2()
           : ec2.MachineImage.latestAmazonLinux2023(),
       requireImdsv2: true,
-      initOptions: { timeout: cdk.Duration.minutes(10) },
+      initOptions: { timeout: cdk.Duration.minutes(10), includeRole: true },
     };
 
     new ec2.Instance(this, 'Instance', {
@@ -50,6 +56,12 @@ export class CreationPolicyCfnInitStack extends cdk.Stack {
         ec2.InitFile.fromString('/tmp/cdkd-6705.txt', 'from-receiver-metadata'),
         ec2.InitCommand.shellCommand('grep -q from-receiver-metadata /tmp/cdkd-6705.txt')
       ),
+    });
+
+    new ec2.Instance(this, 'UnsignedInstance', {
+      ...instanceProps,
+      initOptions: { timeout: cdk.Duration.minutes(10) },
+      init: ec2.CloudFormationInit.fromElements(ec2.InitCommand.shellCommand('true')),
     });
 
     if (process.env.CDKD_TEST_FAIL === 'true') {

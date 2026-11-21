@@ -17,7 +17,13 @@ import { TemplateParser } from '../../analyzer/template-parser.js';
 import { buildResolverContext } from './resolver-context.js';
 import { noEchoParameterNamesOf } from './noecho.js';
 import { warnUnhonoredCreationPolicy } from './update-policy.js';
-import { canReceiveFor, SignalReceiver, signalCandidatesOf } from './signal-receiver.js';
+import {
+  bootstrapCallsOf,
+  canReceiveFor,
+  SignalReceiver,
+  signalPlanOf,
+} from './signal-receiver.js';
+import { safeMsg } from '../../utils/display-safe.js';
 
 // Built on first use: a module-level construction runs at import time, under
 // every test's logger mock.
@@ -39,7 +45,7 @@ export async function ensureSignalReceiver(
 ): Promise<boolean> {
   const recorded = currentState.signalReceiverStackId;
   engine.signalReceiverStackId = recorded;
-  const candidates = signalCandidatesOf(template);
+  const { candidates } = signalPlanOf(template);
   if (candidates.size === 0 || engine.options.dryRun || !canReceiveFor(stackName)) {
     return false;
   }
@@ -135,12 +141,20 @@ export function warnUnwaitedCreationPolicy(
   logicalId: string,
   template: CloudFormationTemplate | undefined
 ): void {
-  warnUnhonoredCreationPolicy(
-    engine.logger,
-    logicalId,
-    template?.Resources?.[logicalId],
+  const resource = template?.Resources?.[logicalId];
+  if (
+    resource?.CreationPolicy === undefined ||
     engine.signalReceiver?.isArmed(logicalId) === true
-  );
+  ) {
+    return;
+  }
+  if (bootstrapCallsOf(template?.Resources ?? {}, logicalId) === 'unsigned') {
+    engine.logger.warn(
+      safeMsg`${logicalId}: CreationPolicy is not honored; its user data calls cfn-init / cfn-signal without credentials, which CloudFormation answers only for its own stacks' instances. Pass --role (CDK: initOptions.includeRole: true) and cdkd waits for the signals.`
+    );
+    return;
+  }
+  warnUnhonoredCreationPolicy(engine.logger, logicalId, resource);
 }
 
 /**
