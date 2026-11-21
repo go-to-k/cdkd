@@ -149,6 +149,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asset-auto-create",
         "asset-bootstrap",
         "asset-migration",
@@ -727,6 +728,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
@@ -1297,6 +1299,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
@@ -1932,6 +1935,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
@@ -2410,6 +2414,7 @@
     {
       "flag": "--update-policy",
       "integs": [
+        "asg-rolling-signals",
         "asg-update-policy",
         "codedeploy-lambda-deployment-group",
         "launchtemplate-asg-inplace"
@@ -2538,6 +2543,7 @@
         "appconfig-environment-delete-protection",
         "appsync",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "asset-auto-create",
         "asset-bootstrap",
