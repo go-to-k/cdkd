@@ -145,7 +145,7 @@ drift-revert-vpc	2026-11-20T15:38:48Z	PASS	480	verify.sh	ce0906083 rc ok, identi
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
 drift-sg-sibling-rules	2026-11-20T22:29:18Z	PASS	335	verify.sh	PR6700 1aa3236df (on #6648), 6c removal re-add reported+reverted, revert-identity kept; rc ok, orph clean
 drift-sns-sibling-subscription	2026-11-20T20:41:06Z	PASS	260	verify.sh	rc ok, orph clean (#6711)
-drift-verbatim-readback	2026-11-20T22:42:39Z	PASS	1420	verify.sh	PR6726 f791f9434, 6/6 identity kept, helper mutation RED at 882f177ca, rc ok, orph clean
+drift-verbatim-readback	2026-11-21T00:20:10Z	PASS	1325	verify.sh	PR6729 674d6808e, no false settle warning, probe RED, rc ok, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-19T14:40:15Z	PASS	153	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
