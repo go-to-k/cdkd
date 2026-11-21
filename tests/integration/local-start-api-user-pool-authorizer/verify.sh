@@ -278,7 +278,7 @@ grep -q 'ApiKeyRequired is not enforced by cdkd local start-api' "${OUT_FILE}" \
   || fail "no-state boot did not warn 'ApiKeyRequired is not enforced' for GET /rest-secure"
 grep -q 'ApiKeyRequired is not enforced .*so route GET /rest-secure is served without an x-api-key check' "${OUT_FILE}" \
   || fail "the ApiKeyRequired warning does not name route GET /rest-secure (reworded?)"
-# Once per route: the warned-key set is shared with the JWT warnings.
+# Exactly once: one route, one boot.
 N_APIKEY="$(grep -c 'ApiKeyRequired is not enforced' "${OUT_FILE}" || true)"
 [ "${N_APIKEY}" = "1" ] || fail "expected one ApiKeyRequired warning, got ${N_APIKEY}"
 REST_NOSTATE="$(server_port "${OUT_FILE}" 'REST API v1')"
@@ -360,6 +360,13 @@ GOT_SUB="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sub)
 [ "${GOT_SUB}" = "${USER_SUB}" ] || fail "REST sub mismatch: body ${GOT_SUB} vs user ${USER_SUB}"
 # The statuses the deployed REST API answers (measured by go-to-k/cdk-local#1016).
 UNAUTH='{"message":"Unauthorized"}'
+# A transient JWKS fetch failure is cached as pass-through for about a minute
+# (then a garbage token gets 200): retry past that window before judging.
+for _ in $(seq 1 30); do
+  CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer garbage")" || CODE="curl-failed"
+  [ "${CODE}" = "401" ] && break
+  sleep 3
+done
 expect_rest "${REST_STATE}" "Bearer garbage" 401 "${UNAUTH}" "REST garbage token"
 expect_rest "${REST_STATE}" "" 401 "${UNAUTH}" "REST no Authorization"
 expect_rest "${REST_STATE}" "Bearer ${TOKEN_A_TAMPERED}" 403 '{"Message":"Access Denied"}' "REST tampered signature"
