@@ -30,8 +30,8 @@ export class LambdaAcceleratorConfigStack extends cdk.Stack {
 
     // The smallest GPU footprint: one isolated subnet and 4-vCPU GPU types
     // (16 GB T4 / 24 GB A10G / 24 GB L4), so one instance fits an 8-vCPU G
-    // quota. Whether Lambda Managed Instances accepts a single subnet and
-    // these xlarge types is unverified until the first integ run.
+    // quota. Lambda Managed Instances accepted a single subnet and these
+    // xlarge types (measured in us-east-1, 2026-11-21).
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 1,
       natGateways: 0,

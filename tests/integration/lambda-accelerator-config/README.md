@@ -15,9 +15,8 @@ function stays on the SDK route instead of auto-routing to Cloud Control.
   `g6.xlarge`, one isolated subnet)
 
 The footprint is the smallest that can run a GPU function: one subnet and one
-4-vCPU GPU instance. Whether Lambda Managed Instances accepts a single subnet
-and these xlarge GPU types is UNVERIFIED until the first integ run; widen to
-more AZs or `.2xlarge` types only if that run refuses them.
+4-vCPU GPU instance. Lambda Managed Instances accepted a single subnet and these
+xlarge GPU types (measured in us-east-1, 2026-11-21).
 
 ## Prerequisites
 
