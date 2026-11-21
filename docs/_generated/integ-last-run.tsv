@@ -184,12 +184,12 @@ ecs-service-update-props	2026-10-30T09:15:32Z	PASS	866	verify.sh	rc ok, destroy 
 ecs-taskdef-tags-launch-type	2026-11-14T16:34:49Z	PASS	171	verify.sh	rc ok, destroy clean, orph clean; PR #6306 TrustedExecutionConfiguration on the SDK route (pre-fix probe RED at provisionedBy=cc-api)
 efs-immutable-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph clean (#6374 sweep)
 efs-lambda	2026-11-04T06:21:47Z	PASS	476	standard	batch 7; 22 deleted/0 errors, orph clean (no EFS/ENI/VPC left)
-efs-standalone	2026-11-21T14:47:26Z	PASS	288	verify.sh	rc 0 at 8ee78065c; AccessPointTags drift OK; orph clean
+efs-standalone	2026-11-21T23:04:35Z	PASS	291	verify.sh	rc 0 at 959dc5ff6; destroy 0 errors, orph clean
 elasticache-replicationgroup-getatt	2026-11-05T07:34:57Z	PASS	1193	verify.sh	rc ok, PrimaryEndPoint.Address real endpoint verified, destroy 0 errors, orph clean (own temp state bucket, deleted)
 elasticache-snapshot-arns	2026-11-06T20:58:31Z	PASS	692	verify.sh	#5915 elasticache split head; rc ok, orph clean
 elbv2-same-name-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph clean (#6374 sweep)
 emr-cluster	2026-11-06T20:24:53Z	PASS	2029	verify.sh	#5907 emr-cluster split head; rc ok, orph clean
-emr-instance-configs	2026-11-19T14:40:15Z	PASS	1611	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean; run1 FAIL at Phase 1c same-template retry not refused (AWS-side resize timing, emitter emr-instance-group-config-provider.ts not in diff), run2 PASS
+emr-instance-configs	2026-11-21T23:04:35Z	PASS	1583	verify.sh	rc 0 at 959dc5ff6; destroy 0 errors, orph clean
 emr-instance-fleets	2026-11-19T14:40:15Z	PASS	1442	verify.sh	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean; us-west-2
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
 eventbridge	2026-11-17T03:42:27Z	PASS	161	verify.sh	rc ok, destroy 0 errors, orph clean; at 607f11bb9 (#6479)
