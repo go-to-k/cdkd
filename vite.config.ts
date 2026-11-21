@@ -113,11 +113,11 @@ export default defineConfig({
       './tests/run-tmpdir-setup.ts',
     ],
     // The lock above serializes large runs but does not narrow one: vitest's
-    // default is `cpus - 1` forks, each spawning the paste harness's bash and
+    // default is `cpus - 1` forks, many spawning the paste harness's bash and
     // zsh per span. A single full run at that width froze a 15-cpu, 48 GB host
-    // within seconds of starting, while the same suite at 4 forks completed
-    // beside it. CI keeps the default (sharded runners, nothing else on them);
-    // an explicit `--maxWorkers` still overrides this.
+    // within seconds of starting, while the same suite at 4 forks had just
+    // completed on it. Any non-empty CI keeps the default (sharded runners,
+    // nothing else on them); an explicit `--maxWorkers` still overrides this.
     maxWorkers: process.env.CI ? undefined : 4,
     coverage: {
       provider: 'v8',
