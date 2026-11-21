@@ -343,10 +343,12 @@ export async function deleteGroup(
     // added between this read and step 3 is not removed, so `DeleteGroup`
     // refuses (`DeleteConflict`) and the retry reads again.
     let members: User[] = [];
+    let membersTruncated = false;
     const readGroup = async () => {
       const response = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
       // The last read's: after a re-read, the group it answered for.
       members = response.Users ?? [];
+      membersTruncated = response.IsTruncated === true;
       // A response naming another group carries no id of this one: with an
       // id recorded, that refuses rather than compares. Compared ignoring
       // case: IAM group names are unique regardless of case and `GetGroup`
@@ -399,14 +401,18 @@ export async function deleteGroup(
           throw error;
         }
         // Step 0's read is the first listing; the rest runs only after the
-        // refusal, so a delete that succeeds costs no extra call. A read that
-        // fails leaves AWS's error.
-        const held = await settledMembers.call(this, physicalId, members).catch((readError) => {
-          log.debug(
-            `Could not read the members of group ${v(physicalId)} after DeleteGroup was refused: ${readError instanceof Error ? readError.name : typeof readError}`
-          );
-          return undefined;
-        });
+        // refusal, so a delete that succeeds costs no extra call. A group
+        // gone meanwhile is deleted (the catch below); any other failed read
+        // leaves AWS's error.
+        const held = await settledMembers
+          .call(this, physicalId, members, membersTruncated)
+          .catch((readError) => {
+            if (readError instanceof NoSuchEntityException) throw readError;
+            log.debug(
+              `Could not read the members of group ${v(physicalId)} after DeleteGroup was refused: ${readError instanceof Error ? readError.name : typeof readError}`
+            );
+            return undefined;
+          });
         if (held === 'empty') continue;
         if (held === undefined) throw error;
         const refusal = markNonRetryable(
@@ -414,8 +420,9 @@ export async function deleteGroup(
             log.mask(
               `Failed to delete IAM group ${logicalId}: group ${physicalId} still has ` +
                 `user(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, whose ` +
-                `membership this destroy did not remove (a user added outside the stack, or ` +
-                `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
+                `membership this destroy did not remove (a user added outside the stack, one ` +
+                `retained by a DeletionPolicy, or a stack user whose own delete has not finished ` +
+                `yet). Matching CloudFormation (DeleteConflict), cdkd ` +
                 `does not remove them from the group. If they no longer need it, remove them ` +
                 `(aws iam remove-user-from-group --group-name <group> --user-name <user>), ` +
                 `then destroy again.`
@@ -505,11 +512,12 @@ const HELD_MAX_POLLS = 30;
 async function settledMembers(
   this: IAMUserGroupProvider,
   groupName: string,
-  firstRead: User[]
+  firstRead: User[],
+  firstTruncated: boolean
 ): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
   const namesOf = (users: User[] | undefined) =>
     (users ?? []).map((user) => user.UserName).filter((n): n is string => !!n);
-  let held = { names: namesOf(firstRead), truncated: false };
+  let held = { names: namesOf(firstRead), truncated: firstTruncated };
   if (held.names.length === 0) return 'empty';
   const key = (h: { names: string[]; truncated: boolean }) =>
     JSON.stringify([h.names, h.truncated]);

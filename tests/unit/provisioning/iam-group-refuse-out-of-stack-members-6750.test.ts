@@ -137,11 +137,11 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
   });
 
   it('waits while the members drain, then refuses with who stays', async () => {
-    drive({ ...base, GetGroupCommand: members(['own', 'kept'], ['own', 'kept'], ['kept']) });
+    drive({ ...base, GetGroupCommand: members(['stacku', 'kept'], ['stacku', 'kept'], ['kept']) });
 
     const message = ((await destroy()) as Error).message;
     expect(message).toContain('still has user(s) kept, whose');
-    expect(message).not.toContain('own');
+    expect(message).not.toContain('stacku');
   });
 
   it('a user ListGroupsForUser shows gone, or out of the group, is the read lagging', async () => {
@@ -181,6 +181,64 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
     expect(((await destroy()) as Error).message).toContain(
       'still has user(s) u1, u2, u3, u4, u5, and more, whose'
     );
+  });
+
+  it('says there are more when GetGroup reports another page', async () => {
+    drive({
+      ...base,
+      GetGroupCommand: () => ({
+        Group: { GroupName: 'my-group' },
+        Users: [{ UserName: 'outsider' }],
+        IsTruncated: true,
+      }),
+    });
+
+    const message = ((await destroy()) as Error).message;
+    expect(message).toContain('still has user(s) outsider, and more, whose');
+    // Step 0's page counts as the first read: five unchanged reads follow.
+    expect(count('GetGroupCommand')).toBe(1 + 5);
+  });
+
+  it('a user whose group list is truncated is kept as still in the group', async () => {
+    drive({
+      ...base,
+      GetGroupCommand: members(['many-groups']),
+      ListGroupsForUserCommand: () => ({ Groups: [{ GroupName: 'other' }], IsTruncated: true }),
+    });
+
+    expect(((await destroy()) as Error).message).toContain('still has user(s) many-groups,');
+  });
+
+  it("step 0 read no member: DeleteGroup is tried once more at once, with no wait and no re-read", async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      GetGroupCommand: members([]),
+      DeleteGroupCommand: () => {
+        deletes++;
+        if (deletes === 1) conflict();
+        return {};
+      },
+    });
+
+    await expect(destroy()).resolves.toBeUndefined();
+    expect(deletes).toBe(2);
+    expect(count('GetGroupCommand')).toBe(1);
+    expect(vi.mocked(setTimeout)).not.toHaveBeenCalled();
+  });
+
+  it('a group gone during the settle is deleted, not a failure', async () => {
+    let reads = 0;
+    drive({
+      ...base,
+      GetGroupCommand: () => {
+        reads++;
+        if (reads > 1) throw new NoSuchEntityException({ $metadata: {}, message: 'gone' });
+        return { Group: { GroupName: 'my-group' }, Users: [{ UserName: 'outsider' }] };
+      },
+    });
+
+    await expect(destroy()).resolves.toBeUndefined();
   });
 
   it('a member list that keeps changing is refused at the cap with who it shows last', async () => {

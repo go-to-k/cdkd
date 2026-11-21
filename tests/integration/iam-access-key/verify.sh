@@ -100,6 +100,9 @@ list_keys() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # First: a user still in the group refuses its destroy (#6750).
+  aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${OOB_USER}" >/dev/null 2>&1
+  aws iam delete-user --user-name "${OOB_USER}" >/dev/null 2>&1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -117,9 +120,6 @@ cleanup() {
   # Direct sweep in case state-based teardown could not run: every access key
   # on the fixture user, then the user, then the secret (force, no recovery
   # window — a scheduled deletion would block the next run's same-name create).
-  # First: a user still in the group refuses its destroy (#6750).
-  aws iam remove-user-from-group --group-name "${GROUP_NAME}" --user-name "${OOB_USER}" >/dev/null 2>&1
-  aws iam delete-user --user-name "${OOB_USER}" >/dev/null 2>&1
   local kid
   for kid in $(aws iam list-access-keys --user-name "${USER_NAME}" \
     --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null); do
