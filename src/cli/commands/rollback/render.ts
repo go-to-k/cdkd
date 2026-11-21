@@ -34,6 +34,10 @@ import {
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { customResourcesFailedWithoutApp } from '../../../local/custom-resource-runtime-gate.js';
 import { dropFailedHint } from '../../../deployment/rollback-executor/journaled-orphans.js';
+import {
+  earlyDeleteWhen,
+  earlyDeletedOld,
+} from '../../../deployment/rollback-executor/early-deleted-old.js';
 
 /**
  * The `Re-run with: cdkd rollback` line that a warning and two refusals here
@@ -303,6 +307,19 @@ export function replacementTypes(op: RollbackPlanItem['op']): string {
     : safe(op.resourceType);
 }
 
+/**
+ * go-to-k/cdkd#6713: the consequence of re-creating an old resource the
+ * deploy had already deleted, which the replay also prints. Empty for an
+ * old type the routing cannot name: the replay refuses that op.
+ */
+function earlyDeleteNote(op: RollbackPlanItem['op']): string {
+  const routing = resolveReplacementOldType(op);
+  const early = routing.ok ? earlyDeletedOld(op, routing.oldType) : undefined;
+  return early === undefined
+    ? ''
+    : ` — the deploy ${earlyDeleteWhen(early)}: what AWS held for it beyond its recorded properties is not restored`;
+}
+
 export function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean): string {
   const { op, action, replacement } = item;
   const rep = replacement ? ' [replacement occurred, best-effort revert]' : '';
@@ -357,8 +374,8 @@ export function actionLabel(item: RollbackPlanItem, skipFinalSnapshot: boolean):
         ? `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) ` +
             `[re-create old resource; new one RETAINED (UpdateReplacePolicy: Retain) and left ` +
             `untracked — REFUSED instead if the re-create collides with the name the retained ` +
-            `resource still holds]`
-        : `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) [re-create old resource, delete new]`;
+            `resource still holds${earlyDeleteNote(op)}]`
+        : `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) [re-create old resource, delete new${earlyDeleteNote(op)}]`;
     case 'reverse-replacement-readopt':
       return item.retainsNewResource
         ? `  - reverse-replace ${safe(op.logicalId)} (${replacementTypes(op)}) ` +

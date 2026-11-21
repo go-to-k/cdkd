@@ -17,6 +17,7 @@ import {
   unroutableReplacementError,
 } from './plan.js';
 import { mayBeStoredIn } from '../child-of-recreated-parent.js';
+import { earlyDeleteWhen, earlyDeletedOld } from './early-deleted-old.js';
 import {
   requireRestorableBaseline,
   replayPrefixScope,
@@ -177,6 +178,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // go-to-k/cdkd#2631: the deploy's delete of the old resource was not
   // confirmed, so it may still exist. Read AWS first: re-creating a live one
   // duplicates it (auto-named) or collides with it (named).
+  let unconfirmedFoundGone = false;
   if (op.oldResourceMaySurvive !== undefined) {
     let survivor = await probeReplacedSurvivor(s, oldType);
     // Alive but `'unconfirmed'`: an accepted delete may still be running
@@ -267,6 +269,8 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       return;
     }
     if (survivor !== 'gone') throw survivorUnprovenRefusal(s, oldType, survivor);
+    // go-to-k/cdkd#6713: the deploy sent this delete, so it is what took it.
+    unconfirmedFoundGone = op.oldResourceMaySurvive === 'unconfirmed';
     logger.info(
       safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) is gone — re-creating it`
     );
@@ -455,6 +459,22 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
         `resource's data was destroyed by the replacement and is NOT recovered by this ` +
         `rollback; the re-created resource starts empty.`
     );
+  } else {
+    // go-to-k/cdkd#6713: any other type the deploy deleted early comes back
+    // from its record alone, which CloudFormation's rollback never needs (it
+    // deletes the old copy only after the deploy succeeded). Advisory as the
+    // line above, through the op's masker like every replay line.
+    const early = earlyDeletedOld(op, oldType, unconfirmedFoundGone);
+    if (early !== undefined) {
+      logger.warn(
+        mask(
+          `  ⚠ ${safe(op.logicalId)} (${safe(oldType)}): the deploy ${earlyDeleteWhen(early)}, ` +
+            `so this rollback re-creates it from its recorded properties — anything AWS held ` +
+            `for it that the template does not declare (such as queued messages, or ` +
+            `subscriptions made outside the stack) does not come back.`
+        )
+      );
+    }
   }
   // Route the re-create via the OLD resource's recorded layer AND TYPE,
   // and the new resource's delete via ITS layer and type (the layers can

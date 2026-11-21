@@ -261,7 +261,10 @@ describe('reversing a delete-first replacement (go-to-k/cdkd#4690)', () => {
       'S',
       ctx
     );
-    expect(warns, warns.join('|')).toEqual([]);
+    // Only go-to-k/cdkd#6713's advisory: the old queue was deleted first.
+    expect(warns, warns.join('|')).toEqual([
+      expect.stringContaining('the deploy deleted the old resource before creating its replacement'),
+    ]);
     expect(result.failures).toBe(0);
     expect(result.warnings).toBe(0);
     expect(del).toHaveBeenCalledTimes(1);

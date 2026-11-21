@@ -34,11 +34,21 @@ A failed deploy takes no snapshot of the old resource. Both copies stay in
 AWS, and are billed, until the deploy ends, and writes that reach the old copy
 meanwhile are in its snapshot.
 
-An IAM inline policy is the one case whose old copy is deleted right after the
-new one is created: both policies attached until the deploy ends would grant
-the union of their permissions. Nothing is lost: the rollback re-creates the
-old policy, as it does the old resource of a delete-first replacement, from the
-properties the journal saved.
+A few cases delete the old copy before the deploy succeeds:
+
+| Case | When the old copy is deleted | Why |
+| --- | --- | --- |
+| An IAM inline policy | Right after the new one is created | Both policies attached until the deploy ends would grant the union of their permissions. |
+| A new resource with the old one's physical id and type, such as a Glue table moved to another database | Right after the new one is created | The id now names the new resource, so a later delete could not address the old one. |
+| An SNS subscription whose change cannot be applied in place | Before the new one is created | SNS returns the existing subscription for the same topic, protocol and endpoint. |
+| An update AWS rejects as unsupported, on a resource whose name cannot change | Before the new one is created | Only one copy can hold the name. A stateful type also needs `--force-stateful-recreation`. |
+| `--replace`, `--recreate-via-cc-api` or `--recreate-via-sdk-provider` | Before the new one is created | You asked for delete-first. A resource stored inside the re-created one goes with it. |
+
+The rollback re-creates such an old resource from the properties the journal
+saved. Nothing is lost for an inline policy. For any other type, the rollback
+output and the `cdkd rollback` plan say that what AWS held for the old
+resource beyond its recorded properties, such as queued messages or
+subscriptions made outside the stack, does not come back.
 
 > [!WARNING]
 > For a type that holds data (DynamoDB, RDS, S3 and so on), an old resource
