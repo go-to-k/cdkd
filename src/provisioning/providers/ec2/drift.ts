@@ -22,6 +22,7 @@ import {
   subnetPrivateDnsOptionsRefusal,
 } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 import { declaredBlockDeviceNames } from './read-instance-state.js';
 
 /** Recovery must not mistake an in-flight IPv6 association for absence. */
@@ -148,11 +149,14 @@ export function canonicalizeUnsettledProperties(
  *  - **AWS::EC2::Subnet**: `DescribeSubnets` for `VpcId`, `CidrBlock`,
  *    `AvailabilityZone`, `MapPublicIpOnLaunch`.
  *  - **AWS::EC2::InternetGateway**: `DescribeInternetGateways` for
- *    existence verification. The provider only handles `Tags`, which is
- *    out of scope for v1 drift.
+ *    existence verification and `Tags`.
  *  - **AWS::EC2::NatGateway**: `DescribeNatGateways` for `SubnetId`,
- *    `AllocationId`, `ConnectivityType`, `PrivateIpAddress`.
+ *    `AllocationId`, `ConnectivityType`, `PrivateIpAddress`, and a zonal
+ *    gateway's declared `Secondary*` addresses (go-to-k/cdkd#6754).
  *  - **AWS::EC2::RouteTable**: `DescribeRouteTables` for `VpcId`.
+ *  - VPC, Subnet, InternetGateway, NatGateway, RouteTable and NetworkAcl
+ *    also read `Tags` from the same `Describe*` response
+ *    (`readbackEc2Tags`, go-to-k/cdkd#6754).
  *  - **AWS::EC2::SecurityGroup**: `DescribeSecurityGroups` for
  *    `GroupName`, `GroupDescription`, `VpcId`, `Tags` (issue #1649 — the
  *    same call returns them in the CFn `[{Key,Value}]` shape, so they are
@@ -183,7 +187,9 @@ export function canonicalizeUnsettledProperties(
  *    (from `Placement`), `KernelId`, `RamdiskId`, `EnclaveOptions.Enabled`
  *    (go-to-k/cdkd#5630), `IamInstanceProfile` (ARN form — v2 fallback
  *    state holding a name will fire one-time drift, resolved via
- *    `cdkd state refresh-observed`), `Tags` (filtered `aws:*`). For
+ *    `cdkd state refresh-observed`), `Tags` (filtered `aws:*`), and for a
+ *    bag that declares them `SecurityGroups` (group names) and `UserData`
+ *    (`DescribeInstanceAttribute userData`, go-to-k/cdkd#6754). For
  *    `BlockDeviceMappings` (narrowed to the declared devices when the bag
  *    declares the list, go-to-k/cdkd#6384), `DescribeInstances` only returns
  *    `(DeviceName, Ebs.VolumeId, Ebs.DeleteOnTermination)`; cdkd
@@ -257,30 +263,27 @@ export async function readCurrentStateOnce(
   properties: Record<string, unknown> | undefined,
   context: ReadCurrentStateContext | undefined
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  const ownWrite = context?.afterOwnWrite === true;
   try {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return await this.readVpcCurrentState(physicalId, properties);
+        return await this.readVpcCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::Subnet':
-        return await this.readSubnetCurrentState(physicalId, undefined, properties);
+        return await this.readSubnetCurrentState(physicalId, undefined, properties, ownWrite);
       case 'AWS::EC2::InternetGateway':
-        return await this.readInternetGatewayCurrentState(physicalId);
+        return await this.readInternetGatewayCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::NatGateway':
-        return await this.readNatGatewayCurrentState(physicalId, properties);
+        return await this.readNatGatewayCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::RouteTable':
-        return await this.readRouteTableCurrentState(physicalId);
+        return await this.readRouteTableCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::SecurityGroup':
         return await this.readSecurityGroupCurrentState(physicalId, properties, context);
       case 'AWS::EC2::Instance':
         return await this.readInstanceCurrentState(physicalId, properties);
       case 'AWS::EC2::NetworkAcl':
-        return await this.readNetworkAclCurrentState(physicalId);
+        return await this.readNetworkAclCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::EIP':
-        return await this.readEipCurrentState(
-          physicalId,
-          properties,
-          context?.afterOwnWrite === true
-        );
+        return await this.readEipCurrentState(physicalId, properties, ownWrite);
       case 'AWS::EC2::VPCGatewayAttachment':
         return await this.readVpcGatewayAttachmentCurrentState(physicalId, properties);
       case 'AWS::EC2::Route':
@@ -329,11 +332,8 @@ export async function readCurrentStateOnce(
  * Other EC2 types (`VPC` / `Subnet` / `InternetGateway` /
  * `NatGateway` / `RouteTable` / `SecurityGroup` / `Instance` /
  * `NetworkAcl`) have first-class Tags support on the WRITE side
- * (create/update tag wiring) and don't need this declaration.
- * NOTE: `readVpcCurrentState` / `readSubnetCurrentState` do NOT
- * currently surface `Tags`, so Tags drift on those types is out of
- * v1 drift scope — `AWS::EC2::Subnet`'s `updateableProperties:
- * Tags` entry serves only the template-update path today.
+ * (create/update tag wiring) and read them back, so they need no such
+ * declaration.
  */
 export function getDriftUnknownPaths(
   this: EC2Provider,
@@ -359,6 +359,8 @@ export function getDriftUnknownPaths(
     // go-to-k/cdkd#5630: DescribeInstances reports no `Licenses` for a
     // licensed instance (measured: null on every one); only License Manager's
     // ListLicenseSpecificationsForResource reads `LicenseSpecifications`.
+    // go-to-k/cdkd#6754: a `UserData` the record holds as the mask (a secret
+    // under `Fn::Base64`) has no value to compare the readback with.
     case 'AWS::EC2::Instance':
       return [
         'NetworkInterfaces',
@@ -368,6 +370,7 @@ export function getDriftUnknownPaths(
         'Ipv6Addresses',
         'LaunchTemplate',
         'LicenseSpecifications',
+        ...(carriesSecretMask(properties?.['UserData']) ? ['UserData'] : []),
       ];
     // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
     // read back from the CIDR instead. A `monitor` encryption control

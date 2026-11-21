@@ -292,4 +292,74 @@ describe('LambdaPermissionProvider.readCurrentState', () => {
       Principal: 's3.amazonaws.com',
     });
   });
+
+  describe('EventSourceToken / FunctionUrlAuthType (go-to-k/cdkd#6758)', () => {
+    const readWith = async (condition: unknown): Promise<unknown> => {
+      const policy = {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'Perm',
+            Action: 'lambda:InvokeFunctionUrl',
+            Principal: '*',
+            ...(condition !== undefined && { Condition: condition }),
+          },
+        ],
+      };
+      mockSend.mockResolvedValueOnce({ Policy: JSON.stringify(policy) });
+      return provider.readCurrentState('Perm', 'L', 'AWS::Lambda::Permission', {
+        FunctionName: 'my-function',
+      });
+    };
+
+    it('reads both from the statement\'s StringEquals lambda: conditions', async () => {
+      const result = await readWith({
+        StringEquals: {
+          'lambda:FunctionUrlAuthType': 'NONE',
+          'lambda:EventSourceToken': 'amzn1.ask.skill.1',
+        },
+      });
+      expect(result).toMatchObject({
+        FunctionUrlAuthType: 'NONE',
+        EventSourceToken: 'amzn1.ask.skill.1',
+      });
+    });
+
+    it('omits both when the statement carries no such condition', async () => {
+      const result = await readWith(undefined);
+      expect(result).not.toHaveProperty('FunctionUrlAuthType');
+      expect(result).not.toHaveProperty('EventSourceToken');
+    });
+
+    it('settles the post-write capture only once the URL auth type reads as declared', async () => {
+      const policy = (authType: string): { Policy: string } => ({
+        Policy: JSON.stringify({
+          Statement: [
+            {
+              Sid: 'Perm',
+              Action: 'lambda:InvokeFunctionUrl',
+              Principal: '*',
+              Condition: { StringEquals: { 'lambda:FunctionUrlAuthType': authType } },
+            },
+          ],
+        }),
+      });
+      (provider as unknown as { ownWriteRereadDelaysMs: number[] }).ownWriteRereadDelaysMs = [0];
+      mockSend.mockResolvedValueOnce(policy('NONE')).mockResolvedValueOnce(policy('AWS_IAM'));
+      const result = await provider.readCurrentState(
+        'Perm',
+        'L',
+        'AWS::Lambda::Permission',
+        {
+          FunctionName: 'my-function',
+          Action: 'lambda:InvokeFunctionUrl',
+          Principal: '*',
+          FunctionUrlAuthType: 'AWS_IAM',
+        },
+        { afterOwnWrite: true }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ FunctionUrlAuthType: 'AWS_IAM' });
+    });
+  });
 });

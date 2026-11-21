@@ -384,6 +384,59 @@ if ! jq -e --arg id "${REGIONAL_ID}" '[.[0].clean[]?.logicalId] | index($id) != 
 fi
 echo "    OK: the regional NAT gateway was read back and compared clean"
 
+# --- Phase 1b2: an out-of-band tag is drift (go-to-k/cdkd#6754) --------------
+# Before #6754 the VPC, Subnet, RouteTable, InternetGateway and NatGateway
+# readbacks dropped the `Tags` their `Describe*` response carries, so a tag
+# added out of band read as no drift. One resource of each type gains a tag;
+# each must be drifted at `Tags`, and clean again once the tag is removed.
+TAG_PROBE_IDS=""
+TAG_PROBE_PHYSICAL=""
+for tag_type in VPC Subnet RouteTable InternetGateway NatGateway; do
+  tag_id=$(echo "${STATE}" | jq -r --arg t "AWS::EC2::${tag_type}" '[.resources | to_entries[] | select(.value.resourceType == $t) | select(.key | startswith("Vpc")) | .key] | sort | first // ""')
+  tag_phys=$(echo "${STATE}" | jq -r --arg id "${tag_id}" '.resources[$id].physicalId // ""')
+  if [ -z "${tag_id}" ] || [ -z "${tag_phys}" ]; then
+    echo "FAIL: no AWS::EC2::${tag_type} under the Vpc construct in state to tag" >&2
+    exit 1
+  fi
+  if ! jq -e --arg id "${tag_id}" '[.[0].clean[]?.logicalId] | index($id) != null' "${DRIFT_JSON_FILE}" >/dev/null; then
+    echo "FAIL: ${tag_id} is not clean after a fresh deploy, so the tag arm below proves nothing (drift rc=${DRIFT_RC}):" >&2
+    jq '.[0] | {drifted, deleted, notSupported, notCompared}' "${DRIFT_JSON_FILE}" >&2
+    exit 1
+  fi
+  TAG_PROBE_IDS="${TAG_PROBE_IDS} ${tag_id}"
+  TAG_PROBE_PHYSICAL="${TAG_PROBE_PHYSICAL} ${tag_phys}"
+done
+echo "==> Phase 1b2: tag${TAG_PROBE_PHYSICAL} out of band, then drift"
+# shellcheck disable=SC2086 # one resource id per word
+aws ec2 create-tags --region "${REGION}" --resources ${TAG_PROBE_PHYSICAL} \
+  --tags Key=cdkd-drift-probe,Value=out-of-band
+DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: drift after the out-of-band tag exited ${DRIFT_RC}, expected 1 (drifted)" >&2
+  cat "${DRIFT_JSON_FILE}" >&2
+  exit 1
+fi
+for tag_id in ${TAG_PROBE_IDS}; do
+  if ! jq -e --arg id "${tag_id}" '[.[0].drifted[]? | select(.logicalId == $id) | .changes[]?.path] | index("Tags") != null' "${DRIFT_JSON_FILE}" >/dev/null; then
+    echo "FAIL: ${tag_id} tagged out of band is not drifted at Tags (go-to-k/cdkd#6754):" >&2
+    jq '.[0] | {drifted, notSupported, notCompared}' "${DRIFT_JSON_FILE}" >&2
+    exit 1
+  fi
+done
+echo "    OK: every tagged resource is drifted at Tags"
+# shellcheck disable=SC2086 # one resource id per word
+aws ec2 delete-tags --region "${REGION}" --resources ${TAG_PROBE_PHYSICAL} \
+  --tags Key=cdkd-drift-probe
+DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")
+for tag_id in ${TAG_PROBE_IDS}; do
+  if ! jq -e --arg id "${tag_id}" '[.[0].clean[]?.logicalId] | index($id) != null' "${DRIFT_JSON_FILE}" >/dev/null; then
+    echo "FAIL: ${tag_id} is not clean again once the out-of-band tag is removed (drift rc=${DRIFT_RC}):" >&2
+    jq '.[0] | {drifted, notSupported, notCompared}' "${DRIFT_JSON_FILE}" >&2
+    exit 1
+  fi
+done
+echo "    OK: removing the tag makes them clean again"
+
 echo "==> Phase 1c: release ${PROBE_ID} (${PROBE_ALLOC}) out of band, then drift"
 aws ec2 release-address --allocation-id "${PROBE_ALLOC}" --region "${REGION}"
 DRIFT_RC=$(drift_json "${DRIFT_JSON_FILE}")

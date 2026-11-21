@@ -64,6 +64,7 @@ import {
   resourceIdentity,
   readIdIfExists,
   readCurrentState,
+  getDriftUnknownPaths,
   readUserCurrentState,
   readGroupCurrentState,
   collectInlinePolicies,
@@ -472,6 +473,10 @@ export class IAMUserGroupProvider implements ResourceProvider {
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     return resourceType === 'AWS::IAM::User' ? ['Groups'] : [];
+  }
+
+  getDriftUnknownPaths(resourceType: string): string[] {
+    return getDriftUnknownPaths(resourceType);
   }
 
   readCurrentState(
