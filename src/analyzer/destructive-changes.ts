@@ -140,8 +140,11 @@ function destructiveImpactOf(
 /**
  * go-to-k/cdkd#6713: whether this replacement deletes the old copy before the
  * deploy succeeds, as far as the plan can tell from the template, the state
- * and the flags; it reads nothing from AWS. Mirrors `earlyDeletedOld`, the
- * rollback's verdict over the same replacement:
+ * and the flags; it reads nothing from AWS. It notes the replacements
+ * `earlyDeletedOld`, the rollback's verdict, will report, and may name the
+ * order more exactly: an SNS subscription's journal records no order, so the
+ * rollback says `during-deploy` where the plan knows `before-create`.
+ *
  *
  * - a `--recreate-via-*` target is destroyed, then created, unless the
  *   template keeps it (`UpdateReplacePolicy: Retain`);

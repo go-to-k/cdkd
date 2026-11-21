@@ -217,7 +217,9 @@ export function renderChangeLines(
           logFn(`      [new physical id: ${LEGACY_HANDLE_HEAL_REASON}]`);
         } else if (change.providerReplacement !== undefined) {
           // go-to-k/cdkd#6713: the old resource goes before the deploy
-          // succeeds, so say what a failed deploy's rollback lacks.
+          // succeeds, so say what a failed deploy's rollback lacks. The
+          // template type is the record's here: `providerReplacementReason`
+          // marks no record of another type, as `plannedEarlyDelete` checks.
           const early = providerReplacementOldDeleted(change.resourceType);
           logFn(
             `      [requires replacement: ${stripForDisplay(change.providerReplacement)}; ` +
