@@ -214,6 +214,8 @@ export async function updateInIdLogScope(
     // go-to-k/cdkd#6709: nor is an UNCHANGED key the type's handler keeps
     // without it and acts on when re-sent (a Lambda function's `Code`, which
     // made the handler call `UpdateFunctionCode` on an update that left it alone).
+    // It IS re-added when the patch also changes `Architectures`, which Lambda
+    // takes on `UpdateFunctionCode`: that path has no handler measurement.
     // See `create()`: started alongside the update, awaited at its end.
     const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
     const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
@@ -222,7 +224,11 @@ export async function updateInIdLogScope(
         resourceType,
         cleanProperties
       );
-      const keptWhenOmitted = getWriteOnlyKeysKeptWhenOmitted(resourceType);
+      const keptWhenOmitted = getWriteOnlyKeysKeptWhenOmitted(
+        resourceType,
+        cleanProperties,
+        cleanPreviousProperties
+      );
       const previousWithoutWriteOnly = { ...cleanPreviousProperties };
       for (const propertyName of writeOnlyProperties) {
         if (

@@ -43,6 +43,7 @@ import {
   isAwsEmulatorRegistryMiss,
   reportAwsEmulatorRegistryMiss,
 } from './describe-type.js';
+import { isDeepStrictEqual } from 'node:util';
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
@@ -278,23 +279,39 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
  * `FunctionScalingConfig` on the Managed Instances image function made no such
  * call, so leaving the key out in that case serves parity and speed alike.
  *
- * Require handler measurements before adding an entry. Readback omits
- * write-only values, so omitting them from a Cloud Control patch can lose them
- * (go-to-k/cdkd#809).
+ * Each key maps to the sibling keys it must still TRAVEL WITH: a change to one
+ * of those re-adds the unchanged key as before. `Architectures` is a parameter
+ * of Lambda's `UpdateFunctionCode`, not of `UpdateFunctionConfiguration`, and
+ * the handler was never measured on a patch changing it without `Code`.
+ *
+ * Require handler measurements before adding an entry, or before dropping a
+ * sibling. Readback omits write-only values, so omitting them from a Cloud
+ * Control patch can lose them (go-to-k/cdkd#809).
  */
-const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['AWS::Lambda::Function', new Set(['Code'])],
-]);
-
-const NO_KEYS: ReadonlySet<string> = new Set();
+const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
+  string,
+  ReadonlyMap<string, readonly string[]>
+> = new Map([['AWS::Lambda::Function', new Map([['Code', ['Architectures']]])]]);
 
 /**
  * The write-only top-level keys of `resourceType` that
  * `CloudControlProvider.update` must not re-add while UNCHANGED
  * (go-to-k/cdkd#6709). A changed one is still re-added: that is the update.
+ * A key is left out of the result when a sibling it travels with differs
+ * between the two sides, so the caller re-adds it for that update.
  */
-export function getWriteOnlyKeysKeptWhenOmitted(resourceType: string): ReadonlySet<string> {
-  return WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType) ?? NO_KEYS;
+export function getWriteOnlyKeysKeptWhenOmitted(
+  resourceType: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const [key, travelsWith] of WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType) ?? []) {
+    if (travelsWith.every((k) => isDeepStrictEqual(properties[k], previousProperties[k]))) {
+      result.add(key);
+    }
+  }
+  return result;
 }
 
 /**

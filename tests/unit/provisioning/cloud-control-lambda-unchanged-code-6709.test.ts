@@ -148,6 +148,87 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
     expect(sentPatch()).toEqual([{ op: 'replace', path: '/MemorySize', value: 256 }]);
   });
 
+  it('leaves an unchanged S3 Code out of a configuration-only patch', async () => {
+    // The shape CDK emits by default for an asset-backed function.
+    mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
+    const code = { S3Bucket: 'cdk-assets', S3Key: 'aaaa.zip' };
+
+    await provider.update(
+      'Fn',
+      'fn-1',
+      'AWS::Lambda::Function',
+      { Code: { ...code }, Timeout: 30 },
+      { Code: code, Timeout: 3 }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/Timeout', value: 30 }]);
+  });
+
+  it('sends an S3 Code whose S3Key alone changed', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
+    const next = { S3Bucket: 'cdk-assets', S3Key: 'bbbb.zip' };
+
+    await provider.update(
+      'Fn',
+      'fn-1',
+      'AWS::Lambda::Function',
+      { Code: next, MemorySize: 128 },
+      { Code: { S3Bucket: 'cdk-assets', S3Key: 'aaaa.zip' }, MemorySize: 128 }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'add', path: '/Code', value: next }]);
+  });
+
+  it('re-adds an unchanged Code when Architectures changes', async () => {
+    // Lambda takes `Architectures` on `UpdateFunctionCode`, and the handler
+    // was never measured on a patch changing it without `Code`.
+    mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
+    const code = { S3Bucket: 'cdk-assets', S3Key: 'aaaa.zip' };
+
+    await provider.update(
+      'Fn',
+      'fn-1',
+      'AWS::Lambda::Function',
+      { Code: { ...code }, Architectures: ['arm64'] },
+      { Code: code, Architectures: ['x86_64'] }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'add', path: '/Code', value: code });
+    expect(patch).toContainEqual({ op: 'replace', path: '/Architectures', value: ['arm64'] });
+    expect(paths(patch)).toEqual(['/Architectures', '/Code']);
+  });
+
+  it('re-adds an unchanged Code when Architectures is newly declared', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
+    const code = { ZipFile: 'exports.handler = async () => ({ ok: true });' };
+
+    await provider.update(
+      'Fn',
+      'fn-1',
+      'AWS::Lambda::Function',
+      { Code: { ...code }, Architectures: ['arm64'] },
+      { Code: code }
+    );
+
+    expect(paths(sentPatch())).toEqual(['/Architectures', '/Code']);
+  });
+
+  it('leaves an unchanged Code out when Architectures is unchanged too', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
+    const code = { S3Bucket: 'cdk-assets', S3Key: 'aaaa.zip' };
+
+    await provider.update(
+      'Fn',
+      'fn-1',
+      'AWS::Lambda::Function',
+      { Code: { ...code }, Architectures: ['arm64'], MemorySize: 256 },
+      { Code: code, Architectures: ['arm64'], MemorySize: 128 }
+    );
+
+    expect(sentPatch()).toEqual([{ op: 'replace', path: '/MemorySize', value: 256 }]);
+  });
+
   it('still sends a changed Code', async () => {
     mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
     const next = { ImageUri: '123456789012.dkr.ecr.us-east-1.amazonaws.com/repo@sha256:bbbb' };
@@ -203,12 +284,28 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
 });
 
 describe('getWriteOnlyKeysKeptWhenOmitted (go-to-k/cdkd#6709)', () => {
+  const kept = (
+    type: string,
+    properties: Record<string, unknown> = {},
+    previous: Record<string, unknown> = {}
+  ): string[] => [...getWriteOnlyKeysKeptWhenOmitted(type, properties, previous)];
+
   it("names a Lambda function's Code and nothing else of the type", () => {
-    expect([...getWriteOnlyKeysKeptWhenOmitted('AWS::Lambda::Function')]).toEqual(['Code']);
+    expect(kept('AWS::Lambda::Function')).toEqual(['Code']);
+    expect(
+      kept('AWS::Lambda::Function', { Architectures: ['arm64'] }, { Architectures: ['arm64'] })
+    ).toEqual(['Code']);
+  });
+
+  it('names nothing for a Lambda function whose Architectures differs', () => {
+    expect(
+      kept('AWS::Lambda::Function', { Architectures: ['arm64'] }, { Architectures: ['x86_64'] })
+    ).toEqual([]);
+    expect(kept('AWS::Lambda::Function', {}, { Architectures: ['arm64'] })).toEqual([]);
   });
 
   it('is empty for a type with no measured entry', () => {
-    expect(getWriteOnlyKeysKeptWhenOmitted('AWS::ECS::Service').size).toBe(0);
-    expect(getWriteOnlyKeysKeptWhenOmitted('AWS::Synthetics::Canary').size).toBe(0);
+    expect(kept('AWS::ECS::Service')).toEqual([]);
+    expect(kept('AWS::Synthetics::Canary')).toEqual([]);
   });
 });
