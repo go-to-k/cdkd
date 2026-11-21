@@ -260,9 +260,15 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
         GROUP_STRIP,
         'an inline policy deleted'
       ),
+      // The handler cannot remove it either: CloudFormation fails with DeleteConflict.
+      refused(
+        'a user outside the stack still in the group (stack destroy)',
+        `${P}iam-user-group/group.ts`,
+        'membership this destroy did not remove (a user added outside the stack, one '
+      ),
     ],
     beyondCfn: [
-      'removes every member user, where DeleteGroup would refuse a group with users (#6750)',
+      'on a deploy-time delete only, removes every member user, where DeleteGroup would refuse a group with users (#6750)',
     ],
   },
   none(
