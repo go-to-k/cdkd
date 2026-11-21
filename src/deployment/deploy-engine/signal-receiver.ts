@@ -34,7 +34,14 @@ import {
 } from '@aws-sdk/client-cloudformation';
 import { safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { bootstrapCallsByResource } from './signal-receiver/bootstrap-calls.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
+
+export {
+  bootstrapCallsByResource,
+  parseBootstrapCall,
+  type BootstrapCalls,
+} from './signal-receiver/bootstrap-calls.js';
 
 /** The tag that marks a stack as a cdkd signal receiver. */
 export const RECEIVER_TAG_KEY = 'cdkd:signal-receiver';
@@ -57,6 +64,12 @@ export interface SignalCandidate {
   count: number;
   timeoutMs: number;
   hasInitMetadata: boolean;
+  /**
+   * go-to-k/cdkd#6706: an `AutoScalingRollingUpdate` declaring
+   * `WaitOnResourceSignals`: its `PauseTime` (CloudFormation's default 5
+   * minutes when absent), the wait for the replaced instances' signals.
+   */
+  rollingPauseMs?: number;
 }
 
 export interface ReceiverLogger {
@@ -90,8 +103,10 @@ export function signalCandidateOf(resource: unknown): SignalCandidate | undefine
     typeof r.Metadata === 'object' &&
     Object.hasOwn(r.Metadata, 'AWS::CloudFormation::Init');
   const hasPolicy = policy !== undefined && policy !== null && typeof policy === 'object';
-  if (!hasPolicy && !hasInitMetadata) return undefined;
-  if (!hasPolicy) return { count: 0, timeoutMs: 0, hasInitMetadata };
+  const rollingPauseMs = rollingSignalPauseMs(resource);
+  const rolling = rollingPauseMs !== undefined && { rollingPauseMs };
+  if (!hasPolicy && !hasInitMetadata && !rolling) return undefined;
+  if (!hasPolicy) return { count: 0, timeoutMs: 0, hasInitMetadata, ...rolling };
   const p = policy as Record<string, unknown>;
   const rawCount = p['Count'];
   const count =
@@ -106,20 +121,31 @@ export function signalCandidateOf(resource: unknown): SignalCandidate | undefine
     isoDurationMs(p['Timeout']) ?? DEFAULT_SIGNAL_TIMEOUT_MS,
     MAX_SIGNAL_TIMEOUT_MS
   );
-  return { count, timeoutMs, hasInitMetadata };
+  return { count, timeoutMs, hasInitMetadata, ...rolling };
+}
+
+/** An `AutoScalingRollingUpdate` with `WaitOnResourceSignals`: its `PauseTime` in ms. */
+function rollingSignalPauseMs(resource: object): number | undefined {
+  const policy = (resource as { UpdatePolicy?: unknown }).UpdatePolicy;
+  if (policy === null || typeof policy !== 'object') return undefined;
+  const replacing = (policy as Record<string, unknown>)['AutoScalingReplacingUpdate'];
+  const willReplace =
+    replacing !== null && typeof replacing === 'object'
+      ? (replacing as Record<string, unknown>)['WillReplace']
+      : undefined;
+  // A replacing update takes precedence: the new group's CreationPolicy waits.
+  if (willReplace === true || willReplace === 'true') return undefined;
+  const rolling = (policy as Record<string, unknown>)['AutoScalingRollingUpdate'];
+  if (rolling === null || typeof rolling !== 'object') return undefined;
+  const wait = (rolling as Record<string, unknown>)['WaitOnResourceSignals'];
+  if (wait !== true && wait !== 'true') return undefined;
+  const pause = isoDurationMs((rolling as Record<string, unknown>)['PauseTime']);
+  return Math.min(pause ?? DEFAULT_SIGNAL_TIMEOUT_MS, MAX_SIGNAL_TIMEOUT_MS);
 }
 
 /** Every template resource asking the receiver for something. */
 export function signalCandidatesOf(template: CloudFormationTemplate): Map<string, SignalCandidate> {
   return signalPlanOf(template).candidates;
-}
-
-/** How the template's user data calls `cfn-init` / `cfn-signal` for one resource. */
-export interface BootstrapCalls {
-  signedSignal: boolean;
-  signedInit: boolean;
-  /** A call naming the resource without credentials (`--role` etc.). */
-  unsigned: boolean;
 }
 
 /**
@@ -153,142 +179,12 @@ export function signalPlanOf(template: CloudFormationTemplate): {
       unsigned.push(id);
       continue;
     }
-    if (candidate.count > 0 ? call?.signedSignal === true : call?.signedInit === true) {
+    const signalled = candidate.count > 0 || candidate.rollingPauseMs !== undefined;
+    if (signalled ? call?.signedSignal === true : call?.signedInit === true) {
       candidates.set(id, candidate);
     }
   }
   return { candidates, unsigned };
-}
-
-/** Every `cfn-init` / `cfn-signal` call in the template's user data, by the resource it names. */
-export function bootstrapCallsByResource(
-  resources: Record<string, unknown>
-): Map<string, BootstrapCalls> {
-  const out = new Map<string, BootstrapCalls>();
-  for (const script of userDataScriptsOf(resources)) {
-    for (const command of commandsOf(script)) {
-      const call = parseBootstrapCall(command);
-      if (call === undefined) continue;
-      const entry = out.get(call.resource) ?? {
-        signedSignal: false,
-        signedInit: false,
-        unsigned: false,
-      };
-      if (!call.signed) entry.unsigned = true;
-      else if (call.kind === 'signal') entry.signedSignal = true;
-      else entry.signedInit = true;
-      out.set(call.resource, entry);
-    }
-  }
-  return out;
-}
-
-const TOKEN_PLACEHOLDER = '__CDKD_TOKEN__';
-const CREDENTIAL_FLAGS = new Set(['--role', '--access-key', '--credential-file', '-f']);
-
-/** Every `UserData` value in the template (instances, launch templates, launch configurations), as script text. */
-function userDataScriptsOf(resources: Record<string, unknown>): string[] {
-  const out: string[] = [];
-  const walk = (value: unknown, depth: number): void => {
-    if (depth > 12 || value === null || typeof value !== 'object') return;
-    if (Array.isArray(value)) {
-      for (const v of value) walk(v, depth + 1);
-      return;
-    }
-    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
-      if (key === 'UserData') out.push(renderScript(inner, true));
-      else walk(inner, depth + 1);
-    }
-  };
-  for (const resource of Object.values(resources)) {
-    if (resource !== null && typeof resource === 'object') {
-      walk((resource as { Properties?: unknown }).Properties, 0);
-    }
-  }
-  return out;
-}
-
-/** The text a user-data value renders to; every unresolved reference becomes a placeholder. */
-function renderScript(value: unknown, topLevel = false): string {
-  if (typeof value === 'string') {
-    if (topLevel && /^[A-Za-z0-9+/=\s]+$/.test(value) && value.length >= 8) {
-      const decoded = Buffer.from(value, 'base64').toString('utf8');
-      if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(decoded)) return decoded;
-    }
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return TOKEN_PLACEHOLDER;
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length !== 1) return TOKEN_PLACEHOLDER;
-  const [fn, arg] = entries[0]!;
-  if (fn === 'Fn::Base64') return renderScript(arg);
-  if (
-    fn === 'Fn::Join' &&
-    Array.isArray(arg) &&
-    typeof arg[0] === 'string' &&
-    Array.isArray(arg[1])
-  ) {
-    return (arg[1] as unknown[]).map((part) => renderScript(part)).join(arg[0]);
-  }
-  if (fn === 'Fn::Sub') {
-    const body = typeof arg === 'string' ? arg : Array.isArray(arg) ? arg[0] : undefined;
-    if (typeof body === 'string') return body.replace(/\$\{[^!][^}]*\}/g, TOKEN_PLACEHOLDER);
-  }
-  return TOKEN_PLACEHOLDER;
-}
-
-/** The script's commands: line continuations joined, split at newlines and `;` `&&` `||` `|`. */
-function commandsOf(script: string): string[] {
-  return script
-    .replace(/\\\r?\n/g, ' ')
-    .split(/\r?\n|;|&&|\|\||\|/)
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0);
-}
-
-/**
- * A `cfn-init` / `cfn-signal` (Linux path or `.exe`) or `aws cloudformation
- * signal-resource` command: which resource it names and whether it passes
- * credentials. `undefined` for anything else, or one naming no resource.
- */
-export function parseBootstrapCall(
-  command: string
-): { kind: 'init' | 'signal'; resource: string; signed: boolean } | undefined {
-  const tokens = command
-    .split(/\s+/)
-    .map((t) => t.replace(/^[\[("',]+|[\]),"']+$/g, ''))
-    .filter((t) => t.length > 0);
-  const at = tokens.findIndex((t) => /(?:^|[/\\])cfn-(?:init|signal)(?:\.exe)?$/i.test(t));
-  if (at !== -1) {
-    const kind = /init(?:\.exe)?$/i.test(tokens[at]!) ? 'init' : 'signal';
-    const args = tokens.slice(at + 1);
-    const resource = flagValue(args, ['--resource', '-r']);
-    if (resource === undefined) return undefined;
-    const signed = args.some((t) => CREDENTIAL_FLAGS.has(t.split('=')[0]!));
-    return { kind, resource, signed };
-  }
-  const aws = tokens.findIndex(
-    (t, i) =>
-      /(?:^|[/\\])aws(?:\.exe)?$/i.test(t) &&
-      tokens[i + 1] === 'cloudformation' &&
-      tokens[i + 2] === 'signal-resource'
-  );
-  if (aws !== -1) {
-    const resource = flagValue(tokens.slice(aws + 3), ['--logical-resource-id']);
-    return resource === undefined ? undefined : { kind: 'signal', resource, signed: true };
-  }
-  return undefined;
-}
-
-function flagValue(args: string[], names: string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const [flag, inline] = args[i]!.split('=', 2) as [string, string | undefined];
-    if (!names.includes(flag)) continue;
-    const value = inline ?? args[i + 1];
-    return value === undefined || value.includes(TOKEN_PLACEHOLDER) ? undefined : value;
-  }
-  return undefined;
 }
 
 /** Whether a CloudFormation stack can carry this name (a nested child's cannot). */
@@ -358,6 +254,18 @@ const SETTLED = /(_COMPLETE|_FAILED)$/;
 export class SignalReceiver {
   private stackId: string | undefined;
   private armed = new Set<string>();
+  /**
+   * The receiver's resources before this deploy changed them: what a
+   * failure restores (CloudFormation rolls a served resource's metadata back
+   * with the deploy, and so does cdkd's rollback).
+   */
+  private prior: TemplateResources | undefined;
+  /** The resolved metadata each served resource was last sent with (to restore it). */
+  private metadataById = new Map<string, unknown>();
+  /** Serializes the receiver updates this deploy's rolling updates make. */
+  private rollingChain: Promise<unknown> = Promise.resolve();
+  /** go-to-k/cdkd#6706: the count each rolling-update waiter was armed with. */
+  private armedCounts = new Map<string, number>();
   /** Armed waiters whose signals arrived. */
   private finished = new Set<string>();
   /** Every waiter `arm()` added, disarmed ones included. */
@@ -397,6 +305,120 @@ export class SignalReceiver {
   /** Whether this deploy armed a waiter for `logicalId`. */
   isArmed(logicalId: string): boolean {
     return this.armed.has(logicalId);
+  }
+
+  /**
+   * go-to-k/cdkd#6706: arm a rolling update's waiter for `count` signals,
+   * right before its Instance Refresh starts (never for an update that runs
+   * none). Only while the receiver is idle: one waiter of this deploy still
+   * pending holds it `UPDATE_IN_PROGRESS`, and that refresh then waits for no
+   * signal (warned). Never throws.
+   */
+  armRolling(logicalId: string, count: number): Promise<boolean> {
+    const run = async (): Promise<boolean> => {
+      if (this.stackId === undefined || count <= 0) return false;
+      try {
+        const client = this.client();
+        let status = (await this.describe(client, this.stackId))?.StackStatus;
+        // This deploy's own metadata update (no waiter pending) settles in
+        // seconds: wait for it rather than refusing.
+        if (
+          status?.endsWith('_IN_PROGRESS') === true &&
+          this.armedIds.every((id) => this.finished.has(id))
+        ) {
+          status = await this.awaitSettled(client);
+        }
+        if (status === undefined || status.endsWith('_IN_PROGRESS')) {
+          this.logger.warn(
+            safeMsg`${logicalId}: the CloudFormation signal receiver is busy with another wait of this deploy (${status ?? 'gone'}), so this rolling update waits for no signal`
+          );
+          return false;
+        }
+        const current = await this.currentResources(client);
+        this.prior ??= current;
+        const metadata = current[logicalId]?.['Metadata'] ?? this.metadataById.get(logicalId);
+        if (current[logicalId] !== undefined) {
+          // A waiter or holder of the same logical id cannot become a fresh
+          // waiter in place: remove it first, in its own update.
+          const without = { ...current };
+          delete without[logicalId];
+          await this.update(client, { [ANCHOR_ID]: anchorResource(), ...without });
+          if ((await this.awaitSettled(client)) !== 'UPDATE_COMPLETE') {
+            throw new Error('the receiver did not finish removing the earlier waiter');
+          }
+        }
+        await this.update(client, {
+          [ANCHOR_ID]: anchorResource(),
+          ...current,
+          [logicalId]: waiterResource(count, metadata),
+        });
+        if (metadata !== undefined) this.metadataById.set(logicalId, metadata);
+        await this.awaitWaiting(client, new Set([logicalId]));
+        this.armed.add(logicalId);
+        this.armedIds.push(logicalId);
+        this.armedCounts.set(logicalId, count);
+        this.armedUpdate = true;
+        this.logger.info(
+          safeMsg`Signal receiver ${this.stackName}: the rolling update of ${logicalId} waits for ${count} signal(s)`
+        );
+        return true;
+      } catch (error) {
+        this.fallbackWarn(error);
+        return false;
+      }
+    };
+    const next = this.rollingChain.then(run, run);
+    this.rollingChain = next;
+    return next;
+  }
+
+  /**
+   * go-to-k/cdkd#6706: a rolling update's FAILURE so far: the waiter failed
+   * (or the receiver's rollback removed it), with the signal's reason from the
+   * events since `since`. `undefined` while it still waits or completed.
+   */
+  async failureOf(logicalId: string, since: number): Promise<string | undefined> {
+    if (!this.armed.has(logicalId) || this.stackId === undefined) return undefined;
+    const client = this.client();
+    let status: string | undefined;
+    try {
+      const out = await client.send(
+        new DescribeStackResourceCommand({ StackName: this.stackId, LogicalResourceId: logicalId })
+      );
+      status = out.StackResourceDetail?.ResourceStatus;
+    } catch (error) {
+      if (!notFound(error)) return undefined;
+      status = 'GONE';
+    }
+    if (status !== 'CREATE_FAILED' && status !== 'GONE' && status?.startsWith('DELETE') !== true) {
+      return undefined;
+    }
+    const reason =
+      (await this.failureReasonOf(client, logicalId, since)) ?? `its signal wait ended (${status})`;
+    await this.restoreAfterFailure(logicalId);
+    return reason;
+  }
+
+  /**
+   * go-to-k/cdkd#6706: a rolling update's wait failed. Before the provider
+   * fails the update (and cdkd's rollback launches instances on the restored
+   * configuration), put the group's pre-deploy metadata back on a holder:
+   * CloudFormation's rollback of the receiver left a template without it.
+   * An unfinished wait is cancelled first. Never throws.
+   */
+  async restoreAfterFailure(logicalId: string): Promise<void> {
+    if (this.stackId === undefined) return;
+    try {
+      const client = this.client();
+      if ((await this.describe(client, this.stackId))?.StackStatus === 'UPDATE_IN_PROGRESS') {
+        await client.send(new CancelUpdateStackCommand({ StackName: this.stackId }));
+      }
+      await this.restoreServed(client);
+    } catch (error) {
+      this.logger.warn(
+        safeMsg`${logicalId}: could not restore its cfn-init metadata in the CloudFormation signal receiver (${describeAwsFailure(error).summary}); instances launched before the next deploy may not find it`
+      );
+    }
   }
 
   /** An armed resource that was not created after all: no wait, cancelled at `settle()`. */
@@ -464,12 +486,15 @@ export class SignalReceiver {
    */
   async arm(
     armIds: ReadonlySet<string>,
-    resolveMetadata: (logicalId: string) => Promise<unknown>
+    resolveMetadata: (logicalId: string) => Promise<unknown>,
+    /** go-to-k/cdkd#6706: a rolling update's signal count (the instances it replaces). */
+    counts: ReadonlyMap<string, number> = new Map()
   ): Promise<ReadonlySet<string>> {
     if (this.stackId === undefined) return new Set();
     try {
       const client = this.client();
       const current = await this.currentResources(client);
+      this.prior ??= current;
       const desired: TemplateResources = { [ANCHOR_ID]: anchorResource() };
       const toArm = new Set<string>();
       for (const [id, candidate] of this.candidates) {
@@ -483,8 +508,10 @@ export class SignalReceiver {
           if (current[id] !== undefined) desired[id] = current[id];
           continue;
         }
-        if (armIds.has(id) && candidate.count > 0) {
-          desired[id] = waiterResource(candidate.count, metadata);
+        if (metadata !== undefined) this.metadataById.set(id, metadata);
+        const count = counts.get(id) ?? candidate.count;
+        if (armIds.has(id) && count > 0) {
+          desired[id] = waiterResource(count, metadata);
           toArm.add(id);
         } else if (candidate.hasInitMetadata) {
           const existing = current[id];
@@ -511,6 +538,7 @@ export class SignalReceiver {
       if (toArm.size > 0) await this.awaitWaiting(client, toArm);
       this.armed = toArm;
       this.armedIds = [...toArm];
+      this.armedCounts = new Map([...counts].filter(([id]) => toArm.has(id)));
       if (toArm.size > 0) {
         this.logger.info(
           safeMsg`Signal receiver ${this.stackName}: waiting for CreationPolicy signals from ${[...toArm].join(', ')}`
@@ -530,13 +558,21 @@ export class SignalReceiver {
    * the receiver rolls the waiter back, and when `stop()` says the deploy is
    * stopping (a sibling failed, or Ctrl-C).
    */
-  async awaitSignals(logicalId: string, startedAt: number, stop: () => boolean): Promise<void> {
+  async awaitSignals(
+    logicalId: string,
+    startedAt: number,
+    stop: () => boolean,
+    /** go-to-k/cdkd#6706: a rolling update's own deadline, in place of the policy's `Timeout`. */
+    deadlineOverride?: number
+  ): Promise<void> {
     const candidate = this.candidates.get(logicalId);
     if (!this.armed.has(logicalId) || candidate === undefined || this.stackId === undefined) return;
     const client = this.client();
-    const deadline = startedAt + candidate.timeoutMs;
+    const deadline = deadlineOverride ?? startedAt + candidate.timeoutMs;
+    const count = this.armedCounts.get(logicalId) ?? candidate.count;
+    const timeoutMs = deadlineOverride !== undefined ? deadline - this.now() : deadline - startedAt;
     this.logger.info(
-      safeMsg`${logicalId}: waiting for ${candidate.count} CreationPolicy signal(s) (timeout ${Math.round(candidate.timeoutMs / 1000)}s)`
+      safeMsg`${logicalId}: waiting for ${count} CreationPolicy signal(s) (timeout ${Math.round(timeoutMs / 1000)}s)`
     );
     for (;;) {
       if (stop())
@@ -580,7 +616,7 @@ export class SignalReceiver {
       }
       if (this.now() >= deadline) {
         throw new Error(
-          safeMsg`${logicalId} did not receive ${candidate.count} CreationPolicy signal(s) within ${Math.round(candidate.timeoutMs / 1000)}s`
+          safeMsg`${logicalId} did not receive ${count} CreationPolicy signal(s) within ${Math.round(timeoutMs / 1000)}s`
         );
       }
       await this.sleep(Math.min(POLL_INTERVAL_MS, Math.max(deadline - this.now(), 0)));
@@ -604,11 +640,31 @@ export class SignalReceiver {
         await client.send(new CancelUpdateStackCommand({ StackName: this.stackId }));
         this.logger.debug(safeMsg`Cancelled the signal receiver's unfinished update`);
       }
+      await this.restoreServed(client);
     } catch (error) {
       this.logger.debug(
-        safeMsg`Could not cancel the signal receiver's update: ${describeAwsFailure(error).summary}`
+        safeMsg`Could not settle the signal receiver: ${describeAwsFailure(error).summary}`
       );
     }
+  }
+
+  /**
+   * After a cancel or a FAILURE signal rolled the receiver back to a template
+   * an earlier re-arm stripped, put each served resource's metadata back on a
+   * holder, so cfn-init on an instance launched later still finds it.
+   */
+  private async restoreServed(client: CloudFormationClient): Promise<void> {
+    if ((await this.awaitSettled(client)) === undefined) return;
+    const current = await this.currentResources(client);
+    const served = new Set([...Object.keys(this.prior ?? {}), ...this.metadataById.keys()]);
+    const missing = [...served].filter((id) => current[id] === undefined);
+    if (missing.length === 0) return;
+    const restored: TemplateResources = { [ANCHOR_ID]: anchorResource(), ...current };
+    for (const id of missing) {
+      restored[id] = holderResource(this.prior?.[id]?.['Metadata'] ?? this.metadataById.get(id));
+    }
+    await this.update(client, restored);
+    await this.awaitSettled(client);
   }
 
   /**

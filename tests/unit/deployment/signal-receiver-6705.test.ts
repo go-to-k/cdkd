@@ -269,6 +269,131 @@ describe('SignalReceiver.arm / awaitSignals / settle', () => {
     await expect(r.awaitSignals('I', 0, () => false)).resolves.toBeUndefined();
   });
 
+  it('arms a rolling update with the count it is handed, and failureOf reads its FAILURE (go-to-k/cdkd#6706)', async () => {
+    let failed = false;
+    const { r, updates } = armedReceiver(() => (failed ? undefined : 'CREATE_IN_PROGRESS'));
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined, new Map([['I', 3]]));
+    expect((updates[0]!['I'] as { CreationPolicy: unknown }).CreationPolicy).toEqual({
+      ResourceSignal: { Count: 3, Timeout: 'PT12H' },
+    });
+    await expect(r.failureOf('I', 0)).resolves.toBeUndefined();
+    failed = true;
+    await expect(r.failureOf('I', 0)).resolves.toBe('Received FAILURE signal with UniqueId i-9');
+  });
+
+  it('armRolling replaces an earlier entry in two updates, keeping its metadata (go-to-k/cdkd#6706)', async () => {
+    const earlier = { Type: 'AWS::CloudFormation::WaitConditionHandle', Metadata: { m: 1 } };
+    const { r, updates } = armedReceiver(() => 'CREATE_IN_PROGRESS', { I: earlier }, true);
+    await r.ensure(ARN);
+    await expect(r.armRolling('I', 2)).resolves.toBe(true);
+    expect(updates[0]!['I']).toBeUndefined();
+    expect(updates[1]!['I']).toEqual({
+      Type: 'AWS::CloudFormation::WaitCondition',
+      CreationPolicy: { ResourceSignal: { Count: 2, Timeout: 'PT12H' } },
+      Metadata: { m: 1 },
+    });
+    expect(r.isArmed('I')).toBe(true);
+  });
+
+  it('armRolling does not arm while the receiver is busy with another wait', async () => {
+    const { r, updates, setStatus } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    setStatus('UPDATE_IN_PROGRESS');
+    await expect(r.armRolling('I', 2)).resolves.toBe(false);
+    expect(updates).toHaveLength(0);
+    expect(r.isArmed('I')).toBe(false);
+  });
+
+  it('settle after an unsignalled wait cancels, then puts a served resource the rollback removed back on a holder', async () => {
+    let status = 'UPDATE_COMPLETE';
+    // The receiver template as CloudFormation holds it: I is present until the
+    // re-arm removed it; the cancel rolls back to that stripped template.
+    let template: Record<string, unknown> = { I: { Type: 'AWS::CloudFormation::WaitConditionHandle', Metadata: { m: 1 } } };
+    const sentTemplates: Record<string, unknown>[] = [];
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => ({ Stacks: [receiverStack(status)] })],
+        [GetTemplateCommand, () => ({ TemplateBody: JSON.stringify({ Resources: template }) })],
+        [
+          UpdateStackCommand,
+          (cmd) => {
+            const resources = JSON.parse((cmd as UpdateStackCommand).input.TemplateBody!).Resources;
+            sentTemplates.push(resources);
+            const { CdkdSignalReceiverAnchor: _a, ...rest } = resources;
+            template = rest;
+            status = 'UPDATE_COMPLETE';
+            return {};
+          },
+        ],
+        [DescribeStackResourceCommand, () => ({ StackResourceDetail: { ResourceStatus: 'CREATE_IN_PROGRESS' } })],
+        [
+          CancelUpdateStackCommand,
+          () => {
+            const { I: _i, ...stripped } = template;
+            template = stripped;
+            status = 'UPDATE_ROLLBACK_COMPLETE';
+            return {};
+          },
+        ],
+      ])
+    );
+    const r = new SignalReceiver('App', new Map([['I', signalCandidateOf(instance)!]]), () => c, logger(), clock());
+    await r.ensure(ARN);
+    await r.armRolling('I', 2);
+    status = 'UPDATE_IN_PROGRESS';
+    await r.settle();
+    expect(calls.some((x) => x instanceof CancelUpdateStackCommand)).toBe(true);
+    expect(sentTemplates.at(-1)!['I']).toEqual({
+      Type: 'AWS::CloudFormation::WaitConditionHandle',
+      Metadata: { m: 1 },
+    });
+  });
+
+  it('failureOf restores the pre-deploy metadata before it reports, so a rollback-launched instance finds it', async () => {
+    let status = 'UPDATE_COMPLETE';
+    let template: Record<string, unknown> = { I: { Type: 'AWS::CloudFormation::WaitConditionHandle', Metadata: { v: 'before' } } };
+    const sentTemplates: Record<string, unknown>[] = [];
+    let resourceStatus: string | undefined = 'CREATE_IN_PROGRESS';
+    const { client: c } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => ({ Stacks: [receiverStack(status)] })],
+        [GetTemplateCommand, () => ({ TemplateBody: JSON.stringify({ Resources: template }) })],
+        [
+          UpdateStackCommand,
+          (cmd) => {
+            const resources = JSON.parse((cmd as UpdateStackCommand).input.TemplateBody!).Resources;
+            sentTemplates.push(resources);
+            const { CdkdSignalReceiverAnchor: _a, ...rest } = resources;
+            template = rest;
+            return {};
+          },
+        ],
+        [
+          DescribeStackResourceCommand,
+          () => {
+            if (resourceStatus === undefined) throw new Error('Resource I does not exist for stack App');
+            return { StackResourceDetail: { ResourceStatus: resourceStatus } };
+          },
+        ],
+        [DescribeStackEventsCommand, () => ({ StackEvents: [] })],
+      ])
+    );
+    const r = new SignalReceiver('App', new Map([['I', signalCandidateOf(instance)!]]), () => c, logger(), clock());
+    await r.ensure(ARN);
+    await r.armRolling('I', 2);
+    // A FAILURE signal: CloudFormation rolls the receiver back to the stripped template.
+    const { I: _i, ...stripped } = template;
+    template = stripped;
+    resourceStatus = undefined;
+    status = 'UPDATE_ROLLBACK_COMPLETE';
+    await expect(r.failureOf('I', 0)).resolves.toBe('its signal wait ended (GONE)');
+    expect(sentTemplates.at(-1)!['I']).toEqual({
+      Type: 'AWS::CloudFormation::WaitConditionHandle',
+      Metadata: { v: 'before' },
+    });
+  });
+
   it('awaitSignals fails on CREATE_FAILED with the reason', async () => {
     let armingDone = false;
     const { r } = armedReceiver(() => (armingDone ? 'CREATE_FAILED' : 'CREATE_IN_PROGRESS'));

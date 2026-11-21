@@ -139,3 +139,48 @@ describe('signalPlanOf: fail-safe signed-call detection (go-to-k/cdkd#6705)', ()
     expect(armed({ M: { Metadata: init } })).toEqual([]);
   });
 });
+
+describe('rolling-update candidates (go-to-k/cdkd#6706)', () => {
+  const lt = (includeRole: boolean) => ({
+    Type: 'AWS::EC2::LaunchTemplate',
+    Properties: {
+      LaunchTemplateData: {
+        UserData: {
+          'Fn::Base64': `/opt/aws/bin/cfn-signal -e $? --stack S --resource Asg${includeRole ? ' --role R' : ''}\n`,
+        },
+      },
+    },
+  });
+  const asg = (policy: Record<string, unknown>) => ({
+    Type: 'AWS::AutoScaling::AutoScalingGroup',
+    UpdatePolicy: { AutoScalingRollingUpdate: policy },
+    Properties: { LaunchTemplate: { LaunchTemplateId: { Ref: 'Lt' } } },
+  });
+
+  it('a WaitOnResourceSignals rolling update signalled signed is a candidate with its PauseTime', () => {
+    const plan = signalPlanOf({
+      Resources: { Lt: lt(true), Asg: asg({ WaitOnResourceSignals: true, PauseTime: 'PT7M' }) },
+    } as never);
+    expect(plan.candidates.get('Asg')).toEqual({
+      count: 0,
+      timeoutMs: 0,
+      hasInitMetadata: false,
+      rollingPauseMs: 420_000,
+    });
+  });
+
+  it('unsigned, without WaitOnResourceSignals, or with no signal at all: not a candidate', () => {
+    expect(
+      signalPlanOf({ Resources: { Lt: lt(false), Asg: asg({ WaitOnResourceSignals: true }) } } as never)
+        .unsigned
+    ).toEqual(['Asg']);
+    expect(
+      signalPlanOf({ Resources: { Lt: lt(true), Asg: asg({ MaxBatchSize: 1 }) } } as never).candidates
+        .size
+    ).toBe(0);
+    expect(
+      signalPlanOf({ Resources: { Asg: asg({ WaitOnResourceSignals: 'true' }) } } as never).candidates
+        .size
+    ).toBe(0);
+  });
+});

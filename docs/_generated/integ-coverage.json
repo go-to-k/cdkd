@@ -858,6 +858,7 @@
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "drift-revert-vpc",
         "getatt-asg-arn-rule-name",
@@ -869,6 +870,9 @@
         "asg-destroy-running-instances": [
           "l2",
           "literal"
+        ],
+        "asg-rolling-signals": [
+          "l2"
         ],
         "asg-update-policy": [
           "l2",
@@ -1821,6 +1825,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -1924,6 +1929,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -2202,6 +2210,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -2299,6 +2308,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -2599,6 +2611,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -2699,6 +2712,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -2969,6 +2985,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -3071,6 +3088,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -3648,6 +3668,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -3761,6 +3782,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -4089,6 +4113,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -4186,6 +4211,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -4445,6 +4473,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -4566,6 +4595,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [
@@ -4921,6 +4953,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -5022,6 +5055,9 @@
           "l2"
         ],
         "asg-destroy-running-instances": [
+          "l2"
+        ],
+        "asg-rolling-signals": [
           "l2"
         ],
         "asg-update-policy": [

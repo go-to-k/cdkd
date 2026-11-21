@@ -12,6 +12,7 @@ import { markNonRetryable } from '../retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/stringify.js';
 import { isCustomResourceType } from '../../provisioning/custom-resource-secure-references.js';
+import type { UpdateContext } from '../../types/resource.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { buildResolverContext } from './resolver-context.js';
@@ -284,4 +285,39 @@ export function getAttReadsOf(value: unknown): Array<[string, string]> {
   };
   walk(value);
   return out;
+}
+
+/**
+ * go-to-k/cdkd#6706: the `UpdateContext.rollingSignals` watch for a rolling
+ * update the receiver armed, or nothing. The wait stops with the deploy.
+ */
+export function rollingSignalsFor(
+  engine: DeployEngine,
+  logicalId: string
+): Pick<UpdateContext, 'rollingSignals'> {
+  const receiver = engine.signalReceiver;
+  if (receiver?.candidate(logicalId)?.rollingPauseMs === undefined) return {};
+  let since = Date.now();
+  return {
+    rollingSignals: {
+      arm: async (count) => {
+        since = Date.now();
+        return receiver.armRolling(logicalId, count);
+      },
+      failure: () => receiver.failureOf(logicalId, since),
+      awaitAll: async (withinMs) => {
+        try {
+          await receiver.awaitSignals(
+            logicalId,
+            since,
+            () => engine.interrupted,
+            Date.now() + withinMs
+          );
+        } catch (error) {
+          await receiver.restoreAfterFailure(logicalId);
+          throw error;
+        }
+      },
+    },
+  };
 }

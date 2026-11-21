@@ -500,6 +500,11 @@
       "scenarios": []
     },
     {
+      "name": "asg-rolling-signals",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "asg-update-policy",
       "annotated": false,
       "scenarios": []
@@ -4172,6 +4177,7 @@
     "appconfig",
     "appconfig-environment-delete-protection",
     "asg-destroy-running-instances",
+    "asg-rolling-signals",
     "asg-update-policy",
     "athena-workgroup-update",
     "aws-custom-resource",
