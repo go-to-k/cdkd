@@ -90,6 +90,25 @@ export async function resolveImportValue(
   const loggedExportName = displayMasked(resolver, exportName, context);
   resolver.logger.debug(`Resolving Fn::ImportValue: ${loggedExportName}`);
 
+  // `cdkd diff` (go-to-k/cdkd#6796): a producer diffed earlier in this run
+  // that changes the export decides it, as its deploy will before this one.
+  const previewed = context.crossStackPreview?.exportValue(resolver.resolverRegion, exportName);
+  if (previewed && previewed.producerStack !== context.stackName) {
+    const producer = displayMasked(resolver, previewed.producerStack, context);
+    if (previewed.kind === 'unknown') {
+      // The diff keeps the raw intrinsic and shows the value as known after deploy.
+      throw markNonRetryable(
+        new Error(
+          `Fn::ImportValue ${quotedRender(loggedExportName, "'")}: stack ${producer}, diffed in this run, publishes a new value only when it deploys`
+        )
+      );
+    }
+    resolver.logger.info(
+      safeMsg`Resolved Fn::ImportValue: ${loggedExportName} (from this diff of ${producer}, which changes it)`
+    );
+    return previewed.value;
+  }
+
   // Hot path: consult the persistent exports index for O(1) lookup.
   // Skip self-references (a stack importing its own export) so the
   // fallback scan below can apply the same exclusion.

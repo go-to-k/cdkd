@@ -11,6 +11,7 @@ import {
 } from '../../types/state.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
+import type { CrossStackPreview } from '../../analyzer/cross-stack-preview.js';
 import type { AbandonedResolution, RedactedAttributeRead } from './context/refusals.js';
 
 export {
@@ -132,6 +133,12 @@ export interface ResolverContext {
    * scan-only path is still correct.
    */
   exportIndex?: ExportIndexStore;
+  /**
+   * `cdkd diff` only (go-to-k/cdkd#6796): the values producers diffed earlier
+   * in the same run will publish. Consulted before state, so a consumer
+   * previews what its deploy after the producer's sees.
+   */
+  crossStackPreview?: CrossStackPreview;
   /**
    * Bag for the resolver to push every successful `Fn::ImportValue`
    * resolution into. The deploy engine reads this after resource

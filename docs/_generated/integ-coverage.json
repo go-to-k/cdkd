@@ -10770,6 +10770,7 @@
           "l1"
         ],
         "cross-stack-export-in-use": [
+          "l1",
           "l2"
         ],
         "cross-stack-references": [

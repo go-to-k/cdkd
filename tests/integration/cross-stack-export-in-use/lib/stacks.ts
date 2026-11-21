@@ -31,6 +31,13 @@ export class ConsumerStack extends cdk.Stack {
       parameterName: '/cdkd-integ/export-in-use/queue-url',
       stringValue: props.queue.queueUrl,
     });
+    // Named after the imported queue name: the producer's replacement replaces
+    // it, which `cdkd diff` over both stacks must show (go-to-k/cdkd#6796).
+    new ssm.CfnParameter(this, 'NamedByQueue', {
+      type: 'String',
+      name: `/cdkd-integ/export-in-use/by-${props.queue.queueName}`,
+      value: 'named',
+    });
   }
 }
 

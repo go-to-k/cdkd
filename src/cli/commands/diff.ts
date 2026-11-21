@@ -55,7 +55,10 @@ import {
   renderAllLeftOutStageStacks,
   renderAllNoTopLevelStacks,
   renderNoStackMatch,
+  stacksForDependency,
 } from '../stack-matcher.js';
+import { CrossStackPreview, orderProducersFirst } from '../../analyzer/cross-stack-preview.js';
+import { inferCrossStackDepsByStack } from '../../analyzer/cross-stack-deps.js';
 import {
   loadProviderClasses,
   registerAllProviders,
@@ -331,7 +334,7 @@ async function diffCommand(
 
     // Determine target stacks: positional args > --stack > --all > auto (single stack)
     const stackPatterns = stacks.length > 0 ? stacks : options.stack ? [options.stack] : [];
-    let targetStacks;
+    let targetStacks: typeof allStacks;
 
     if (allStacks.length === 0) {
       // Reached before the branch chain below: with zero stacks and no
@@ -548,6 +551,14 @@ async function diffCommand(
     // The environment of each tree, for the refactor hints below.
     const treeEnvs: string[] = [];
     const producerLookup = producerLookupOver(allStacks);
+    // go-to-k/cdkd#6796: a producer is diffed before its consumers, as the
+    // deploy orders them, and what its deploy publishes reaches theirs.
+    const crossStackPreview = new CrossStackPreview();
+    const inferredProducers = inferCrossStackDepsByStack(targetStacks);
+    targetStacks = orderProducersFirst(targetStacks, (stack) => [
+      ...stack.dependencyNames.flatMap((name) => stacksForDependency(name, stack, targetStacks)),
+      ...(inferredProducers.get(stack) ?? []),
+    ]);
     // A name two selected stacks share is shown with its CDK path (#5176).
     const sharedNames = new Set(
       targetStacks.map((s) => s.stackName).filter((name, i, names) => names.indexOf(name) !== i)
@@ -610,6 +621,7 @@ async function diffCommand(
           ...(resolveUpdatePolicy(options.updatePolicy) === true && { updatePolicy: true }),
           // Consulted lazily, by a `Fn::GetStackOutput` carrying a `RoleArn` only.
           producerLookup,
+          crossStackPreview,
           ...(stackInfo.account && { consumerAccount: stackInfo.account }),
           previewOrphanAdoption,
           attributeHealerFor,
