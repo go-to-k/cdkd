@@ -6,8 +6,9 @@
 #      MaxRetries / ExecutionProperty.MaxConcurrentRuns are synthed as STRINGS
 #      in the template; the provider must coerce them to numbers so the Glue
 #      SDK accepts them. Asserted via `aws glue get-job` returning real numbers.
-#   2. Crawler running-state delete handling (unit-tested; here the crawler is
-#      idle so it just creates + deletes).
+#   2. Crawler running-state delete handling (issue #6752, Phase 3a): a crawl
+#      is started right before the destroy and must be RUNNING; the destroy
+#      must stop it (the provider's debug line) and delete the crawler.
 #   3. Trigger state-machine (unit-tested; the ON_DEMAND trigger create+delete
 #      is exercised here).
 #   4. Workflow Tags from a MAP shape reaching AWS — asserted via
@@ -162,6 +163,10 @@ PIPE_DB_NAME="${LOWER}-pipe|db"
 PIPE_DB_TABLE_NAME="${LOWER}-in-pipe-db"
 # Assertion 13 (issue #4073): the tagged log group's name, as the stack sets it.
 TAGGED_LG_NAME="/cdkd-integ/${STACK}-tagged"
+# Phase 3a (issue #6752): the database the crawler writes to, which a crawl
+# creates outside the stack, and the destroy's --verbose log.
+CRAWLER_DB_NAME="${LOWER}-crawler-db"
+DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-6752-glue-destroy.$$.log"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -198,11 +203,19 @@ cleanup() {
       done
       # Assertion 13's log group, should a failed run leave it behind.
       aws logs delete-log-group --log-group-name "${TAGGED_LG_NAME}" --region "${REGION}" >/dev/null 2>&1
+      # Phase 3a's crawl may create its target database (and tables in it); the
+      # stack never declares it. Runs on every exit: the EXIT trap stays armed.
+      aws glue delete-database --name "${CRAWLER_DB_NAME}" --region "${REGION}" >/dev/null 2>&1
+      # ...and writes a stream named after the crawler into Glue's shared log
+      # group, which only that stream of is this fixture's.
+      aws logs delete-log-stream --log-group-name /aws-glue/crawlers \
+        --log-stream-name "${CRAWLER_NAME:-${CRAWLER_NAME_FALLBACK}}" --region "${REGION}" >/dev/null 2>&1
       ;;
     *)
       echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
       ;;
   esac
+  rm -f "${DESTROY_LOG}"
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -1073,12 +1086,59 @@ fi
 assert_all_tag_sets "${UPDATED_TAGS}" 'removal' '{}'
 echo "    OK: removed Workflow / Trigger properties cleared in place, tags and actions kept, removed crawler properties kept and named (issue #1160)"
 
+# --- Phase 3a: a RUNNING crawler at destroy time (go-to-k/cdkd#6752) -----
+# DeleteCrawler refuses a crawler mid-run (CrawlerRunningException); the
+# provider stops it, waits it out and retries. Start a crawl right before the
+# destroy and require it RUNNING, so the destroy meets that refusal.
+echo "==> Phase 3a: start the crawler so the destroy meets it RUNNING (issue #6752)"
+aws glue start-crawler --name "${CRAWLER_NAME}" --region "${REGION}"
+CRAWLER_STATE=""
+for _ in $(seq 1 30); do
+  CRAWLER_STATE="$(aws glue get-crawler --name "${CRAWLER_NAME}" --region "${REGION}" \
+    --query 'Crawler.State' --output text)"
+  [ "${CRAWLER_STATE}" = "RUNNING" ] && break
+  sleep 2
+done
+if [ "${CRAWLER_STATE}" != "RUNNING" ]; then
+  echo "FAIL: crawler ${CRAWLER_NAME} is '${CRAWLER_STATE}' after start-crawler, expected RUNNING" >&2
+  exit 1
+fi
+echo "    OK: crawler ${CRAWLER_NAME} is RUNNING as the destroy begins"
+
 # --- Phase 3: destroy -------------------------------------------------
+# `--verbose` is load-bearing for Phase 3a's assertions: the stop is announced
+# at debug level.
 echo "==> Phase 3: destroy"
+DESTROY_RC=0
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --force
+  --force --verbose >"${DESTROY_LOG}" 2>&1 || DESTROY_RC=$?
+cat "${DESTROY_LOG}"
+DESTROY_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_LOG}")"
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "FAIL: destroy exited ${DESTROY_RC}; CrawlerRunningException lines in the log: $(grep -cF 'CrawlerRunningException' <<<"${DESTROY_PLAIN}" || true)" >&2
+  exit 1
+fi
+# The crawl was still running when the delete reached it, and the provider
+# stopped it. The sentinel (the delete's own first line) proves the debug
+# channel was captured, so a missing needle is never a quiet log.
+CRAWLER_LID="$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Glue::Crawler") | .key] | if length == 1 then .[0] else empty end' <<<"${STATE}")"
+if [ -z "${CRAWLER_LID}" ]; then
+  echo "FAIL: the deploy-time state holds no single AWS::Glue::Crawler record" >&2
+  exit 1
+fi
+CRAWLER_DELETE_SENTINEL="Deleting Glue Crawler ${CRAWLER_LID}: ${CRAWLER_NAME}"
+CRAWLER_STOP_NEEDLE="Glue Crawler ${CRAWLER_NAME} is running; stopping before delete and retrying"
+if ! grep -qF "${CRAWLER_DELETE_SENTINEL}" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: the --verbose destroy log has no '${CRAWLER_DELETE_SENTINEL}' line: debug output was not captured or its wording changed" >&2
+  exit 1
+fi
+if ! grep -qF "${CRAWLER_STOP_NEEDLE}" <<<"${DESTROY_PLAIN}"; then
+  echo "FAIL: issue #6752 — DeleteCrawler was not refused as running: the crawl ended before the destroy reached the crawler, so this arm did not meet the running-crawl blocker (or the stop line was reworded)" >&2
+  exit 1
+fi
+echo "    OK: the destroy stopped the running crawler and deleted it (issue #6752)"
 
 for chk in \
   "get-job --job-name ${JOB_NAME}" \
@@ -1134,4 +1194,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + Workflow/Trigger property removal + Crawler property keep-on-removal + clean destroy)"
+echo "==> glue-update-hardening test passed (numeric coercion + MAP tags + DynamoDB scan tuning + Table SkewedInfo + Database TargetDatabase/CreateTableDefaultPermissions + TableInput.Name rename refusal + Database CatalogId move refusal + DatabaseInput template-path refusal + '|'-named Table deploy/Ref/update + Table in a '|'-named Database deploy/Ref/update + Workflow/Job/log group Tags update + Workflow/Trigger property removal + Crawler property keep-on-removal + running-Crawler destroy + clean destroy)"

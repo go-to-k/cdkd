@@ -163,6 +163,7 @@ dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-we
 dynamodb-table-policy-baseline	2026-11-20T15:08:45Z	PASS	187	verify.sh	rc ok, orph clean; #6669 7a7f2b93b, revert-identity wired
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
+ec2-eip-instance-association	2026-11-21T15:34:28Z	PASS	101	verify.sh	rc ok, orph clean
 ec2-instance	2026-11-20T16:58:26Z	PASS	772	verify.sh	rc ok, orph clean, head 6e772c737 (#6693)
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-instance-volume-attachment-drift	2026-11-20T10:54:34Z	PASS	255	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
@@ -227,7 +228,7 @@ globaltable-fix-forward-orphan	2026-11-10T17:32:16Z	PASS	180	verify.sh	rc ok, or
 globaltable-keyschema-replace	2026-11-15T20:16:11Z	PASS	106	verify.sh	rc ok, orph clean; #6365 replaced row
 globaltable-template-baseline-drift	2026-11-05T03:19:21Z	PASS	69	verify.sh	#5789/#5790 template-bag baseline drift; red-then-green proof (pre-fix binary FAIL Phase 3 [Replicas], fix binary all 5 phases PASS); orph clean (re-run after review fix f3c52eda2)
 glue-securityconfig-replace	2026-11-16T08:22:27Z	PASS	70	verify.sh	rc ok, orph clean (#6374 sweep)
-glue-update-hardening	2026-11-10T16:06:52Z	PASS	335	verify.sh	rc ok, orph clean
+glue-update-hardening	2026-11-21T15:34:28Z	PASS	291	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc056, rc ok, no pre-existing detector, revert-identity kept x2, orph clean (eu-west-1)
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-access-key	2026-11-06T19:55:55Z	PASS	80	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
