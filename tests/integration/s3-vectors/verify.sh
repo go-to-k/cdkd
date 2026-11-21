@@ -128,7 +128,10 @@ if [ "${deploy_rc}" != "0" ]; then
 fi
 
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-BUCKET_NAME=$(echo "${STATE}" | jq -r '.outputs.VectorBucketName // empty')
+# The outputs carry each bucket's Ref, which since #6255 is its ARN, as in
+# CloudFormation; every s3vectors call below takes the bare name.
+bucket_name_of() { printf '%s' "${1##*:bucket/}"; }
+BUCKET_NAME=$(bucket_name_of "$(echo "${STATE}" | jq -r '.outputs.VectorBucketName // empty')")
 if [ -z "${BUCKET_NAME}" ]; then
   echo "FAIL: state.outputs.VectorBucketName missing after deploy" >&2
   echo "${STATE}" | jq '.outputs'
@@ -196,7 +199,7 @@ echo "    OK: VectorBucket tags { env=cdkd-integ, team=platform } reached AWS (T
 # names are 3-63 characters of lowercase letters, digits and hyphens. A fresh
 # stack always carries an instance id, so the 12-hex suffix is required (a
 # suffix-less legacy name here would be a regression).
-NAMELESS_NAME=$(echo "${STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')
+NAMELESS_NAME=$(bucket_name_of "$(echo "${STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')")
 if [ -z "${NAMELESS_NAME}" ]; then
   echo "FAIL: state.outputs.NamelessVectorBucketName missing after deploy (issue #5309)" >&2
   echo "${STATE}" | jq '.outputs'
@@ -253,7 +256,7 @@ echo "    OK: tags updated on AWS { env=cdkd-integ-updated, owner=cdkd, team rem
 # Issue #5309: the redeploy must keep the nameless bucket's generated name (no
 # replacement, no second bucket).
 UPD_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-UPD_NAMELESS_NAME=$(echo "${UPD_STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')
+UPD_NAMELESS_NAME=$(bucket_name_of "$(echo "${UPD_STATE}" | jq -r '.outputs.NamelessVectorBucketName // empty')")
 if [ "${UPD_NAMELESS_NAME}" != "${NAMELESS_NAME}" ]; then
   echo "FAIL: after update, the nameless VectorBucket is '${UPD_NAMELESS_NAME}', expected '${NAMELESS_NAME}' (issue #5309)" >&2
   exit 1
