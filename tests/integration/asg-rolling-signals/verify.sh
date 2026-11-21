@@ -136,7 +136,7 @@ for id in ${IDS1}; do
   if grep -qw "${id}" <<<"${IDS2}"; then echo "FAIL: ${id} was not replaced (${IDS2})" >&2; exit 1; fi
 done
 echo "    OK: both instances replaced and signalled (${IDS2})"
-LT_VERSION=$(state_field 'JSON.stringify(Object.values(s.resources).find((r) => r.resourceType === "AWS::AutoScaling::AutoScalingGroup")?.properties.LaunchConfigurationName ?? null)')
+LT_VERSION=$(state_field 'JSON.stringify(Object.values(s.resources).find((r) => r.resourceType === "AWS::AutoScaling::AutoScalingGroup")?.properties.LaunchTemplate ?? null)')
 
 echo "==> Phase 3: a FAILURE signal stops the rolling update and the deploy rolls the group back"
 LOG3=$(mktemp)
@@ -150,7 +150,7 @@ grep -qE 'instance refresh [^ ]+ stopped: Received FAILURE signal with UniqueId'
   || { echo "FAIL: the refresh was not stopped by the FAILURE signal" >&2; exit 1; }
 grep -q 'Rolling back' "${LOG3}" || { echo "FAIL: the deploy did not roll back" >&2; exit 1; }
 rm -f "${LOG3}"
-LT_AFTER=$(state_field 'JSON.stringify(Object.values(s.resources).find((r) => r.resourceType === "AWS::AutoScaling::AutoScalingGroup")?.properties.LaunchConfigurationName ?? null)')
+LT_AFTER=$(state_field 'JSON.stringify(Object.values(s.resources).find((r) => r.resourceType === "AWS::AutoScaling::AutoScalingGroup")?.properties.LaunchTemplate ?? null)')
 [ "${LT_AFTER}" = "${LT_VERSION}" ] || { echo "FAIL: the group's launch template was not rolled back (${LT_VERSION} -> ${LT_AFTER})" >&2; exit 1; }
 echo "    OK: the FAILURE signal failed the update (rc=${RC3}) and the group was rolled back"
 
