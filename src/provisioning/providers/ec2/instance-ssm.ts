@@ -235,57 +235,52 @@ export async function deleteInstanceSsmAssociationsBestEffort(
  * `DescribeAssociation` parameters in the CloudFormation shape, the
  * declared parameter order kept (keys the template does not declare follow,
  * sorted) so the comparison and the secret masking line up with the
- * template. `undefined` when Systems Manager could not be read.
+ * template. Throws when Systems Manager could not be read (issue #6759), so
+ * the drift run reports the instance not compared instead of never comparing
+ * the key; an association deleted between the list and its read is skipped.
  */
 export async function readInstanceSsmAssociations(
   this: EC2Provider,
   instanceId: string,
   declared: readonly InstanceSsmAssociation[]
-): Promise<Array<Record<string, unknown>> | undefined> {
-  try {
-    const listed = await this.listInstanceSsmAssociations(
-      instanceId,
-      declared.map((d) => d.DocumentName)
-    );
-    const out: Array<Record<string, unknown>> = [];
-    for (const a of listed) {
-      let resp;
-      try {
-        resp = await this.awsClients.ssm.send(
-          new DescribeAssociationCommand({ AssociationId: a.AssociationId })
-        );
-      } catch (error) {
-        // Deleted between the list and this read: it is not there.
-        if (isNamedError(error, ASSOCIATION_GONE_NAMES)) continue;
-        throw error;
-      }
-      const description = resp.AssociationDescription;
-      const name = description?.Name ?? a.Name;
-      const match = declared.find((d) => ssmDocumentName(d.DocumentName) === ssmDocumentName(name));
-      const params = description?.Parameters ?? {};
-      const order = match?.parameterKeys ?? [];
-      const keys = [
-        ...order.filter((k) => k in params),
-        ...Object.keys(params)
-          .filter((k) => !order.includes(k))
-          .sort(),
-      ];
-      const entry: Record<string, unknown> = {
-        // The declared spelling (a name or an ARN) when it names this document.
-        DocumentName: match?.DocumentName ?? name,
-      };
-      if (keys.length > 0 || match?.declaresParameters === true) {
-        entry['AssociationParameters'] = keys.map((Key) => ({ Key, Value: params[Key] ?? [] }));
-      }
-      out.push(entry);
+): Promise<Array<Record<string, unknown>>> {
+  const listed = await this.listInstanceSsmAssociations(
+    instanceId,
+    declared.map((d) => d.DocumentName)
+  );
+  const out: Array<Record<string, unknown>> = [];
+  for (const a of listed) {
+    let resp;
+    try {
+      resp = await this.awsClients.ssm.send(
+        new DescribeAssociationCommand({ AssociationId: a.AssociationId })
+      );
+    } catch (error) {
+      // Deleted between the list and this read: it is not there.
+      if (isNamedError(error, ASSOCIATION_GONE_NAMES)) continue;
+      throw error;
     }
-    return out;
-  } catch (error) {
-    this.logger.debug(
-      safeMsg`ListAssociations / DescribeAssociation for ${instanceId} failed: ${describeAwsFailure(error).summary}`
-    );
-    return undefined;
+    const description = resp.AssociationDescription;
+    const name = description?.Name ?? a.Name;
+    const match = declared.find((d) => ssmDocumentName(d.DocumentName) === ssmDocumentName(name));
+    const params = description?.Parameters ?? {};
+    const order = match?.parameterKeys ?? [];
+    const keys = [
+      ...order.filter((k) => k in params),
+      ...Object.keys(params)
+        .filter((k) => !order.includes(k))
+        .sort(),
+    ];
+    const entry: Record<string, unknown> = {
+      // The declared spelling (a name or an ARN) when it names this document.
+      DocumentName: match?.DocumentName ?? name,
+    };
+    if (keys.length > 0 || match?.declaresParameters === true) {
+      entry['AssociationParameters'] = keys.map((Key) => ({ Key, Value: params[Key] ?? [] }));
+    }
+    out.push(entry);
   }
+  return out;
 }
 
 /**

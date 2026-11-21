@@ -59,6 +59,9 @@ describe('EFSProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop answers a case left queued; an unshaped call answers `{}`.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
     provider = new EFSProvider();
   });
 
@@ -173,16 +176,25 @@ describe('EFSProvider.readCurrentState', () => {
       ).rejects.toThrow('denied');
     });
 
-    it('omits the key (no sentinel) on a message-only "not found" or AccessDenied from a sub-call', async () => {
+    it.each([
+      ['a message-only "not found"', 'BadRequest', 'FileSystemNotFound: not found'],
+      ['AccessDenied', 'AccessDeniedException', 'denied'],
+    ])('rejects (no sentinel) on %s from a sub-call (#6759)', async (_what, name, message) => {
       mockSend
         .mockResolvedValueOnce({ FileSystems: [fsItem] })
-        .mockRejectedValueOnce(
-          Object.assign(new Error('FileSystemNotFound: not found'), { name: 'BadRequest' })
-        )
-        .mockRejectedValueOnce(
-          Object.assign(new Error('denied'), { name: 'AccessDeniedException' })
-        )
-        .mockRejectedValueOnce(Object.assign(new Error('not found'), { name: 'PolicyNotFound' }));
+        .mockRejectedValueOnce(Object.assign(new Error(message), { name }));
+      await expect(provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem')).rejects.toThrow(
+        message
+      );
+    });
+
+    it('omits each key on its sub-call\'s PolicyNotFound', async () => {
+      const none = () => Object.assign(new Error('not found'), { name: 'PolicyNotFound' });
+      mockSend
+        .mockResolvedValueOnce({ FileSystems: [fsItem] })
+        .mockRejectedValueOnce(none())
+        .mockRejectedValueOnce(none())
+        .mockRejectedValueOnce(none());
       const result = await provider.readCurrentState('fs-1', 'L', 'AWS::EFS::FileSystem');
       expect(result).toEqual({
         PerformanceMode: 'generalPurpose',

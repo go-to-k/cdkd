@@ -128,16 +128,13 @@ export async function readFileSystem(
       });
     }
   } catch (err) {
-    // "Not configured" is service-specific; FileSystemNotFound on this call
-    // means the FS itself is gone between the two calls.
+    // FileSystemNotFound on this call means the FS itself is gone between the
+    // two calls. `PolicyNotFound` (not in this call's documented errors, but
+    // the code EFS uses for "none set") omits the key. Any other failure
+    // (AccessDenied, a throttle) throws (issue #6759): an omitted key is
+    // never compared, so `cdkd drift` would report no drift for it.
     if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
-    // Other errors (e.g. PolicyNotFound, AccessDenied) — omit the key,
-    // don't fail the whole snapshot.
-    const e = err as { name?: string };
-    if (e.name !== 'PolicyNotFound') {
-      // Best-effort: log and continue. Drift comparator only descends into
-      // keys present in state, so an absent key cannot fire false drift.
-    }
+    if ((err as { name?: string }).name !== 'PolicyNotFound') throw err;
   }
 
   // BackupPolicy — separate call, "not configured" omits the key.
@@ -150,20 +147,31 @@ export async function readFileSystem(
     }
   } catch (err) {
     if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
-    // PolicyNotFound or similar — omit the key.
+    // `PolicyNotFound` (no backup policy, e.g. a One Zone file system) and
+    // `ValidationException` (AWS Backup not available in the Region) are the
+    // "not configured" answers: omit the key. Anything else throws (#6759).
+    const name = (err as { name?: string }).name;
+    if (name !== 'PolicyNotFound' && name !== 'ValidationException') throw err;
   }
 
   // FileSystemPolicy — separate DescribeFileSystemPolicy call. AWS returns
   // the policy as a JSON string; the CFn property is a policy object, so
   // parse it back so the drift comparator compares object-to-object.
   // "PolicyNotFound" (no policy attached) omits the key.
+  //
+  // A FAILED read (AccessDenied, a throttle) throws (issue #6759). On the
+  // post-write capture a transient failure is re-read first, and the error
+  // throws only when no re-read answered.
   let policy: MemberRead<unknown>;
+  let policyError: unknown;
+  let policyFailed = false;
   try {
     policy = await readFileSystemPolicy.call(this, physicalId);
   } catch (err) {
     if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
-    // AccessDenied or similar — omit the key. Only a transient one is re-read.
     policy = memberReadFailure(err);
+    policyError = err;
+    policyFailed = true;
   }
   const declared =
     context?.afterOwnWrite === true
@@ -179,6 +187,7 @@ export async function readFileSystem(
       () => warnUnsettledMember(this.logger, logicalId, 'AWS::EFS::FileSystem', 'FileSystemPolicy')
     );
   }
+  if (policyFailed && (policy === 'failed' || policy === 'refused')) throw policyError;
   if (typeof policy === 'object') result['FileSystemPolicy'] = policy.value;
 
   // FileSystemTags from the same DescribeFileSystems response.
@@ -290,7 +299,9 @@ export async function readMountTarget(
   // SecurityGroups via DescribeMountTargetSecurityGroups. Always-emit
   // `[]` placeholder when AWS reports none so a console-side ADD on a
   // previously-unconfigured mount target is detectable on the v3
-  // observedProperties baseline.
+  // observedProperties baseline. `MountTargetNotFound` keeps that placeholder;
+  // any other failure throws (issue #6759) rather than record `[]` for groups
+  // it could not read.
   let securityGroups: string[] = [];
   try {
     const sgResp = await this.getClient().send(
@@ -301,8 +312,8 @@ export async function readMountTarget(
     securityGroups = (sgResp.SecurityGroups ?? []).filter(
       (s): s is string => typeof s === 'string'
     );
-  } catch {
-    // Best-effort.
+  } catch (err) {
+    if (!(err instanceof MountTargetNotFound)) throw err;
   }
   result['SecurityGroups'] = securityGroups;
 

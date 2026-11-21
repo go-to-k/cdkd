@@ -181,7 +181,9 @@ export async function readCurrentState(
     } catch (err) {
       // The mapping vanished between GetEventSourceMapping and ListTags.
       if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
-      // Permission errors etc — fall through with empty placeholder.
+      // Any other failure (AccessDenied, a throttle) throws (issue #6759):
+      // the `[]` placeholder would read as "no tags" and report a removal.
+      throw err;
     }
   }
   result['Tags'] = tags;

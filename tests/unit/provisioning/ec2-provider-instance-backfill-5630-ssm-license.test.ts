@@ -1111,13 +1111,15 @@ describe('AWS::EC2::Instance SsmAssociations drift readback (#5630)', () => {
     expect(ssmSend).not.toHaveBeenCalled();
   });
 
-  it('omits the key when Systems Manager cannot be read, and reads nothing for a bag without it', async () => {
+  it('rejects when Systems Manager cannot be read (#6759), and reads nothing for a bag without it', async () => {
     failList = new Error('AccessDenied');
-    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
-      ...BASE,
-      SsmAssociations: [SHELL],
-    })) as Record<string, unknown>;
-    expect('SsmAssociations' in read).toBe(false);
+    await expect(
+      new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+        ...BASE,
+        SsmAssociations: [SHELL],
+      })
+    ).rejects.toThrow('AccessDenied');
+    failList = undefined;
     ssmSend.mockClear();
     await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, { ...BASE });
     expect(ssmSend).not.toHaveBeenCalled();

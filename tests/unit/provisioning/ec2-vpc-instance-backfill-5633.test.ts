@@ -547,7 +547,7 @@ describe('AWS::EC2::VPC backfill (#5633): review round 1', () => {
 });
 
 describe('AWS::EC2::Instance backfill (#5630): review round 1', () => {
-  it('omits InstanceInitiatedShutdownBehavior when its DescribeInstanceAttribute read fails', async () => {
+  it('rejects when its InstanceInitiatedShutdownBehavior read fails (#6759)', async () => {
     mockSend.mockImplementation((cmd: unknown) => {
       if (cmd instanceof DescribeInstancesCommand) {
         return Promise.resolve({
@@ -562,12 +562,12 @@ describe('AWS::EC2::Instance backfill (#5630): review round 1', () => {
       }
       return Promise.resolve({});
     });
-    const read = await new EC2Provider().readCurrentState('i-1', 'Inst', 'AWS::EC2::Instance', {
-      ImageId: 'ami-1',
-      InstanceInitiatedShutdownBehavior: 'terminate',
-    });
-    expect(read).not.toHaveProperty('InstanceInitiatedShutdownBehavior');
-    expect(read).toHaveProperty('Tags');
+    await expect(
+      new EC2Provider().readCurrentState('i-1', 'Inst', 'AWS::EC2::Instance', {
+        ImageId: 'ami-1',
+        InstanceInitiatedShutdownBehavior: 'terminate',
+      })
+    ).rejects.toThrow('denied');
   });
 });
 

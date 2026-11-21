@@ -6,6 +6,7 @@ import {
   ListAliasesCommand,
   ListResourceTagsCommand,
   NotFoundException,
+  UnsupportedOperationException,
 } from '@aws-sdk/client-kms';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import {
@@ -125,19 +126,25 @@ export async function readCurrentStateKey(
     // already-resolved object form. KMS keys always have a policy
     // (minimum is the implicit root statement KMS injects on
     // CreateKey), so the empty-response branch is unreachable in
-    // practice — we omit the key on a permission error rather than
-    // emit `{}`, which would round-trip through update() as `'{}'`
-    // and KMS would reject ("KMS key policy must include the JSON
-    // statement..."), turning a transient permission blip into a
-    // drift-detection false-positive cycle.
+    // practice — it omits the key rather than emit `{}`, which would
+    // round-trip through update() as `'{}'` and KMS would reject ("KMS key
+    // policy must include the JSON statement...").
+    //
+    // A FAILED read (an `AccessDenied`, a throttle) throws instead of
+    // omitting the key (issue #6759): an omitted key is never compared, so
+    // `cdkd drift` would report no drift for a policy it could not read. On
+    // the post-write capture a transient failure is still re-read first, and
+    // the error throws only when no re-read answered.
     let keyPolicy: MemberRead<unknown>;
+    let keyPolicyError: unknown;
+    let keyPolicyFailed = false;
     try {
       keyPolicy = await readKeyPolicy.call(this, md.KeyId);
     } catch (err) {
       if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      // Permission errors etc — leave key absent rather than firing
-      // false drift on every run. Only a transient one is re-read.
       keyPolicy = memberReadFailure(err);
+      keyPolicyError = err;
+      keyPolicyFailed = true;
     }
     const declared =
       context?.afterOwnWrite === true
@@ -145,6 +152,9 @@ export async function readCurrentStateKey(
         : undefined;
     if (declared !== undefined) {
       keyPolicy = await settleKeyPolicy.call(this, md.KeyId, logicalId, keyPolicy, declared);
+    }
+    if (keyPolicyFailed && (keyPolicy === 'failed' || keyPolicy === 'refused')) {
+      throw keyPolicyError;
     }
     if (typeof keyPolicy === 'object') result['KeyPolicy'] = keyPolicy.value;
 
@@ -166,13 +176,19 @@ export async function readCurrentStateKey(
         }
       } catch (err) {
         if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-        // UnsupportedOperationException (asymmetric edge cases AWS
-        // changes over time) / AccessDenied — leave key absent.
+        // UnsupportedOperationException is KMS saying rotation does not apply
+        // to this key (imported key material, a custom key store, asymmetric
+        // edge cases AWS changes over time): leave the key absent. Any other
+        // failure (AccessDenied, a throttle) throws (issue #6759).
+        if (!(err instanceof UnsupportedOperationException)) throw err;
       }
     }
 
-    // Tags via ListResourceTags. AWS-managed keys (alias/aws/*) reject
-    // ListResourceTags with AccessDenied — omit silently.
+    // Tags via ListResourceTags. Any failure other than the key's
+    // not-found throws (issue #6759) rather than omitting the key, which
+    // would never compare it. That includes the AccessDenied an AWS-managed
+    // key (alias/aws/*) answers; a template's AWS::KMS::Key creates a
+    // customer-managed key.
     try {
       const tagsResp = await this.getClient().send(
         new ListResourceTagsCommand({ KeyId: md.KeyId })
@@ -181,7 +197,7 @@ export async function readCurrentStateKey(
       result['Tags'] = tags;
     } catch (err) {
       if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      // Permission errors etc — leave key absent.
+      throw err;
     }
   }
   return result;

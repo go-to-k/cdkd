@@ -12,7 +12,6 @@ import {
   type AvailabilityZone,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { inDeclaredOrder } from '../../declared-order.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
@@ -112,10 +111,12 @@ export async function readLoadBalancer(
     result['Ipv4IpamPoolId'] = lb.IpamPools.Ipv4IpamPoolId;
   }
 
-  // MinimumLoadBalancerCapacity via DescribeCapacityReservation —
-  // best-effort like the attribute reads below; emitted only when a
-  // reservation is actually set (CapacityUnits > 0) so LBs without one
-  // don't grow a phantom key.
+  // MinimumLoadBalancerCapacity via DescribeCapacityReservation — emitted
+  // only when a reservation is actually set (CapacityUnits > 0) so LBs
+  // without one don't grow a phantom key. A failed read of an Application or
+  // Network Load Balancer throws (issue #6759); a Gateway Load Balancer,
+  // which capacity reservations do not cover, keeps the best-effort read
+  // (a failure there leaves the key absent, as before).
   try {
     const capResp = await this.getClient().send(
       new DescribeCapacityReservationCommand({ LoadBalancerArn: physicalId })
@@ -127,8 +128,7 @@ export async function readLoadBalancer(
   } catch (err) {
     if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
     if (this.isNotFoundError(err)) return undefined;
-    // Permission errors etc — leave key absent rather than firing
-    // false drift on every run.
+    if (lb.Type !== 'gateway') throw err;
   }
 
   // LoadBalancerAttributes via DescribeLoadBalancerAttributes. AWS
@@ -158,8 +158,9 @@ export async function readLoadBalancer(
   } catch (err) {
     if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
     if (this.isNotFoundError(err)) return undefined;
-    // Permission errors etc — leave key absent rather than firing
-    // false drift on every run.
+    // Any other failure (AccessDenied, a throttle) throws (issue #6759): an
+    // absent key is never compared, so the run would report no drift for it.
+    throw err;
   }
 
   await this.attachTags(result, physicalId);
@@ -288,8 +289,9 @@ export async function readTargetGroup(
   } catch (err) {
     if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
     if (this.isNotFoundError(err)) return undefined;
-    // Permission errors etc — leave key absent rather than firing
-    // false drift on every run.
+    // Any other failure (AccessDenied, a throttle) throws (issue #6759): an
+    // absent key is never compared, so the run would report no drift for it.
+    throw err;
   }
 
   await this.attachRegisteredTargets(result, physicalId);
@@ -342,11 +344,9 @@ export async function readTargetGroup(
  * treating an empty readback as unreadable would also blind a legitimately
  * emptied target group.
  *
- * On error the key is left ABSENT rather than emitted empty. That is not
- * silent: against an observed baseline that HOLDS targets, an absent key
- * still reports them as drifted. It is the honest option available — the
- * read failed, so the live set is unknown — and it keeps `--revert` from
- * acting on a fabricated empty list.
+ * A failed read throws (issue #6759) rather than emit an empty list, which
+ * would let `--revert` act on a fabricated "no targets"; the target group's
+ * not-found leaves the key ABSENT.
  */
 export async function attachRegisteredTargets(
   this: ELBv2Provider,
@@ -379,15 +379,13 @@ export async function attachRegisteredTargets(
     }
     result['Targets'] = targets;
   } catch (err) {
-    // Permission errors etc — leave the key absent rather than reporting
-    // every registered target as removed. Swallowed (not NotFound-mapped to
-    // `undefined` like the attributes read above) because the
-    // DescribeTargetGroups + DescribeTargetGroupAttributes calls that
-    // precede it already surface a deleted target group; this mirrors
-    // `attachTags`, the sibling best-effort enrichment.
-    this.logger.debug(
-      `ELBv2 DescribeTargetHealth(${targetGroupArn}) failed: ${describeAwsFailure(err).detail}`
-    );
+    // `TargetGroupNotFoundException` leaves the key absent (not mapped to
+    // RESOURCE_NOT_FOUND: the DescribeTargetGroups + DescribeTargetGroupAttributes
+    // calls that precede it already surface a deleted target group). Any other
+    // failure (AccessDenied, a throttle, HealthUnavailable) throws (issue
+    // #6759), so the run reports the resource not compared instead of
+    // comparing a target set it could not read.
+    if (!isElbv2NotFoundName(err)) throw err;
   }
 }
 
@@ -583,15 +581,19 @@ export async function readListener(
   } catch (err) {
     if (isElbv2NotFoundName(err)) return RESOURCE_NOT_FOUND;
     if (this.isNotFoundError(err)) return undefined;
-    // Permission errors etc — leave key absent rather than firing
-    // false drift on every run.
+    // Any other failure (AccessDenied, a throttle) throws (issue #6759): an
+    // absent key is never compared, so the run would report no drift for it.
+    throw err;
   }
 
   await this.attachTags(result, physicalId);
   return result;
 }
 
-/** Best-effort tag fetch via `DescribeTags(ResourceArns=[arn])`. */
+/**
+ * Tag fetch via `DescribeTags(ResourceArns=[arn])`. The resource's not-found
+ * leaves `Tags` absent; any other failure throws (issue #6759).
+ */
 export async function attachTags(
   this: ELBv2Provider,
   result: Record<string, unknown>,
@@ -603,6 +605,6 @@ export async function attachTags(
     const tags = normalizeAwsTagsToCfn(tagDesc?.Tags);
     result['Tags'] = tags;
   } catch (err) {
-    this.logger.debug(`ELBv2 DescribeTags(${arn}) failed: ${describeAwsFailure(err).detail}`);
+    if (!isElbv2NotFoundName(err)) throw err;
   }
 }

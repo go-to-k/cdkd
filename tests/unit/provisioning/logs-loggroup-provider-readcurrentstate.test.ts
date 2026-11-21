@@ -41,6 +41,9 @@ describe('LogsLogGroupProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop answers a case left queued; an unshaped call answers `{}`.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
     provider = new LogsLogGroupProvider();
   });
 

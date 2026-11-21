@@ -6,11 +6,9 @@ import {
   DescribeInstanceAttributeCommand,
   type Volume,
 } from '@aws-sdk/client-ec2';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
-import { safeMsg } from '../../../utils/display-safe.js';
 import {
   instanceSsmAssociationEntries,
   instanceSsmAssociationsRefusal,
@@ -18,8 +16,19 @@ import {
   instanceVolumesRefusal,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { isNamedError } from './common.js';
 import { inDeclaredOrder } from '../../declared-order.js';
 import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
+
+/** The instance's own not-found code on a per-attribute read. */
+const INVALID_INSTANCE_NOT_FOUND: ReadonlySet<string> = new Set(['InvalidInstanceID.NotFound']);
+/** A volume gone between `DescribeInstances` and `DescribeVolumes`. */
+const INVALID_VOLUME_NOT_FOUND: ReadonlySet<string> = new Set(['InvalidVolume.NotFound']);
+/** The answers that mean an instance has no credit specification to read. */
+const CREDIT_SPECIFICATION_NOT_APPLICABLE: ReadonlySet<string> = new Set([
+  'InvalidInstanceID.NotFound',
+  'UnsupportedOperation',
+]);
 
 export async function readInstanceCurrentState(
   this: EC2Provider,
@@ -198,26 +207,21 @@ export async function readInstanceCurrentState(
     // #1291 item 3). One targeted association read closes it; the extra
     // call happens ONLY in this narrow window (--no-wait capture of a
     // still-pending instance), never on `cdkd drift` reads.
-    // Best-effort: a transient throttle here must cost only THIS field,
-    // not the whole snapshot -- an uncaught throw would make the deploy
-    // engine discard the entire observed-properties capture.
-    try {
-      const assoc = await this.ec2Client.send(
-        new DescribeIamInstanceProfileAssociationsCommand({
-          Filters: [{ Name: 'instance-id', Values: [physicalId] }],
-        })
-      );
-      const live = assoc.IamInstanceProfileAssociations?.find(
-        (a) => a.State === 'associated' || a.State === 'associating'
-      );
-      if (live?.IamInstanceProfile?.Arn !== undefined) {
-        result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
-      }
-    } catch (error) {
-      const backfillHead = `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture: `;
-      this.logger.warn(
-        `${backfillHead}${this.warnFailureSentence(backfillHead, error, (t) => t)} The field is omitted from the observed snapshot.`
-      );
+    // A failed read throws (issue #6759): omitting the field would be the
+    // same permanent blind spot. The deploy engine then records no
+    // observed-properties capture for this instance (the deploy itself does
+    // not fail), so drift falls back to its template properties until the
+    // next successful deploy.
+    const assoc = await this.ec2Client.send(
+      new DescribeIamInstanceProfileAssociationsCommand({
+        Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+      })
+    );
+    const live = assoc.IamInstanceProfileAssociations?.find(
+      (a) => a.State === 'associated' || a.State === 'associating'
+    );
+    if (live?.IamInstanceProfile?.Arn !== undefined) {
+      result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
     }
   }
 
@@ -240,12 +244,12 @@ export async function readInstanceCurrentState(
         if (v.VolumeId !== undefined) volumesById.set(v.VolumeId, v);
       }
     } catch (err) {
-      // Best-effort: if DescribeVolumes fails (rare — maybe a permissions
-      // gap), fall back to the partial shape. The DeleteOnTermination
-      // field is still surfaced from the DescribeInstances response.
-      this.logger.debug(
-        `DescribeVolumes(${volumeIds.join(',')}) failed: ${describeAwsFailure(err).detail}`
-      );
+      // A volume detached and deleted between the two calls
+      // (`InvalidVolume.NotFound`) falls back to the partial shape: the
+      // DeleteOnTermination field is still surfaced from the DescribeInstances
+      // response. Any other failure (AccessDenied, a throttle) throws (issue
+      // #6759) rather than record mappings without their volume details.
+      if (!isNamedError(err, INVALID_VOLUME_NOT_FOUND)) throw err;
       volumesById = new Map();
     }
   }
@@ -320,18 +324,17 @@ export async function readInstanceCurrentState(
 
   // SsmAssociations (go-to-k/cdkd#5630): read for a bag that declares them,
   // as CloudFormation reads them (ListAssociations + DescribeAssociation),
-  // in the template's shape and parameter order. Best-effort: an unreadable
-  // Systems Manager omits the key.
+  // in the template's shape and parameter order. An unreadable Systems
+  // Manager throws (issue #6759) rather than omit the key.
   if (
     Array.isArray(properties?.['SsmAssociations']) &&
     instanceSsmAssociationsRefusal(properties['SsmAssociations'], 'AWS::EC2::Instance') ===
       undefined
   ) {
-    const read = await this.readInstanceSsmAssociations(
+    result['SsmAssociations'] = await this.readInstanceSsmAssociations(
       physicalId,
       instanceSsmAssociationEntries(properties['SsmAssociations'])
     );
-    if (read !== undefined) result['SsmAssociations'] = read;
   }
 
   // Tags: filter aws:* (CDK-internal metadata) and always emit (even as
@@ -339,10 +342,10 @@ export async function readInstanceCurrentState(
   result['Tags'] = normalizeAwsTagsToCfn(instance.Tags);
 
   // DisableApiTermination: not returned by DescribeInstances; needs a
-  // separate DescribeInstanceAttribute call. Best-effort — a permissions
-  // gap or other failure falls back to omitting the key (state-keys-only
-  // walk skips silently). Always emit when AWS reports a value so the v3
-  // baseline catches a console-side toggle.
+  // separate DescribeInstanceAttribute call. The instance's not-found (gone
+  // between the calls) omits the key; any other failure throws (issue
+  // #6759), since an omitted key is never compared. Always emit when AWS
+  // reports a value so the v3 baseline catches a console-side toggle.
   try {
     const attrResp = await this.ec2Client.send(
       new DescribeInstanceAttributeCommand({
@@ -354,11 +357,7 @@ export async function readInstanceCurrentState(
       result['DisableApiTermination'] = attrResp.DisableApiTermination.Value;
     }
   } catch (err) {
-    this.logger.debug(
-      `DescribeInstanceAttribute(disableApiTermination, ${physicalId}) failed: ${
-        describeAwsFailure(err).detail
-      }`
-    );
+    if (!isNamedError(err, INVALID_INSTANCE_NOT_FOUND)) throw err;
   }
 
   // UserData (go-to-k/cdkd#6754): the base64 text CloudFormation declares, as
@@ -378,7 +377,8 @@ export async function readInstanceCurrentState(
 
   // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): another
   // DescribeInstanceAttribute call, made only for a bag that declares it, so
-  // an instance without it pays no extra read. Best-effort as above.
+  // an instance without it pays no extra read. A failure other than the
+  // instance's not-found throws, as above.
   if (properties?.['InstanceInitiatedShutdownBehavior'] !== undefined) {
     try {
       const attrResp = await this.ec2Client.send(
@@ -392,17 +392,16 @@ export async function readInstanceCurrentState(
           attrResp.InstanceInitiatedShutdownBehavior.Value;
       }
     } catch (err) {
-      this.logger.debug(
-        safeMsg`DescribeInstanceAttribute(instanceInitiatedShutdownBehavior, ${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
+      if (!isNamedError(err, INVALID_INSTANCE_NOT_FOUND)) throw err;
     }
   }
 
   // CreditSpecification (#609): not returned by DescribeInstances; needs a
-  // separate DescribeInstanceCreditSpecifications call. Best-effort — only
-  // T-family burstable instances have a credit spec, and AWS errors for
-  // non-burstable families, so a failure / absent value falls back to
-  // omitting the key (the state-keys-only drift walk skips it silently).
+  // separate DescribeInstanceCreditSpecifications call. An absent value
+  // omits the key. The SDK documents `standard` as the answer for a
+  // non-burstable instance; `UnsupportedOperation` (EC2's "not available for
+  // this instance") and the instance's not-found also omit the key, and any
+  // other failure (AccessDenied, a throttle) throws (issue #6759).
   // Reverse-map to the CFn input shape ({ CPUCredits } — the canonical CDK
   // emission) so drift compares like-for-like against templated state.
   try {
@@ -414,11 +413,7 @@ export async function readInstanceCurrentState(
       result['CreditSpecification'] = { CPUCredits: cpuCredits };
     }
   } catch (err) {
-    this.logger.debug(
-      `DescribeInstanceCreditSpecifications(${physicalId}) failed: ${
-        describeAwsFailure(err).detail
-      }`
-    );
+    if (!isNamedError(err, CREDIT_SPECIFICATION_NOT_APPLICABLE)) throw err;
   }
 
   return result;

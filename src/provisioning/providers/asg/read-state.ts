@@ -4,7 +4,6 @@ import {
   DescribeTrafficSourcesCommand,
   DescribeNotificationConfigurationsCommand,
 } from '@aws-sdk/client-auto-scaling';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../../import-helpers.js';
 import type {
@@ -176,11 +175,12 @@ export async function importGroup(
  *
  * Sub-shapes (LifecycleHookSpecificationList / TrafficSources /
  * NotificationConfigurations) are surfaced via three parallel Describe
- * calls fired alongside the primary `DescribeAutoScalingGroups`. Each is
- * best-effort: a per-call failure (e.g. permissions gap on
- * `autoscaling:DescribeLifecycleHooks`) is logged at debug and the
- * matching key falls back to its always-emit `[]` placeholder rather
- * than aborting the whole drift read.
+ * calls fired alongside the primary `DescribeAutoScalingGroups`. A call
+ * answering the group's not-found (`ValidationError` "... not found")
+ * falls back to its always-emit `[]` placeholder, the primary read deciding
+ * whether the group is gone. Any other failure (e.g. a permissions gap on
+ * `autoscaling:DescribeLifecycleHooks`, a throttle) throws (issue #6759):
+ * the `[]` placeholder would read as "none" and report a removal.
  *
  * `MetricsCollection` is reverse-mapped from `EnabledMetrics` (already
  * present on the primary `DescribeAutoScalingGroups` response, so no
@@ -194,8 +194,8 @@ export async function readCurrentState(
   _logicalId: string,
   _resourceType: string
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-  // Fire the four reads in parallel. Sub-shape failures are best-effort
-  // so a single permission gap does not break the whole drift read.
+  // Fire the four reads in parallel. A sub-shape read's not-found keeps the
+  // `[]` placeholder; any other failure rejects the whole read.
   const groupPromise = (async () => {
     try {
       return await this.describeGroup(physicalId);
@@ -211,31 +211,25 @@ export async function readCurrentState(
   const lifecycleHooksPromise = this.getClient()
     .send(new DescribeLifecycleHooksCommand({ AutoScalingGroupName: physicalId }))
     .then((r) => r.LifecycleHooks ?? [])
-    .catch((err) => {
-      this.logger.debug(
-        `DescribeLifecycleHooks(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
-      return [];
+    .catch((err: unknown) => {
+      if (this.isNotFoundError(err)) return [];
+      throw err;
     });
 
   const trafficSourcesPromise = this.getClient()
     .send(new DescribeTrafficSourcesCommand({ AutoScalingGroupName: physicalId }))
     .then((r) => r.TrafficSources ?? [])
-    .catch((err) => {
-      this.logger.debug(
-        `DescribeTrafficSources(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
-      return [];
+    .catch((err: unknown) => {
+      if (this.isNotFoundError(err)) return [];
+      throw err;
     });
 
   const notificationsPromise = this.getClient()
     .send(new DescribeNotificationConfigurationsCommand({ AutoScalingGroupNames: [physicalId] }))
     .then((r) => r.NotificationConfigurations ?? [])
-    .catch((err) => {
-      this.logger.debug(
-        `DescribeNotificationConfigurations(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
-      return [];
+    .catch((err: unknown) => {
+      if (this.isNotFoundError(err)) return [];
+      throw err;
     });
 
   const [group, lifecycleHooks, trafficSources, notifications] = await Promise.all([
