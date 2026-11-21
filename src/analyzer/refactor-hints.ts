@@ -10,7 +10,7 @@
  * re-checks every pair with its own diff before writing anything.
  */
 import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceChange } from '../types/state.js';
+import type { ResourceChange, ResourceState } from '../types/state.js';
 import type { DestructiveChange } from './destructive-changes.js';
 import { displayIdent } from '../utils/display-safe.js';
 import { cdkdRemedy, proseQuoted } from '../utils/pasteable-command.js';
@@ -18,9 +18,23 @@ import {
   changedDependencyOf,
   isPairableType,
   looselyEqual,
+  referencedLogicalIds,
   type RefactorCreateSide,
   type RefactorDeleteSide,
 } from './refactor-pairing.js';
+
+/**
+ * A CREATE row, with the resources it references that stay in the stack
+ * (go-to-k/cdkd#6797): `looselyEqual` cannot compare a `Ref` to one of them.
+ */
+export type HintCreateSide = RefactorCreateSide & {
+  stayingReferences?: readonly string[];
+  /** The CREATE rows of the same stack it references: renames, or new resources. */
+  createdReferences?: readonly string[];
+};
+
+/** A DELETE row, with the logical ids its record's template referenced. */
+export type HintDeleteSide = RefactorDeleteSide & { recordedDependencies?: readonly string[] };
 
 /** One stack's unpaired rows, and the environment it deploys to. */
 export interface RefactorHintStack {
@@ -29,8 +43,33 @@ export interface RefactorHintStack {
   stackName: string;
   /** Rows pair only within one environment (account and region). */
   env: string;
-  creates: readonly RefactorCreateSide[];
-  deletes: readonly RefactorDeleteSide[];
+  creates: readonly HintCreateSide[];
+  deletes: readonly HintDeleteSide[];
+}
+
+/**
+ * Could the record be the CREATE renamed? A CREATE referencing a resource that
+ * stays in the stack is the record only when the record referenced it too: a
+ * subscription or queue policy now aimed at ANOTHER existing queue is a new
+ * resource (go-to-k/cdkd#6797), as the AWS CDK CLI's digest, which covers what
+ * a resource references, says. A record with no `dependencies` field, or a
+ * reference to a resource the diff creates (itself maybe a rename), stays loose.
+ */
+function referencesAgree(
+  create: HintCreateSide,
+  record: HintDeleteSide,
+  sameStack: boolean,
+  isNew: (logicalId: string) => boolean
+): boolean {
+  // A reference to a CREATE no record pairs with is a new resource: the pair
+  // is not a rename either (a subscription to a queue created in its place).
+  if ((create.createdReferences ?? []).some(isNew)) return false;
+  const staying = create.stayingReferences ?? [];
+  if (staying.length === 0) return true;
+  // Logical ids name resources per stack: across stacks they cannot be compared.
+  if (!sameStack) return false;
+  if (record.recordedDependencies === undefined) return true;
+  return staying.every((id) => record.recordedDependencies!.includes(id));
 }
 
 /** Where a removed resource reappears. */
@@ -55,21 +94,39 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
     );
     if (deletes.length === 0 || creates.length === 0) continue;
 
-    const matchesOf = new Map<(typeof creates)[number], Array<(typeof deletes)[number]>>();
-    const claims = new Map<(typeof deletes)[number], number>();
-    for (const c of creates) {
-      const matches = deletes.filter(
-        (d) =>
-          d.row.resourceType === c.row.resourceType &&
-          looselyEqual(c.row.properties, d.row.properties)
-      );
-      matchesOf.set(c, matches);
-      for (const d of matches) claims.set(d, (claims.get(d) ?? 0) + 1);
-    }
-    for (const c of creates) {
-      const matches = matchesOf.get(c) ?? [];
-      if (matches.length !== 1 || claims.get(matches[0]!) !== 1) continue;
-      const d = matches[0]!;
+    type Create = (typeof creates)[number];
+    type Delete = (typeof deletes)[number];
+    // One pass pairs every CREATE whose references agree, given which CREATEs
+    // are new; the first treats none as new, the second each it left unpaired.
+    const pairUp = (isNewIn: (c: Create, logicalId: string) => boolean): Map<Create, Delete> => {
+      const matchesOf = new Map<Create, Delete[]>();
+      const claims = new Map<Delete, number>();
+      for (const c of creates) {
+        const matches = deletes.filter(
+          (d) =>
+            d.row.resourceType === c.row.resourceType &&
+            looselyEqual(c.row.properties, d.row.properties) &&
+            referencesAgree(c.row, d.row, c.stack === d.stack, (id) => isNewIn(c, id))
+        );
+        matchesOf.set(c, matches);
+        for (const d of matches) claims.set(d, (claims.get(d) ?? 0) + 1);
+      }
+      const pairs = new Map<Create, Delete>();
+      for (const c of creates) {
+        const matches = matchesOf.get(c) ?? [];
+        if (matches.length === 1 && claims.get(matches[0]!) === 1) pairs.set(c, matches[0]!);
+      }
+      return pairs;
+    };
+    const firstPass = pairUp(() => false);
+    const pairs = pairUp(
+      (c, logicalId) =>
+        !creates.some(
+          (other) =>
+            other.stack === c.stack && other.row.logicalId === logicalId && firstPass.has(other)
+        )
+    );
+    for (const [c, d] of pairs) {
       let byId = hints.get(d.stack.id);
       if (byId === undefined) {
         byId = new Map();
@@ -83,8 +140,8 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
 
 /** One stack's rows as pairing sides. */
 export interface RefactorSides {
-  creates: RefactorCreateSide[];
-  deletes: RefactorDeleteSide[];
+  creates: HintCreateSide[];
+  deletes: HintDeleteSide[];
 }
 
 /**
@@ -118,7 +175,8 @@ export function rollbackOrphanIds(orphans: unknown): Set<string> {
 export function hintSidesOf(
   changes: Iterable<ResourceChange>,
   template: CloudFormationTemplate,
-  exclude: ReadonlySet<string> = new Set()
+  exclude: ReadonlySet<string> = new Set(),
+  records?: Readonly<Record<string, ResourceState>>
 ): RefactorSides {
   const rows = [...changes];
   const deletedTypes = new Set(
@@ -133,24 +191,45 @@ export function hintSidesOf(
       )
       .map((c) => c.logicalId)
   );
-  const creates: RefactorCreateSide[] = [];
-  const deletes: RefactorDeleteSide[] = [];
+  // A resource that stays: an UPDATE or NO_CHANGE row, or a record the diff
+  // does not delete (the approval prompt's rows leave NO_CHANGE out).
+  const deleted = new Set(rows.filter((c) => c.changeType === 'DELETE').map((c) => c.logicalId));
+  const staying = new Set([
+    ...rows
+      .filter((c) => c.changeType === 'UPDATE' || c.changeType === 'NO_CHANGE')
+      .map((c) => c.logicalId),
+    ...Object.keys(records ?? {}).filter((id) => !deleted.has(id)),
+  ]);
+  const created = new Set(rows.filter((c) => c.changeType === 'CREATE').map((c) => c.logicalId));
+  const creates: HintCreateSide[] = [];
+  const deletes: HintDeleteSide[] = [];
   for (const change of rows) {
     if (exclude.has(change.logicalId)) continue;
     if (change.changeType === 'CREATE') {
       if (changedDependencyOf(template, change.logicalId, (id) => updated.has(id)) !== undefined) {
         continue;
       }
+      const references = [...referencedLogicalIds(template, change.logicalId)];
+      const stayingReferences = references.filter((id) => staying.has(id));
+      const createdReferences = references.filter((id) => created.has(id));
       creates.push({
         logicalId: change.logicalId,
         resourceType: change.resourceType,
         properties: change.desiredProperties ?? {},
+        ...(stayingReferences.length > 0 && { stayingReferences }),
+        ...(createdReferences.length > 0 && { createdReferences }),
       });
     } else if (change.changeType === 'DELETE') {
+      const record =
+        records && Object.hasOwn(records, change.logicalId) ? records[change.logicalId] : undefined;
+      const dependencies = record?.dependencies as unknown;
       deletes.push({
         logicalId: change.logicalId,
         resourceType: change.resourceType,
         properties: change.currentProperties ?? {},
+        ...(Array.isArray(dependencies) && {
+          recordedDependencies: dependencies.filter((id): id is string => typeof id === 'string'),
+        }),
       });
     }
   }

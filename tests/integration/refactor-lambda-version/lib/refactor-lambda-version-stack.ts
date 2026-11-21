@@ -1,6 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
 /**
@@ -39,5 +42,19 @@ export class RefactorLambdaVersionStack extends cdk.Stack {
       }),
       { methodResponses: [{ statusCode: '200' }] }
     );
+
+    // go-to-k/cdkd#6797: generation "b" moves the subscription to the other
+    // existing queue. The new subscription and queue policy reference q2, the
+    // old records q1: new resources, so no `moved to` hint either.
+    const q1 = new sqs.Queue(this, 'Q1', {
+      queueName: 'cdkd-refactor-lambda-version-q1',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const q2 = new sqs.Queue(this, 'Q2', {
+      queueName: 'cdkd-refactor-lambda-version-q2',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const topic = new sns.Topic(this, 'Topic', { topicName: 'cdkd-refactor-lambda-version-t' });
+    topic.addSubscription(new subs.SqsSubscription(gen === 'b' ? q2 : q1));
   }
 }

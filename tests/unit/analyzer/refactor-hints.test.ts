@@ -201,6 +201,47 @@ describe('which stacks take part (cdkd refactor would plan them)', () => {
     expect(node.refactorSides?.creates).toEqual([]);
   });
 
+  // go-to-k/cdkd#6797: the diff hands the records over, so a DELETE carries
+  // its recorded dependencies and a CREATE the staying resources it references.
+  it('a DELETE carries its record dependencies, a CREATE its staying references', async () => {
+    const node = await buildDiffTree({
+      stackName: 'S',
+      displayName: 'S',
+      region: 'us-east-1',
+      template: {
+        Resources: {
+          Dlq: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'dlq' } },
+          NewQueue: {
+            Type: 'AWS::SQS::Queue',
+            Properties: { QueueName: 'q', RedrivePolicy: { deadLetterTargetArn: { 'Fn::GetAtt': ['Dlq', 'Arn'] } } },
+          },
+        },
+      },
+      nestedTemplates: {},
+      recursive: false,
+      stateBackend: {
+        getState: async () => ({
+          state: {
+            ...record,
+            resources: {
+              OldQueue: { ...record.resources['OldQueue']!, dependencies: ['OtherDlq'] },
+              Dlq: { physicalId: 'd', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'dlq' } },
+            },
+          },
+          etag: 'e',
+        }),
+      } as unknown as S3StateBackend,
+      diffCalculator: new DiffCalculator(),
+      isNestedChild: false,
+    });
+    expect(node.refactorSides?.deletes).toEqual([
+      expect.objectContaining({ logicalId: 'OldQueue', recordedDependencies: ['OtherDlq'] }),
+    ]);
+    expect(node.refactorSides?.creates).toEqual([
+      expect.objectContaining({ logicalId: 'NewQueue', stayingReferences: ['Dlq'] }),
+    ]);
+  });
+
   it('a nested child offers none: cdkd refactor plans top-level stacks only', async () => {
     expect((await tree(record, true)).refactorSides).toBeUndefined();
   });
@@ -302,6 +343,142 @@ describe('hintSidesOf', () => {
     expect(hints([...versionRows(undefined), added, removed])?.get('FnVersionOld')).toEqual({
       stackName: 'S',
       logicalId: 'FnVersionNew',
+    });
+  });
+
+  // go-to-k/cdkd#6797: a subscription moved from Q1 to Q2, both existing.
+  // The CREATE's `Ref: Q2` matches anything loosely, so only the record's
+  // dependencies can tell the pair apart.
+  describe('a CREATE referencing a resource that stays in the stack', () => {
+    const template = {
+      Resources: {
+        Topic: { Type: 'AWS::SNS::Topic', Properties: {} },
+        Q1: { Type: 'AWS::SQS::Queue', Properties: {} },
+        Q2: { Type: 'AWS::SQS::Queue', Properties: {} },
+        SubQ2: {
+          Type: 'AWS::SNS::Subscription',
+          Properties: {
+            TopicArn: { Ref: 'Topic' },
+            Protocol: 'sqs',
+            Endpoint: { 'Fn::GetAtt': ['Q2', 'Arn'] },
+          },
+        },
+      },
+    };
+    const rows: ResourceChange[] = [
+      {
+        logicalId: 'SubQ2',
+        changeType: 'CREATE',
+        resourceType: 'AWS::SNS::Subscription',
+        desiredProperties: template.Resources.SubQ2.Properties,
+      },
+      {
+        logicalId: 'SubQ1',
+        changeType: 'DELETE',
+        resourceType: 'AWS::SNS::Subscription',
+        currentProperties: { TopicArn: 'arn:topic', Protocol: 'sqs', Endpoint: 'arn:q1' },
+      },
+      ...['Topic', 'Q1', 'Q2'].map(
+        (logicalId): ResourceChange => ({
+          logicalId,
+          changeType: 'NO_CHANGE',
+          resourceType: logicalId === 'Topic' ? 'AWS::SNS::Topic' : 'AWS::SQS::Queue',
+        })
+      ),
+    ];
+    const hint = (dependencies?: string[]) =>
+      findRefactorHints([
+        {
+          id: 's',
+          stackName: 'S',
+          env: 'e',
+          ...hintSidesOf(rows, template, new Set(), {
+            SubQ1: {
+              physicalId: 'arn:sub1',
+              resourceType: 'AWS::SNS::Subscription',
+              properties: {},
+              ...(dependencies && { dependencies }),
+            },
+          }),
+        },
+      ]).get('s');
+
+    it('gives no hint when the record referenced another existing resource', () => {
+      expect(hint(['Topic', 'Q1'])).toBeUndefined();
+    });
+
+    it('hints a rename whose record referenced the same resources', () => {
+      expect(hint(['Topic', 'Q2'])?.get('SubQ1')).toEqual({ stackName: 'S', logicalId: 'SubQ2' });
+    });
+
+    it('stays loose for a record with no dependencies field (an older record)', () => {
+      expect(hint(undefined)?.get('SubQ1')).toEqual({ stackName: 'S', logicalId: 'SubQ2' });
+    });
+  });
+
+  it('gives no hint across stacks to a CREATE referencing a staying resource: ids are per stack', () => {
+    const hints = findRefactorHints([
+      {
+        id: 'A',
+        stackName: 'A',
+        env: 'e',
+        creates: [],
+        deletes: [
+          {
+            logicalId: 'Sub',
+            resourceType: 'AWS::SNS::Subscription',
+            properties: { Endpoint: 'arn:a-queue' },
+            recordedDependencies: ['Queue'],
+          },
+        ],
+      },
+      {
+        id: 'B',
+        stackName: 'B',
+        env: 'e',
+        creates: [
+          {
+            logicalId: 'Sub',
+            resourceType: 'AWS::SNS::Subscription',
+            properties: { Endpoint: { 'Fn::GetAtt': ['Queue', 'Arn'] } },
+            stayingReferences: ['Queue'],
+          },
+        ],
+        deletes: [],
+      },
+    ]);
+    expect(hints.size).toBe(0);
+  });
+
+  it('gives no hint to a CREATE referencing a new resource, but keeps one referencing a renamed one', () => {
+    const sub = (endpointQueue: string) => ({
+      logicalId: 'Sub2',
+      resourceType: 'AWS::SNS::Subscription',
+      properties: { Endpoint: { 'Fn::GetAtt': [endpointQueue, 'Arn'] } },
+      createdReferences: [endpointQueue],
+    });
+    const run = (newQueueName: string) =>
+      findRefactorHints([
+        {
+          id: 's',
+          stackName: 'S',
+          env: 'e',
+          creates: [
+            { logicalId: 'Q2', resourceType: 'AWS::SQS::Queue', properties: { QueueName: newQueueName } },
+            sub('Q2'),
+          ],
+          deletes: [
+            { logicalId: 'Q1', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q1' } },
+            { logicalId: 'Sub1', resourceType: 'AWS::SNS::Subscription', properties: { Endpoint: 'arn:q1' } },
+          ],
+        },
+      ]).get('s');
+    // Q2 is a new queue (another name): the subscription to it is new too.
+    expect(run('q2')).toBeUndefined();
+    // Q2 is Q1 renamed: the subscription may be renamed with it.
+    expect(Object.fromEntries(run('q1') ?? [])).toEqual({
+      Q1: { stackName: 'S', logicalId: 'Q2' },
+      Sub1: { stackName: 'S', logicalId: 'Sub2' },
     });
   });
 
@@ -428,6 +605,53 @@ describe('where the hint is rendered', () => {
     expect(request.destructiveChanges).toEqual([
       expect.objectContaining({ logicalId: 'OldTable', movedTo: { stackName: 'Src', logicalId: 'NewTable' } }),
     ]);
+  });
+
+  // go-to-k/cdkd#6797: the prompt hands the records over too.
+  it('not in the deploy approval prompt for a subscription moved to another existing queue', async () => {
+    const approve = vi.fn(async () => true);
+    await requireDeploymentApproval({
+      options: { requireApproval: 'destructive', approveDeployment: approve },
+      stackName: 'Src',
+      changes: [
+        {
+          logicalId: 'SubQ1',
+          changeType: 'DELETE',
+          resourceType: 'AWS::SNS::Subscription',
+          currentProperties: { Protocol: 'sqs', Endpoint: 'arn:q1' },
+        },
+        {
+          logicalId: 'SubQ2',
+          changeType: 'CREATE',
+          resourceType: 'AWS::SNS::Subscription',
+          desiredProperties: { Protocol: 'sqs', Endpoint: { 'Fn::GetAtt': ['Q2', 'Arn'] } },
+        },
+        { logicalId: 'Q2', changeType: 'NO_CHANGE', resourceType: 'AWS::SQS::Queue' },
+      ],
+      records: {
+        SubQ1: {
+          physicalId: 's1',
+          resourceType: 'AWS::SNS::Subscription',
+          properties: { Protocol: 'sqs', Endpoint: 'arn:q1' },
+          dependencies: ['Q1'],
+        },
+        Q2: { physicalId: 'q2', resourceType: 'AWS::SQS::Queue', properties: {} },
+      },
+      template: {
+        Resources: {
+          Q2: { Type: 'AWS::SQS::Queue', Properties: {} },
+          SubQ2: {
+            Type: 'AWS::SNS::Subscription',
+            Properties: { Protocol: 'sqs', Endpoint: { 'Fn::GetAtt': ['Q2', 'Arn'] } },
+          },
+        },
+      },
+    });
+    const request = (approve.mock.calls[0] as unknown[] | undefined)?.[0] as {
+      destructiveChanges: Array<{ logicalId: string; movedTo?: unknown }>;
+    };
+    expect(request.destructiveChanges.map((c) => c.logicalId)).toEqual(['SubQ1']);
+    expect(request.destructiveChanges[0]?.movedTo).toBeUndefined();
   });
 
   // go-to-k/cdkd#6097: the prompt reads the stack's template for references.
