@@ -1,6 +1,7 @@
 import {
   DeleteTableCommand,
   DescribeTableCommand,
+  type DescribeTableCommandOutput,
   UpdateTableCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-dynamodb';
@@ -33,6 +34,11 @@ import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { isThrottlingError, isTransientServerError } from '../../../deployment/retryable-errors.js';
+import {
+  assertRecordedIdentity,
+  recordedIdentityId,
+  RecordedIdentityError,
+} from '../../recorded-identity.js';
 import type { DynamoDBTableProvider } from '../dynamodb-table-provider.js';
 import {
   TABLE_ACTIVE_WAIT_ATTEMPTS,
@@ -308,79 +314,90 @@ export async function deleteTableResource(
     DELETE_BUDGET_REUSE_WINDOW_MS
   );
 
-  // `--remove-protection`: flip DeletionProtectionEnabled off before
-  // delete. UpdateTable is async — wait for ACTIVE before issuing
-  // DeleteTable so the delete doesn't race the still-UPDATING table.
-  // Idempotent — DynamoDB accepts the call when protection is already
-  // disabled. Non-fatal: log at debug if the flip-off itself errors
-  // (NotFound / similar) so the delete still proceeds.
-  if (context?.removeProtection === true) {
-    try {
-      // OBSERVE before flipping (issue #1978). Only a guard that was ON and
-      // that THIS run turned off may be put back on the error path — a table
-      // the user had already left unprotected must come out of a failed
-      // destroy exactly as it went in. Best-effort like the flip itself: a
-      // describe failure leaves the record false, which means "do not know,
-      // so do not touch", and the delete proceeds either way. Deliberately
-      // NOT read from the state properties: state can be stale, and what has
-      // to be restored is what AWS actually had.
-      let observedProtectionOn = false;
+  try {
+    // go-to-k/cdkd#6655 (D1): with a `TableId` recorded, the table under the
+    // name must be the one cdkd created, checked before the protection flip
+    // or any delete. Its describe is reused by the flip's observation below.
+    const identityRead = await readRecordedTableIdentity.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      context
+    );
+
+    // `--remove-protection`: flip DeletionProtectionEnabled off before
+    // delete. UpdateTable is async — wait for ACTIVE before issuing
+    // DeleteTable so the delete doesn't race the still-UPDATING table.
+    // Idempotent — DynamoDB accepts the call when protection is already
+    // disabled. Non-fatal: log at debug if the flip-off itself errors
+    // (NotFound / similar) so the delete still proceeds.
+    if (context?.removeProtection === true) {
       try {
-        const before = await this.dynamoDBClient.send(
-          new DescribeTableCommand({ TableName: physicalId })
+        // OBSERVE before flipping (issue #1978). Only a guard that was ON and
+        // that THIS run turned off may be put back on the error path — a table
+        // the user had already left unprotected must come out of a failed
+        // destroy exactly as it went in. Best-effort like the flip itself: a
+        // describe failure leaves the record false, which means "do not know,
+        // so do not touch", and the delete proceeds either way. Deliberately
+        // NOT read from the state properties: state can be stale, and what has
+        // to be restored is what AWS actually had.
+        let observedProtectionOn = false;
+        try {
+          const before =
+            identityRead ??
+            (await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId })));
+          observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
+        } catch (observeError) {
+          // Masked (#5180): the physical id can carry a dynamic-reference
+          // plaintext, and AWS's text quotes it.
+          const mask = maskerOrIdentity(context?.maskSecrets);
+          this.logger.debug(
+            mask(
+              safeMsg`Could not read DeletionProtectionEnabled on ${mask(physicalId)} before disabling it: ${mask(describeAwsFailure(observeError).detail)}`
+            )
+          );
+        }
+        await this.dynamoDBClient.send(
+          new UpdateTableCommand({
+            TableName: physicalId,
+            DeletionProtectionEnabled: false,
+          })
         );
-        observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
-      } catch (observeError) {
-        // Masked (#5180): the physical id can carry a dynamic-reference
-        // plaintext, and AWS's text quotes it.
-        const mask = maskerOrIdentity(context?.maskSecrets);
+        // Set only AFTER AWS accepted the flip: a rejected `UpdateTable` left
+        // the guard where it was, so there is nothing to compensate.
+        //
+        // LATCHED, never assigned: on a re-entry the observation above reports
+        // the guard OFF because the PREVIOUS attempt turned it off, so
+        // `flip.flippedOffByThisRun = observedProtectionOn` would erase what
+        // that attempt recorded and the terminal failure here would compensate
+        // nothing (issue #1978). The record is cleared by `release()` on a
+        // terminal outcome, which is what stops the latch from outliving the
+        // delete it belongs to.
+        if (observedProtectionOn) flip.flippedOffByThisRun = true;
         this.logger.debug(
-          mask(
-            safeMsg`Could not read DeletionProtectionEnabled on ${mask(physicalId)} before disabling it: ${mask(describeAwsFailure(observeError).detail)}`
-          )
+          `Disabled DeletionProtectionEnabled on DynamoDB table ${logicalId}, waiting for ACTIVE`
         );
-      }
-      await this.dynamoDBClient.send(
-        new UpdateTableCommand({
-          TableName: physicalId,
-          DeletionProtectionEnabled: false,
-        })
-      );
-      // Set only AFTER AWS accepted the flip: a rejected `UpdateTable` left
-      // the guard where it was, so there is nothing to compensate.
-      //
-      // LATCHED, never assigned: on a re-entry the observation above reports
-      // the guard OFF because the PREVIOUS attempt turned it off, so
-      // `flip.flippedOffByThisRun = observedProtectionOn` would erase what
-      // that attempt recorded and the terminal failure here would compensate
-      // nothing (issue #1978). The record is cleared by `release()` on a
-      // terminal outcome, which is what stops the latch from outliving the
-      // delete it belongs to.
-      if (observedProtectionOn) flip.flippedOffByThisRun = true;
-      this.logger.debug(
-        `Disabled DeletionProtectionEnabled on DynamoDB table ${logicalId}, waiting for ACTIVE`
-      );
-      try {
-        await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS, budget);
-      } catch (waitErr) {
-        this.logger.debug(
-          maskerOrIdentity(context?.maskSecrets)(
-            `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
-          )
-        );
-      }
-    } catch (flipError) {
-      if (!(flipError instanceof ResourceNotFoundException)) {
-        this.logger.debug(
-          maskerOrIdentity(context?.maskSecrets)(
-            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
-          )
-        );
+        try {
+          await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS, budget);
+        } catch (waitErr) {
+          this.logger.debug(
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
+            )
+          );
+        }
+      } catch (flipError) {
+        if (!(flipError instanceof ResourceNotFoundException)) {
+          this.logger.debug(
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
+          );
+        }
       }
     }
-  }
 
-  try {
     // AWS refuses `DeleteTable` while a GSI is transitioning
     // (`Cannot delete table while indexes are being created, updated, or
     // deleted`), and the condition is TRANSIENT: a real destroy lost a table
@@ -398,8 +415,9 @@ export async function deleteTableResource(
     // vector indexes too (go-to-k/cdkd#5574), so a refusal while one builds
     // waits for it rather than spending each retry on backoff alone.
     //
-    // Deliberately NO pre-delete describe / settle gate here (the sibling's
-    // #1521 gate). The only thing that can precede this `DeleteTable` is the
+    // Deliberately NO pre-delete settle gate here (the sibling's #1521
+    // gate). The only things that can precede this `DeleteTable` are the
+    // recorded-identity describe (one read, no wait) and the
     // `--remove-protection` flip above (an `UpdateTable` plus a <=60s wait
     // for ACTIVE), and that wait watches the TABLE status, not the index
     // ones — so nothing here closes the index-busy window, and there is no
@@ -547,6 +565,24 @@ export async function deleteTableResource(
     this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
     this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
   } catch (error) {
+    // go-to-k/cdkd#6655: the identity refusals, already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) {
+      // Raised before any write. A deletion-protection flip an EARLIER
+      // attempt made (latched on the record) is not put back: the
+      // compensation re-enables BY NAME, and the resource under the name is
+      // not proven ours -- another one (a mismatch), or unconfirmed (an
+      // answer without the id). Said instead, so the stripped guard is not
+      // silent (#1978 / #2204). No value is printed.
+      if (flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        flip.flippedOffByThisRun = false;
+        this.logger.warn(
+          safeMsg`DynamoDB table ${logicalId}: an earlier attempt of this delete turned its deletion protection off, ` +
+            `and cdkd did not turn it back on because it cannot confirm the DynamoDB table now under the ` +
+            `name is the one it recorded; check the deletion protection of the one you keep.`
+        );
+      }
+      throw error;
+    }
     if (error instanceof ResourceNotFoundException) {
       const clientRegion = await this.dynamoDBClient.config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
@@ -604,4 +640,44 @@ export async function deleteTableResource(
     // typed not-found above means this table is gone (go-to-k/cdkd#2319).
     throw error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
+}
+
+/**
+ * go-to-k/cdkd#6655 (D1): a table delete addresses the table BY NAME, and a
+ * name freed by a delete can be taken again by another table. With a
+ * `TableId` recorded, one `DescribeTable` must answer with it, or the delete
+ * is refused (`RecordedIdentityMismatchError`) before any write: no
+ * protection flip, no `DeleteTable`. Returns that describe (the latest, after
+ * a mismatch's re-read) so `--remove-protection` observes the guard from it
+ * instead of a second read.
+ *
+ * No usable `TableId` recorded (a legacy, masked or secret-reference value):
+ * `undefined` with NO read, the by-name delete as before. A
+ * `ResourceNotFoundException` propagates to the delete's idempotent
+ * not-found path; any other failure propagates to the retry classifiers,
+ * never to a by-name delete.
+ */
+export async function readRecordedTableIdentity(
+  this: DynamoDBTableProvider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  context: DeleteContext | undefined
+): Promise<DescribeTableCommandOutput | undefined> {
+  if (recordedIdentityId(resourceType, context) === undefined) return undefined;
+  let latest = await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+  await assertRecordedIdentity({
+    label: 'DynamoDB table',
+    replacedBy: 'a restore from a backup or to a point in time under the same table name',
+    resourceType,
+    logicalId,
+    physicalId,
+    liveId: latest.Table?.TableId,
+    reread: async () => {
+      latest = await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+      return latest.Table?.TableId;
+    },
+    context,
+  });
+  return latest;
 }

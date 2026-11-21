@@ -1,10 +1,19 @@
-import { DeleteDBInstanceCommand, ModifyDBInstanceCommand } from '@aws-sdk/client-rds';
+import {
+  DeleteDBInstanceCommand,
+  ModifyDBInstanceCommand,
+  type DBInstance,
+} from '@aws-sdk/client-rds';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import {
+  assertRecordedIdentity,
+  recordedIdentityId,
+  RecordedIdentityError,
+} from '../../recorded-identity.js';
 import {
   deleteWithProtectionCompensation,
   observeThenDisableProtection,
@@ -83,6 +92,17 @@ export async function deleteDBInstanceOnce(
   this.logger.debug(`Deleting DBInstance ${logicalId}`);
 
   try {
+    // go-to-k/cdkd#6655 (D1): with a `DbiResourceId` recorded, the instance
+    // under the identifier must be the one cdkd created, checked before the
+    // protection flip or the delete. Its describe is reused below.
+    const identityRead = await readRecordedInstanceIdentity.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      context
+    );
+
     // `--remove-protection`: flip DeletionProtection off in-place
     // before delete. Idempotent — RDS accepts the call when protection
     // is already disabled. Non-fatal: log at debug if the flip-off
@@ -98,7 +118,8 @@ export async function deleteDBInstanceOnce(
           mask: context?.maskSecrets,
           guardName: 'DeletionProtection',
           observe: async () =>
-            (await this.describeDBInstance(physicalId))?.DeletionProtection === true,
+            (identityRead ?? (await this.describeDBInstance(physicalId)))?.DeletionProtection ===
+            true,
           // go-to-k/cdkd#5639: as for a DB cluster, a refusal of the flip
           // as not `available` is waited out and resent.
           disable: async () => {
@@ -155,14 +176,18 @@ export async function deleteDBInstanceOnce(
     // too, so RDS refuses rather than a standalone instance losing its
     // snapshot.
     if (finalSnapshotId && declaredReplicaSource(properties) !== undefined) {
-      const live = await this.describeDBInstance(physicalId).catch((err: unknown) => {
-        this.logger.debug(
-          maskerOrIdentity(context?.maskSecrets)(
-            safeMsg`Could not read whether DBInstance ${logicalId} is a read replica: ${describeAwsFailure(err).detail}`
-          )
-        );
-        return undefined;
-      });
+      // The identity describe, when one was made: the flip in between changes
+      // no replica membership.
+      const live =
+        identityRead ??
+        (await this.describeDBInstance(physicalId).catch((err: unknown) => {
+          this.logger.debug(
+            maskerOrIdentity(context?.maskSecrets)(
+              safeMsg`Could not read whether DBInstance ${logicalId} is a read replica: ${describeAwsFailure(err).detail}`
+            )
+          );
+          return undefined;
+        }));
       if (isLiveReadReplica(live)) {
         finalSnapshotId = undefined;
         this.logger.info(
@@ -202,6 +227,24 @@ export async function deleteDBInstanceOnce(
     // Wait for instance to be fully deleted
     await this.waitForInstanceDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
   } catch (error) {
+    // go-to-k/cdkd#6655: the identity refusals, already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) {
+      // Raised before any write. A deletion-protection flip an EARLIER
+      // attempt made (latched on the record) is not put back: the
+      // compensation re-enables BY NAME, and the resource under the name is
+      // not proven ours -- another one (a mismatch), or unconfirmed (an
+      // answer without the id). Said instead, so the stripped guard is not
+      // silent (#1978 / #2204). No value is printed.
+      if (flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        flip.flippedOffByThisRun = false;
+        this.logger.warn(
+          safeMsg`RDS DB instance ${logicalId}: an earlier attempt of this delete turned its deletion protection off, ` +
+            `and cdkd did not turn it back on because it cannot confirm the RDS DB instance now under the ` +
+            `name is the one it recorded; check the deletion protection of the one you keep.`
+        );
+      }
+      throw error;
+    }
     if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) {
       const clientRegion = await this.getClient().config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
@@ -259,4 +302,51 @@ export async function deleteInstanceAfterProtectionFlip(
     logger: this.logger,
     remainingMs: enclosingDeadlineRemainingMs(),
   });
+}
+
+/**
+ * go-to-k/cdkd#6655 (D1): a DB instance delete addresses the instance BY
+ * IDENTIFIER, and an identifier freed by a delete can be taken again by
+ * another instance. With a `DbiResourceId` recorded, one
+ * `DescribeDBInstances` must answer with it, or the delete is refused
+ * (`RecordedIdentityMismatchError`) before any write: no protection flip,
+ * no `DeleteDBInstance`, no final snapshot. Returns that describe (the
+ * latest, after a mismatch's re-read) for the delete's own reads to reuse.
+ *
+ * No usable `DbiResourceId` recorded (a legacy, masked or secret-reference
+ * value): `undefined` with NO read, the by-identifier delete as before. The
+ * not-found fault propagates to the delete's idempotent not-found path; any
+ * other failure to the retry classifiers. A response with no instance of
+ * this identifier carries no id, and refuses (`assertRecordedIdentity`).
+ */
+export async function readRecordedInstanceIdentity(
+  this: RDSProvider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  context: DeleteContext | undefined
+): Promise<DBInstance | undefined> {
+  if (recordedIdentityId(resourceType, context) === undefined) return undefined;
+  const read = async (): Promise<DBInstance | undefined> => {
+    const instance = await this.describeDBInstance(physicalId);
+    return instance?.DBInstanceIdentifier?.toLowerCase() === physicalId.toLowerCase()
+      ? instance
+      : undefined;
+  };
+  let latest = await read();
+  await assertRecordedIdentity({
+    label: 'RDS DB instance',
+    replacedBy:
+      'an RDS blue/green switchover, or a restore from a snapshot or to a point in time under the same identifier',
+    resourceType,
+    logicalId,
+    physicalId,
+    liveId: latest?.DbiResourceId,
+    reread: async () => {
+      latest = await read();
+      return latest?.DbiResourceId;
+    },
+    context,
+  });
+  return latest;
 }
