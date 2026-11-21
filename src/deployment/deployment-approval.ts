@@ -115,7 +115,7 @@ export async function requireDeploymentApproval(args: {
               id: 'self',
               stackName: args.stackName,
               env: '',
-              ...hintSidesOf(changes, args.template, rollbackOrphanIds(args.orphans)),
+              ...hintSidesOf(changes, args.template, rollbackOrphanIds(args.orphans), args.records),
             },
           ]).get('self')
         )

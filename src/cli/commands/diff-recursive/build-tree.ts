@@ -442,7 +442,8 @@ export async function buildDiffTree(args: {
     node.refactorSides = hintSidesOf(
       changes.values(),
       effectiveTemplate,
-      rollbackOrphanIds(state.orphans)
+      rollbackOrphanIds(state.orphans),
+      stateAfterAdoption.resources
     );
   }
   if (!recursive) return node;
