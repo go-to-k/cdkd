@@ -121,6 +121,13 @@ export function signalCandidateOf(resource: unknown): SignalCandidate | undefine
 function rollingSignalPauseMs(resource: object): number | undefined {
   const policy = (resource as { UpdatePolicy?: unknown }).UpdatePolicy;
   if (policy === null || typeof policy !== 'object') return undefined;
+  const replacing = (policy as Record<string, unknown>)['AutoScalingReplacingUpdate'];
+  const willReplace =
+    replacing !== null && typeof replacing === 'object'
+      ? (replacing as Record<string, unknown>)['WillReplace']
+      : undefined;
+  // A replacing update takes precedence: the new group's CreationPolicy waits.
+  if (willReplace === true || willReplace === 'true') return undefined;
   const rolling = (policy as Record<string, unknown>)['AutoScalingRollingUpdate'];
   if (rolling === null || typeof rolling !== 'object') return undefined;
   const wait = (rolling as Record<string, unknown>)['WaitOnResourceSignals'];
@@ -379,6 +386,10 @@ const SETTLED = /(_COMPLETE|_FAILED)$/;
 export class SignalReceiver {
   private stackId: string | undefined;
   private armed = new Set<string>();
+  /** The resolved metadata each served resource was last sent with (to restore it). */
+  private metadataById = new Map<string, unknown>();
+  /** Serializes the receiver updates this deploy's rolling updates make. */
+  private rollingChain: Promise<unknown> = Promise.resolve();
   /** go-to-k/cdkd#6706: the count each rolling-update waiter was armed with. */
   private armedCounts = new Map<string, number>();
   /** Armed waiters whose signals arrived. */
@@ -420,6 +431,62 @@ export class SignalReceiver {
   /** Whether this deploy armed a waiter for `logicalId`. */
   isArmed(logicalId: string): boolean {
     return this.armed.has(logicalId);
+  }
+
+  /**
+   * go-to-k/cdkd#6706: arm a rolling update's waiter for `count` signals,
+   * right before its Instance Refresh starts (never for an update that runs
+   * none). Only while the receiver is idle: one waiter of this deploy still
+   * pending holds it `UPDATE_IN_PROGRESS`, and that refresh then waits for no
+   * signal (warned). Never throws.
+   */
+  armRolling(logicalId: string, count: number): Promise<boolean> {
+    const run = async (): Promise<boolean> => {
+      if (this.stackId === undefined || count <= 0) return false;
+      try {
+        const client = this.client();
+        const status = (await this.describe(client, this.stackId))?.StackStatus;
+        if (status === undefined || status.endsWith('_IN_PROGRESS')) {
+          this.logger.warn(
+            safeMsg`${logicalId}: the CloudFormation signal receiver is busy with another wait of this deploy (${status ?? 'gone'}), so this rolling update waits for no signal`
+          );
+          return false;
+        }
+        const current = await this.currentResources(client);
+        const metadata = current[logicalId]?.['Metadata'] ?? this.metadataById.get(logicalId);
+        if (current[logicalId] !== undefined) {
+          // A waiter or holder of the same logical id cannot become a fresh
+          // waiter in place: remove it first, in its own update.
+          const without = { ...current };
+          delete without[logicalId];
+          await this.update(client, { [ANCHOR_ID]: anchorResource(), ...without });
+          if ((await this.awaitSettled(client)) !== 'UPDATE_COMPLETE') {
+            throw new Error('the receiver did not finish removing the earlier waiter');
+          }
+        }
+        await this.update(client, {
+          [ANCHOR_ID]: anchorResource(),
+          ...current,
+          [logicalId]: waiterResource(count, metadata),
+        });
+        if (metadata !== undefined) this.metadataById.set(logicalId, metadata);
+        await this.awaitWaiting(client, new Set([logicalId]));
+        this.armed.add(logicalId);
+        this.armedIds.push(logicalId);
+        this.armedCounts.set(logicalId, count);
+        this.armedUpdate = true;
+        this.logger.info(
+          safeMsg`Signal receiver ${this.stackName}: the rolling update of ${logicalId} waits for ${count} signal(s)`
+        );
+        return true;
+      } catch (error) {
+        this.fallbackWarn(error);
+        return false;
+      }
+    };
+    const next = this.rollingChain.then(run, run);
+    this.rollingChain = next;
+    return next;
   }
 
   /**
@@ -534,6 +601,7 @@ export class SignalReceiver {
           if (current[id] !== undefined) desired[id] = current[id];
           continue;
         }
+        if (metadata !== undefined) this.metadataById.set(id, metadata);
         const count = counts.get(id) ?? candidate.count;
         if (armIds.has(id) && count > 0) {
           desired[id] = waiterResource(count, metadata);
@@ -665,11 +733,28 @@ export class SignalReceiver {
         await client.send(new CancelUpdateStackCommand({ StackName: this.stackId }));
         this.logger.debug(safeMsg`Cancelled the signal receiver's unfinished update`);
       }
+      await this.restoreServed(client);
     } catch (error) {
       this.logger.debug(
-        safeMsg`Could not cancel the signal receiver's update: ${describeAwsFailure(error).summary}`
+        safeMsg`Could not settle the signal receiver: ${describeAwsFailure(error).summary}`
       );
     }
+  }
+
+  /**
+   * After a cancel or a FAILURE signal rolled the receiver back to a template
+   * an earlier re-arm stripped, put each served resource's metadata back on a
+   * holder, so cfn-init on an instance launched later still finds it.
+   */
+  private async restoreServed(client: CloudFormationClient): Promise<void> {
+    if ((await this.awaitSettled(client)) === undefined) return;
+    const current = await this.currentResources(client);
+    const missing = [...this.metadataById].filter(([id]) => current[id] === undefined);
+    if (missing.length === 0) return;
+    const restored: TemplateResources = { [ANCHOR_ID]: anchorResource(), ...current };
+    for (const [id, metadata] of missing) restored[id] = holderResource(metadata);
+    await this.update(client, restored);
+    await this.awaitSettled(client);
   }
 
   /**

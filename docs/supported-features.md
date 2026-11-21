@@ -189,8 +189,10 @@ larger.
 `WaitOnResourceSignals` is honored through the stack's
 [signal receiver](#creationpolicy-and-cfn-init) when the group's launch
 template sends a signed `cfn-signal --resource <group>` (AWS CDK
-`initOptions.includeRole: true`). cdkd waits for one signal per instance the
-refresh replaces (the group's desired capacity):
+`initOptions.includeRole: true`). Right before the refresh starts, cdkd arms
+the receiver for one signal per instance the refresh replaces (the group's
+in-service instances not protected from scale-in, at most its desired
+capacity); an update that runs no refresh never touches the receiver:
 
 | Signal outcome | Result |
 | --- | --- |
@@ -198,8 +200,10 @@ refresh replaces (the group's desired capacity):
 | Not every signal within `PauseTime` (`PT5M` when unset) after the refresh finished | The update fails and is rolled back |
 
 The batches still advance after `InstanceWarmup` (`PauseTime`), as in a
-refresh without signals. Unsigned signals, or a group without the receiver,
-keep a warning and the plain `PauseTime` wait. A refresh has no setting
+refresh without signals. Unsigned signals, a group without the receiver, or a
+receiver still waiting on another resource of the same deploy keep a warning
+and the plain `PauseTime` wait. A rollback's revert refresh waits for no
+signal. A refresh has no setting
 for `MinActiveInstancesPercent`, `MinSuccessfulInstancesPercent` or
 `SuspendProcesses`; when the template sets one, cdkd logs one line naming it.
 

@@ -737,18 +737,24 @@ describe('ASGProvider.update instance refresh (go-to-k/cdkd#6437)', () => {
   });
 
   describe('WaitOnResourceSignals through the signal receiver (go-to-k/cdkd#6706)', () => {
-    const watch = (failures: (string | undefined)[], awaitAll = vi.fn(async () => undefined)) => {
+    const watch = (
+      failures: (string | undefined)[],
+      awaitAll = vi.fn(async () => undefined),
+      armed = true
+    ) => {
       const failure = vi.fn(async () => failures.shift());
-      return { failure, awaitAll };
+      const arm = vi.fn(async (_count: number) => armed);
+      return { arm, failure, awaitAll };
     };
 
     it('waits for every replaced instance signal after the refresh, within PauseTime, and does not warn', async () => {
-      arm({ statuses: ['InProgress', 'Successful'] });
+      arm({ statuses: ['InProgress', 'Successful'], inService: [2] });
       const rollingSignals = watch([]);
       await run(changed, {
         updatePolicy: rolling({ WaitOnResourceSignals: true, PauseTime: 'PT2M' }),
         rollingSignals,
       });
+      expect(rollingSignals.arm).toHaveBeenCalledWith(2);
       expect(rollingSignals.awaitAll).toHaveBeenCalledWith(120_000);
       expect(logger.warn).not.toHaveBeenCalledWith(
         expect.stringContaining('WaitOnResourceSignals is not honored')
@@ -756,7 +762,7 @@ describe('ASGProvider.update instance refresh (go-to-k/cdkd#6437)', () => {
     });
 
     it('cancels the refresh and fails on a FAILURE signal while it runs', async () => {
-      arm({ statuses: ['InProgress', 'InProgress', 'Successful'] });
+      arm({ statuses: ['InProgress', 'InProgress', 'Successful'], inService: [2] });
       const rollingSignals = watch(['Received FAILURE signal with UniqueId i-9']);
       const error = await run(changed, {
         updatePolicy: rolling({ WaitOnResourceSignals: true }),
@@ -767,8 +773,36 @@ describe('ASGProvider.update instance refresh (go-to-k/cdkd#6437)', () => {
       expect(rollingSignals.awaitAll).not.toHaveBeenCalled();
     });
 
+    it('arms one signal per in-service instance, at most the desired capacity', async () => {
+      arm({ statuses: ['Successful'], desired: 1, instances: 3, inService: [3] });
+      const rollingSignals = watch([]);
+      await run(changed, { updatePolicy: rolling({ WaitOnResourceSignals: true }), rollingSignals });
+      expect(rollingSignals.arm).toHaveBeenCalledWith(1);
+    });
+
+    it('waits for no signal, and warns, when the receiver cannot arm', async () => {
+      arm({ statuses: ['Successful'], inService: [2] });
+      const rollingSignals = watch([], vi.fn(async () => undefined), false);
+      await run(changed, { updatePolicy: rolling({ WaitOnResourceSignals: true }), rollingSignals });
+      expect(rollingSignals.awaitAll).not.toHaveBeenCalled();
+      expect(rollingSignals.failure).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('WaitOnResourceSignals is not honored'));
+    });
+
+    it('a rollback revert neither arms nor warns', async () => {
+      arm({ statuses: ['Successful'], inService: [2] });
+      const rollingSignals = watch([]);
+      await run(changed, {
+        updatePolicy: rolling({ WaitOnResourceSignals: true }),
+        rollingSignals,
+        replayingState: true,
+      });
+      expect(rollingSignals.arm).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('WaitOnResourceSignals is not honored'));
+    });
+
     it('fails when the signals do not all arrive after the refresh', async () => {
-      arm({ statuses: ['Successful'] });
+      arm({ statuses: ['Successful'], inService: [2] });
       const rollingSignals = watch(
         [],
         vi.fn(async () => {

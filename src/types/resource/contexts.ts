@@ -642,6 +642,11 @@ export interface CreateContext extends SecretMaskingContext {
 
 /** {@link UpdateContext.rollingSignals}. */
 export interface RollingSignalWatch {
+  /**
+   * Arm the wait for `count` signals, right before the refresh starts.
+   * `false` when the receiver cannot take it (busy, refused): no wait then.
+   */
+  arm(count: number): Promise<boolean>;
   /** Why the signals failed so far (a `FAILURE` signal), or `undefined`. */
   failure(): Promise<string | undefined>;
   /** Resolve once every replaced instance signalled; throw on a failure or after `withinMs`. */

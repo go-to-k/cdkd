@@ -12,9 +12,6 @@ import { markNonRetryable } from '../retryable-errors.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { isSecretValuedAttribute, isSensitiveAttributeName } from '../../utils/stringify.js';
 import { isCustomResourceType } from '../../provisioning/custom-resource-secure-references.js';
-import { AutoScalingClient, DescribeAutoScalingGroupsCommand } from '@aws-sdk/client-auto-scaling';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { UpdateContext } from '../../types/resource.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
@@ -95,21 +92,16 @@ export async function armSignalReceiver(
     }
   }
   if (!touchesCandidate) return;
-  const counts = await rollingSignalCounts(engine, changes, stateResources);
-  for (const id of counts.keys()) armIds.add(id);
-  await receiver.arm(
-    armIds,
-    (id) =>
-      resolveTemplateMetadata(
-        engine,
-        id,
-        stateResources,
-        stackName,
-        template,
-        parameterValues,
-        conditions
-      ),
-    counts
+  await receiver.arm(armIds, (id) =>
+    resolveTemplateMetadata(
+      engine,
+      id,
+      stateResources,
+      stackName,
+      template,
+      parameterValues,
+      conditions
+    )
   );
 }
 
@@ -296,42 +288,6 @@ export function getAttReadsOf(value: unknown): Array<[string, string]> {
 }
 
 /**
- * go-to-k/cdkd#6706: the rolling updates this deploy may run with
- * `WaitOnResourceSignals` (an `--update-policy` UPDATE of a group the plan
- * serves), each with the signal count to wait for: the group's live desired
- * capacity, every instance an Instance Refresh replaces. A group whose count
- * cannot be read is not armed (the fixed pause applies, as before).
- */
-async function rollingSignalCounts(
-  engine: DeployEngine,
-  changes: ReadonlyMap<string, ResourceChange>,
-  stateResources: Record<string, ResourceState>
-): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  if (engine.options.updatePolicy !== true) return out;
-  const receiver = engine.signalReceiver;
-  for (const change of changes.values()) {
-    if (change.changeType !== 'UPDATE') continue;
-    if (change.propertyChanges?.some((pc) => pc.requiresReplacement) === true) continue;
-    if (receiver?.candidate(change.logicalId)?.rollingPauseMs === undefined) continue;
-    const physicalId = stateResources[change.logicalId]?.physicalId;
-    if (physicalId === undefined) continue;
-    try {
-      const out2 = await new AutoScalingClient(ambientClientDefaults()).send(
-        new DescribeAutoScalingGroupsCommand({ AutoScalingGroupNames: [physicalId] })
-      );
-      const desired = out2.AutoScalingGroups?.[0]?.DesiredCapacity;
-      if (typeof desired === 'number' && desired > 0) out.set(change.logicalId, desired);
-    } catch (error) {
-      engine.logger.debug(
-        safeMsg`${change.logicalId}: could not read its desired capacity for the signal wait (${describeAwsFailure(error).summary})`
-      );
-    }
-  }
-  return out;
-}
-
-/**
  * go-to-k/cdkd#6706: the `UpdateContext.rollingSignals` watch for a rolling
  * update the receiver armed, or nothing. The wait stops with the deploy.
  */
@@ -340,19 +296,17 @@ export function rollingSignalsFor(
   logicalId: string
 ): Pick<UpdateContext, 'rollingSignals'> {
   const receiver = engine.signalReceiver;
-  if (receiver?.isArmed(logicalId) !== true) return {};
-  if (receiver.candidate(logicalId)?.rollingPauseMs === undefined) return {};
-  const since = Date.now();
+  if (receiver?.candidate(logicalId)?.rollingPauseMs === undefined) return {};
+  let since = Date.now();
   return {
     rollingSignals: {
+      arm: async (count) => {
+        since = Date.now();
+        return receiver.armRolling(logicalId, count);
+      },
       failure: () => receiver.failureOf(logicalId, since),
       awaitAll: (withinMs) =>
-        receiver.awaitSignals(
-          logicalId,
-          Date.now(),
-          () => engine.interrupted,
-          Date.now() + withinMs
-        ),
+        receiver.awaitSignals(logicalId, since, () => engine.interrupted, Date.now() + withinMs),
     },
   };
 }

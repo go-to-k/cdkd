@@ -387,6 +387,7 @@ export async function runInstanceRefresh(
   const ignored: string[] = [];
   let strategy: 'Rolling' | 'ReplaceRootVolume' = 'Rolling';
   let preferences: RefreshPreferences;
+  let signals: RollingSignalWatch | undefined;
   if (selection.kind === 'rolling') {
     const group = await describeQuietly(provider, physicalId, mask);
     if (group !== undefined && (group.Instances ?? []).length === 0 && !group.DesiredCapacity) {
@@ -419,11 +420,24 @@ export async function runInstanceRefresh(
     ) {
       preferences = { ...preferences, SkipMatching: true };
     }
-    if (
-      run.rollingSignals === undefined &&
-      (selection.policy['WaitOnResourceSignals'] === true ||
-        selection.policy['WaitOnResourceSignals'] === 'true')
-    ) {
+    const waitsOnSignals =
+      selection.policy['WaitOnResourceSignals'] === true ||
+      selection.policy['WaitOnResourceSignals'] === 'true';
+    // go-to-k/cdkd#6706: arm the receiver only now, for a refresh about to
+    // start, with one signal per instance it replaces: the group's in-service
+    // instances not protected from scale-in (a rolling refresh leaves those),
+    // at most the desired capacity. A rollback revert waits for no signal.
+    if (waitsOnSignals && run.rollingSignals !== undefined && !run.replayingState) {
+      const replaced = Math.min(
+        desired,
+        (group?.Instances ?? []).filter(
+          (i) => i.LifecycleState === 'InService' && i.ProtectedFromScaleIn !== true
+        ).length
+      );
+      signals =
+        replaced > 0 && (await run.rollingSignals.arm(replaced)) ? run.rollingSignals : undefined;
+    }
+    if (waitsOnSignals && signals === undefined && !run.replayingState) {
       provider.logger.warn(
         mask(
           `${logicalId}: UpdatePolicy AutoScalingRollingUpdate WaitOnResourceSignals is not honored (no signed cfn-signal --resource for it reaches the stack's CloudFormation signal receiver; CDK: initOptions.includeRole: true); cdkd waits PauseTime after each new instance is in service instead.`
@@ -566,9 +580,9 @@ export async function runInstanceRefresh(
       }
       if (read.status === 'Successful') {
         provider.logger.info(mask(`${logicalId}: instance refresh ${refreshId} succeeded.`));
-        if (run.rollingSignals !== undefined) {
+        if (signals !== undefined) {
           try {
-            await run.rollingSignals.awaitAll((preferences.InstanceWarmup ?? 300) * 1000);
+            await signals.awaitAll((preferences.InstanceWarmup ?? 300) * 1000);
           } catch (error) {
             throw wrapRefreshError(
               `the replaced instances' WaitOnResourceSignals signals: ${error instanceof Error ? error.message : String(error)}`
@@ -577,7 +591,7 @@ export async function runInstanceRefresh(
         }
         return;
       }
-      const signalFailure = await run.rollingSignals?.failure();
+      const signalFailure = await signals?.failure();
       if (signalFailure !== undefined) {
         await cancelIfActive(provider, logicalId, physicalId, refreshId, mask, true);
         throw wrapRefreshError(`instance refresh ${refreshId} stopped: ${signalFailure}`);
