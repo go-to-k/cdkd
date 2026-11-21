@@ -431,6 +431,12 @@ export class DeployEngine {
    */
   /** @internal */
   signalReceiver: SignalReceiver | undefined;
+  /**
+   * go-to-k/cdkd#6705: the stack's signal receiver StackId (recorded, or
+   * created this deploy): `AWS::StackId` resolves to it. Reset per deploy.
+   * @internal
+   */
+  signalReceiverStackId: string | undefined;
 
   /**
    * The live-progress label `provisionResource` gave each resource, and whether

@@ -1,308 +1,341 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
-import type { CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
-  buildSignalReceiver,
+  CancelUpdateStackCommand,
+  CreateStackCommand,
+  DeleteStackCommand,
+  DescribeStackResourceCommand,
+  DescribeStacksCommand,
+  GetTemplateCommand,
+  UpdateStackCommand,
+} from '@aws-sdk/client-cloudformation';
+import {
+  deleteSignalReceiver,
+  isReceiver,
   isoDurationMs,
-  receiverTemplate,
+  RECEIVER_DESCRIPTION,
   RECEIVER_TAG_KEY,
-  signalCandidateOf,
+  removeSignalReceiverNamed,
   SignalReceiver,
-  type SignalCandidate,
+  signalCandidateOf,
+  signalCandidatesOf,
+  canReceiveFor,
 } from '../../../src/deployment/deploy-engine/signal-receiver.js';
-import { honorCreationPolicy } from '../../../src/deployment/deploy-engine/update-policy.js';
 
-// go-to-k/cdkd#6705: the CloudFormation signal receiver that lets a cdkd
-// deploy honor `CreationPolicy` signals and serve `cfn-init` metadata.
+const RECEIVER_TAGS = [{ Key: RECEIVER_TAG_KEY, Value: 'true' }];
+const ARN = 'arn:aws:cloudformation:us-east-1:123456789012:stack/App/11111111-2222-3333-4444-555555555555';
 
-const logger = () => ({ info: vi.fn(), warn: vi.fn(), debug: vi.fn() });
+function receiverStack(status = 'CREATE_COMPLETE') {
+  return { StackId: ARN, StackName: 'App', StackStatus: status, Description: RECEIVER_DESCRIPTION, Tags: RECEIVER_TAGS };
+}
 
-type Cmd = { constructor: { name: string }; input: Record<string, unknown> };
+function logger() {
+  return { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+}
 
-/** A CloudFormation client answering by command name. */
-function client(handlers: Record<string, (input: Record<string, unknown>) => unknown>) {
-  const send = vi.fn(async (cmd: Cmd) => {
-    const h = handlers[cmd.constructor.name];
-    if (h === undefined) throw new Error(`unexpected ${cmd.constructor.name}`);
-    return h(cmd.input);
+type Handler = (command: unknown) => unknown;
+
+/** A client whose `send` dispatches on the command class. */
+function client(handlers: Map<unknown, Handler>) {
+  const calls: unknown[] = [];
+  const send = vi.fn(async (command: { constructor: unknown; input: unknown }) => {
+    calls.push(command);
+    const handler = handlers.get(command.constructor);
+    if (handler === undefined) throw new Error(`unexpected ${String(command.constructor)}`);
+    return handler(command);
   });
-  return { client: { send } as unknown as CloudFormationClient, send };
+  return { client: { send } as never, calls, send };
 }
 
 const notFound = () => {
-  throw new Error('Stack with id S does not exist');
+  throw new Error('Stack with id App does not exist');
 };
 
-function receiver(
-  candidates: Record<string, SignalCandidate>,
-  c: CloudFormationClient,
-  log = logger(),
-  clock = { t: 0 }
-) {
-  return new SignalReceiver('S', new Map(Object.entries(candidates)), () => c, log, {
-    sleep: async (ms) => {
-      clock.t += ms;
-    },
-    now: () => clock.t,
-  });
-}
+const clock = () => {
+  let t = 0;
+  return { now: () => t, sleep: async (ms: number) => void (t += ms) };
+};
 
-const POLICY: SignalCandidate = { count: 1, timeoutMs: 600_000, hasInitMetadata: false };
+const instance = {
+  Type: 'AWS::EC2::Instance',
+  CreationPolicy: { ResourceSignal: { Count: 2, Timeout: 'PT10M' } },
+  Metadata: { 'AWS::CloudFormation::Init': { config: {} } },
+};
 
-describe('signalCandidateOf', () => {
-  it('reads a CreationPolicy ResourceSignal (defaults: Count 1, Timeout PT5M)', () => {
-    expect(
-      signalCandidateOf({ CreationPolicy: { ResourceSignal: { Count: 2, Timeout: 'PT15M' } } })
-    ).toEqual({ count: 2, timeoutMs: 900_000, hasInitMetadata: false });
-    expect(signalCandidateOf({ CreationPolicy: { ResourceSignal: {} } })).toEqual({
+describe('signal candidates (go-to-k/cdkd#6705)', () => {
+  it('reads count, timeout and cfn-init metadata', () => {
+    expect(signalCandidateOf(instance)).toEqual({ count: 2, timeoutMs: 600_000, hasInitMetadata: true });
+    expect(signalCandidateOf({ Type: 'X', CreationPolicy: { ResourceSignal: {} } })).toEqual({
       count: 1,
       timeoutMs: 300_000,
       hasInitMetadata: false,
     });
-  });
-
-  it('caps the timeout at 12 h and reads a quoted count', () => {
-    expect(
-      signalCandidateOf({ CreationPolicy: { ResourceSignal: { Count: '3', Timeout: 'PT20H' } } })
-    ).toEqual({ count: 3, timeoutMs: 12 * 3600_000, hasInitMetadata: false });
-  });
-
-  it('marks cfn-init metadata, with or without a policy', () => {
-    expect(signalCandidateOf({ Metadata: { 'AWS::CloudFormation::Init': {} } })).toEqual({
+    expect(signalCandidateOf({ Type: 'X', Metadata: { 'AWS::CloudFormation::Init': {} } })).toEqual({
       count: 0,
       timeoutMs: 0,
       hasInitMetadata: true,
     });
+    expect(signalCandidateOf({ Type: 'X', CreationPolicy: { AutoScalingCreationPolicy: {} } })).toBeUndefined();
+    expect(signalCandidateOf({ Type: 'X', Metadata: { Other: 1 } })).toBeUndefined();
   });
 
-  it('is undefined for a resource asking for neither', () => {
-    expect(signalCandidateOf({ Metadata: { 'aws:cdk:path': 'x' } })).toBeUndefined();
-    expect(signalCandidateOf({ CreationPolicy: { StartFleet: true } })).toBeUndefined();
-    expect(signalCandidateOf(undefined)).toBeUndefined();
+  it('caps the timeout at 12 hours and parses ISO durations', () => {
+    expect(signalCandidateOf({ CreationPolicy: { ResourceSignal: { Timeout: 'PT13H' } } })?.timeoutMs).toBe(43_200_000);
+    expect(isoDurationMs('PT1H2M3S')).toBe(3_723_000);
+    expect(isoDurationMs('PT')).toBeUndefined();
+    expect(isoDurationMs(5)).toBeUndefined();
+  });
+
+  it('lists only resources asking for something', () => {
+    const map = signalCandidatesOf({ Resources: { I: instance, B: { Type: 'AWS::S3::Bucket' } } } as never);
+    expect([...map.keys()]).toEqual(['I']);
+  });
+
+  it('refuses a nested child name as a stack name', () => {
+    expect(canReceiveFor('App')).toBe(true);
+    expect(canReceiveFor('App~Child')).toBe(false);
+  });
+
+  it('recognises a receiver only by tag AND description', () => {
+    expect(isReceiver(receiverStack())).toBe(true);
+    expect(isReceiver({ ...receiverStack(), Description: 'x' })).toBe(false);
+    expect(isReceiver({ ...receiverStack(), Tags: [] })).toBe(false);
   });
 });
 
-describe('isoDurationMs / receiverTemplate / canReceiveFor', () => {
-  it('parses CloudFormation durations', () => {
-    expect(isoDurationMs('PT1H30M')).toBe(5_400_000);
-    expect(isoDurationMs('PT90S')).toBe(90_000);
-    expect(isoDurationMs('15M')).toBeUndefined();
-  });
-
-  it('builds one WaitCondition per entry, metadata carried, the receiver timeout at the maximum', () => {
-    const t = JSON.parse(
-      receiverTemplate([
-        { logicalId: 'Inst', count: 2, metadata: { 'AWS::CloudFormation::Init': { config: {} } } },
-        { logicalId: 'InitOnly', count: 0 },
+describe('SignalReceiver.ensure', () => {
+  it('creates the receiver when none exists and returns its id', async () => {
+    let created = false;
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => (created ? { Stacks: [receiverStack()] } : notFound())],
+        [CreateStackCommand, () => ((created = true), { StackId: ARN })],
       ])
     );
-    expect(t.Resources.Inst).toEqual({
+    const log = logger();
+    const r = new SignalReceiver('App', new Map([['I', signalCandidateOf(instance)!]]), () => c, log, clock());
+    await expect(r.ensure(undefined)).resolves.toBe(ARN);
+    const create = calls.find((x) => x instanceof CreateStackCommand) as CreateStackCommand;
+    expect(create.input.StackName).toBe('App');
+    expect(create.input.Tags).toEqual(RECEIVER_TAGS);
+    expect(JSON.parse(create.input.TemplateBody!).Description).toBe(RECEIVER_DESCRIPTION);
+  });
+
+  it('leaves a foreign stack holding the name alone and falls back', async () => {
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => ({ Stacks: [{ StackId: ARN, StackStatus: 'CREATE_COMPLETE', Tags: [] }] })],
+      ])
+    );
+    const log = logger();
+    const r = new SignalReceiver('App', new Map(), () => c, log, clock());
+    await expect(r.ensure(undefined)).resolves.toBeUndefined();
+    expect(calls.some((x) => x instanceof CreateStackCommand || x instanceof DeleteStackCommand)).toBe(false);
+    expect(log.warn.mock.calls[0]![0]).toMatch(/is not cdkd's signal receiver/);
+  });
+
+  it('falls back with a warning when CloudFormation refuses', async () => {
+    const { client: c } = client(
+      new Map<unknown, Handler>([
+        [
+          DescribeStacksCommand,
+          () => {
+            throw Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
+          },
+        ],
+      ])
+    );
+    const log = logger();
+    const r = new SignalReceiver('App', new Map(), () => c, log, clock());
+    await expect(r.ensure(ARN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the recorded receiver without creating one', async () => {
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([[DescribeStacksCommand, () => ({ Stacks: [receiverStack('UPDATE_COMPLETE')] })]])
+    );
+    const r = new SignalReceiver('App', new Map(), () => c, logger(), clock());
+    await expect(r.ensure(ARN)).resolves.toBe(ARN);
+    expect(calls.some((x) => x instanceof CreateStackCommand)).toBe(false);
+  });
+});
+
+describe('SignalReceiver.arm / awaitSignals / settle', () => {
+  function armedReceiver(
+    resourceStatus: () => string | undefined,
+    existing: Record<string, unknown> = {},
+    updatesFinish = false
+  ) {
+    const updates: Record<string, unknown>[] = [];
+    let stackStatus = 'UPDATE_COMPLETE';
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([
+        [
+          DescribeStacksCommand,
+          () => {
+            const out = { Stacks: [receiverStack(stackStatus)] };
+            if (updatesFinish) stackStatus = 'UPDATE_COMPLETE';
+            return out;
+          },
+        ],
+        [GetTemplateCommand, () => ({ TemplateBody: JSON.stringify({ Resources: existing }) })],
+        [
+          UpdateStackCommand,
+          (cmd) => {
+            updates.push(JSON.parse((cmd as UpdateStackCommand).input.TemplateBody!).Resources);
+            stackStatus = 'UPDATE_IN_PROGRESS';
+            return {};
+          },
+        ],
+        [
+          DescribeStackResourceCommand,
+          () => {
+            const status = resourceStatus();
+            if (status === undefined) notFound();
+            return { StackResourceDetail: { ResourceStatus: status, ResourceStatusReason: 'why' } };
+          },
+        ],
+        [CancelUpdateStackCommand, () => ({})],
+      ])
+    );
+    const r = new SignalReceiver('App', new Map([['I', signalCandidateOf(instance)!]]), () => c, logger(), clock());
+    return { r, updates, calls, setStatus: (s: string) => (stackStatus = s) };
+  }
+
+  it('arms a created resource with a fresh waiter carrying its metadata', async () => {
+    const { r, updates } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    const armed = await r.arm(new Set(['I']), async () => ({ 'AWS::CloudFormation::Init': { resolved: true } }));
+    expect([...armed]).toEqual(['I']);
+    expect(r.isArmed('I')).toBe(true);
+    expect(updates[0]!['I']).toEqual({
       Type: 'AWS::CloudFormation::WaitCondition',
       CreationPolicy: { ResourceSignal: { Count: 2, Timeout: 'PT12H' } },
-      Metadata: { 'AWS::CloudFormation::Init': { config: {} } },
+      Metadata: { 'AWS::CloudFormation::Init': { resolved: true } },
     });
-    expect(t.Resources.InitOnly.CreationPolicy.ResourceSignal.Count).toBe(1);
   });
 
-  it('refuses a nested child name, which holds ~', () => {
-    expect(SignalReceiver.canReceiveFor('MyStack')).toBe(true);
-    expect(SignalReceiver.canReceiveFor('Parent~Child')).toBe(false);
+  it('keeps an unchanged cfn-init resource on a metadata holder, unarmed', async () => {
+    const { r, updates } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    await r.arm(new Set(), async () => ({ m: 1 }));
+    expect(r.isArmed('I')).toBe(false);
+    expect(updates[0]!['I']).toEqual({ Type: 'AWS::CloudFormation::WaitConditionHandle', Metadata: { m: 1 } });
+  });
+
+  it('does not cover a resource whose metadata cannot be sent', async () => {
+    const { r } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    const armed = await r.arm(new Set(['I']), async () => {
+      throw new Error('reads a NoEcho value');
+    });
+    expect(armed.size).toBe(0);
+  });
+
+  it('removes an earlier waiter in its own update before re-arming it', async () => {
+    const earlier = { Type: 'AWS::CloudFormation::WaitCondition' };
+    const { r, updates } = armedReceiver(() => 'CREATE_IN_PROGRESS', { I: earlier }, true);
+    await r.ensure(ARN);
+    await expect(r.arm(new Set(['I']), async () => undefined)).resolves.toEqual(new Set(['I']));
+    expect(updates[0]!['I']).toBeUndefined();
+    expect((updates[1]!['I'] as { Type: string }).Type).toBe('AWS::CloudFormation::WaitCondition');
+  });
+
+  it('awaitSignals succeeds on CREATE_COMPLETE', async () => {
+    const statuses = ['CREATE_IN_PROGRESS', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE'];
+    let armingDone = false;
+    const { r } = armedReceiver(() => (armingDone ? statuses.shift() : 'CREATE_IN_PROGRESS'));
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined);
+    armingDone = true;
+    await expect(r.awaitSignals('I', 0, () => false)).resolves.toBeUndefined();
+  });
+
+  it('awaitSignals fails on CREATE_FAILED with the reason', async () => {
+    let armingDone = false;
+    const { r } = armedReceiver(() => (armingDone ? 'CREATE_FAILED' : 'CREATE_IN_PROGRESS'));
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined);
+    armingDone = true;
+    await expect(r.awaitSignals('I', 0, () => false)).rejects.toThrow(/FAILURE signal.*why/);
+  });
+
+  it('awaitSignals fails at the policy timeout', async () => {
+    const { r } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined);
+    await expect(r.awaitSignals('I', 0, () => false)).rejects.toThrow(/did not receive 2 CreationPolicy signal\(s\) within 600s/);
+  });
+
+  it('awaitSignals stops with the deploy', async () => {
+    const { r } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined);
+    await expect(r.awaitSignals('I', 0, () => true)).rejects.toThrow(/stopped with the deploy/);
+  });
+
+  it('awaitSignals is a no-op for an unarmed resource', async () => {
+    const { r, calls } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await expect(r.awaitSignals('I', 0, () => true)).resolves.toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('settle cancels the update a deploy left in progress', async () => {
+    const { r, calls } = armedReceiver(() => 'CREATE_IN_PROGRESS');
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined);
+    await r.settle();
+    expect(calls.some((x) => x instanceof CancelUpdateStackCommand)).toBe(true);
   });
 });
 
-describe('buildSignalReceiver', () => {
-  const t = {
-    Resources: {
-      Inst: { Type: 'AWS::EC2::Instance', CreationPolicy: { ResourceSignal: {} } },
-      Bucket: { Type: 'AWS::S3::Bucket' },
-    },
-  };
+describe('receiver deletion', () => {
+  it('deletes only a stack carrying the receiver marks', async () => {
+    const own = client(new Map<unknown, Handler>([[DescribeStacksCommand, () => ({ Stacks: [receiverStack()] })], [DeleteStackCommand, () => ({})]]));
+    await deleteSignalReceiver(own.client, ARN, logger());
+    expect(own.calls.some((x) => x instanceof DeleteStackCommand)).toBe(true);
 
-  it('is undefined when no CREATE row asks, or for a nested child', () => {
-    expect(buildSignalReceiver({ logger: logger() }, 'S', [{ logicalId: 'Bucket' }], t)).toBeUndefined();
-    expect(buildSignalReceiver({ logger: logger() }, 'P~C', [{ logicalId: 'Inst' }], t)).toBeUndefined();
-  });
-
-  it('covers the asking CREATE rows', () => {
-    const r = buildSignalReceiver({ logger: logger() }, 'S', [{ logicalId: 'Inst' }, { logicalId: 'Bucket' }], t);
-    expect(r?.candidate('Inst')).toBeDefined();
-    expect(r?.candidate('Bucket')).toBeUndefined();
-  });
-});
-
-describe('SignalReceiver.cover', () => {
-  it('creates the receiver once (tagged), for every candidate, and waits for its resources', async () => {
-    let created: Record<string, unknown> | undefined;
-    const { client: c, send } = client({
-      DescribeStacksCommand: notFound,
-      CreateStackCommand: (input) => {
-        created = input;
-        return {};
-      },
-      DescribeStackResourcesCommand: () => ({
-        StackResources: [{ LogicalResourceId: 'A' }, { LogicalResourceId: 'B' }],
-      }),
-    });
-    const r = receiver({ A: POLICY, B: { count: 0, timeoutMs: 0, hasInitMetadata: true } }, c);
-    const resolve = vi.fn(async () => ({ 'AWS::CloudFormation::Init': { config: {} } }));
-    const [a, b] = await Promise.all([r.cover('A', resolve), r.cover('B', resolve)]);
-    expect([a, b]).toEqual(['covered', 'covered']);
-    expect(send.mock.calls.filter(([cmd]) => cmd.constructor.name === 'CreateStackCommand')).toHaveLength(1);
-    expect(created?.['StackName']).toBe('S');
-    expect(created?.['Tags']).toEqual([{ Key: RECEIVER_TAG_KEY, Value: 'true' }]);
-    expect(resolve).toHaveBeenCalledWith('B');
-    expect(resolve).not.toHaveBeenCalledWith('A');
-  });
-
-  it('leaves a stack it did not make alone, and covers nothing', async () => {
-    const log = logger();
-    const { client: c, send } = client({
-      DescribeStacksCommand: () => ({ Stacks: [{ StackStatus: 'CREATE_COMPLETE', Tags: [] }] }),
-    });
-    expect(await receiver({ A: POLICY }, c, log).cover('A', vi.fn())).toBe('not-covered');
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(String(log.warn.mock.calls[0]![0])).toMatch(/not a cdkd signal receiver.*left alone/);
-  });
-
-  it('deletes a receiver an interrupted deploy left, then creates its own', async () => {
-    let described = 0;
-    const { client: c, send } = client({
-      DescribeStacksCommand: () => {
-        described++;
-        if (described === 1) {
-          return { Stacks: [{ StackStatus: 'CREATE_IN_PROGRESS', Tags: [{ Key: RECEIVER_TAG_KEY, Value: 'true' }] }] };
-        }
-        return notFound();
-      },
-      DeleteStackCommand: () => ({}),
-      CreateStackCommand: () => ({}),
-      DescribeStackResourcesCommand: () => ({ StackResources: [{ LogicalResourceId: 'A' }] }),
-    });
-    expect(await receiver({ A: POLICY }, c).cover('A', vi.fn())).toBe('covered');
-    expect(send.mock.calls.map(([cmd]) => cmd.constructor.name)).toEqual([
-      'DescribeStacksCommand',
-      'DeleteStackCommand',
-      'DescribeStacksCommand',
-      'CreateStackCommand',
-      'DescribeStackResourcesCommand',
-    ]);
-  });
-
-  it('falls back when CreateStack is denied, without throwing', async () => {
-    const log = logger();
-    const { client: c } = client({
-      DescribeStacksCommand: notFound,
-      CreateStackCommand: () => {
-        throw Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
-      },
-    });
-    const r = receiver({ A: POLICY }, c, log);
-    expect(await r.cover('A', vi.fn())).toBe('not-covered');
-    expect(String(log.warn.mock.calls[0]![0])).toMatch(/created without waiting for signals/);
-    await r.dispose();
-  });
-
-  it('leaves out a candidate whose metadata does not resolve yet', async () => {
-    const { client: c } = client({
-      DescribeStacksCommand: notFound,
-      CreateStackCommand: () => ({}),
-      DescribeStackResourcesCommand: () => ({ StackResources: [{ LogicalResourceId: 'A' }] }),
-    });
-    const r = receiver({ A: POLICY, B: { count: 1, timeoutMs: 1000, hasInitMetadata: true } }, c);
-    const resolve = vi.fn(async () => {
-      throw new Error('Ref not found');
-    });
-    expect(await r.cover('A', resolve)).toBe('covered');
-    expect(await r.cover('B', resolve)).toBe('not-covered');
-  });
-
-  it('is not-covered for a resource that is not a candidate, with no call', async () => {
-    const { client: c, send } = client({});
-    expect(await receiver({ A: POLICY }, c).cover('Other', vi.fn())).toBe('not-covered');
-    expect(send).not.toHaveBeenCalled();
-  });
-});
-
-describe('SignalReceiver.awaitSignals', () => {
-  const statuses = (...s: Array<{ ResourceStatus: string; ResourceStatusReason?: string }>) => {
-    let i = 0;
-    return client({
-      DescribeStackResourceCommand: () => ({ StackResourceDetail: s[Math.min(i++, s.length - 1)] }),
-    });
-  };
-
-  it('returns once the receiver resource completes', async () => {
-    const { client: c, send } = statuses(
-      { ResourceStatus: 'CREATE_IN_PROGRESS' },
-      { ResourceStatus: 'CREATE_COMPLETE' }
+    const foreign = client(
+      new Map<unknown, Handler>([[DescribeStacksCommand, () => ({ Stacks: [{ ...receiverStack(), Tags: [] }] })]])
     );
-    await receiver({ A: POLICY }, c).awaitSignals('A', 0);
-    expect(send).toHaveBeenCalledTimes(2);
+    await deleteSignalReceiver(foreign.client, ARN, logger());
+    expect(foreign.calls.some((x) => x instanceof DeleteStackCommand)).toBe(false);
   });
 
-  it('fails on a FAILURE signal, naming the reason', async () => {
-    const { client: c } = statuses({ ResourceStatus: 'CREATE_FAILED', ResourceStatusReason: 'Received FAILURE signal' });
-    await expect(receiver({ A: POLICY }, c).awaitSignals('A', 0)).rejects.toThrow(
-      /A received a FAILURE signal or did not signal.*Received FAILURE signal/
+  it('warns with the delete-stack command when the delete fails', async () => {
+    const { client: c } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => ({ Stacks: [receiverStack()] })],
+        [
+          DeleteStackCommand,
+          () => {
+            throw new Error('denied');
+          },
+        ],
+      ])
     );
+    const log = logger();
+    await deleteSignalReceiver(c, ARN, log);
+    expect(log.warn.mock.calls[0]![0]).toMatch(/aws cloudformation delete-stack --stack-name/);
   });
 
-  it('fails once the declared Timeout passes, counted from the create', async () => {
-    const clock = { t: 0 };
-    const { client: c } = statuses({ ResourceStatus: 'CREATE_IN_PROGRESS' });
-    await expect(receiver({ A: POLICY }, c, logger(), clock).awaitSignals('A', 0)).rejects.toThrow(
-      /did not receive 1 CreationPolicy signal\(s\) within 600s/
+  it('export removes the receiver holding the name and waits until it is gone', async () => {
+    let deleted = false;
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([
+        [DescribeStacksCommand, () => (deleted ? notFound() : { Stacks: [receiverStack()] })],
+        [DeleteStackCommand, () => ((deleted = true), {})],
+      ])
     );
-    expect(clock.t).toBe(600_000);
+    await removeSignalReceiverNamed(c, 'App', logger(), clock());
+    expect(calls.filter((x) => x instanceof DeleteStackCommand)).toHaveLength(1);
   });
 
-  it('waits for nothing on a metadata-only entry', async () => {
-    const { client: c, send } = client({});
-    await receiver({ A: { count: 0, timeoutMs: 0, hasInitMetadata: true } }, c).awaitSignals('A', 0);
-    expect(send).not.toHaveBeenCalled();
-  });
-});
-
-describe('SignalReceiver.dispose', () => {
-  it('deletes only a receiver this deploy created, and never throws', async () => {
-    const none = client({});
-    await receiver({ A: POLICY }, none.client).dispose();
-    expect(none.send).not.toHaveBeenCalled();
-
-    const { client: c, send } = client({
-      DescribeStacksCommand: notFound,
-      CreateStackCommand: () => ({}),
-      DescribeStackResourcesCommand: () => ({ StackResources: [{ LogicalResourceId: 'A' }] }),
-      DeleteStackCommand: () => {
-        throw new Error('throttled');
-      },
-    });
-    const log = logger();
-    const r = receiver({ A: POLICY }, c, log);
-    await r.cover('A', vi.fn());
-    await expect(r.dispose()).resolves.toBeUndefined();
-    expect(send.mock.calls.at(-1)![0].constructor.name).toBe('DeleteStackCommand');
-    expect(String(log.warn.mock.calls[0]![0])).toMatch(/Could not delete the CloudFormation signal receiver/);
-  });
-});
-
-describe('honorCreationPolicy', () => {
-  it('waits through the receiver when it covers the resource, and does not warn', async () => {
-    const { client: c } = client({
-      DescribeStacksCommand: notFound,
-      CreateStackCommand: () => ({}),
-      DescribeStackResourcesCommand: () => ({ StackResources: [{ LogicalResourceId: 'A' }] }),
-      DescribeStackResourceCommand: () => ({ StackResourceDetail: { ResourceStatus: 'CREATE_COMPLETE' } }),
-    });
-    const r = receiver({ A: POLICY }, c);
-    await r.cover('A', vi.fn());
-    const log = logger();
-    await honorCreationPolicy(log, r, 'A', { CreationPolicy: { ResourceSignal: {} } } as never, 0);
-    expect(log.warn).not.toHaveBeenCalled();
-  });
-
-  it('warns that the policy is not honored when nothing covers the resource', async () => {
-    const log = logger();
-    await honorCreationPolicy(log, undefined, 'A', { CreationPolicy: { ResourceSignal: {} } } as never, 0);
-    expect(String(log.warn.mock.calls[0]![0])).toMatch(/CreationPolicy is not honored/);
+  it('export leaves a foreign stack holding the name alone', async () => {
+    const { client: c, calls } = client(
+      new Map<unknown, Handler>([[DescribeStacksCommand, () => ({ Stacks: [{ StackId: ARN, StackStatus: 'CREATE_COMPLETE' }] })]])
+    );
+    await removeSignalReceiverNamed(c, 'App', logger(), clock());
+    expect(calls.some((x) => x instanceof DeleteStackCommand)).toBe(false);
   });
 });

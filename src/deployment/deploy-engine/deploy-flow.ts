@@ -1,3 +1,4 @@
+import { armSignalReceiver, ensureSignalReceiver, settledAfter } from './signal-receiver-run.js';
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
 import {
@@ -60,7 +61,6 @@ import { deployWithoutChanges } from './deploy-flow/no-change.js';
 import { prepareChangeExecution } from './deploy-flow/change-plan.js';
 import { settleSuccessfulDeploy } from './deploy-flow/success-settle.js';
 import { keptHistorySources } from './deploy-flow/kept-history.js';
-import { buildSignalReceiver } from './signal-receiver.js';
 import { createNoEchoValueMacs } from '../noecho-value-macs.js';
 import {
   healSlashedSsmParameterNames,
@@ -568,6 +568,15 @@ export async function doDeployWithPrefetch(
       !Object.values(orphanPlan.adopted).some(
         (r) => r.resourceType === 'AWS::CloudFormation::Stack'
       );
+    // go-to-k/cdkd#6705: a stack declaring a CreationPolicy signal or cfn-init
+    // metadata has a CloudFormation signal receiver, found or created here,
+    // before the diff, so `AWS::StackId` resolves to its real ARN everywhere.
+    const signalReceiverChanged = await ensureSignalReceiver(
+      engine,
+      stackName,
+      effectiveTemplate,
+      currentState
+    );
     const { diffResolverContext, maskedInputs, changes } = await calculateDeployDiff(engine, {
       stackName,
       currentState,
@@ -684,7 +693,7 @@ export async function doDeployWithPrefetch(
         migrationPending,
         maskedFingerprintsBackfilled,
         orphansChanged,
-        terminationProtectionChanged,
+        terminationProtectionChanged: terminationProtectionChanged || signalReceiverChanged,
         ssmNamesHealed: ssmNameHeals.length > 0,
         nestedSsmNamesMarked: marksNestedCheck,
         resolveStackInstanceId,
@@ -739,20 +748,18 @@ export async function doDeployWithPrefetch(
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
     const progress = { current: 0, total: totalOperations };
 
-    clock.lap('first-deploy instance id, name guard');
-    // go-to-k/cdkd#6705: a CREATE declaring a CreationPolicy or cfn-init
-    // metadata gets a CloudFormation signal receiver, made lazily by its first
-    // create; a deploy creating none makes no CloudFormation call.
-    engine.signalReceiver = buildSignalReceiver(
+    // go-to-k/cdkd#6705: arm the receiver for this deploy's signalling creates.
+    await armSignalReceiver(
       engine,
       stackName,
-      [
-        ...createChanges,
-        // A replacement creates the resource anew, as CloudFormation's does.
-        ...updateChanges.filter((c) => c.propertyChanges?.some((pc) => pc.requiresReplacement)),
-      ],
-      effectiveTemplate
+      effectiveTemplate,
+      changes,
+      currentState.resources,
+      parameterValues,
+      conditions
     );
+
+    clock.lap('first-deploy instance id, name guard');
     // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
     const {
       state: newState,
@@ -763,20 +770,22 @@ export async function doDeployWithPrefetch(
       () => producerRegionEvidence(engine.rollbackDeps(), currentState),
       () =>
         withStackScope(nameScope(), () =>
-          executeDeployment(
-            engine,
-            effectiveTemplate,
-            currentState,
-            changes,
-            dag,
-            executionLevels,
-            stackName,
-            outputsDigestSource,
-            parameterValues,
-            conditions,
-            currentEtag,
-            progress,
-            migrationPending
+          settledAfter(engine, () =>
+            executeDeployment(
+              engine,
+              effectiveTemplate,
+              currentState,
+              changes,
+              dag,
+              executionLevels,
+              stackName,
+              outputsDigestSource,
+              parameterValues,
+              conditions,
+              currentEtag,
+              progress,
+              migrationPending
+            )
           )
         )
     );
@@ -933,9 +942,6 @@ export async function doDeployWithPrefetch(
     // client, on every path, not only the success settle that awaits the
     // purge. Neither rejects.
     await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch, finalSaveCleanup]);
-    // go-to-k/cdkd#6705: the signal receiver goes with the deploy, on every
-    // path. Never throws.
-    await engine.signalReceiver?.dispose();
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed

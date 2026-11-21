@@ -14,7 +14,6 @@ import type {
   UpdateContext,
 } from '../../types/resource.js';
 import type { ResourceChange } from '../../types/state.js';
-import type { SignalReceiver } from './signal-receiver.js';
 import {
   INSTANCE_REFRESH_TRIGGER_PROPERTIES,
   REPLACEMENT_TRIGGER_PROPERTIES,
@@ -258,52 +257,18 @@ function stringLeaves(value: unknown): string[] {
 }
 
 /**
- * After a create (or a replacement's create): wait for the resource's
- * `CreationPolicy` signals through the deploy's signal receiver when it covers
- * the resource (go-to-k/cdkd#6705), else warn that the policy is not waited on.
- * `startedAt` is when the create began; the declared `Timeout` counts from it.
- */
-export async function honorCreationPolicy(
-  logger: UpdatePolicyLogger,
-  receiver: SignalReceiver | undefined,
-  logicalId: string,
-  resource: TemplateResource | undefined,
-  startedAt: number
-): Promise<void> {
-  if (receiver?.isCovered(logicalId) === true) {
-    await receiver.awaitSignals(logicalId, startedAt);
-    return;
-  }
-  warnUnhonoredCreationPolicy(logger, logicalId, resource);
-}
-
-/** {@link honorCreationPolicy} for a deploy engine's own logger and receiver. */
-export function honorCreationPolicyFor(
-  engine: { logger: UpdatePolicyLogger; signalReceiver: SignalReceiver | undefined },
-  logicalId: string,
-  template: { Resources?: Record<string, TemplateResource> } | undefined,
-  startedAt: number
-): Promise<void> {
-  return honorCreationPolicy(
-    engine.logger,
-    engine.signalReceiver,
-    logicalId,
-    template?.Resources?.[logicalId],
-    startedAt
-  );
-}
-
-/**
  * Warn, once per create, that a `CreationPolicy` the template declares is not
  * waited on. Called on the CREATE path only: CloudFormation evaluates a
- * `CreationPolicy` when it creates the resource.
+ * `CreationPolicy` when it creates the resource. Silent when the stack's
+ * signal receiver waits on it (`waited`, go-to-k/cdkd#6705).
  */
 export function warnUnhonoredCreationPolicy(
   logger: UpdatePolicyLogger,
   logicalId: string,
-  resource: TemplateResource | undefined
+  resource: TemplateResource | undefined,
+  waited = false
 ): void {
-  if (resource?.CreationPolicy === undefined) return;
+  if (resource?.CreationPolicy === undefined || waited) return;
   logger.warn(
     safeMsg`${logicalId}: CreationPolicy is not honored; cdkd does not wait for cfn-signal success signals.`
   );

@@ -294,12 +294,8 @@ describe('DeployEngine UpdatePolicy / CreationPolicy (go-to-k/cdkd#6437)', () =>
         },
       };
     }
-    // The stubbed clients have no CloudFormation, so the #6705 signal receiver
-    // falls back (with its own warning) and the create is not waited on.
     const creationWarnings = (): string[] =>
-      log.warn.mock.calls
-        .map((c) => String(c[0]))
-        .filter((l) => l.includes('CreationPolicy is not honored'));
+      log.warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('CreationPolicy'));
 
     it('warns once on the create of a resource that declares one, and still creates it', async () => {
       await makeEngine().deploy(STACK, primeCreate(true));

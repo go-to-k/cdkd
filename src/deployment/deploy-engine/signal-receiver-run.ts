@@ -1,0 +1,176 @@
+/**
+ * go-to-k/cdkd#6705: the deploy engine's side of the signal receiver
+ * (`signal-receiver.ts`): find or create it before the diff, arm this
+ * deploy's waiters before the DAG, wait after a covered create is journaled,
+ * settle at the deploy's end. Design: docs/design/6705-cloudformation-signal-receiver.md.
+ */
+
+import type { DeployEngine } from '../deploy-engine.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
+import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { TemplateParser } from '../../analyzer/template-parser.js';
+import { buildResolverContext } from './resolver-context.js';
+import { noEchoParameterNamesOf } from './noecho.js';
+import { warnUnhonoredCreationPolicy } from './update-policy.js';
+import { canReceiveFor, SignalReceiver, signalCandidatesOf } from './signal-receiver.js';
+
+const parser = new TemplateParser();
+
+/**
+ * Before the diff: when the template declares a `CreationPolicy` signal or
+ * `cfn-init` metadata, find or create the stack's receiver and record its
+ * StackId (`AWS::StackId` resolves to it from here on). A stack that recorded
+ * one keeps it even when the template no longer asks. `true` when the record
+ * changed (the no-change path must still save it). `--dry-run` makes none.
+ */
+export async function ensureSignalReceiver(
+  engine: DeployEngine,
+  stackName: string,
+  template: CloudFormationTemplate,
+  currentState: StackState
+): Promise<boolean> {
+  const recorded = currentState.signalReceiverStackId;
+  engine.signalReceiverStackId = recorded;
+  const candidates = signalCandidatesOf(template);
+  if (candidates.size === 0 || engine.options.dryRun || !canReceiveFor(stackName)) {
+    return false;
+  }
+  const receiver = new SignalReceiver(
+    stackName,
+    candidates,
+    () => getAwsClients().cloudFormation,
+    engine.logger
+  );
+  const stackId = await receiver.ensure(recorded);
+  if (stackId === undefined) return false;
+  engine.signalReceiver = receiver;
+  engine.signalReceiverStackId = stackId;
+  if (stackId === recorded) return false;
+  currentState.signalReceiverStackId = stackId;
+  return true;
+}
+
+/**
+ * Before the DAG: arm a waiter for every CREATE, and every UPDATE the diff
+ * already knows replaces, of a resource declaring a `ResourceSignal`.
+ */
+export async function armSignalReceiver(
+  engine: DeployEngine,
+  stackName: string,
+  template: CloudFormationTemplate,
+  changes: ReadonlyMap<string, ResourceChange>,
+  stateResources: Record<string, ResourceState>,
+  parameterValues: Record<string, unknown> | undefined,
+  conditions: Record<string, boolean> | undefined
+): Promise<void> {
+  const receiver = engine.signalReceiver;
+  if (receiver === undefined) return;
+  const armIds = new Set<string>();
+  for (const change of changes.values()) {
+    const creates =
+      change.changeType === 'CREATE' ||
+      (change.changeType === 'UPDATE' &&
+        change.propertyChanges?.some((pc) => pc.requiresReplacement) === true);
+    if (creates && (receiver.candidate(change.logicalId)?.count ?? 0) > 0) {
+      armIds.add(change.logicalId);
+    }
+  }
+  await receiver.arm(armIds, (id) =>
+    resolveTemplateMetadata(
+      engine,
+      id,
+      stateResources,
+      stackName,
+      template,
+      parameterValues,
+      conditions
+    )
+  );
+}
+
+/**
+ * After a covered resource's create (or replacement) is journaled as
+ * completed: wait for its signals. A failure stops the deploy, so the
+ * rollback reverts the completed operation (deleting the created resource).
+ */
+export async function awaitCreationSignals(
+  engine: DeployEngine,
+  logicalId: string,
+  startedAt: number
+): Promise<void> {
+  const receiver = engine.signalReceiver;
+  if (receiver === undefined || !receiver.isArmed(logicalId)) return;
+  try {
+    await receiver.awaitSignals(logicalId, startedAt, () => engine.interrupted);
+  } catch (error) {
+    engine.interrupted = true;
+    engine.interruptCause ??= 'sibling-failure';
+    throw error;
+  }
+}
+
+/** #6437's "CreationPolicy is not honored" warning, unless the receiver waits on it. */
+export function warnUnwaitedCreationPolicy(
+  engine: DeployEngine,
+  logicalId: string,
+  template: CloudFormationTemplate | undefined
+): void {
+  warnUnhonoredCreationPolicy(
+    engine.logger,
+    logicalId,
+    template?.Resources?.[logicalId],
+    engine.signalReceiver?.isArmed(logicalId) === true
+  );
+}
+
+/**
+ * A resource's template `Metadata`, resolved against the deploy's state, for
+ * the receiver (a CloudFormation TEMPLATE, readable through GetTemplate). No
+ * secret may be resolved into it: a secret `{{resolve:...}}` reference stays
+ * a token, as CloudFormation keeps it in its own template, and metadata
+ * reading a `NoEcho` parameter or attribute is refused (the resource is then
+ * not covered). Throws when a reference does not resolve yet.
+ */
+export async function resolveTemplateMetadata(
+  engine: DeployEngine,
+  logicalId: string,
+  stateResources: Record<string, ResourceState>,
+  stackName: string,
+  template: CloudFormationTemplate,
+  parameterValues: Record<string, unknown> | undefined,
+  conditions: Record<string, boolean> | undefined
+): Promise<unknown> {
+  const metadata = template.Resources?.[logicalId]?.Metadata;
+  if (metadata === undefined) return undefined;
+  const noEchoParameters = noEchoParameterNamesOf(template);
+  const noEchoAttributes = engine.noEchoRun.noEchoAttributeResources;
+  for (const ref of parser.extractReferences(metadata)) {
+    if (noEchoParameters.has(ref) || noEchoAttributes.has(ref)) {
+      throw new Error(`${logicalId}'s Metadata reads a NoEcho value`);
+    }
+  }
+  const context = buildResolverContext(
+    engine.resolverContextDeps(),
+    {
+      template,
+      resources: stateResources,
+      ...(parameterValues && { parameters: parameterValues }),
+      ...(conditions && { conditions }),
+    },
+    stackName
+  );
+  return engine.resolver.resolve(metadata, { ...context, skipDynamicReferences: true });
+}
+
+/**
+ * Run the resource DAG, then settle the receiver (cancel an update a failed
+ * or interrupted deploy left waiting), whatever the DAG's outcome.
+ */
+export async function settledAfter<T>(engine: DeployEngine, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    await engine.signalReceiver?.settle();
+  }
+}

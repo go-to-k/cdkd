@@ -1,3 +1,4 @@
+import { isReceiver } from '../../../deployment/deploy-engine/signal-receiver.js';
 import { readFileSync } from 'node:fs';
 import {
   cdkdRemedy,
@@ -144,6 +145,9 @@ export async function assertCfnStackAbsent(
     const resp = await cfnClient.send(new DescribeStacksCommand({ StackName: stackName }));
     const stack = resp.Stacks?.[0];
     if (!stack) return;
+    // go-to-k/cdkd#6705: the cdkd stack's own signal receiver holds its name;
+    // it is deleted right before the IMPORT changeset takes the name.
+    if (stack.StackStatus !== 'DELETE_COMPLETE' && isReceiver(stack)) return;
     // REVIEW_IN_PROGRESS comes from a failed CreateChangeSet IMPORT that
     // was never deleted; surfacing it lets the user clean up before retry.
     throw new Error(

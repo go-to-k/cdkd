@@ -1,3 +1,4 @@
+import { awaitCreationSignals } from '../signal-receiver-run.js';
 import { replaceDeadIdentity } from '../../recorded-identity-attributes.js';
 import {
   currentNameGeneration,
@@ -99,6 +100,8 @@ export async function provisionCreateUpdateNode(
   // is saved (`settleReportedCreates`). Fresh per operation;
   // its retries share it, as they share the carried mark.
   const createdSink = new CreatedResourceSink(logicalId, change.resourceType);
+  // go-to-k/cdkd#6705: a CreationPolicy timeout counts from the create.
+  const signalWaitStart = Date.now();
   try {
     try {
       await timePhase(
@@ -448,6 +451,12 @@ export async function provisionCreateUpdateNode(
   saveStateAfterResource(logicalId);
   if (engine.replacementRun.recreatedUnderSameId.has(logicalId))
     enqueueLostChildren(createUpdateExecutor);
+  // go-to-k/cdkd#6705: a create (or replacement) the signal receiver armed
+  // completes only on its CreationPolicy signals, so its dependents wait, as
+  // CloudFormation's do. It runs AFTER the operation is journaled completed:
+  // a failed wait fails the deploy and the rollback reverts the operation
+  // (deleting the created resource), as CloudFormation's rollback does.
+  await awaitCreationSignals(engine, logicalId, signalWaitStart);
 }
 
 /**

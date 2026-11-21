@@ -20,7 +20,7 @@ locally.
 | Feature | Status | What cdkd does |
 | --- | --- | --- |
 | `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (the Auto Scaling group policies and `CodeDeployLambdaAliasUpdate`) |
-| `CreationPolicy` | ✅ | Waits for `cfn-signal` through a transient signal receiver stack; see [`CreationPolicy` and `cfn-init`](#creationpolicy-and-cfn-init) |
+| `CreationPolicy` | ✅ | Waits for `cfn-signal` through the stack's signal receiver; see [`CreationPolicy` and `cfn-init`](#creationpolicy-and-cfn-init) |
 | A resource type with no SDK provider and no Cloud Control support | Not supported | Fails the deploy with an error naming the type |
 
 ### `UpdatePolicy` is opt-in
@@ -253,29 +253,50 @@ replacing update, one that changes a property listed above, and for
 
 `cfn-signal --stack <name> --resource <id>` and `cfn-init --stack <name>
 --resource <id>` talk to the CloudFormation API, which only a CloudFormation
-stack can answer. When a deploy creates or replaces a resource that declares a
-`CreationPolicy` `ResourceSignal` or `AWS::CloudFormation::Init` metadata, cdkd
-creates a small **signal receiver** CloudFormation stack under the cdkd stack's
-name for the length of the deploy:
+stack can answer. A stack whose template declares a `CreationPolicy`
+`ResourceSignal` or `AWS::CloudFormation::Init` metadata gets a small
+**signal receiver**: a CloudFormation stack with the cdkd stack's exact name,
+tagged `cdkd:signal-receiver=true`, that lives as long as the cdkd stack.
 
-| Step | What happens |
+```bash
+cdkd deploy MyStack    # first deploy: creates the receiver stack "MyStack"
+cdkd destroy MyStack   # deletes the receiver with the stack
+```
+
+| When | What happens |
 | --- | --- |
-| Before the resource is created | The receiver holds a wait condition under the resource's logical id, with its signal count and resolved `Metadata` |
+| The first deploy that needs it | cdkd creates the receiver (about 30 seconds, once) and records it in state |
+| Every deploy | `AWS::StackId` resolves to the receiver's ARN, so CDK's grant to call `cfn-signal` / `cfn-init` names it |
+| A resource with a `ResourceSignal` is created or replaced | The receiver holds a wait condition under its logical id, with its signal count and `Metadata` |
 | At the instance's boot | `cfn-init` reads the metadata and `cfn-signal` signals the receiver, as under CloudFormation |
-| After the resource is created | cdkd waits until the signals arrive; a `FAILURE` signal or the policy's `Timeout` fails the deploy and rolls the resource back |
-| When the deploy ends | cdkd deletes the receiver (on success, failure and Ctrl-C) |
+| After the resource is created | Its dependents wait for the signals; a `FAILURE` signal or the policy's `Timeout` fails the deploy and rolls the resource back |
+| `cdkd destroy` | Deletes the receiver after the stack's resources |
+| `cdkd export` | Deletes the receiver right before the export's own CloudFormation stack takes the name |
+| `cdkd state orphan` | Keeps the receiver and prints the command that deletes it |
 
-A deploy whose resources declare neither makes no CloudFormation call. In
-these cases cdkd creates the resource without waiting and logs a warning, as
-before; the warning does not change the exit code or fail `--strict`:
+A stack declaring neither never gets a receiver and makes no CloudFormation
+call. A deploy that creates or replaces nothing signalling makes one
+`DescribeStacks` call. Secret dynamic references in `Metadata` stay
+`{{resolve:...}}` tokens in the receiver's template, as in CloudFormation's.
 
-- A CloudFormation stack with the cdkd stack's name already exists (for
-  example the same app deployed with the AWS CDK CLI). cdkd never touches it.
-- The credentials may not call `cloudformation:CreateStack`.
+In these cases cdkd creates the resource without waiting and logs a warning;
+the warning does not change the exit code or fail `--strict`:
+
+- A CloudFormation stack with the cdkd stack's name already exists and is not
+  a receiver (for example the same app deployed with the AWS CDK CLI). cdkd
+  never touches it.
+- The credentials may not call CloudFormation.
 - The resource is in a nested stack (its name cannot be a CloudFormation
   stack's).
-- The resource's `Metadata` refers to something not created yet when the
-  receiver is made.
+- The resource's `Metadata` reads a `NoEcho` parameter or attribute.
+- The replacement is decided only while the deploy runs (an update the
+  provider cannot make in place).
+- `--dry-run`: no receiver is made, and the preview keeps cdkd's own
+  `AWS::StackId`.
+
+When a stack that already exists starts declaring one of these, its
+`AWS::StackId` moves to the receiver's ARN once; resources reading it update
+in that deploy.
 
 Signals must name the stack by `${AWS::StackName}`, as CDK's
 `applyCloudFormationInit` and `signals` do; a `--stack ${AWS::StackId}` does

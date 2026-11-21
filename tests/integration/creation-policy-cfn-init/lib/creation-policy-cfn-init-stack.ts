@@ -7,13 +7,18 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
  * CDK emits a `CreationPolicy` `ResourceSignal`, `AWS::CloudFormation::Init`
  * metadata, and user data running `cfn-init --stack ${AWS::StackName}
  * --resource <id>` then `cfn-signal -e $? --stack ... --resource <id>`. Both
- * call the CloudFormation API; cdkd answers them through its transient signal
- * receiver stack, and the deploy completes only once the instance signals.
+ * call the CloudFormation API; cdkd answers them through the stack's persistent
+ * signal receiver (a CloudFormation stack named as this stack, whose real ARN
+ * `AWS::StackId` resolves to, so CDK's grant on it matches), and the deploy
+ * completes only once the instance signals.
  *
  * The init config writes a file and runs a command that checks it, so a
  * SUCCESS signal proves cfn-init read the metadata from the receiver.
  *
- * CDKD_TEST_FAIL=true (verify.sh Phase 2): a second instance whose init
+ * CDKD_TEST_UPDATE=true (verify.sh Phase 3): Amazon Linux 2 instead of 2023,
+ * so the instance is REPLACED and its replacement waits for a fresh signal.
+ *
+ * CDKD_TEST_FAIL=true (verify.sh Phase 4): a second instance whose init
  * command exits 1, so cfn-signal sends FAILURE: the deploy must fail and roll
  * that instance back.
  */
@@ -31,7 +36,10 @@ export class CreationPolicyCfnInitStack extends cdk.Stack {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
-      machineImage: ec2.MachineImage.latestAmazonLinux2023(),
+      machineImage:
+        process.env.CDKD_TEST_UPDATE === 'true'
+          ? ec2.MachineImage.latestAmazonLinux2()
+          : ec2.MachineImage.latestAmazonLinux2023(),
       requireImdsv2: true,
       initOptions: { timeout: cdk.Duration.minutes(10) },
     };

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # verify.sh — CreationPolicy + cfn-init through cdkd's signal receiver (issue #6705).
-# Phases: deploy (the instance's cfn-init reads its metadata from the receiver
-# and cfn-signal reports SUCCESS; the receiver stack is gone afterwards) ->
-# FAILURE (a second instance's init fails, cfn-signal sends FAILURE, the deploy
-# fails and rolls that instance back) -> destroy.
+# Phases: deploy (the receiver stack is created, AWS::StackId resolves to it,
+# the instance's cfn-init reads its metadata from it and cfn-signal reports
+# SUCCESS) -> no-change redeploy (the receiver is reused, untouched) ->
+# replacement (a new AMI replaces the instance; the replacement waits for its
+# own signal) -> FAILURE (a second instance's init fails, cfn-signal sends
+# FAILURE, the deploy fails and rolls that instance back) -> destroy (the
+# receiver goes with the stack).
 
 set -euo pipefail
 
@@ -45,16 +48,35 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# The receiver is deleted at the deploy's end (DeleteStack, not awaited):
-# wait for it to be gone.
+state_field() { # usage: state_field <node expression over s>
+  local json
+  json=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  printf '%s' "${json}" | node -e '
+    let d = ""; process.stdin.on("data", (c) => (d += c));
+    process.stdin.on("end", () => { const s = JSON.parse(d); process.stdout.write(String(('"$1"') ?? "")); });'
+}
+
+# The receiver exists, carries cdkd's tag, and is the one state records.
+assert_receiver_recorded() {
+  local live recorded tag
+  live=$(aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" \
+    --query 'Stacks[0].StackId' --output text) || return 1
+  tag=$(aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" \
+    --query "Stacks[0].Tags[?Key=='cdkd:signal-receiver'].Value | [0]" --output text) || return 1
+  recorded=$(state_field 's.signalReceiverStackId') || return 1
+  [ "${tag}" = "true" ] || { echo "FAIL: the stack named ${STACK} is not cdkd's receiver (tag ${tag})" >&2; exit 1; }
+  [ -n "${recorded}" ] && [ "${recorded}" = "${live}" ] \
+    || { echo "FAIL: state records receiver '${recorded}', the live one is '${live}'" >&2; exit 1; }
+  printf '%s' "${live}"
+}
+
 assert_receiver_gone() {
-  local i
-  for i in $(seq 1 30); do
+  local i status
+  for i in $(seq 1 60); do
     if gone_probe aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}"; then
       echo "    OK: the signal receiver stack is gone"
       return 0
     fi
-    local status
     status=$(aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" \
       --query 'Stacks[0].StackStatus' --output text) || return 1
     [ "${status}" = "DELETE_COMPLETE" ] && { echo "    OK: the signal receiver stack is deleted"; return 0; }
@@ -84,12 +106,12 @@ trap '(exit 143); cleanup; exit 143' TERM
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"; cleanup
 
-echo "==> Phase 1: Deploy (cfn-init reads the receiver's metadata; cfn-signal SUCCESS)"
+echo "==> Phase 1: Deploy (the receiver is created; cfn-init reads its metadata; cfn-signal SUCCESS)"
 DEPLOY_LOG=$(mktemp)
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 grep -q 'Created the CloudFormation signal receiver stack' "${DEPLOY_LOG}" \
   || { echo "FAIL: the deploy did not create a signal receiver" >&2; exit 1; }
-grep -q 'received its CreationPolicy signal' "${DEPLOY_LOG}" \
+grep -q 'Instance[0-9A-F]*: received its CreationPolicy signal' "${DEPLOY_LOG}" \
   || { echo "FAIL: the deploy did not wait for the instance's signal" >&2; exit 1; }
 if grep -q 'CreationPolicy is not honored' "${DEPLOY_LOG}"; then
   echo "FAIL: the deploy fell back to not waiting" >&2
@@ -97,54 +119,66 @@ if grep -q 'CreationPolicy is not honored' "${DEPLOY_LOG}"; then
 fi
 rm -f "${DEPLOY_LOG}"
 echo "    OK: the instance's cfn-init + cfn-signal reached the receiver"
-assert_receiver_gone
-
-STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
-INSTANCE_ID=$(printf '%s' "${STATE_JSON}" | node -e '
-  let d = ""; process.stdin.on("data", (c) => (d += c));
-  process.stdin.on("end", () => {
-    const s = JSON.parse(d);
-    const r = Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && !id.startsWith("FailingInstance"));
-    process.stdout.write(r ? r[1].physicalId : "");
-  });')
+RECEIVER_ID=$(assert_receiver_recorded)
+echo "    OK: the receiver ${RECEIVER_ID} is recorded in state"
+# AWS::StackId resolves to the receiver: CDK's instance-role grant names it.
+POLICY_ARNS=$(state_field 'JSON.stringify(Object.values(s.resources).filter((r) => r.resourceType === "AWS::IAM::Policy").map((r) => r.properties))')
+grep -qF "${RECEIVER_ID}" <<<"${POLICY_ARNS}" \
+  || { echo "FAIL: no instance-role policy names the receiver's ARN" >&2; exit 1; }
+echo "    OK: the instance-role grant names the receiver's ARN"
+INSTANCE_ID=$(state_field 'Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && !id.startsWith("FailingInstance"))?.[1].physicalId')
 [ -n "${INSTANCE_ID}" ] || { echo "FAIL: no instance in state" >&2; exit 1; }
-VPC_ID=$(printf '%s' "${STATE_JSON}" | node -e '
-  let d = ""; process.stdin.on("data", (c) => (d += c));
-  process.stdin.on("end", () => {
-    const s = JSON.parse(d);
-    const r = Object.values(s.resources).find((x) => x.resourceType === "AWS::EC2::VPC");
-    process.stdout.write(r ? r.physicalId : "");
-  });')
+VPC_ID=$(state_field 'Object.values(s.resources).find((x) => x.resourceType === "AWS::EC2::VPC")?.physicalId')
 
-echo "==> Phase 2: a FAILURE signal fails the deploy and rolls the instance back"
+echo "==> Phase 2: a no-change redeploy reuses the receiver and waits for nothing"
+NOCHANGE_LOG=$(mktemp)
+node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${NOCHANGE_LOG}"
+grep -q 'No changes' "${NOCHANGE_LOG}" || { echo "FAIL: the redeploy was not a no-change deploy" >&2; exit 1; }
+if grep -qE 'Created the CloudFormation signal receiver|waiting for .* CreationPolicy signal' "${NOCHANGE_LOG}"; then
+  echo "FAIL: the no-change redeploy touched the receiver" >&2
+  exit 1
+fi
+rm -f "${NOCHANGE_LOG}"
+[ "$(assert_receiver_recorded)" = "${RECEIVER_ID}" ] || { echo "FAIL: the receiver changed" >&2; exit 1; }
+echo "    OK: same receiver, no wait"
+
+echo "==> Phase 3: a replaced instance waits for its own signal"
+REPLACE_LOG=$(mktemp)
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${REPLACE_LOG}"
+grep -q 'Instance[0-9A-F]*: received its CreationPolicy signal' "${REPLACE_LOG}" \
+  || { echo "FAIL: the replacement did not wait for its signal" >&2; exit 1; }
+rm -f "${REPLACE_LOG}"
+NEW_INSTANCE_ID=$(state_field 'Object.entries(s.resources).find(([id, x]) => x.resourceType === "AWS::EC2::Instance" && !id.startsWith("FailingInstance"))?.[1].physicalId')
+[ -n "${NEW_INSTANCE_ID}" ] && [ "${NEW_INSTANCE_ID}" != "${INSTANCE_ID}" ] \
+  || { echo "FAIL: the instance was not replaced (${INSTANCE_ID} -> ${NEW_INSTANCE_ID})" >&2; exit 1; }
+[ "$(assert_receiver_recorded)" = "${RECEIVER_ID}" ] || { echo "FAIL: the receiver changed" >&2; exit 1; }
+echo "    OK: ${INSTANCE_ID} -> ${NEW_INSTANCE_ID}, signalled through the same receiver"
+INSTANCE_ID="${NEW_INSTANCE_ID}"
+
+echo "==> Phase 4: a FAILURE signal fails the deploy and rolls the instance back"
 FAIL_LOG=$(mktemp)
 set +e
-CDKD_TEST_FAIL=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FAIL_LOG}" 2>&1
+CDKD_TEST_UPDATE=true CDKD_TEST_FAIL=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${FAIL_LOG}" 2>&1
 FAIL_RC=$?
 set -e
 tail -20 "${FAIL_LOG}"
 [ "${FAIL_RC}" -ne 0 ] || { echo "FAIL: the deploy with a failing init succeeded" >&2; exit 1; }
 grep -q 'FailingInstance' "${FAIL_LOG}" \
   || { echo "FAIL: the failure does not name FailingInstance (sentinel)" >&2; exit 1; }
-grep -qE 'FailingInstance received a FAILURE signal|FailingInstance did not receive' "${FAIL_LOG}" \
+grep -qE 'FailingInstance[0-9A-F]* received a FAILURE signal|FailingInstance[0-9A-F]* did not receive' "${FAIL_LOG}" \
   || { echo "FAIL: the deploy did not fail on the CreationPolicy signal" >&2; exit 1; }
 rm -f "${FAIL_LOG}"
 echo "    OK: the deploy failed on the FAILURE signal (rc=${FAIL_RC})"
-LEFT=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
-  let d = ""; process.stdin.on("data", (c) => (d += c));
-  process.stdin.on("end", () => {
-    const s = JSON.parse(d);
-    process.stdout.write(Object.keys(s.resources).some((k) => k.startsWith("FailingInstance")) ? "yes" : "no");
-  });')
+LEFT=$(state_field 'Object.keys(s.resources).some((k) => k.startsWith("FailingInstance")) ? "yes" : "no"')
 [ "${LEFT}" = "no" ] || { echo "FAIL: FailingInstance is still recorded after the rollback" >&2; exit 1; }
 RUNNING=$(aws ec2 describe-instances --region "${REGION}" \
   --filters "Name=tag:Name,Values=${STACK}/FailingInstance" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
   --query 'length(Reservations[].Instances[])' --output json)
 [ "${RUNNING}" = "0" ] || { echo "FAIL: ${RUNNING} FailingInstance instance(s) survived the rollback" >&2; exit 1; }
 echo "    OK: the failing instance was rolled back"
-assert_receiver_gone
+[ "$(assert_receiver_recorded)" = "${RECEIVER_ID}" ] || { echo "FAIL: the receiver changed" >&2; exit 1; }
 
-echo "==> Phase 3: Destroy"
+echo "==> Phase 5: Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 STATE_OUT=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
   --query 'Reservations[0].Instances[0].State.Name' --output text)

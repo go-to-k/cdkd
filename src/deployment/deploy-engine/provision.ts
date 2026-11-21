@@ -1,3 +1,4 @@
+import { warnUnwaitedCreationPolicy } from './signal-receiver-run.js';
 import {
   type DeployEngine,
   EMPTY_SECRETS,
@@ -52,84 +53,6 @@ import { provisionDelete } from './delete.js';
 import { provisionCreate } from './create.js';
 import { awaitNoEchoMacsFor } from './noecho-macs.js';
 import { provisionUpdate } from './update.js';
-import { honorCreationPolicy } from './update-policy.js';
-import { buildResolverContext } from './resolver-context.js';
-import { noEchoParameterNamesOf } from './noecho.js';
-import { TemplateParser } from '../../analyzer/template-parser.js';
-
-/**
- * go-to-k/cdkd#6705: before a resource the signal receiver lists is created,
- * make sure the receiver exists (it is created once, by the first such
- * resource), so `cfn-init` finds its metadata at the instance's first boot.
- * A no-op when the deploy has no receiver or does not list the resource.
- */
-async function coverForSignals(
-  engine: DeployEngine,
-  logicalId: string,
-  stateResources: Record<string, ResourceState>,
-  stackName: string,
-  template: CloudFormationTemplate | undefined,
-  parameterValues: Record<string, unknown> | undefined,
-  conditions: Record<string, boolean> | undefined
-): Promise<void> {
-  const receiver = engine.signalReceiver;
-  if (receiver?.candidate(logicalId) === undefined) return;
-  await receiver.cover(logicalId, (id) =>
-    resolveTemplateMetadata(
-      engine,
-      id,
-      stateResources,
-      stackName,
-      template,
-      parameterValues,
-      conditions
-    )
-  );
-}
-
-/**
- * go-to-k/cdkd#6705: a resource's template `Metadata`, resolved against the
- * deploy's state as it stands (for the signal receiver, which `cfn-init`
- * reads). Throws when a reference does not resolve yet.
- */
-async function resolveTemplateMetadata(
-  engine: DeployEngine,
-  logicalId: string,
-  stateResources: Record<string, ResourceState>,
-  stackName: string,
-  template: CloudFormationTemplate | undefined,
-  parameterValues: Record<string, unknown> | undefined,
-  conditions: Record<string, boolean> | undefined
-): Promise<unknown> {
-  const metadata = template?.Resources?.[logicalId]?.Metadata;
-  if (metadata === undefined || template === undefined) return undefined;
-  // The resolved metadata becomes a CloudFormation TEMPLATE body (readable
-  // through GetTemplate), so no secret may be resolved into it. A `NoEcho`
-  // parameter or a resource holding a `NoEcho` attribute it reads is refused
-  // (the resource falls back to not waiting), and a secret `{{resolve:...}}`
-  // reference stays a token, as CloudFormation keeps it in its own template.
-  const references = metadataParser.extractReferences(metadata);
-  const noEchoParameters = noEchoParameterNamesOf(template);
-  const noEchoAttributes = engine.noEchoRun.noEchoAttributeResources;
-  for (const ref of references) {
-    if (noEchoParameters.has(ref) || noEchoAttributes.has(ref)) {
-      throw new Error(`${logicalId}'s Metadata reads a NoEcho value`);
-    }
-  }
-  const context = buildResolverContext(
-    engine.resolverContextDeps(),
-    {
-      template,
-      resources: stateResources,
-      ...(parameterValues && { parameters: parameterValues }),
-      ...(conditions && { conditions }),
-    },
-    stackName
-  );
-  return engine.resolver.resolve(metadata, { ...context, skipDynamicReferences: true });
-}
-
-const metadataParser = new TemplateParser();
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';
@@ -251,16 +174,9 @@ export async function provisionResource(
   // slow CREATE / UPDATE is not aborted by the 30-min default. A per-type CLI
   // override still wins (explicit escape hatch).
   const slowTypeMinTimeoutMs = slowCcOperationTimeoutMs(resourceType, operationKind);
-  // go-to-k/cdkd#6705: a create (or replacement) waiting for CreationPolicy
-  // signals may take its declared Timeout (up to 12 h) on top of the create.
-  const signalWaitMs =
-    change.changeType === 'DELETE'
-      ? 0
-      : (engine.signalReceiver?.candidate(logicalId)?.timeoutMs ?? 0);
-  const signalMinTimeoutMs = signalWaitMs > 0 ? signalWaitMs + 30 * 60 * 1000 : 0;
   const timeoutMs =
     engine.options.resourceTimeoutByType?.[resourceType] ??
-    Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, signalMinTimeoutMs, globalTimeoutMs);
+    Math.max(providerMinTimeoutMs, slowTypeMinTimeoutMs, globalTimeoutMs);
 
   // #808 best-effort event: per-resource op started. `provisionedBy`
   // is the routing inference used for the live label (same decision the
@@ -704,79 +620,41 @@ export async function provisionResourceBody(
     engine.stackRecordsView,
     (): Promise<ResourceOutcomeSignal | void> | undefined => {
       switch (change.changeType) {
-        case 'CREATE': {
-          // go-to-k/cdkd#6705: a resource the signal receiver covers is
-          // created only once its receiver exists (cfn-init reads it at
-          // boot), and completes only once its CreationPolicy signals arrive.
-          // The wait runs after the record is saved, so a missing or FAILURE
-          // signal fails the deploy and the rollback deletes the resource,
-          // as CloudFormation's does.
-          const startedAt = Date.now();
-          return (async () => {
-            await coverForSignals(
+        case 'CREATE':
+          return withPriorAttempts(priorAttempts, () =>
+            provisionCreate(
               engine,
               logicalId,
+              change,
               stateResources,
               stackName,
               template,
               parameterValues,
-              conditions
-            );
-            const outcome = await withPriorAttempts(priorAttempts, () =>
-              provisionCreate(
-                engine,
-                logicalId,
-                change,
-                stateResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                counts,
-                progress
-              )
-            );
-            // go-to-k/cdkd#6437: uncovered, a warning only -- no exit-code or
-            // `--strict` effect.
-            await honorCreationPolicy(
-              engine.logger,
-              engine.signalReceiver,
-              logicalId,
-              template?.Resources?.[logicalId],
-              startedAt
-            );
+              conditions,
+              counts,
+              progress
+            )
+          ).then((outcome) => {
+            // go-to-k/cdkd#6437: log only, once the create succeeded -- no
+            // exit-code or `--strict` effect.
+            warnUnwaitedCreationPolicy(engine, logicalId, template);
             return outcome;
-          })();
-        }
+          });
         case 'UPDATE':
-          return (async () => {
-            // go-to-k/cdkd#6705: a replacement creates the resource anew, so a
-            // replacing row the receiver lists is covered before it runs; the
-            // replacement paths wait on it (`honorCreationPolicy`).
-            await coverForSignals(
+          return withPriorAttempts(priorAttempts, () =>
+            provisionUpdate(
               engine,
               logicalId,
+              change,
               stateResources,
               stackName,
               template,
               parameterValues,
-              conditions
-            );
-            return withPriorAttempts(priorAttempts, () =>
-              provisionUpdate(
-                engine,
-                logicalId,
-                change,
-                stateResources,
-                stackName,
-                template,
-                parameterValues,
-                conditions,
-                counts,
-                progress
-              )
-            );
-          })();
+              conditions,
+              counts,
+              progress
+            )
+          );
         case 'DELETE':
           return provisionDelete(
             engine.deleteDeps(),
