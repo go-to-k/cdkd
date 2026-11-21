@@ -1,4 +1,3 @@
-import { removeSignalReceiverNamed } from '../../../deployment/deploy-engine/signal-receiver.js';
 import { randomUUID } from 'node:crypto';
 import { displayAwsMessage } from '../../../utils/display-safe.js';
 import {
@@ -222,9 +221,6 @@ export async function submitImportChangeSet(
   const logger = getLogger();
   const changeSetName = `cdkd-migrate-${Date.now()}`;
   const templateBody = stringifyCfnTemplate(template, templateFormat);
-
-  // go-to-k/cdkd#6705: the stack's signal receiver holds the name until now.
-  await removeSignalReceiverNamed(cfnClient, stackName, logger);
 
   logger.info(
     `Creating IMPORT changeset '${changeSetName}' for stack ${quotedOrNotShown(stackName)} ` +

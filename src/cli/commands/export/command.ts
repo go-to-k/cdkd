@@ -1,4 +1,7 @@
-import { deleteSignalReceiver } from '../../../deployment/deploy-engine/signal-receiver.js';
+import {
+  deleteSignalReceiver,
+  removeSignalReceiverNamed,
+} from '../../../deployment/deploy-engine/signal-receiver.js';
 import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import { displayAwsMessage } from '../../../utils/display-safe.js';
 import {
@@ -775,6 +778,10 @@ export async function exportCommand(
             `explicit DeletionPolicy (required by CFn IMPORT — matches the CDK/CFn ` +
             `default for resources without RemovalPolicy).`
         );
+      }
+      // go-to-k/cdkd#6705: the stack's own signal receiver holds the name until now.
+      if (typeof state.signalReceiverStackId === 'string' && cfnStackName === resolvedStackName) {
+        await removeSignalReceiverNamed(awsClients.cloudFormation, cfnStackName, logger);
       }
       await executeImportChangeSet(
         awsClients.cloudFormation,

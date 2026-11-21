@@ -1,4 +1,7 @@
-import { deleteSignalReceiver } from '../../../deployment/deploy-engine/signal-receiver.js';
+import {
+  deleteSignalReceiver,
+  removeSignalReceiverNamed,
+} from '../../../deployment/deploy-engine/signal-receiver.js';
 import { releaseRegistryMarkerQuietly } from '../registry-release.js';
 import { recordRetainedForReadoption } from '../../../deployment/retained-readoption.js';
 import { pasteableCommand } from '../../../utils/pasteable-command.js';
@@ -212,6 +215,10 @@ export async function runPerStackImportPhases(
       );
     }
 
+    // go-to-k/cdkd#6705: the stack's own signal receiver holds the name until now.
+    if (typeof plan.state.signalReceiverStackId === 'string' && plan.cfnName === plan.cdkdName) {
+      await removeSignalReceiverNamed(deps.cfnClient, plan.cfnName, logger);
+    }
     try {
       await submitImportChangeSet(
         deps.cfnClient,
