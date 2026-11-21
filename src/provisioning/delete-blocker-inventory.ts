@@ -107,6 +107,10 @@ function handled(
   return { blocker, disposition: { kind: 'handled', site, call, test } };
 }
 
+function refused(blocker: string, site: string, message: string): DeleteBlocker {
+  return { blocker, disposition: { kind: 'refused', site, message } };
+}
+
 const P = 'src/provisioning/providers/';
 const T = 'tests/unit/provisioning/';
 const IAM_STARTED = `${T}iam-delete-started-4946.test.ts`;
@@ -141,9 +145,15 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
         `${T}iam-role-provider.test.ts`,
         'should delete inline policies before deleting role'
       ),
+      // The handler cannot remove it either: CloudFormation fails with DeleteConflict.
+      refused(
+        'an instance profile outside the stack still holding the role (stack destroy)',
+        `${P}iam-role/delete.ts`,
+        'which this destroy did not delete (a profile created outside the stack, or'
+      ),
     ],
     beyondCfn: [
-      'removes the role from every instance profile listing it, where DeleteRole would refuse with DeleteConflict (#6750)',
+      'on a deploy-time delete only, removes the role from every instance profile listing it, where DeleteRole would refuse with DeleteConflict (#6770)',
     ],
   },
   {
