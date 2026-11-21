@@ -25,6 +25,7 @@ import {
   ContinueUpdateRollbackCommand,
   CreateStackCommand,
   DeleteStackCommand,
+  DescribeStackEventsCommand,
   DescribeStackResourceCommand,
   DescribeStacksCommand,
   GetTemplateCommand,
@@ -493,8 +494,14 @@ export class SignalReceiver {
         status === 'GONE' ||
         status?.startsWith('DELETE') === true
       ) {
+        // A FAILURE signal fails the waiter and CloudFormation rolls the
+        // receiver's update back, which removes it: between two polls only
+        // its events still say why.
+        reason ??= await this.failureReasonOf(client, logicalId);
         throw new Error(
-          safeMsg`${logicalId} received a FAILURE signal or no signal (CreationPolicy): ${reason ?? status ?? 'unknown'}`
+          reason !== undefined && /FAILURE signal/i.test(reason)
+            ? safeMsg`${logicalId} received a FAILURE signal (CreationPolicy): ${reason}`
+            : safeMsg`${logicalId} did not receive its CreationPolicy signal(s): its wait in the signal receiver ended (${reason ?? status ?? 'unknown'})`
         );
       }
       if (this.now() >= deadline) {
@@ -636,6 +643,21 @@ export class SignalReceiver {
     } catch (error) {
       if (noUpdates(error)) return false;
       throw error;
+    }
+  }
+
+  /** The latest `CREATE_FAILED` reason the receiver's events give for `logicalId`. */
+  private async failureReasonOf(
+    client: CloudFormationClient,
+    logicalId: string
+  ): Promise<string | undefined> {
+    try {
+      const out = await client.send(new DescribeStackEventsCommand({ StackName: this.stackId }));
+      return out.StackEvents?.find(
+        (e) => e.LogicalResourceId === logicalId && e.ResourceStatus === 'CREATE_FAILED'
+      )?.ResourceStatusReason;
+    } catch {
+      return undefined;
     }
   }
 

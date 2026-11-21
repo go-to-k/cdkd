@@ -178,7 +178,7 @@ FAIL_RC=$?
 set -e
 tail -20 "${FAIL_LOG}"
 [ "${FAIL_RC}" -ne 0 ] || { echo "FAIL: the deploy with a failing init succeeded" >&2; exit 1; }
-grep -qE 'FailingInstance[0-9A-F]* received a FAILURE signal' "${FAIL_LOG}" \
+grep -qE 'FailingInstance[0-9A-Fa-f]* received a FAILURE signal' "${FAIL_LOG}" \
   || { echo "FAIL: the deploy did not fail on FailingInstance's FAILURE signal" >&2; exit 1; }
 rm -f "${FAIL_LOG}"
 echo "    OK: the deploy failed on the FAILURE signal (rc=${FAIL_RC})"

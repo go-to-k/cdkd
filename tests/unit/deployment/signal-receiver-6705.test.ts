@@ -3,6 +3,7 @@ import {
   CancelUpdateStackCommand,
   CreateStackCommand,
   DeleteStackCommand,
+  DescribeStackEventsCommand,
   DescribeStackResourceCommand,
   DescribeStacksCommand,
   GetTemplateCommand,
@@ -192,10 +193,23 @@ describe('SignalReceiver.arm / awaitSignals / settle', () => {
           () => {
             const status = resourceStatus();
             if (status === undefined) notFound();
-            return { StackResourceDetail: { ResourceStatus: status, ResourceStatusReason: 'why' } };
+            return { StackResourceDetail: { ResourceStatus: status, ResourceStatusReason: 'Received FAILURE signal with UniqueId i-1' } };
           },
         ],
         [CancelUpdateStackCommand, () => ({})],
+        [
+          DescribeStackEventsCommand,
+          () => ({
+            StackEvents: [
+              { LogicalResourceId: 'I', ResourceStatus: 'DELETE_COMPLETE' },
+              {
+                LogicalResourceId: 'I',
+                ResourceStatus: 'CREATE_FAILED',
+                ResourceStatusReason: 'Received FAILURE signal with UniqueId i-9',
+              },
+            ],
+          }),
+        ],
       ])
     );
     const r = new SignalReceiver('App', new Map([['I', signalCandidateOf(instance)!]]), () => c, logger(), clock());
@@ -257,7 +271,20 @@ describe('SignalReceiver.arm / awaitSignals / settle', () => {
     await r.ensure(ARN);
     await r.arm(new Set(['I']), async () => undefined);
     armingDone = true;
-    await expect(r.awaitSignals('I', 0, () => false)).rejects.toThrow(/FAILURE signal.*why/);
+    await expect(r.awaitSignals('I', 0, () => false)).rejects.toThrow(
+      /I received a FAILURE signal \(CreationPolicy\): Received FAILURE signal with UniqueId i-1/
+    );
+  });
+
+  it('awaitSignals reads the FAILURE reason from the events once the rollback removed the waiter', async () => {
+    let armingDone = false;
+    const { r } = armedReceiver(() => (armingDone ? undefined : 'CREATE_IN_PROGRESS'));
+    await r.ensure(ARN);
+    await r.arm(new Set(['I']), async () => undefined);
+    armingDone = true;
+    await expect(r.awaitSignals('I', 0, () => false)).rejects.toThrow(
+      /I received a FAILURE signal \(CreationPolicy\): Received FAILURE signal with UniqueId i-9/
+    );
   });
 
   it('awaitSignals fails at the policy timeout', async () => {
