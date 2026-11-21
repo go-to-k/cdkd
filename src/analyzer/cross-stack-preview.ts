@@ -76,6 +76,12 @@ export interface ProducerPreviewInput {
    * handed to another stack's diff, whose masking does not know it.
    */
   holdsSecret: (text: string) => boolean;
+  /**
+   * True when `value` reads an export or output this run's preview answers
+   * unknown. An output that failed to resolve is unknown only then; any other
+   * failure leaves it out, as before.
+   */
+  readsUnknownPreview?: (value: unknown) => boolean;
 }
 
 type Scalar = string | number | boolean;
@@ -145,7 +151,7 @@ export function previewProducerValues(input: ProducerPreviewInput): ProducerPrev
         exports.set(exportName, verdict(desired));
         continue;
       }
-    } else if (/"Fn::(ImportValue|GetStackOutput)"/.test(JSON.stringify(value) ?? '')) {
+    } else if (input.readsUnknownPreview?.(value) === true) {
       previewed = { kind: 'unknown', producerStack };
     }
     if (previewed === undefined) continue;
@@ -185,7 +191,57 @@ export async function recordProducerPreview(
   input: Omit<ProducerPreviewInput, 'exportNameOf'>
 ): Promise<void> {
   const exportNameOf = await resolvedExportNames(input.template, resolve);
-  preview.record(region, input.stackName, previewProducerValues({ ...input, exportNameOf }));
+  const readsUnknownPreview = (value: unknown): boolean =>
+    crossStackReads(value).some((read) => {
+      const found =
+        read.kind === 'export'
+          ? preview.exportValue(region, read.name)
+          : preview.stackOutput(read.region ?? region, read.stackName, read.outputName);
+      return found?.kind === 'unknown';
+    });
+  preview.record(
+    region,
+    input.stackName,
+    previewProducerValues({ ...input, exportNameOf, readsUnknownPreview })
+  );
+}
+
+type CrossStackRead =
+  | { kind: 'export'; name: string }
+  | { kind: 'output'; stackName: string; outputName: string; region?: string };
+
+/** The literal `Fn::ImportValue` / same-account `Fn::GetStackOutput` reads inside `value`. */
+export function crossStackReads(value: unknown): CrossStackRead[] {
+  const reads: CrossStackRead[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, arg] of Object.entries(node as Record<string, unknown>)) {
+      if (key === 'Fn::ImportValue' && typeof arg === 'string') {
+        reads.push({ kind: 'export', name: arg });
+      } else if (key === 'Fn::GetStackOutput' && arg !== null && typeof arg === 'object') {
+        const { StackName, OutputName, Region, RoleArn } = arg as Record<string, unknown>;
+        if (
+          typeof StackName === 'string' &&
+          typeof OutputName === 'string' &&
+          RoleArn === undefined
+        ) {
+          reads.push({
+            kind: 'output',
+            stackName: StackName,
+            outputName: OutputName,
+            ...(typeof Region === 'string' && { region: Region }),
+          });
+        }
+      }
+      walk(arg);
+    }
+  };
+  walk(value);
+  return reads;
 }
 
 /**

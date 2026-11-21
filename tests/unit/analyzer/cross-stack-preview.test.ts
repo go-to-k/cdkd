@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   CrossStackPreview,
+  crossStackReads,
   orderProducersFirst,
+  recordProducerPreview,
   previewProducerValues,
   type ProducerPreviewInput,
 } from '../../../src/analyzer/cross-stack-preview.js';
@@ -132,9 +134,69 @@ describe('previewProducerValues', () => {
         desiredOutputs: {},
         storedOutputs: { Fwd: 'old' },
         exportNameOf: new Map([['Fwd', 'b-x']]),
+        readsUnknownPreview: (value) => crossStackReads(value).some((r) => r.kind === 'export' && r.name === 'a-x'),
       })
     );
     expect(preview.exports.get('b-x')).toEqual({ kind: 'unknown', producerStack: 'Producer' });
+  });
+
+  it('CONTROL: an output failing for another reason (a denied RoleArn read, no fallback) stays out', () => {
+    const preview = previewProducerValues(
+      input({
+        template: {
+          Resources: {},
+          Outputs: { Fwd: { Value: { 'Fn::ImportValue': 'cfn-only' }, Export: { Name: 'b-x' } } },
+        },
+        desiredOutputs: {},
+        storedOutputs: { Fwd: 'old' },
+        exportNameOf: new Map([['Fwd', 'b-x']]),
+        readsUnknownPreview: () => false,
+      })
+    );
+    expect(preview.exports.has('b-x')).toBe(false);
+  });
+
+  it('crossStackReads finds literal imports and same-account stack-output reads only', () => {
+    expect(
+      crossStackReads({
+        'Fn::Join': [
+          '',
+          [
+            { 'Fn::ImportValue': 'a-x' },
+            { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'O', Region: 'us-west-2' } },
+            { 'Fn::GetStackOutput': { StackName: 'X', OutputName: 'O', RoleArn: 'arn:r' } },
+            { 'Fn::ImportValue': { 'Fn::Sub': 'n' } },
+          ],
+        ],
+      })
+    ).toEqual([
+      { kind: 'export', name: 'a-x' },
+      { kind: 'output', stackName: 'P', outputName: 'O', region: 'us-west-2' },
+    ]);
+  });
+
+  it('recordProducerPreview chains an unknown through a re-export (A -> B -> C)', async () => {
+    const preview = new CrossStackPreview();
+    preview.record('us-east-1', 'A', {
+      exports: new Map([['a-x', { kind: 'unknown', producerStack: 'A' }]]),
+      outputs: new Map(),
+    });
+    await recordProducerPreview(preview, 'us-east-1', async (v) => v, {
+      stackName: 'B',
+      template: {
+        Resources: {},
+        Outputs: {
+          Fwd: { Value: { 'Fn::ImportValue': 'a-x' }, Export: { Name: 'b-x' } },
+          Other: { Value: { 'Fn::ImportValue': 'cfn-only' }, Export: { Name: 'b-y' } },
+        },
+      },
+      changes: new Map(),
+      desiredOutputs: {},
+      storedOutputs: { Fwd: 'old', 'b-x': 'old', Other: 'o', 'b-y': 'o' },
+      holdsSecret: () => false,
+    });
+    expect(preview.exportValue('us-east-1', 'b-x')).toEqual({ kind: 'unknown', producerStack: 'B' });
+    expect(preview.exportValue('us-east-1', 'b-y')).toBeUndefined();
   });
 
   it('previews an output of a nested stack the deploy updates as unknown', () => {
