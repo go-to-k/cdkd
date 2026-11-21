@@ -224,6 +224,7 @@ W1=()
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  rm -f "${DRIFT_JSON:-}"
   local destroy_rc=1 destroy_out=""
   if [ -f "${LOCAL_DIST}" ]; then
     destroy_out=$(node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes 2>&1)
@@ -384,6 +385,82 @@ for id in "${SUBJECTS[@]}"; do
 done
 rm -f "${DRIFT_JSON}"
 echo "    OK: cdkd drift reported all ${#SUBJECTS[@]} clean (rc=0)"
+
+echo "==> Phase 6b: an out-of-band tag is drift on the SDK route (go-to-k/cdkd#6754, #6755)"
+# Before #6754 / #6755 the VPC, InternetGateway, NetworkAcl and IAM user
+# readbacks dropped `Tags`, so the tag added here read as no drift. Each must be
+# drifted at `Tags` while it is on, and clean again once it is removed.
+TAG_EC2_IDS=("$(record RerouteVpc '.physicalId')" "$(record RerouteInternetGateway '.physicalId')" "$(record RerouteNetworkAcl '.physicalId')")
+TAG_USER=$(record RerouteUser '.physicalId')
+TAG_SUBJECTS=(RerouteVpc RerouteInternetGateway RerouteNetworkAcl RerouteUser)
+# IAM reads lag its writes: wait until GetUser shows (or stops showing) the tag.
+wait_user_tag() { # usage: wait_user_tag <present|absent>
+  local seen
+  for _ in $(seq 1 12); do
+    seen=$(aws iam get-user --user-name "${TAG_USER}" \
+      --query "length(User.Tags[?Key=='cdkd-drift-probe'] || \`[]\`)" --output text) || return 1
+    if { [ "$1" = present ] && [ "${seen}" = 1 ]; } || { [ "$1" = absent ] && [ "${seen}" = 0 ]; }; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL: user ${TAG_USER}'s probe tag is not ${1} 60s after the write" >&2
+  exit 1
+}
+# EC2 tag reads lag the tag writes: wait until every probed resource shows the
+# probe tag (present) or none does (absent) before drift reads them.
+wait_probe_tags() { # usage: wait_probe_tags <present|absent> <resource-id>...
+  local want="$1" seen n _i
+  shift
+  for _i in $(seq 1 12); do
+    seen=$(aws ec2 describe-tags --region "${REGION}" \
+      --filters Name=key,Values=cdkd-drift-probe "Name=resource-id,Values=$(IFS=,; echo "$*")" \
+      --query 'Tags[].ResourceId' --output text) || return 1
+    n=0
+    [ -z "${seen}" ] || [ "${seen}" = "None" ] || n=$(wc -w <<<"${seen}" | tr -d ' ')
+    if { [ "${want}" = present ] && [ "${n}" -eq "$#" ]; } || { [ "${want}" = absent ] && [ "${n}" -eq 0 ]; }; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "FAIL: the probe tag is not ${want} on every probed resource 60s after the write (${n} of $# tagged)" >&2
+  exit 1
+}
+tag_drift_buckets() { # usage: tag_drift_buckets <expected rc>; fills DRIFT_JSON
+  DRIFT_JSON=$(mktemp)
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --stack-region "${REGION}" --json >"${DRIFT_JSON}" 2>/dev/null
+  DRIFT_RC=$?
+  set -e
+  if [ "${DRIFT_RC}" -ne "$1" ]; then
+    echo "FAIL: cdkd drift exited ${DRIFT_RC}, expected $1:" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+}
+aws ec2 create-tags --region "${REGION}" --resources "${TAG_EC2_IDS[@]}" \
+  --tags Key=cdkd-drift-probe,Value=out-of-band
+aws iam tag-user --user-name "${TAG_USER}" --tags Key=cdkd-drift-probe,Value=out-of-band
+wait_probe_tags present "${TAG_EC2_IDS[@]}" || { echo "FAIL: describe-tags failed while waiting for the probe tag" >&2; exit 1; }
+wait_user_tag present || { echo "FAIL: get-user ${TAG_USER} failed while waiting for its probe tag" >&2; exit 1; }
+tag_drift_buckets 1
+for id in "${TAG_SUBJECTS[@]}"; do
+  if ! jq -e --arg id "${id}" '[.[0].drifted[]? | select(.logicalId == $id) | .changes[]?.path] | index("Tags") != null' "${DRIFT_JSON}" >/dev/null; then
+    echo "FAIL: ${id} tagged out of band is not drifted at Tags:" >&2
+    jq '.[0] | {drifted, notSupported, notCompared}' "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+done
+rm -f "${DRIFT_JSON}"
+echo "    OK: all ${#TAG_SUBJECTS[@]} tagged resources are drifted at Tags"
+aws ec2 delete-tags --region "${REGION}" --resources "${TAG_EC2_IDS[@]}" --tags Key=cdkd-drift-probe
+aws iam untag-user --user-name "${TAG_USER}" --tag-keys cdkd-drift-probe
+wait_probe_tags absent "${TAG_EC2_IDS[@]}" || { echo "FAIL: describe-tags failed while waiting for the probe tag to go" >&2; exit 1; }
+wait_user_tag absent || { echo "FAIL: get-user ${TAG_USER} failed while waiting for its probe tag to go" >&2; exit 1; }
+tag_drift_buckets 0
+rm -f "${DRIFT_JSON}"
+echo "    OK: removing the tag makes the stack drift-clean again"
 
 echo "==> Phase 7: the SDK provider deletes each flipped function URL by its recorded id"
 # Through destroy the URLs would vanish with their function anyway, so a delete

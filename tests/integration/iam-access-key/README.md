@@ -17,6 +17,11 @@ provider's `update()` must omit attributes so the cached value survives.
 1. **create** — deploy user + Active key + secret; assert the key is Active on
    AWS and the secret holds a resolved 40-char secret access key (no
    unresolved intrinsic).
+   **1b** — the user has a console login profile whose password is a
+   generated secret (go-to-k/cdkd#6755): drift is clean right after the
+   deploy, drifted at `LoginProfile.PasswordResetRequired` once the flag is
+   flipped out of band, and clean again once flipped back; the password
+   appears in neither state nor drift output.
 2. **update** (`CDKD_TEST_UPDATE=true`) — flip `Status` to `Inactive` (the
    only in-place-mutable property; `UserName` / `Serial` are createOnly).
    Assert the flip landed, the physical id survived, and BOTH the Secrets

@@ -2,6 +2,7 @@ import type { IAMUserGroupProvider } from '../iam-user-group-provider.js';
 import {
   GetUserCommand,
   GetGroupCommand,
+  GetLoginProfileCommand,
   ListAttachedGroupPoliciesCommand,
   ListAttachedUserPoliciesCommand,
   ListUserPoliciesCommand,
@@ -10,6 +11,7 @@ import {
   GetGroupPolicyCommand,
   ListGroupsForUserCommand,
   NoSuchEntityException,
+  type Tag,
 } from '@aws-sdk/client-iam';
 import { collectInlinePolicyNamesManagedBySiblings } from '../iam-role-provider.js';
 import {
@@ -29,6 +31,8 @@ import {
 import { warnUnsettledMember } from '../../settle-after-own-write.js';
 import { principalOwnWriteMembers, settleOwnWriteMembers } from '../../settle-own-write-members.js';
 import { takeOwnWriteRemovals } from '../../own-write-removals.js';
+import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
+import { coerceCfnBoolean } from '../../config-shape.js';
 
 /**
  * go-to-k/cdkd#4606: whether the user or group a failed CREATE journaled is
@@ -158,10 +162,9 @@ export async function readIdIfExists(
  *    `ListGroupsForUser` for `Groups`; `ListUserPolicies` +
  *    `GetUserPolicy` per name for inline `Policies` (URL-decoded +
  *    JSON-parsed, capped at IAM's documented 10-per-user limit, order
- *    reconciled against state's `Policies` array). `Tags` and
- *    `LoginProfile` remain omitted — Tags will land in a follow-up,
- *    LoginProfile contains a one-time password we never want to surface
- *    through drift.
+ *    reconciled against state's `Policies` array); `Tags` from `GetUser`;
+ *    for a record declaring one, `LoginProfile.PasswordResetRequired` via
+ *    `GetLoginProfile` (go-to-k/cdkd#6755; the password is write-only).
  *  - **AWS::IAM::Group**: `GetGroup` for `GroupName`, `Path`;
  *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`;
  *    `ListGroupPolicies` + `GetGroupPolicy` per name for inline
@@ -234,6 +237,13 @@ export async function readUserCurrentState(
   // Always-emit so a console-side ADD on a user deployed without a
   // boundary surfaces as drift (top-level walk is state-keys-only).
   result['PermissionsBoundary'] = user.PermissionsBoundary?.PermissionsBoundaryArn ?? '';
+  const ownWrite = context?.afterOwnWrite === true;
+  const tags = readbackUserTags(user.Tags, properties, ownWrite);
+  if (tags !== undefined) result['Tags'] = tags;
+  if (properties?.['LoginProfile'] != null) {
+    const profile = await readLoginProfile.call(this, physicalId, properties, ownWrite);
+    if (profile !== undefined) result['LoginProfile'] = profile;
+  }
 
   const reads = userMemberReads.call(this, physicalId, properties, context);
   try {
@@ -280,6 +290,86 @@ export async function readUserCurrentState(
     );
   }
   return result;
+}
+
+/**
+ * The user's `Tags`, from the `GetUser` response (go-to-k/cdkd#6755): the
+ * reserved `aws:` tags dropped, and the key omitted when none is left, so a
+ * template declaring none is not compared against `[]`. On the capture right
+ * after cdkd's own write (`afterOwnWrite`) a read whose tags differ from the
+ * declared list keeps the declared one: IAM reads lag its writes, and a lagging
+ * read frozen into the baseline would report every later read as drift.
+ */
+function readbackUserTags(
+  awsTags: readonly Tag[] | undefined,
+  properties: Record<string, unknown> | undefined,
+  afterOwnWrite: boolean
+): unknown[] | undefined {
+  const tags = normalizeAwsTagsToCfn(awsTags);
+  const declared = properties?.['Tags'];
+  // A template declaring no tags had its last ones removed by this write, so
+  // a read still showing them is the lag too: no baseline key, not the old tags.
+  if (afterOwnWrite && properties !== undefined && declared == null) return undefined;
+  const bag =
+    afterOwnWrite && Array.isArray(declared) && !sameTagSet(tags, declared) ? declared : tags;
+  return bag.length > 0 ? bag : undefined;
+}
+
+/** Whether two tag lists hold the same `Key` / `Value` pairs, in any order. */
+function sameTagSet(a: readonly unknown[], b: readonly unknown[]): boolean {
+  const pairs = (list: readonly unknown[]): string =>
+    JSON.stringify(
+      list
+        .map((entry) => {
+          const tag = (entry ?? {}) as Record<string, unknown>;
+          return JSON.stringify([tag['Key'], tag['Value'] ?? '']);
+        })
+        .sort()
+    );
+  return pairs(a) === pairs(b);
+}
+
+/**
+ * The user's `LoginProfile` (go-to-k/cdkd#6755), read only for a record that
+ * declares one: `GetLoginProfile` is a call of its own, and the capture runs on
+ * every deploy. `PasswordResetRequired` alone: `Password` is write-only and
+ * `getDriftUnknownPaths` declares it. `undefined` when the user has no login
+ * profile (`NoSuchEntityException`), so a profile deleted out of band reads
+ * as the declared one gone; any other failure throws, since omitting the key
+ * would read as that deletion. On the capture right after cdkd's own write a
+ * profile not visible yet, or one whose flag differs from the declared one
+ * (`UpdateLoginProfile` not visible yet), keeps the declared shape, as the
+ * tags do.
+ */
+async function readLoginProfile(
+  this: IAMUserGroupProvider,
+  userName: string,
+  properties: Record<string, unknown>,
+  afterOwnWrite: boolean
+): Promise<Record<string, unknown> | undefined> {
+  const declared = properties['LoginProfile'] as Record<string, unknown>;
+  const declaredShape = {
+    PasswordResetRequired: coerceCfnBoolean(declared['PasswordResetRequired']) === true,
+  };
+  let read: Record<string, unknown> | undefined;
+  try {
+    const resp = await this.iamClient.send(new GetLoginProfileCommand({ UserName: userName }));
+    read = { PasswordResetRequired: resp.LoginProfile?.PasswordResetRequired === true };
+  } catch (err) {
+    if (!(err instanceof NoSuchEntityException)) throw err;
+  }
+  if (!afterOwnWrite) return read;
+  return read?.['PasswordResetRequired'] === declaredShape.PasswordResetRequired
+    ? read
+    : declaredShape;
+}
+
+/**
+ * Drift paths no read answers: a user's `LoginProfile.Password`, write-only in
+ * IAM (go-to-k/cdkd#6755).
+ */
+export function getDriftUnknownPaths(this: IAMUserGroupProvider, resourceType: string): string[] {
+  return resourceType === 'AWS::IAM::User' ? ['LoginProfile.Password'] : [];
 }
 
 /**

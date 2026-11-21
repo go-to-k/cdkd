@@ -49,6 +49,7 @@ import { networkAclMethods } from './ec2/network-acl.js';
 import { tagsErrorsMethods } from './ec2/tags-errors.js';
 import { driftMethods } from './ec2/drift.js';
 import { readStateMethods } from './ec2/read-state.js';
+import { readNetworkStateMethods } from './ec2/read-network-state.js';
 import { readInstanceStateMethods } from './ec2/read-instance-state.js';
 import { verifyExplicitMethods } from './ec2/verify-explicit.js';
 
@@ -106,6 +107,7 @@ type EC2ProviderMixins = typeof orphansMethods &
   typeof tagsErrorsMethods &
   typeof driftMethods &
   typeof readStateMethods &
+  typeof readNetworkStateMethods &
   typeof readInstanceStateMethods &
   typeof verifyExplicitMethods;
 // The merge is the point: the prototype loop below supplies every member.
@@ -823,6 +825,7 @@ for (const methods of [
   tagsErrorsMethods,
   driftMethods,
   readStateMethods,
+  readNetworkStateMethods,
   readInstanceStateMethods,
   verifyExplicitMethods,
 ]) {

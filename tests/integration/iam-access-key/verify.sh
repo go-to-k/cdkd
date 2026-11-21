@@ -79,6 +79,7 @@ USER_NAME="cdkd-iam-access-key-user"
 GROUP_NAME="cdkd-iam-access-key-group"
 MOVED_PATH="/cdkd-moved/"
 SECRET_NAME="cdkd-iam-access-key-secret"
+LOGIN_SECRET_NAME="cdkd-iam-access-key-login-password"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -95,6 +96,7 @@ list_keys() {
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${DRIFT_OUT:-}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -117,9 +119,12 @@ cleanup() {
     --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null); do
     aws iam delete-access-key --user-name "${USER_NAME}" --access-key-id "${kid}" >/dev/null 2>&1
   done
+  aws iam delete-login-profile --user-name "${USER_NAME}" >/dev/null 2>&1
   aws iam delete-user --user-name "${USER_NAME}" >/dev/null 2>&1
   aws iam delete-group --group-name "${GROUP_NAME}" >/dev/null 2>&1
   aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" \
+    --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
+  aws secretsmanager delete-secret --secret-id "${LOGIN_SECRET_NAME}" \
     --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1
   set -eu
 }
@@ -186,6 +191,69 @@ if grep -q 'Fn::GetAtt\|Token' <<<"${SECRET_VALUE_1}"; then
   exit 1
 fi
 echo "    OK: secret holds a resolved 40-char SecretAccessKey"
+
+# --- Phase 1b: the login profile's PasswordResetRequired is drift (#6755) ---
+# Before go-to-k/cdkd#6755 the user readback never read the login profile, so
+# a PasswordResetRequired flipped out of band read as no drift. Flipped on, the
+# user must be drifted at LoginProfile.PasswordResetRequired; flipped back by
+# hand, clean again. The generated password must appear in no drift output and
+# nowhere in state: it is held in a variable and never printed.
+echo "==> Phase 1b: flip the login profile's PasswordResetRequired out of band, then drift"
+LOGIN_PW=$(aws secretsmanager get-secret-value --secret-id "${LOGIN_SECRET_NAME}" \
+  --region "${REGION}" --query 'SecretString' --output text)
+[ "${#LOGIN_PW}" -eq 32 ] || { echo "FAIL: the generated login password is ${#LOGIN_PW} characters, expected 32" >&2; exit 1; }
+if grep -qF -- "${LOGIN_PW}" <<<"${STATE}"; then
+  echo "FAIL: the login password is in state.json in plaintext" >&2
+  exit 1
+fi
+USER_ID=$(printf '%s' "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::User") | .key] | first // ""')
+[ -n "${USER_ID}" ] || { echo "FAIL: no AWS::IAM::User in state" >&2; exit 1; }
+DRIFT_OUT=$(mktemp)
+user_drift() { # usage: user_drift; fills ${DRIFT_OUT}, prints the user's report bucket
+  local rc=0
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_OUT}" || rc=$?
+  case "${rc}" in 0 | 1 | 2) ;; *) echo "FAIL: cdkd drift exited ${rc}" >&2; exit 1 ;; esac
+  if grep -qF -- "${LOGIN_PW}" "${DRIFT_OUT}"; then
+    echo "FAIL: cdkd drift printed the login password" >&2
+    exit 1
+  fi
+  jq -r --arg id "${USER_ID}" '[.[0] | to_entries[] | select((.value | type) == "array") | .key as $b | .value[]? | objects | select(.logicalId == $id) | $b] | join(",")' "${DRIFT_OUT}"
+}
+# IAM reads lag its writes: wait until GetLoginProfile shows the flag.
+wait_reset_required() { # usage: wait_reset_required <true|false>
+  local got="" _i
+  for _i in $(seq 1 12); do
+    got=$(aws iam get-login-profile --user-name "${USER_NAME}" --query 'LoginProfile.PasswordResetRequired' --output text) || return 1
+    # `--output text` renders a boolean as True / False.
+    [ "$(tr '[:upper:]' '[:lower:]' <<<"${got}")" = "$1" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: PasswordResetRequired is '${got}' 60s after setting it to $1" >&2
+  exit 1
+}
+BUCKET=$(user_drift)
+[ "${BUCKET}" = "clean" ] || { echo "FAIL: ${USER_ID} is '${BUCKET}' right after the deploy, expected clean" >&2; jq '.[0].drifted' "${DRIFT_OUT}" >&2; exit 1; }
+if [ "$(printf '%s' "${STATE}" | jq -c --arg id "${USER_ID}" '.resources[$id].observedProperties.LoginProfile // null')" != '{"PasswordResetRequired":false}' ]; then
+  echo "FAIL: the deploy-time baseline does not read the login profile back as {PasswordResetRequired: false}" >&2
+  exit 1
+fi
+aws iam update-login-profile --user-name "${USER_NAME}" --password-reset-required
+wait_reset_required true || { echo "FAIL: get-login-profile ${USER_NAME} failed while waiting for PasswordResetRequired=true" >&2; exit 1; }
+BUCKET=$(user_drift)
+if [ "${BUCKET}" != "drifted" ] ||
+  ! jq -e --arg id "${USER_ID}" '[.[0].drifted[]? | select(.logicalId == $id) | .changes[]?.path] | index("LoginProfile.PasswordResetRequired") != null' "${DRIFT_OUT}" >/dev/null; then
+  echo "FAIL: ${USER_ID} with PasswordResetRequired flipped out of band is '${BUCKET}', expected drifted at LoginProfile.PasswordResetRequired:" >&2
+  jq --arg id "${USER_ID}" '.[0].drifted[]? | select(.logicalId == $id)' "${DRIFT_OUT}" >&2
+  exit 1
+fi
+echo "    OK: the flipped PasswordResetRequired is drift at LoginProfile.PasswordResetRequired"
+aws iam update-login-profile --user-name "${USER_NAME}" --no-password-reset-required
+wait_reset_required false || { echo "FAIL: get-login-profile ${USER_NAME} failed while waiting for PasswordResetRequired=false" >&2; exit 1; }
+BUCKET=$(user_drift)
+[ "${BUCKET}" = "clean" ] || { echo "FAIL: ${USER_ID} is '${BUCKET}' once PasswordResetRequired is flipped back, expected clean" >&2; exit 1; }
+unset LOGIN_PW
+rm -f "${DRIFT_OUT}"
+echo "    OK: flipped back by hand, the user compares clean again; the password reached no output"
 
 # --- Phase 2: update (Status flip — the only in-place-mutable property) ----
 echo "==> Phase 2: update (Status Active -> Inactive)"

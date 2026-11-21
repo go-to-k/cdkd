@@ -521,7 +521,7 @@ describe('preFixBaselineUncomparedDriftKeys third rule (#6609)', () => {
     ).toEqual(['PolicyDocument']);
   });
 
-  it('20: Lambda::Permission observed OLD principal, live declared -> the six keys', () => {
+  it('20: Lambda::Permission observed OLD principal, live declared -> the eight keys', () => {
     expect(
       preFixBaselineUncomparedDriftKeys(
         'AWS::Lambda::Permission',
@@ -535,6 +535,8 @@ describe('preFixBaselineUncomparedDriftKeys third rule (#6609)', () => {
       'SourceArn',
       'SourceAccount',
       'PrincipalOrgID',
+      'EventSourceToken',
+      'FunctionUrlAuthType',
       'InvokedViaFunctionUrl',
     ]);
   });

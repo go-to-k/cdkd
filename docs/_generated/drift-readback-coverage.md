@@ -14,9 +14,9 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 - SDK provider types: **146** (without a readback, reported as `drift unknown`: **5**)
 - Handled properties classified: **1526**
-- Named on the readback path: **1354**
-- Declared unreadable by `getDriftUnknownPaths`: **128**
-- In the committed baseline (does NOT block CI): **44**
+- Named on the readback path: **1372**
+- Declared unreadable by `getDriftUnknownPaths`: **129**
+- In the committed baseline (does NOT block CI): **25**
 - Classified though the schema capture does not list them: **12**
 - **Gaps (blocks CI): 0**
 
@@ -31,30 +31,11 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::CloudFormation::WaitCondition` | `Handle` | baseline |  | cdkd-side input to the S3 signal poll: no AWS resource holds it |
 | `AWS::CloudFormation::WaitCondition` | `Timeout` | baseline |  | cdkd-side input to the S3 signal poll: no AWS resource holds it |
 | `AWS::DocDB::DBCluster` | `MasterUserPassword` | baseline |  | a password: DescribeDBClusters never returns it |
-| `AWS::EC2::Instance` | `SecurityGroups` | baseline | #6754 | not read back |
-| `AWS::EC2::Instance` | `UserData` | baseline | #6754 | not read back |
-| `AWS::EC2::InternetGateway` | `Tags` | baseline | #6754 | the Describe response carries the tags; the readback drops them |
-| `AWS::EC2::NatGateway` | `SecondaryAllocationIds` | baseline | #6754 | the readback takes only NatGatewayAddresses[0] |
-| `AWS::EC2::NatGateway` | `SecondaryPrivateIpAddressCount` | baseline | #6754 | the readback takes only NatGatewayAddresses[0] |
-| `AWS::EC2::NatGateway` | `SecondaryPrivateIpAddresses` | baseline | #6754 | the readback takes only NatGatewayAddresses[0] |
-| `AWS::EC2::NatGateway` | `Tags` | baseline | #6754 | the Describe response carries the tags; the readback drops them |
-| `AWS::EC2::NetworkAcl` | `Tags` | baseline | #6754 | the Describe response carries the tags; the readback drops them |
-| `AWS::EC2::RouteTable` | `Tags` | baseline | #6754 | the Describe response carries the tags; the readback drops them |
-| `AWS::EC2::Subnet` | `Tags` | baseline | #6754 | the Describe response carries the tags; the readback drops them |
-| `AWS::EC2::VPC` | `Tags` | baseline | #6754 | the Describe response carries the tags; the readback drops them |
 | `AWS::EFS::FileSystem` | `BypassPolicyLockoutSafetyCheck` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
-| `AWS::ElastiCache::CacheCluster` | `AZMode` | baseline | #6757 | not read back |
-| `AWS::ElastiCache::CacheCluster` | `LogDeliveryConfigurations` | baseline | #6757 | not read back |
-| `AWS::ElastiCache::CacheCluster` | `PreferredAvailabilityZones` | baseline | #6757 | not read back |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | `SubnetMappings` | baseline | #6756 | only Subnets is read back; the per-subnet addresses are not |
 | `AWS::Events::EventBus` | `EventSourceName` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
 | `AWS::Glue::Trigger` | `StartOnCreation` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
-| `AWS::IAM::User` | `LoginProfile` | baseline | #6755 | PasswordResetRequired is readable; Password is write-only |
-| `AWS::IAM::User` | `Tags` | baseline | #6755 | not read back |
 | `AWS::IAM::UserToGroupAddition` | `GroupName` | baseline |  | readCurrentState returns undefined for the type: drift reports it as drift unknown |
 | `AWS::IAM::UserToGroupAddition` | `Users` | baseline |  | readCurrentState returns undefined for the type: drift reports it as drift unknown |
-| `AWS::Lambda::Permission` | `EventSourceToken` | baseline | #6758 | a condition of the policy statement the readback parses, not returned |
-| `AWS::Lambda::Permission` | `FunctionUrlAuthType` | baseline | #6758 | a condition of the policy statement the readback parses, not returned |
 | `AWS::Lambda::Url` | `Qualifier` | baseline |  | create-only and part of the physical id: it cannot change out of band |
 | `AWS::RDS::DBCluster` | `ManageMasterUserPassword` | baseline |  | no Describe field; its effect is MasterUserSecret, which is read back |
 | `AWS::RDS::DBCluster` | `MasterUserPassword` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
@@ -124,19 +105,19 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::DynamoDB::GlobalTable` | `DynamoDBGlobalTableProvider` | AttributeDefinitions, BillingMode, DeletionProtectionEnabled, GlobalSecondaryIndexes, KeySchema, LocalSecondaryIndexes, ReadOnDemandThroughputSettings, ReadProvisionedThroughputSettings, Replicas, SSESpecification, StreamSpecification, TableClass, TableName, TimeToLiveSpecification, VectorIndexes, WarmThroughput, WriteOnDemandThroughputSettings, WriteProvisionedThroughputSettings | TableType |
 | `AWS::DynamoDB::Table` | `DynamoDBTableProvider` | AttributeDefinitions, BillingMode, ContributorInsightsSpecification, DeletionProtectionEnabled, GlobalSecondaryIndexes, KeySchema, KinesisStreamSpecification, LocalSecondaryIndexes, OnDemandThroughput, PointInTimeRecoverySpecification, ProvisionedThroughput, ResourcePolicy, SSESpecification, StreamSpecification, TableClass, TableName, Tags, TimeToLiveSpecification, VectorIndexes, WarmThroughput |  |
 | `AWS::EC2::EIP` | `EC2Provider` | Domain, InstanceId, NetworkBorderGroup, PublicIpv4Pool, Tags |  |
-| `AWS::EC2::Instance` | `EC2Provider` | Affinity, AvailabilityZone, BlockDeviceMappings, CpuOptions, CreditSpecification, DisableApiTermination, EbsOptimized, EnclaveOptions, HibernationOptions, HostId, HostResourceGroupArn, IamInstanceProfile, ImageId, InstanceInitiatedShutdownBehavior, InstanceType, KernelId, KeyName, MetadataOptions, Monitoring, PlacementGroupName, PrivateDnsNameOptions, PrivateIpAddress, RamdiskId, SecurityGroupIds, SourceDestCheck, SsmAssociations, SubnetId, Tags, Tenancy, Volumes | AdditionalInfo, Ipv6AddressCount, Ipv6Addresses, LaunchTemplate, LicenseSpecifications, NetworkInterfaces, PropagateTagsToVolumeOnCreation |
-| `AWS::EC2::InternetGateway` | `EC2Provider` |  |  |
-| `AWS::EC2::NatGateway` | `EC2Provider` | AllocationId, AvailabilityMode, AvailabilityZoneAddresses, ConnectivityType, PrivateIpAddress, SubnetId, VpcId |  |
-| `AWS::EC2::NetworkAcl` | `EC2Provider` | VpcId |  |
+| `AWS::EC2::Instance` | `EC2Provider` | Affinity, AvailabilityZone, BlockDeviceMappings, CpuOptions, CreditSpecification, DisableApiTermination, EbsOptimized, EnclaveOptions, HibernationOptions, HostId, HostResourceGroupArn, IamInstanceProfile, ImageId, InstanceInitiatedShutdownBehavior, InstanceType, KernelId, KeyName, MetadataOptions, Monitoring, PlacementGroupName, PrivateDnsNameOptions, PrivateIpAddress, RamdiskId, SecurityGroupIds, SecurityGroups, SourceDestCheck, SsmAssociations, SubnetId, Tags, Tenancy, UserData, Volumes | AdditionalInfo, Ipv6AddressCount, Ipv6Addresses, LaunchTemplate, LicenseSpecifications, NetworkInterfaces, PropagateTagsToVolumeOnCreation |
+| `AWS::EC2::InternetGateway` | `EC2Provider` | Tags |  |
+| `AWS::EC2::NatGateway` | `EC2Provider` | AllocationId, AvailabilityMode, AvailabilityZoneAddresses, ConnectivityType, PrivateIpAddress, SecondaryAllocationIds, SecondaryPrivateIpAddressCount, SecondaryPrivateIpAddresses, SubnetId, Tags, VpcId |  |
+| `AWS::EC2::NetworkAcl` | `EC2Provider` | Tags, VpcId |  |
 | `AWS::EC2::NetworkAclEntry` | `EC2Provider` | CidrBlock, Egress, Icmp, Ipv6CidrBlock, NetworkAclId, PortRange, Protocol, RuleAction, RuleNumber |  |
 | `AWS::EC2::Route` | `EC2Provider` | CarrierGatewayId, CoreNetworkArn, DestinationCidrBlock, DestinationIpv6CidrBlock, DestinationPrefixListId, EgressOnlyInternetGatewayId, GatewayId, InstanceId, LocalGatewayId, NatGatewayId, NetworkInterfaceId, OdbNetworkArn, RouteTableId, TransitGatewayId, VpcEndpointId, VpcPeeringConnectionId |  |
-| `AWS::EC2::RouteTable` | `EC2Provider` | VpcId |  |
+| `AWS::EC2::RouteTable` | `EC2Provider` | Tags, VpcId |  |
 | `AWS::EC2::SecurityGroup` | `EC2Provider` | GroupDescription, GroupName, SecurityGroupEgress, SecurityGroupIngress, Tags, VpcId |  |
 | `AWS::EC2::SecurityGroupIngress` | `EC2Provider` | CidrIp, CidrIpv6, Description, FromPort, GroupId, IpProtocol, SourcePrefixListId, SourceSecurityGroupId, SourceSecurityGroupOwnerId, ToPort |  |
-| `AWS::EC2::Subnet` | `EC2Provider` | AssignIpv6AddressOnCreation, AvailabilityZone, AvailabilityZoneId, CidrBlock, EnableDns64, Ipv4NetmaskLength, Ipv6CidrBlock, Ipv6Native, Ipv6NetmaskLength, MapPublicIpOnLaunch, PrivateDnsNameOptionsOnLaunch, VpcId | Ipv4IpamPoolId, Ipv6IpamPoolId |
+| `AWS::EC2::Subnet` | `EC2Provider` | AssignIpv6AddressOnCreation, AvailabilityZone, AvailabilityZoneId, CidrBlock, EnableDns64, Ipv4NetmaskLength, Ipv6CidrBlock, Ipv6Native, Ipv6NetmaskLength, MapPublicIpOnLaunch, PrivateDnsNameOptionsOnLaunch, Tags, VpcId | Ipv4IpamPoolId, Ipv6IpamPoolId |
 | `AWS::EC2::SubnetNetworkAclAssociation` | `EC2Provider` | NetworkAclId, SubnetId |  |
 | `AWS::EC2::SubnetRouteTableAssociation` | `EC2Provider` | RouteTableId, SubnetId |  |
-| `AWS::EC2::VPC` | `EC2Provider` | CidrBlock, EnableDnsHostnames, EnableDnsSupport, InstanceTenancy, Ipv4NetmaskLength, VpcEncryptionControl | Ipv4IpamPoolId |
+| `AWS::EC2::VPC` | `EC2Provider` | CidrBlock, EnableDnsHostnames, EnableDnsSupport, InstanceTenancy, Ipv4NetmaskLength, Tags, VpcEncryptionControl | Ipv4IpamPoolId |
 | `AWS::EC2::VPCGatewayAttachment` | `EC2Provider` | InternetGatewayId, VpcId, VpnGatewayId |  |
 | `AWS::ECR::Repository` | `ECRProvider` | EncryptionConfiguration, ImageScanningConfiguration, ImageTagMutability, ImageTagMutabilityExclusionFilters, LifecyclePolicy, RepositoryName, RepositoryPolicyText, Tags | EmptyOnDelete |
 | `AWS::ECS::Cluster` | `ECSProvider` | CapacityProviders, ClusterName, ClusterSettings, Configuration, DefaultCapacityProviderStrategy, ServiceConnectDefaults, Tags |  |
@@ -145,10 +126,10 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::EFS::AccessPoint` | `EFSProvider` | AccessPointTags, FileSystemId, PosixUser, RootDirectory |  |
 | `AWS::EFS::FileSystem` | `EFSProvider` | AvailabilityZoneName, BackupPolicy, Encrypted, FileSystemPolicy, FileSystemProtection, FileSystemTags, KmsKeyId, LifecyclePolicies, PerformanceMode, ProvisionedThroughputInMibps, ThroughputMode |  |
 | `AWS::EFS::MountTarget` | `EFSProvider` | FileSystemId, IpAddress, IpAddressType, Ipv6Address, SecurityGroups, SubnetId |  |
-| `AWS::ElastiCache::CacheCluster` | `ElastiCacheProvider` | AutoMinorVersionUpgrade, CacheNodeType, CacheParameterGroupName, CacheSubnetGroupName, ClusterName, Engine, EngineVersion, IpDiscovery, NetworkType, NotificationTopicArn, NumCacheNodes, Port, PreferredAvailabilityZone, PreferredMaintenanceWindow, SnapshotRetentionLimit, SnapshotWindow, Tags, TransitEncryptionEnabled, VpcSecurityGroupIds | SnapshotArns, SnapshotName |
+| `AWS::ElastiCache::CacheCluster` | `ElastiCacheProvider` | AutoMinorVersionUpgrade, CacheNodeType, CacheParameterGroupName, CacheSubnetGroupName, ClusterName, Engine, EngineVersion, IpDiscovery, LogDeliveryConfigurations, NetworkType, NotificationTopicArn, NumCacheNodes, Port, PreferredAvailabilityZone, PreferredAvailabilityZones, PreferredMaintenanceWindow, SnapshotRetentionLimit, SnapshotWindow, Tags, TransitEncryptionEnabled, VpcSecurityGroupIds | AZMode, SnapshotArns, SnapshotName |
 | `AWS::ElastiCache::SubnetGroup` | `ElastiCacheProvider` | CacheSubnetGroupDescription, CacheSubnetGroupName, Description, SubnetIds, Tags |  |
 | `AWS::ElasticLoadBalancingV2::Listener` | `ELBv2Provider` | AlpnPolicy, Certificates, DefaultActions, ListenerAttributes, LoadBalancerArn, MutualAuthentication, Port, Protocol, SslPolicy, Tags |  |
-| `AWS::ElasticLoadBalancingV2::LoadBalancer` | `ELBv2Provider` | EnablePrefixForIpv6SourceNat, EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic, IpAddressType, Ipv4IpamPoolId, LoadBalancerAttributes, MinimumLoadBalancerCapacity, Name, Scheme, SecurityGroups, Subnets, Tags, Type | EnableCapacityReservationProvisionStabilize |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | `ELBv2Provider` | EnablePrefixForIpv6SourceNat, EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic, IpAddressType, Ipv4IpamPoolId, LoadBalancerAttributes, MinimumLoadBalancerCapacity, Name, Scheme, SecurityGroups, SubnetMappings, Subnets, Tags, Type | EnableCapacityReservationProvisionStabilize |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `ELBv2Provider` | HealthCheckEnabled, HealthCheckIntervalSeconds, HealthCheckPath, HealthCheckPort, HealthCheckProtocol, HealthCheckTimeoutSeconds, HealthyThresholdCount, IpAddressType, Matcher, Name, Port, Protocol, ProtocolVersion, Tags, TargetControlPort, TargetGroupAttributes, Targets, TargetType, UnhealthyThresholdCount, VpcId |  |
 | `AWS::EMR::Cluster` | `EMRClusterProvider` | Applications, AutoScalingRole, CustomAmiId, EbsRootVolumeIops, EbsRootVolumeSize, EbsRootVolumeThroughput, Instances, JobFlowRole, LogEncryptionKmsKeyId, LogUri, MonitoringConfiguration, Name, OSReleaseLabel, ReleaseLabel, ScaleDownBehavior, SecurityConfiguration, ServiceRole, SessionEnabled, StepConcurrencyLevel, Tags, VisibleToAllUsers | AdditionalInfo, AutoTerminationPolicy, BootstrapActions, Configurations, KerberosAttributes, ManagedScalingPolicy, PlacementGroupConfigs, Steps |
 | `AWS::Events::Archive` | `EventBridgeArchiveProvider` | ArchiveName, Description, EventPattern, KmsKeyIdentifier, RetentionDays, SourceArn |  |
@@ -169,7 +150,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::IAM::ManagedPolicy` | `IAMManagedPolicyProvider` | Description, Groups, ManagedPolicyName, Path, PolicyDocument, Roles, Tags, Users |  |
 | `AWS::IAM::Policy` | `IAMPolicyProvider` | Groups, PolicyDocument, PolicyName, Roles, Users |  |
 | `AWS::IAM::Role` | `IAMRoleProvider` | AssumeRolePolicyDocument, Description, ManagedPolicyArns, MaxSessionDuration, Path, PermissionsBoundary, Policies, RoleName, Tags |  |
-| `AWS::IAM::User` | `IAMUserGroupProvider` | Groups, ManagedPolicyArns, Path, PermissionsBoundary, Policies, UserName |  |
+| `AWS::IAM::User` | `IAMUserGroupProvider` | Groups, LoginProfile, ManagedPolicyArns, Path, PermissionsBoundary, Policies, Tags, UserName |  |
 | `AWS::IAM::UserToGroupAddition` | `IAMUserGroupProvider` |  |  |
 | `AWS::Kinesis::Stream` | `KinesisStreamProvider` | DesiredShardLevelMetrics, MaxRecordSizeInKiB, Name, RecordDistributionStrategy, RetentionPeriodHours, ShardCount, StreamEncryption, StreamModeDetails, Tags |  |
 | `AWS::Kinesis::StreamConsumer` | `KinesisStreamConsumerProvider` | ConsumerName, StreamARN, Tags |  |
@@ -182,7 +163,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::Lambda::LayerVersion` | `LambdaLayerVersionProvider` | CompatibleArchitectures, CompatibleRuntimes, Description, LayerName, LicenseInfo | Content |
 | `AWS::Lambda::MicrovmImage` | `LambdaMicrovmImageProvider` | Name, Tags | AdditionalOsCapabilities, BaseImageArn, BaseImageVersion, BuildRoleArn, CodeArtifact, CpuConfigurations, Description, EgressNetworkConnectors, EnvironmentVariables, Hooks, Logging, Resources |
 | `AWS::Lambda::NetworkConnector` | `LambdaNetworkConnectorProvider` | Configuration, Name, OperatorRole, Tags |  |
-| `AWS::Lambda::Permission` | `LambdaPermissionProvider` | Action, FunctionName, InvokedViaFunctionUrl, Principal, PrincipalOrgID, SourceAccount, SourceArn |  |
+| `AWS::Lambda::Permission` | `LambdaPermissionProvider` | Action, EventSourceToken, FunctionName, FunctionUrlAuthType, InvokedViaFunctionUrl, Principal, PrincipalOrgID, SourceAccount, SourceArn |  |
 | `AWS::Lambda::Url` | `LambdaUrlProvider` | AuthType, Cors, InvokeMode, TargetFunctionArn |  |
 | `AWS::Lambda::WebFunctionEndpoint` | `LambdaWebFunctionEndpointProvider` | AuthType, Description, EndpointName, EndpointType, FunctionName, Regions, RevisionWeights, ScalingConfig, ThrottleConfig |  |
 | `AWS::Lambda::WebFunctionRevision` | `LambdaWebFunctionRevisionProvider` | BuildConfig, Description, FunctionName, KmsKeyArn, ServiceConfig |  |

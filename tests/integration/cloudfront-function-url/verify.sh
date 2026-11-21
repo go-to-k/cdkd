@@ -164,6 +164,27 @@ if [ "${INVOKED_VIA_URL}" != "true" ]; then
 fi
 echo "    OK: Condition.Bool.\"lambda:InvokedViaFunctionUrl\" == 'true' (InvokedViaFunctionUrl silent-drop CLOSED by #609)"
 
+# --- Assertion: the drift readback reads FunctionUrlAuthType back (#6758) -
+# The URL's own `lambda:InvokeFunctionUrl` permission declares
+# `FunctionUrlAuthType: NONE`. The deploy-time drift baseline is the readback
+# of the live statement, so it holds the value only when the readback parses
+# the condition AWS wrote for it. Before go-to-k/cdkd#6758 it never did, and a
+# statement re-added out of band with another auth type read as no drift.
+URL_AUTH_ROWS=$(echo "${STATE}" | jq -c '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::Lambda::Permission")
+  | select((.value.properties.FunctionUrlAuthType | type) == "string")
+  | {id: .key, declared: .value.properties.FunctionUrlAuthType,
+     read: (.value.observedProperties.FunctionUrlAuthType // null)}]')
+if [ "$(echo "${URL_AUTH_ROWS}" | jq 'length')" -lt 1 ]; then
+  echo "FAIL: no AWS::Lambda::Permission in state declares FunctionUrlAuthType, so this assertion proves nothing" >&2
+  exit 1
+fi
+if ! echo "${URL_AUTH_ROWS}" | jq -e 'all(.declared == .read)' >/dev/null; then
+  echo "FAIL: a permission's drift baseline does not read FunctionUrlAuthType back as declared (go-to-k/cdkd#6758): ${URL_AUTH_ROWS}" >&2
+  exit 1
+fi
+echo "    OK: the drift baseline reads FunctionUrlAuthType back as declared: ${URL_AUTH_ROWS}"
+
 # --- Assertion: baseline Function URL config carries InvokeMode + Cors -
 URL_CONFIG=$(aws lambda get-function-url-config \
   --function-name "${FUNCTION_NAME}" --region "${REGION}" --output json)
