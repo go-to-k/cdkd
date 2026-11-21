@@ -850,7 +850,7 @@ clean up -- only a file system whose `CreationTime` is no earlier than that
 token's first send in this process, on AWS's clock, and refuses any other
 ([#4428](https://github.com/go-to-k/cdkd/issues/4428)).
 
-## Preparing a delete the way CloudFormation's handler does
+## Preparing a delete the way the CloudFormation handler does
 
 CloudFormation's delete handler for some types removes what blocks the delete
 first: an IAM role's policies, a secret's replica regions, an Auto Scaling

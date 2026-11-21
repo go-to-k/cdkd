@@ -49,7 +49,7 @@ type Handler = (cmd: unknown) => unknown;
 /** Drive the EC2 client: per command class, a queue of answers (last repeats). */
 function drive(answers: {
   release: Array<'ok' | Error>;
-  describe?: { AssociationId?: string; InstanceId?: string };
+  describe?: { AssociationId?: string; InstanceId?: string } | Error;
   disassociate?: 'ok' | Error;
 }): string[] {
   const sent: string[] = [];
@@ -64,6 +64,7 @@ function drive(answers: {
     if (cmd instanceof DescribeAddressesCommand) {
       sent.push('DescribeAddresses');
       expect(cmd.input.AllocationIds).toEqual([ALLOC]);
+      if (answers.describe instanceof Error) throw answers.describe;
       return { Addresses: [{ AllocationId: ALLOC, ...answers.describe }] };
     }
     if (cmd instanceof DisassociateAddressCommand) {
@@ -159,5 +160,79 @@ describe('AWS::EC2::EIP delete of an associated address (go-to-k/cdkd#6715)', ()
     });
     await provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX);
     expect(sent.at(-1)).toBe('ReleaseAddress');
+  });
+
+  it('retries the release when the association left after the refusal', async () => {
+    const sent = drive({ release: [inUse(), 'ok'], describe: {} });
+    await provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX);
+    expect(sent).toEqual(['ReleaseAddress', 'DescribeAddresses', 'ReleaseAddress']);
+  });
+
+  it('reads nothing and disassociates nothing on a first refusal that is not InUse', async () => {
+    const sent = drive({
+      release: [awsError('UnauthorizedOperation')],
+      describe: { AssociationId: 'eipassoc-1', InstanceId: INSTANCE },
+    });
+    await expect(
+      provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+    ).rejects.toThrow(/UnauthorizedOperation/);
+    expect(sent).toEqual(['ReleaseAddress']);
+  });
+
+  it('surfaces the InUse refusal when the address cannot be read', async () => {
+    const sent = drive({ release: [inUse()], describe: awsError('UnauthorizedOperation') });
+    const error = await provider()
+      .delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(String((error as Error).message)).toMatch(/InvalidIPAddress\.InUse/);
+    expect(isDeleteStarted(error)).toBe(false);
+    expect(sent).toEqual(['ReleaseAddress', 'DescribeAddresses']);
+  });
+
+  it('propagates a refused disassociation without releasing again', async () => {
+    const sent = drive({
+      release: [inUse(), 'ok'],
+      describe: { AssociationId: 'eipassoc-1', InstanceId: INSTANCE },
+      disassociate: awsError('UnauthorizedOperation'),
+    });
+    const error = await provider()
+      .delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(String((error as Error).message)).toMatch(/UnauthorizedOperation/);
+    expect(isDeleteStarted(error)).toBe(false);
+    expect(sent.filter((c) => c === 'ReleaseAddress')).toHaveLength(1);
+  });
+
+  it('gives up after a bounded number of InUse retries, marked started', async () => {
+    const sent = drive({
+      release: [inUse()],
+      describe: { AssociationId: 'eipassoc-1', InstanceId: INSTANCE },
+    });
+    const error = await provider()
+      .delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(isDeleteStarted(error)).toBe(true);
+    // The first release, then five after the disassociation.
+    expect(sent.filter((c) => c === 'ReleaseAddress')).toHaveLength(6);
+  });
+
+  it('stops retrying at once on a refusal that is not InUse', async () => {
+    const sent = drive({
+      release: [inUse(), inUse(), awsError('UnauthorizedOperation'), 'ok'],
+      describe: { AssociationId: 'eipassoc-1', InstanceId: INSTANCE },
+    });
+    await expect(
+      provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+    ).rejects.toThrow(/UnauthorizedOperation/);
+    expect(sent.filter((c) => c === 'ReleaseAddress')).toHaveLength(3);
   });
 });

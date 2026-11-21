@@ -38,7 +38,11 @@ export type DeleteBlockerDisposition =
       readonly kind: 'handled';
       /** The repo-relative file holding the preparation. */
       readonly site: string;
-      /** A literal in `site` naming the preparation (an SDK command, a helper). */
+      /**
+       * A literal in `site` naming the preparation (an SDK command, a
+       * helper). The check reads the whole file, so prefer one only the
+       * delete path spells; the test title is what pins the behavior.
+       */
       readonly call: string;
       readonly test: {
         /** The repo-relative unit test file. */
@@ -299,13 +303,13 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::DynamoDB::GlobalTable',
     source: perms(
-      'dynamodb:Describe*, dynamodb:DeleteTable, application-autoscaling:DeleteScalingPolicy, application-autoscaling:DeregisterScalableTarget'
+      'dynamodb:Describe*, dynamodb:DeleteTable, application-autoscaling:DeleteScalingPolicy, application-autoscaling:DeleteScheduledAction, application-autoscaling:DeregisterScalableTarget'
     ),
     blockers: [
       handled(
         'replicas in other regions',
         `${P}dynamodb-globaltable/delete.ts`,
-        'ReplicaUpdates',
+        'dropReplicaForDelete',
         `${T}dynamodb-globaltable-provider-roundtrip.test.ts`,
         'drops non-local replicas via UpdateTable Delete before DeleteTable'
       ),
@@ -314,7 +318,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
         `${P}dynamodb-globaltable/autoscaling.ts`,
         'DeregisterScalableTargetCommand',
         `${T}dynamodb-globaltable-provider-roundtrip.test.ts`,
-        'tears down autoscaling targets BEFORE DeleteTable'
+        'tears down autoscaling targets BEFORE DeleteTable (regression PR #403 blocker — orphan leak)'
       ),
     ],
   },
@@ -326,7 +330,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::RDS::DBCluster',
     source:
-      'https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-rds/blob/5a410e843efb90076c1c4d322707bc989e5a058b/aws-rds-dbcluster/src/main/java/software/amazon/rds/dbcluster/DeleteHandler.java#L47-L61 (RemoveFromGlobalCluster when GlobalClusterIdentifier is set; no member-instance delete)',
+      'https://github.com/aws-cloudformation/aws-cloudformation-resource-providers-rds/blob/5a410e843efb90076c1c4d322707bc989e5a058b/aws-rds-dbcluster/src/main/java/software/amazon/rds/dbcluster/DeleteHandler.java#L47-L61 (RemoveFromGlobalCluster when GlobalClusterIdentifier is set; no member-instance delete. The current registry schema also lists rds:DeleteDBInstance, which #6751 settles)',
     blockers: [
       handled(
         'global cluster membership',
@@ -469,10 +473,12 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
     source:
       'https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_ReleaseAddress.html (a non-default VPC address must be disassociated first; handler permissions include ec2:DisassociateAddress)',
     blockers: [
+      // The handler may disassociate ANY association; cdkd meets only its
+      // own, and AWS's refusal stands for one another resource made.
       handled(
         'the association its own InstanceId made',
         `${P}ec2/igw-eip.ts`,
-        'DisassociateAddressCommand',
+        'disassociateOwnAssociation',
         `${T}ec2-eip-delete-disassociate-6715.test.ts`,
         'disassociates its own instance association after an InUse refusal, then releases'
       ),

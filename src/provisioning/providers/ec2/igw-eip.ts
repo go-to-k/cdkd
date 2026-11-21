@@ -6,6 +6,7 @@ import {
   DescribeAddressesCommand,
   AssociateAddressCommand,
   DisassociateAddressCommand,
+  type Address,
   type AllocateAddressCommandInput,
   type AllocateAddressCommandOutput,
   type CreateInternetGatewayCommandOutput,
@@ -679,9 +680,10 @@ const EIP_RELEASE_AFTER_DISASSOCIATE_ATTEMPTS = 5;
 /**
  * Disassociate the address from the instance the EIP's recorded `InstanceId`
  * names, the association this EIP made itself. Returns false, sending
- * nothing, when the record names no instance or the address is associated
- * with anything else: that association belongs to another resource, and
- * AWS's refusal is the answer. A disassociation already gone counts as done.
+ * nothing, when the record names no instance, the address cannot be read, or
+ * it is associated with anything else: that association belongs to another
+ * resource, and AWS's refusal is the answer. An association already gone
+ * counts as done.
  */
 async function disassociateOwnAssociation(
   this: EC2Provider,
@@ -691,11 +693,24 @@ async function disassociateOwnAssociation(
 ): Promise<boolean> {
   const instanceId = properties?.['InstanceId'];
   if (typeof instanceId !== 'string' || instanceId === '' || !allocationId) return false;
-  const described = await this.ec2Client.send(
-    new DescribeAddressesCommand({ AllocationIds: [allocationId] })
-  );
-  const address = described.Addresses?.[0];
-  if (!address?.AssociationId || address.InstanceId !== instanceId) return false;
+  let address: Address | undefined;
+  try {
+    const described = await this.ec2Client.send(
+      new DescribeAddressesCommand({ AllocationIds: [allocationId] })
+    );
+    address = described.Addresses?.[0];
+  } catch (error) {
+    // Unreadable (a caller without ec2:DescribeAddresses): the release's own
+    // InUse refusal is the error worth surfacing, not this read's.
+    this.logger.debug(
+      safeMsg`Could not read EIP ${logicalId} (${allocationId}) to disassociate it: ${error instanceof Error ? error.name : 'unknown error'}`
+    );
+    return false;
+  }
+  if (!address) return false;
+  // No association left (it went since the refusal): the release can retry.
+  if (!address.AssociationId) return true;
+  if (address.InstanceId !== instanceId) return false;
   this.logger.debug(
     safeMsg`Disassociating EIP ${logicalId} (${allocationId}) from its instance before release`
   );

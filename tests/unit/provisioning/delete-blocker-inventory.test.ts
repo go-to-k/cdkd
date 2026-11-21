@@ -54,15 +54,31 @@ function blockerProblems(blocker: DeleteBlocker): string[] {
     else if (!site.includes(d.message)) problems.push(`${d.site} lacks the refusal "${d.message}"`);
     return problems;
   }
-  if (d.call.length < 8 || !site.includes(d.call)) problems.push(`${d.site} lacks "${d.call}"`);
+  if (d.call.length < 8 || !codeOnly(site).includes(d.call)) {
+    problems.push(`${d.site} lacks "${d.call}" outside comments and imports`);
+  }
   const test = readRepoFile(d.test.file);
   if (test === undefined) return [...problems, `${d.test.file} does not exist`];
   for (const needle of [d.test.title, d.test.caseLabel]) {
     if (needle === undefined) continue;
     if (needle.length < 15) problems.push(`"${needle}" is shorter than 15 characters`);
-    else if (!test.includes(needle)) problems.push(`${d.test.file} has no "${needle}"`);
+    else if (!['\'', '"', '`'].some((q) => test.includes(`${q}${needle}${q}`))) {
+      problems.push(`${d.test.file} has no string literal "${needle}"`);
+    }
   }
   return problems;
+}
+
+/**
+ * `source` without its comments and import statements: a call named only in
+ * a doc comment or an unused import is no preparation. Line comments are
+ * dropped only where they start a line, so a `//` inside a URL string stays.
+ */
+function codeOnly(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+    .replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?/gm, '');
 }
 
 const allBlockers = DELETE_BLOCKER_INVENTORY.flatMap((row) =>
