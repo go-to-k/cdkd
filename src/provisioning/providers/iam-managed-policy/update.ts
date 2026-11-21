@@ -14,6 +14,7 @@ import type { UpdateContext, ResourceUpdateResult } from '../../../types/resourc
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { unchangedBehindSecretReference } from '../../secret-reference-immutable.js';
 import {
+  diffPrincipalNames,
   holdsSecretDerivedEntry,
   onlySecretDerived,
   recordedPrincipalsRepair,
@@ -287,9 +288,11 @@ export async function update(
     // the ADD-only diff leaves something the user may need to detach.
     const unmatched: string[] = [];
     for (const kind of liveKinds) {
-      const desired = newPrincipals.lists[kind] ?? [];
-      oldLists[kind] = live[kind].filter((name) => desired.includes(name));
-      if (live[kind].some((name) => !desired.includes(name))) unmatched.push(kind);
+      // IAM names ignore case (go-to-k/cdkd#6774): a live `my-role` is the
+      // `My-Role` the template names.
+      const desired = new Set((newPrincipals.lists[kind] ?? []).map((n) => n.toLowerCase()));
+      oldLists[kind] = live[kind].filter((name) => desired.has(name.toLowerCase()));
+      if (live[kind].some((name) => !desired.has(name.toLowerCase()))) unmatched.push(kind);
     }
     if (unmatched.length > 0) {
       log.warn(
@@ -486,17 +489,17 @@ function recordedNonRootPath(arn: string): string | undefined {
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
 /**
- * Whether this update attaches or detaches anything: the desired and the
- * (live-corrected) recorded lists differ as sets for some kind. The same
- * comparison `updatePrincipals` acts on, so `false` means it made no call.
+ * Whether this update attaches or detaches anything: some kind's desired and
+ * (live-corrected) recorded lists differ ignoring case. The same diff
+ * `updatePrincipals` acts on (`diffPrincipalNames`, go-to-k/cdkd#6774), so
+ * `false` means it made no call.
  */
 function principalListsDiffer(
   desired: Partial<Record<'Groups' | 'Roles' | 'Users', string[] | undefined>>,
   previous: Partial<Record<'Groups' | 'Roles' | 'Users', string[] | undefined>>
 ): boolean {
   return (['Groups', 'Roles', 'Users'] as const).some((kind) => {
-    const a = new Set(desired[kind] ?? []);
-    const b = new Set(previous[kind] ?? []);
-    return a.size !== b.size || [...a].some((name) => !b.has(name));
+    const { added, removed } = diffPrincipalNames(desired[kind], previous[kind]);
+    return added.length > 0 || removed.length > 0;
   });
 }
