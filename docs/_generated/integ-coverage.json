@@ -6464,6 +6464,7 @@
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
+        "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
         "iam-sibling-managed-policy-drift",
         "iam-user-group-fix-forward-orphan",
@@ -6490,6 +6491,10 @@
         ],
         "iam-recreate-reattach": [
           "l1",
+          "literal"
+        ],
+        "iam-role-prefixed-name-update": [
+          "l2",
           "literal"
         ],
         "iam-secret-derived-principals": [
