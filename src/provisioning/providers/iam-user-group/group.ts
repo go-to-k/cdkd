@@ -34,6 +34,7 @@ import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './sh
 import { definedAttributes } from '../../attribute-map.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
+import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 
 /**
  * go-to-k/cdkd#6609: each removal an update makes is noted once its call
@@ -227,7 +228,8 @@ export async function updateGroup(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
   log: MaskedLogSinks,
-  claimed: InlinePolicyClaimed | undefined
+  claimed: InlinePolicyClaimed | undefined,
+  recordedAttributes?: Record<string, unknown>
 ): Promise<ResourceUpdateResult> {
   const { value: v } = log;
   log.debug(`Updating IAM group ${logicalId}: ${v(physicalId)}`);
@@ -235,9 +237,23 @@ export async function updateGroup(
   clearOwnWriteRemovals(GROUP_TYPE, physicalId);
 
   try {
+    // go-to-k/cdkd#6722: every write below is by name, so a recorded GroupId
+    // is compared first, on the read this update makes for its attributes
+    // (moved before the writes).
+    const ownRead = await verifyOwnIdentityBeforeUpdate({
+      label: 'IAM group',
+      resourceType,
+      permission: 'iam:GetGroup',
+      logicalId,
+      physicalId,
+      recordedAttributes,
+      read: () => this.iamClient.send(new GetGroupCommand({ GroupName: physicalId, MaxItems: 1 })),
+      idOf: (response) => response.Group?.GroupId,
+    });
     // `Path` in place, as for a user (#3723).
     const newPath = iamPathOf(properties['Path']);
-    if (newPath !== iamPathOf(previousProperties['Path'])) {
+    const pathMoved = newPath !== iamPathOf(previousProperties['Path']);
+    if (pathMoved) {
       await this.iamClient.send(
         new UpdateGroupCommand({ GroupName: physicalId, NewPath: newPath })
       );
@@ -263,10 +279,10 @@ export async function updateGroup(
       claimed
     );
 
-    // Get updated group info
-    const getGroupResponse = await this.iamClient.send(
-      new GetGroupCommand({ GroupName: physicalId })
-    );
+    // Get updated group info: a moved Path changes the Arn, so it is read again.
+    const getGroupResponse =
+      (pathMoved ? undefined : ownRead) ??
+      (await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId })));
 
     log.debug(`Successfully updated IAM group ${logicalId}`);
 
@@ -283,6 +299,8 @@ export async function updateGroup(
       },
     };
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       log.mask,

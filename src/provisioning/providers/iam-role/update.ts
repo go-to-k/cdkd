@@ -1,4 +1,5 @@
-import { RecordedIdentityMismatchError } from '../../recorded-identity.js';
+import { RecordedIdentityError, RecordedIdentityMismatchError } from '../../recorded-identity.js';
+import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 import type { IAMRoleProvider } from '../iam-role-provider.js';
 import {
   UpdateRoleCommand,
@@ -320,6 +321,21 @@ export async function update(
   }
 
   try {
+    // go-to-k/cdkd#6722: every write below is by name, so a recorded RoleId
+    // is compared first, on the read this update makes for its attributes
+    // (moved before the writes, not added): a same-named role re-created out
+    // of band refuses with nothing sent. `undefined`: nothing read here.
+    const ownRead = await verifyOwnIdentityBeforeUpdate({
+      label: 'IAM role',
+      resourceType,
+      permission: 'iam:GetRole',
+      logicalId,
+      physicalId,
+      recordedAttributes: context?.recordedAttributes,
+      read: () => this.iamClient.send(new GetRoleCommand({ RoleName: physicalId })),
+      idOf: (response) => response.Role?.RoleId,
+    });
+
     // Update role properties (Description, MaxSessionDuration)
     const updateParams: {
       RoleName: string;
@@ -423,8 +439,9 @@ export async function update(
 
     log.debug(`Successfully updated IAM role ${logicalId}`);
 
-    // Get updated role info
-    const getRoleResponse = await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId }));
+    // Get updated role info: no write above changes its Arn or RoleId.
+    const getRoleResponse =
+      ownRead ?? (await this.iamClient.send(new GetRoleCommand({ RoleName: physicalId })));
 
     const attributes = {
       Arn: getRoleResponse.Role?.Arn,
@@ -437,6 +454,8 @@ export async function update(
       attributes,
     };
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     // Redacted or masked RAW, and stamped, as in `create()` (`wrapMaskedError`).
     throw this.wrapMaskedError(
