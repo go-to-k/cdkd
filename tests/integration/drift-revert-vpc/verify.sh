@@ -255,38 +255,34 @@ echo "[verify] step 5b ok: rule ${OLD_INGRESS_ID} kept its id, its description i
 # this step reports it as LoadBalancerAttributes drift, since one read cannot
 # tell it from an out-of-band value. Re-run the fixture. The opposite direction
 # (captured, then absent) is not drift (#4144).
-# Exit 2, not 0 (go-to-k/cdkd#6696): the stack's LaunchTemplate is drift
-# unknown (Cloud Control's read is deny-listed for the type), which makes the
-# comparison incomplete. Drift would be 1, so 2 still says the revert held.
-echo "[verify] step 6: cdkd drift again (expect exit 2: nothing drifted, the LaunchTemplate is drift unknown)"
+# Exit 0 with nothing drift unknown (go-to-k/cdkd#6696 makes a drift-unknown
+# row exit 2). The LaunchTemplate is Cloud Control-routed, and Cloud Control's
+# own read compares it: the drift deny-list only stops the fallback for an SDK
+# provider that has no read-back, so it never applies here.
+echo "[verify] step 6: cdkd drift again (expect exit 0, every resource compared)"
 STEP6_OUT="$(mktemp)"
 set +e
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" >"${STEP6_OUT}" 2>&1
 rc=$?
 set -e
 cat "${STEP6_OUT}"
-if [ "${rc}" -ne 2 ]; then
+if [ "${rc}" -ne 0 ]; then
   rm -f "${STEP6_OUT}"
-  echo "[verify] FAIL: step 6: expected drift exit 2, got ${rc}"
+  echo "[verify] FAIL: step 6: expected drift exit 0, got ${rc}"
   exit 1
 fi
-if ! grep -qE '^ +\? DriftAsgLt[0-9A-F]* \(AWS::EC2::LaunchTemplate\)' "${STEP6_OUT}"; then
+if ! grep -qE 'no drift detected \([0-9]+ resources checked, 0 unsupported\)' "${STEP6_OUT}"; then
   rm -f "${STEP6_OUT}"
-  echo "[verify] FAIL: step 6: exit 2 without the LaunchTemplate's drift-unknown row; something else left the comparison incomplete"
+  echo "[verify] FAIL: step 6: exit 0 without the fully-compared summary line"
   exit 1
 fi
-if [ "$(grep -cE '^ +\? ' "${STEP6_OUT}" || true)" != 1 ]; then
+if [ "$(grep -cE '^ +\? ' "${STEP6_OUT}" || true)" != 0 ]; then
   rm -f "${STEP6_OUT}"
-  echo "[verify] FAIL: step 6: a drift-unknown row other than the LaunchTemplate's (a reader regressing to no read-back?)"
-  exit 1
-fi
-if grep -qE 'NOT fully compared|only PARTIALLY compared' "${STEP6_OUT}"; then
-  rm -f "${STEP6_OUT}"
-  echo "[verify] FAIL: step 6: a resource was reported not compared (a failed or refused read), not only drift unknown"
+  echo "[verify] FAIL: step 6: a drift-unknown row appeared (a reader regressing to no read-back?)"
   exit 1
 fi
 rm -f "${STEP6_OUT}"
-echo "[verify] step 6 ok: exit 2, the LaunchTemplate is the only drift-unknown row, and no resource is reported not compared"
+echo "[verify] step 6 ok: exit 0, every resource compared, nothing drift unknown"
 
 # go-to-k/cdkd#3948: `cdkd import`'s raw-template fallback can record an
 # unresolved intrinsic in a list. A malformed RECORDED TargetGroupARNs must be
