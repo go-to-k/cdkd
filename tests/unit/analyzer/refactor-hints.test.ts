@@ -416,6 +416,72 @@ describe('hintSidesOf', () => {
     });
   });
 
+  it('gives no hint across stacks to a CREATE referencing a staying resource: ids are per stack', () => {
+    const hints = findRefactorHints([
+      {
+        id: 'A',
+        stackName: 'A',
+        env: 'e',
+        creates: [],
+        deletes: [
+          {
+            logicalId: 'Sub',
+            resourceType: 'AWS::SNS::Subscription',
+            properties: { Endpoint: 'arn:a-queue' },
+            recordedDependencies: ['Queue'],
+          },
+        ],
+      },
+      {
+        id: 'B',
+        stackName: 'B',
+        env: 'e',
+        creates: [
+          {
+            logicalId: 'Sub',
+            resourceType: 'AWS::SNS::Subscription',
+            properties: { Endpoint: { 'Fn::GetAtt': ['Queue', 'Arn'] } },
+            stayingReferences: ['Queue'],
+          },
+        ],
+        deletes: [],
+      },
+    ]);
+    expect(hints.size).toBe(0);
+  });
+
+  it('gives no hint to a CREATE referencing a new resource, but keeps one referencing a renamed one', () => {
+    const sub = (endpointQueue: string) => ({
+      logicalId: 'Sub2',
+      resourceType: 'AWS::SNS::Subscription',
+      properties: { Endpoint: { 'Fn::GetAtt': [endpointQueue, 'Arn'] } },
+      createdReferences: [endpointQueue],
+    });
+    const run = (newQueueName: string) =>
+      findRefactorHints([
+        {
+          id: 's',
+          stackName: 'S',
+          env: 'e',
+          creates: [
+            { logicalId: 'Q2', resourceType: 'AWS::SQS::Queue', properties: { QueueName: newQueueName } },
+            sub('Q2'),
+          ],
+          deletes: [
+            { logicalId: 'Q1', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q1' } },
+            { logicalId: 'Sub1', resourceType: 'AWS::SNS::Subscription', properties: { Endpoint: 'arn:q1' } },
+          ],
+        },
+      ]).get('s');
+    // Q2 is a new queue (another name): the subscription to it is new too.
+    expect(run('q2')).toBeUndefined();
+    // Q2 is Q1 renamed: the subscription may be renamed with it.
+    expect(Object.fromEntries(run('q1') ?? [])).toEqual({
+      Q1: { stackName: 'S', logicalId: 'Q2' },
+      Sub1: { stackName: 'S', logicalId: 'Sub2' },
+    });
+  });
+
   it('keeps the hint when nothing the CREATE references changes (a plain rename)', () => {
     expect(hintFor(versionRows(undefined))?.get('FnVersionOld')).toEqual({
       stackName: 'S',

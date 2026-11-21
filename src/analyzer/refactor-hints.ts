@@ -27,7 +27,11 @@ import {
  * A CREATE row, with the resources it references that stay in the stack
  * (go-to-k/cdkd#6797): `looselyEqual` cannot compare a `Ref` to one of them.
  */
-export type HintCreateSide = RefactorCreateSide & { stayingReferences?: readonly string[] };
+export type HintCreateSide = RefactorCreateSide & {
+  stayingReferences?: readonly string[];
+  /** The CREATE rows of the same stack it references: renames, or new resources. */
+  createdReferences?: readonly string[];
+};
 
 /** A DELETE row, with the logical ids its record's template referenced. */
 export type HintDeleteSide = RefactorDeleteSide & { recordedDependencies?: readonly string[] };
@@ -51,9 +55,20 @@ export interface RefactorHintStack {
  * a resource references, says. A record with no `dependencies` field, or a
  * reference to a resource the diff creates (itself maybe a rename), stays loose.
  */
-function referencesAgree(create: HintCreateSide, record: HintDeleteSide): boolean {
+function referencesAgree(
+  create: HintCreateSide,
+  record: HintDeleteSide,
+  sameStack: boolean,
+  isNew: (logicalId: string) => boolean
+): boolean {
+  // A reference to a CREATE no record pairs with is a new resource: the pair
+  // is not a rename either (a subscription to a queue created in its place).
+  if ((create.createdReferences ?? []).some(isNew)) return false;
   const staying = create.stayingReferences ?? [];
-  if (staying.length === 0 || record.recordedDependencies === undefined) return true;
+  if (staying.length === 0) return true;
+  // Logical ids name resources per stack: across stacks they cannot be compared.
+  if (!sameStack) return false;
+  if (record.recordedDependencies === undefined) return true;
   return staying.every((id) => record.recordedDependencies!.includes(id));
 }
 
@@ -79,22 +94,39 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
     );
     if (deletes.length === 0 || creates.length === 0) continue;
 
-    const matchesOf = new Map<(typeof creates)[number], Array<(typeof deletes)[number]>>();
-    const claims = new Map<(typeof deletes)[number], number>();
-    for (const c of creates) {
-      const matches = deletes.filter(
-        (d) =>
-          d.row.resourceType === c.row.resourceType &&
-          looselyEqual(c.row.properties, d.row.properties) &&
-          referencesAgree(c.row, d.row)
-      );
-      matchesOf.set(c, matches);
-      for (const d of matches) claims.set(d, (claims.get(d) ?? 0) + 1);
-    }
-    for (const c of creates) {
-      const matches = matchesOf.get(c) ?? [];
-      if (matches.length !== 1 || claims.get(matches[0]!) !== 1) continue;
-      const d = matches[0]!;
+    type Create = (typeof creates)[number];
+    type Delete = (typeof deletes)[number];
+    // One pass pairs every CREATE whose references agree, given which CREATEs
+    // are new; the first treats none as new, the second each it left unpaired.
+    const pairUp = (isNewIn: (c: Create, logicalId: string) => boolean): Map<Create, Delete> => {
+      const matchesOf = new Map<Create, Delete[]>();
+      const claims = new Map<Delete, number>();
+      for (const c of creates) {
+        const matches = deletes.filter(
+          (d) =>
+            d.row.resourceType === c.row.resourceType &&
+            looselyEqual(c.row.properties, d.row.properties) &&
+            referencesAgree(c.row, d.row, c.stack === d.stack, (id) => isNewIn(c, id))
+        );
+        matchesOf.set(c, matches);
+        for (const d of matches) claims.set(d, (claims.get(d) ?? 0) + 1);
+      }
+      const pairs = new Map<Create, Delete>();
+      for (const c of creates) {
+        const matches = matchesOf.get(c) ?? [];
+        if (matches.length === 1 && claims.get(matches[0]!) === 1) pairs.set(c, matches[0]!);
+      }
+      return pairs;
+    };
+    const firstPass = pairUp(() => false);
+    const pairs = pairUp(
+      (c, logicalId) =>
+        !creates.some(
+          (other) =>
+            other.stack === c.stack && other.row.logicalId === logicalId && firstPass.has(other)
+        )
+    );
+    for (const [c, d] of pairs) {
       let byId = hints.get(d.stack.id);
       if (byId === undefined) {
         byId = new Map();
@@ -168,6 +200,7 @@ export function hintSidesOf(
       .map((c) => c.logicalId),
     ...Object.keys(records ?? {}).filter((id) => !deleted.has(id)),
   ]);
+  const created = new Set(rows.filter((c) => c.changeType === 'CREATE').map((c) => c.logicalId));
   const creates: HintCreateSide[] = [];
   const deletes: HintDeleteSide[] = [];
   for (const change of rows) {
@@ -176,14 +209,15 @@ export function hintSidesOf(
       if (changedDependencyOf(template, change.logicalId, (id) => updated.has(id)) !== undefined) {
         continue;
       }
-      const stayingReferences = [...referencedLogicalIds(template, change.logicalId)].filter((id) =>
-        staying.has(id)
-      );
+      const references = [...referencedLogicalIds(template, change.logicalId)];
+      const stayingReferences = references.filter((id) => staying.has(id));
+      const createdReferences = references.filter((id) => created.has(id));
       creates.push({
         logicalId: change.logicalId,
         resourceType: change.resourceType,
         properties: change.desiredProperties ?? {},
         ...(stayingReferences.length > 0 && { stayingReferences }),
+        ...(createdReferences.length > 0 && { createdReferences }),
       });
     } else if (change.changeType === 'DELETE') {
       const record =
