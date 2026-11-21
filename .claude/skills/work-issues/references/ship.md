@@ -46,7 +46,10 @@ turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
-exits — a no-edit brief still names the ledger row it owes (#6332) —
+exits — a no-edit brief still names the ledger row it owes (#6332); while the
+lane's branch holds UNPUSHED commits the runner commits nothing and writes the
+rows to `<scratch>/integ-<PR>.rows` for the parent (its pushes went non-ff
+twice in the #6610 run) —
 names only fixtures `ls tests/integration/` lists in the PR's OWN repo, has it run `/run-integ` step 5's block AS
 WRITTEN and UNWRAPPED in ONE launch call per fixture (its `wait` works only in the
 shell that ran the `&`), never step 5's SET loop (zsh leaves `set -- $p` unsplit;
@@ -138,11 +141,12 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   budget it (#5873).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
-  each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
+  each `main` ledger row re-CONFLICTS the PR, as does each peer's
+  `docs/cli-flag-coverage.md` regen: rebase locally, normalize (Merge).
   Once every other pre-merge step (Merge's up-to-date suite too) is done
   and the post-rebase push leaves `git status --porcelain` empty, arm
-  `gh pr merge <n> --squash --delete-branch --auto` to land before the next peer
-  merge (#4966). It merges whatever head goes green, so before any push or body
+  `gh pr merge <n> --squash --delete-branch --auto --match-head-commit <sha>`
+  AT ONCE to land before the next peer merge (#4966; again in the #6610 run). It merges whatever head goes green, so before any push or body
   edit run `--disable-auto` in its OWN call, only when `gh pr view <n> --json
   autoMergeRequest` is non-null: `integ-destroy-gate` refuses it on a
   deletion-touching PR's stale marker, sinking a chained push (#5744). Re-run that suite before re-arming;
