@@ -73,6 +73,7 @@ vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) =
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 import { isInterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
@@ -410,6 +411,48 @@ describe('SecurityGroupIds', () => {
     expect(mutatingCalls()).toEqual([
       { name: 'ModifyInstanceAttributeCommand', input: { InstanceId: ID, Groups: ['sg-default'] } },
     ]);
+  });
+});
+
+// go-to-k/cdkd#6754: the drift readback returns a declared `SecurityGroups`
+// (group names, create-only), so `cdkd drift --revert` can bring a change here.
+describe('SecurityGroups (names) on a drift --revert', () => {
+  const NAMED = { ImageId: 'ami-1', InstanceType: 't3.nano', SecurityGroups: ['web'] };
+
+  it('refuses a names-only change before any AWS call, rather than reporting it reverted', async () => {
+    const error = await update({ ...NAMED, SecurityGroups: ['web'] }, { ...NAMED, SecurityGroups: ['ops'] }).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(String(error)).toMatch(/SecurityGroups names the groups only when the instance is launched/);
+    expect(isRefusedBeforeApplying(error, 'Inst')).toBe(true);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('lets a SecurityGroupIds change in the same update carry it, by id', async () => {
+    await update(
+      { ...NAMED, SecurityGroups: ['web'], SecurityGroupIds: ['sg-web'] },
+      { ...NAMED, SecurityGroups: ['ops'], SecurityGroupIds: ['sg-ops'] }
+    );
+    expect(mutatingCalls()).toEqual([
+      { name: 'ModifyInstanceAttributeCommand', input: { InstanceId: ID, Groups: ['sg-web'] } },
+    ]);
+  });
+
+  it('a template change replaces the instance even without DescribeType', () => {
+    // The refusal above is only for a revert: the deploy engine routes a
+    // template change of the create-only names to a replacement, and the hand
+    // rule keeps that true when the DescribeType fallback is empty.
+    const rules = new ReplacementRulesRegistry();
+    expect(rules.requiresReplacement('AWS::EC2::Instance', 'SecurityGroups', ['ops'], ['web'])).toBe(
+      true
+    );
+  });
+
+  it('a reorder of the names is no change', async () => {
+    await update({ ...NAMED, SecurityGroups: ['a', 'b'] }, { ...NAMED, SecurityGroups: ['b', 'a'] });
+    expect(mutatingCalls()).toEqual([]);
   });
 });
 

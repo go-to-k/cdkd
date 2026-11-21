@@ -3,7 +3,9 @@ import {
   DescribeCacheClustersCommand,
   DescribeCacheSubnetGroupsCommand,
   ListTagsForResourceCommand,
+  type LogDeliveryConfiguration,
 } from '@aws-sdk/client-elasticache';
+import { inDeclaredOrder } from '../../declared-order.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
@@ -20,7 +22,9 @@ import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
  *    `PreferredAvailabilityZone`, `SnapshotRetentionLimit`,
  *    `SnapshotWindow`, `AutoMinorVersionUpgrade`, `NotificationTopicArn`,
  *    `IpDiscovery`, `NetworkType`, `TransitEncryptionEnabled`, plus
- *    `VpcSecurityGroupIds` derived from the cluster's `SecurityGroups[]`.
+ *    `VpcSecurityGroupIds` derived from the cluster's `SecurityGroups[]`,
+ *    `LogDeliveryConfigurations`, and a declared `PreferredAvailabilityZones`
+ *    from `CacheNodes[].CustomerAvailabilityZone` (go-to-k/cdkd#6757).
  *  - `SubnetGroup` → `DescribeCacheSubnetGroups` filtered by name,
  *    surfacing `CacheSubnetGroupName`, `CacheSubnetGroupDescription`,
  *    and `SubnetIds` derived from `Subnets[].SubnetIdentifier`.
@@ -35,11 +39,12 @@ export async function readCurrentState(
   this: ElastiCacheProvider,
   physicalId: string,
   _logicalId: string,
-  resourceType: string
+  resourceType: string,
+  properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   switch (resourceType) {
     case 'AWS::ElastiCache::CacheCluster':
-      return this.readCacheCluster(physicalId);
+      return this.readCacheCluster(physicalId, properties);
     case 'AWS::ElastiCache::SubnetGroup':
       return this.readSubnetGroup(physicalId);
     default:
@@ -49,7 +54,8 @@ export async function readCurrentState(
 
 export async function readCacheCluster(
   this: ElastiCacheProvider,
-  physicalId: string
+  physicalId: string,
+  properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let cluster;
   try {
@@ -123,9 +129,72 @@ export async function readCacheCluster(
     .map((sg) => sg.SecurityGroupId)
     .filter((id): id is string => !!id);
   result['VpcSecurityGroupIds'] = sgIds;
+  result['LogDeliveryConfigurations'] = readbackLogDelivery(
+    cluster.LogDeliveryConfigurations ?? [],
+    properties?.['LogDeliveryConfigurations']
+  );
+  // go-to-k/cdkd#6757: the zones the live nodes occupy, for a record that
+  // declares the list, in the declared order (`inDeclaredOrder`), so a node
+  // added, removed or placed in another zone out of band differs from it. A
+  // node being deleted is no longer one of the cluster's.
+  const declaredZones = properties?.['PreferredAvailabilityZones'];
+  if (Array.isArray(declaredZones)) {
+    result['PreferredAvailabilityZones'] = inDeclaredOrder(
+      (cluster.CacheNodes ?? []).flatMap((node) =>
+        node.CacheNodeStatus !== 'deleting' && node.CustomerAvailabilityZone !== undefined
+          ? [node.CustomerAvailabilityZone]
+          : []
+      ),
+      (zone) => zone,
+      declaredZones
+    );
+  }
 
   if (cluster.ARN) await this.attachTags(result, cluster.ARN);
   return result;
+}
+
+/** A delivery AWS is turning off: what `update()` sends for a removed log type. */
+const LEAVING_LOG_DELIVERY_STATUSES: ReadonlySet<string> = new Set(['disabling']);
+
+/**
+ * The cluster's `LogDeliveryConfigurations` in the CloudFormation shape
+ * (go-to-k/cdkd#6757), in the declared `LogType` order. Always emitted, `[]`
+ * when none is on: `update()` turns a removed log type off
+ * (`buildLogDeliveryConfigurationsForUpdate`), so no delivery is what an unset
+ * property leaves. A delivery being turned off is left out.
+ */
+function readbackLogDelivery(
+  live: readonly LogDeliveryConfiguration[],
+  declared: unknown
+): Record<string, unknown>[] {
+  const entries = live
+    .filter((config) => !LEAVING_LOG_DELIVERY_STATUSES.has(config.Status ?? ''))
+    .map((config) => {
+      const entry: Record<string, unknown> = {};
+      if (config.LogType !== undefined) entry['LogType'] = config.LogType;
+      if (config.DestinationType !== undefined) entry['DestinationType'] = config.DestinationType;
+      const details = config.DestinationDetails;
+      if (details !== undefined) {
+        const out: Record<string, unknown> = {};
+        const logGroup = details.CloudWatchLogsDetails?.LogGroup;
+        if (logGroup !== undefined) out['CloudWatchLogsDetails'] = { LogGroup: logGroup };
+        const stream = details.KinesisFirehoseDetails?.DeliveryStream;
+        if (stream !== undefined) out['KinesisFirehoseDetails'] = { DeliveryStream: stream };
+        entry['DestinationDetails'] = out;
+      }
+      if (config.LogFormat !== undefined) entry['LogFormat'] = config.LogFormat;
+      return entry;
+    });
+  return inDeclaredOrder(
+    entries,
+    (entry) => entry['LogType'] as string | undefined,
+    Array.isArray(declared)
+      ? declared.map((d) =>
+          d !== null && typeof d === 'object' ? (d as Record<string, unknown>)['LogType'] : d
+        )
+      : undefined
+  );
 }
 
 export async function readSubnetGroup(

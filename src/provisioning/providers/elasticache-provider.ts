@@ -472,25 +472,33 @@ export class ElastiCacheProvider implements ResourceProvider {
    * `readCurrentState` never emits them, so a drift run whose baseline is the
    * template `properties` (a record with no observed capture) would report
    * them as removed from AWS on every run.
+   *
+   * `AZMode` (go-to-k/cdkd#6757) has no member either. It is a placement rule
+   * for the nodes a create or a node addition places, and the zones they hold
+   * (`PreferredAvailabilityZones`, read back) are its only trace: a one-node
+   * `cross-az` cluster occupies one zone, as a `single-az` one does, so the
+   * mode cannot be told from them.
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     return resourceType === 'AWS::ElastiCache::CacheCluster'
-      ? ['SnapshotArns', 'SnapshotName']
+      ? ['SnapshotArns', 'SnapshotName', 'AZMode']
       : [];
   }
 
   readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, _logicalId, resourceType);
+    return readCurrentState.call(this, physicalId, _logicalId, resourceType, properties);
   }
 
   readCacheCluster(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCacheCluster.call(this, physicalId);
+    return readCacheCluster.call(this, physicalId, properties);
   }
 
   readSubnetGroup(

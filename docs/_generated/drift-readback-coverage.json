@@ -3,9 +3,9 @@
     "types": 146,
     "noReadback": 5,
     "properties": 1526,
-    "read": 1354,
-    "unknown": 128,
-    "baseline": 44,
+    "read": 1372,
+    "unknown": 129,
+    "baseline": 25,
     "gap": 0,
     "outsideSchema": 12
   },
@@ -2403,9 +2403,7 @@
         },
         {
           "property": "SecurityGroups",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "not read back"
+          "status": "read"
         },
         {
           "property": "SourceDestCheck",
@@ -2429,9 +2427,7 @@
         },
         {
           "property": "UserData",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "not read back"
+          "status": "read"
         },
         {
           "property": "Volumes",
@@ -2448,9 +2444,7 @@
       "properties": [
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the Describe response carries the tags; the readback drops them"
+          "status": "read"
         }
       ],
       "unresolved": []
@@ -2483,21 +2477,15 @@
         },
         {
           "property": "SecondaryAllocationIds",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the readback takes only NatGatewayAddresses[0]"
+          "status": "read"
         },
         {
           "property": "SecondaryPrivateIpAddressCount",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the readback takes only NatGatewayAddresses[0]"
+          "status": "read"
         },
         {
           "property": "SecondaryPrivateIpAddresses",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the readback takes only NatGatewayAddresses[0]"
+          "status": "read"
         },
         {
           "property": "SubnetId",
@@ -2505,9 +2493,7 @@
         },
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the Describe response carries the tags; the readback drops them"
+          "status": "read"
         },
         {
           "property": "VpcId",
@@ -2524,9 +2510,7 @@
       "properties": [
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the Describe response carries the tags; the readback drops them"
+          "status": "read"
         },
         {
           "property": "VpcId",
@@ -2661,9 +2645,7 @@
       "properties": [
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the Describe response carries the tags; the readback drops them"
+          "status": "read"
         },
         {
           "property": "VpcId",
@@ -2814,9 +2796,7 @@
         },
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the Describe response carries the tags; the readback drops them"
+          "status": "read"
         },
         {
           "property": "VpcId",
@@ -2891,9 +2871,7 @@
         },
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6754,
-          "reason": "the Describe response carries the tags; the readback drops them"
+          "status": "read"
         },
         {
           "property": "VpcEncryptionControl",
@@ -3335,9 +3313,7 @@
         },
         {
           "property": "AZMode",
-          "status": "baseline",
-          "issue": 6757,
-          "reason": "not read back"
+          "status": "unknown"
         },
         {
           "property": "CacheNodeType",
@@ -3369,9 +3345,7 @@
         },
         {
           "property": "LogDeliveryConfigurations",
-          "status": "baseline",
-          "issue": 6757,
-          "reason": "not read back"
+          "status": "read"
         },
         {
           "property": "NetworkType",
@@ -3395,9 +3369,7 @@
         },
         {
           "property": "PreferredAvailabilityZones",
-          "status": "baseline",
-          "issue": 6757,
-          "reason": "not read back"
+          "status": "read"
         },
         {
           "property": "PreferredMaintenanceWindow",
@@ -3561,9 +3533,7 @@
         },
         {
           "property": "SubnetMappings",
-          "status": "baseline",
-          "issue": 6756,
-          "reason": "only Subnets is read back; the per-subnet addresses are not"
+          "status": "read"
         },
         {
           "property": "Subnets",
@@ -4533,9 +4503,7 @@
         },
         {
           "property": "LoginProfile",
-          "status": "baseline",
-          "issue": 6755,
-          "reason": "PasswordResetRequired is readable; Password is write-only"
+          "status": "read"
         },
         {
           "property": "ManagedPolicyArns",
@@ -4555,9 +4523,7 @@
         },
         {
           "property": "Tags",
-          "status": "baseline",
-          "issue": 6755,
-          "reason": "not read back"
+          "status": "read"
         },
         {
           "property": "UserName",
@@ -5220,9 +5186,7 @@
         },
         {
           "property": "EventSourceToken",
-          "status": "baseline",
-          "issue": 6758,
-          "reason": "a condition of the policy statement the readback parses, not returned"
+          "status": "read"
         },
         {
           "property": "FunctionName",
@@ -5230,9 +5194,7 @@
         },
         {
           "property": "FunctionUrlAuthType",
-          "status": "baseline",
-          "issue": 6758,
-          "reason": "a condition of the policy statement the readback parses, not returned"
+          "status": "read"
         },
         {
           "property": "InvokedViaFunctionUrl",

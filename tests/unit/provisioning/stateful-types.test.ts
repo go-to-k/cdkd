@@ -439,9 +439,39 @@ describe('STATEFUL_TYPES (#615)', () => {
       expect(typesRegisteredTo('S3TablesProvider')).toContain('AWS::S3Tables::Table');
     });
 
+    /**
+     * Types registered to a consuming class whose OWN delete reads no consent.
+     * The fence is class-granular; each entry names why its type is still not
+     * data-bearing.
+     */
+    const NOT_CONSUMING_SIBLINGS: Readonly<
+      Record<string, { className: string; deleteModule: string }>
+    > = {
+      // Shares `S3TablesProvider` with the table bucket (#6749). Its delete is
+      // a bare `DeleteNamespace`, which AWS refuses on a namespace holding a
+      // table (#2539), and `STATEFUL_TYPES` documents why it is off the list.
+      'AWS::S3Tables::Namespace': {
+        className: 'S3TablesProvider',
+        deleteModule: 's3-tables/namespace.ts',
+      },
+    };
+
     it('every one of them is in STATEFUL_TYPES', () => {
-      const missing = guardedTypes.filter((t) => !STATEFUL_TYPES.has(t));
+      const missing = guardedTypes.filter(
+        (t) => !STATEFUL_TYPES.has(t) && NOT_CONSUMING_SIBLINGS[t] === undefined
+      );
       expect(missing).toEqual([]);
+    });
+
+    it('every exempt sibling is still registered to a consuming class, still off the list, and its own delete still reads no consent', () => {
+      for (const [type, { className, deleteModule }] of Object.entries(NOT_CONSUMING_SIBLINGS)) {
+        expect(consumingClasses).toContain(className);
+        expect(typesRegisteredTo(className)).toContain(type);
+        expect(STATEFUL_TYPES.has(type)).toBe(false);
+        expect(readFileSync(join(providersDir, deleteModule), 'utf8')).not.toContain(
+          'forceDataDelete'
+        );
+      }
     });
   });
 

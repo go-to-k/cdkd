@@ -517,6 +517,55 @@ describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
       expect(subnetCall[0].input).not.toHaveProperty('EnablePrefixForIpv6SourceNat');
     });
 
+    // go-to-k/cdkd#6756: the drift readback carries a declared SubnetMappings
+    // beside Subnets, so a `drift --revert` of a Subnets change alone holds the
+    // LIVE mappings on both sides; sending them would put the out-of-band
+    // subnet back. Subnets goes out then; changed mappings still win.
+    it('sends Subnets when only Subnets changed, even beside unchanged SubnetMappings', async () => {
+      const live = [{ SubnetId: 'subnet-111' }, { SubnetId: 'subnet-222' }, { SubnetId: 'subnet-333' }];
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111', 'subnet-222'], SubnetMappings: live },
+        { Subnets: ['subnet-111', 'subnet-222', 'subnet-333'], SubnetMappings: live }
+      );
+      const [subnetCall] = callsOf('SetSubnetsCommand');
+      expect(subnetCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        Subnets: ['subnet-111', 'subnet-222'],
+      });
+
+      vi.clearAllMocks();
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111', 'subnet-222'], SubnetMappings: live.slice(0, 2) },
+        { Subnets: ['subnet-111', 'subnet-222', 'subnet-333'], SubnetMappings: live }
+      );
+      const [mappingsCall] = callsOf('SetSubnetsCommand');
+      expect(mappingsCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SubnetMappings: live.slice(0, 2),
+      });
+
+      // Both changed: the mappings carry what Subnets cannot, so they win.
+      vi.clearAllMocks();
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111'], SubnetMappings: live.slice(0, 1) },
+        { Subnets: ['subnet-111', 'subnet-222'], SubnetMappings: live.slice(0, 2) }
+      );
+      const [bothCall] = callsOf('SetSubnetsCommand');
+      expect(bothCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SubnetMappings: live.slice(0, 1),
+      });
+    });
+
     it('sets the IPAM pool via ModifyIpPools and removes it via RemoveIpamPools', async () => {
       await provider.update('MyAlb', LB_ARN, LB_TYPE, { Ipv4IpamPoolId: 'ipam-pool-0abc' }, {});
       let [ipamCall] = callsOf('ModifyIpPoolsCommand');

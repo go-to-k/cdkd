@@ -4,7 +4,6 @@ import {
   DescribeInternetGatewaysCommand,
   DescribeRouteTablesCommand,
   DescribeVpnGatewaysCommand,
-  DescribeNatGatewaysCommand,
   DescribeAddressesCommand,
   DescribeSubnetsCommand,
   DescribeSecurityGroupsCommand,
@@ -19,7 +18,7 @@ import type { ResourceNotFound, ReadCurrentStateContext } from '../../../types/r
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { VPC_ENCRYPTION_CONTROL_EXCLUSIONS } from './common.js';
-import { readNatZoneAddresses, readbackNatZoneAddresses } from './nat-support.js';
+import { readbackEc2Tags } from './read-network-state.js';
 import {
   type CfnSgRule,
   cfnIngressPortValue,
@@ -32,7 +31,6 @@ import {
   sgProtocolKey,
   sgRuleKey,
   stackIngressRuleHolder,
-  tagListsMatch,
 } from './sg-support.js';
 import { SUBNET_PRIVATE_DNS_MEMBERS, cidrPrefixLength } from './subnet-support.js';
 import {
@@ -53,7 +51,8 @@ import { restoreOwnWriteRemovals, takeOwnWriteRemovals } from '../../own-write-r
 export async function readVpcCurrentState(
   this: EC2Provider,
   physicalId: string,
-  properties?: Record<string, unknown>
+  properties?: Record<string, unknown>,
+  afterOwnWrite = false
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const resp = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
   const vpc = resp.Vpcs?.[0];
@@ -89,6 +88,8 @@ export async function readVpcCurrentState(
     }
     result['VpcEncryptionControl'] = out;
   }
+  const tags = readbackEc2Tags(vpc.Tags, properties, afterOwnWrite);
+  if (tags !== undefined) result['Tags'] = tags;
 
   // EnableDnsHostnames / EnableDnsSupport require separate
   // DescribeVpcAttribute calls.
@@ -120,7 +121,8 @@ export async function readSubnetCurrentState(
   this: EC2Provider,
   physicalId: string,
   unsettledNames?: ReadonlySet<string>,
-  properties?: Record<string, unknown>
+  properties?: Record<string, unknown>,
+  afterOwnWrite = false
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const resp = await this.ec2Client.send(new DescribeSubnetsCommand({ SubnetIds: [physicalId] }));
   const subnet = resp.Subnets?.[0];
@@ -173,72 +175,8 @@ export async function readSubnetCurrentState(
     }
     result['PrivateDnsNameOptionsOnLaunch'] = block;
   }
-
-  return result;
-}
-
-export async function readInternetGatewayCurrentState(
-  this: EC2Provider,
-  physicalId: string
-): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-  const resp = await this.ec2Client.send(
-    new DescribeInternetGatewaysCommand({ InternetGatewayIds: [physicalId] })
-  );
-  const igw = resp.InternetGateways?.[0];
-  if (!igw) return RESOURCE_NOT_FOUND;
-
-  // The provider only handles `Tags`, which is out of scope for v1 drift.
-  // Return an empty object so the comparator marks the resource as
-  // `clean` (existence verified) rather than `unsupported`.
-  return {};
-}
-
-export async function readNatGatewayCurrentState(
-  this: EC2Provider,
-  physicalId: string,
-  properties: Record<string, unknown> | undefined
-): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-  const resp = await this.ec2Client.send(
-    new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
-  );
-  const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
-  if (!gw) return RESOURCE_NOT_FOUND;
-
-  const result: Record<string, unknown> = {};
-  if (gw.SubnetId !== undefined) result['SubnetId'] = gw.SubnetId;
-  if (gw.ConnectivityType !== undefined) result['ConnectivityType'] = gw.ConnectivityType;
-
-  // AllocationId / PrivateIpAddress live inside NatGatewayAddresses[0]
-  // for single-AZ public NATs.
-  // A regional gateway's addresses move between zones (see
-  // AvailabilityZoneAddresses below): reading an UNDECLARED one as
-  // AllocationId / PrivateIpAddress would record a drift baseline that flips
-  // after a swap, which `drift --revert` then sends to an update refusing
-  // both create-only keys. So a regional gateway reports each only when the
-  // record declares it (CDK's automatic mode with a given Elastic IP).
-  const regional = gw.AvailabilityMode === 'regional';
-  const primary =
-    gw.NatGatewayAddresses?.find((a) => a.IsPrimary === true) ?? gw.NatGatewayAddresses?.[0];
-  if (primary?.AllocationId !== undefined && (!regional || properties?.['AllocationId'] != null)) {
-    result['AllocationId'] = primary.AllocationId;
-  }
-  if (primary?.PrivateIp !== undefined && (!regional || properties?.['PrivateIpAddress'] != null)) {
-    result['PrivateIpAddress'] = primary.PrivateIp;
-  }
-
-  // go-to-k/cdkd#2762: a regional gateway's mode and VPC, and — once it no
-  // longer expands to new zones on its own (`AutoProvisionZones: disabled`,
-  // what a declared AvailabilityZoneAddresses selects) — its per-zone
-  // addresses, spelled the way the recorded entries spell each zone.
-  if (gw.AvailabilityMode !== undefined) result['AvailabilityMode'] = gw.AvailabilityMode;
-  if (gw.VpcId !== undefined) result['VpcId'] = gw.VpcId;
-  if (gw.AvailabilityMode === 'regional' && gw.AutoProvisionZones === 'disabled') {
-    const recorded = readNatZoneAddresses(properties?.['AvailabilityZoneAddresses']);
-    result['AvailabilityZoneAddresses'] = readbackNatZoneAddresses(
-      gw.NatGatewayAddresses ?? [],
-      recorded.kind === 'usable' ? recorded.entries : []
-    );
-  }
+  const tags = readbackEc2Tags(subnet.Tags, properties, afterOwnWrite);
+  if (tags !== undefined) result['Tags'] = tags;
 
   return result;
 }
@@ -292,26 +230,8 @@ export async function readEipCurrentState(
     result['NetworkBorderGroup'] = addr.NetworkBorderGroup;
   }
   if (addr.PublicIpv4Pool !== undefined) result['PublicIpv4Pool'] = addr.PublicIpv4Pool;
-  const tags = normalizeAwsTagsToCfn(addr.Tags);
-  const declared = properties?.['Tags'];
-  const bag =
-    afterOwnWrite && Array.isArray(declared) && !tagListsMatch(tags, declared) ? declared : tags;
-  if (bag.length > 0) result['Tags'] = bag;
-  return result;
-}
-
-export async function readRouteTableCurrentState(
-  this: EC2Provider,
-  physicalId: string
-): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-  const resp = await this.ec2Client.send(
-    new DescribeRouteTablesCommand({ RouteTableIds: [physicalId] })
-  );
-  const rt = resp.RouteTables?.[0];
-  if (!rt) return RESOURCE_NOT_FOUND;
-
-  const result: Record<string, unknown> = {};
-  if (rt.VpcId !== undefined) result['VpcId'] = rt.VpcId;
+  const tags = readbackEc2Tags(addr.Tags, properties, afterOwnWrite);
+  if (tags !== undefined) result['Tags'] = tags;
   return result;
 }
 
@@ -481,21 +401,6 @@ function sgRuleLists(
     SecurityGroupIngress: reconcileSgRules(ingressRules, stateIngress, 'ingress'),
     SecurityGroupEgress: reconcileSgRules(egressRules, stateEgress, 'egress'),
   };
-}
-
-export async function readNetworkAclCurrentState(
-  this: EC2Provider,
-  physicalId: string
-): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-  const resp = await this.ec2Client.send(
-    new DescribeNetworkAclsCommand({ NetworkAclIds: [physicalId] })
-  );
-  const acl = resp.NetworkAcls?.[0];
-  if (!acl) return RESOURCE_NOT_FOUND;
-
-  const result: Record<string, unknown> = {};
-  if (acl.VpcId !== undefined) result['VpcId'] = acl.VpcId;
-  return result;
 }
 
 /**
@@ -984,12 +889,8 @@ export async function readSubnetNetworkAclAssociationCurrentState(
 export const readStateMethods = {
   readVpcCurrentState,
   readSubnetCurrentState,
-  readInternetGatewayCurrentState,
-  readNatGatewayCurrentState,
   readEipCurrentState,
-  readRouteTableCurrentState,
   readSecurityGroupCurrentState,
-  readNetworkAclCurrentState,
   readVpcGatewayAttachmentCurrentState,
   readRouteCurrentState,
   readSubnetRouteTableAssociationCurrentState,

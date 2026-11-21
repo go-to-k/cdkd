@@ -259,7 +259,16 @@ describe('S3VectorsProvider', () => {
   });
 
   describe('delete', () => {
-    it('should delete a vector bucket with no indexes', async () => {
+    it('deletes the bucket with one DeleteVectorBucket and lists nothing (#6749)', async () => {
+      mockSend.mockResolvedValue({});
+
+      await provider.delete('MyVectorBucket', 'my-vector-bucket', 'AWS::S3Vectors::VectorBucket');
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toBeInstanceOf(DeleteVectorBucketCommand);
+    });
+
+    it('under forceDataDelete, deletes a vector bucket with no indexes', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof ListIndexesCommand) {
           return Promise.resolve({ indexes: [], nextToken: undefined });
@@ -270,7 +279,9 @@ describe('S3VectorsProvider', () => {
         return Promise.resolve({});
       });
 
-      await provider.delete('MyVectorBucket', 'my-vector-bucket', 'AWS::S3Vectors::VectorBucket');
+      await provider.delete('MyVectorBucket', 'my-vector-bucket', 'AWS::S3Vectors::VectorBucket', undefined, {
+        forceDataDelete: true,
+      });
 
       const listCall = mockSend.mock.calls.find(
         (call: unknown[]) => call[0] instanceof ListIndexesCommand
@@ -292,7 +303,7 @@ describe('S3VectorsProvider', () => {
       expect(deleteIndexCalls).toHaveLength(0);
     });
 
-    it('should delete all indexes before deleting the vector bucket', async () => {
+    it('under forceDataDelete, deletes all indexes before deleting the vector bucket', async () => {
       mockSend.mockImplementation((cmd: unknown) => {
         if (cmd instanceof ListIndexesCommand) {
           return Promise.resolve({
@@ -312,7 +323,9 @@ describe('S3VectorsProvider', () => {
         return Promise.resolve({});
       });
 
-      await provider.delete('MyVectorBucket', 'my-vector-bucket', 'AWS::S3Vectors::VectorBucket');
+      await provider.delete('MyVectorBucket', 'my-vector-bucket', 'AWS::S3Vectors::VectorBucket', undefined, {
+        forceDataDelete: true,
+      });
 
       // Verify ListIndexes was called
       const listCall = mockSend.mock.calls.find(

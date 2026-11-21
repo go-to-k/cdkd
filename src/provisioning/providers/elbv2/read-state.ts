@@ -9,7 +9,9 @@ import {
   DescribeTagsCommand,
   DescribeListenersCommand,
   DescribeListenerAttributesCommand,
+  type AvailabilityZone,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
+import { inDeclaredOrder } from '../../declared-order.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
@@ -26,7 +28,8 @@ import {
  *
  * Dispatch per resource type:
  *  - `LoadBalancer` → `DescribeLoadBalancers` (Name, Subnets via
- *    `AvailabilityZones[].SubnetId`, SecurityGroups, Scheme, Type,
+ *    `AvailabilityZones[].SubnetId`, a declared `SubnetMappings` from the
+ *    same zones (`readbackSubnetMappings`), SecurityGroups, Scheme, Type,
  *    IpAddressType) plus `DescribeLoadBalancerAttributes` for the full
  *    `LoadBalancerAttributes` `[{Key, Value}]` array (sorted by Key for
  *    stable positional compare). AWS returns every attribute valid for
@@ -48,11 +51,12 @@ export async function readCurrentState(
   this: ELBv2Provider,
   physicalId: string,
   _logicalId: string,
-  resourceType: string
+  resourceType: string,
+  properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   switch (resourceType) {
     case 'AWS::ElasticLoadBalancingV2::LoadBalancer':
-      return this.readLoadBalancer(physicalId);
+      return this.readLoadBalancer(physicalId, properties);
     case 'AWS::ElasticLoadBalancingV2::TargetGroup':
       return this.readTargetGroup(physicalId);
     case 'AWS::ElasticLoadBalancingV2::Listener':
@@ -64,7 +68,8 @@ export async function readCurrentState(
 
 export async function readLoadBalancer(
   this: ELBv2Provider,
-  physicalId: string
+  physicalId: string,
+  properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   let lb;
   try {
@@ -85,6 +90,12 @@ export async function readLoadBalancer(
     .map((az) => az.SubnetId)
     .filter((id): id is string => !!id);
   result['Subnets'] = subnets;
+  if (properties?.['SubnetMappings'] != null) {
+    result['SubnetMappings'] = readbackSubnetMappings(
+      lb.AvailabilityZones ?? [],
+      properties['SubnetMappings']
+    );
+  }
   result['SecurityGroups'] = lb.SecurityGroups ? [...lb.SecurityGroups] : [];
   if (lb.Scheme !== undefined) result['Scheme'] = lb.Scheme;
   if (lb.Type !== undefined) result['Type'] = lb.Type;
@@ -153,6 +164,63 @@ export async function readLoadBalancer(
 
   await this.attachTags(result, physicalId);
   return result;
+}
+
+/** The per-subnet address members of a CloudFormation `SubnetMapping`. */
+const SUBNET_MAPPING_ADDRESS_MEMBERS = [
+  'AllocationId',
+  'PrivateIPv4Address',
+  'IPv6Address',
+] as const;
+
+/**
+ * A declared `SubnetMappings`, read from `AvailabilityZones[]`
+ * (go-to-k/cdkd#6756): each zone's `SubnetId`, its addresses from
+ * `LoadBalancerAddresses[]`, and its `SourceNatIpv6Prefix` from
+ * `SourceNatIpv6Prefixes[]`, in the declared subnet order.
+ *
+ * A member is read only where the declared entry for that subnet declares it:
+ * AWS reports a private address it picked for every NLB zone, and `update()`
+ * sends `SubnetMappings` whole to `SetSubnets`, which refuses a private address
+ * on an internet-facing load balancer, so `drift --revert` must not carry one
+ * the template never set. A subnet no entry declares (one added out of band)
+ * reads as its `SubnetId` alone. A declared member AWS does not report is
+ * left out, so it differs from the declared value. A declared
+ * `SourceNatIpv6Prefix: auto_assigned` reads as `auto_assigned` while AWS
+ * reports a prefix: the value AWS assigned is not one the template can name.
+ */
+export function readbackSubnetMappings(
+  zones: readonly AvailabilityZone[],
+  declared: unknown
+): Record<string, unknown>[] {
+  const declaredEntries = (Array.isArray(declared) ? declared : []).filter(
+    (entry): entry is Record<string, unknown> =>
+      entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+  );
+  const mappings = zones.flatMap((zone) => {
+    if (zone.SubnetId === undefined) return [];
+    const want = declaredEntries.find((entry) => entry['SubnetId'] === zone.SubnetId);
+    const mapping: Record<string, unknown> = { SubnetId: zone.SubnetId };
+    if (want === undefined) return [mapping];
+    for (const member of SUBNET_MAPPING_ADDRESS_MEMBERS) {
+      if (want[member] == null) continue;
+      const value = zone.LoadBalancerAddresses?.find((a) => a[member] !== undefined)?.[member];
+      if (value !== undefined) mapping[member] = value;
+    }
+    if (want['SourceNatIpv6Prefix'] != null) {
+      const prefix = zone.SourceNatIpv6Prefixes?.[0];
+      if (prefix !== undefined) {
+        mapping['SourceNatIpv6Prefix'] =
+          want['SourceNatIpv6Prefix'] === 'auto_assigned' ? 'auto_assigned' : prefix;
+      }
+    }
+    return [mapping];
+  });
+  return inDeclaredOrder(
+    mappings,
+    (mapping) => mapping['SubnetId'] as string,
+    declaredEntries.map((entry) => entry['SubnetId'])
+  );
 }
 
 export async function readTargetGroup(

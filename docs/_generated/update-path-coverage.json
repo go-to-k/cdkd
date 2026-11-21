@@ -2539,7 +2539,7 @@
         {
           "property": "SecurityGroups",
           "status": "replacement",
-          "via": "create-only"
+          "via": "rule"
         },
         {
           "property": "SourceDestCheck",

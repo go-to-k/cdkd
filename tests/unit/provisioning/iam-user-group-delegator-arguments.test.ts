@@ -116,6 +116,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['resourceIdentity', 'read-state', 'resourceIdentity', 3],
   ['readIdIfExists', 'read-state', 'readIdIfExists', 2],
   ['readCurrentState', 'read-state', 'readCurrentState', 5],
+  ['getDriftUnknownPaths', 'read-state', 'getDriftUnknownPaths', 1],
   ['readUserCurrentState', 'read-state', 'readUserCurrentState', 4],
   ['readGroupCurrentState', 'read-state', 'readGroupCurrentState', 4],
   ['collectInlinePolicies', 'read-state', 'collectInlinePolicies', 4],
