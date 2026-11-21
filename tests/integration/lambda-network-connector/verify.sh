@@ -166,7 +166,26 @@ case "${OLD_REPORTED}" in
 esac
 
 echo "==> Phase 1: create the connector with the previous release (Cloud Control)"
-OUT="$(deploy "${OLD_BIN}")" || { echo "${OUT}"; echo "FAIL: phase 1 deploy" >&2; exit 1; }
+# The previous release predates go-to-k/cdkd#6775: it gives up when the
+# connector create rejects the seconds-old operator role, and its rollback then
+# deletes the role, so a plain re-run races the same propagation. Phase 1 keeps
+# the role (--no-rollback) and, on that rejection only, deploys once more after
+# the role has had time to propagate; the old release fixes forward over its
+# kept journal.
+phase1_deploy() {
+  env CONNECTOR_NAME="${CONNECTOR_NAME}" SUBNET_IDS="${SUBNET_IDS}" SECURITY_GROUP_ID="${SECURITY_GROUP_ID}" \
+    node "${OLD_BIN}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback 2>&1
+}
+if ! OUT="$(phase1_deploy)"; then
+  echo "${OUT}"
+  case "${OUT}" in
+    *"invalid ConnectorOperatorRole permissions"* | *"operator role is invalid"* | *"NetworkConnector' with identifier"*"did not stabilize"*) ;;
+    *) echo "FAIL: phase 1 deploy" >&2; exit 1 ;;
+  esac
+  echo "    phase 1: the previous release gave up while the operator role propagated; retrying once in 30s"
+  sleep 30
+  OUT="$(phase1_deploy)" || { echo "${OUT}"; echo "FAIL: phase 1 deploy (retry)" >&2; exit 1; }
+fi
 echo "${OUT}"
 ARN1="$(record '.physicalId')"
 ROUTE="$(record '.provisionedBy')"

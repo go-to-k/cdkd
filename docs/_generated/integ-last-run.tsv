@@ -285,7 +285,7 @@ lambda-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	142	verify.sh	rc 0, 0 orphan
 lambda-layer-version-update	2026-11-16T08:22:27Z	PASS	150	verify.sh	rc ok, orph clean (#6374 sweep)
 lambda-log-retention	2026-11-04T05:45:58Z	PASS	91	verify.sh	1104 sweep b5; rc ok, 0 orph
 lambda-microvm-image	2026-11-05T03:14:59Z	PASS	827	verify.sh	rc 0, all phases ok; deleted leftover log group /aws/lambda-microvms/cdkd-integ-microvm-image; orph clean
-lambda-network-connector	2026-11-21T11:31:39Z	FAIL	60	verify.sh	phase 1 deploy: Connector CREATE IAM-propagation retry gap, pre-existing #6775 (src/deployment/retryable-errors/patterns.ts, outside PR); 0 orphans
+lambda-network-connector	2026-11-21T13:30:19Z	PASS	1559	verify.sh	rc 0, orph clean; phase 1 old-release retry used once; no IAM-propagation retry in current-build phases
 lambda-reserved-concurrency	2026-11-04T06:31:22Z	PASS	50	verify.sh	rc ok, orph clean
 lambda-runtime-config	2026-11-15T17:41:38Z	PASS	115	verify.sh	rc ok, orph clean; #6352 RuntimeConfig create/alias/removal, runtime + ECR swept
 lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
