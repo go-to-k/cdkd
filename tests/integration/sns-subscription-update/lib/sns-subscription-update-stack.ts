@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 /**
  * cdkd standalone `AWS::SNS::Subscription` UPDATE integ (issue
@@ -91,6 +92,20 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
       filterPolicy,
       filterPolicyScope,
     });
+
+    // `fail-after` (go-to-k/cdkd#6731): a parameter AWS refuses (its value
+    // breaks its own AllowedPattern), created after the subscription, so the
+    // deploy fails once the subscription's re-create ran. It never exists, so
+    // no later step deletes it.
+    // allow-mode-gated-drop: failure-injection parameter that never succeeds at CREATE; the rollback and every later step correctly omit it.
+    if (modes.includes('fail-after')) {
+      const breaker = new ssm.CfnParameter(this, 'Breaker', {
+        type: 'String',
+        value: 'not-a-number',
+        allowedPattern: '^[0-9]+$',
+      });
+      breaker.addDependency(subscription);
+    }
 
     new cdk.CfnOutput(this, 'TopicArn', { value: topic.topicArn });
     new cdk.CfnOutput(this, 'QueueArn', { value: queue.queueArn });

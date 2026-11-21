@@ -10611,6 +10611,7 @@
         "secrets-dynamic-ref",
         "select-out-of-bounds",
         "shared-stackname-multi-region",
+        "sns-subscription-update",
         "ssm-generated-name-grant",
         "ssm-typed-parameter-not-found",
         "stack-id-uuid",
@@ -11048,6 +11049,9 @@
         "shared-stackname-multi-region": [
           "l2",
           "literal"
+        ],
+        "sns-subscription-update": [
+          "l1"
         ],
         "ssm-generated-name-grant": [
           "l2",
