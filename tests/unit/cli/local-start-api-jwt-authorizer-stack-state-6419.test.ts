@@ -85,6 +85,52 @@ describe('loadStateForRoutedStacks with a JWT authorizer waiting on state (#6419
     expect([...bundles.keys()]).toEqual(['Api']);
   });
 
+  it("loads the stack while a route's intrinsic AuthorizationScopes wait on state (#6717)", async () => {
+    const loaded: string[] = [];
+    provide(loaded);
+    const base = jwtEntry(false);
+    const entry = {
+      ...base,
+      authorizer: {
+        ...base.authorizer,
+        scopes: {
+          state: 'unresolved',
+          stackName: 'Api',
+          raw: [{ 'Fn::Join': ['', [{ Ref: 'Server' }, '/read']] }],
+          reason: 'no state source',
+        },
+      },
+    } as RouteWithAuth;
+    await loadStateForRoutedStacks([apiStack], [], [entry], { fromState: true } as never);
+    expect(loaded).toEqual(['Api']);
+  });
+
+  it("loads the stack while a TOKEN authorizer's intrinsic IdentityValidationExpression waits on state (#6717)", async () => {
+    const loaded: string[] = [];
+    provide(loaded);
+    const entry = {
+      route: { declaredAt: 'Api/Method', serviceIntegration: true } as never,
+      authorizer: {
+        kind: 'lambda-token',
+        logicalId: 'Auth',
+        lambdaLogicalId: 'AuthFn',
+        identitySource: 'Authorization',
+        resultTtlSeconds: 300,
+        declaredAt: 'Api/Method',
+        identityValidation: {
+          state: 'unresolved',
+          stackName: 'Api',
+          raw: { Ref: 'Pattern' },
+          reason: 'no state source',
+        },
+      },
+    } as unknown as RouteWithAuth;
+    await loadStateForRoutedStacks([apiStack], [], [entry], { fromState: true } as never);
+    // `AuthFn` is in no stack's template, so no Lambda adds a load: the one
+    // load is for the expression.
+    expect(loaded).toEqual(['Api']);
+  });
+
   it('does not load a stack whose JWT authorizer is all literal', async () => {
     const loaded: string[] = [];
     provide(loaded);

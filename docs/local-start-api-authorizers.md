@@ -27,7 +27,9 @@ Declared as an `AWS::ApiGateway::Authorizer` with `Type: 'TOKEN'`.
 cdkd reads the header named by `IdentitySource`, which is `Authorization` by
 default, and passes it to the authorizer Lambda as
 `event.authorizationToken`. When the header is missing, the request gets 401
-and the authorizer is not invoked.
+and the authorizer is not invoked. An `IdentityValidationExpression` is
+applied as the deployed API applies it: a header value that does not match
+the whole pattern gets 401 without invoking the authorizer.
 
 The authorizer must return a `policyDocument` with at least one
 `{ Effect: 'Allow', Resource: <methodArn> }` statement. cdkd matches
@@ -61,12 +63,28 @@ returns 401 without invoking the Lambda. An HTTP API falls through.
 
 Declared with `Type: 'COGNITO_USER_POOLS'`.
 
-cdkd reads the token from `Authorization: Bearer <token>` and verifies its
-signature against the user pool's JWKS, the public keys the pool publishes.
+cdkd reads the token from the `Authorization` header (the `Bearer ` prefix is
+optional, as on the deployed API) and verifies its signature against the user
+pool's JWKS, the public keys the pool publishes. It checks the token type and
+the method's `AuthorizationScopes` as the deployed API does:
+
+| Method | Accepted token |
+| --- | --- |
+| Without `AuthorizationScopes` | An ID token |
+| With `AuthorizationScopes` | An access token whose `scope` claim carries at least one of them |
+
+An `IdentityValidationExpression` must match the token's whole `aud` claim.
+An access token has no `aud`, so it never matches.
 
 - **Allowed:** the token's claims are passed to the handler under
   `event.requestContext.authorizer.claims`.
-- **Denied:** 403.
+- **Denied:** the status the deployed API returns:
+
+| Token | Response |
+| --- | --- |
+| Signature does not verify | 403 `{"Message":"Access Denied"}` |
+| Expired | 401 `{"message":"The incoming token has expired"}` |
+| Missing, malformed, unsigned, another pool's, wrong type, missing scope | 401 `{"message":"Unauthorized"}` |
 
 A `CognitoUserPoolsAuthorizer` names its user pool by reference
 (`Fn::GetAtt <Pool>.Arn`), so the template holds no pool id. cdkd reads it
@@ -81,13 +99,15 @@ from the deployed stack:
 
 Declared with `AuthorizerType: 'JWT'`.
 
-cdkd reads the token from `Authorization: Bearer <token>` and verifies its
-signature against the issuer's JWKS. It also checks the token's `aud` or
-`client_id` claim against `JwtConfiguration.Audience`.
+cdkd reads the token from the `Authorization` header (the `Bearer ` prefix is
+optional) and verifies its signature against the issuer's JWKS. It also checks
+the token's `aud` or `client_id` claim against `JwtConfiguration.Audience`.
 
 - **Allowed:** the token's claims are passed to the handler under
   `event.requestContext.authorizer.jwt.claims`.
 - **Denied:** 401.
+- **A route's `AuthorizationScopes`:** the token's `scope` (or `scp`) claim
+  must carry at least one of them, else 403 `{"message":"Forbidden"}`.
 
 An `HttpUserPoolAuthorizer` builds its issuer and audience from the user pool
 and app client it names, so the template holds references rather than
@@ -101,18 +121,31 @@ values. cdkd reads them from the deployed stack:
 If the issuer resolves but an audience entry does not, cdkd warns and checks
 the signature, issuer and expiry without the audience.
 
+`AuthorizationScopes` and an `IdentityValidationExpression` written as
+references (CDK's `OAuthScope.resourceServer` emits a `Fn::Join`) resolve from
+`--from-state` or `--from-cfn-stack` the same way. The scope and token-type
+checks are skipped for a token accepted because the JWKS was unreachable
+(below), since nothing about it was verified.
+
 ## Settings cdkd does not enforce
 
 cdkd still serves a route that carries one of these settings, but it does
 not check it. It warns once per route at startup, naming the route and the
 setting, so nothing is dropped silently:
 
-| Setting | Declared on |
+| Setting | When it is not enforced |
 | --- | --- |
-| `ApiKeyRequired` | A REST v1 method or a WebSocket route: API keys live in the deployed API |
-| `AuthorizationScopes` | A REST v1 method or an HTTP API route |
-| `IdentityValidationExpression` | A REST v1 TOKEN authorizer |
-| `Policy` | A REST v1 `AWS::ApiGateway::RestApi` (resource policy) |
+| `ApiKeyRequired` | Always, on a REST v1 method or a WebSocket route: API keys live in the deployed API |
+| `AuthorizationScopes` | On an authorizer other than REST v1 Cognito or HTTP API JWT, or when it stays an unresolved reference |
+| `IdentityValidationExpression` | When it stays an unresolved reference, or is not a pattern cdkd can evaluate |
+| `Policy` | Always, on a REST v1 `AWS::ApiGateway::RestApi` (resource policy) |
+
+cdkd evaluates `IdentityValidationExpression` as a JavaScript Unicode-mode
+pattern. Java syntax with no exact JavaScript equivalent (`\p{Alnum}`, `\A`,
+`\z`, an escaped `\_`) is warned and not applied, rather than applied with a
+different meaning. Java's ASCII-only `\p{Alpha}` / `\p{Lower}` / `\p{Upper}`
+are read as Unicode properties, so locally they also match a non-ASCII
+character the deployed API would reject.
 
 ## Result caching
 

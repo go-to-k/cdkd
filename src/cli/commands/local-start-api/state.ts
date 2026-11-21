@@ -136,15 +136,31 @@ export async function loadStateForRoutedStacks(
     }
   }
   // A JWT authorizer whose Issuer / Audience waits on state
-  // (go-to-k/cdkd#6419), or a REST v1 Cognito authorizer whose ProviderARNs do
-  // (go-to-k/cdkd#6717), needs its own stack's state even when no Lambda there
-  // is routed (an HTTP_PROXY or service-integration route, or a Lambda in
-  // another stack).
+  // (go-to-k/cdkd#6419), a REST v1 Cognito authorizer whose ProviderARNs do,
+  // and a route's intrinsic AuthorizationScopes or an authorizer's intrinsic
+  // IdentityValidationExpression (go-to-k/cdkd#6717) need their own stack's
+  // state even when no Lambda there is routed (an HTTP_PROXY or
+  // service-integration route, or a Lambda in another stack).
   const jwtAuthorizerStacks = new Set<string>();
+  const addAuthorizerStack = (stackName: string): void => {
+    jwtAuthorizerStacks.add(stackName);
+    reachableStackNames.add(stackName);
+  };
   for (const { authorizer } of routesWithAuth) {
     if ((authorizer?.kind === 'jwt' || authorizer?.kind === 'cognito') && authorizer.pending) {
-      jwtAuthorizerStacks.add(authorizer.pending.stackName);
-      reachableStackNames.add(authorizer.pending.stackName);
+      addAuthorizerStack(authorizer.pending.stackName);
+    }
+    if (
+      (authorizer?.kind === 'jwt' || authorizer?.kind === 'cognito') &&
+      authorizer.scopes?.state === 'unresolved'
+    ) {
+      addAuthorizerStack(authorizer.scopes.stackName);
+    }
+    if (
+      (authorizer?.kind === 'lambda-token' || authorizer?.kind === 'cognito') &&
+      authorizer.identityValidation?.state === 'unresolved'
+    ) {
+      addAuthorizerStack(authorizer.identityValidation.stackName);
     }
   }
   const stackHasIntrinsicEnv = (stackName: string): boolean => intrinsicEnvStacks.has(stackName);
