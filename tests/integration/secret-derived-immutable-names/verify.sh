@@ -130,13 +130,17 @@
 #      fails. The fault cleared, `cdkd diff` labels the reader's Value
 #      `[read value moved upstream]`, and the redeploy sends it (its `is sent`
 #      info line): its SSM value is the new queue's ARN. Before, the reader
-#      equalled its record and stayed on the deleted queue's ARN.
+#      equalled its record and stayed on the replaced queue's ARN. The failed
+#      deploy KEEPS the replaced queue, recorded as superseded (its delete
+#      waits for a successful deploy, go-to-k/cdkd#6445); the redeploy deletes
+#      it ('Deleting old PromoQueue (...), superseded by an earlier deploy').
 #   5i. LOAD-BEARING (go-to-k/cdkd#4852, a NESTED child): the same pattern
 #      through the nested PromoChild, whose row passes NestQueue's ARN (the
 #      nqueue field) to the child's PromoChildReader; the CHILD reader's
 #      AllowedPattern fails the child, and so the row. `cdkd diff --recursive`
 #      labels both the row's Parameters and the child reader's Value, and the
-#      redeploy sends both: the child's SSM value is the new queue's ARN.
+#      redeploy sends both: the child's SSM value is the new queue's ARN. The
+#      replaced NestQueue is kept and deleted the same way as in 5h.
 #   5j. LOAD-BEARING (go-to-k/cdkd#4852, a producer updated IN PLACE in an
 #      earlier run): PromoValueProducer (an SSM parameter whose Value is the
 #      pjvalue field) and PromoValueReader (its `Fn::GetAtt Value`). Rotate
@@ -1717,8 +1721,65 @@ promo_wait_queue_gone() { # usage: promo_wait_queue_gone <what> <queue name>: SQ
     fi
     [ "${attempt}" = 14 ] || sleep 5
   done
-  echo "FAIL: premise: $1 still exists 65s after its replacement deleted it" >&2
+  echo "FAIL: $1 still exists 65s after the redeploy deleted it" >&2
   exit 1
+}
+promo_log_line_has() { # usage: promo_log_line_has <needle>...: 0 when one DEPLOY_LOG line holds every needle
+  # The needles ride in ARGV (cleared before the file is read): colour codes
+  # sit between them on a resource line, so each is an index() check.
+  awk 'BEGIN { k = ARGC - 2; for (i = 1; i <= k; i++) { n[i] = ARGV[i]; ARGV[i] = "" } }
+    { ok = 1; for (i = 1; i <= k; i++) if (!index($0, n[i])) ok = 0; if (ok) found = 1 }
+    END { exit !found }' "$@" "${DEPLOY_LOG}"
+}
+promo_superseded_ids() { # usage: promo_superseded_ids <logical id> -> the recorded physical ids of its superseded entries, one per line ("none" for zero)
+  local out
+  out="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg id "$1" '[(.supersededResources // [])[] | select(.logicalId == $id) | .state.physicalId] | if length == 0 then "none" else .[] end')" || return 1
+  printf '%s\n' "${out}"
+}
+# go-to-k/cdkd#6445: a replaced queue's delete waits for the rest of the deploy
+# to succeed, so a FAILED deploy keeps the old queue live and records it in
+# state as superseded (delete-replaced.ts `recordSupersededForDeferral`;
+# deferred-deletes.ts `warnUnretriedReplacedDeletes` prints the info line).
+promo_assert_old_queue_kept() { # usage: promo_assert_old_queue_kept <which> <logical id> <queue name> <its ARN before the deploy>
+  local which="$1" lid="$2" qname="$3" arn_before="$4" kept_arn ids
+  if ! promo_log_line_has "Old ${lid} (" "was not deleted: the deploy failed first" "cdkd keeps it in state, and the next deploy deletes it"; then
+    echo "FAIL: premise: the ${which} log has no 'Old ${lid} (...) was not deleted: the deploy failed first ... cdkd keeps it in state, and the next deploy deletes it' line (the old queue was deleted inline, kept untracked, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+  # The old queue is still the live holder of its name: the same ARN as before.
+  promo_capture kept_arn "the old ${lid}'s live ARN after the ${which} (promo_queue_arn)" promo_queue_arn "${qname}"
+  if [ "${kept_arn}" != "${arn_before}" ]; then
+    echo "FAIL: premise: the old ${lid}'s name is held by another queue after the ${which} (not the one kept)" >&2
+    exit 1
+  fi
+  promo_capture ids "${lid}'s superseded entries after the ${which}" promo_superseded_ids "${lid}"
+  if [ "${ids}" = "none" ] || [ "$(printf '%s\n' "${ids}" | wc -l | tr -d ' ')" != "1" ] || [ "${ids##*/}" != "${qname}" ]; then
+    echo "FAIL: premise: state does not record exactly one superseded ${lid} entry for the old queue after the ${which} (go-to-k/cdkd#6445)" >&2
+    exit 1
+  fi
+}
+# The next successful deploy sends the carried delete (superseded-retry.ts
+# `retryCarriedSupersededResources`) and drops the entry.
+promo_assert_old_queue_deleted() { # usage: promo_assert_old_queue_deleted <which> <logical id> <queue name>
+  local which="$1" lid="$2" qname="$3" ids
+  if ! promo_log_line_has "Deleting old ${lid} (" "superseded by an earlier deploy"; then
+    echo "FAIL: the ${which} log has no 'Deleting old ${lid} (...), superseded by an earlier deploy...' line (the carried delete was not sent, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+  if ! promo_log_line_has "Old ${lid} (" ") deleted"; then
+    echo "FAIL: the ${which} log has no 'Old ${lid} (...) deleted' line (the carried delete did not complete, or the wording drifted)" >&2
+    log_tail
+    exit 1
+  fi
+  promo_wait_queue_gone "the old ${lid}" "${qname}"
+  promo_capture ids "${lid}'s superseded entries after the ${which}" promo_superseded_ids "${lid}"
+  if [ "${ids}" != "none" ]; then
+    echo "FAIL: state still records a superseded ${lid} entry after the ${which} deleted it" >&2
+    exit 1
+  fi
 }
 
 echo "==> Step 5h: a reader left on a replaced queue by an INTERRUPTED deploy is sent on the next one (go-to-k/cdkd#4852)"
@@ -1789,7 +1850,9 @@ if ! grep -qF -- "Failed to update SSM parameter PromoReader" "${DEPLOY_LOG}"; t
   exit 1
 fi
 promo_assert_masked "step 5h fault deploy" PQ_NAME PQ_NAME_2
-promo_wait_queue_gone "the replaced PromoQueue" "${PQ_NAME}"
+# The failed deploy kept the old queue (its delete waits for a successful
+# deploy, go-to-k/cdkd#6445): live, and recorded as superseded.
+promo_assert_old_queue_kept "step 5h fault deploy" PromoQueue "${PQ_NAME}" "${PQ_ARN_1}"
 promo_capture PQ_ARN_2 "PQ_ARN_2 (promo_queue_arn)" promo_queue_arn "${PQ_NAME_2}"
 if [ "${PQ_ARN_2##*:}" != "${PQ_NAME_2}" ]; then
   echo "FAIL: premise: the replacement PromoQueue's live ARN does not end with the rotated pqueue value" >&2
@@ -1799,7 +1862,7 @@ fi
 # NO_CHANGE: the queue's recorded ARN is the SAME string as before (its
 # template spelling did not change); the reader's record still holds the
 # version it read; the queue's record no longer holds it; and AWS still holds
-# the deleted queue's ARN in the reader.
+# the old (replaced, kept) queue's ARN in the reader.
 promo_capture PROMO_GOT "PromoQueue's recorded Arn" state_attribute PromoQueue Arn
 expect_eq "premise: PromoQueue's recorded Arn after its replacement (the same reference spelling)" \
   "${PQ_ARN_RECORDED}" "${PROMO_GOT}"
@@ -1813,10 +1876,10 @@ if [ "${PROMO_VERDICT}" != "true" ]; then
 fi
 promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PH_PARAM_NAME}" promo_param_value "${SDIN_PH_PARAM_NAME}"
 if [ "${PROMO_GOT}" != "${PQ_ARN_1}" ]; then
-  echo "FAIL: premise: PromoReader's SSM value is not the deleted queue's ARN after the failed deploy (the interruption did not leave it stale)" >&2
+  echo "FAIL: premise: PromoReader's SSM value is not the replaced queue's ARN after the failed deploy (the interruption did not leave it stale)" >&2
   exit 1
 fi
-echo "    OK: the interrupted deploy replaced PromoQueue and left PromoReader on the deleted queue's ARN"
+echo "    OK: the interrupted deploy replaced PromoQueue (old one kept as superseded) and left PromoReader on the old queue's ARN"
 # The fault cleared: `cdkd diff` must name the reason. Its verdict is kept and
 # asserted AFTER the redeploy's red line, so a pre-fix binary fails on the
 # live value, the symptom.
@@ -1833,7 +1896,7 @@ promo_expect_deployed "step 5h redeploy"
 # LOAD-BEARING (the red line): the reader was sent the replacement's ARN.
 promo_capture PH_LIVE "PH_LIVE (promo_param_value)" promo_param_value "${SDIN_PH_PARAM_NAME}"
 if [ "${PH_LIVE}" != "${PQ_ARN_2}" ]; then
-  if [ "${PH_LIVE}" = "${PQ_ARN_1}" ]; then PH_HELD="the deleted queue's ARN"; else PH_HELD="neither queue's ARN"; fi
+  if [ "${PH_LIVE}" = "${PQ_ARN_1}" ]; then PH_HELD="the replaced queue's ARN"; else PH_HELD="neither queue's ARN"; fi
   echo "FAIL: reader NO_CHANGE: PromoReader's SSM value is ${PH_HELD} after the redeploy, not the replacement PromoQueue's (go-to-k/cdkd#4852)" >&2
   log_tail
   exit 1
@@ -1849,6 +1912,8 @@ if ! grep -qF -- "PromoReader is sent: Value read a secret-derived value at a ne
 fi
 promo_assert_masked "step 5h redeploy" PQ_NAME PQ_NAME_2
 echo "    OK: the interrupted reader was promoted and sent the replacement queue's ARN"
+promo_assert_old_queue_deleted "step 5h redeploy" PromoQueue "${PQ_NAME}"
+echo "    OK: the redeploy deleted the old PromoQueue the failed deploy kept"
 promo_assert_settled "step 5h" "PromoReader|(AWS::SSM::Parameter)"
 
 echo "==> Step 5i: a nested child reader left on a replaced queue is sent through its row (go-to-k/cdkd#4852)"
@@ -1913,7 +1978,7 @@ if ! grep -qF -- "Failed to update SSM parameter PromoChildReader" "${DEPLOY_LOG
   exit 1
 fi
 promo_assert_masked "step 5i fault deploy" NQ_NAME NQ_NAME_2
-promo_wait_queue_gone "the replaced NestQueue" "${NQ_NAME}"
+promo_assert_old_queue_kept "step 5i fault deploy" NestQueue "${NQ_NAME}" "${NQ_ARN_1}"
 promo_capture NQ_ARN_2 "NQ_ARN_2 (promo_queue_arn)" promo_queue_arn "${NQ_NAME_2}"
 if [ "${NQ_ARN_2##*:}" != "${NQ_NAME_2}" ]; then
   echo "FAIL: premise: the replacement NestQueue's live ARN does not end with the rotated nqueue value" >&2
@@ -1934,10 +1999,10 @@ if [ "${PROMO_VERDICT}" != "true" ]; then
 fi
 promo_capture PROMO_GOT "the live value of SSM parameter ${SDIN_PI_PARAM_NAME}" promo_param_value "${SDIN_PI_PARAM_NAME}"
 if [ "${PROMO_GOT}" != "${NQ_ARN_1}" ]; then
-  echo "FAIL: premise: PromoChildReader's SSM value is not the deleted queue's ARN after the failed deploy (the interruption did not leave it stale)" >&2
+  echo "FAIL: premise: PromoChildReader's SSM value is not the replaced queue's ARN after the failed deploy (the interruption did not leave it stale)" >&2
   exit 1
 fi
-echo "    OK: the interrupted deploy replaced NestQueue and left the row and its child reader on the deleted queue's ARN"
+echo "    OK: the interrupted deploy replaced NestQueue (old one kept as superseded) and left the row and its child reader on the old queue's ARN"
 set +e
 env "${PROMO_ENV[@]}" node "${LOCAL_DIST}" diff "${STACK}" --recursive \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${DEPLOY_LOG}" 2>&1
@@ -1953,7 +2018,7 @@ promo_expect_deployed "step 5i redeploy"
 # LOAD-BEARING (the red line): the child reader holds the replacement's ARN.
 promo_capture PI_LIVE "PI_LIVE (promo_param_value)" promo_param_value "${SDIN_PI_PARAM_NAME}"
 if [ "${PI_LIVE}" != "${NQ_ARN_2}" ]; then
-  if [ "${PI_LIVE}" = "${NQ_ARN_1}" ]; then PI_HELD="the deleted queue's ARN"; else PI_HELD="neither queue's ARN"; fi
+  if [ "${PI_LIVE}" = "${NQ_ARN_1}" ]; then PI_HELD="the replaced queue's ARN"; else PI_HELD="neither queue's ARN"; fi
   echo "FAIL: child reader NO_CHANGE: PromoChildReader holds ${PI_HELD} after the redeploy, not the replacement NestQueue's (go-to-k/cdkd#4852)" >&2
   log_tail
   exit 1
@@ -1977,6 +2042,8 @@ if ! grep -qF -- "PromoChild is sent: Parameters read a secret-derived value at 
 fi
 promo_assert_masked "step 5i redeploy" NQ_NAME NQ_NAME_2
 echo "    OK: the row and its child reader were promoted and the child holds the replacement queue's ARN"
+promo_assert_old_queue_deleted "step 5i redeploy" NestQueue "${NQ_NAME}"
+echo "    OK: the redeploy deleted the old NestQueue the failed deploy kept"
 promo_assert_settled "step 5i" "PromoChild|(AWS::CloudFormation::Stack)" "PromoChildReader|(AWS::SSM::Parameter)"
 
 echo "==> Step 5j: a reader of a producer updated in place in an EARLIER run is sent (go-to-k/cdkd#4852)"

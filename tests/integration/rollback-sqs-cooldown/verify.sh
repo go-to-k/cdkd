@@ -10,22 +10,31 @@
 #     1. Deploy v1 clean: custom-named queue `-queue-x`. State has 1 resource.
 #     2. Deploy with QUEUE_SUFFIX=y + INJECT_FAIL under --no-rollback
 #        --force-stateful-recreation: the create-only QueueName change drives a
-#        REPLACEMENT (new `-queue-y` created, old `-queue-x` deleted — its ~60s
-#        re-creation cooldown starts here), then FailingQueue's CreateQueue is
-#        rejected. Exit NON-ZERO, journal records the completed replacement.
+#        REPLACEMENT (new `-queue-y` created), then FailingQueue's CreateQueue
+#        is rejected. Exit NON-ZERO, journal records the completed replacement.
+#        The old `-queue-x` is KEPT: a replaced resource's delete waits for the
+#        rest of the deploy to succeed (go-to-k/cdkd#6374 / #6445), so the
+#        failed deploy says so and records it in state as superseded. The
+#        fixture then deletes `-queue-x` itself (out of band), which starts its
+#        ~60s re-creation cooldown and is the one verdict on which the rollback
+#        RE-CREATES a deferred old resource instead of re-adopting it.
 #     3. `cdkd rollback --force --verbose` immediately (< 60s): the
-#        reverse-replacement's initial re-create of `-queue-x` must hit
-#        `QueueDeletedRecently`, retry through the window (visible in the
-#        --verbose retry lines), restore `-queue-x`, delete `-queue-y`, clear
-#        the journal, and exit 0.
+#        reverse-replacement sees `-queue-x` gone, and its initial re-create of
+#        `-queue-x` must hit `QueueDeletedRecently`, retry through the window
+#        (visible in the --verbose retry lines), restore `-queue-x`, delete
+#        `-queue-y`, clear the journal, and exit 0.
 #   PHASE 2 (failed-only journal retention cycle, #1208):
 #     4. Failing deploy (same injected resource) WITHOUT --no-rollback: clean
-#        automatic rollback. Exit non-zero, the output prints the "automatic
-#        rollback restored the pre-deploy state" guidance, and the journal
+#        automatic rollback. Exit non-zero, the output warns that FailingQueue's
+#        failed CREATE recorded no physical id (go-to-k/cdkd#6204: the
+#        "automatic rollback restored the pre-deploy state" guidance is no
+#        longer printed when --revert-failed has nothing to act on), and the journal
 #        SURVIVES as reason=auto-rollback-clean / operations=[] /
 #        failedOperations=[FailingQueue] (raw S3 read).
-#     5. The NEXT deploy (same failing shape) prints the failed-only
-#        `--revert-failed` note at its start, and its own clean auto-rollback
+#     5. The NEXT deploy (same failing shape) prints NO failed-only
+#        `--revert-failed` note at its start (go-to-k/cdkd#6204: the kept
+#        failed CREATE has no physical id, so there is nothing to revert), and
+#        its own clean auto-rollback
 #        PRESERVES the older failed-only segment (PR #1216) — the journal now
 #        holds exactly 2 failed-only segments.
 #     6. `cdkd rollback --force --revert-failed` consumes it: the
@@ -192,9 +201,34 @@ if ! aws sqs get-queue-url --queue-name "${QUEUE_Y_NAME}" --region "${REGION}" >
   echo "[verify] FAIL: ${QUEUE_Y_NAME} missing — the replacement did not land"
   exit 1
 fi
-# ...and the old-named queue is deleted (its ~60s re-creation cooldown started
-# at the delete). DeleteQueue visibility is eventually consistent, so poll
+# ...and the old-named queue is KEPT: its delete waits for the rest of the
+# deploy to succeed (deferred-deletes.ts warnUnretriedReplacedDeletes prints
+# this line for a failed deploy), it is still live, and state records it as
+# superseded (delete-replaced.ts recordSupersededForDeferral), so the next
+# successful deploy or the rollback below settles it.
+if ! awk 'index($0, "Old NamedQueue (") && index($0, "was not deleted: the deploy failed first") && index($0, "cdkd keeps it in state, and the next deploy deletes it") { found = 1 } END { exit !found }' \
+  /tmp/rollback-sqs-replace.log; then
+  echo "[verify] FAIL: the replacement deploy has no 'Old NamedQueue (...) was not deleted: the deploy failed first ... cdkd keeps it in state' line (the old queue was deleted inline, kept untracked, or the wording drifted)"
+  exit 1
+fi
+if ! aws sqs get-queue-url --queue-name "${QUEUE_X_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: old ${QUEUE_X_NAME} is not live after the failed replacement deploy (its delete must wait for a successful deploy)"
+  exit 1
+fi
+X_SUPERSEDED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq -r '[(.supersededResources // [])[] | select(.logicalId == "NamedQueue") | .state.physicalId] | join(",")')"
+case "${X_SUPERSEDED}" in
+  *,*|"") echo "[verify] FAIL: state records superseded NamedQueue entries '${X_SUPERSEDED}' (expected exactly the old ${QUEUE_X_NAME})"; exit 1 ;;
+  */"${QUEUE_X_NAME}") ;;
+  *) echo "[verify] FAIL: state's superseded NamedQueue entry is ${X_SUPERSEDED} (expected the old ${QUEUE_X_NAME})"; exit 1 ;;
+esac
+# Delete the kept old queue out of band: its ~60s re-creation cooldown starts
+# here, and AWS reporting it gone is what makes the rollback RE-CREATE it
+# (replay-reverse-replacement.ts: a 'deferred' op re-adopts on every survivor
+# verdict but gone). DeleteQueue visibility is eventually consistent, so poll
 # briefly instead of asserting a single snapshot.
+X_URL="$(aws sqs get-queue-url --queue-name "${QUEUE_X_NAME}" --region "${REGION}" --query QueueUrl --output text)"
+aws sqs delete-queue --queue-url "${X_URL}" --region "${REGION}"
 X_GONE=false
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if gone_probe aws sqs get-queue-url --queue-name "${QUEUE_X_NAME}" --region "${REGION}"; then
@@ -204,10 +238,10 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 2
 done
 if [ "${X_GONE}" != "true" ]; then
-  echo "[verify] FAIL: old ${QUEUE_X_NAME} still resolvable ~20s after the replacement delete"
+  echo "[verify] FAIL: old ${QUEUE_X_NAME} still resolvable ~20s after the fixture deleted it"
   exit 1
 fi
-echo "[verify] step 3 ok: replacement landed (y created, x deleted — cooldown running), journal present"
+echo "[verify] step 3 ok: replacement landed (y created, x kept as superseded, then deleted out of band — cooldown running), journal present"
 
 echo "[verify] step 4: cdkd rollback ${STACK} --force --verbose immediately (expect the re-create to retry through QueueDeletedRecently, exit 0)"
 # Success-expected, but echo the captured output BEFORE asserting the exit
@@ -224,6 +258,13 @@ if [ "${RB_RC}" -ne 0 ]; then
 fi
 if ! grep -qi 'reverse-replace\|Reversing replacement' /tmp/rollback-sqs-rb.log; then
   echo "[verify] FAIL: rollback output does not mention the reverse-replacement"
+  exit 1
+fi
+# The deferred old queue is gone, so the rollback re-creates it rather than
+# re-adopting it (replay-reverse-replacement.ts).
+if ! grep -qF -- 'Rollback: the old resource of NamedQueue (' /tmp/rollback-sqs-rb.log \
+  || ! grep -F -- 'Rollback: the old resource of NamedQueue (' /tmp/rollback-sqs-rb.log | grep -qF -- 'is gone — re-creating it'; then
+  echo "[verify] FAIL: rollback output has no 'Rollback: the old resource of NamedQueue (...) is gone — re-creating it' line (it re-adopted, or the wording drifted)"
   exit 1
 fi
 # The --verbose retry lines embed the AWS error message, proving the initial
@@ -263,8 +304,17 @@ if [ "${AUTORB_RC}" -eq 0 ]; then
   echo "[verify] FAIL: INJECT_FAIL deploy unexpectedly SUCCEEDED"
   exit 1
 fi
-if ! grep -qi 'automatic rollback restored the pre-deploy state' /tmp/rollback-sqs-autorb.log; then
-  echo "[verify] FAIL: deploy output missing the #1208 failed-only retention guidance line"
+# go-to-k/cdkd#6204: with FailingQueue's failed CREATE recording no physical
+# id, --revert-failed has nothing to act on, so the clean rollback warns about
+# it (settle.ts unaddressableFailedCreateMessage) instead of printing "The
+# automatic rollback restored the pre-deploy state." The journal it kept is
+# asserted in step 5a.
+if ! grep -qF -- 'FailingQueue (AWS::SQS::Queue): the failed CREATE recorded no physical id' /tmp/rollback-sqs-autorb.log; then
+  echo "[verify] FAIL: deploy output missing the 'FailingQueue (AWS::SQS::Queue): the failed CREATE recorded no physical id' warning of the clean automatic rollback"
+  exit 1
+fi
+if grep -qi 'automatic rollback restored the pre-deploy state' /tmp/rollback-sqs-autorb.log; then
+  echo "[verify] FAIL: deploy output prints the --revert-failed guidance although the failed CREATE recorded no physical id (go-to-k/cdkd#6204)"
   exit 1
 fi
 assert_gone "FailingQueue ${FAILING_QUEUE_NAME} exists — the injected CreateQueue should have been rejected" \
@@ -285,7 +335,7 @@ if [ "${J_SEGS}" != "1" ] || [ "${J_REASON}" != "auto-rollback-clean" ] || [ "${
 fi
 echo "[verify] step 5 ok: clean auto-rollback retained the failed-only journal (auto-rollback-clean, operations=[], failedOperations=[FailingQueue])"
 
-echo "[verify] step 6: next deploy must print the --revert-failed note at its start (re-run the failing deploy)"
+echo "[verify] step 6: next deploy (re-run the failing deploy) must print NO --revert-failed note, and must keep the older failed-only segment"
 set +e
 INJECT_FAIL=true ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" > /tmp/rollback-sqs-note.log 2>&1
 NOTE_RC=$?
@@ -295,12 +345,15 @@ if [ "${NOTE_RC}" -eq 0 ]; then
   echo "[verify] FAIL: second INJECT_FAIL deploy unexpectedly SUCCEEDED"
   exit 1
 fi
-if ! grep -qi 'failed and was automatically rolled back' /tmp/rollback-sqs-note.log; then
-  echo "[verify] FAIL: next deploy did not print the failed-only journal note"
+# go-to-k/cdkd#6204 (journal-at-start.ts): every kept failed op is a failed
+# CREATE with no physical id, which --revert-failed can only skip, so no note
+# is printed. The sentinel proves this deploy reached its own clean rollback.
+if ! grep -qF -- 'FailingQueue (AWS::SQS::Queue): the failed CREATE recorded no physical id' /tmp/rollback-sqs-note.log; then
+  echo "[verify] FAIL: the second INJECT_FAIL deploy has no 'FailingQueue (AWS::SQS::Queue): the failed CREATE recorded no physical id' warning (it failed elsewhere, or the wording drifted)"
   exit 1
 fi
-if ! grep -q -- '--revert-failed' /tmp/rollback-sqs-note.log; then
-  echo "[verify] FAIL: the journal note does not point at --revert-failed"
+if grep -qi 'failed and was automatically rolled back' /tmp/rollback-sqs-note.log; then
+  echo "[verify] FAIL: next deploy printed the failed-only --revert-failed note although the kept failed CREATE has no physical id (go-to-k/cdkd#6204)"
   exit 1
 fi
 # The second clean auto-rollback must PRESERVE the older failed-only segment
@@ -313,7 +366,7 @@ if [ "${J2_SEGS}" != "2" ] || [ "${J2_NONEMPTY_OPS}" != "0" ]; then
   echo "[verify] FAIL: journal after the 2nd clean auto-rollback should hold 2 failed-only segments (got segments=${J2_SEGS}, segments-with-ops=${J2_NONEMPTY_OPS}) — the older segment must be preserved (PR #1216)"
   exit 1
 fi
-echo "[verify] step 6 ok: the next deploy printed the failed-only --revert-failed note; older journal segment preserved (2 failed-only segments)"
+echo "[verify] step 6 ok: the next deploy printed no --revert-failed note (nothing to revert); older journal segment preserved (2 failed-only segments)"
 
 echo "[verify] step 7: cdkd rollback ${STACK} --force --revert-failed (expect the #1198 skip-with-warning; exit 0 or 2)"
 set +e
