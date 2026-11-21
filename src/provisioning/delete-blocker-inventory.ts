@@ -122,7 +122,6 @@ const GROUP_STRIP = '%s, then DeleteGroup refused: unconfirmed';
  * provider cannot join it unnoticed. #6751 settles these by live probe.
  */
 export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = [
-  'AWS::Neptune::DBCluster',
   'AWS::DocDB::DBCluster',
   'AWS::FSx::FileSystem',
 ];
@@ -355,6 +354,12 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   none('AWS::DocDB::DBSubnetGroup', perms('rds:DeleteDBSubnetGroup')),
   none('AWS::DocDB::DBInstance', perms('rds:DeleteDBInstance, rds:DescribeDBInstances')),
   none('AWS::Neptune::DBSubnetGroup', perms('rds:DeleteDBSubnetGroup, rds:DescribeDBSubnetGroups')),
+  none(
+    'AWS::Neptune::DBCluster',
+    perms(
+      'rds:DeleteDBCluster, rds:DeleteDBInstance, rds:RemoveFromGlobalCluster (#6751 probe: with an out-of-band member instance the stack delete failed with "Cluster can\'t be deleted. It still contains DB instances", so the handler deletes no member. CloudTrail shows it detaching a global-cluster member first; a declared GlobalClusterIdentifier routes the type to Cloud Control, which keeps that delete)'
+    )
+  ),
   none(
     'AWS::Neptune::DBInstance',
     perms('rds:DeleteDBInstance, rds:DescribeDBInstances, rds:CreateDBSnapshot')
