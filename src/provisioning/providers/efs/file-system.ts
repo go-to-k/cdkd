@@ -405,7 +405,9 @@ export async function applyFileSystemProtection(
 /**
  * How long a delete waits for a deleted replication configuration to finish
  * tearing down: DeleteFileSystem keeps refusing until it has (CloudFormation's
- * handler polled for about six minutes in the #6751 probe). Mutable for tests.
+ * handler polled for about six minutes in the #6751 probe). It fits the
+ * default 30-minute --resource-timeout; a shorter one rejects the delete while
+ * this loop is still waiting. Mutable for tests.
  */
 export const REPLICATION_TEARDOWN_WAIT = { intervalMs: 15_000, attempts: 60 };
 
@@ -428,8 +430,11 @@ async function deleteOwnReplication(this: EFSProvider, fileSystemId: string): Pr
   const resp = await this.getClient()
     .send(new DescribeReplicationConfigurationsCommand({ FileSystemId: fileSystemId }))
     .catch(() => undefined);
-  const own = (resp?.Replications ?? []).some((r) => r.SourceFileSystemId === fileSystemId);
+  const own = (resp?.Replications ?? []).find((r) => r.SourceFileSystemId === fileSystemId);
   if (!own) return false;
+  // A re-run while an earlier delete is still tearing it down: only wait.
+  const destinations = own.Destinations ?? [];
+  if (destinations.length > 0 && destinations.every((d) => d.Status === 'DELETING')) return true;
   try {
     await this.getClient().send(
       new DeleteReplicationConfigurationCommand({ SourceFileSystemId: fileSystemId })

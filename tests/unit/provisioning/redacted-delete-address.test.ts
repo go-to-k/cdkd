@@ -591,7 +591,8 @@ describe('EMR TASK configs skip only the best-effort scale-to-0', () => {
           'G',
           'ig-1',
           'AWS::EMR::InstanceGroupConfig',
-          { InstanceRole: 'TASK', JobFlowId: SECRET_REF }
+          // A declared policy too: its removal must not send the redacted id either.
+          { InstanceRole: 'TASK', JobFlowId: SECRET_REF, AutoScalingPolicy: { Rules: [] } }
         ),
       'JobFlowId is redacted',
     ],

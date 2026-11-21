@@ -700,10 +700,18 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         try {
           await removeScalingPolicyForDelete(this.getClient(), jobFlowId, physicalId);
         } catch (error) {
-          // Best effort like the scale-in below: the cluster's termination ends it too.
-          const head = safeMsg`Removing the automatic scaling policy of EMR instance group ${physicalId} failed: `;
-          const text = this.cleanupFailureText(head, error, context?.maskSecrets);
-          this.logger.warn(maskerOrIdentity(context?.maskSecrets)(safeMsg`${head}${text}`));
+          // A cluster or group already gone: the scale-in below meets the same
+          // InvalidRequestException and owns the region check, so stay quiet here.
+          if (error instanceof InvalidRequestException) {
+            this.logger.debug(
+              safeMsg`EMR instance group ${physicalId} policy removal skipped (cluster/group gone)`
+            );
+          } else {
+            // Best effort like the scale-in below: the cluster's termination ends it too.
+            const head = safeMsg`Removing the automatic scaling policy of EMR instance group ${physicalId} failed: `;
+            const text = this.cleanupFailureText(head, error, context?.maskSecrets);
+            this.logger.warn(maskerOrIdentity(context?.maskSecrets)(safeMsg`${head}${text}`));
+          }
         }
       }
       try {

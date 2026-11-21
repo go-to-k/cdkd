@@ -97,6 +97,23 @@ describe('EFS FileSystem delete with a replication configuration (#6751)', () =>
     expect(mockSend.mock.calls[2][0].input).toEqual({ SourceFileSystemId: FS });
   });
 
+  it('only waits, without a second DeleteReplicationConfiguration, when the configuration is already deleting', async () => {
+    mockSend
+      .mockRejectedValueOnce(inReplication())
+      .mockResolvedValueOnce({
+        Replications: [{ SourceFileSystemId: FS, Destinations: [{ FileSystemId: OTHER, Status: 'DELETING' }] }],
+      })
+      .mockResolvedValueOnce({});
+
+    await new EFSProvider().delete('Fs', FS, 'AWS::EFS::FileSystem');
+
+    expect(names()).toEqual([
+      'DeleteFileSystemCommand',
+      'DescribeReplicationConfigurationsCommand',
+      'DeleteFileSystemCommand',
+    ]);
+  });
+
   it('sends only DeleteFileSystem when it is not refused', async () => {
     mockSend.mockResolvedValueOnce({});
     await new EFSProvider().delete('Fs', FS, 'AWS::EFS::FileSystem');
