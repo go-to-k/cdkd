@@ -92,6 +92,13 @@ describe('planContributorInsightsOp', () => {
     expect(plan(before, undefined)).toEqual({ action: 'ENABLE', mode: 'THROTTLED_KEYS' });
   });
 
+  // go-to-k/cdkd#6778: the strict unsettled re-read reads DISABLING as
+  // `{Enabled: false}`; a removal retried then must not send a second DISABLE.
+  it('issues nothing on removal when the previous side is already disabled', () => {
+    expect(plan(undefined, { Enabled: false })).toBeUndefined();
+    expect(plan(undefined, { Enabled: 'false' })).toBeUndefined();
+  });
+
   it('disables on removal even when the recorded previous is unreadable', () => {
     expect(plan(undefined, 'junk')).toEqual({ action: 'DISABLE' });
   });
@@ -235,6 +242,11 @@ describe('completeTableContributorInsightsBaseline', () => {
       complete({}, { Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' }, { Enabled: true })
     ).toEqual({ Enabled: true, Mode: 'ACCESSED_AND_THROTTLED_KEYS' });
     expect(complete({}, { Enabled: false }, { Enabled: 'true' })).toEqual({ Enabled: true });
+    // A disabled live block carrying a mode (the reverse-map never emits one,
+    // but the completion must not lean on that) lends no mode.
+    expect(complete({}, { Enabled: false, Mode: 'THROTTLED_KEYS' }, { Enabled: true })).toEqual({
+      Enabled: true,
+    });
   });
 
   it('leaves a baseline that records the key alone, whatever it holds', () => {

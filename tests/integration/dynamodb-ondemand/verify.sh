@@ -357,7 +357,7 @@ read_ci_status() {
 wait_ci_status() { # usage: wait_ci_status <status> <label>
   local now=""
   for _ in $(seq 1 60); do
-    now=$(read_ci_status)
+    now=$(read_ci_status || echo error)
     [ "${now}" = "$1" ] && return 0
     sleep 5
   done
@@ -421,10 +421,15 @@ if [ "${CI_MODE_AFTER}" != "${EXPECTED_CI_MODE}" ]; then
 fi
 CI_DRIFT_JSON=$(mktemp)
 CI_DRIFT_RC=$(ci_drift "${CI_DRIFT_JSON}")
+# Scoped to this table, as the Phase 1.5 drift arms are: another resource's
+# drift is not what this arm proves.
 CI_CLEAN=$(jq --arg id "${CI_LOGICAL_ID}" \
   '[.[].clean[]? | select(.logicalId == $id)] | length' "${CI_DRIFT_JSON}" 2>/dev/null || echo unparsable)
-if [ "${CI_DRIFT_RC}" != "0" ] || [ "${CI_CLEAN}" != "1" ]; then
-  echo "FAIL (issue go-to-k/cdkd#6778): expected cdkd drift CLEAN (exit 0, ${CI_LOGICAL_ID} clean) after drift --revert (rc=${CI_DRIFT_RC} clean=${CI_CLEAN}):" >&2
+CI_LEFT=$(jq -r --arg id "${CI_LOGICAL_ID}" \
+  '[.[].drifted[]? | select(.logicalId == $id) | .changes[]?.path | select(startswith("ContributorInsightsSpecification"))] | join(",")' \
+  "${CI_DRIFT_JSON}" 2>/dev/null || echo unparsable)
+if [ "${CI_CLEAN}" != "1" ] || [ -n "${CI_LEFT}" ]; then
+  echo "FAIL (issue go-to-k/cdkd#6778): expected ${CI_LOGICAL_ID} CLEAN in cdkd drift after drift --revert (rc=${CI_DRIFT_RC} clean=${CI_CLEAN} insights paths='${CI_LEFT}'):" >&2
   cat "${CI_DRIFT_JSON}" >&2
   rm -f "${CI_DRIFT_JSON}"
   exit 1

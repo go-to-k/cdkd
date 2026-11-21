@@ -69,7 +69,7 @@ export interface ContributorInsightsOp {
  * The call one block needs, given the block the PREVIOUS side recorded.
  *
  * - `absent` with a DECLARED previous (usable or not) is a template REMOVAL and
- *   DISABLES — the rule this provider's other post-ACTIVE blocks (PITR, TTL,
+ *   DISABLES, unless the previous side is already disabled — the rule this provider's other post-ACTIVE blocks (PITR, TTL,
  *   Kinesis) and the table-level block already follow. Because the rule is
  *   symmetric in its two sides, a rollback — which replays `update()` with the
  *   sides SWAPPED — restores the old setting through the same arms.
@@ -88,7 +88,12 @@ export function planContributorInsightsOp(
     return undefined;
   }
   if (desired.kind === 'absent') {
-    return previous.kind === 'absent' ? undefined : { action: 'DISABLE' };
+    // Absent means disabled, so a previous side already disabled needs no
+    // call (go-to-k/cdkd#6778: the strict unsettled re-read reads DISABLING
+    // as `{Enabled: false}`, and a second DISABLE then would race the first).
+    return previous.kind === 'absent' || (previous.kind === 'usable' && !previous.enabled)
+      ? undefined
+      : { action: 'DISABLE' };
   }
   if (
     previous.kind === 'usable' &&
@@ -263,6 +268,12 @@ export function reverseMapTableContributorInsights(
  * declares none takes the live mode while both sides are enabled (AWS applies
  * its default mode, which the capture would have recorded). `Enabled` is a
  * boolean, the spelling the reverse-map emits.
+ *
+ * Known residual: `drift --accept` of a REMOVAL (a live read that reported no
+ * block) writes the key as `undefined` through `setAtPath`, which the state
+ * write drops, so the accepted baseline looks exactly like a legacy one. Once
+ * the live read reports a block again it is compared with the declaration,
+ * not with the accepted absence, and may be reported again.
  */
 export function completeTableContributorInsightsBaseline(
   baseline: Record<string, unknown>,
