@@ -3245,6 +3245,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'AliasTarget',
+        'AZAffinity',
         'CidrRoutingConfig',
         'Comment',
         'Failover',
@@ -3262,7 +3263,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
         'Weight',
       ]),
-      sdkUnwired: new Map<string, string>([['AZAffinity', 'not yet implemented by cdkd']]),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       primaryIdentifier: new Set<string>(['HostedZoneId', 'Name', 'SetIdentifier', 'Type']),

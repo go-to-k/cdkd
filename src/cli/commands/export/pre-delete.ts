@@ -1,4 +1,5 @@
 import { commandHole } from '../../../utils/pasteable-command.js';
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import {
   IAM_PRINCIPAL_NAME,
   readRecordedPrincipals,
@@ -425,7 +426,7 @@ export function policyTemplateCheck(
 export function preDeleteListingLines(entry: RecreateBeforePhase2Entry): string[] {
   const head =
     `${rowIdent(entry.logicalId)} (${rowIdent(entry.resourceType)}) — physicalId: ` +
-    recordValueOrNotShown(entry.physicalId);
+    recordValueOrNotShown(displayPhysicalId(entry.resourceType, entry.physicalId));
   if (entry.resourceType !== 'AWS::IAM::Policy') return [head];
   const targets = policyDetachTargets(entry);
   // UNREACHABLE from both callers: `buildImportPlan` blocks a refusing policy

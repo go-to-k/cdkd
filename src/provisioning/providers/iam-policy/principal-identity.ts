@@ -8,7 +8,7 @@ import {
 import { getStackRecords, verifiedIdentityCache } from '../../../deployment/stack-records-scope.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import type { InlinePolicyPrincipalKind } from '../../../types/resource.js';
-import { isAccessDeniedError } from '../../name-lookup.js';
+import { isPermissionDenial } from '../../identity-read-denied.js';
 import { markNotGone } from '../../not-gone.js';
 import {
   assertRecordedIdentity,
@@ -94,6 +94,11 @@ export type InlinePolicyOperation = 'delete' | 'update' | 'attach';
 export interface PolicyOwner {
   readonly label: string;
   readonly resourceType: string;
+  /**
+   * What it sends is a group or instance-profile MEMBERSHIP (go-to-k/cdkd#6722),
+   * not a policy: only the refusals' wording differs.
+   */
+  readonly membership?: boolean;
 }
 export const INLINE_POLICY_OWNER: PolicyOwner = {
   label: 'IAM policy',
@@ -140,7 +145,15 @@ function inStackRecordedIds(
   let found: { logicalId: string; key: string; values: string[] } | undefined;
   let allFresh = true;
   for (const [logicalId, record] of view.live()) {
-    if (record.resourceType !== resourceType || record.physicalId !== name) continue;
+    // IAM names are unique regardless of case (go-to-k/cdkd#6722): a template
+    // spelling `My-Role` addresses the role recorded as `my-role`.
+    if (
+      record.resourceType !== resourceType ||
+      typeof record.physicalId !== 'string' ||
+      record.physicalId.toLowerCase() !== name.toLowerCase()
+    ) {
+      continue;
+    }
     const recorded = recordedIdentityId(resourceType, { recordedAttributes: record.attributes });
     if (recorded === undefined) continue;
     if (!(skipFresh && view.writtenFreshThisRun?.(logicalId) === true)) allFresh = false;
@@ -236,7 +249,7 @@ export async function verifyInlinePolicyPrincipal(params: {
     }
     // go-to-k/cdkd#6722: a denied read does not lift with time, and the
     // by-name write it guards is never the fallback (the #6665 shape).
-    if (isAccessDeniedError(error)) {
+    if (isPermissionDenial(error)) {
       throw new InlinePolicyPrincipalReadDeniedError({
         policyLogicalId,
         physicalId,
@@ -355,8 +368,9 @@ export class InlinePolicyPrincipalReadDeniedError extends RecordedIdentityError 
     super(
       operationPrefix(operation, owner, policyLogicalId, principal) +
         `AWS refused the ${permission} read cdkd makes to confirm it is the one cdkd created ` +
-        `(${errorClass}), so cdkd sent nothing to it and kept the record. Grant ${permission} to ` +
-        `the identity running cdkd and re-run.`,
+        `(${errorClass}), so cdkd sent nothing to it and kept the record. Allow ${permission} ` +
+        `for the identity running cdkd (an IAM policy, permission boundary, SCP or VPC endpoint ` +
+        `policy may deny it) and re-run.`,
       owner.resourceType,
       policyLogicalId,
       physicalId
@@ -413,18 +427,21 @@ export class InlinePolicyPrincipalMismatchError extends RecordedIdentityError {
     physicalId: string;
     mismatches: ReadonlyArray<Extract<PrincipalVerdict, { kind: 'mismatch' }>>;
     context: DeleteContext | undefined;
+    owner?: PolicyOwner;
   }) {
     const { policyLogicalId, physicalId, mismatches, context } = params;
+    const owner = params.owner ?? INLINE_POLICY_OWNER;
     const named = mismatches
       .map((m) => `${m.label} ${m.principalLogicalId} (its ${m.attribute} differs)`)
       .join(', ');
     super(
-      `Cannot delete IAM policy ${policyLogicalId} from ${named}: the principal holding the name ` +
-        `cdkd recorded is not the one cdkd created, so cdkd sent it no delete and kept the record ` +
-        `(the principal's own record refuses its delete the same way). Leave that principal ` +
-        `alone; if the one cdkd created is gone (its inline policy went with it), drop the ` +
+      `Cannot delete ${owner.label} ${policyLogicalId} from ${named}: the principal holding the ` +
+        `name cdkd recorded is not the one cdkd created, so cdkd sent it no delete and kept the ` +
+        `record (the principal's own record refuses its delete the same way). Leave that ` +
+        `principal alone; if the one cdkd created is gone (its ` +
+        `${owner.membership === true ? 'membership' : 'inline policy'} went with it), drop the ` +
         `record with ${stateOrphanRecordRemedy(context, policyLogicalId)}.`,
-      'AWS::IAM::Policy',
+      owner.resourceType,
       policyLogicalId,
       physicalId
     );
@@ -506,8 +523,11 @@ export class InlinePolicyAttachMismatchError extends RecordedIdentityError {
       .join('. ');
     super(
       `Cannot attach ${owner.label} ${policyLogicalId} to ${named}: the principal holding the name ` +
-        `cdkd recorded is not the one cdkd created, so cdkd sent the policy to no principal ` +
-        `(granting nothing) and kept the principals' records. ${remedies}.`,
+        `cdkd recorded is not the one cdkd created, so cdkd ` +
+        (owner.membership === true
+          ? `added no membership (granting nothing)`
+          : `sent the policy to no principal (granting nothing)`) +
+        ` and kept the principals' records. ${remedies}.`,
       owner.resourceType,
       policyLogicalId,
       physicalId
@@ -515,6 +535,212 @@ export class InlinePolicyAttachMismatchError extends RecordedIdentityError {
     Object.setPrototypeOf(this, InlinePolicyAttachMismatchError.prototype);
     this.name = 'InlinePolicyAttachMismatchError';
     markNonRetryable(this);
+    markNotGone(this);
+  }
+}
+
+/** A membership write's principals: the group and user, or the role. */
+export type MembershipPrincipals = ReadonlyArray<readonly [InlinePolicyPrincipalKind, string]>;
+
+/**
+ * go-to-k/cdkd#6722: a membership (`AddUserToGroup` / `RemoveUserFromGroup`,
+ * `AddRoleToInstanceProfile` / `RemoveRoleFromInstanceProfile`) is written
+ * by the principals' NAMES, so every in-stack principal it is about to touch
+ * is compared first (see {@link verifyInlinePolicyPrincipal}). An add
+ * touching another holder of a name refuses the whole operation, nothing
+ * written: it would join a principal cdkd did not create. A removal touching
+ * one is warned about and skipped on an update, as an inline policy's leaving
+ * principal is, and refuses the whole delete before any removal. Answers
+ * whether a removal touching `principals` must be skipped.
+ */
+export async function compareMembershipWrites(params: {
+  client: IAMClient;
+  owner: PolicyOwner;
+  logicalId: string;
+  physicalId: string;
+  adds: readonly MembershipPrincipals[];
+  removes: readonly MembershipPrincipals[];
+  operation: 'update' | 'delete';
+  context?: DeleteContext | undefined;
+  warn: (message: string) => void;
+}): Promise<(principals: MembershipPrincipals) => boolean> {
+  const { client, owner, logicalId, physicalId, operation } = params;
+  const verdicts = await verifyInlinePolicyPrincipals({
+    client,
+    principals: params.removes.flat(),
+    policyLogicalId: logicalId,
+    physicalId,
+    operation,
+    owner,
+  });
+  const mismatches = [...verdicts.values()].filter(
+    (verdict): verdict is Extract<PrincipalVerdict, { kind: 'mismatch' }> =>
+      verdict.kind === 'mismatch'
+  );
+  if (operation === 'delete' && mismatches.length > 0) {
+    throw new InlinePolicyPrincipalMismatchError({
+      policyLogicalId: logicalId,
+      physicalId,
+      mismatches,
+      context: params.context,
+      owner,
+    });
+  }
+  await assertInlinePolicyAttachTargets({
+    client,
+    principals: params.adds.flat(),
+    policyLogicalId: logicalId,
+    physicalId,
+    owner,
+  });
+  for (const m of mismatches) {
+    params.warn(
+      `${owner.label} ${logicalId}: the ${m.label} ${m.principalLogicalId} leaving it is not the ` +
+        `one cdkd created (its ${m.attribute} differs from the recorded one), so cdkd sent no ` +
+        `membership removal naming it. Leave that ${m.label} alone.`
+    );
+  }
+  return (principals) =>
+    principals.some(([kind, name]) => verdicts.get(injectiveKey(kind, name))?.kind === 'mismatch');
+}
+
+/**
+ * go-to-k/cdkd#6722: an in-place update of an IAM role, user, group or
+ * instance profile writes to it BY NAME, so a same-named one re-created out
+ * of band would receive cdkd's change (its policies, tags, boundary,
+ * memberships). With a usable recorded identity id, the update's own read of
+ * the resource is made BEFORE its first write and compared; its answer is
+ * returned for the update to build its attributes from, so the read the
+ * update made after its writes moves here rather than being added.
+ *
+ * `undefined`, no read: no usable recorded id (a legacy or masked record),
+ * a record this deploy itself created or replaced (`writtenFreshThisRun`),
+ * or one already matched in this run (`verifiedIdentityCache`, shared with
+ * the policy attach compares, so a policy attached to a role this run
+ * updated is not read again). A mismatch refuses non-retryably with nothing
+ * written; a denied read refuses non-retryably; a read answering no id is a
+ * not-gone {@link RecordedIdentityError} left to the retry classifiers; any
+ * other read failure (`NoSuchEntity`, a throttle) is thrown as is.
+ */
+export async function verifyOwnIdentityBeforeUpdate<T>(params: {
+  /** `IAM role`, `IAM user`, `IAM group`, `IAM instance profile`. */
+  label: string;
+  resourceType: string;
+  /** The read's IAM action, named by a denied read's refusal. */
+  permission: string;
+  logicalId: string;
+  physicalId: string;
+  recordedAttributes: Record<string, unknown> | undefined;
+  read: () => Promise<T>;
+  idOf: (response: T) => string | undefined;
+}): Promise<T | undefined> {
+  const { label, resourceType, permission, logicalId, physicalId } = params;
+  const recorded = recordedIdentityId(resourceType, {
+    ...(params.recordedAttributes && { recordedAttributes: params.recordedAttributes }),
+  });
+  if (recorded === undefined) return undefined;
+  const view = getStackRecords();
+  if (view?.writtenFreshThisRun?.(logicalId) === true) return undefined;
+  const cache = verifiedIdentityCache(view);
+  // The key a policy's compare of this principal uses (its only record).
+  const cacheKey = injectiveKey(resourceType, logicalId, physicalId, recorded.value);
+  const earlier = cache?.get(cacheKey);
+  if (earlier !== undefined) {
+    const matched = await earlier.then(
+      () => true,
+      () => false
+    );
+    if (matched) return undefined;
+  }
+  let latest: T | undefined;
+  const readId = async (): Promise<string | undefined> => {
+    latest = await params.read();
+    return params.idOf(latest);
+  };
+  const compare = (async () => {
+    await assertRecordedIdentity({
+      label,
+      resourceType,
+      logicalId,
+      physicalId,
+      liveId: await readId(),
+      reread: readId,
+      context: { recordedAttributes: { [recorded.key]: recorded.value } },
+    });
+  })();
+  if (cache !== undefined) {
+    cache.set(cacheKey, compare);
+    compare.catch(() => {
+      if (cache.get(cacheKey) === compare) cache.delete(cacheKey);
+    });
+  }
+  try {
+    await compare;
+    return latest;
+  } catch (error) {
+    if (error instanceof RecordedIdentityMismatchError) {
+      throw new OwnIdentityUpdateRefusal(
+        `Cannot update ${label} ${logicalId}: the ${label} holding the name cdkd recorded is not ` +
+          `the one cdkd created (its ${error.attribute} differs from the recorded one), so cdkd ` +
+          `sent it no change and kept the record. If you replaced it yourself, adopt the new one ` +
+          `with ${reAdoptRemedy(logicalId)} and re-run; otherwise leave that ${label} alone, and ` +
+          `if the one cdkd created is gone, drop the record with ` +
+          `${stateOrphanRecordRemedy(undefined, logicalId)}.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        true
+      );
+    }
+    if (error instanceof RecordedIdentityError) {
+      throw new OwnIdentityUpdateRefusal(
+        `Cannot update ${label} ${logicalId}: AWS answered without its ${recorded.key}, so cdkd ` +
+          `cannot confirm it is the one cdkd created; nothing was sent and the record is kept. ` +
+          `Re-run the operation.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        false
+      );
+    }
+    if (isPermissionDenial(error)) {
+      const name = (error as { name?: unknown } | null)?.name;
+      const errorClass =
+        typeof name === 'string' && /^[A-Za-z0-9]{1,64}$/.test(name) ? name : 'a 403';
+      throw new OwnIdentityUpdateRefusal(
+        `Cannot update ${label} ${logicalId}: AWS refused the ${permission} read cdkd makes to ` +
+          `confirm it is the one cdkd created (${errorClass}), so cdkd sent it no change and kept ` +
+          `the record. Allow ${permission} for the identity running cdkd (an IAM policy, ` +
+          `permission boundary, SCP or VPC endpoint policy may deny it) and re-run.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        true
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * {@link verifyOwnIdentityBeforeUpdate}'s refusals: worded by cdkd with no AWS
+ * text and no `cause` (a denied read's text can name the caller), so an
+ * update's catch rethrows it as is. Marked not gone: the logical id is
+ * template-controlled text. A mismatch and a denied read are non-retryable
+ * (a retry reads the same holder, or is denied again).
+ */
+export class OwnIdentityUpdateRefusal extends RecordedIdentityError {
+  constructor(
+    message: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    nonRetryable: boolean
+  ) {
+    super(message, resourceType, logicalId, physicalId);
+    Object.setPrototypeOf(this, OwnIdentityUpdateRefusal.prototype);
+    this.name = 'OwnIdentityUpdateRefusal';
+    if (nonRetryable) markNonRetryable(this);
     markNotGone(this);
   }
 }

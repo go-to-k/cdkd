@@ -196,7 +196,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
-    claimed: InlinePolicyClaimed | undefined
+    claimed: InlinePolicyClaimed | undefined,
+    recordedAttributes?: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     return updateUser.call(
       this,
@@ -206,7 +207,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
       properties,
       previousProperties,
       log,
-      claimed
+      claimed,
+      recordedAttributes
     );
   }
 
@@ -320,7 +322,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks,
-    claimed: InlinePolicyClaimed | undefined
+    claimed: InlinePolicyClaimed | undefined,
+    recordedAttributes?: Record<string, unknown>
   ): Promise<ResourceUpdateResult> {
     return updateGroup.call(
       this,
@@ -330,7 +333,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
       properties,
       previousProperties,
       log,
-      claimed
+      claimed,
+      recordedAttributes
     );
   }
 

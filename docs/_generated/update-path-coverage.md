@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **146**
-- Handled properties classified: **1548**
-- Read on the update path: **1130**
+- Handled properties classified: **1549**
+- Read on the update path: **1131**
 - Replacement: **397**
 - Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
@@ -173,7 +173,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::RDS::DBProxyTargetGroup` | `RDSDBProxyTargetGroupProvider` | ConnectionPoolConfigurationInfo, DBClusterIdentifiers, DBInstanceIdentifiers, Tags | DBProxyName, TargetGroupName |
 | `AWS::RDS::DBSubnetGroup` | `RDSProvider` | DBSubnetGroupDescription, SubnetIds, Tags | DBSubnetGroupName |
 | `AWS::Route53::HostedZone` | `Route53Provider` | HostedZoneConfig, HostedZoneFeatures, HostedZoneTags, QueryLoggingConfig, VPCs | DelegationSetId, Name |
-| `AWS::Route53::RecordSet` | `Route53Provider` | AliasTarget, CidrRoutingConfig, Comment, Failover, GeoLocation, HealthCheckId, HostedZoneId, HostedZoneName, MultiValueAnswer, Name, Region, ResourceRecords, SetIdentifier, TTL, Type, Weight |  |
+| `AWS::Route53::RecordSet` | `Route53Provider` | AliasTarget, AZAffinity, CidrRoutingConfig, Comment, Failover, GeoLocation, HealthCheckId, HostedZoneId, HostedZoneName, MultiValueAnswer, Name, Region, ResourceRecords, SetIdentifier, TTL, Type, Weight |  |
 | `AWS::Route53::RecordSetGroup` | `Route53Provider` | Comment, HostedZoneId, HostedZoneName, RecordSets |  |
 | `AWS::S3::Bucket` | `S3BucketProvider` | AbacStatus, AccelerateConfiguration, AnalyticsConfigurations, BucketEncryption, CorsConfiguration, IntelligentTieringConfigurations, InventoryConfigurations, LifecycleConfiguration, LoggingConfiguration, MetadataConfiguration, MetricsConfigurations, NotificationConfiguration, ObjectLockConfiguration, ObjectLockEnabled, OwnershipControls, PublicAccessBlockConfiguration, ReplicationConfiguration, Tags, VersioningConfiguration, WebsiteConfiguration | BucketName, BucketNamePrefix, BucketNamespace |
 | `AWS::S3::BucketPolicy` | `S3BucketPolicyProvider` | PolicyDocument | Bucket |

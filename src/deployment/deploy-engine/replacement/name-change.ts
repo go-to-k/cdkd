@@ -3,6 +3,7 @@
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
  * re-exports every symbol it exported, so no importer changes.
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import type { ProvisionedBy } from '../../../provisioning/provider-registry.js';
 import { explicitNamePropertyFor } from '../../../provisioning/resource-name.js';
 import type { ResourceProvider } from '../../../types/resource.js';
@@ -270,8 +271,8 @@ export async function checkedReplacementNameChange(
     new CdkdError(
       maskName(
         `${subject} requires replacement, and another existing resource ` +
-          `(${displaySafe(found.physicalId)}) already holds the name it asks for. ` +
-          `${renderReplacementNameChange(change, input.createProps)}. Since ${adoptsText}, creating the replacement ` +
+          `(${displaySafe(displayPhysicalId(resourceType, found.physicalId))}) already holds the name it asks for. ` +
+          `${renderReplacementNameChange(change, input.createProps, input.oldResourceType)}. Since ${adoptsText}, creating the replacement ` +
           `would take that resource over and record it as this stack's. Nothing was ` +
           `created or deleted. ${remedy}`
       ),

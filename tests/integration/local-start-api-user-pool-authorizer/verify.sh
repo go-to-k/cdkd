@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd local start-api --from-state with HttpUserPoolAuthorizer
-# real-AWS integ test (go-to-k/cdkd#6419)
+# real-AWS integ test (go-to-k/cdkd#6419, go-to-k/cdkd#6717)
 #
 # aws-cdk-lib's `HttpUserPoolAuthorizer` writes JwtConfiguration.Issuer as a
 # `Fn::Join` over `Ref AWS::Region` + `Ref <UserPool>` and Audience as
@@ -9,21 +9,32 @@
 # resolve from cdkd state (--from-state); without state the server boots and
 # warns, running the authorizer in JWKS pass-through.
 #
+# A REST v1 API rides along (go-to-k/cdkd#6717): GET /rest-secure behind a
+# `CognitoUserPoolsAuthorizer` on the same pool, whose ProviderARNs is
+# `[Fn::GetAtt <Pool>.Arn]`, on a method with `apiKeyRequired`.
+#
 # Flow:
 #   1. Deploy the stack (user pool, client A (authorized), client B (not),
 #      HTTP API route GET /secure behind the authorizer, Lambda).
 #   2. Create a user and mint ID tokens for client A and client B.
 #   3. No state: start-api boots and warns `JwtConfiguration.Issuer is an
-#      intrinsic` (sentinel: the same line says `JWKS pass-through`).
+#      intrinsic` (sentinel: the same line says `JWKS pass-through`). The REST
+#      route warns per route that `ProviderARNs[0] is an intrinsic` and that
+#      `ApiKeyRequired is not enforced`; a garbage token passes through (200).
 #   4. --from-state: no such warning and no `JWKS unreachable`; client-A
 #      token -> 200 with the user's sub; tampered token -> 401; no
 #      Authorization -> 401; client-B token -> 401 (audience resolved).
-#   5. Destroy; user pool, HTTP API, Lambda, log groups and state are gone.
+#      REST: no ProviderARNs warning; client-A ID token -> 200 with the sub;
+#      the statuses the deployed REST API answers: garbage / no header -> 401
+#      Unauthorized, tampered signature -> 403 Access Denied.
+#   5. Destroy; user pool, HTTP and REST APIs, Lambda, log groups and state
+#      are gone.
 #
 #     AWS_REGION=us-east-1 STATE_BUCKET=cdkd-state-<accountId> \
 #       bash tests/integration/local-start-api-user-pool-authorizer/verify.sh
 #
-# Requires Docker. Uses host ports 18490 and 18491.
+# Requires Docker. Uses host ports 18560-18563 (two servers per boot: the HTTP
+# API and the REST API).
 
 set -euo pipefail
 
@@ -71,8 +82,8 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 CDKD="node ${LOCAL_DIST}"
-PORT_NOSTATE=18490
-PORT_STATE=18491
+PORT_NOSTATE=18560
+PORT_STATE=18562
 USERNAME="cdkd-integ-user"
 # Meets the default pool policy (upper, lower, digit, symbol, >= 8).
 PASSWORD="Cdkd-Integ-6419-Pw!"
@@ -144,21 +155,54 @@ start_server() {
   CDKD_PID=$!
   local booted=0
   for _ in $(seq 1 480); do
-    if grep -q 'Server listening' "${logfile}"; then booted=1; break; fi
+    # The line after the LAST ready banner: the stack serves two APIs, and each
+    # server's banner is its own write.
+    if grep -q '\^C to stop' "${logfile}"; then booted=1; break; fi
     kill -0 "${CDKD_PID}" 2>/dev/null || fail "start-api exited before it was ready (port ${port})"
     sleep 0.5
   done
-  [ "${booted}" = 1 ] || fail "start-api did not print 'Server listening' in time (port ${port})"
+  [ "${booted}" = 1 ] || fail "start-api did not print '^C to stop' in time (port ${port})"
+}
+
+# server_port <logfile> <label>: the port of the server whose ready banner
+# names <label> (`HTTP API v2` / `REST API v1`); the order of the two servers
+# is not part of the contract.
+server_port() {
+  local port
+  port="$(grep -E "Server listening on http://[^[:space:]]+[[:space:]]+\(.*$2\)" "$1" \
+    | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1 || true)"
+  [ -n "${port}" ] || fail "no '$2' server banner in $1"
+  printf '%s' "${port}"
 }
 
 # http_code <port> [header...]: GET /secure, prints the status code; body in BODY_FILE.
 http_code() {
-  local port="$1"
-  shift
+  http_path_code "$1" /secure "${@:2}"
+}
+
+# http_path_code <port> <path> [header...]: GET <path>, prints the status code; body in BODY_FILE.
+http_path_code() {
+  local port="$1" path="$2"
+  shift 2
+  # Emptied first, so a failed curl never reports the previous response's body.
+  : > "${BODY_FILE}"
   local -a hdrs=()
   local h
   for h in "$@"; do hdrs+=(-H "${h}"); done
-  curl -sS -o "${BODY_FILE}" -w '%{http_code}' --max-time 60 ${hdrs[@]+"${hdrs[@]}"} "http://127.0.0.1:${port}/secure"
+  curl -sS -o "${BODY_FILE}" -w '%{http_code}' --max-time 60 ${hdrs[@]+"${hdrs[@]}"} "http://127.0.0.1:${port}${path}"
+}
+
+# expect_rest <port> <auth header or ""> <code> <exact body> <label>
+expect_rest() {
+  local code
+  if [ -n "$2" ]; then
+    code="$(http_path_code "$1" /rest-secure "Authorization: $2")" || code="curl-failed"
+  else
+    code="$(http_path_code "$1" /rest-secure)" || code="curl-failed"
+  fi
+  [ "${code}" = "$3" ] || fail "$5: expected $3, got ${code} (body: $(cat "${BODY_FILE}"))"
+  [ "$(cat "${BODY_FILE}")" = "$4" ] || fail "$5: expected body $4, got $(cat "${BODY_FILE}")"
+  echo "    $5 -> $3"
 }
 
 echo "==> Installing fixture deps"
@@ -178,12 +222,13 @@ POOL_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPool
 CLIENT_A="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPoolClient PoolClientA54DA49E6)" || fail "no client A id in state"
 CLIENT_B="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Cognito::UserPoolClient PoolClientB32581292)" || fail "no client B id in state"
 API_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::ApiGatewayV2::Api ApiF70053CD)" || fail "no HTTP API id in state"
+REST_API_ID="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::ApiGateway::RestApi RestApi0C43BF4B)" || fail "no REST API id in state"
 FN_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" AWS::Lambda::Function Handler886CB40B)" || fail "no function name in state"
 # cdkd records a user pool client's physical id as `<poolId>|<clientId>`.
 CLIENT_A="${CLIENT_A##*|}"
 CLIENT_B="${CLIENT_B##*|}"
 [ "${CLIENT_A}" != "${CLIENT_B}" ] || fail "client A and B share an id: ${CLIENT_A}"
-echo "    pool=${POOL_ID} clientA=${CLIENT_A} clientB=${CLIENT_B} api=${API_ID} fn=${FN_NAME}"
+echo "    pool=${POOL_ID} clientA=${CLIENT_A} clientB=${CLIENT_B} api=${API_ID} restApi=${REST_API_ID} fn=${FN_NAME}"
 
 echo "==> Phase 2: create a user and mint ID tokens for client A and B"
 aws cognito-idp admin-create-user --user-pool-id "${POOL_ID}" --username "${USERNAME}" \
@@ -220,10 +265,37 @@ grep -q 'JwtConfiguration.Issuer is an intrinsic' "${OUT_FILE}" \
 # Sentinel: an independent marker on the same line. Present while the parsed
 # marker is absent would mean the warning was reworded.
 grep -q 'JWKS pass-through' "${OUT_FILE}" || fail "warning lacks its 'JWKS pass-through' sentinel (reworded?)"
+# go-to-k/cdkd#6717: the REST v1 Cognito authorizer's GetAtt pool ARN, and the
+# method's ApiKeyRequired, are each warned per route (cdkd's own wording, with
+# cdk-local 0.169.2).
+grep -q 'RestAuth348E6400.ProviderARNs\[0\] is an intrinsic cdkd local start-api could not resolve' "${OUT_FILE}" \
+  || fail "no-state boot did not warn 'ProviderARNs[0] is an intrinsic' for the REST authorizer"
+# Sentinel: the route the same line names. Absent while the marker is present
+# would mean the warning stopped naming the route.
+grep -q 'ProviderARNs\[0\] is an intrinsic .*JWKS pass-through admits every Bearer token on route GET /rest-secure' "${OUT_FILE}" \
+  || fail "the ProviderARNs warning does not name route GET /rest-secure (reworded?)"
+grep -q 'ApiKeyRequired is not enforced by cdkd local start-api' "${OUT_FILE}" \
+  || fail "no-state boot did not warn 'ApiKeyRequired is not enforced' for GET /rest-secure"
+grep -q 'ApiKeyRequired is not enforced .*so route GET /rest-secure is served without an x-api-key check' "${OUT_FILE}" \
+  || fail "the ApiKeyRequired warning does not name route GET /rest-secure (reworded?)"
+# Exactly once: one route, one boot.
+N_APIKEY="$(grep -c 'ApiKeyRequired is not enforced' "${OUT_FILE}" || true)"
+[ "${N_APIKEY}" = "1" ] || fail "expected one ApiKeyRequired warning, got ${N_APIKEY}"
+REST_NOSTATE="$(server_port "${OUT_FILE}" 'REST API v1')"
+echo "    REST, no state: garbage token -> 200 (JWKS pass-through, warned; cold boot: retry)"
+CODE=""
+for _ in $(seq 1 10); do
+  CODE="$(http_path_code "${REST_NOSTATE}" /rest-secure "Authorization: Bearer garbage")" || CODE="curl-failed"
+  [ "${CODE}" = "200" ] && break
+  sleep 3
+done
+[ "${CODE}" = "200" ] || fail "REST, no state: garbage token expected 200 (pass-through), got ${CODE} (body: $(cat "${BODY_FILE}"))"
 stop_server
 
 echo "==> Phase 4: start-api --from-state resolves Issuer and Audience from state"
 start_server "${OUT_FILE2}" "${PORT_STATE}" --from-state --state-bucket "${STATE_BUCKET}"
+HTTP_STATE="$(server_port "${OUT_FILE2}" 'HTTP API v2')"
+REST_STATE="$(server_port "${OUT_FILE2}" 'REST API v1')"
 if grep -q 'JwtConfiguration.Issuer is an intrinsic' "${OUT_FILE2}"; then
   fail "--from-state still warned about an intrinsic Issuer"
 fi
@@ -234,11 +306,17 @@ fi
 if grep -q 'JWKS pass-through' "${OUT_FILE2}"; then
   fail "--from-state log mentions JWKS pass-through"
 fi
+if grep -q 'ProviderARNs\[0\] is an intrinsic' "${OUT_FILE2}"; then
+  fail "--from-state still warned that the REST authorizer's ProviderARNs is an intrinsic"
+fi
+# Not a state matter: ApiKeyRequired stays warned under --from-state too.
+grep -q 'ApiKeyRequired is not enforced by cdkd local start-api' "${OUT_FILE2}" \
+  || fail "--from-state boot did not warn 'ApiKeyRequired is not enforced'"
 
 echo "    client-A token -> 200 (cold boot: retry)"
 CODE=""
 for _ in $(seq 1 10); do
-  CODE="$(http_code "${PORT_STATE}" "Authorization: Bearer ${TOKEN_A}")" || CODE="curl-failed"
+  CODE="$(http_code "${HTTP_STATE}" "Authorization: Bearer ${TOKEN_A}")" || CODE="curl-failed"
   [ "${CODE}" = "200" ] && break
   sleep 3
 done
@@ -257,16 +335,46 @@ GOT_ENV="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).clie
 [ "${GOT_ENV}" = "${CLIENT_A}" ] || fail "CLIENT_ID env mismatch: body ${GOT_ENV} vs client A ${CLIENT_A}"
 
 echo "    tampered client-A token -> 401"
-CODE="$(http_code "${PORT_STATE}" "Authorization: Bearer ${TOKEN_A_TAMPERED}")" || CODE="curl-failed"
+CODE="$(http_code "${HTTP_STATE}" "Authorization: Bearer ${TOKEN_A_TAMPERED}")" || CODE="curl-failed"
 [ "${CODE}" = "401" ] || fail "tampered token: expected 401, got ${CODE}"
 
 echo "    no Authorization -> 401"
-CODE="$(http_code "${PORT_STATE}")" || CODE="curl-failed"
+CODE="$(http_code "${HTTP_STATE}")" || CODE="curl-failed"
 [ "${CODE}" = "401" ] || fail "no Authorization: expected 401, got ${CODE}"
 
 echo "    client-B token (valid signature, audience not allowed) -> 401"
-CODE="$(http_code "${PORT_STATE}" "Authorization: Bearer ${TOKEN_B}")" || CODE="curl-failed"
+CODE="$(http_code "${HTTP_STATE}" "Authorization: Bearer ${TOKEN_B}")" || CODE="curl-failed"
 [ "${CODE}" = "401" ] || fail "client-B token: expected 401 (Audience resolved), got ${CODE}"
+
+echo "    REST client-A ID token -> 200 (pool resolved from state; cold boot: retry)"
+CODE=""
+for _ in $(seq 1 10); do
+  CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer ${TOKEN_A}")" || CODE="curl-failed"
+  [ "${CODE}" = "200" ] && break
+  sleep 3
+done
+[ "${CODE}" = "200" ] || fail "REST client-A token: expected 200, got ${CODE} (body: $(cat "${BODY_FILE}"))"
+BODY="$(cat "${BODY_FILE}")"
+GOT_SUB="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sub))' "${BODY}")" \
+  || fail "REST response body is not JSON: ${BODY}"
+[ "${GOT_SUB}" = "${USER_SUB}" ] || fail "REST sub mismatch: body ${GOT_SUB} vs user ${USER_SUB}"
+# The statuses the deployed REST API answers (measured by go-to-k/cdk-local#1016).
+UNAUTH='{"message":"Unauthorized"}'
+# A transient JWKS fetch failure is cached as pass-through for about a minute
+# (then a garbage token gets 200): retry past that window before judging.
+for _ in $(seq 1 30); do
+  CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer garbage")" || CODE="curl-failed"
+  [ "${CODE}" = "401" ] && break
+  sleep 3
+done
+expect_rest "${REST_STATE}" "Bearer garbage" 401 "${UNAUTH}" "REST garbage token"
+expect_rest "${REST_STATE}" "" 401 "${UNAUTH}" "REST no Authorization"
+expect_rest "${REST_STATE}" "Bearer ${TOKEN_A_TAMPERED}" 403 '{"Message":"Access Denied"}' "REST tampered signature"
+# A REST v1 Cognito authorizer checks the pool, not the app client (as
+# deployed), so the HTTP route's resolved audience must not leak onto it.
+echo "    REST client-B ID token -> 200 (no audience check on a REST Cognito authorizer)"
+CODE="$(http_path_code "${REST_STATE}" /rest-secure "Authorization: Bearer ${TOKEN_B}")" || CODE="curl-failed"
+[ "${CODE}" = "200" ] || fail "REST client-B token: expected 200, got ${CODE} (body: $(cat "${BODY_FILE}"))"
 
 stop_server
 orphans="$(docker ps -a --filter 'name=cdkd-local-' --format '{{.Names}}')" \
@@ -282,6 +390,8 @@ assert_gone "user pool ${POOL_ID} still exists after destroy" \
   aws cognito-idp describe-user-pool --user-pool-id "${POOL_ID}" --region "${REGION}"
 assert_gone "HTTP API ${API_ID} still exists after destroy" \
   aws apigatewayv2 get-api --api-id "${API_ID}" --region "${REGION}"
+assert_gone "REST API ${REST_API_ID} still exists after destroy" \
+  aws apigateway get-rest-api --rest-api-id "${REST_API_ID}" --region "${REGION}"
 assert_gone "function ${FN_NAME} still exists after destroy" \
   aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
@@ -294,4 +404,4 @@ left="$(aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/${STAC
 
 trap - EXIT INT TERM
 rm -f "${OUT_FILE}" "${OUT_FILE2}" "${BODY_FILE}"
-echo "[verify] PASS — HttpUserPoolAuthorizer Issuer/Audience resolved from state by local start-api (#6419)"
+echo "[verify] PASS — HttpUserPoolAuthorizer Issuer/Audience and CognitoUserPoolsAuthorizer pool resolved from state by local start-api, unenforced settings warned (#6419, #6717)"

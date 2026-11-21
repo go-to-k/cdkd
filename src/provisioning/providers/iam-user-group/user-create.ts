@@ -23,6 +23,8 @@ import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
 import { iamEntityLeftByThisCreate, isEntityAlreadyExists } from '../iam-replay-adopt.js';
 import { readPrincipalLists } from '../../iam-policy-targets.js';
+import { assertInlinePolicyAttachTargets } from '../iam-policy/principal-identity.js';
+import { RecordedIdentityError } from '../../recorded-identity.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { definedAttributes } from '../../attribute-map.js';
 import {
@@ -57,6 +59,36 @@ export async function createUser(
       `Groups of IAM user ${logicalId} is not a list of IAM group names — no user was created`,
       resourceType,
       logicalId
+    );
+  }
+
+  // go-to-k/cdkd#6722: `AddUserToGroup` names each group, so an in-stack
+  // group with a recorded GroupId this deploy did not create or replace is
+  // compared before the user is created: another holder of the name refuses
+  // with nothing created.
+  try {
+    await assertInlinePolicyAttachTargets({
+      client: this.iamClient,
+      principals: (groups.lists.Groups ?? []).map((g) => ['group', g] as const),
+      policyLogicalId: logicalId,
+      physicalId: userName,
+      owner: { label: 'IAM user', resourceType, membership: true },
+    });
+  } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
+    const cause = error instanceof Error ? error : undefined;
+    throw this.wrapMaskedError(
+      log.mask,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to create IAM user ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          userName,
+          cause
+        )
     );
   }
 

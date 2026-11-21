@@ -211,6 +211,15 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       roles: [role.roleName, mixedRole.roleName],
     });
 
+    // go-to-k/cdkd#6734: a managed policy attached to the second role by its
+    // own `Roles`, so verify.sh's Phase 2p (the role re-created out of band)
+    // proves `--revert` re-attaches it to no stranger either. Fixed name.
+    new iam.CfnManagedPolicy(this, 'SharedManaged', {
+      managedPolicyName: 'cdkd-iam-drift-clean-shared-managed',
+      policyDocument: doc('sqs:GetQueueAttributes'),
+      roles: [mixedRole.roleName],
+    });
+
     // go-to-k/cdkd#4225: AWS rejects this queue (MessageRetentionPeriod is
     // out of range), failing the deploy only after the swap, the role's
     // update, the to-role rename and HandoffNew's create completed. The rollback then reverses

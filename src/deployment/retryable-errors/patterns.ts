@@ -273,6 +273,17 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // re-validates its operator role could carry one, and would then spend up to
   // ~35s of retry backoff if the rejection persisted through every attempt.
   'One or more security group IDs are invalid',
+  // Lambda NetworkConnector (issue #6775): the same seconds-old operator role
+  // race as the CapacityProvider entries above, on a different handler. The
+  // create rejects the role first with "The operator role is invalid ..." and
+  // then, as the rejection MOVES, with "Encountered unauthorized operation
+  // while calling EC2 due to invalid ConnectorOperatorRole permissions"
+  // (observed in the lambda-network-connector integ, us-east-1, 2026-11-21).
+  // Anchored on the handler's trailing clause only, NOT on "Encountered
+  // unauthorized operation while calling EC2", so another service's
+  // authorization failure cannot false-positive into the retry loop. Same five
+  // readers as above; no connector DELETE was observed carrying this wording.
+  'due to invalid ConnectorOperatorRole permissions',
   // CodeDeploy DeploymentGroup: the Cloud Control CreateResource references a
   // same-stack service IAM role, but cdkd's fast path issues the create before
   // IAM finishes propagating the just-created role's trust policy, so AWS

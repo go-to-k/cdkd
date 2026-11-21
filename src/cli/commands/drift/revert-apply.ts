@@ -3,12 +3,17 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { differingIdentityWarning } from '../../../provisioning/recorded-identity.js';
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { ResourceUpdateNotSupportedError } from '../../../utils/error-handler.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { updatePartialReason, updatePartialMessage } from '../../../deployment/update-outcome.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { recordAfterRollbackUpdate } from '../../../deployment/rollback-executor/replay-retry.js';
 import { withRetry } from '../../../deployment/retry.js';
+import {
+  revertStackRecordsView,
+  withStackRecords,
+} from '../../../deployment/stack-records-scope.js';
 import { maskingRetryLogger } from '../../../deployment/masking-retry-logger.js';
 import {
   createSecretMasker,
@@ -42,8 +47,20 @@ import type { ResourceUpdateResult } from '../../../types/resource.js';
 /**
  * The `provider.update` half of {@link revertDriftedOutcome}: send the revert
  * payload, then record what the update returned.
+ *
+ * go-to-k/cdkd#6734: under a view of the stack's IAM principal records, so an
+ * IAM policy's revert compares each in-stack principal's recorded id before
+ * it puts, attaches, removes or detaches its policy by name, as a deploy
+ * does. Only the principal records: every other reader of the scope keeps
+ * its unbound behavior ({@link revertStackRecordsView}).
  */
-export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<void> {
+export function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<void> {
+  return withStackRecords(revertStackRecordsView(args.report.state.resources), () =>
+    applyRevertUpdateInScope(args)
+  );
+}
+
+async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<void> {
   const {
     logger,
     tally,
@@ -205,7 +222,11 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
     // (counted failed, exit non-zero) and the record still takes the identity
     // AWS now holds: keeping the old id would name a resource that is gone and
     // orphan the new one.
-    const replacedBy = revertReplacementOf(stateResource.physicalId, updateResult);
+    const replacedBy = revertReplacementOf(
+      stateResource.physicalId,
+      updateResult,
+      stateResource.resourceType
+    );
     if (replacedBy !== undefined) {
       tally.totalFailed++;
       logger.error(
@@ -454,18 +475,21 @@ export async function applyRevertUpdate(args: ApplyRevertUpdateArgs): Promise<vo
  */
 export function revertReplacementOf(
   recordedPhysicalId: string,
-  updateResult: ResourceUpdateResult | undefined
+  updateResult: ResourceUpdateResult | undefined,
+  resourceType: string
 ): string | undefined {
   if (updateResult === undefined) return undefined;
   const idChanged =
     typeof updateResult.physicalId === 'string' &&
     updateResult.physicalId !== '' &&
     updateResult.physicalId !== recordedPhysicalId;
+  // Shown masked: a returned id is in no bag yet (go-to-k/cdkd#6716).
+  const recordedShown = displayPhysicalId(resourceType, recordedPhysicalId);
   if (idChanged) {
-    return `physical id ${recordedPhysicalId} became ${updateResult.physicalId}`;
+    return `physical id ${recordedShown} became ${displayPhysicalId(resourceType, updateResult.physicalId)}`;
   }
   return updateResult.wasReplaced === true
-    ? `reported a replacement under the same physical id ${recordedPhysicalId}`
+    ? `reported a replacement under the same physical id ${recordedShown}`
     : undefined;
 }
 

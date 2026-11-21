@@ -374,6 +374,7 @@ export async function deleteRecordSet(
       GeoLocation: properties['GeoLocation'],
       GeoProximityLocation: properties['GeoProximityLocation'],
       CidrRoutingConfig: properties['CidrRoutingConfig'],
+      AZAffinity: properties['AZAffinity'],
     })
   );
   if (redactedSkip) return redactedSkip;
@@ -561,7 +562,7 @@ export async function deleteRecordSet(
  * to SDK-style ResourceRecords (array of {Value}).
  * Also handles routing policy properties: Weight, Region, Failover,
  * MultiValueAnswer, GeoLocation, GeoProximityLocation, CidrRoutingConfig,
- * SetIdentifier, and HealthCheckId.
+ * AZAffinity, SetIdentifier, and HealthCheckId.
  */
 export function buildResourceRecordSet(
   this: Route53Provider,
@@ -703,6 +704,25 @@ export function buildResourceRecordSet(
       crc.LocationName = cidrRoutingConfig['LocationName'] as string;
     }
     recordSet.CidrRoutingConfig = crc;
+  }
+
+  // AZ-affinity routing — the CFn `AZAffinity` object shares the SDK
+  // PascalCase shape (`LocationType` / `LocationId`, both required by the
+  // schema). Like the other routing policies it needs a `SetIdentifier` and
+  // excludes every other routing element; cdkd forwards what the template
+  // supplied and lets AWS validate (#6719).
+  const azAffinity = properties['AZAffinity'] as Record<string, unknown> | undefined;
+  if (azAffinity) {
+    const aza: NonNullable<ResourceRecordSet['AZAffinity']> = {};
+    if (azAffinity['LocationType'] !== undefined) {
+      aza.LocationType = azAffinity['LocationType'] as NonNullable<
+        ResourceRecordSet['AZAffinity']
+      >['LocationType'];
+    }
+    if (azAffinity['LocationId'] !== undefined) {
+      aza.LocationId = azAffinity['LocationId'] as string;
+    }
+    recordSet.AZAffinity = aza;
   }
 
   return recordSet;

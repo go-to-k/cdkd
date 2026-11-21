@@ -2,6 +2,7 @@
  * The destroy runner from the stack lock on (split out of
  * `../destroy-runner.ts`, go-to-k/cdkd#5835).
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { cdkdRemedy, plainOrDescribed, proseQuoted } from '../../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { displaySafe, displayStackName, safeMsg } from '../../../utils/display-safe.js';
@@ -18,6 +19,7 @@ import {
   stackInstanceIdCarriedFrom,
   type ResourceState,
   type StackState,
+  type SupersededResourceRecord,
 } from '../../../types/state.js';
 import {
   destroyProducerRegions,
@@ -72,7 +74,6 @@ import {
 } from './under-lock-steps.js';
 import { deleteStackResource, type DeleteResourceFrame } from './delete-resource.js';
 import { isCustomResourceType } from '../../../provisioning/custom-resource-secure-references.js';
-import type { SupersededResourceRecord } from '../../../types/state.js';
 
 /** What {@link destroyStackUnderLock} reads from `destroyStackInRegion`. */
 export interface UnderLockFrame {
@@ -241,8 +242,7 @@ export async function destroyStackUnderLock({
   // stack's. A skipped nested-stack row's malformed record lives in the CHILD's
   // state file (`<parent>~<childLogicalId>`), so a remedy naming
   // `cdkd state show <parent>` sends the user to a file that does not contain
-  // the bad id. Collected during the loop so the summary can name the real
-  // target(s).
+  // the bad id. Collected during the loop so the summary can name the real target(s).
   const stateTargetFor = (logicalId: string, resourceType: string): string =>
     resourceType === NESTED_STACK_TYPE ? `${stackName}~${logicalId}` : stackName;
   const skippedStateTargets = new Set<string>();
@@ -545,8 +545,9 @@ export async function destroyStackUnderLock({
         }
         return false;
       }
+      const shownId = displayPhysicalId(resourceType, physicalId);
       return withPrintingSecrets(bag, async (): Promise<boolean> => {
-        logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
+        logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${shownId})...`);
         let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
         try {
           outcome = await withStackRecords(
@@ -594,7 +595,7 @@ export async function destroyStackUnderLock({
             logger.info(safeMsg`  ✓ ${logicalId}'s superseded ${resourceType} is already gone`);
           } else {
             logger.warn(
-              safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${outcome.cause}. The replaced resource is gone, and cdkd no longer tracks it in state.`
+              safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${shownId}) was not deleted: ${outcome.cause}. The replaced resource is gone, and cdkd no longer tracks it in state.`
             );
           }
           return false;
@@ -610,7 +611,7 @@ export async function destroyStackUnderLock({
           // A not-yet-updated resource of a failed deploy may still use the
           // old id; nothing printed carries the failure's text.
           logger.info(
-            safeMsg`  ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted yet; retrying after the stack's own resources`
+            safeMsg`  ${logicalId}'s superseded ${resourceType} (${shownId}) was not deleted yet; retrying after the stack's own resources`
           );
           return true;
         }
@@ -625,14 +626,14 @@ export async function destroyStackUnderLock({
           result.skippedCount++;
           result.journaledOrphanSkips++;
           logger.warn(
-            safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+            safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${shownId}) was not deleted: ${why}. ` +
               'Delete it manually — it is no longer tracked in state.'
           );
           return false;
         }
         result.errorCount++;
         logger.warn(
-          safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+          safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${shownId}) was not deleted: ${why}. ` +
             'State preserved: it stays recorded, and a re-run of the destroy retries it.'
         );
         return false;

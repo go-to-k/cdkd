@@ -13,6 +13,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * - AWS::Route53::HealthCheck (HTTP health check)
  * - AWS::Route53::RecordSet with GeoProximityLocation (#609 backfill)
  * - AWS::Route53::CidrCollection (CC-API) + RecordSet with CidrRoutingConfig (#609 backfill)
+ * - AWS::Route53::RecordSet with AZAffinity, changed in place by the REMOVAL phase (#6719)
  * - Resource dependencies (RecordSet depends on HostedZone)
  * - Fn::GetAtt for outputs (HostedZoneId, HostedZone NameServers, HealthCheckId)
  * - The NameServers list read BOTH ways: through Fn::Join, and bare so the
@@ -229,6 +230,26 @@ export class Route53Stack extends cdk.Stack {
       cidrRoutingConfig: { collectionId: cidrCollection.attrId, locationName: 'office' },
     });
     cidrRecord.addDependency(cidrCollection);
+
+    // Issue #6719: an AZ-affinity routing-policy RecordSet (a routing policy,
+    // so it needs a setIdentifier). A raw override, as GeoProximityLocation
+    // above: an aws-cdk-lib without the L1 prop drops an unknown key silently.
+    // The REMOVAL phase changes LocationType in place, so the redeploy UPSERTs
+    // a changed AZAffinity on the same SetIdentifier.
+    const azAffinityRecord = new route53.CfnRecordSet(this, 'AzAffinityRecord', {
+      hostedZoneId: zone.hostedZoneId,
+      name: `aza.cdkd-test-${this.account}.internal`,
+      type: 'A',
+      ttl: '300',
+      resourceRecords: ['198.51.100.9'],
+      setIdentifier: 'aza-1',
+    });
+    azAffinityRecord.addPropertyOverride(
+      'AZAffinity',
+      removal
+        ? { LocationType: 'Global', LocationId: 'global' }
+        : { LocationType: 'Region', LocationId: this.region }
+    );
 
     // Issue #3890: Route 53 accepts `|` in a record name (it stores it as
     // `\174`), and cdkd uses `|` to join its `<zoneId>|<name>|<type>` physical

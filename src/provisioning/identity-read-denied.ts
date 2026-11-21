@@ -41,9 +41,8 @@ export function deniedIdentityReadRefusal(
     context: DeleteContext | undefined;
   }
 ): RecordedIdentityError | undefined {
+  if (!isPermissionDenial(error)) return undefined;
   const name = (error as { name?: unknown } | null | undefined)?.name;
-  if (typeof name === 'string' && CREDENTIAL_FAILURE_NAMES.has(name)) return undefined;
-  if (!isAccessDeniedError(error)) return undefined;
   const { label, permission, resourceType, logicalId, physicalId, context } = params;
   const errorClass = typeof name === 'string' && /^[A-Za-z0-9]{1,64}$/.test(name) ? name : 'a 403';
   return markNotGone(
@@ -61,6 +60,17 @@ export function deniedIdentityReadRefusal(
       )
     )
   );
+}
+
+/**
+ * go-to-k/cdkd#6722: an authorization refusal, never a credential or clock
+ * failure ({@link CREDENTIAL_FAILURE_NAMES}), which a retry or new
+ * credentials fix and whose own text says what is wrong.
+ */
+export function isPermissionDenial(error: unknown): boolean {
+  const name = (error as { name?: unknown } | null | undefined)?.name;
+  if (typeof name === 'string' && CREDENTIAL_FAILURE_NAMES.has(name)) return false;
+  return isAccessDeniedError(error);
 }
 
 /**

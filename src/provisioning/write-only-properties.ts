@@ -16,9 +16,12 @@
  * `/properties/Foo/Bar` strips to `Foo` — re-adding the whole containing
  * property is sufficient and matches terraform-provider-awscc's approach of
  * clearing write-only attribute paths in the prior state so the patch
- * generator always emits `add` ops for them). An unchanged key whose value
- * holds a create-only path overlapping a write-only one is the exception
- * ({@link getTopLevelKeysHoldingUnreadableCreateOnly}, go-to-k/cdkd#4416).
+ * generator always emits `add` ops for them). Two kinds of UNCHANGED key are
+ * the exception: one whose value holds a create-only path overlapping a
+ * write-only one ({@link getTopLevelKeysHoldingUnreadableCreateOnly},
+ * go-to-k/cdkd#4416), and one the type's handler keeps without it and acts on
+ * when it is re-sent ({@link getWriteOnlyKeysKeptWhenOmitted},
+ * go-to-k/cdkd#6709).
  *
  * Only SUCCESSFUL lookups are cached per resource type for the process
  * (deploy) lifetime — `cloudformation:DescribeType` is throttled per-account,
@@ -34,6 +37,7 @@
  * each update simply re-warns and re-falls-back.
  */
 
+import { isDeepStrictEqual } from 'node:util';
 import {
   describeTypeWithThrottleRetry,
   hasNoRegistrySchema,
@@ -261,6 +265,54 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
   const result = new Set<string>();
   for (const path of settledUnreadableCreateOnlyPaths.get(resourceType) ?? []) {
     if (holdsValueAt(properties, path)) result.add(path[0]!);
+  }
+  return result;
+}
+
+/**
+ * go-to-k/cdkd#6709: write-only top-level keys the type's update handler keeps
+ * when a patch omits them, and ACTS ON when a patch re-sends them unchanged.
+ * `AWS::Lambda::Function` `Code`: a patch without it left the code in place,
+ * while one re-adding the same value made the handler call
+ * `UpdateFunctionCode` (measured on a container image on Lambda Managed
+ * Instances and on an inline zip). A CloudFormation stack update changing only
+ * `FunctionScalingConfig` on the Managed Instances image function made no such
+ * call, so leaving the key out in that case serves parity and speed alike.
+ *
+ * Each key maps to the sibling keys it must still TRAVEL WITH: a change to one
+ * of those re-adds the unchanged key as before. `Architectures` is a parameter
+ * of Lambda's `UpdateFunctionCode`, not of `UpdateFunctionConfiguration`: a
+ * Cloud Control patch changing it without `Code` fails with Lambda's 400
+ * "Please provide a source for function code", while the same patch with
+ * `Code` re-added succeeds (measured on an inline zip function, x86_64 ->
+ * arm64, go-to-k/cdkd#6709).
+ *
+ * Require handler measurements before adding an entry, or before dropping a
+ * sibling. Readback omits write-only values, so omitting them from a Cloud
+ * Control patch can lose them (go-to-k/cdkd#809).
+ */
+const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
+  string,
+  ReadonlyMap<string, readonly string[]>
+> = new Map([['AWS::Lambda::Function', new Map([['Code', ['Architectures']]])]]);
+
+/**
+ * The write-only top-level keys of `resourceType` that
+ * `CloudControlProvider.update` must not re-add while UNCHANGED
+ * (go-to-k/cdkd#6709). A changed one is still re-added: that is the update.
+ * A key is left out of the result when a sibling it travels with differs
+ * between the two sides, so the caller re-adds it for that update.
+ */
+export function getWriteOnlyKeysKeptWhenOmitted(
+  resourceType: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const [key, travelsWith] of WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType) ?? []) {
+    if (travelsWith.every((k) => isDeepStrictEqual(properties[k], previousProperties[k]))) {
+      result.add(key);
+    }
   }
   return result;
 }

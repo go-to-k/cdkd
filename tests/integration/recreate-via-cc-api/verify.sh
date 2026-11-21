@@ -11,6 +11,8 @@
 #   - the Lambda's `RuntimeManagementConfig` reaches AWS via CC
 #   - the physical id changed (recreate produced a NEW Lambda function;
 #     the old one was destroyed)
+#   - a configuration-only update on the CC route does not re-send the
+#     unchanged `Code` (go-to-k/cdkd#6709)
 #   - destroy via CC API delete path is clean
 #
 # Required env vars:
@@ -65,12 +67,16 @@ BUCKET_NAME="cdkd-recreate-via-cc-api-probe-${ACCOUNT_ID}"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Phase 2b's --verbose deploy log; removed by cleanup once it is set.
+CONFIG_ONLY_LOG=""
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS probe"
   # `set +eu` so an early-exit (e.g. STATE_BUCKET unset) does not abort
   # cleanup on the first `"${STATE_BUCKET}"` expansion — best-effort
   # cleanup should run as much as it can with the env it has.
   set +eu
+  if [ -n "${CONFIG_ONLY_LOG:-}" ]; then rm -f "${CONFIG_ONLY_LOG}"; fi
   # go-to-k/cdkd#1889's arm (Sub-3e) denies `s3:DeleteBucket` on the probe
   # bucket with a bucket policy. Drop it FIRST, before the leaked-bucket
   # delete below, or a run that died mid-arm cannot clear the bucket.
@@ -211,6 +217,79 @@ if [ "${RL_2}" != "FunctionUpdate" ]; then
 fi
 echo "    OK: post-recreate RuntimeManagementConfig reached AWS via CC (UpdateRuntimeOn=FunctionUpdate)"
 
+# --- Phase 2b: configuration-only update on the CC route (go-to-k/cdkd#6709) ---
+# The function is on the Cloud Control route now. A deploy that changes only
+# its Timeout must not re-send the unchanged Code: the Lambda handler keeps the
+# code without it, and calls UpdateFunctionCode (a new CodeSha256 for an inline
+# zip) when the patch carries it.
+echo "==> Phase 2b: configuration-only update of the CC-routed Lambda (unchanged Code must not be re-sent)"
+# A read that succeeds with no hash (`None`) must not read as "unchanged".
+assert_code_sha() { # usage: assert_code_sha "<when>" "<value>"
+  if ! [[ "$2" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+    echo "FAIL: $1 CodeSha256 is not a SHA-256 in base64: '$2'" >&2
+    exit 1
+  fi
+}
+CODE_SHA_2=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'CodeSha256' --output text)
+assert_code_sha "pre-update" "${CODE_SHA_2}"
+echo "    Pre-update CodeSha256: ${CODE_SHA_2}"
+CONFIG_ONLY_LOG=$(mktemp)
+# CDKD_INTEG_CONFIG_ONLY_UPDATE stays exported for the rest of the run, so the
+# later deploys (Sub-3e) see the function as unchanged, as they did before this
+# phase existed.
+export CDKD_INTEG_CONFIG_ONLY_UPDATE=true
+export CDKD_INTEG_USE_SDK_UNWIRED=true
+if ! node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes --verbose > "${CONFIG_ONLY_LOG}" 2>&1; then
+  echo "FAIL: the configuration-only deploy failed:" >&2
+  tail -n 60 "${CONFIG_ONLY_LOG}" >&2
+  exit 1
+fi
+unset CDKD_INTEG_USE_SDK_UNWIRED
+TIMEOUT_2B=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'Timeout' --output text)
+CODE_SHA_2B=$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" --query 'CodeSha256' --output text)
+assert_code_sha "post-update" "${CODE_SHA_2B}"
+echo "    Post-update CodeSha256: ${CODE_SHA_2B}  Timeout: ${TIMEOUT_2B}"
+
+# The patch cdkd generated for the function, read off the provider's debug
+# line. A missing line, or a read that failed, fails here rather than reading
+# as "no /Code".
+if ! PATCH_LINE=$(grep -F 'patch operations for RecreateProbe:' "${CONFIG_ONLY_LOG}" | tail -n 1) ||
+  [[ -z "${PATCH_LINE}" ]]; then
+  echo "FAIL: could not read a 'patch operations for RecreateProbe:' line from the --verbose log (was the function updated through Cloud Control?)" >&2
+  tail -n 60 "${CONFIG_ONLY_LOG}" >&2
+  exit 1
+fi
+if [[ "${PATCH_LINE}" != *'"path":"/Timeout"'* ]]; then
+  echo "FAIL: the patch does not carry the Timeout change: ${PATCH_LINE}" >&2
+  exit 1
+fi
+if [[ "${PATCH_LINE}" == *'"path":"/Code"'* ]]; then
+  echo "FAIL: the patch re-sends the unchanged Code (go-to-k/cdkd#6709): ${PATCH_LINE}" >&2
+  exit 1
+fi
+echo "    OK: the patch carries /Timeout and no /Code"
+
+if [ "${TIMEOUT_2B}" != "10" ]; then
+  echo "FAIL: Timeout is '${TIMEOUT_2B}' after the configuration-only update, expected 10" >&2
+  exit 1
+fi
+if [ "${CODE_SHA_2B}" != "${CODE_SHA_2}" ]; then
+  echo "FAIL: CodeSha256 changed across a configuration-only update ('${CODE_SHA_2}' -> '${CODE_SHA_2B}'): the function code was updated (go-to-k/cdkd#6709)" >&2
+  exit 1
+fi
+echo "    OK: Timeout reached AWS (10) and CodeSha256 is unchanged"
+
+STATE_2B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+PROVISIONED_2B=$(echo "${STATE_2B}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
+if [ "${PROVISIONED_2B}" != "cc-api" ]; then
+  echo "FAIL: the Lambda left the Cloud Control route in Phase 2b (provisionedBy='${PROVISIONED_2B}')" >&2
+  exit 1
+fi
+echo "    OK: the Lambda is still provisionedBy == 'cc-api'"
+
 # --- Phase 3: S3 probe pre-flight refusal (#648) -----------------------
 echo "==> Phase 3: pre-flight S3 ListObjectsV2 probe — non-empty bucket must be refused"
 # Sanity check: the bucket was deployed empty.
@@ -284,8 +363,8 @@ echo "        OK: bucket emptied"
 #
 # The failed destroy throws before any create, so the old bucket and its state
 # record are untouched and Phase 4 destroys the stack as before. The deploy
-# runs under the Phase 2 template (`CDKD_INTEG_USE_SDK_UNWIRED`) so the
-# Lambda diffs NO_CHANGE and the bucket is the only operation.
+# uses the Phase 2b template with both fixture flags enabled, so the Lambda
+# diffs NO_CHANGE and the bucket is the only operation.
 echo "    Sub-3e: recreate destroy denied by AWS -> RESOURCE_FAILED carries the AWS code (#1889)"
 DENY_POLICY=$(jq -cn --arg b "${BUCKET_NAME}" '{Version: "2012-10-17", Statement: [{Sid: "Cdkd1889DenyDeleteBucket", Effect: "Deny", Principal: "*", Action: "s3:DeleteBucket", Resource: ("arn:aws:s3:::" + $b)}]}')
 aws s3api put-bucket-policy --bucket "${BUCKET_NAME}" --region "${REGION}" --policy "${DENY_POLICY}"
@@ -425,4 +504,4 @@ fi
 echo "    OK: IAM role is gone"
 
 echo ""
-echo "==> recreate-via-cc-api test passed (#615 mid-life SDK->CC migration + #648 S3 probe verified end-to-end)"
+echo "==> recreate-via-cc-api test passed (#615 mid-life SDK->CC migration + #6709 unchanged Code not re-sent + #648 S3 probe verified end-to-end)"

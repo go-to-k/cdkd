@@ -34,7 +34,7 @@ function harness(update: ResourceProvider['update']) {
   const args = {
     logger,
     tally,
-    report: { stackName: 'MyStack', region: 'us-east-1' },
+    report: { stackName: 'MyStack', region: 'us-east-1', state: { resources: {} } },
     narrowedByLogicalId: new Map(),
     reRecordedByLogicalId,
     settledByRevert: new Map(),
@@ -66,7 +66,9 @@ describe('revertReplacementOf', () => {
     ['the flag under the same id', { physicalId: RECORDED_ID, wasReplaced: true }, true],
     ['an empty id is no new id', { physicalId: '', wasReplaced: false }, false],
   ])('%s', (_l, result, replaced) => {
-    expect(revertReplacementOf(RECORDED_ID, result) !== undefined).toBe(replaced);
+    expect(
+      revertReplacementOf(RECORDED_ID, result, 'AWS::SNS::Subscription') !== undefined
+    ).toBe(replaced);
   });
 });
 

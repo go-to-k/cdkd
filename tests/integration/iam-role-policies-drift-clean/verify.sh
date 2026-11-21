@@ -40,6 +40,10 @@
 #       Policies takes. The receiving resource must keep each name. The swap
 #       and a rename-plus-create also run between resources with NO dependency
 #       on each other (go-to-k/cdkd#4227).
+#   2p. Re-create MixedRole out of band under its name without SharedPolicy's
+#       copy or SharedManaged's attachment: drift --revert must refuse to put
+#       or attach either on the stranger, changing nothing (go-to-k/cdkd#6734).
+#       The stranger is then deleted.
 #   3. Destroy + assert the function / queue / role are gone and the cdkd
 #      state file is removed.
 #
@@ -133,6 +137,11 @@ cleanup() {
   # The standalone role keeps its inline + sibling-managed policies; delete
   # them before the role or DeleteRole 409s.
   for rn in "${ROLE_NAME}" "${MIXED_ROLE_NAME}"; do
+    for arn in $(aws iam list-attached-role-policies --role-name "${rn}" --region "${REGION}" \
+        --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+      aws iam detach-role-policy --role-name "${rn}" --policy-arn "${arn}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    done
     for pn in $(aws iam list-role-policies --role-name "${rn}" --region "${REGION}" \
         --query 'PolicyNames' --output text 2>/dev/null); do
       aws iam delete-role-policy --role-name "${rn}" --policy-name "${pn}" \
@@ -140,6 +149,13 @@ cleanup() {
     done
     aws iam delete-role --role-name "${rn}" --region "${REGION}" >/dev/null 2>&1 || true
   done
+  # go-to-k/cdkd#6734: Phase 2p's managed policy, detached above.
+  SHARED_MANAGED_ARN="arn:aws:iam::$(aws sts get-caller-identity --query Account --output text 2>/dev/null):policy/cdkd-iam-drift-clean-shared-managed"
+  for v in $(aws iam list-policy-versions --policy-arn "${SHARED_MANAGED_ARN}" \
+      --query 'Versions[?!IsDefaultVersion].VersionId' --output text 2>/dev/null); do
+    aws iam delete-policy-version --policy-arn "${SHARED_MANAGED_ARN}" --version-id "${v}" >/dev/null 2>&1 || true
+  done
+  aws iam delete-policy --policy-arn "${SHARED_MANAGED_ARN}" >/dev/null 2>&1 || true
   # The function's auto-created log group survives a function delete.
   aws logs delete-log-group --log-group-name "/aws/lambda/${FN_NAME}" \
     --region "${REGION}" >/dev/null 2>&1 || true
@@ -689,6 +705,171 @@ if ! has_policy "DeclaredInline" || ! has_policy "${NEW_POLICY}"; then
 fi
 assert_no_role_drift "after hand-off" handoff
 
+# --- Phase 2p: a same-named stranger under MixedRole's name, then --revert (go-to-k/cdkd#6734)
+# MixedRole is deleted and re-created out of band under its name, holding a
+# copy of every inline policy it held EXCEPT SharedPolicy's, and not attached
+# to SharedManaged: both are then drifted on Roles, the one change each revert
+# would make. Before the fix the revert sent its updates with no record of the
+# stack's other resources, saw the role as outside the stack and put
+# SharedPolicy on / attached SharedManaged to the stranger by name (a grant).
+# It must now read the role, refuse both with nothing put or attached (exit
+# 2), and leave both records, SharedPolicy's copy on the first role and every
+# id as they were. LAST before the destroy: the stranger is deleted
+# afterwards, so the destroy finds MixedRole gone (Phase 3's MixedRole check
+# then proves only that it stays gone).
+echo "==> Phase 2p: re-create MixedRole out of band; drift --revert must not put SharedPolicy on the stranger"
+P2P_PREFIX="${REVERT_DIR}/revert-2p-policy-"
+MIXED_ROLE_ID_BEFORE_2P="$(role_id "${MIXED_ROLE_NAME}")"
+ROLE_ID_BEFORE_2P="$(role_id "${ROLE_NAME}")"
+SHARED_PHYSICAL_BEFORE_2P="$(record_physical_id "${SHARED_POLICY_LID}")"
+TEMPLATE_DOCUMENT_2P="$(state_json | jq -cS --arg l "${SHARED_POLICY_LID}" '.resources[$l].properties.PolicyDocument')"
+MIXED_TRUST="$(aws iam get-role --role-name "${MIXED_ROLE_NAME}" --region "${REGION}" \
+  --query 'Role.AssumeRolePolicyDocument' --output json)"
+SHARED_MANAGED_LID="SharedManaged"
+SHARED_MANAGED_ARN="$(record_physical_id "${SHARED_MANAGED_LID}")"
+MIXED_ATTACHED="$(aws iam list-attached-role-policies --role-name "${MIXED_ROLE_NAME}" --region "${REGION}" \
+  --query 'AttachedPolicies[].PolicyArn' --output text)"
+if [ -z "${MIXED_ROLE_ID_BEFORE_2P}" ] || [ -z "${ROLE_ID_BEFORE_2P}" ] || [ "${SHARED_PHYSICAL_BEFORE_2P}" = "<none>" ] \
+    || [ "${TEMPLATE_DOCUMENT_2P}" = "null" ] || [ -z "${MIXED_TRUST}" ] || [ "${SHARED_MANAGED_ARN}" = "<none>" ] \
+    || [ "${MIXED_ATTACHED}" != "${SHARED_MANAGED_ARN}" ]; then
+  echo "FAIL: premise: cannot read the role ids, SharedPolicy's / SharedManaged's records or MixedRole's trust policy before Phase 2p, or MixedRole's attached managed policies are not SharedManaged alone (${MIXED_ATTACHED})" >&2
+  exit 1
+fi
+if [ "$(shared_document "${MIXED_ROLE_NAME}" | jq -cS .)" != "${TEMPLATE_DOCUMENT_2P}" ]; then
+  echo "FAIL: premise: ${MIXED_ROLE_NAME} does not hold the template's ${SHARED_POLICY} before Phase 2p" >&2
+  exit 1
+fi
+MIXED_INLINE="$(aws iam list-role-policies --role-name "${MIXED_ROLE_NAME}" --region "${REGION}" \
+  --query 'PolicyNames' --output text)"
+kept_2p=0
+for pn in ${MIXED_INLINE}; do
+  [ "${pn}" = "${SHARED_POLICY}" ] && continue
+  aws iam get-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${pn}" --region "${REGION}" \
+    --query 'PolicyDocument' --output json >"${P2P_PREFIX}${pn}.json"
+  kept_2p=$((kept_2p + 1))
+done
+# MixedDeclared, MixedPolicy's and MixedRolePolicy's names; checked before
+# anything is deleted.
+if [ "${kept_2p}" -ne 3 ]; then
+  echo "FAIL: premise: ${MIXED_ROLE_NAME} held ${kept_2p} inline policies besides ${SHARED_POLICY}, expected 3" >&2
+  exit 1
+fi
+for pn in ${MIXED_INLINE}; do
+  aws iam delete-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${pn}" --region "${REGION}"
+done
+aws iam detach-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-arn "${SHARED_MANAGED_ARN}" --region "${REGION}"
+aws iam delete-role --role-name "${MIXED_ROLE_NAME}" --region "${REGION}"
+aws iam create-role --role-name "${MIXED_ROLE_NAME}" --assume-role-policy-document "${MIXED_TRUST}" \
+  --region "${REGION}" >/dev/null
+for f in "${P2P_PREFIX}"*.json; do
+  pn="${f#"${P2P_PREFIX}"}"
+  aws iam put-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${pn%.json}" \
+    --policy-document "file://${f}" --region "${REGION}"
+done
+# Two reads in a row answering the new RoleId: a lagging read answering the
+# old one would let cdkd's own compare match and put (a false RED).
+stranger_ready=false
+new_id_reads=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+  stranger_id="$(role_id "${MIXED_ROLE_NAME}" 2>/dev/null || true)"
+  if [ -n "${stranger_id}" ] && [ "${stranger_id}" != "${MIXED_ROLE_ID_BEFORE_2P}" ] \
+      && gone_probe aws iam get-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${SHARED_POLICY}" --region "${REGION}"; then
+    new_id_reads=$((new_id_reads + 1))
+    if [ "${new_id_reads}" -ge 2 ]; then
+      stranger_ready=true
+      break
+    fi
+  else
+    new_id_reads=0
+  fi
+  sleep 5
+done
+if [ "${stranger_ready}" != true ]; then
+  echo "FAIL: premise: the out-of-band re-create of ${MIXED_ROLE_NAME} never read back with a new RoleId and no ${SHARED_POLICY}" >&2
+  exit 1
+fi
+set +e
+REVERT_DRIFT="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>/dev/null)"
+revert_rc=$?
+set -e
+drifted_2p="$(jq -c '[.[].drifted[].logicalId] | sort' <<<"${REVERT_DRIFT}")" || {
+  echo "FAIL: cdkd drift --json printed no parseable report in Phase 2p (rc=${revert_rc})" >&2
+  printf '%s\n' "${REVERT_DRIFT}" | sed 's/^/    | /' >&2
+  exit 1
+}
+shared_paths="$(jq -c --arg l "${SHARED_POLICY_LID}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path]' <<<"${REVERT_DRIFT}")"
+managed_paths="$(jq -c --arg l "${SHARED_MANAGED_LID}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path]' <<<"${REVERT_DRIFT}")"
+# Not MixedRole / MixedPolicy / MixedRolePolicy: a drifted one would be
+# reverted onto the stranger too, by paths this phase does not prove.
+if ! jq -e 'any(.[]; startswith("Roles"))' <<<"${shared_paths}" >/dev/null \
+    || ! jq -e 'any(.[]; startswith("Roles"))' <<<"${managed_paths}" >/dev/null \
+    || jq -e 'any(.[]; startswith("Mixed"))' <<<"${drifted_2p}" >/dev/null \
+    || [ "${revert_rc}" -ne 1 ]; then
+  echo "FAIL: premise: drift --json must report SharedPolicy and SharedManaged on Roles and nothing of MixedRole's (drifted: ${drifted_2p}; SharedPolicy paths: ${shared_paths}; SharedManaged paths: ${managed_paths}; rc=${revert_rc})" >&2
+  exit 1
+fi
+echo "    drift --json reported SharedPolicy and SharedManaged on Roles (drifted: ${drifted_2p})"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-2p-before" "${STACK}" "${SHARED_POLICY_LID}" "${SHARED_MANAGED_LID}" || exit 1
+RC=0
+env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes >"${REVERT_DIR}/revert-2p.log" 2>&1 || RC=$?
+cat "${REVERT_DIR}/revert-2p.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-2p-before" "${REVERT_DIR}/revert-ids-2p-after" 2 "${REVERT_DIR}/revert-2p.log" expect-refusal || exit 1
+if [ "${RC}" -ne 2 ]; then
+  echo "FAIL: Phase 2p: drift --revert exited ${RC}, expected 2 (SharedPolicy and SharedManaged refused) (go-to-k/cdkd#6734)" >&2
+  exit 1
+fi
+P2P_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_DIR}/revert-2p.log")"
+for refusal in "Cannot attach IAM policy ${SHARED_POLICY_LID} to IAM role MixedRole" \
+    "Cannot attach IAM managed policy ${SHARED_MANAGED_LID} to IAM role MixedRole"; do
+  if ! grep -qF "${refusal}" <<<"${P2P_PLAIN}"; then
+    echo "FAIL: Phase 2p: drift --revert printed no '${refusal}...' for the stranger under ${MIXED_ROLE_NAME} (go-to-k/cdkd#6734)" >&2
+    exit 1
+  fi
+done
+# A put or attach would read back within seconds: look for a while, not once.
+for i in 1 2 3 4 5 6; do
+  if ! gone_probe aws iam get-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${SHARED_POLICY}" --region "${REGION}"; then
+    echo "FAIL: drift --revert put ${SHARED_POLICY} on the stranger holding ${MIXED_ROLE_NAME} (go-to-k/cdkd#6734)" >&2
+    exit 1
+  fi
+  stranger_attached="$(aws iam list-attached-role-policies --role-name "${MIXED_ROLE_NAME}" --region "${REGION}" \
+    --query 'AttachedPolicies[].PolicyArn' --output text)"
+  if [ -n "${stranger_attached}" ]; then
+    echo "FAIL: drift --revert attached ${stranger_attached} to the stranger holding ${MIXED_ROLE_NAME} (go-to-k/cdkd#6734)" >&2
+    exit 1
+  fi
+  sleep 5
+done
+if [ "$(shared_document "${ROLE_NAME}" | jq -cS .)" != "${TEMPLATE_DOCUMENT_2P}" ] \
+    || [ "$(role_id "${ROLE_NAME}")" != "${ROLE_ID_BEFORE_2P}" ] \
+    || [ "$(role_id "${MIXED_ROLE_NAME}")" != "${stranger_id}" ] \
+    || [ "$(record_physical_id "${SHARED_POLICY_LID}")" != "${SHARED_PHYSICAL_BEFORE_2P}" ]; then
+  echo "FAIL: Phase 2p: the refused revert changed ${ROLE_NAME}'s copy of ${SHARED_POLICY}, a RoleId or SharedPolicy's physical id (go-to-k/cdkd#6734)" >&2
+  exit 1
+fi
+echo "    --revert refused SharedPolicy and SharedManaged for the stranger; nothing put or attached, every id unchanged"
+# The stranger goes before the destroy, which then finds MixedRole gone (its
+# own delete would refuse a holder with another RoleId, go-to-k/cdkd#6679).
+for pn in $(aws iam list-role-policies --role-name "${MIXED_ROLE_NAME}" --region "${REGION}" \
+    --query 'PolicyNames' --output text); do
+  aws iam delete-role-policy --role-name "${MIXED_ROLE_NAME}" --policy-name "${pn}" --region "${REGION}"
+done
+aws iam delete-role --role-name "${MIXED_ROLE_NAME}" --region "${REGION}"
+stranger_gone=false
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if gone_probe aws iam get-role --role-name "${MIXED_ROLE_NAME}" --region "${REGION}"; then
+    stranger_gone=true
+    break
+  fi
+  sleep 5
+done
+if [ "${stranger_gone}" != true ]; then
+  echo "FAIL: the out-of-band delete of the stranger holding ${MIXED_ROLE_NAME} never read back" >&2
+  exit 1
+fi
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 CDKD_TEST_RENAME=true CDKD_TEST_HANDOFF=true node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -700,8 +881,13 @@ echo "    function deleted"
 assert_gone "role ${ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${ROLE_NAME}" --region "${REGION}"
 echo "    standalone role deleted"
 
+# Phase 2p deleted MixedRole (by then a stranger) out of band: this proves
+# only that it stays gone.
 assert_gone "role ${MIXED_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${MIXED_ROLE_NAME}" --region "${REGION}"
 echo "    mixed-swap role deleted"
+
+assert_gone "managed policy ${SHARED_MANAGED_ARN} still exists after destroy" aws iam get-policy --policy-arn "${SHARED_MANAGED_ARN}"
+echo "    shared managed policy deleted"
 
 assert_gone "queue ${QUEUE_NAME} still exists after destroy" aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"
 echo "    queue deleted"

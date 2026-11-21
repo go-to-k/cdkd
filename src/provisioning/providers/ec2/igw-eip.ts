@@ -6,6 +6,7 @@ import {
   DescribeAddressesCommand,
   AssociateAddressCommand,
   DisassociateAddressCommand,
+  type Address,
   type AllocateAddressCommandInput,
   type AllocateAddressCommandOutput,
   type CreateInternetGatewayCommandOutput,
@@ -37,7 +38,9 @@ import {
   allocateAddressLatch,
   createInternetGatewayLatch,
   ec2IdsCreatedByThisProcess,
+  isNamedError,
 } from './common.js';
+import { markDeleteStarted } from '../../delete-started.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 // ─── AWS::EC2::InternetGateway ────────────────────────────────────
@@ -578,7 +581,8 @@ export async function deleteEip(
   logicalId: string,
   physicalId: string,
   resourceType: string,
-  context?: DeleteContext
+  context?: DeleteContext,
+  properties?: Record<string, unknown>
 ): Promise<void> {
   this.logger.debug(`Deleting EIP ${logicalId}: ${physicalId}`);
   const parsed = this.parseEipPhysicalId(physicalId);
@@ -598,11 +602,48 @@ export async function deleteEip(
     }
   }
 
-  try {
-    await this.withDependencyViolationRetry(
+  const release = () =>
+    this.withDependencyViolationRetry(
       () => this.ec2Client.send(new ReleaseAddressCommand({ AllocationId: allocationId })),
       { description: `ReleaseAddress ${logicalId} (${allocationId})` }
     );
+  try {
+    try {
+      await release();
+    } catch (error) {
+      // go-to-k/cdkd#6715: in a non-default VPC, ReleaseAddress refuses an
+      // associated address (`InvalidIPAddress.InUse`), and a destroy reaches
+      // the EIP BEFORE the instance its `InstanceId` names, so the address is
+      // still associated. CloudFormation's delete handler disassociates
+      // first; cdkd does so only after that refusal (no read on the ordinary
+      // path) and only for the association this EIP's own `InstanceId`
+      // made, never one another resource owns.
+      if (!isNamedError(error, EIP_IN_USE_NAMES)) throw error;
+      const freed = await disassociateOwnAssociation.call(
+        this,
+        logicalId,
+        allocationId,
+        properties
+      );
+      if (freed === 'not-ours') throw error;
+      try {
+        // The disassociation can lag the release's read briefly: retry the
+        // same refusal a bounded number of times, any other error at once.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await release();
+            break;
+          } catch (retryError) {
+            if (attempt >= EIP_RELEASE_AFTER_DISASSOCIATE_ATTEMPTS) throw retryError;
+            if (!isNamedError(retryError, EIP_IN_USE_NAMES)) throw retryError;
+            await this.sleep(2000);
+          }
+        }
+      } catch (retryError) {
+        // Only a disassociation cdkd sent changed the resource (#4946).
+        throw freed === 'disassociated' ? markDeleteStarted(retryError) : retryError;
+      }
+    }
     this.logger.debug(`Successfully deleted EIP ${logicalId}`);
   } catch (error) {
     if (this.isNotFoundError(error)) {
@@ -634,6 +675,67 @@ export async function deleteEip(
     );
   }
 }
+
+/** `ReleaseAddress`'s refusal of an address that is still associated. */
+const EIP_IN_USE_NAMES: ReadonlySet<string> = new Set(['InvalidIPAddress.InUse']);
+const EIP_RELEASE_AFTER_DISASSOCIATE_ATTEMPTS = 5;
+
+/** What {@link disassociateOwnAssociation} did. */
+type EipFreed = 'disassociated' | 'gone' | 'not-ours';
+
+/**
+ * Disassociate the address from the instance the EIP's recorded `InstanceId`
+ * names, the association this EIP made itself. `'not-ours'`, sending
+ * nothing, when the record names no instance, the address cannot be read, or
+ * it is associated with anything else: that association belongs to another
+ * resource, and AWS's refusal is the answer. `'gone'` when the read shows no
+ * association left, so the release can simply retry.
+ */
+async function disassociateOwnAssociation(
+  this: EC2Provider,
+  logicalId: string,
+  allocationId: string | undefined,
+  properties: Record<string, unknown> | undefined
+): Promise<EipFreed> {
+  const instanceId = properties?.['InstanceId'];
+  if (typeof instanceId !== 'string' || instanceId === '' || !allocationId) return 'not-ours';
+  let address: Address | undefined;
+  try {
+    const described = await this.ec2Client.send(
+      new DescribeAddressesCommand({ AllocationIds: [allocationId] })
+    );
+    address = described.Addresses?.[0];
+  } catch (error) {
+    // Unreadable (a caller without ec2:DescribeAddresses): the release's own
+    // InUse refusal is the error worth surfacing, not this read's.
+    this.logger.debug(
+      safeMsg`Could not read EIP ${logicalId} (${allocationId}) to disassociate it: ${error instanceof Error ? error.name : 'unknown error'}`
+    );
+    return 'not-ours';
+  }
+  if (!address) return 'not-ours';
+  // No association left (it went since the refusal): the release can retry.
+  if (!address.AssociationId) return 'gone';
+  if (address.InstanceId !== instanceId) return 'not-ours';
+  this.logger.debug(
+    safeMsg`Disassociating EIP ${logicalId} (${allocationId}) from its instance before release`
+  );
+  try {
+    await this.ec2Client.send(
+      new DisassociateAddressCommand({ AssociationId: address.AssociationId })
+    );
+  } catch (error) {
+    // Not-found counts as cdkd's own: an SDK retry can see it after the first
+    // attempt landed, and under-marking re-adopts a stripped survivor (#4946).
+    if (!isNamedError(error, EIP_ASSOCIATION_NOT_FOUND_NAMES)) throw error;
+  }
+  return 'disassociated';
+}
+
+/** `DisassociateAddress`'s answer for an association already gone. */
+const EIP_ASSOCIATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
+  'InvalidAssociationID.NotFound',
+]);
 
 export async function getEipAttribute(
   this: EC2Provider,

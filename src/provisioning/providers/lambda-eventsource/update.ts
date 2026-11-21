@@ -138,6 +138,58 @@ export async function update(
   }
 }
 
+type LambdaDestinationConfig = import('@aws-sdk/client-lambda').DestinationConfig;
+
+/**
+ * The UpdateEventSourceMapping shape that clears an on-failure destination
+ * (issue #6777, measured on a DynamoDB stream mapping): `{}` leaves the
+ * destination in place, `{ OnFailure: {} }` is refused ("The Destination
+ * field is required for an OnFailure configuration"), and an empty
+ * `Destination` clears it, after which the mapping reads back
+ * `{ OnFailure: {} }`. CloudFormation clears it on the same template change.
+ */
+function clearedDestinationConfig(): LambdaDestinationConfig {
+  return { OnFailure: { Destination: '' } };
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Whether a DestinationConfig names an on-failure destination. `{}`,
+ * `{ OnFailure: {} }` (the cleared state as Lambda reads it back) and an empty
+ * or null `Destination` name none. The schema has no `OnSuccess`.
+ */
+function holdsDestination(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const onFailure = value['OnFailure'];
+  if (!isPlainObject(onFailure)) return false;
+  const destination = onFailure['Destination'];
+  return destination !== undefined && destination !== null && destination !== '';
+}
+
+/**
+ * The DestinationConfig to send for a desired one, or `undefined` to send
+ * none. A desired value naming a destination goes through as it is. One
+ * naming none (`{}`, or the read-back `{ OnFailure: {} }` a drift baseline or
+ * restored record carries) is the clearing shape when the previous side holds
+ * a destination, since Lambda ignores `{}` and refuses `{ OnFailure: {} }`
+ * (failing the whole update); otherwise it is omitted, so an update of an
+ * unrelated member sends no DestinationConfig at all, as before, on any
+ * source kind. A malformed value (not an object, or an `OnFailure` that is
+ * not one) goes through for AWS to refuse.
+ */
+function destinationConfigForUpdate(
+  value: unknown,
+  previous: unknown
+): LambdaDestinationConfig | undefined {
+  if (holdsDestination(value)) return value as LambdaDestinationConfig;
+  if (!isPlainObject(value)) return value as LambdaDestinationConfig;
+  const onFailure = value['OnFailure'];
+  if (onFailure !== undefined && !isPlainObject(onFailure)) return value as LambdaDestinationConfig;
+  return holdsDestination(previous) ? clearedDestinationConfig() : undefined;
+}
+
 export async function applyUpdate(
   this: LambdaEventSourceMappingProvider,
   logicalId: string,
@@ -184,9 +236,10 @@ export async function applyUpdate(
       Filters?: Array<{ Pattern?: string }>;
     };
   if (properties['DestinationConfig'] !== undefined)
-    updateParams.DestinationConfig = properties[
-      'DestinationConfig'
-    ] as import('@aws-sdk/client-lambda').DestinationConfig;
+    updateParams.DestinationConfig = destinationConfigForUpdate(
+      properties['DestinationConfig'],
+      previousProperties['DestinationConfig']
+    );
   if (properties['TumblingWindowInSeconds'] !== undefined)
     updateParams.TumblingWindowInSeconds = properties['TumblingWindowInSeconds'] as number;
   if (properties['FunctionResponseTypes'] !== undefined)
@@ -272,11 +325,16 @@ export async function applyUpdate(
   // Object properties whose documented clear sentinel is an empty object.
   // `FilterCriteria: {}` is explicitly documented (Lambda event-filtering
   // guide: "run update-event-source-mapping ... with an empty
-  // FilterCriteria object"); `ScalingConfig: {}` / `DestinationConfig: {}`
-  // reset MaximumConcurrency / the on-failure destination back to default.
+  // FilterCriteria object"); `ScalingConfig: {}` clears MaximumConcurrency
+  // (issue #6777, measured on an SQS mapping: 5 -> no ScalingConfig read
+  // back). DestinationConfig is NOT one of them: Lambda ignores `{}` and keeps
+  // the on-failure destination (issue #6777, measured), so its removal sends
+  // the clearing shape instead (see `clearedDestinationConfig`), and only when
+  // the previous side named a destination: nothing else needs clearing.
   if (wasSet('FilterCriteria')) updateParams.FilterCriteria = {};
   if (wasSet('ScalingConfig')) updateParams.ScalingConfig = {};
-  if (wasSet('DestinationConfig')) updateParams.DestinationConfig = {};
+  if (wasSet('DestinationConfig') && holdsDestination(previousProperties['DestinationConfig']))
+    updateParams.DestinationConfig = clearedDestinationConfig();
 
   // Array properties whose documented clear sentinel is an empty array,
   // gated by source kind (see above).
@@ -285,7 +343,8 @@ export async function applyUpdate(
   if (wasSet('SourceAccessConfigurations') && KINDS_WITH_SOURCE_ACCESS_CONFIGURATIONS.has(prevKind))
     updateParams.SourceAccessConfigurations = [];
 
-  // MetricsConfig resets by disabling the opt-in metrics — `{ Metrics: [] }`.
+  // MetricsConfig resets by disabling the opt-in metrics — `{ Metrics: [] }`
+  // (issue #6777, measured: EventCount cleared, `{ Metrics: [] }` read back).
   if (wasSet('MetricsConfig')) updateParams.MetricsConfig = { Metrics: [] };
 
   // KMSKeyArn (CFn `KmsKeyArn`): the documented clear sentinel is an empty

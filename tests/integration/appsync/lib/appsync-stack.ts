@@ -195,7 +195,10 @@ export class AppSyncStack extends cdk.Stack {
       apiId: graphqlApi.attrApiId,
     });
 
-    // Inline GraphQL schema. `getItemV2` backs the S3-sourced-template
+    // Inline GraphQL schema. It deliberately has NO `schema { query: Query }`
+    // block (how most CDK apps write it): AWS's introspection SDL always adds
+    // one, and verify.sh Phase 1b asserts drift stays clean (#6779).
+    // `getItemV2` backs the S3-sourced-template
     // resolver added by the #609 Resolver/DataSource batch (present in ALL
     // phases so no phase ever deletes the resolver).
     const schema = new appsync.CfnGraphQLSchema(this, 'GraphQLSchema', {
@@ -209,10 +212,6 @@ type Item {
 type Query {
   getItem(id: ID!): Item
   getItemV2(id: ID!): Item
-}
-
-schema {
-  query: Query
 }
 `,
     });

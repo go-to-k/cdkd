@@ -14,7 +14,10 @@ import {
   repairMalformedResourcesForReadOnly,
 } from '../../../state/malformed-resources-bag.js';
 import { stripForDisplay } from '../../../utils/regexp.js';
-import { withSecretPhysicalIdsMaskedInState } from '../../../provisioning/secret-physical-id.js';
+import {
+  displayPhysicalId,
+  withSecretPhysicalIdsMaskedInState,
+} from '../../../provisioning/secret-physical-id.js';
 import type { LockInfo, ResourceState } from '../../../types/state.js';
 import {
   type ResourceDetail,
@@ -204,7 +207,9 @@ export async function printStackResources(
       // joined with `\n` too, so an unstripped field forges rows here as well.
       lines.push(stripForDisplay(detail.logicalId));
       lines.push(`  Type: ${formatAttributeValue(detail.resourceType)}`);
-      lines.push(`  PhysicalID: ${formatAttributeValue(detail.physicalId)}`);
+      lines.push(
+        `  PhysicalID: ${formatAttributeValue(displayPhysicalId(detail.resourceType, detail.physicalId))}`
+      );
       lines.push(`  Dependencies: ${formatDependencyList(detail.dependencies)}`);
       const attrEntries = Object.entries(detail.attributes);
       if (attrEntries.length === 0) {
@@ -244,7 +249,7 @@ export async function printStackResources(
   const typeWidth = Math.max(...rows.map((r) => r.resourceType.length));
   for (const row of rows) {
     process.stdout.write(
-      `${row.logicalId.padEnd(idWidth)}  ${row.resourceType.padEnd(typeWidth)}  ${row.physicalId}\n`
+      `${row.logicalId.padEnd(idWidth)}  ${row.resourceType.padEnd(typeWidth)}  ${displayPhysicalId(row.resourceType, row.physicalId)}\n`
     );
   }
 }

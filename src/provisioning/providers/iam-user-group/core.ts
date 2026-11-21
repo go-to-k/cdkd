@@ -140,7 +140,8 @@ export async function update(
         properties,
         previousProperties,
         log,
-        context?.inlinePolicyClaimed
+        context?.inlinePolicyClaimed,
+        context?.recordedAttributes
       );
     case 'AWS::IAM::Group':
       return this.updateGroup(
@@ -150,7 +151,8 @@ export async function update(
         properties,
         previousProperties,
         log,
-        context?.inlinePolicyClaimed
+        context?.inlinePolicyClaimed,
+        context?.recordedAttributes
       );
     case 'AWS::IAM::UserToGroupAddition':
       return this.updateUserToGroupAddition(

@@ -39,6 +39,8 @@ import {
 } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
+import { verifyOwnIdentityBeforeUpdate } from './iam-policy/principal-identity.js';
+import { compareProfileRoleWrites } from './iam-instance-profile-roles.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -192,6 +194,33 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       );
     }
     const roles = principals.lists.Roles;
+    // go-to-k/cdkd#6722: each in-stack role is compared before the profile
+    // is created; another holder of a role's name refuses with nothing created.
+    try {
+      await compareProfileRoleWrites({
+        client: this.iamClient,
+        logicalId,
+        physicalId: instanceProfileName,
+        added: roles ?? [],
+        removed: [],
+        warn: (message) => log.warn(message),
+      });
+    } catch (error) {
+      if (error instanceof RecordedIdentityError) throw error; // worded, marked
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create IAM instance profile ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            instanceProfileName,
+            cause
+          )
+      );
+    }
 
     // go-to-k/cdkd#4583: set once CreateInstanceProfile returns, or a replay adopts
     // its own profile (#5660); cleared when the partial-create cleanup deleted the
@@ -456,9 +485,37 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     const oldRoles = oldPrincipals.lists.Roles ?? [];
 
     try {
+      // go-to-k/cdkd#6722: the role writes below name the profile, so its
+      // recorded InstanceProfileId is compared first, on the read this update
+      // makes for its attributes (moved before the writes, not added).
+      const ownRead = await verifyOwnIdentityBeforeUpdate({
+        label: 'IAM instance profile',
+        resourceType,
+        permission: 'iam:GetInstanceProfile',
+        logicalId,
+        physicalId,
+        recordedAttributes: context?.recordedAttributes,
+        read: () =>
+          this.iamClient.send(new GetInstanceProfileCommand({ InstanceProfileName: physicalId })),
+        // A response naming another profile carries no id of this one (see `delete()`).
+        idOf: (response) =>
+          response.InstanceProfile?.InstanceProfileName?.toLowerCase() === physicalId.toLowerCase()
+            ? response.InstanceProfile.InstanceProfileId
+            : undefined,
+      });
+      // go-to-k/cdkd#6722: each in-stack role gained or lost is compared
+      // before any role write (a lost one held by another id is sent no removal).
+      const skipRemoval = await compareProfileRoleWrites({
+        client: this.iamClient,
+        logicalId,
+        physicalId,
+        added: newRoles.filter((r) => !oldRoles.includes(r)),
+        removed: oldRoles.filter((r) => !newRoles.includes(r)),
+        warn: (message) => log.warn(message),
+      });
       // Remove old roles that are no longer in the list
       for (const roleName of oldRoles) {
-        if (!newRoles.includes(roleName)) {
+        if (!newRoles.includes(roleName) && !skipRemoval(roleName)) {
           try {
             await this.iamClient.send(
               new RemoveRoleFromInstanceProfileCommand({
@@ -505,10 +562,12 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
 
       log.debug(`Successfully updated IAM instance profile ${logicalId}`);
 
-      // Get updated instance profile info for attributes
-      const getResponse = await this.iamClient.send(
-        new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
-      );
+      // Get updated instance profile info for attributes (unchanged by a role write)
+      const getResponse =
+        ownRead ??
+        (await this.iamClient.send(
+          new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+        ));
 
       return {
         physicalId,
@@ -525,6 +584,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (error instanceof RecordedIdentityError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
         log.mask,
@@ -631,7 +691,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         throw error;
       }
 
-      // Remove all roles from instance profile
+      // Remove all roles (read live; not compared, see `compareProfileRoleWrites`)
       for (const roleName of roles) {
         try {
           await this.iamClient.send(

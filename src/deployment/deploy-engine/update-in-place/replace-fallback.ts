@@ -471,7 +471,7 @@ export async function replaceFallbackFor(
       throw new Error(
         deleteSkippedMessage(
           logicalId,
-          currentResource.physicalId,
+          displayPhysicalId(currentResource.resourceType, currentResource.physicalId),
           fallbackSkipReason,
           'during the UPDATE-not-supported replacement'
         )
@@ -642,7 +642,7 @@ export async function replaceFallbackFor(
       const createFailureText = (text: string): string =>
         // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
         safeMsg`Failed to create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
-        safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
+        safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}) ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
         // as-is and LAST: it can end in cdkd's own remedy command lines.
         safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(text, shownSecrets))}`;
@@ -679,7 +679,7 @@ export async function replaceFallbackFor(
         new CdkdError(
           safeMsg`${logicalId} (${resourceType}) requires replacement because the ` +
             `provisioning layer cannot update it in place, but the create collided. ` +
-            safeMsg`${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
+            safeMsg`${renderNameHeldElsewhere(nameHeldElsewhere, currentResource.resourceType)} — so removing ` +
             `UpdateReplacePolicy: Retain would delete this resource and still ` +
             `collide. Choose a name no other resource holds, or delete the resource ` +
             `holding it if it is yours.`,
@@ -688,7 +688,11 @@ export async function replaceFallbackFor(
         )
       );
     }
-    const nameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
+    const nameOrigin = replacementNameOrigin(
+      logicalId,
+      currentResource.physicalId,
+      currentResource.resourceType
+    );
     // Verbatim the property-driven twin's verdict and code: with
     // Retain the old resource keeps the name, so a same-name
     // replacement can never proceed — under ANY flag, since the
@@ -760,7 +764,11 @@ export async function replaceFallbackFor(
         newProperties: resolvedProps,
       })
     ) {
-      const idempotentNameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
+      const idempotentNameOrigin = replacementNameOrigin(
+        logicalId,
+        currentResource.physicalId,
+        currentResource.resourceType
+      );
       // Marked for the same reason as its collision sibling: the
       // verdict is two recorded physical ids plus a template
       // attribute, and the message carries template-controlled
@@ -770,7 +778,7 @@ export async function replaceFallbackFor(
         new CdkdError(
           safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create ` +
             `API is name-idempotent: the create returned the existing resource ` +
-            safeMsg`(${currentResource.physicalId}) instead of creating a new one, and ` +
+            safeMsg`(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) instead of creating a new one, and ` +
             `UpdateReplacePolicy: Retain pins that resource in place, so the new ` +
             safeMsg`properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
             safeMsg`${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +

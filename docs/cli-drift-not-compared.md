@@ -53,7 +53,8 @@ real. It is listed under both `drifted` and `notCompared` in `--json`, and its
 `drifted` entry carries `referencesUnresolved: true`.
 
 A resource type cdkd cannot read back at all is a different outcome, drift
-unknown, and is marked `?`. It is not a failed read.
+unknown, and is marked `?`. It is not a failed read, but it makes the
+comparison incomplete too, so a run with one and no drift exits `2`.
 
 ### `readFailed`: the read failed
 

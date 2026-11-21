@@ -76,7 +76,9 @@ import {
  *      S3, asks every resource's provider for its `readCurrentState`
  *      snapshot, and compares against the state-recorded `properties`.
  *      Outputs a per-stack report and exits with `0` when no drift, `1`
- *      when drift is detected (rich human report is the only output).
+ *      when drift is detected, and `2` when nothing drifted but the
+ *      comparison was incomplete — a drift-unknown (`unsupported`) resource
+ *      included (go-to-k/cdkd#6696). See `outcomeExitSignal`.
  *
  *   2. **`--accept`** — state ← AWS. For each drifted property, write
  *      the AWS-current value back into cdkd state. Use this when the
@@ -331,8 +333,8 @@ export async function driftCommand(
     //
     // Issue #2135: read through `outcomeExitSignal` rather than off a `kind`
     // comparison, so a new outcome variant cannot quietly join the "nothing to
-    // report" side. The REFUSED subset is deliberately narrower than the
-    // not-compared roll-up both renderings use; see that function.
+    // report" side. The INCOMPLETE subset is deliberately narrower than what
+    // both renderings name as not compared; see that function.
     const signals = reports.flatMap((r) => r.outcomes.map(outcomeExitSignal));
     const drifted = signals.includes('drifted');
     const anyIncomplete = signals.includes('incomplete');

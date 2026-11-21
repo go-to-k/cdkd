@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { createUnionSecretMasker } from '../secret-redaction.js';
 import { secretNameBagFor } from './masking.js';
 import { prepareFinalSnapshotForDelete, type ReplacementDeps } from './replacement.js';
@@ -357,7 +358,7 @@ Drop the record with: ${dropCommand}`
     deps.logger.warn(
       safeMsg`${deleteSkippedMessage(
         logicalId,
-        currentResource.physicalId,
+        displayPhysicalId(currentResource.resourceType, currentResource.physicalId),
         deleteSkipped,
         'while removing it from the template'
       )}` +

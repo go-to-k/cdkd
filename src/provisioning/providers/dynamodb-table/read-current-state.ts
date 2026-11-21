@@ -560,10 +560,12 @@ export async function readKinesisStreamSpecification(
 
 /**
  * `ContributorInsightsSpecification` — separate DescribeContributorInsights
- * call. Emit-when-present: only surface the key when AWS reports a terminal
- * ENABLED / DISABLED status (ENABLING / DISABLING are transient and omitted
- * so drift doesn't fire on a momentary state). Surface `Mode` only while
- * ENABLED so a disabled table doesn't grow a CFn-invalid placeholder.
+ * call. Emit-when-present: surface the key whenever AWS reports a setting,
+ * a transient ENABLING / DISABLING read as its target (go-to-k/cdkd#6778:
+ * the deploy-time capture usually sees ENABLING, and omitting the key there
+ * left it uncompared). Surface `Mode` only while enabled or enabling so a
+ * disabled table doesn't grow a CFn-invalid placeholder
+ * (`reverseMapTableContributorInsights`).
  */
 export async function readTableContributorInsights(
   this: DynamoDBTableProvider,

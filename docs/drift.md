@@ -84,9 +84,9 @@ The exit code tells a CI job which case it is in:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Nothing drifted |
+| `0` | Nothing drifted, and the comparison was complete, apart from gaps no run can close (such as custom resources) |
 | `1` | At least one resource drifted, or the command failed |
-| `2` | Nothing drifted, but a comparison is missing for a reason you can fix |
+| `2` | Nothing drifted, but the comparison was incomplete (a drift unknown resource counts) |
 
 [`cdkd drift`](cli-drift.md) lists which resource types cdkd can read back and
 gives the full exit-code rules.

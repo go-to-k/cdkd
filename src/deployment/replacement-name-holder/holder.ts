@@ -2,6 +2,7 @@ import { alternateNamePropertiesFor } from '../../provisioning/resource-name.js'
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import { generateResourceNameWithFallback } from '../../provisioning/resource-name.js';
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import {
   type Renderer,
   type Voice,
@@ -45,7 +46,7 @@ function recordSetHolds(
   r: Renderer,
   v: Voice
 ): ReverseReplacementHolderVerdict {
-  const newRecord = `${v.holderRecord} (${r.shown(newPhysicalId)})`;
+  const newRecord = `${v.holderRecord} (${r.shown(displayPhysicalId(RECORD_SET, newPhysicalId))})`;
   const wantName = valueAt(requested, ['Name']);
   const wantType = valueAt(requested, ['Type']);
   const haveName = heldAt(recorded, observed, ['Name']).value;
@@ -287,7 +288,7 @@ function holderVerdict(
 ): ReverseReplacementHolderVerdict {
   const { oldResourceType, newResourceType, requested, recorded, observed, physicalId } = input;
   const r = renderer(input.mask ?? ((value) => value));
-  const newResource = `${v.holder} (${r.shown(physicalId)})`;
+  const newResource = `${v.holder} (${r.shown(displayPhysicalId(newResourceType, physicalId))})`;
   if (
     oldResourceType !== newResourceType &&
     !SHARED_NAME_SPACES.some((s) => s.has(oldResourceType) && s.has(newResourceType))
@@ -536,7 +537,11 @@ export function replacementOldHoldsSentName(input: {
  * `$( )` or a backtick runs inside double quotes regardless. Any other value
  * is described.
  */
-export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
+export function renderNameHeldElsewhere(
+  change: ReplacementNameChange,
+  /** The type of the resource being replaced, which decides how its id is shown (go-to-k/cdkd#6716). */
+  oldResourceType: string
+): string {
   const property = change.property;
   const desiredPlain = isPlainName(change.desiredName);
   const asksFor = desiredPlain
@@ -553,7 +558,7 @@ export function renderNameHeldElsewhere(change: ReplacementNameChange): string {
     change.physicalId === ''
       ? 'the resource being replaced, which has no recorded id,'
       : isPlainName(change.physicalId)
-        ? `the resource being replaced (${change.physicalId})`
+        ? `the resource being replaced (${displayPhysicalId(oldResourceType, change.physicalId)})`
         : 'the resource being replaced, whose recorded id is not a plain identifier,';
   // The desired name's second mention: `"name"` when plain, else `the
   // requested name`, which cannot bind to a described held name nearer to it.

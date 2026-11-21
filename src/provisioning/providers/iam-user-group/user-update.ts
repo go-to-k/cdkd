@@ -25,6 +25,11 @@ import type { InlinePolicyClaimed, ResourceUpdateResult } from '../../../types/r
 import { readPrincipalSides, iamPathOf, userOrGroupIdentityToken } from './shared.js';
 import { definedAttributes } from '../../attribute-map.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
+import { RecordedIdentityError } from '../../recorded-identity.js';
+import {
+  compareMembershipWrites,
+  verifyOwnIdentityBeforeUpdate,
+} from '../iam-policy/principal-identity.js';
 
 /**
  * go-to-k/cdkd#6609: each removal below is noted once its call succeeds (a
@@ -41,7 +46,8 @@ export async function updateUser(
   properties: Record<string, unknown>,
   previousProperties: Record<string, unknown>,
   log: MaskedLogSinks,
-  claimed: InlinePolicyClaimed | undefined
+  claimed: InlinePolicyClaimed | undefined,
+  recordedAttributes?: Record<string, unknown>
 ): Promise<ResourceUpdateResult> {
   const { value: v } = log;
   log.debug(`Updating IAM user ${logicalId}: ${v(physicalId)}`);
@@ -86,10 +92,42 @@ export async function updateUser(
   }
 
   try {
+    // go-to-k/cdkd#6722: every write below is by name, so a recorded UserId
+    // is compared first, on the read this update makes for its attributes
+    // (moved before the writes).
+    const ownRead = await verifyOwnIdentityBeforeUpdate({
+      label: 'IAM user',
+      resourceType,
+      permission: 'iam:GetUser',
+      logicalId,
+      physicalId,
+      recordedAttributes,
+      read: () => this.iamClient.send(new GetUserCommand({ UserName: physicalId })),
+      idOf: (response) => response.User?.UserId,
+    });
+    // go-to-k/cdkd#6722: each in-stack group the user joins or leaves is
+    // compared before any write. A group it leaves held by another id is
+    // warned about and sent no removal; one it joins refuses the update.
+    const nextGroups = new Set(groups.next.Groups ?? []);
+    const prevGroups = new Set(groups.prev.Groups ?? []);
+    const skipRemoval = await compareMembershipWrites({
+      client: this.iamClient,
+      owner: { label: 'IAM user', resourceType, membership: true },
+      logicalId,
+      physicalId,
+      adds: [...nextGroups].filter((g) => !prevGroups.has(g)).map((g) => [['group', g] as const]),
+      removes: [...prevGroups]
+        .filter((g) => !nextGroups.has(g))
+        .map((g) => [['group', g] as const]),
+      operation: 'update',
+      warn: (message) => log.warn(message),
+    });
+
     // `Path` is mutable in place, as CloudFormation applies it (#3723); an
     // absent one is IAM's default `/`, so a removed Path moves the user back.
     const newPath = iamPathOf(properties['Path']);
-    if (newPath !== iamPathOf(previousProperties['Path'])) {
+    const pathMoved = newPath !== iamPathOf(previousProperties['Path']);
+    if (pathMoved) {
       await this.iamClient.send(new UpdateUserCommand({ UserName: physicalId, NewPath: newPath }));
       log.debug(`Moved user ${v(physicalId)} to path ${v(newPath)}`);
     }
@@ -181,7 +219,12 @@ export async function updateUser(
     );
 
     // Update groups
-    await this.updateUserGroups(physicalId, groups.next.Groups, groups.prev.Groups, log);
+    await this.updateUserGroups(
+      physicalId,
+      groups.next.Groups,
+      groups.prev.Groups?.filter((g) => !skipRemoval([['group', g]])),
+      log
+    );
 
     // Update inline policies
     await this.updateUserInlinePolicies(
@@ -194,8 +237,10 @@ export async function updateUser(
       claimed
     );
 
-    // Get updated user info
-    const getUserResponse = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
+    // Get updated user info: a moved Path changes the Arn, so it is read again.
+    const getUserResponse =
+      (pathMoved ? undefined : ownRead) ??
+      (await this.iamClient.send(new GetUserCommand({ UserName: physicalId })));
 
     return {
       physicalId,
@@ -208,6 +253,8 @@ export async function updateUser(
       },
     };
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       log.mask,

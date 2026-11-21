@@ -164,6 +164,7 @@ export class Route53Provider implements ResourceProvider {
         'GeoLocation',
         'GeoProximityLocation',
         'CidrRoutingConfig',
+        'AZAffinity',
       ]),
     ],
     [

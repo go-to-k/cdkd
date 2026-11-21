@@ -42,7 +42,8 @@ import {
  *    Surfaces TTL, ResourceRecords (with
  *    `[{Value}]` -> string[] re-shape to match cdkd state), AliasTarget,
  *    Weight, Region, Failover, MultiValueAnswer, HealthCheckId,
- *    GeoLocation, GeoProximityLocation, CidrRoutingConfig, SetIdentifier.
+ *    GeoLocation, GeoProximityLocation, CidrRoutingConfig, AZAffinity,
+ *    SetIdentifier.
  *
  * Returns `RESOURCE_NOT_FOUND` when the zone (or the parent zone of a
  * record) is gone (`NoSuchHostedZone`); `undefined` for another type, a
@@ -476,6 +477,16 @@ export async function readRecordSetAt(
       crc['LocationName'] = recordSet.CidrRoutingConfig.LocationName;
     }
     result['CidrRoutingConfig'] = crc;
+  }
+  if (recordSet.AZAffinity) {
+    const aza: Record<string, unknown> = {};
+    if (recordSet.AZAffinity.LocationType !== undefined) {
+      aza['LocationType'] = recordSet.AZAffinity.LocationType;
+    }
+    if (recordSet.AZAffinity.LocationId !== undefined) {
+      aza['LocationId'] = recordSet.AZAffinity.LocationId;
+    }
+    result['AZAffinity'] = aza;
   }
   return result;
 }

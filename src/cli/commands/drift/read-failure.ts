@@ -108,7 +108,8 @@ const NO_READ_HANDLER_NAMES = new Set(['UnsupportedActionException', 'TypeNotFou
 
 /**
  * The FULL phrase, deliberately -- see {@link isNoReadHandlerError}. Matching
- * loosely on `does not support` would route a genuine read failure to exit 0.
+ * loosely on `does not support` would report a genuine read failure as drift
+ * unknown.
  */
 const NO_READ_HANDLER_MESSAGE = /does not support READ action/i;
 
@@ -119,10 +120,9 @@ const NO_READ_HANDLER_MESSAGE = /does not support READ action/i;
  * This is the taxonomy question issue
  * [#2151](https://github.com/go-to-k/cdkd/issues/2151) raised, and the property
  * it turns on is whether a RE-RUN CAN CLEAR IT. A type Cloud Control has no READ
- * handler for is permanent by construction, so routing it to `readFailed` would
- * make `cdkd drift` exit non-zero forever for every stack holding one -- the
- * same "unclearable in CI" hazard `unresolvedToken` is kept out of the exit code
- * for. It reports `unsupported` instead, which is not a new claim about it:
+ * handler for is permanent by construction, so it is a coverage limit (drift
+ * unknown), not a failed read. It reports `unsupported`, which is not a new
+ * claim about it:
  * `CloudControlProvider.readCurrentState` signals the SAME condition by
  * returning `undefined` when the response carries no properties, and that
  * already reports `unsupported`. Which spelling arrives is AWS's choice, so the
@@ -141,17 +141,16 @@ const NO_READ_HANDLER_MESSAGE = /does not support READ action/i;
  * pair and preserves the original as `cause`, so the day any read path is routed
  * through it -- or wrapped by a caller -- the top-level name becomes
  * `ProvisioningError` and a name-only check would silently start reporting a
- * permanent no-read-path condition as an actionable failure, at exit 2, forever.
+ * permanent no-read-path condition as a failed read.
  * A reader deleting the walk as unreachable should know that is the failure they
  * are buying.
  *
  * The message check is a FALLBACK for a re-wrap that kept neither the name nor
  * the cause, and it is deliberately the full phrase rather than `does not
- * support`: matching loosely would route a genuine read failure to `unsupported`
- * and exit 0 over a resource nobody compared, which is the direction this whole
- * lane exists to stop erring in. An error that loses its name AND its cause AND
- * its wording is reported `readFailed` and exits 2 -- loud, which is the safe
- * side.
+ * support`: matching loosely would report a genuine read failure as a type no
+ * provider can read, hiding a clearable cause (a missing permission, a
+ * throttle). Both exit 2 since go-to-k/cdkd#6696. An error that loses its name
+ * AND its cause AND its wording is reported `readFailed`.
  */
 export function isNoReadHandlerError(err: unknown): boolean {
   // Its OWN try/catch, and this is not defensive padding: the only caller is the

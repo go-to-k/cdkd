@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { newCopyDeleteAttributes } from '../../recorded-identity-attributes.js';
 import { withReplayDeletePrinting } from '../replay-scope.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
@@ -192,7 +193,7 @@ export async function recreateOldResource(
       const recreateFailure = (text: string): string =>
         mask(
           `Failed to re-create the old ${safe(op.logicalId)} after the new resource ` +
-            `(${mask(current.physicalId)}) was already deleted: ` +
+            `(${mask(String(displayPhysicalId(current.resourceType, current.physicalId)))}) was already deleted: ` +
             `${displaySafe(text)}${text.endsWith('.') ? '' : '.'} ` +
             // No command on this line (go-to-k/cdkd#4214): it carries
             // the provider's text and the new physical id.
@@ -252,7 +253,7 @@ export async function recreateOldResource(
     // the resource absent, and the error below says so.
     logger.info(
       `  Rollback: the replacement deleted the old resource before creating the new one — ` +
-        safeMsg`deleting the new resource (${mask(current.physicalId)}) first...`
+        safeMsg`deleting the new resource (${mask(String(displayPhysicalId(current.resourceType, current.physicalId)))}) first...`
     );
     await deleteNewResourceFirst(
       'while clearing the new resource before re-creating the old one (the replacement deleted the old one first)'
@@ -381,7 +382,9 @@ export async function recreateOldResource(
       );
       if (!holder.holds) {
         const remedy = orphanRemedy(op.logicalId, ctx);
-        const oldShown = refusalPhysicalId(mask(prev.physicalId));
+        const oldShown = refusalPhysicalId(
+          mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))
+        );
         throw ownRemedyError(
           markNonRetryable(
             new CdkdError(
@@ -458,8 +461,12 @@ export async function recreateOldResource(
         // name-release budget on a path that cannot succeed (issue #1838's
         // shape).
         const remedy = orphanRemedy(op.logicalId, ctx);
-        const oldShown = refusalPhysicalId(mask(prev.physicalId));
-        const newShown = refusalPhysicalId(mask(current.physicalId));
+        const oldShown = refusalPhysicalId(
+          mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))
+        );
+        const newShown = refusalPhysicalId(
+          mask(String(displayPhysicalId(current.resourceType, current.physicalId)))
+        );
         throw ownRemedyError(
           markNonRetryable(
             new CdkdError(
@@ -533,8 +540,12 @@ export async function recreateOldResource(
         // the resource. Keep the new one, as the delete-first route does. The
         // blocker is named by logical id only (see its warning above).
         const remedy = orphanRemedy(op.logicalId, ctx);
-        const oldShown = refusalPhysicalId(mask(prev.physicalId));
-        const newShown = refusalPhysicalId(mask(current.physicalId));
+        const oldShown = refusalPhysicalId(
+          mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))
+        );
+        const newShown = refusalPhysicalId(
+          mask(String(displayPhysicalId(current.resourceType, current.physicalId)))
+        );
         throw ownRemedyError(
           markNonRetryable(
             new CdkdError(
@@ -567,7 +578,7 @@ export async function recreateOldResource(
       }
       logger.info(
         `  Rollback: re-create collided with the new resource's name — deleting the new ` +
-          `resource (${displaySafe(mask(current.physicalId))}) first...` +
+          `resource (${displaySafe(mask(String(displayPhysicalId(current.resourceType, current.physicalId))))}) first...` +
           // Issue #2668: a Type change reaches here only between two types
           // `reverseReplacementNewHoldsName` knows share a name space.
           (typeChanged
