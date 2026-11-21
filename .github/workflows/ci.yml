@@ -207,6 +207,12 @@ jobs:
       # change the diff shows as an update hides a replacement from the approval.
       - run: vp run audit:provider-replace-branches:check
 
+      # go-to-k/cdkd#6713 — a replaced resource's old copy is deleted only in the
+      # deploy's cleanup phase (`deferToCleanupPhase`), or at a site on the
+      # reviewed exception list naming why it cannot defer and how the rollback
+      # reports the loss. A new early delete fails here, as does a stale entry.
+      - run: vp run audit:replaced-delete-deferral:check
+
       - run: vp run audit:nested-key-coverage:check
 
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a
