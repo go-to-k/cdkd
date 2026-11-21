@@ -308,6 +308,101 @@ describe('S3 Tables table bucket delete refuses a non-empty bucket (#6749)', () 
   });
 });
 
+describe("the stack's own table and namespace deletes wait until the bucket no longer lists them (#6749)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) => {
+      fn();
+      return 0;
+    }) as unknown as typeof setTimeout);
+  });
+
+  /**
+   * A bucket whose deleted children stay listed for `lag` listings each, and
+   * whose `DeleteTableBucket` refuses while anything is listed: the listing
+   * lag the bucket's own delete would otherwise meet.
+   */
+  function laggingBucket(lag: number, foreign: { namespace?: string } = {}) {
+    const listed = { tables: new Map<string, number>(), namespaces: new Map<string, number>() };
+    listed.tables.set('ns.own', Infinity);
+    listed.namespaces.set('ns', Infinity);
+    if (foreign.namespace) listed.namespaces.set(foreign.namespace, Infinity);
+    const visible = (m: Map<string, number>) =>
+      [...m.entries()].filter(([, left]) => left > 0).map(([k]) => k);
+    const tick = (m: Map<string, number>, key: string) => {
+      const left = m.get(key);
+      if (left !== undefined && left !== Infinity) m.set(key, left - 1);
+    };
+    tablesSend.mockImplementation((cmd: unknown) => {
+      const input = (cmd as { input: Record<string, string> }).input;
+      if (cmd instanceof DeleteTableCommand) listed.tables.set(`${input['namespace']}.${input['name']}`, lag);
+      if (cmd instanceof DeleteNamespaceCommand) listed.namespaces.set(input['namespace']!, lag);
+      if (cmd instanceof ListTablesCommand) {
+        const shown = visible(listed.tables).filter(
+          (k) => !input['namespace'] || k.startsWith(`${input['namespace']}.`)
+        );
+        shown.forEach((k) => tick(listed.tables, k));
+        return Promise.resolve({
+          tables: shown.map((k) => ({ namespace: [k.split('.')[0]], name: k.split('.')[1] })),
+        });
+      }
+      if (cmd instanceof ListNamespacesCommand) {
+        const shown = visible(listed.namespaces);
+        shown.forEach((k) => tick(listed.namespaces, k));
+        return Promise.resolve({ namespaces: shown.map((ns) => ({ namespace: [ns] })) });
+      }
+      if (cmd instanceof DeleteTableBucketCommand) {
+        if (visible(listed.tables).length > 0 || visible(listed.namespaces).length > 0) {
+          return Promise.resolve().then(notEmpty);
+        }
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('own children listed for several polls after their delete, then gone: the destroy order succeeds with no refusal', async () => {
+    laggingBucket(4);
+    const provider = new S3TablesProvider();
+
+    await provider.delete('Table', `${TABLE_BUCKET_ARN}|ns|own`, 'AWS::S3Tables::Table', undefined, {
+      stackDestroy: true,
+    });
+    await provider.delete('Namespace', `${TABLE_BUCKET_ARN}|ns`, 'AWS::S3Tables::Namespace', undefined, {
+      stackDestroy: true,
+    });
+    await expect(
+      provider.delete('Bucket', TABLE_BUCKET_ARN, 'AWS::S3Tables::TableBucket', undefined, {
+        stackDestroy: true,
+      })
+    ).resolves.toBeUndefined();
+    // The bucket delete went through first time: its own children were gone.
+    expect(sent(tablesSend, DeleteTableBucketCommand)).toHaveLength(1);
+    // The table's wait read the listing with its name as the prefix.
+    expect(sent(tablesSend, ListTablesCommand)[0]![0].input).toEqual({
+      tableBucketARN: TABLE_BUCKET_ARN,
+      namespace: 'ns',
+      prefix: 'own',
+      continuationToken: undefined,
+    });
+  });
+
+  it('a foreign namespace left after the own children are gone is refused', async () => {
+    laggingBucket(2, { namespace: 'foreign' });
+    const provider = new S3TablesProvider();
+
+    await provider.delete('Table', `${TABLE_BUCKET_ARN}|ns|own`, 'AWS::S3Tables::Table');
+    await provider.delete('Namespace', `${TABLE_BUCKET_ARN}|ns`, 'AWS::S3Tables::Namespace');
+    const error = await provider
+      .delete('Bucket', TABLE_BUCKET_ARN, 'AWS::S3Tables::TableBucket')
+      .then(() => undefined, (e: unknown) => e);
+
+    expect((error as Error).message).toContain('it holds namespace(s) foreign. ');
+    expect((error as Error).message).not.toContain('ns.own');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+});
+
 function vectorsAnswer(answers: {
   deleteBucket: () => unknown;
   indexes?: string[];

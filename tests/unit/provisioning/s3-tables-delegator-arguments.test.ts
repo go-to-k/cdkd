@@ -189,7 +189,8 @@ describe('S3TablesProvider moved bodies send the SDK command the delegator names
       `${BUCKET_ARN}|my_ns`,
       'AWS::S3Tables::Namespace'
     );
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    // The delete, then (go-to-k/cdkd#6749) one listing that shows it gone.
+    expect(mockSend).toHaveBeenCalledTimes(2);
     const command = mockSend.mock.calls[0]![0] as DeleteNamespaceCommand;
     expect(command).toBeInstanceOf(DeleteNamespaceCommand);
     expect(command.input).toEqual({ tableBucketARN: BUCKET_ARN, namespace: 'my_ns' });
