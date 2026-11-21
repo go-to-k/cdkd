@@ -71,13 +71,16 @@ function blockerProblems(blocker: DeleteBlocker): string[] {
 
 /**
  * `source` without its comments and import statements: a call named only in
- * a doc comment or an unused import is no preparation. Line comments are
- * dropped only where they start a line, so a `//` inside a URL string stays.
+ * a doc comment or an unused import is no preparation. A line comment is
+ * dropped where it starts a line, or trails code and holds no quote, so a
+ * `//` inside a URL string stays.
  */
 function codeOnly(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
+    // A trailing comment holding no quote: one with a quote may be inside a string.
+    .replace(/\s\/\/[^'"`\n]*$/gm, '')
     .replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?/gm, '');
 }
 
@@ -165,6 +168,11 @@ describe('delete-blocker inventory (#6715)', () => {
       ['a missing test file', { test: { ...test, file: 'tests/unit/no-such.test.ts' } }],
       ['a title the test lacks', { test: { ...test, title: 'no test is titled like this one' } }],
       ['a case label the test lacks', { test: { ...test, caseLabel: 'no case is labelled like this' } }],
+      ['a call named only in a comment', { call: 'go-to-k/cdkd#6715' }],
+      [
+        'a title the test spells only as a prefix of a longer one',
+        { test: { ...test, title: 'disassociates its own instance association after an InUse refusal' } },
+      ],
     ])('rejects %s', (_label, over) => {
       expect(blockerProblems(handled(over)).length).toBeGreaterThan(0);
     });

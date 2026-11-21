@@ -49,7 +49,7 @@ type Handler = (cmd: unknown) => unknown;
 /** Drive the EC2 client: per command class, a queue of answers (last repeats). */
 function drive(answers: {
   release: Array<'ok' | Error>;
-  describe?: { AssociationId?: string; InstanceId?: string } | Error;
+  describe?: { AssociationId?: string; InstanceId?: string } | Error | 'none';
   disassociate?: 'ok' | Error;
 }): string[] {
   const sent: string[] = [];
@@ -65,6 +65,7 @@ function drive(answers: {
       sent.push('DescribeAddresses');
       expect(cmd.input.AllocationIds).toEqual([ALLOC]);
       if (answers.describe instanceof Error) throw answers.describe;
+      if (answers.describe === 'none') return { Addresses: [] };
       return { Addresses: [{ AllocationId: ALLOC, ...answers.describe }] };
     }
     if (cmd instanceof DisassociateAddressCommand) {
@@ -166,6 +167,41 @@ describe('AWS::EC2::EIP delete of an associated address (go-to-k/cdkd#6715)', ()
     const sent = drive({ release: [inUse(), 'ok'], describe: {} });
     await provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX);
     expect(sent).toEqual(['ReleaseAddress', 'DescribeAddresses', 'ReleaseAddress']);
+  });
+
+  it('leaves an association already gone unmarked when the retried release is refused', async () => {
+    drive({ release: [inUse(), awsError('UnauthorizedOperation')], describe: {} });
+    const error = await provider()
+      .delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(String((error as Error).message)).toMatch(/UnauthorizedOperation/);
+    expect(isDeleteStarted(error)).toBe(false);
+  });
+
+  it('leaves a disassociation answered not-found unmarked when the retried release is refused', async () => {
+    drive({
+      release: [inUse(), awsError('UnauthorizedOperation')],
+      describe: { AssociationId: 'eipassoc-1', InstanceId: INSTANCE },
+      disassociate: awsError('InvalidAssociationID.NotFound'),
+    });
+    const error = await provider()
+      .delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(isDeleteStarted(error)).toBe(false);
+  });
+
+  it('surfaces the InUse refusal when the read returns no address', async () => {
+    const sent = drive({ release: [inUse()], describe: 'none' });
+    await expect(
+      provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+    ).rejects.toThrow(/InvalidIPAddress\.InUse/);
+    expect(sent).toEqual(['ReleaseAddress', 'DescribeAddresses']);
   });
 
   it('reads nothing and disassociates nothing on a first refusal that is not InUse', async () => {
