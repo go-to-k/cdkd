@@ -34,7 +34,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EMRInstanceGroupConfigProvider } from '../../../src/provisioning/providers/emr-instance-group-config-provider.js';
-import { ModifyInstanceGroupsCommand, RemoveAutoScalingPolicyCommand } from '@aws-sdk/client-emr';
+import {
+  InvalidRequestException,
+  ModifyInstanceGroupsCommand,
+  RemoveAutoScalingPolicyCommand,
+} from '@aws-sdk/client-emr';
 
 /**
  * go-to-k/cdkd#6751: deleting a TASK group scales it to 0, which EMR accepts
@@ -104,5 +108,17 @@ describe('EMR instance group delete with an automatic scaling policy (#6751)', (
     expect(String(warn.mock.calls[0][0])).toContain(
       `Removing the automatic scaling policy of EMR instance group ${GROUP} failed`
     );
+  });
+
+  it('stays quiet when the cluster is already gone for both calls', async () => {
+    const gone = (): InvalidRequestException =>
+      new InvalidRequestException({ $metadata: {}, message: 'Cluster id is not valid.' });
+    mockSend.mockRejectedValueOnce(gone()).mockRejectedValueOnce(gone());
+    await new EMRInstanceGroupConfigProvider().delete('Grp', GROUP, TYPE, {
+      ...PROPS,
+      AutoScalingPolicy: POLICY,
+    });
+    expect(sent()).toEqual(['RemoveAutoScalingPolicyCommand', 'ModifyInstanceGroupsCommand']);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
