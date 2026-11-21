@@ -11,13 +11,18 @@ function stays on the SDK route instead of auto-routing to Cloud Control.
 ## What it covers
 
 - `AWS::Lambda::Function`
-- `AWS::Lambda::CapacityProvider` (x86_64, `g4dn.2xlarge` / `g5.2xlarge` /
-  `g6.2xlarge`, isolated subnets in three AZs)
+- `AWS::Lambda::CapacityProvider` (x86_64, `g4dn.xlarge` / `g5.xlarge` /
+  `g6.xlarge`, one isolated subnet)
+
+The footprint is the smallest that can run a GPU function: one subnet and one
+4-vCPU GPU instance. Whether Lambda Managed Instances accepts a single subnet
+and these xlarge GPU types is UNVERIFIED until the first integ run; widen to
+more AZs or `.2xlarge` types only if that run refuses them.
 
 ## Prerequisites
 
 - The EC2 quota "Running On-Demand G and VT instances" (`L-DB2E81BA`) in the
-  region must be at least 24 vCPU. `verify.sh` reads it first and stops before
+  region must be at least 4 vCPU. `verify.sh` reads it first and stops before
   any deploy when it is lower.
 - Docker, to build the one-file Python image in `gpu-image/` (linux/amd64).
 

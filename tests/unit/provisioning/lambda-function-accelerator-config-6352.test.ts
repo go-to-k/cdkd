@@ -222,9 +222,12 @@ describe('AWS::Lambda::Function AcceleratorConfig (#6352)', () => {
 
       expect(sentOfType(UpdateFunctionConfigurationCommand)).toHaveLength(1);
       const warn = vi.mocked(provider.logger.warn);
-      expect(
-        warn.mock.calls.some((c) => String(c[0]).includes('cannot lose its AcceleratorConfig'))
-      ).toBe(true);
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('cannot lose its AcceleratorConfig'));
+      // A replay user has no template to edit: the warn names the outcome.
+      expect(line).toMatch(/stays on AWS/);
+      expect(line).not.toMatch(/Keep the property/);
     });
   });
 

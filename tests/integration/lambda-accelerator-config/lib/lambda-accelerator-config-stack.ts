@@ -28,8 +28,12 @@ export class LambdaAcceleratorConfigStack extends cdk.Stack {
     const updating = process.env['CDKD_TEST_UPDATE'] === 'true';
     const removal = process.env['CDKD_TEST_REMOVAL'] === 'true';
 
+    // The smallest GPU footprint: one isolated subnet and 4-vCPU GPU types
+    // (16 GB T4 / 24 GB A10G / 24 GB L4), so one instance fits an 8-vCPU G
+    // quota. Whether Lambda Managed Instances accepts a single subnet and
+    // these xlarge types is unverified until the first integ run.
     const vpc = new ec2.Vpc(this, 'Vpc', {
-      maxAzs: 3,
+      maxAzs: 1,
       natGateways: 0,
       subnetConfiguration: [{ name: 'isolated', subnetType: ec2.SubnetType.PRIVATE_ISOLATED }],
     });
@@ -42,9 +46,9 @@ export class LambdaAcceleratorConfigStack extends cdk.Stack {
       securityGroups: [sg],
       architectures: [lambda.Architecture.X86_64],
       instanceTypeFilter: lambda.InstanceTypeFilter.allow([
-        new ec2.InstanceType('g4dn.2xlarge'),
-        new ec2.InstanceType('g5.2xlarge'),
-        new ec2.InstanceType('g6.2xlarge'),
+        new ec2.InstanceType('g4dn.xlarge'),
+        new ec2.InstanceType('g5.xlarge'),
+        new ec2.InstanceType('g6.xlarge'),
       ]),
     });
 

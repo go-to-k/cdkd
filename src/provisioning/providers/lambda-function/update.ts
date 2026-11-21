@@ -120,14 +120,23 @@ export async function update(
     properties['RuntimeConfig'] == null &&
     previousProperties['RuntimeConfig'] != null
   ) {
-    const message =
-      `Lambda function ${logicalId} keeps Runtime 'custom' without RuntimeConfig: AWS keeps ` +
-      `the live RuntimeConfig, and refuses a 'custom' function without one. Keep the ` +
-      `property, or change Runtime to remove it.`;
+    const head = `Lambda function ${logicalId} keeps Runtime 'custom' without RuntimeConfig`;
     if (context?.replayingState === true) {
-      log.warn(message);
+      // A replay restores a record, not a template the user can edit here.
+      log.warn(
+        `${head}: the live RuntimeConfig stays on AWS, so this replay leaves it in place; ` +
+          `the next deploy or \`cdkd drift\` shows it.`
+      );
     } else {
-      throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId, physicalId));
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${head}: AWS keeps the live RuntimeConfig, and refuses a 'custom' function without ` +
+            `one. Keep the property, or change Runtime to remove it.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
     }
   }
   // An absent UpdateFunctionConfiguration member means "no change", and
@@ -135,14 +144,23 @@ export async function update(
   // required and takes GB sizes only), so this removal would report success
   // and change nothing (go-to-k/cdkd#6352).
   if (properties['AcceleratorConfig'] == null && previousProperties['AcceleratorConfig'] != null) {
-    const message =
-      `Lambda function ${logicalId} cannot lose its AcceleratorConfig: UpdateFunctionConfiguration ` +
-      `has no value that removes it. Keep the property, or replace the function under a new ` +
-      `logical id.`;
+    const head = `Lambda function ${logicalId} cannot lose its AcceleratorConfig`;
     if (context?.replayingState === true) {
-      log.warn(message);
+      // A replay restores a record, not a template the user can edit here.
+      log.warn(
+        `${head}: the live AcceleratorConfig stays on AWS, so this replay leaves it in place; ` +
+          `the next deploy or \`cdkd drift\` shows it.`
+      );
     } else {
-      throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId, physicalId));
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${head}: UpdateFunctionConfiguration has no value that removes it. Keep the ` +
+            `property, or replace the function under a new logical id.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
     }
   }
   try {

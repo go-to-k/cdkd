@@ -90,8 +90,8 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 PROVIDER_NAME="${STACK}-gpu"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DEPLOY_LOG="$(mktemp)"
-# Three AZs at one 8-vCPU GPU instance each.
-MIN_G_VCPU=24
+# One subnet, one 4-vCPU GPU instance (g4dn/g5/g6 .xlarge).
+MIN_G_VCPU=4
 FUNCTION_NAME=""
 VPC_ID=""
 
@@ -235,7 +235,13 @@ fi
 echo "    quota ${G_QUOTA} vCPU (need ${MIN_G_VCPU})"
 
 echo "==> Installing fixture deps"
-if [ ! -d node_modules ]; then npm install; fi
+npm install --no-audit --no-fund
+# fncfg.mjs reads AcceleratorConfig through this client; an older one drops the
+# field and every readback would see null.
+SDK_VERSION="$(node -p "require('./node_modules/@aws-sdk/client-lambda/package.json').version")"
+if [ "${SDK_VERSION}" != "3.1175.0" ]; then
+  echo "FAIL: fixture @aws-sdk/client-lambda is ${SDK_VERSION}, want 3.1175.0 (the first that models AcceleratorConfig)" >&2; exit 1
+fi
 
 echo "==> Pre-run cleanup"
 cleanup
