@@ -414,9 +414,8 @@ export async function applyFileSystemProtection(
 /**
  * How long a delete waits for a deleted replication configuration to finish
  * tearing down: DeleteFileSystem keeps refusing until it has (CloudFormation's
- * handler polled for about six minutes in the #6751 probe). It fits the
- * default 30-minute --resource-timeout; a shorter one rejects the delete while
- * this loop is still waiting. Mutable for tests.
+ * handler polled for about six minutes in the #6751 probe), capped by what the
+ * enclosing --resource-timeout has left. Mutable for tests.
  */
 export const REPLICATION_TEARDOWN_WAIT = { intervalMs: 15_000, attempts: 60 };
 
