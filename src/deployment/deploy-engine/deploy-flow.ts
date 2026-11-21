@@ -1,3 +1,4 @@
+import { armSignalReceiver, ensureSignalReceiver, settledAfter } from './signal-receiver-run.js';
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
 import {
@@ -301,6 +302,9 @@ export async function doDeployWithPrefetch(
         : undefined;
     firstDeployIdentityRead?.catch(() => undefined);
     let firstDeployIdentity: StackInstanceIdentity | undefined;
+    // go-to-k/cdkd#6705: a recorded signal receiver answers `AWS::StackId`
+    // from the first resolution on (conditions included).
+    engine.signalReceiverStackId = currentState.signalReceiverStackId;
     engine.runStackIdTail = () =>
       stackIdTailOf(
         currentState.stackInstanceId === undefined && firstDeployIdentity !== undefined
@@ -567,6 +571,15 @@ export async function doDeployWithPrefetch(
       !Object.values(orphanPlan.adopted).some(
         (r) => r.resourceType === 'AWS::CloudFormation::Stack'
       );
+    // go-to-k/cdkd#6705: a stack declaring a CreationPolicy signal or cfn-init
+    // metadata has a CloudFormation signal receiver, found or created here,
+    // before the diff, so `AWS::StackId` resolves to its real ARN everywhere.
+    const signalReceiverChanged = await ensureSignalReceiver(
+      engine,
+      stackName,
+      effectiveTemplate,
+      currentState
+    );
     const { diffResolverContext, maskedInputs, changes } = await calculateDeployDiff(engine, {
       stackName,
       currentState,
@@ -683,7 +696,7 @@ export async function doDeployWithPrefetch(
         migrationPending,
         maskedFingerprintsBackfilled,
         orphansChanged,
-        terminationProtectionChanged,
+        terminationProtectionChanged: terminationProtectionChanged || signalReceiverChanged,
         ssmNamesHealed: ssmNameHeals.length > 0,
         nestedSsmNamesMarked: marksNestedCheck,
         resolveStackInstanceId,
@@ -738,6 +751,17 @@ export async function doDeployWithPrefetch(
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
     const progress = { current: 0, total: totalOperations };
 
+    // go-to-k/cdkd#6705: arm the receiver for this deploy's signalling creates.
+    await armSignalReceiver(
+      engine,
+      stackName,
+      effectiveTemplate,
+      changes,
+      currentState.resources,
+      parameterValues,
+      conditions
+    );
+
     clock.lap('first-deploy instance id, name guard');
     // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
     const {
@@ -749,20 +773,22 @@ export async function doDeployWithPrefetch(
       () => producerRegionEvidence(engine.rollbackDeps(), currentState),
       () =>
         withStackScope(nameScope(), () =>
-          executeDeployment(
-            engine,
-            effectiveTemplate,
-            currentState,
-            changes,
-            dag,
-            executionLevels,
-            stackName,
-            outputsDigestSource,
-            parameterValues,
-            conditions,
-            currentEtag,
-            progress,
-            migrationPending
+          settledAfter(engine, () =>
+            executeDeployment(
+              engine,
+              effectiveTemplate,
+              currentState,
+              changes,
+              dag,
+              executionLevels,
+              stackName,
+              outputsDigestSource,
+              parameterValues,
+              conditions,
+              currentEtag,
+              progress,
+              migrationPending
+            )
           )
         )
     );

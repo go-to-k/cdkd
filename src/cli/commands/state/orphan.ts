@@ -405,6 +405,9 @@ async function stateOrphanCommand(stackArgs: string[], options: StateOrphanOptio
           // a state record unremovable — but it was silent, so say what is
           // being destroyed. Best-effort: a failed read must not block the rm.
           await warnOnLiveForeignLock(setup.lockManager, stackName, target.region, logger);
+          // go-to-k/cdkd#6705: orphan deletes no AWS resource, the stack's
+          // CloudFormation signal receiver included; name it so it is not lost.
+          await noteOrphanedSignalReceiver(setup.stateBackend, stackName, target.region, logger);
           await setup.stateBackend.deleteState(stackName, target.region);
           await setup.lockManager.forceReleaseLock(stackName, target.region);
           // go-to-k/cdkd#4705: what a destroy kept stops licensing a later
@@ -752,4 +755,21 @@ export async function confirmStateOrphanRemoval(
         'environment. Pass -y / --yes (or -f / --force) to confirm the removal, or ' +
         'run the command from a real terminal.',
   });
+}
+
+async function noteOrphanedSignalReceiver(
+  stateBackend: { getState: S3StateBackend['getState'] },
+  stackName: string,
+  region: string,
+  logger: { info(message: string): void }
+): Promise<void> {
+  try {
+    const receiver = (await stateBackend.getState(stackName, region))?.state.signalReceiverStackId;
+    if (typeof receiver !== 'string') return;
+    logger.info(
+      safeMsg`The stack's CloudFormation signal receiver stack is kept; delete it with: aws cloudformation delete-stack --region ${region} --stack-name '${receiver}'`
+    );
+  } catch {
+    // Best-effort: an unreadable record must not block the orphan.
+  }
 }

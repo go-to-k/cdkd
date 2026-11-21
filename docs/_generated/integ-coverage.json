@@ -1761,6 +1761,7 @@
     {
       "resourceType": "AWS::EC2::Instance",
       "integs": [
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -1773,6 +1774,9 @@
         "wait-condition-ec2-signal"
       ],
       "signals": {
+        "creation-policy-cfn-init": [
+          "l2"
+        ],
         "deletion-ordering-complex": [
           "l2"
         ],
@@ -1828,6 +1832,7 @@
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -1953,6 +1958,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2204,6 +2212,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2320,6 +2329,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2597,6 +2609,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2716,6 +2729,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2964,6 +2980,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3088,6 +3105,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -3640,6 +3660,7 @@
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3777,6 +3798,9 @@
         ],
         "codebuild-project": [
           "l1"
+        ],
+        "creation-policy-cfn-init": [
+          "l2"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -4075,6 +4099,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -4191,6 +4216,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -4432,6 +4460,7 @@
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -4584,6 +4613,9 @@
         ],
         "codebuild-project": [
           "l1"
+        ],
+        "creation-policy-cfn-init": [
+          "l2"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -4899,6 +4931,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -5019,6 +5052,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -11460,6 +11496,7 @@
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
     "AWS::CloudFormation::CustomResource",
+    "AWS::CloudFormation::Init",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CloudWatch::MetricStream",
     "AWS::CodeDeploy::Application",

@@ -880,6 +880,11 @@
       "scenarios": []
     },
     {
+      "name": "creation-policy-cfn-init",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cross-backend-same-stack",
       "annotated": false,
       "scenarios": []
@@ -4212,6 +4217,7 @@
     "cognito-userpool-user-ref",
     "connect-instance",
     "created-before-failure-revert",
+    "creation-policy-cfn-init",
     "cross-backend-same-stack",
     "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",

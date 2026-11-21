@@ -482,6 +482,22 @@ export interface StackState {
    */
   nestedSsmNamesChecked?: true;
 
+  /**
+   * The StackId of this stack's CloudFormation signal receiver
+   * (go-to-k/cdkd#6705, `src/deployment/deploy-engine/signal-receiver.ts`):
+   * `AWS::StackId` resolves to it, so a grant on it (CDK's `init` /
+   * `signals`) names the receiver `cfn-signal` / `cfn-init` call. Written by
+   * the first deploy declaring a `CreationPolicy` signal or cfn-init metadata,
+   * kept for the stack's lifetime, deleted with it by `cdkd destroy`.
+   *
+   * Additive, NO schema bump (the `terminationProtection` precedent): an older
+   * binary ignores it and drops it on its next save (its `AWS::StackId` is
+   * then the synthetic one; the next deploy by this one finds the receiver by
+   * name and records it again). Carried by every non-deploy writer through
+   * `stackInstanceIdCarriedFrom`.
+   */
+  signalReceiverStackId?: string;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
 }

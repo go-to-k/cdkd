@@ -482,6 +482,8 @@ export async function bindParametersAndConditions({
       stateBackend,
       stackName,
       stackIdTail: () => stackIdTailOf(currentState, stackName),
+      // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+      stackIdOverride: () => currentState?.signalReceiverStackId,
       bestEffort: true,
       ...(mergedParameters && { parameters: mergedParameters }),
       // Its `Evaluated condition` / `Resolved` debug lines print a condition

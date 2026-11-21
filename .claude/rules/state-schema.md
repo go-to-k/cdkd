@@ -35,6 +35,7 @@ interface StackState {
   pendingMovesOut?: PendingMoveOut[]; // no bump: an unfinished `cdkd refactor` move out (ids only); deploy/destroy refuse while present (#5212)
   terminationProtection?: true; // no bump: each deploy writes it from synth (root only); destroy / state destroy refuse while present (#5238)
   nestedSsmNamesChecked?: true; // no bump: children checked for a pre-#6272 SSM name (#6282)
+  signalReceiverStackId?: string; // no bump: the CFn signal receiver's StackId; AWS::StackId resolves to it; destroy deletes it (#6705)
   lastModified: number;
 }
 

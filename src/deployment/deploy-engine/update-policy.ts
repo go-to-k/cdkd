@@ -259,14 +259,16 @@ function stringLeaves(value: unknown): string[] {
 /**
  * Warn, once per create, that a `CreationPolicy` the template declares is not
  * waited on. Called on the CREATE path only: CloudFormation evaluates a
- * `CreationPolicy` when it creates the resource.
+ * `CreationPolicy` when it creates the resource. Silent when the stack's
+ * signal receiver waits on it (`waited`, go-to-k/cdkd#6705).
  */
 export function warnUnhonoredCreationPolicy(
   logger: UpdatePolicyLogger,
   logicalId: string,
-  resource: TemplateResource | undefined
+  resource: TemplateResource | undefined,
+  waited = false
 ): void {
-  if (resource?.CreationPolicy === undefined) return;
+  if (resource?.CreationPolicy === undefined || waited) return;
   logger.warn(
     safeMsg`${logicalId}: CreationPolicy is not honored; cdkd does not wait for cfn-signal success signals.`
   );

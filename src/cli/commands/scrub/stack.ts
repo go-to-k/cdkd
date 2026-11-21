@@ -573,6 +573,8 @@ export async function scrubStack(
       stackName: stack.stackName,
       // go-to-k/cdkd#6170: the tail the deploy resolved `AWS::StackId` with.
       stackIdTail: () => stackIdTailOf(state, stack.stackName),
+      // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+      stackIdOverride: () => state?.signalReceiverStackId,
       stateBackend: resolverStateBackend,
       ...(recordedSecretValues && { recordedSecretValues }),
       // Issue #2134: the evidence that arms the resolver's own region

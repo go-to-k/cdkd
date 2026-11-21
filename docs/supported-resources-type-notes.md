@@ -210,7 +210,8 @@ Limits:
   expire sooner end it sooner; cdkd warns when they do.
 - The instance must reach Amazon S3, as it must under CloudFormation.
 - A wait condition without a `Handle` (the `CreationPolicy` form that
-  `cfn-signal --resource` signals) is refused.
+  `cfn-signal --resource` signals) waits through the deploy's signal receiver;
+  see [`CreationPolicy` and `cfn-init`](supported-features.md#creationpolicy-and-cfn-init).
 - A wait condition on a handle whose id is a URL cdkd did not issue (one
   imported from CloudFormation) is refused: give the handle a new logical id
   so cdkd issues one.

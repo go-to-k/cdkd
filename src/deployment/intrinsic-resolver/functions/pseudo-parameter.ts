@@ -58,6 +58,11 @@ export async function resolvePseudoParameter(
       // The tail is a UUID derived from the stack's instance id on a stack
       // first written with schema v16+, as CloudFormation's is a per-stack
       // UUID, and `cdkd` on every older record (go-to-k/cdkd#6170).
+      //
+      // go-to-k/cdkd#6705: a stack with a CloudFormation signal receiver
+      // answers that stack's real ARN instead.
+      const override = context?.stackIdOverride?.();
+      if (override !== undefined) return override;
       const info = await getAccountInfo(resolver.resolverRegion);
       // A refusal over a damaged record (a marker without a well-formed id)
       // cannot change on a retry (#1889).

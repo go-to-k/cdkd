@@ -119,6 +119,13 @@ export interface ResolverContext {
    */
   stackIdTail?: () => string | undefined;
   /**
+   * go-to-k/cdkd#6705: the stack's whole `AWS::StackId` when it has a
+   * CloudFormation signal receiver: that stack's REAL ARN, so a grant on
+   * `AWS::StackId` (CDK's `init` / `signals`) names it. Wins over
+   * {@link stackIdTail}; absent or `undefined` keeps the synthetic ARN.
+   */
+  stackIdOverride?: () => string | undefined;
+  /**
    * Persistent exports index for fast `Fn::ImportValue` resolution. When
    * supplied, the resolver tries an O(1) index lookup before falling back
    * to the per-stack state.json scan. Optional for backwards compat; the

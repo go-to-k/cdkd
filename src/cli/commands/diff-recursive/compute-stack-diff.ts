@@ -388,6 +388,8 @@ export async function computeStackDiff(
         stackName,
         // go-to-k/cdkd#6170: the tail the deploy resolves `AWS::StackId` with.
         stackIdTail: () => stackIdTailOf(currentState, stackName),
+        // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+        stackIdOverride: () => currentState?.signalReceiverStackId,
         // Diff resolution is best-effort (the calculator catches failures and
         // keeps the raw intrinsic): a Ref to a to-be-created resource is the
         // expected case here, so the resolver logs it at debug, not warn
@@ -483,6 +485,8 @@ export async function computeStackDiff(
             stateBackend,
             stackName,
             stackIdTail: () => stackIdTailOf(currentState, stackName),
+            // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+            stackIdOverride: () => currentState?.signalReceiverStackId,
             bestEffort: true,
             ...(Object.keys(classified.bound).length > 0 && { parameters: classified.bound }),
             ...(conditions && Object.keys(conditions).length > 0 && { conditions }),

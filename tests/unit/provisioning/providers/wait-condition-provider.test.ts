@@ -257,8 +257,15 @@ describe('WaitConditionProvider', () => {
       expect(readSignals).not.toHaveBeenCalled();
     });
 
+    it('creates the CreationPolicy form (no Handle) without polling: the engine waits on it (#6705)', async () => {
+      const { store, readSignals } = storeAnswering([[]]);
+      const result = await new TestProvider(store).create('Wait', TYPE, { Timeout: '600' });
+      expect(result.physicalId).toMatch(/^cdkd-wait-condition-Wait-/);
+      expect(result.attributes).toEqual({ Data: '{}' });
+      expect(readSignals).not.toHaveBeenCalled();
+    });
+
     it.each([
-      [{ Handle: undefined }, /has no Handle.*CreationPolicy/],
       [{ Handle: { Ref: 'X' } }, /Handle must resolve to a string/],
       [{ Timeout: undefined }, /Timeout must be a whole number/],
       [{ Timeout: '0' }, /Timeout must be a whole number/],
