@@ -281,8 +281,11 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
  *
  * Each key maps to the sibling keys it must still TRAVEL WITH: a change to one
  * of those re-adds the unchanged key as before. `Architectures` is a parameter
- * of Lambda's `UpdateFunctionCode`, not of `UpdateFunctionConfiguration`, and
- * the handler was never measured on a patch changing it without `Code`.
+ * of Lambda's `UpdateFunctionCode`, not of `UpdateFunctionConfiguration`: a
+ * Cloud Control patch changing it without `Code` fails with Lambda's 400
+ * "Please provide a source for function code", while the same patch with
+ * `Code` re-added succeeds (measured on an inline zip function, x86_64 ->
+ * arm64, go-to-k/cdkd#6709).
  *
  * Require handler measurements before adding an entry, or before dropping a
  * sibling. Readback omits write-only values, so omitting them from a Cloud

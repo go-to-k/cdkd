@@ -180,8 +180,9 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
   });
 
   it('re-adds an unchanged Code when Architectures changes', async () => {
-    // Lambda takes `Architectures` on `UpdateFunctionCode`, and the handler
-    // was never measured on a patch changing it without `Code`.
+    // Lambda takes `Architectures` on `UpdateFunctionCode`: on an inline zip
+    // function, x86_64 -> arm64, a patch changing it without `Code` failed
+    // (go-to-k/cdkd#6709).
     mockCloudFormationSend.mockResolvedValue({ Schema: LAMBDA_FUNCTION_SCHEMA });
     const code = { S3Bucket: 'cdk-assets', S3Key: 'aaaa.zip' };
 
