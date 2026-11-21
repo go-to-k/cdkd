@@ -36,6 +36,28 @@ import {
   readPrincipalSides,
   DEPLOY_SKIP_CAVEAT,
 } from './shared.js';
+import { RecordedIdentityError } from '../../recorded-identity.js';
+import {
+  compareMembershipWrites,
+  type MembershipPrincipals,
+  type PolicyOwner,
+} from '../iam-policy/principal-identity.js';
+
+/**
+ * go-to-k/cdkd#6722: `AddUserToGroup` / `RemoveUserFromGroup` name both the
+ * group and the user, either of which may be a same-named principal cdkd did
+ * not create: each membership write is compared through
+ * {@link compareMembershipWrites} first.
+ */
+const MEMBERSHIP_OWNER: PolicyOwner = {
+  label: 'IAM UserToGroupAddition',
+  resourceType: 'AWS::IAM::UserToGroupAddition',
+  membership: true,
+};
+const membership = (group: string, user: string): MembershipPrincipals => [
+  ['group', group],
+  ['user', user],
+];
 
 export async function createUserToGroupAddition(
   this: IAMUserGroupProvider,
@@ -68,6 +90,16 @@ export async function createUserToGroupAddition(
   }
 
   try {
+    await compareMembershipWrites({
+      client: this.iamClient,
+      owner: MEMBERSHIP_OWNER,
+      logicalId,
+      physicalId: logicalId,
+      adds: users.map((user) => membership(groupName, user)),
+      removes: [],
+      operation: 'update',
+      warn: (message) => log.warn(message),
+    });
     for (const userName of users) {
       await this.iamClient.send(
         new AddUserToGroupCommand({
@@ -85,6 +117,8 @@ export async function createUserToGroupAddition(
       physicalId: logicalId,
     };
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       log.mask,
@@ -128,11 +162,29 @@ export async function updateUserToGroupAddition(
   const newUsers = new Set(users.next.Users ?? []);
   const oldGroupName = previousProperties['GroupName'] as string;
   const oldUsers = new Set(users.prev.Users ?? []);
+  const groupMoved = Boolean(oldGroupName) && oldGroupName !== groupName;
 
   try {
+    // go-to-k/cdkd#6722: the memberships the arms below add and remove,
+    // compared before any write.
+    const skipRemoval = await compareMembershipWrites({
+      client: this.iamClient,
+      owner: MEMBERSHIP_OWNER,
+      logicalId,
+      physicalId,
+      adds: [...newUsers]
+        .filter((user) => groupMoved || !oldUsers.has(user))
+        .map((user) => membership(groupName, user)),
+      removes: [...oldUsers]
+        .filter((user) => groupMoved || !newUsers.has(user))
+        .map((user) => membership(groupMoved ? oldGroupName : groupName, user)),
+      operation: 'update',
+      warn: (message) => log.warn(message),
+    });
     // If group changed, remove from old group and add to new group
-    if (oldGroupName && oldGroupName !== groupName) {
+    if (groupMoved) {
       for (const userName of oldUsers) {
+        if (skipRemoval(membership(oldGroupName, userName))) continue;
         try {
           await this.iamClient.send(
             new RemoveUserFromGroupCommand({
@@ -168,7 +220,7 @@ export async function updateUserToGroupAddition(
         }
       }
       for (const userName of oldUsers) {
-        if (!newUsers.has(userName)) {
+        if (!newUsers.has(userName) && !skipRemoval(membership(groupName, userName))) {
           try {
             await this.iamClient.send(
               new RemoveUserFromGroupCommand({
@@ -191,6 +243,8 @@ export async function updateUserToGroupAddition(
       wasReplaced: false,
     };
   } catch (error) {
+    // The identity refusals: already worded (no AWS text) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       log.mask,
@@ -373,6 +427,22 @@ export async function deleteUserToGroupAddition(
   // refusal after one leaves a partial membership, never a whole survivor.
   let removedAny = false;
   try {
+    // go-to-k/cdkd#6722: a group or user of this stack whose name another
+    // principal now holds refuses the delete before any removal (the record
+    // is kept). A name a secret resolved is compared too: an in-stack record
+    // holds the resolved name as its physical id. The refusal names logical
+    // ids only.
+    await compareMembershipWrites({
+      client: this.iamClient,
+      owner: MEMBERSHIP_OWNER,
+      logicalId,
+      physicalId,
+      adds: [],
+      removes: (users ?? []).map((user) => membership(groupName, user)),
+      operation: 'delete',
+      context,
+      warn: (message) => this.logger.warn(mask(message)),
+    });
     for (const userName of users ?? []) {
       if (
         resolvedNames.has(userName) &&
@@ -430,6 +500,8 @@ export async function deleteUserToGroupAddition(
     // error body can quote a principal name resolved from a secret. The
     // clone keeps each link's prototype, `$metadata` and markers, so the
     // retry classifiers read it as before.
+    // The identity refusals: worded by cdkd (logical ids only) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     // The marks survive `maskError`'s clone of the chain. An AWS-authored
     // failure is named by its class (`wrapMaskedError`, issue #2319), its text
