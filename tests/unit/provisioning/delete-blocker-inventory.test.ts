@@ -51,7 +51,9 @@ function blockerProblems(blocker: DeleteBlocker): string[] {
   if (d.kind === 'refused') {
     // A short needle would match by accident.
     if (d.message.length < 20) problems.push('refusal text shorter than 20 characters');
-    else if (!site.includes(d.message)) problems.push(`${d.site} lacks the refusal "${d.message}"`);
+    else if (!codeOnly(site).includes(d.message)) {
+      problems.push(`${d.site} lacks the refusal "${d.message}" outside comments and imports`);
+    }
     return problems;
   }
   if (d.call.length < 8 || !codeOnly(site).includes(d.call)) {
@@ -191,6 +193,8 @@ describe('delete-blocker inventory (#6715)', () => {
       expect(blockerProblems(refused('Disassociating EIP'))).toEqual(['refusal text shorter than 20 characters']);
       expect(blockerProblems(refused('from its instance before release'))).toEqual([]);
       expect(blockerProblems(refused('a refusal no provider spells'))).toHaveLength(1);
+      // Spelled only in a comment at the site, so not a refusal.
+      expect(blockerProblems(refused('go-to-k/cdkd#6715: in a non-default VPC'))).toHaveLength(1);
     });
   });
 });

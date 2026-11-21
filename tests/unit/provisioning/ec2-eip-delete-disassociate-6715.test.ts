@@ -49,7 +49,10 @@ type Handler = (cmd: unknown) => unknown;
 /** Drive the EC2 client: per command class, a queue of answers (last repeats). */
 function drive(answers: {
   release: Array<'ok' | Error>;
-  describe?: { AssociationId?: string; InstanceId?: string } | Error | 'none';
+  describe?:
+    | { AssociationId?: string; InstanceId?: string; NetworkInterfaceId?: string }
+    | Error
+    | 'none';
   disassociate?: 'ok' | Error;
 }): string[] {
   const sent: string[] = [];
@@ -123,6 +126,17 @@ describe('AWS::EC2::EIP delete of an associated address (go-to-k/cdkd#6715)', ()
     const sent = drive({
       release: [inUse()],
       describe: { AssociationId: 'eipassoc-2', InstanceId: 'i-0bbbbbbbbbbbbbbb2' },
+    });
+    await expect(
+      provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)
+    ).rejects.toThrow(/InvalidIPAddress\.InUse/);
+    expect(sent).toEqual(['ReleaseAddress', 'DescribeAddresses']);
+  });
+
+  it('never disassociates an association made through a network interface', async () => {
+    const sent = drive({
+      release: [inUse()],
+      describe: { AssociationId: 'eipassoc-3', NetworkInterfaceId: 'eni-0ccccccccccccccc3' },
     });
     await expect(
       provider().delete('Eip', PHYSICAL, EIP, { InstanceId: INSTANCE }, CTX)

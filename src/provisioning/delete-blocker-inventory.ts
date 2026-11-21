@@ -40,8 +40,9 @@ export type DeleteBlockerDisposition =
       readonly site: string;
       /**
        * A literal in `site` naming the preparation (an SDK command, a
-       * helper). The check reads the whole file, so prefer one only the
-       * delete path spells; the test title is what pins the behavior.
+       * helper). The check reads the whole file outside comments and
+       * imports, so prefer one only the delete path spells; the test title
+       * is what pins the behavior.
        */
       readonly call: string;
       readonly test: {
