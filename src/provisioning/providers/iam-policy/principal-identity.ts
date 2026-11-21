@@ -8,7 +8,7 @@ import {
 import { getStackRecords, verifiedIdentityCache } from '../../../deployment/stack-records-scope.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import type { InlinePolicyPrincipalKind } from '../../../types/resource.js';
-import { isAccessDeniedError } from '../../name-lookup.js';
+import { isPermissionDenial } from '../../identity-read-denied.js';
 import { markNotGone } from '../../not-gone.js';
 import {
   assertRecordedIdentity,
@@ -236,7 +236,7 @@ export async function verifyInlinePolicyPrincipal(params: {
     }
     // go-to-k/cdkd#6722: a denied read does not lift with time, and the
     // by-name write it guards is never the fallback (the #6665 shape).
-    if (isAccessDeniedError(error)) {
+    if (isPermissionDenial(error)) {
       throw new InlinePolicyPrincipalReadDeniedError({
         policyLogicalId,
         physicalId,
@@ -515,6 +515,147 @@ export class InlinePolicyAttachMismatchError extends RecordedIdentityError {
     Object.setPrototypeOf(this, InlinePolicyAttachMismatchError.prototype);
     this.name = 'InlinePolicyAttachMismatchError';
     markNonRetryable(this);
+    markNotGone(this);
+  }
+}
+
+/**
+ * go-to-k/cdkd#6722: an in-place update of an IAM role, user, group or
+ * instance profile writes to it BY NAME, so a same-named one re-created out
+ * of band would receive cdkd's change (its policies, tags, boundary,
+ * memberships). With a usable recorded identity id, the update's own read of
+ * the resource is made BEFORE its first write and compared; its answer is
+ * returned for the update to build its attributes from, so the read the
+ * update made after its writes moves here rather than being added.
+ *
+ * `undefined`, no read: no usable recorded id (a legacy or masked record),
+ * a record this deploy itself created or replaced (`writtenFreshThisRun`),
+ * or one already matched in this run (`verifiedIdentityCache`, shared with
+ * the policy attach compares, so a policy attached to a role this run
+ * updated is not read again). A mismatch refuses non-retryably with nothing
+ * written; a denied read refuses non-retryably; a read answering no id is a
+ * not-gone {@link RecordedIdentityError} left to the retry classifiers; any
+ * other read failure (`NoSuchEntity`, a throttle) is thrown as is.
+ */
+export async function verifyOwnIdentityBeforeUpdate<T>(params: {
+  /** `IAM role`, `IAM user`, `IAM group`, `IAM instance profile`. */
+  label: string;
+  resourceType: string;
+  /** The read's IAM action, named by a denied read's refusal. */
+  permission: string;
+  logicalId: string;
+  physicalId: string;
+  recordedAttributes: Record<string, unknown> | undefined;
+  read: () => Promise<T>;
+  idOf: (response: T) => string | undefined;
+}): Promise<T | undefined> {
+  const { label, resourceType, permission, logicalId, physicalId } = params;
+  const recorded = recordedIdentityId(resourceType, {
+    ...(params.recordedAttributes && { recordedAttributes: params.recordedAttributes }),
+  });
+  if (recorded === undefined) return undefined;
+  const view = getStackRecords();
+  if (view?.writtenFreshThisRun?.(logicalId) === true) return undefined;
+  const cache = verifiedIdentityCache(view);
+  // The key a policy's compare of this principal uses (its only record).
+  const cacheKey = injectiveKey(resourceType, logicalId, physicalId, recorded.value);
+  const earlier = cache?.get(cacheKey);
+  if (earlier !== undefined) {
+    const matched = await earlier.then(
+      () => true,
+      () => false
+    );
+    if (matched) return undefined;
+  }
+  let latest: T | undefined;
+  const readId = async (): Promise<string | undefined> => {
+    latest = await params.read();
+    return params.idOf(latest);
+  };
+  const compare = (async () => {
+    await assertRecordedIdentity({
+      label,
+      resourceType,
+      logicalId,
+      physicalId,
+      liveId: await readId(),
+      reread: readId,
+      context: { recordedAttributes: { [recorded.key]: recorded.value } },
+    });
+  })();
+  if (cache !== undefined) {
+    cache.set(cacheKey, compare);
+    compare.catch(() => {
+      if (cache.get(cacheKey) === compare) cache.delete(cacheKey);
+    });
+  }
+  try {
+    await compare;
+    return latest;
+  } catch (error) {
+    if (error instanceof RecordedIdentityMismatchError) {
+      throw new OwnIdentityUpdateRefusal(
+        `Cannot update ${label} ${logicalId}: the ${label} holding the name cdkd recorded is not ` +
+          `the one cdkd created (its ${error.attribute} differs from the recorded one), so cdkd ` +
+          `sent it no change and kept the record. If you replaced it yourself, adopt the new one ` +
+          `with ${reAdoptRemedy(logicalId)} and re-run; otherwise leave that ${label} alone, and ` +
+          `if the one cdkd created is gone, drop the record with ` +
+          `${stateOrphanRecordRemedy(undefined, logicalId)}.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        true
+      );
+    }
+    if (error instanceof RecordedIdentityError) {
+      throw new OwnIdentityUpdateRefusal(
+        `Cannot update ${label} ${logicalId}: AWS answered without its ${recorded.key}, so cdkd ` +
+          `cannot confirm it is the one cdkd created; nothing was sent and the record is kept. ` +
+          `Re-run the operation.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        false
+      );
+    }
+    if (isPermissionDenial(error)) {
+      const name = (error as { name?: unknown } | null)?.name;
+      const errorClass =
+        typeof name === 'string' && /^[A-Za-z0-9]{1,64}$/.test(name) ? name : 'a 403';
+      throw new OwnIdentityUpdateRefusal(
+        `Cannot update ${label} ${logicalId}: AWS refused the ${permission} read cdkd makes to ` +
+          `confirm it is the one cdkd created (${errorClass}), so cdkd sent it no change and kept ` +
+          `the record. Allow ${permission} for the identity running cdkd (an IAM policy, ` +
+          `permission boundary, SCP or VPC endpoint policy may deny it) and re-run.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        true
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * {@link verifyOwnIdentityBeforeUpdate}'s refusals: worded by cdkd with no AWS
+ * text and no `cause` (a denied read's text can name the caller), so an
+ * update's catch rethrows it as is. Marked not gone: the logical id is
+ * template-controlled text. A mismatch and a denied read are non-retryable
+ * (a retry reads the same holder, or is denied again).
+ */
+export class OwnIdentityUpdateRefusal extends RecordedIdentityError {
+  constructor(
+    message: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    nonRetryable: boolean
+  ) {
+    super(message, resourceType, logicalId, physicalId);
+    Object.setPrototypeOf(this, OwnIdentityUpdateRefusal.prototype);
+    this.name = 'OwnIdentityUpdateRefusal';
+    if (nonRetryable) markNonRetryable(this);
     markNotGone(this);
   }
 }
