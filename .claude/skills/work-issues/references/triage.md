@@ -122,9 +122,10 @@ an umbrella's row ticks lag its claim-release comments — `ship.md`'s "Release
 the claims" — so read those and the PRs they name BEFORE ranking a row, #1160) —
 done, not-yet-true and WRONG look alike by title. "WRONG" /
 "not cdkd" needs BOTH sides of the boundary read: the handler or asset that
-consumes cdkd's output too, from `node_modules` (#5871: cdkd kept the port,
-aws-cdk-lib's handler dropped it). Grep the
-asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
+consumes cdkd's output too, from `node_modules` (#5871). Grep the
+asserted SYMBOL, not the body's paths or line numbers; a `src/local/` hit
+headed `Shim:` puts the fix in go-to-k/cdk-local, which the claim names, and a
+cdkd bump PR closes the issue (#6717); a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
 `origin/main` already produces it (#2286). On an empty grep,
 `gh pr list --state all --search <symbol>` separates "premise wrong" from
 "premise on an unmerged branch". A fix choosing accept / refuse / replace /
