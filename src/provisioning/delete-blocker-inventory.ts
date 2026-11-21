@@ -615,7 +615,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   none('AWS::Logs::Delivery', perms('logs:DeleteDelivery')),
   none(
     'AWS::Logs::DeliveryDestination',
-    'https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DeleteDeliveryDestination.html (#6751 probe: DeleteDeliveryDestination succeeded with a delivery destination policy attached, and the policy went with it; the handler\'s logs:DeleteDeliveryDestinationPolicy clears nothing the delete needs)'
+    "https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DeleteDeliveryDestination.html (#6751 probe: DeleteDeliveryDestination succeeded with a delivery destination policy attached, and the policy went with it; the handler's logs:DeleteDeliveryDestinationPolicy clears nothing the delete needs)"
   ),
   none('AWS::CloudWatch::Alarm', perms('cloudwatch:DeleteAlarms')),
   none(
@@ -758,7 +758,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   none(
     'AWS::AppConfig::Environment',
     perms(
-      'appconfig:GetEnvironment, appconfig:DeleteEnvironment (#6751 probe: CloudTrail shows the handler\'s DeleteEnvironment carrying no DeletionProtectionCheck, so the account default applies, as when cdkd sends none)'
+      "appconfig:GetEnvironment, appconfig:DeleteEnvironment (#6751 probe: CloudTrail shows the handler's DeleteEnvironment carrying no DeletionProtectionCheck, so the account default applies, as when cdkd sends none)"
     )
   ),
   none(
