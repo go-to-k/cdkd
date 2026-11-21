@@ -109,7 +109,7 @@ export function parseBootstrapCall(
 ): { kind: 'init' | 'signal'; resource: string; signed: boolean } | undefined {
   const tokens = command
     .split(/\s+/)
-    .map((t) => t.replace(/^[[("',]+|[\]),"']+$/g, ''))
+    .map((t) => t.replace(/^[\[("',]+|[\]),"']+$/g, ''))
     .filter((t) => t.length > 0);
   const at = tokens.findIndex((t) => /(?:^|[/\\])cfn-(?:init|signal)(?:\.exe)?$/i.test(t));
   if (at !== -1) {
