@@ -97,7 +97,7 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
     type Create = (typeof creates)[number];
     type Delete = (typeof deletes)[number];
     // One pass pairs every CREATE whose references agree, given which CREATEs
-    // are new; the first treats none as new, the second each it left unpaired.
+    // are new.
     const pairUp = (isNewIn: (c: Create, logicalId: string) => boolean): Map<Create, Delete> => {
       const matchesOf = new Map<Create, Delete[]>();
       const claims = new Map<Delete, number>();
@@ -118,14 +118,22 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
       }
       return pairs;
     };
-    const firstPass = pairUp(() => false);
-    const pairs = pairUp(
-      (c, logicalId) =>
-        !creates.some(
+    // A CREATE left unpaired is new, and stays new: each pass may unpair a
+    // CREATE referencing one (A -> B -> C, C new), so repeat until the new set
+    // stops growing, at most once per CREATE.
+    const isNew = new Set<Create>();
+    let pairs = pairUp(() => false);
+    for (;;) {
+      const grown = creates.filter((c) => !pairs.has(c) && !isNew.has(c));
+      if (grown.length === 0) break;
+      for (const c of grown) isNew.add(c);
+      pairs = pairUp((c, logicalId) =>
+        creates.some(
           (other) =>
-            other.stack === c.stack && other.row.logicalId === logicalId && firstPass.has(other)
+            other.stack === c.stack && other.row.logicalId === logicalId && isNew.has(other)
         )
-    );
+      );
+    }
     for (const [c, d] of pairs) {
       let byId = hints.get(d.stack.id);
       if (byId === undefined) {

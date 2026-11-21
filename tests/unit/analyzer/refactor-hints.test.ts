@@ -475,6 +475,34 @@ describe('hintSidesOf', () => {
       ]).get('s');
     // Q2 is a new queue (another name): the subscription to it is new too.
     expect(run('q2')).toBeUndefined();
+    // Two hops (Alarm2 -> Sub2 -> Q2): the alarm on the new subscription is new too.
+    const chained = findRefactorHints([
+      {
+        id: 's',
+        stackName: 'S',
+        env: 'e',
+        creates: [
+          { logicalId: 'Q2', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q2' } },
+          sub('Q2'),
+          {
+            logicalId: 'Alarm2',
+            resourceType: 'AWS::CloudWatch::Alarm',
+            properties: { Dimensions: [{ Value: { Ref: 'Sub2' } }] },
+            createdReferences: ['Sub2'],
+          },
+        ],
+        deletes: [
+          { logicalId: 'Q1', resourceType: 'AWS::SQS::Queue', properties: { QueueName: 'q1' } },
+          { logicalId: 'Sub1', resourceType: 'AWS::SNS::Subscription', properties: { Endpoint: 'arn:q1' } },
+          {
+            logicalId: 'Alarm1',
+            resourceType: 'AWS::CloudWatch::Alarm',
+            properties: { Dimensions: [{ Value: 'arn:sub1' }] },
+          },
+        ],
+      },
+    ]).get('s');
+    expect(chained).toBeUndefined();
     // Q2 is Q1 renamed: the subscription may be renamed with it.
     expect(Object.fromEntries(run('q1') ?? [])).toEqual({
       Q1: { stackName: 'S', logicalId: 'Q2' },
