@@ -3015,6 +3015,7 @@
     "--backup-id",
     "--backup-plan-id",
     "--backup-vault-name",
+    "--batch-size",
     "--bearer-token",
     "--billing-mode",
     "--block-device-mappings",
