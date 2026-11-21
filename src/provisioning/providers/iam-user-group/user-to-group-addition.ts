@@ -10,7 +10,7 @@ import type { DeleteContext } from '../../region-check.js';
 import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { markDeleteStarted } from '../../delete-started.js';
-import { readPrincipalLists } from '../../iam-policy-targets.js';
+import { diffPrincipalNames, readPrincipalLists } from '../../iam-policy-targets.js';
 import {
   isResolvableSecretPrincipalList,
   holdsUnprovenSecretPrincipalToken,
@@ -162,7 +162,13 @@ export async function updateUserToGroupAddition(
   const newUsers = new Set(users.next.Users ?? []);
   const oldGroupName = previousProperties['GroupName'] as string;
   const oldUsers = new Set(users.prev.Users ?? []);
-  const groupMoved = Boolean(oldGroupName) && oldGroupName !== groupName;
+  // A GroupName respelled only in case names the same group (go-to-k/cdkd#6774):
+  // not a move, which would remove every user and re-add them.
+  const groupMoved =
+    Boolean(oldGroupName) && oldGroupName.toLowerCase() !== groupName?.toLowerCase();
+  // go-to-k/cdkd#6774: in the same group, a user respelled only in case is
+  // neither added nor removed.
+  const { added, removed } = diffPrincipalNames(users.next.Users, users.prev.Users);
 
   try {
     // go-to-k/cdkd#6722: the memberships the arms below add and remove,
@@ -172,12 +178,10 @@ export async function updateUserToGroupAddition(
       owner: MEMBERSHIP_OWNER,
       logicalId,
       physicalId,
-      adds: [...newUsers]
-        .filter((user) => groupMoved || !oldUsers.has(user))
-        .map((user) => membership(groupName, user)),
-      removes: [...oldUsers]
-        .filter((user) => groupMoved || !newUsers.has(user))
-        .map((user) => membership(groupMoved ? oldGroupName : groupName, user)),
+      adds: (groupMoved ? [...newUsers] : added).map((user) => membership(groupName, user)),
+      removes: (groupMoved ? [...oldUsers] : removed).map((user) =>
+        membership(groupMoved ? oldGroupName : groupName, user)
+      ),
       operation: 'update',
       warn: (message) => log.warn(message),
     });
@@ -208,19 +212,17 @@ export async function updateUserToGroupAddition(
       }
     } else {
       // Same group: add new users, remove old users
-      for (const userName of newUsers) {
-        if (!oldUsers.has(userName)) {
-          await this.iamClient.send(
-            new AddUserToGroupCommand({
-              GroupName: groupName,
-              UserName: userName,
-            })
-          );
-          log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
-        }
+      for (const userName of added) {
+        await this.iamClient.send(
+          new AddUserToGroupCommand({
+            GroupName: groupName,
+            UserName: userName,
+          })
+        );
+        log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
       }
-      for (const userName of oldUsers) {
-        if (!newUsers.has(userName) && !skipRemoval(membership(groupName, userName))) {
+      for (const userName of removed) {
+        if (!skipRemoval(membership(groupName, userName))) {
           try {
             await this.iamClient.send(
               new RemoveUserFromGroupCommand({
