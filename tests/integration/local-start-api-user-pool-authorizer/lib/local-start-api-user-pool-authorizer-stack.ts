@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpUserPoolAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
@@ -14,7 +15,9 @@ const HOST_ARCHITECTURE =
 
 const HANDLER = `
 exports.handler = async (event) => {
-  const claims = (event.requestContext.authorizer && event.requestContext.authorizer.jwt && event.requestContext.authorizer.jwt.claims) || {};
+  // HTTP API nests the claims under jwt; a REST v1 Cognito authorizer does not.
+  const authorizer = event.requestContext.authorizer || {};
+  const claims = (authorizer.jwt && authorizer.jwt.claims) || authorizer.claims || {};
   return {
     statusCode: 200,
     headers: { 'content-type': 'application/json' },
@@ -32,10 +35,19 @@ exports.handler = async (event) => {
  * deployed state can resolve them. Client B is NOT given to the authorizer, so
  * a token minted for it must be refused once the audience is resolved.
  *
+ * A REST v1 API behind a `CognitoUserPoolsAuthorizer` on the same pool rides
+ * along (go-to-k/cdkd#6717): its `ProviderARNs` is `[Fn::GetAtt <Pool>.Arn]`,
+ * which only the deployed state resolves, and its method sets
+ * `apiKeyRequired`, which the local server does not enforce and must warn
+ * per route.
+ *
  * covers: AWS::Cognito::UserPool
  * covers: AWS::Cognito::UserPoolClient
  * covers: AWS::ApiGatewayV2::Api
  * covers: AWS::ApiGatewayV2::Authorizer
+ * covers: AWS::ApiGateway::RestApi
+ * covers: AWS::ApiGateway::Authorizer
+ * covers: AWS::ApiGateway::Method
  */
 export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -62,6 +74,21 @@ export class LocalStartApiUserPoolAuthorizerStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.GET],
       integration: new HttpLambdaIntegration('SecureIntegration', fn),
       authorizer: new HttpUserPoolAuthorizer('Auth', pool, { userPoolClients: [clientA] }),
+    });
+
+    const restApi = new apigw.RestApi(this, 'RestApi', {
+      deployOptions: { stageName: 'prod' },
+      // No account-level CloudWatch role: CDK retains it on destroy.
+      cloudWatchRole: false,
+    });
+    restApi.root.addResource('rest-secure').addMethod('GET', new apigw.LambdaIntegration(fn), {
+      authorizer: new apigw.CognitoUserPoolsAuthorizer(this, 'RestAuth', {
+        cognitoUserPools: [pool],
+      }),
+      authorizationType: apigw.AuthorizationType.COGNITO,
+      // Not enforced locally (API keys live in the deployed API): it must be
+      // warned per route rather than dropped silently.
+      apiKeyRequired: true,
     });
 
     new cdk.CfnOutput(this, 'PoolId', { value: pool.userPoolId });
