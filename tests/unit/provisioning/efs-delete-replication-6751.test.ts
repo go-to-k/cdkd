@@ -40,9 +40,26 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+const interrupt = vi.hoisted(() => ({ afterChecks: Infinity, checks: 0 }));
+vi.mock('../../../src/provisioning/interrupt-watch.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/provisioning/interrupt-watch.js')>(
+    '../../../src/provisioning/interrupt-watch.js'
+  );
+  return {
+    ...actual,
+    // A watch that reports a Ctrl-C once it has been asked `afterChecks` times.
+    startInterruptWatch: (what: string) => ({
+      isInterrupted: () => ++interrupt.checks > interrupt.afterChecks,
+      onInterrupted: () => new actual.InterruptedWaitError(what),
+      dispose: () => {},
+    }),
+  };
+});
+
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { REPLICATION_TEARDOWN_WAIT } from '../../../src/provisioning/providers/efs/file-system.js';
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
+import { isInterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 
 /**
  * go-to-k/cdkd#6751: DeleteFileSystem refuses a replication SOURCE with
@@ -69,6 +86,8 @@ describe('EFS FileSystem delete with a replication configuration (#6751)', () =>
   const saved = { ...REPLICATION_TEARDOWN_WAIT };
   beforeEach(() => {
     mockSend.mockReset();
+    interrupt.afterChecks = Infinity;
+    interrupt.checks = 0;
     REPLICATION_TEARDOWN_WAIT.intervalMs = 0;
     REPLICATION_TEARDOWN_WAIT.attempts = 3;
   });
@@ -112,6 +131,22 @@ describe('EFS FileSystem delete with a replication configuration (#6751)', () =>
       'DescribeReplicationConfigurationsCommand',
       'DeleteFileSystemCommand',
     ]);
+  });
+
+  it('stops the teardown wait on a Ctrl-C, sending no further DeleteFileSystem, and marks the delete started', async () => {
+    interrupt.afterChecks = 1; // the second check, before the second retry, sees the Ctrl-C
+    mockSend
+      .mockRejectedValueOnce(inReplication())
+      .mockResolvedValueOnce({ Replications: [{ SourceFileSystemId: FS }] })
+      .mockResolvedValueOnce({}) // DeleteReplicationConfiguration
+      .mockRejectedValueOnce(inReplication()) // first retry: still tearing down
+      .mockResolvedValue({});
+
+    const error = await new EFSProvider().delete('Fs', FS, 'AWS::EFS::FileSystem').catch((e: unknown) => e);
+
+    expect(isInterruptedWaitError(error)).toBe(true);
+    expect(isDeleteStarted(error)).toBe(true);
+    expect(names().filter((n) => n === 'DeleteFileSystemCommand')).toHaveLength(2);
   });
 
   it('sends only DeleteFileSystem when it is not refused', async () => {

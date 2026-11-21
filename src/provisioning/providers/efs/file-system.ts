@@ -22,6 +22,11 @@ import {
 } from '../../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import { markDeleteStarted } from '../../delete-started.js';
+import {
+  isInterruptedWaitError,
+  startInterruptWatch,
+  type InterruptWatch,
+} from '../../interrupt-watch.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult } from '../../../types/resource.js';
@@ -411,6 +416,15 @@ export async function applyFileSystemProtection(
  */
 export const REPLICATION_TEARDOWN_WAIT = { intervalMs: 15_000, attempts: 60 };
 
+/** Sleep `ms` in one-second slices, throwing as soon as `watch` sees a Ctrl-C. */
+async function sleepUnlessInterrupted(ms: number, watch: InterruptWatch): Promise<void> {
+  for (let left = ms; ; left -= 1_000) {
+    if (watch.isInterrupted()) throw watch.onInterrupted();
+    if (left <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, left)));
+  }
+}
+
 /** DeleteFileSystem's refusal of a file system that is in a replication. */
 function isReplicationRefusal(error: unknown): boolean {
   const e = error as { name?: unknown; message?: unknown } | null;
@@ -470,20 +484,30 @@ export async function deleteFileSystem(
       if (!isReplicationRefusal(error)) throw error;
       replicationDeleted = await deleteOwnReplication.call(this, physicalId);
       if (!replicationDeleted) throw error;
-      for (let attempt = 1; ; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, REPLICATION_TEARDOWN_WAIT.intervalMs));
-        try {
-          await send();
-          break;
-        } catch (retryError) {
-          if (!isReplicationRefusal(retryError) || attempt >= REPLICATION_TEARDOWN_WAIT.attempts) {
-            throw retryError;
+      const watch = startInterruptWatch(`EFS FileSystem ${logicalId} (replication teardown)`);
+      try {
+        for (let attempt = 1; ; attempt++) {
+          await sleepUnlessInterrupted(REPLICATION_TEARDOWN_WAIT.intervalMs, watch);
+          try {
+            await send();
+            break;
+          } catch (retryError) {
+            if (
+              !isReplicationRefusal(retryError) ||
+              attempt >= REPLICATION_TEARDOWN_WAIT.attempts
+            ) {
+              throw retryError;
+            }
           }
         }
+      } finally {
+        watch.dispose();
       }
     }
     this.logger.debug(`Successfully deleted EFS FileSystem ${logicalId}`);
   } catch (error) {
+    // A Ctrl-C ends the wait as itself, not as an AWS delete failure.
+    if (isInterruptedWaitError(error)) throw replicationDeleted ? markDeleteStarted(error) : error;
     if (error instanceof FileSystemNotFound) {
       const clientRegion = await this.getClient().config.region();
       assertRegionMatch(clientRegion, context?.expectedRegion, resourceType, logicalId, physicalId);
