@@ -94,6 +94,11 @@ export type InlinePolicyOperation = 'delete' | 'update' | 'attach';
 export interface PolicyOwner {
   readonly label: string;
   readonly resourceType: string;
+  /**
+   * What it sends is a group or instance-profile MEMBERSHIP (go-to-k/cdkd#6722),
+   * not a policy: only the refusals' wording differs.
+   */
+  readonly membership?: boolean;
 }
 export const INLINE_POLICY_OWNER: PolicyOwner = {
   label: 'IAM policy',
@@ -140,7 +145,15 @@ function inStackRecordedIds(
   let found: { logicalId: string; key: string; values: string[] } | undefined;
   let allFresh = true;
   for (const [logicalId, record] of view.live()) {
-    if (record.resourceType !== resourceType || record.physicalId !== name) continue;
+    // IAM names are unique regardless of case (go-to-k/cdkd#6722): a template
+    // spelling `My-Role` addresses the role recorded as `my-role`.
+    if (
+      record.resourceType !== resourceType ||
+      typeof record.physicalId !== 'string' ||
+      record.physicalId.toLowerCase() !== name.toLowerCase()
+    ) {
+      continue;
+    }
     const recorded = recordedIdentityId(resourceType, { recordedAttributes: record.attributes });
     if (recorded === undefined) continue;
     if (!(skipFresh && view.writtenFreshThisRun?.(logicalId) === true)) allFresh = false;
@@ -355,8 +368,9 @@ export class InlinePolicyPrincipalReadDeniedError extends RecordedIdentityError 
     super(
       operationPrefix(operation, owner, policyLogicalId, principal) +
         `AWS refused the ${permission} read cdkd makes to confirm it is the one cdkd created ` +
-        `(${errorClass}), so cdkd sent nothing to it and kept the record. Grant ${permission} to ` +
-        `the identity running cdkd and re-run.`,
+        `(${errorClass}), so cdkd sent nothing to it and kept the record. Allow ${permission} ` +
+        `for the identity running cdkd (an IAM policy, permission boundary, SCP or VPC endpoint ` +
+        `policy may deny it) and re-run.`,
       owner.resourceType,
       policyLogicalId,
       physicalId
@@ -413,18 +427,21 @@ export class InlinePolicyPrincipalMismatchError extends RecordedIdentityError {
     physicalId: string;
     mismatches: ReadonlyArray<Extract<PrincipalVerdict, { kind: 'mismatch' }>>;
     context: DeleteContext | undefined;
+    owner?: PolicyOwner;
   }) {
     const { policyLogicalId, physicalId, mismatches, context } = params;
+    const owner = params.owner ?? INLINE_POLICY_OWNER;
     const named = mismatches
       .map((m) => `${m.label} ${m.principalLogicalId} (its ${m.attribute} differs)`)
       .join(', ');
     super(
-      `Cannot delete IAM policy ${policyLogicalId} from ${named}: the principal holding the name ` +
-        `cdkd recorded is not the one cdkd created, so cdkd sent it no delete and kept the record ` +
-        `(the principal's own record refuses its delete the same way). Leave that principal ` +
-        `alone; if the one cdkd created is gone (its inline policy went with it), drop the ` +
+      `Cannot delete ${owner.label} ${policyLogicalId} from ${named}: the principal holding the ` +
+        `name cdkd recorded is not the one cdkd created, so cdkd sent it no delete and kept the ` +
+        `record (the principal's own record refuses its delete the same way). Leave that ` +
+        `principal alone; if the one cdkd created is gone (its ` +
+        `${owner.membership === true ? 'membership' : 'inline policy'} went with it), drop the ` +
         `record with ${stateOrphanRecordRemedy(context, policyLogicalId)}.`,
-      'AWS::IAM::Policy',
+      owner.resourceType,
       policyLogicalId,
       physicalId
     );
@@ -506,8 +523,11 @@ export class InlinePolicyAttachMismatchError extends RecordedIdentityError {
       .join('. ');
     super(
       `Cannot attach ${owner.label} ${policyLogicalId} to ${named}: the principal holding the name ` +
-        `cdkd recorded is not the one cdkd created, so cdkd sent the policy to no principal ` +
-        `(granting nothing) and kept the principals' records. ${remedies}.`,
+        `cdkd recorded is not the one cdkd created, so cdkd ` +
+        (owner.membership === true
+          ? `added no membership (granting nothing)`
+          : `sent the policy to no principal (granting nothing)`) +
+        ` and kept the principals' records. ${remedies}.`,
       owner.resourceType,
       policyLogicalId,
       physicalId
@@ -517,6 +537,71 @@ export class InlinePolicyAttachMismatchError extends RecordedIdentityError {
     markNonRetryable(this);
     markNotGone(this);
   }
+}
+
+/** A membership write's principals: the group and user, or the role. */
+export type MembershipPrincipals = ReadonlyArray<readonly [InlinePolicyPrincipalKind, string]>;
+
+/**
+ * go-to-k/cdkd#6722: a membership (`AddUserToGroup` / `RemoveUserFromGroup`,
+ * `AddRoleToInstanceProfile` / `RemoveRoleFromInstanceProfile`) is written
+ * by the principals' NAMES, so every in-stack principal it is about to touch
+ * is compared first (see {@link verifyInlinePolicyPrincipal}). An add
+ * touching another holder of a name refuses the whole operation, nothing
+ * written: it would join a principal cdkd did not create. A removal touching
+ * one is warned about and skipped on an update, as an inline policy's leaving
+ * principal is, and refuses the whole delete before any removal. Answers
+ * whether a removal touching `principals` must be skipped.
+ */
+export async function compareMembershipWrites(params: {
+  client: IAMClient;
+  owner: PolicyOwner;
+  logicalId: string;
+  physicalId: string;
+  adds: readonly MembershipPrincipals[];
+  removes: readonly MembershipPrincipals[];
+  operation: 'update' | 'delete';
+  context?: DeleteContext | undefined;
+  warn: (message: string) => void;
+}): Promise<(principals: MembershipPrincipals) => boolean> {
+  const { client, owner, logicalId, physicalId, operation } = params;
+  const verdicts = await verifyInlinePolicyPrincipals({
+    client,
+    principals: params.removes.flat(),
+    policyLogicalId: logicalId,
+    physicalId,
+    operation,
+    owner,
+  });
+  const mismatches = [...verdicts.values()].filter(
+    (verdict): verdict is Extract<PrincipalVerdict, { kind: 'mismatch' }> =>
+      verdict.kind === 'mismatch'
+  );
+  if (operation === 'delete' && mismatches.length > 0) {
+    throw new InlinePolicyPrincipalMismatchError({
+      policyLogicalId: logicalId,
+      physicalId,
+      mismatches,
+      context: params.context,
+      owner,
+    });
+  }
+  await assertInlinePolicyAttachTargets({
+    client,
+    principals: params.adds.flat(),
+    policyLogicalId: logicalId,
+    physicalId,
+    owner,
+  });
+  for (const m of mismatches) {
+    params.warn(
+      `${owner.label} ${logicalId}: the ${m.label} ${m.principalLogicalId} leaving it is not the ` +
+        `one cdkd created (its ${m.attribute} differs from the recorded one), so cdkd sent no ` +
+        `membership removal naming it. Leave that ${m.label} alone.`
+    );
+  }
+  return (principals) =>
+    principals.some(([kind, name]) => verdicts.get(injectiveKey(kind, name))?.kind === 'mismatch');
 }
 
 /**

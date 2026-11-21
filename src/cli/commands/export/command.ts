@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import {
   deleteSignalReceiver,
   removeSignalReceiverNamed,
@@ -831,13 +832,15 @@ export async function exportCommand(
           );
           try {
             await handler(entry);
-            logger.info(`  ${preDeletedLine(entry.physicalId)}`);
+            logger.info(
+              `  ${preDeletedLine(displayPhysicalId(entry.resourceType, entry.physicalId))}`
+            );
           } catch (err) {
             const msg = describeAwsFailure(err).detail;
             const orphan = orphanCommandFor(resolvedStackName, targetRegion, lockRecovery);
             throw new Error(
               `Phase 1 (IMPORT) succeeded; pre-delete of ${plainOrNotShown(entry.logicalId)} ` +
-                `(${plainOrNotShown(entry.resourceType)}, physicalId: ${recordValueOrNotShown(entry.physicalId)}) failed: ` +
+                `(${plainOrNotShown(entry.resourceType)}, physicalId: ${recordValueOrNotShown(displayPhysicalId(entry.resourceType, entry.physicalId))}) failed: ` +
                 `${displayAwsMessage(msg)}\n\n` +
                 `The CloudFormation stack ${quotedOrNotShown(cfnStackName)} contains the phase-1 imports ` +
                 `but the IMPORT-unsupported resources (${recreateBeforePhase2.length} total) ` +

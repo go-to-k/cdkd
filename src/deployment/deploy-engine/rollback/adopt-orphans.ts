@@ -4,6 +4,7 @@
  * Split out of `deploy-engine/rollback.ts` (go-to-k/cdkd#5835), which
  * re-exports what it exported.
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { explicitNamePropertyFor } from '../../../provisioning/resource-name.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import type { ResourceState, StackState } from '../../../types/state.js';
@@ -246,7 +247,7 @@ export async function adoptRollbackOrphans(
     currentState.resources[logicalId] = record;
     deps.logger.info(
       safeMsg`Adopting ${displayIdent(logicalId)} (${displayIdent(record.resourceType)}) left in AWS ` +
-        safeMsg`by an earlier rollback as ${displaySafe(maskSecretsInText(record.physicalId, named))}`
+        safeMsg`by an earlier rollback as ${displaySafe(maskSecretsInText(String(displayPhysicalId(record.resourceType, record.physicalId)), named))}`
     );
   }
   // Assigned unconditionally when there WERE records, so an adopted or

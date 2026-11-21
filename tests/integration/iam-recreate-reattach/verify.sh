@@ -222,12 +222,22 @@ assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <me
   }
   echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
 }
+# Clean here means "nothing drifted": the stack's `Membership`
+# (AWS::IAM::UserToGroupAddition) has no read path, so it is drift unknown and
+# the run exits 2, never 0 (go-to-k/cdkd#6696). The row and the absence of a
+# not-compared block keep a failed read (also exit 2) from passing.
 assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
-  local rc=0 label="$1"
+  local rc=0 label="$1" out
   shift
-  env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" >/dev/null 2>&1 || rc=$?
-  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0 (#6609)" >&2; exit 1; }
-  echo "    OK: cdkd drift is clean after ${label} (#6609)"
+  out="$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || rc=$?
+  [ "${rc}" -eq 2 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 2: nothing drifted, Membership is drift unknown (#6609, #6696)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
+  grep -qF '? Membership (AWS::IAM::UserToGroupAddition)' <<<"${out}" || { echo "FAIL: cdkd drift after ${label} exited 2 without Membership's drift-unknown row (#6696)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
+  # Exactly that one row: a reader regressing to undefined would add another.
+  [ "$(grep -cE '^ +\? ' <<<"${out}" || true)" = 1 ] || { echo "FAIL: cdkd drift after ${label} reported a drift-unknown row other than Membership (#6696)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
+  if grep -qE 'NOT fully compared|only PARTIALLY compared' <<<"${out}"; then
+    echo "FAIL: cdkd drift after ${label} reported a resource not compared (#6696)" >&2; printf '%s\n' "${out}" >&2; exit 1
+  fi
+  echo "    OK: cdkd drift is clean after ${label}, Membership drift unknown (#6609, #6696)"
 }
 run_revert() { # usage: run_revert [env args...]
   env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes

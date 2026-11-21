@@ -1799,6 +1799,29 @@ describe('Lambda CapacityProvider security-group propagation (#3227)', () => {
   });
 });
 
+// Lambda NetworkConnector (issue #6775): the operator-role rejection moves to
+// a different wording on a different handler.
+describe('Lambda NetworkConnector operator role (issue #6775)', () => {
+  const CLAUSE = 'due to invalid ConnectorOperatorRole permissions';
+  const OBSERVED =
+    'CREATE failed for Connector: Encountered unauthorized operation while calling EC2 ' +
+    `${CLAUSE} (Service: LambdaCore, Status Code: 400, Request ID: fd876e38-1ea3-4905-a28f-34edf22664cc)`;
+
+  it('classifies the observed wording as IAM propagation and as retryable, via its own entry only', () => {
+    expect(isIamPropagationError(OBSERVED)).toBe(true);
+    expect(isRetryableTransientError(new Error(OBSERVED), OBSERVED)).toBe(true);
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => OBSERVED.includes(p))).toEqual([CLAUSE]);
+  });
+
+  it('does not retry the same prefix without the ConnectorOperatorRole clause', () => {
+    const other =
+      'CREATE failed for Connector: Encountered unauthorized operation while calling EC2 ' +
+      '(Service: LambdaCore, Status Code: 400)';
+    expect(isIamPropagationError(other)).toBe(false);
+    expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+  });
+});
+
 /**
  * AWS::ECS::Gateway infrastructure-role propagation (issue #5661).
  *

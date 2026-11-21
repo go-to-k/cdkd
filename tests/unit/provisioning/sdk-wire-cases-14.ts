@@ -246,7 +246,9 @@ const ESM_CASE: TypeCase = {
       bag: fresh(KINESIS_BAG),
       expectedSilent: {
         'update-remove:FunctionName': FUNCTION_NAME_REQUIRED,
-        ...underWhole(KINESIS_BAG, 'DestinationConfig'),
+        // DestinationConfig is not sent whole from next: a desired block naming
+        // no destination reads prev, which decides clear or omit (#6777), so its
+        // member removals reach the wire through update-remove.
         ...underWhole(KINESIS_BAG, 'FunctionResponseTypes'),
       },
       expectedRemovalThrows: NO_FUNCTION_NAME,

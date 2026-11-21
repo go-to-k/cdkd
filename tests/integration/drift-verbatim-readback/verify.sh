@@ -171,7 +171,7 @@ unsettled=$(grep -F 'the read right after the write never showed' "${ARTIFACT_DI
 [ -z "${unsettled}" ] || { echo "FAIL: #6634: the deploy warned of an unsettled post-write read:" >&2; echo "${unsettled}" >&2; exit 1; }
 echo "    OK: #6634: no post-write settle warning on the deploy"
 
-# `drift` exits 0 clean, 1 drifted, 2 refused; any of the three is a result
+# `drift` exits 0 clean, 1 drifted, 2 incomplete; any of the three is a result
 # to record here, anything else is a failure of the run.
 run_drift() { # $1 = output file
   local rc=0
@@ -181,6 +181,23 @@ run_drift() { # $1 = output file
     0 | 1 | 2) echo "    drift rc=${rc} -> $1" ;;
     *) echo "FAIL: cdkd drift exited ${rc}" >&2; exit 1 ;;
   esac
+}
+# A clean run of THIS stack exits 2, never 0 (go-to-k/cdkd#6696): the
+# `ProbeUserToGroupAddition` row has no readback, so it is drift unknown and the
+# comparison is incomplete. Clean = exit 2, nothing deleted or not compared, and
+# that row in `notSupported`; a failed read (also exit 2) lands in
+# `notCompared` and fails here. The caller checks `drifted` itself.
+drift_clean_report() { # $1 = the run_drift output file
+  [ "${DRIFT_RC}" = 2 ] || return 1
+  node -e '
+    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const ok = r.every((s) => s.deleted.length === 0 && s.notCompared.length === 0) &&
+      // EXACTLY that one row: a reader regressing to undefined on a type this
+      // stack compares today would add a second.
+      JSON.stringify(r.flatMap((s) => s.notSupported.map((u) => [u.logicalId, u.type]))) ===
+        JSON.stringify([["ProbeUserToGroupAddition", "AWS::IAM::UserToGroupAddition"]]);
+    process.exit(ok ? 0 : 1);
+  ' "$1"
 }
 show_state() { # $1 = output file
   node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --json >"$1"
@@ -197,7 +214,8 @@ KEY_ID=$(node -e '
 [ -n "${KEY_ID}" ] || { echo "FAIL: no AWS::KMS::Key physical id in state" >&2; exit 1; }
 # AWS::IAM::UserToGroupAddition has no readback by design (its provider's
 # readCurrentState returns undefined: the membership is read on the user, as
-# its `Groups`), so it alone records none; drift reports it unsupported (exit 0).
+# its `Groups`), so it alone records none; drift reports it unsupported (drift
+# unknown, exit 2 when nothing drifted: go-to-k/cdkd#6696).
 missing=$(node -e '
   const s = require(process.argv[1]);
   const noRead = new Set(["AWS::IAM::UserToGroupAddition"]);
@@ -421,7 +439,7 @@ grant_phase() { # $1 = baseline label (observed | template-only)
   echo "==> #6627 (${label}): drift after the revert is clean"
   run_drift "${ARTIFACT_DIR}/drift-grants-${label}-after.json"
   got=$(drift_paths "${ARTIFACT_DIR}/drift-grants-${label}-after.json")
-  [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 (${label}): drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
+  [ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-grants-${label}-after.json" || { echo "FAIL: #6627 (${label}): drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
   echo "    OK: clean"
 }
 
@@ -443,7 +461,7 @@ accept_phase() {
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --accept --yes
   run_drift "${ARTIFACT_DIR}/drift-accept-after.json"
   got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-after.json")
-  [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 accept: drift after --accept:" >&2; echo "${got}" >&2; exit 1; }
+  [ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-accept-after.json" || { echo "FAIL: #6627 accept: drift after --accept:" >&2; echo "${got}" >&2; exit 1; }
   revert_ids_before accepted
   local rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
@@ -486,14 +504,14 @@ accept_phase() {
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --accept --yes
   run_drift "${ARTIFACT_DIR}/drift-accept-final.json"
   got=$(drift_paths "${ARTIFACT_DIR}/drift-accept-final.json")
-  [ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: #6627 accept: drift after the final --accept:" >&2; echo "${got}" >&2; exit 1; }
+  [ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-accept-final.json" || { echo "FAIL: #6627 accept: drift after the final --accept:" >&2; echo "${got}" >&2; exit 1; }
   echo "    OK: clean"
 }
 
 echo "==> Drift on the observed baseline: clean"
 run_drift "${ARTIFACT_DIR}/drift-observed.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-observed.json")
-[ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: observed-baseline drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
+[ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-observed.json" || { echo "FAIL: observed-baseline drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
 echo "    OK: observed baseline clean"
 
 grant_phase observed
@@ -508,7 +526,7 @@ STACK="${STACK}" STATE_BUCKET="${STATE_BUCKET:-}" AWS_REGION="${REGION}" node st
 echo "==> Drift on the template-only baseline: clean"
 run_drift "${ARTIFACT_DIR}/drift-template-only.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-template-only.json")
-[ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: template-only drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
+[ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-template-only.json" || { echo "FAIL: template-only drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
 echo "    OK: template-only baseline clean"
 
 # --- go-to-k/cdkd#6624: a Condition added out of band to each document ------
@@ -610,7 +628,7 @@ echo "    OK: every Condition removed from AWS"
 echo "==> Drift on the template-only baseline after the revert: clean"
 run_drift "${ARTIFACT_DIR}/drift-after-revert.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-after-revert.json")
-[ -z "${got}" ] && [ "${DRIFT_RC}" = 0 ] || { echo "FAIL: drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
+[ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-after-revert.json" || { echo "FAIL: drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
 echo "    OK: clean after the revert"
 
 grant_phase template-only

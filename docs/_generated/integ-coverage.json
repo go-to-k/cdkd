@@ -184,6 +184,7 @@
         "apigateway",
         "cc-to-sdk-reroute-common-types-7",
         "local-start-api",
+        "local-start-api-user-pool-authorizer",
         "sdk-unmodelled-nested-route"
       ],
       "signals": {
@@ -200,6 +201,9 @@
         ],
         "local-start-api": [
           "l2"
+        ],
+        "local-start-api-user-pool-authorizer": [
+          "literal"
         ],
         "sdk-unmodelled-nested-route": [
           "l1",
@@ -264,7 +268,8 @@
         "apigw-stage-throttling",
         "apigw-vpclink-integration-target",
         "cc-to-sdk-reroute-common-types-7",
-        "cc-to-sdk-reroute-rest-api"
+        "cc-to-sdk-reroute-rest-api",
+        "local-start-api-user-pool-authorizer"
       ],
       "signals": {
         "api-cognito": [
@@ -300,6 +305,9 @@
         ],
         "cc-to-sdk-reroute-rest-api": [
           "l1"
+        ],
+        "local-start-api-user-pool-authorizer": [
+          "literal"
         ]
       }
     },
@@ -344,6 +352,7 @@
         "cc-to-sdk-reroute-rest-api",
         "destroy-nested-cross-region",
         "local-invoke-nested-stack-from-state",
+        "local-start-api-user-pool-authorizer",
         "noecho-restapi-body-mac",
         "schema-v16-to-v17-migration",
         "sdk-unmodelled-nested-route",
@@ -382,6 +391,9 @@
           "literal"
         ],
         "local-invoke-nested-stack-from-state": [
+          "literal"
+        ],
+        "local-start-api-user-pool-authorizer": [
           "literal"
         ],
         "noecho-restapi-body-mac": [
@@ -10110,6 +10122,7 @@
         "drift-sns-sibling-subscription",
         "drift-verbatim-readback",
         "dynamodb-globaltable",
+        "dynamodb-stream-filter",
         "event-driven",
         "eventbridge",
         "eventbridge-input-transformer",
@@ -10269,6 +10282,9 @@
         ],
         "dynamodb-globaltable": [
           "l1"
+        ],
+        "dynamodb-stream-filter": [
+          "l2"
         ],
         "event-driven": [
           "l2"

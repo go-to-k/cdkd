@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import type { IntrinsicFunctionResolver } from '../intrinsic-function-resolver.js';
 import { displayMasked, maskValueLeaves } from './masking-display.js';
@@ -186,7 +187,11 @@ export async function constructAttributeForCoreTypes(
           // <id>=<physicalId>`, a record another binary or a hand edit
           // wrote), so being an id answers the secret question, not the
           // control-character one. Bound once for the five renders below.
-          const loggedId = displayMasked(resolver, physicalId, context);
+          const loggedId = displayMasked(
+            resolver,
+            displayPhysicalId(resourceType, physicalId),
+            context
+          );
           for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             const resp = await ec2.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
             const associations = resp.Vpcs?.[0]?.Ipv6CidrBlockAssociationSet || [];
@@ -225,7 +230,7 @@ export async function constructAttributeForCoreTypes(
           // Rebuilt here rather than reusing `loggedId`, which the `try`
           // scopes away.
           resolver.logger.warn(
-            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(resolver, physicalId, context)}: ${displayMasked(resolver, describeAwsFailure(error).detail, context)}`
+            `Failed to fetch VPC Ipv6CidrBlocks for ${displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context)}: ${displayMasked(resolver, describeAwsFailure(error).detail, context)}`
           );
           return [];
         }
@@ -252,7 +257,7 @@ export async function constructAttributeForCoreTypes(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DefaultSecurityGroup] for AWS::EC2::VPC: the ` +
-                `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+                `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
                 `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                 `record (cdkd import, or re-create the VPC) and deploy again.`
             )
@@ -309,7 +314,7 @@ export async function constructAttributeForCoreTypes(
           throw markNonRetryable(
             new IntrinsicResolutionRefusalError(
               `Cannot resolve Fn::GetAtt [${displayMasked(resolver, logicalId, context)}, DefaultNetworkAcl] for AWS::EC2::VPC: the ` +
-                `state record's physical id ${quotedRender(displayMasked(resolver, physicalId, context).slice(0, 64), '"')} ` +
+                `state record's physical id ${quotedRender(displayMasked(resolver, displayPhysicalId(resourceType, physicalId), context).slice(0, 64), '"')} ` +
                 `is not a VPC id (vpc-<hex>), so cdkd will not use it as an EC2 filter value. Repair the ` +
                 `record (cdkd import, or re-create the VPC) and deploy again.`
             )

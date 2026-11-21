@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import {
   ListObjectVersionsCommand,
@@ -269,7 +270,7 @@ export async function probeStatefulRecreateTargetsAsync(
           // say that the API answered without answering.
           logger.warn(
             `--recreate-via-cc-api / --recreate-via-sdk-provider: S3 answered the emptiness probe ` +
-              `for ${target.logicalId} (bucket ${target.physicalId}) without settling it (an empty ` +
+              `for ${target.logicalId} (bucket ${displayPhysicalId(target.resourceType, target.physicalId)}) without settling it (an empty ` +
               `page carrying a continuation marker); treating the bucket as NOT provably empty. ` +
               `Re-run to retry the probe, or — only if the bucket really is disposable — re-run ` +
               `with --force-stateful-recreation (that flag has NO per-resource granularity and ` +
@@ -306,7 +307,7 @@ export async function probeStatefulRecreateTargetsAsync(
         }
         logger.warn(
           `--recreate-via-cc-api / --recreate-via-sdk-provider: live S3 probe failed for ${target.logicalId} ` +
-            `(bucket ${target.physicalId}); leaving stateful guard at the sync ` +
+            `(bucket ${displayPhysicalId(target.resourceType, target.physicalId)}); leaving stateful guard at the sync ` +
             `result. If the bucket might be non-empty, re-run with ` +
             `--force-stateful-recreation. Underlying error: ` +
             `${describeAwsFailure(e).detail}`
@@ -357,7 +358,7 @@ export async function probeStatefulRecreateTargetsAsync(
           // that the API answered without answering.
           logger.warn(
             `--recreate-via-cc-api / --recreate-via-sdk-provider: CloudWatch Logs answered the ` +
-              `emptiness probe for ${target.logicalId} (log group ${target.physicalId}) without ` +
+              `emptiness probe for ${target.logicalId} (log group ${displayPhysicalId(target.resourceType, target.physicalId)}) without ` +
               `settling it (${streams === undefined ? 'no logStreams field in the response' : 'an empty page carrying a continuation token'}); ` +
               `treating the log group as NOT provably empty. An unset or zero RetentionInDays is ` +
               `CloudWatch Logs' "never expire", so an unprovable emptiness must not read as empty. ` +
@@ -413,7 +414,7 @@ export async function probeStatefulRecreateTargetsAsync(
             regionVerified = false;
             logger.warn(
               `--recreate-via-cc-api / --recreate-via-sdk-provider: CloudWatch Logs reported ` +
-                `${target.logicalId} (log group ${target.physicalId}) missing, but this stack's ` +
+                `${target.logicalId} (log group ${displayPhysicalId(target.resourceType, target.physicalId)}) missing, but this stack's ` +
                 `state record names a region that is not the one its S3 key holds, so cdkd ` +
                 `cannot attribute that not-found to any region — run ${proseQuoted(cdkdRemedy('cdkd state show'))} with ` +
                 `--verbose to see what the record claims, and repair it. Re-run with ` +
@@ -480,7 +481,7 @@ export async function probeStatefulRecreateTargetsAsync(
                   `(${recordedRegion}). Fix the client's region configuration, or`;
               logger.warn(
                 `--recreate-via-cc-api / --recreate-via-sdk-provider: CloudWatch Logs reported ` +
-                  `${target.logicalId} (log group ${target.physicalId}) missing, but ${cause} ` +
+                  `${target.logicalId} (log group ${displayPhysicalId(target.resourceType, target.physicalId)}) missing, but ${cause} ` +
                   `re-run with --force-stateful-recreation if the log group really is disposable ` +
                   `(that flag clears the data guard for every target in the run). Until then it ` +
                   `is treated as NOT provably empty.`
@@ -489,7 +490,7 @@ export async function probeStatefulRecreateTargetsAsync(
           }
           if (regionVerified) {
             logger.debug(
-              `--recreate-via-cc-api / --recreate-via-sdk-provider: log group ${target.physicalId} ` +
+              `--recreate-via-cc-api / --recreate-via-sdk-provider: log group ${displayPhysicalId(target.resourceType, target.physicalId)} ` +
                 `(${target.logicalId}) does not exist, so it holds no events — not stateful.`
             );
             promoted.push({ ...target });
@@ -500,7 +501,7 @@ export async function probeStatefulRecreateTargetsAsync(
         }
         logger.warn(
           `--recreate-via-cc-api / --recreate-via-sdk-provider: live CloudWatch Logs probe failed for ` +
-            `${target.logicalId} (log group ${target.physicalId}); treating the log group as ` +
+            `${target.logicalId} (log group ${displayPhysicalId(target.resourceType, target.physicalId)}); treating the log group as ` +
             `NOT provably empty. An unset or zero RetentionInDays is CloudWatch Logs' ` +
             `"never expire", so an unprovable emptiness must not read as empty. Fixes, cheapest ` +
             `first: grant logs:DescribeLogStreams and re-run, or re-run as-is if this was ` +

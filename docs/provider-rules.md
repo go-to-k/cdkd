@@ -850,6 +850,31 @@ clean up -- only a file system whose `CreationTime` is no earlier than that
 token's first send in this process, on AWS's clock, and refuses any other
 ([#4428](https://github.com/go-to-k/cdkd/issues/4428)).
 
+## Preparing a delete the way the CloudFormation handler does
+
+CloudFormation's delete handler for some types removes what blocks the delete
+first: an IAM role's policies, a secret's replica regions, an Auto Scaling
+group's instances, an Elastic IP's association. A `delete()` that sends only
+the plain delete call fails there, or leaves the resource, while the AWS CDK
+CLI succeeds ([#6715](https://github.com/go-to-k/cdkd/issues/6715)).
+
+[`src/provisioning/delete-blocker-inventory.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/delete-blocker-inventory.ts)
+lists, per SDK-provider type, what the handler removes, its source, and how
+`delete()` meets each one:
+
+| Disposition | Meaning | Checked by the unit test |
+| --- | --- | --- |
+| `handled` | `delete()` removes it first | the site holds the named call; the named unit test exists |
+| `refused` | `delete()` refuses, naming the blocker and the next step | the site holds the refusal text |
+| `open` | not met yet | an issue number |
+| no blockers | the handler removes nothing first | a cited source |
+
+Every registered type is a row or on the shrink-only unaudited list, so a new
+provider fails `delete-blocker-inventory.test.ts` until its type's handler is
+read. Run the preparation only when the blocker is present (one read on the
+delete path, or none until the plain call refuses), and never remove more than
+the handler does; a step that does goes in the row's `beyondCfn`.
+
 ## Reporting a skipped delete
 
 Written for issue [#1752](https://github.com/go-to-k/cdkd/issues/1752).
@@ -2463,6 +2488,8 @@ it('emits placeholders for every user-controllable top-level key on AWS minimum 
 See [tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/lambda-function-provider-readcurrentstate.test.ts) and [tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts](https://github.com/go-to-k/cdkd/blob/main/tests/unit/provisioning/cognito-provider-readcurrentstate.test.ts) for canonical examples.
 
 This is the **structural defense** against the "provider author forgets to emit a key" regression class. Without it, the bug only surfaces when a user runs drift on a resource configured exactly the way the test missed (and PR review missed). The test makes silent regression mechanically impossible — a refactor that drops a placeholder fails the key-set assertion immediately.
+
+Across providers, `vp run audit:drift-readback-coverage:check` (CI) fails on a handled, schema-writable top-level property a `readCurrentState` never names, unless `getDriftUnknownPaths` declares it whole or `DRIFT_READBACK_BASELINE` in `scripts/gen-drift-readback-coverage.ts` records why (issue [#6696](https://github.com/go-to-k/cdkd/issues/6696)). Returning a baselined property means deleting its entry.
 
 **The `properties` argument is the DESIRED side, and gating an emission on it is a fix with a TRANSITION COST — do not reach for it alone** (issues [#1742](https://github.com/go-to-k/cdkd/issues/1742) / [#1760](https://github.com/go-to-k/cdkd/issues/1760)). Every caller passes the resource's state-recorded / template-resolved bag (`drift.ts`, the deploy engine's observed capture, `import.ts`, `state.ts`), so a provider CAN ask what the user actually declared, and the temptation is to use that to stop emitting an AWS-COMPUTED value the desired side can never carry.
 

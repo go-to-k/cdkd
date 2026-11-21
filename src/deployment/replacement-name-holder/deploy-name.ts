@@ -290,9 +290,10 @@ export function probeErrorMeansNameHeld(resourceType: string, error: unknown): b
  */
 export function renderReplacementNameChange(
   change: ReplacementNameChange,
-  createProps: Record<string, unknown>
+  createProps: Record<string, unknown>,
+  oldResourceType: string
 ): string {
-  if (change.property !== 'EventBusName') return renderNameHeldElsewhere(change);
+  if (change.property !== 'EventBusName') return renderNameHeldElsewhere(change, oldResourceType);
   const name = createProps['Name'];
   const rule =
     typeof name === 'string' && isPlainName(name) ? `rule "${name}"` : 'the rule (by its Name)';

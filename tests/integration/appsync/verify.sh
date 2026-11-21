@@ -331,6 +331,24 @@ node "${LOCAL_DIST}" diff "${STACK}" \
   --fail
 echo "    OK: re-synth diff is clean (the new properties round-trip)"
 
+# #6779: the schema above has no explicit `schema {}` block while AWS's
+# introspection SDL always carries one; right after the deploy `drift` must
+# not report the GraphQLSchema.
+echo "==> Phase 1b': drift must be clean right after the deploy (schema without a schema block)"
+DRIFT_JSON="$(node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json)" || true
+jq -e --arg stack "${STACK}" '
+  [.[] | select(.stack == $stack)] as $r |
+  ($r | length) == 1 and
+  ([($r[0].clean // [])[] | select(.logicalId == "GraphQLSchema")] | length) == 1
+' <<<"${DRIFT_JSON}" >/dev/null || {
+  echo "FAIL: drift reported the GraphQLSchema (not exactly one clean entry) right after the deploy (#6779)" >&2
+  echo "${DRIFT_JSON}" >&2
+  exit 1
+}
+echo "    OK: drift is clean (the default schema definition AWS adds is normalized away)"
+
 API_JSON="$(api_json)"
 # Sorted: AWS does not promise the submitted order of a list-valued member.
 AUTH_TYPES="$(echo "${API_JSON}" | jq -r '[.additionalAuthenticationProviders[].authenticationType] | sort | join(",")')"

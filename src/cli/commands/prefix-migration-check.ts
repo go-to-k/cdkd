@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import * as readline from 'node:readline/promises';
 import { getLogger } from '../../utils/logger.js';
 import { DeployCancelledError } from '../../utils/error-handler.js';
@@ -193,7 +194,7 @@ export async function promptMigrationConfirm(
   );
   for (const r of renames) {
     logger.warn(
-      `  - ${r.logicalId} (${r.resourceType}): from ${r.oldPhysicalId} to ${r.newPhysicalId}`
+      `  - ${r.logicalId} (${r.resourceType}): from ${displayPhysicalId(r.resourceType, r.oldPhysicalId)} to ${displayPhysicalId(r.resourceType, r.newPhysicalId)}`
     );
   }
   logger.warn(

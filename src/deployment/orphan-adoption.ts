@@ -34,6 +34,7 @@
  * decision can be tested without an engine.
  */
 
+import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import { alternateNamePropertiesFor } from '../provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import { isReadableBag, type ResourceState, type StackOrphanRecord } from '../types/state.js';
@@ -240,7 +241,7 @@ export async function planOrphanAdoption(params: {
       if (declared?.Type !== record.state.resourceType) continue;
       outcome.warnings.push(
         `${displayIdent(record.logicalId)} (${displayIdent(record.state.resourceType)}) was ` +
-          `left in AWS by an earlier rollback as ${displaySafe(record.state.physicalId)} ` +
+          `left in AWS by an earlier rollback as ${displaySafe(displayPhysicalId(record.state.resourceType, record.state.physicalId))} ` +
           '(DeletionPolicy: Retain). This deploy does not take it back: it creates a new ' +
           'resource under a new name, as CloudFormation does. To manage the kept resource ' +
           // With the run's flags, `--aws-emulator` included (go-to-k/cdkd#6245).
@@ -284,7 +285,7 @@ export async function planOrphanAdoption(params: {
     // one.
     const shownId = displayIdent(logicalId);
     const shownType = displayIdent(state.resourceType);
-    const shownPhysicalId = displaySafe(state.physicalId);
+    const shownPhysicalId = displaySafe(displayPhysicalId(state.resourceType, state.physicalId));
 
     // Already managed? Then the record describes a past that state has moved
     // on from — drop it, before any AWS call. Splicing over the live record
@@ -366,7 +367,7 @@ export async function planOrphanAdoption(params: {
       outcome.remaining.push(record);
       outcome.notices.push(
         `${shownId} (${shownType}): cdkd asked about ${shownPhysicalId} and its ` +
-          `provider answered for ${displaySafe(found.physicalId)} — not adopting.`
+          `provider answered for ${displaySafe(displayPhysicalId(state.resourceType, found.physicalId))} — not adopting.`
       );
       continue;
     }

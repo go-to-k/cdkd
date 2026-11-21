@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import type { SupersededResourceRecord } from '../../types/state.js';
 import { nameGenerationOf } from '../../state/name-generation.js';
 import { cdkdRemedy, deployReplaceCommand, proseQuoted } from '../../utils/pasteable-command.js';
@@ -233,7 +234,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       // cleanup may have sent it since); only AWS reporting it gone (deleted
       // out of band) re-creates it.
       logger.info(
-        safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) was not deleted yet — re-adopting it`
+        safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))}) was not deleted yet — re-adopting it`
       );
       await replayReadopt(s, {});
       // A re-adopt that throws fails the op with its own error, and no line
@@ -251,7 +252,9 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
       // A warning, since a provider's delete may have run earlier steps
       // before AWS refused it (a managed policy's detaches).
       // The line names `cdkd drift`, so each value is shown only when plain.
-      const oldShown = refusalPhysicalId(mask(String(prev.physicalId)));
+      const oldShown = refusalPhysicalId(
+        mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))
+      );
       logger.warn(
         safeMsg`  ⚠ Rollback: the old resource of ${shownLogicalId(op.logicalId)} (${oldShown}) still ` +
           `exists — the deploy's delete of it was not confirmed — so it is re-adopted instead of ` +
@@ -272,7 +275,7 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
     // go-to-k/cdkd#6713: the deploy sent this delete, so it is what took it.
     unconfirmedFoundGone = op.oldResourceMaySurvive === 'unconfirmed';
     logger.info(
-      safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(prev.physicalId))}) is gone — re-creating it`
+      safeMsg`  Rollback: the old resource of ${safe(op.logicalId)} (${mask(String(displayPhysicalId(prev.resourceType, prev.physicalId)))}) is gone — re-creating it`
     );
   }
   const typeChanged = oldType !== op.resourceType;
@@ -734,7 +737,7 @@ function survivorUnprovenRefusal(
 ): Error {
   const { op, ctx, mask } = s;
   const remedy = orphanRemedy(op.logicalId, ctx);
-  const oldId = op.previousState?.physicalId;
+  const oldId = displayPhysicalId(op.previousState?.resourceType, op.previousState?.physicalId);
   const oldShown = hasAddressablePhysicalId({ physicalId: oldId })
     ? refusalPhysicalId(mask(String(oldId)))
     : 'no recorded id';
@@ -819,7 +822,9 @@ function foreignSurvivorRefusal(
 ): Error {
   const { op, ctx, mask } = s;
   const remedy = orphanRemedy(op.logicalId, ctx);
-  const oldShown = refusalPhysicalId(mask(String(op.previousState?.physicalId)));
+  const oldShown = refusalPhysicalId(
+    mask(String(displayPhysicalId(op.previousState?.resourceType, op.previousState?.physicalId)))
+  );
   const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
   // go-to-k/cdkd#6621: each arm says what it saw.
   const seen =
@@ -867,7 +872,9 @@ function modifiedSurvivorRefusal(
 ): Error {
   const { op, ctx, mask } = s;
   const remedy = orphanRemedy(op.logicalId, ctx);
-  const oldShown = refusalPhysicalId(mask(String(op.previousState?.physicalId)));
+  const oldShown = refusalPhysicalId(
+    mask(String(displayPhysicalId(op.previousState?.resourceType, op.previousState?.physicalId)))
+  );
   const rerun = rerunRollbackPhrase(ctx, cdkdRemedy('cdkd rollback'));
   return ownRemedyError(
     markNonRetryable(

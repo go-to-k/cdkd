@@ -3,6 +3,7 @@
  * read, the empty-stack path, and the orphan notices and confirmation prompt
  * (split out of `../destroy-runner.ts`, go-to-k/cdkd#5835).
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { refusePendingMovesOut } from '../../../state/pending-moves.js';
 import { readRefactorMarker, refuseRefactorMarker } from '../../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
@@ -543,7 +544,7 @@ export async function announceOrphansAndConfirm({
       withPrintingSecrets(orphanListing, () =>
         logger.info(
           `  - ${displaySafe(entry.logicalId)} (${displaySafe(entry.state.resourceType)})  ` +
-            `${displaySafe(entry.state.physicalId)}`
+            `${displaySafe(displayPhysicalId(entry.state.resourceType, entry.state.physicalId))}`
         )
       );
     }

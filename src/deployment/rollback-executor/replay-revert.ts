@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { identityWarner } from '../../provisioning/recorded-identity.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
@@ -91,7 +92,7 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
   // resource is the new copy (the re-run would meet the refusal below), so it
   // gets that refusal's remedy directly.
   const oldShown = hasAddressablePhysicalId({ physicalId: prev.physicalId })
-    ? displaySafe(mask(prev.physicalId))
+    ? displaySafe(mask(String(displayPhysicalId(prev.resourceType, prev.physicalId))))
     : 'no recorded id';
   /**
    * A refusal whose remedy is a manual check, or `--orphan` (which pops the
@@ -148,7 +149,9 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
     // is printed (masked, and shown only when plain: the line names a command).
     // With no op id, nothing checks the repair, so the message says so.
     const target =
-      op.physicalId === undefined ? undefined : refusalPhysicalId(mask(String(op.physicalId)));
+      op.physicalId === undefined
+        ? undefined
+        : refusalPhysicalId(mask(String(displayPhysicalId(op.resourceType, op.physicalId))));
     const repair =
       target === undefined
         ? `Repair the record's 'physicalId' to the id of the replacement's NEW resource ` +
@@ -203,7 +206,7 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
   logger.info(
     `  Rollback: Reversing replacement of ${safe(op.logicalId)} (${safe(op.resourceType)}) — ` +
       `deleting the new resource and re-adopting the ${oldKind} old one ` +
-      `(${displaySafe(mask(prev.physicalId))})`
+      `(${displaySafe(mask(String(displayPhysicalId(prev.resourceType, prev.physicalId))))})`
   );
   /**
    * Set when this arm ORPHANS the replacement's new copy. Read at the
@@ -247,8 +250,10 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
     const survivorMessages = retainedSurvivorMessages(
       op.logicalId,
       op.resourceType,
-      survivorId ?? 'no recorded id',
-      `State is restored to the old resource (${prev.physicalId}).`,
+      survivorId === undefined
+        ? 'no recorded id'
+        : String(displayPhysicalId(current.resourceType, survivorId)),
+      `State is restored to the old resource (${displayPhysicalId(prev.resourceType, prev.physicalId)}).`,
       mask
     );
     logger.warn(survivorMessages.warn);

@@ -38,7 +38,10 @@ import type { AppSyncProvider } from '../appsync-provider.js';
  *    AWS-returned SDL are run through `graphql-js` `parse(...)` →
  *    `print(...)` to produce a canonical, comment-stripped, whitespace-
  *    stable form so cosmetic diffs (whitespace, comments, blank lines)
- *    do not fire false drift. Field-order differences are intentionally
+ *    do not fire false drift. A default `schema { query: Query }` block is
+ *    normalized away on both sides (the spec allows omitting it, AWS's SDL
+ *    always has it; a non-default root name or a directive on it is kept).
+ *    Field-order differences are intentionally
  *    NOT normalized — `print` preserves the source AST order, so a
  *    user-side reordering of fields surfaces as drift (which is the
  *    desired behavior, since AWS retains the schema in submission
@@ -75,8 +78,26 @@ export async function readCurrentState(
   }
 }
 
+/** The root type name each operation takes when a schema definition is omitted. */
+const DEFAULT_ROOT_TYPE_NAMES: Record<string, string> = {
+  query: 'Query',
+  mutation: 'Mutation',
+  subscription: 'Subscription',
+};
+
 /**
  * Canonicalize an SDL string via `graphql-js` `parse` → `print`.
+ *
+ * A DEFAULT schema definition is dropped: one with no description and no
+ * directives whose every operation maps to `Query` / `Mutation` /
+ * `Subscription`. The GraphQL spec lets that block be omitted, so it carries
+ * no information; but AWS's `GetIntrospectionSchema` SDL always includes it
+ * (`schema { query: Query }`) while a CDK schema file usually omits it, which
+ * made every such stack drift right after deploy (#6779). A schema definition
+ * naming a non-default root type, or carrying directives, is kept so a real
+ * change still shows as drift. It is also kept when it lists fewer roots than
+ * the document has default-named object types (`schema { query: Query }` plus
+ * `type Mutation`), since dropping it would promote Mutation to a root.
  *
  * Strips comments and normalizes whitespace; preserves source AST
  * ordering of types and fields. Returns the raw input on parse
@@ -94,9 +115,35 @@ export async function canonicalizeSdl(
   sdl: string,
   source: 'state' | 'aws'
 ): Promise<string> {
-  const { parse, print } = await import('graphql');
+  const { parse, print, Kind } = await import('graphql');
   try {
-    return print(parse(sdl));
+    const doc = parse(sdl);
+    // With a schema block present ONLY the operations it lists are roots, so
+    // dropping it is lossless only when, per operation, "the block lists it"
+    // equals "the document defines the default-named object type": otherwise
+    // `schema { query: Query }` + `type Mutation` would collapse onto a
+    // schema-less document whose Mutation IS a root.
+    const objectTypeNames = new Set<string>();
+    for (const def of doc.definitions) {
+      if (def.kind === Kind.OBJECT_TYPE_DEFINITION || def.kind === Kind.OBJECT_TYPE_EXTENSION) {
+        objectTypeNames.add(def.name.value);
+      }
+    }
+    const definitions = doc.definitions.filter((def) => {
+      if (def.kind !== Kind.SCHEMA_DEFINITION) return true;
+      const listed = new Map<string, string>(
+        def.operationTypes.map((op) => [op.operation, op.type.name.value])
+      );
+      const isDefault =
+        !def.description &&
+        (def.directives?.length ?? 0) === 0 &&
+        [...listed].every(([op, name]) => name === DEFAULT_ROOT_TYPE_NAMES[op]) &&
+        Object.entries(DEFAULT_ROOT_TYPE_NAMES).every(
+          ([op, name]) => listed.has(op) === objectTypeNames.has(name)
+        );
+      return !isDefault;
+    });
+    return print({ ...doc, definitions });
   } catch (err) {
     this.logger.debug(
       `Failed to parse ${source} SDL via graphql-js (falling back to raw): ${

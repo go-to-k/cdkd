@@ -26,7 +26,10 @@ import { readPrincipalSides, iamPathOf, userOrGroupIdentityToken } from './share
 import { definedAttributes } from '../../attribute-map.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { RecordedIdentityError } from '../../recorded-identity.js';
-import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
+import {
+  compareMembershipWrites,
+  verifyOwnIdentityBeforeUpdate,
+} from '../iam-policy/principal-identity.js';
 
 /**
  * go-to-k/cdkd#6609: each removal below is noted once its call succeeds (a
@@ -101,6 +104,23 @@ export async function updateUser(
       recordedAttributes,
       read: () => this.iamClient.send(new GetUserCommand({ UserName: physicalId })),
       idOf: (response) => response.User?.UserId,
+    });
+    // go-to-k/cdkd#6722: each in-stack group the user joins or leaves is
+    // compared before any write. A group it leaves held by another id is
+    // warned about and sent no removal; one it joins refuses the update.
+    const nextGroups = new Set(groups.next.Groups ?? []);
+    const prevGroups = new Set(groups.prev.Groups ?? []);
+    const skipRemoval = await compareMembershipWrites({
+      client: this.iamClient,
+      owner: { label: 'IAM user', resourceType, membership: true },
+      logicalId,
+      physicalId,
+      adds: [...nextGroups].filter((g) => !prevGroups.has(g)).map((g) => [['group', g] as const]),
+      removes: [...prevGroups]
+        .filter((g) => !nextGroups.has(g))
+        .map((g) => [['group', g] as const]),
+      operation: 'update',
+      warn: (message) => log.warn(message),
     });
 
     // `Path` is mutable in place, as CloudFormation applies it (#3723); an
@@ -199,7 +219,12 @@ export async function updateUser(
     );
 
     // Update groups
-    await this.updateUserGroups(physicalId, groups.next.Groups, groups.prev.Groups, log);
+    await this.updateUserGroups(
+      physicalId,
+      groups.next.Groups,
+      groups.prev.Groups?.filter((g) => !skipRemoval([['group', g]])),
+      log
+    );
 
     // Update inline policies
     await this.updateUserInlinePolicies(

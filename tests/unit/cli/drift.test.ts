@@ -1999,7 +1999,12 @@ describe('cdkd drift', () => {
     // THE ASSERTION: `2`, from a stack of three resources. The exact rendered
     // fragment rather than the absence of `3`, which a report that stopped
     // printing the count at all would also satisfy.
-    expect(output).toContain('no drift detected (2 resources checked, 0 unsupported)');
+    // go-to-k/cdkd#6696: the line also says the custom resource was LEFT OUT,
+    // so the ✓ never claims to cover it (#323 still keeps it off the listing).
+    expect(output).toContain(
+      '✓ TestStack (us-east-1): no drift detected (2 resources checked, 0 unsupported) — ' +
+        'excludes 1 custom resource, which cdkd does not drift-check\n'
+    );
     expect(output).not.toContain('3 resources checked');
     // Secondary only -- a resource silently DROPPED before the report would
     // satisfy this too, so on its own it cannot state the premise. It adds
@@ -2060,7 +2065,8 @@ describe('cdkd drift', () => {
 
     const { output, error } = await runDrift(['TestStack']);
 
-    expect(error).toBeUndefined();
+    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+    expect((error as Error | undefined)?.message).toBe('__exit__');
     expect(output).toContain('? SomeRes (AWS::Lambda::Function)');
     expect(output).toContain('drift unknown');
     // The EXACT rendered fragment, not just the `1 unsupported` half. Issue
@@ -2098,11 +2104,10 @@ describe('cdkd drift', () => {
     // test passes on any output CONTAINING the new line, including one that
     // printed both.
     expect(output).not.toContain('✓ TestStack');
-    // Drift unknown is not drift, and #2154 changed the GLYPH ONLY -> still
-    // exit 0. This is the assertion that keeps the rendering fix from becoming
-    // a CI-breaking exit-code change for every stack holding an unsupported
-    // type.
-    expect(exitSpy).not.toHaveBeenCalled();
+    // Drift unknown is not drift (never 1), but since go-to-k/cdkd#6696 it is
+    // an incomplete comparison, so the run exits 2.
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
   });
 
   it('--json emits a structured per-stack report', async () => {
@@ -4660,10 +4665,13 @@ describe('cdkd drift', () => {
 
       const { output, error } = await runDrift(['TestStack']);
 
-      expect(error).toBeUndefined();
+      // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+      expect((error as Error | undefined)?.message).toBe('__exit__');
       expect(mockCcReadCurrentState).not.toHaveBeenCalled();
       expect(output).toContain('? LaunchTemplate1 (AWS::EC2::LaunchTemplate)');
       expect(output).toContain('1 unsupported');
+      // Drift unknown is an incomplete comparison (go-to-k/cdkd#6696).
+      expect(exitSpy).toHaveBeenCalledWith(2);
     });
 
     it('treats CC API ResourceNotFound (undefined) as drift unknown', async () => {
@@ -4682,9 +4690,11 @@ describe('cdkd drift', () => {
 
       const { output, error } = await runDrift(['TestStack']);
 
-      expect(error).toBeUndefined();
+      // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+      expect((error as Error | undefined)?.message).toBe('__exit__');
       expect(mockCcReadCurrentState).toHaveBeenCalledTimes(1);
       expect(output).toContain('? Foo (AWS::SomeService::SomeType)');
+      expect(exitSpy).toHaveBeenCalledWith(2);
     });
   });
 
@@ -4720,6 +4730,70 @@ describe('cdkd drift', () => {
     expect(output).toContain('✓ StackA (us-east-1): no drift detected');
     expect(output).toContain('✓ StackB (us-west-2): no drift detected');
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * go-to-k/cdkd#6696: the exit code aggregates over every stack. One stack
+   * whose only gap is a drift-unknown resource makes the whole run exit 2
+   * beside a clean one, and drift anywhere still outranks it with 1.
+   */
+  describe('multi-stack exit aggregation with a drift-unknown resource (go-to-k/cdkd#6696)', () => {
+    const stageStacks = (byStack: Record<string, Record<string, ResourceState>>): void => {
+      mockListStacks.mockResolvedValueOnce(
+        Object.keys(byStack).map((stackName) => ({ stackName, region: 'us-east-1' }))
+      );
+      mockGetState.mockImplementation(async (stackName: string, region: string) => {
+        const st = makeState(byStack[stackName] ?? {});
+        return { ...st, state: { ...st.state, stackName, region } };
+      });
+      // A bucket reads back as its physical id; an SNS topic is the drifted
+      // one; any other type has no reader (drift unknown).
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::S3::Bucket'
+          ? { readCurrentState: async (physicalId: string) => ({ BucketName: physicalId }) }
+          : type === 'AWS::SNS::Topic'
+            ? { readCurrentState: async () => ({ TopicName: 'changed' }) }
+            : { readCurrentState: async () => undefined }
+      );
+    };
+    const bucket = (name: string): ResourceState =>
+      makeResource({ physicalId: name, resourceType: 'AWS::S3::Bucket', properties: { BucketName: name } });
+    const unreadable = (): ResourceState =>
+      makeResource({ physicalId: 'x', resourceType: 'AWS::Some::Unreadable', properties: { A: 1 } });
+
+    afterEach(() => {
+      mockGetState.mockReset();
+      mockRegistryGetProvider.mockReset();
+    });
+
+    it('an unsupported-only stack beside a clean one exits 2', async () => {
+      stageStacks({ Clean: { B: bucket('b') }, Gap: { U: unreadable() } });
+
+      const { output, error } = await runDrift(['--all']);
+
+      expect(output).toContain('✓ Clean (us-east-1): no drift detected (1 resource checked, 0 unsupported)\n');
+      expect(output).toContain('⚠ Gap (us-east-1): no drift detected, but NOTHING was compared');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+      expect((error as Error | undefined)?.message).toBe('__exit__');
+    });
+
+    it('adding a drifted stack makes the same run exit 1', async () => {
+      stageStacks({
+        Clean: { B: bucket('b') },
+        Gap: { U: unreadable() },
+        Drifted: {
+          T: makeResource({ physicalId: 't', resourceType: 'AWS::SNS::Topic', properties: { TopicName: 'orig' } }),
+        },
+      });
+
+      const { output, error } = await runDrift(['--all']);
+
+      expect(output).toContain('Drifted (us-east-1): drift detected on 1 resource');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(exitSpy).not.toHaveBeenCalledWith(2);
+      expect((error as Error | undefined)?.message).toBe('__exit__');
+    });
   });
 
   /**
@@ -5148,6 +5222,29 @@ describe('cdkd drift', () => {
       expect(exitSpy).not.toHaveBeenCalled();
     });
 
+    it('a drift-unknown resource in the CHILD exits 2, and the parent keeps its nested-only line (go-to-k/cdkd#6696)', async () => {
+      stageNested([
+        { stackName: 'Parent', region: 'us-east-1' },
+        { stackName: 'Parent~Child', region: 'us-east-1' },
+      ]);
+      // The child's queue has no read-back at all.
+      mockRegistryGetProvider.mockImplementation((type: string) =>
+        type === 'AWS::SQS::Queue' ? { readCurrentState: async () => undefined } : {}
+      );
+
+      const { output, error } = await runDrift(['Parent']);
+
+      expect(output).toContain(
+        '✓ Parent (us-east-1): no drift detected here — 1 nested stack, each checked in its own block'
+      );
+      expect(output).toContain('⚠ Parent~Child (us-east-1): no drift detected, but NOTHING was compared');
+      expect(output).toContain('? Queue (AWS::SQS::Queue)');
+      expect(output).not.toContain('✓ Parent~Child');
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+      expect((error as Error | undefined)?.message).toBe('__exit__');
+    });
+
     it('naming only the child is unchanged: the parent is not read', async () => {
       stageNested([
         { stackName: 'Parent', region: 'us-east-1' },
@@ -5530,18 +5627,21 @@ describe('cdkd drift', () => {
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it('keeps `undefined` meaning "no read path": unsupported, exit 0', async () => {
+    it('keeps `undefined` meaning "no read path": unsupported, exit 2 not 1', async () => {
       // The negative control: the sentinel, not the absence of a bag, is what
-      // reports a deletion.
+      // reports a deletion. Drift unknown exits 2 (go-to-k/cdkd#6696), a
+      // deletion 1, so the code still tells the two apart.
       stageDeleted();
       mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => undefined });
 
       const { output, error } = await runDrift(['TestStack']);
 
-      expect(error).toBeUndefined();
+      // The non-zero exit reached the mocked `process.exit`, nothing else threw.
+      expect((error as Error | undefined)?.message).toBe('__exit__');
       expect(output).toContain('drift unknown');
       expect(output).not.toContain('DELETED');
-      expect(exitSpy).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
     });
 
     it('lists it under `deleted` in --json, never under `notSupported`', async () => {

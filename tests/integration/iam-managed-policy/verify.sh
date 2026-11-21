@@ -376,12 +376,19 @@ if [ -z "${RESTORED}" ]; then echo "FAIL: could not restore ${POLICY_LID}'s reco
 printf '%s\n' "${RESTORED}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
 REPORT="${REVERT_DIR}/drift-restored.json"
 run_drift_json "${REPORT}"
-if [ "${DRIFT_RC}" -ne 0 ]; then
-  echo "FAIL: cdkd drift exited ${DRIFT_RC} once the policy's record was restored, want 0" >&2
+# Exit 2, not 0 (go-to-k/cdkd#6696): `Membership` (AWS::IAM::UserToGroupAddition)
+# has no read path, so it is drift unknown and the comparison is incomplete.
+# Nothing drifted, nothing else went uncompared, and Membership is the drift-
+# unknown row: a failed read (also exit 2) lands in `notCompared` and fails.
+if [ "${DRIFT_RC}" -ne 2 ] || ! jq -e '
+    all(.[]; .drifted == [] and .deleted == [] and .notCompared == [])
+    and ([.[] | .notSupported[] | [.logicalId, .type]] == [["Membership", "AWS::IAM::UserToGroupAddition"]])
+  ' "${REPORT}" >/dev/null; then
+  echo "FAIL: cdkd drift exited ${DRIFT_RC} once the policy's record was restored, want 2 with nothing drifted or not compared and only Membership drift unknown" >&2
   cat "${REPORT}" >&2
   exit 1
 fi
-echo "    OK: drift is clean with the policy compared again"
+echo "    OK: drift is clean with the policy compared again (Membership drift unknown)"
 
 echo "==> Step 3c: redeploy with CDKD_TEST_UPDATE=true (every principal list swapped)"
 set +e

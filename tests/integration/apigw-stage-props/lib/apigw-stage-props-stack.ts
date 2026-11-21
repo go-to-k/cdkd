@@ -104,6 +104,10 @@ export class ApigwStagePropsStack extends cdk.Stack {
       stageName: 'live',
       deploymentId: deployment.ref,
       variables: { flag: 'main' },
+      // go-to-k/cdkd#6696: a declared tag, so verify.sh can change it out of
+      // band and expect Tags drift (an undeclared, empty-captured key is not
+      // compared by design).
+      tags: [{ key: 'cdkdIntegStage', value: 'original' }],
       canarySetting: {
         percentTraffic: isUpdate ? 25 : 10,
         deploymentId: deployment.ref,

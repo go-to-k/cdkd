@@ -3,6 +3,7 @@
  * Moved out of `deploy-engine/replacement.ts` (go-to-k/cdkd#5835), which
  * re-exports every symbol it exported, so no importer changes.
  */
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { EMPTY_SECRETS } from '../../deploy-engine.js';
 import { secretNameBagFor } from '../masking.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -82,7 +83,9 @@ export async function retryDeferredReplacedDeletes(
       await withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
         withStackRecords(deps.stackRecordsView(), () =>
           collectDeleteGuards(guards, async () => {
-            deps.logger.info(safeMsg`  Deleting old ${logicalId} (${entry.physicalId})...`);
+            deps.logger.info(
+              safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)})...`
+            );
             try {
               await entry.retry();
             } catch {
@@ -90,7 +93,7 @@ export async function retryDeferredReplacedDeletes(
               // anything else must not strand the entries still queued. Its
               // text is not shown: nothing masked it.
               deps.logger.warn(
-                safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): the retry failed unexpectedly`
+                safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}): the retry failed unexpectedly`
               );
             }
           })
@@ -184,7 +187,7 @@ function warnUnsentUntracked(
     if (run.supersededEntries.has(logicalId)) continue;
     withPrintingSecrets(secretNameBagFor(deps.secretsRun(), logicalId), () =>
       deps.logger.warn(
-        safeMsg`  ⚠ Old ${logicalId} (${entry.physicalId}) was not deleted: the deploy was interrupted. It is no longer tracked in state, so delete it manually`
+        safeMsg`  ⚠ Old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: the deploy was interrupted. It is no longer tracked in state, so delete it manually`
       )
     );
   }
@@ -222,7 +225,7 @@ export function warnUnretriedReplacedDeletes(
         ? // go-to-k/cdkd#6398: never sent, and the deploy succeeded, so no
           // rollback takes it back.
           deps.logger.warn(
-            safeMsg`  ⚠ Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'It is no longer tracked in state, so delete it manually'}`
+            safeMsg`  ⚠ Old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: ${cause}. ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy deletes it' : 'It is no longer tracked in state, so delete it manually'}`
           )
         : entry.cleanupPhase === true
           ? // go-to-k/cdkd#6374: never sent; the rollback that follows a failed
@@ -231,18 +234,18 @@ export function warnUnretriedReplacedDeletes(
             // (go-to-k/cdkd#6445), which nothing tracks without that rollback.
             run.supersededEntries.has(logicalId)
             ? deps.logger.info(
-                safeMsg`  Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise cdkd keeps it in state, and the next deploy deletes it`
+                safeMsg`  Old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise cdkd keeps it in state, and the next deploy deletes it`
               )
             : deps.logger.warn(
-                safeMsg`  ⚠ Old ${logicalId} (${entry.physicalId}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise it is no longer tracked in state, so delete it manually`
+                safeMsg`  ⚠ Old ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: ${cause}. A rollback of the deploy adopts it again; otherwise it is no longer tracked in state, so delete it manually`
               )
           : deps.logger.warn(
               entry.failureMessage === undefined
                 ? // go-to-k/cdkd#6117: never sent. A rollback that reverses the
                   // update sends the new id an Update with the old properties
                   // (#6120): tracked again only when the handler answers this id.
-                  safeMsg`  ⚠ The old physical id of ${logicalId} (${entry.physicalId}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
-                : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${entry.physicalId}): ${entry.failureMessage} (${noteFor(logicalId)})`
+                  safeMsg`  ⚠ The old physical id of ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not sent its Delete: ${cause}. A rollback sends the new id an Update with the old properties, and this id is tracked again if the handler answers it; otherwise ${run.supersededEntries.has(logicalId) ? 'cdkd keeps it in state, and the next deploy sends the Delete' : 'it is no longer tracked in state, so delete it manually'}`
+                : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(entry.resourceType, entry.physicalId)}): ${entry.failureMessage} (${noteFor(logicalId)})`
             )
     );
   }
