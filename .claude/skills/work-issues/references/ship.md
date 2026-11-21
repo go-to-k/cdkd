@@ -41,8 +41,10 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
 - a building fixture runs alone in its tree (`/run-integ` step 1's grep,
   re-run on each fixture ADDED, #6438).
 
-The PARENT checks all six before granting each further lane's integ. ANY
-turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
+The PARENT checks all six before granting each further lane's integ. For ANY
+wait the user can see (CI, integ, a lane), tell the user its ETA and queue
+unasked, at its start and every ~30 min, not only an HOURS-long turn (asked
+twice on #6762's CI + integ). A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
@@ -79,6 +81,9 @@ read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`),
 `SendMessage`s the runner as each exits, and alarms when no PID has run for 15
 min unreported.
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
+The PARENT fixes a cleared FAIL whose fixture main outgrew (a narrowed IAM
+policy missing a call main added) in its OWN PR from a sibling worktree, merged
+first; the lane then rebases and re-runs (#6782).
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
   merge from the main tree consults the WRONG store (#2363); read
