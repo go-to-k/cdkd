@@ -198,7 +198,10 @@ wait_esm_enabled() { # $1 = label
   local state=""
   for _ in $(seq 1 60); do
     state="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
-      --query State --output text)" || return 1
+      --query State --output text)" || {
+      echo "FAIL: could not read the State of ESM ${ESM_UUID} ($1)" >&2
+      exit 1
+    }
     [ "${state}" = "Enabled" ] && return 0
     sleep 5
   done
@@ -211,10 +214,15 @@ echo "==> Phase 2: redeploy without the on-failure destination"
 wait_esm_enabled "before the Phase 2 deploy"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-ESM_UUID_2="$(aws lambda list-event-source-mappings --function-name "${FN_NAME}" --region "${REGION}" \
-  --query 'EventSourceMappings[0].UUID' --output text)"
-if [ "${ESM_UUID_2}" != "${ESM_UUID}" ]; then
-  echo "FAIL: removing the destination replaced the ESM (${ESM_UUID} -> ${ESM_UUID_2})" >&2
+# Not replaced: the original mapping still answers, and it is the only one.
+if ! aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" >/dev/null; then
+  echo "FAIL: removing the destination replaced the ESM (${ESM_UUID} no longer answers)" >&2
+  exit 1
+fi
+ESM_COUNT_2="$(aws lambda list-event-source-mappings --function-name "${FN_NAME}" --region "${REGION}" \
+  --query 'length(EventSourceMappings)' --output text)"
+if [ "${ESM_COUNT_2}" != "1" ]; then
+  echo "FAIL: expected exactly 1 ESM on ${FN_NAME} after removing the destination, got ${ESM_COUNT_2}" >&2
   exit 1
 fi
 wait_esm_enabled "after the Phase 2 deploy"
@@ -237,26 +245,42 @@ if [ "${OOB_BATCH}" != "50" ]; then
   echo "FAIL: the out-of-band BatchSize change did not land (BatchSize ${OOB_BATCH})" >&2
   exit 1
 fi
-ESM_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null \
+ESM_STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+ESM_LID="$(printf '%s' "${ESM_STATE_JSON}" \
   | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .key] | if length == 1 then .[0] else "" end')"
 if [ -z "${ESM_LID}" ]; then
   echo "FAIL: the state record does not hold exactly one AWS::Lambda::EventSourceMapping" >&2
   exit 1
 fi
+# The revert must restore the READ-BACK shape, or this phase does not exercise
+# the #6777 desired-bag half.
+OBSERVED_DEST="$(printf '%s' "${ESM_STATE_JSON}" | jq -c --arg l "${ESM_LID}" '.resources[$l].observedProperties.DestinationConfig')"
+if [ "${OBSERVED_DEST}" != '{"OnFailure":{}}' ]; then
+  echo "FAIL (issue #6777): ${ESM_LID} observedProperties.DestinationConfig is '${OBSERVED_DEST}', expected '{\"OnFailure\":{}}' -- the revert below would not send the read-back shape" >&2
+  exit 1
+fi
+# The out-of-band change is drift on the mapping, and on nothing else.
+DRIFT_RC=0
+DRIFT_JSON_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || DRIFT_RC=$?
+DRIFTED_LIDS="$(printf '%s' "${DRIFT_JSON_OUT}" | jq -r '[.[].drifted[].logicalId] | sort | join(" ")' 2>/dev/null || echo "?")"
+if [ "${DRIFTED_LIDS}" != "${ESM_LID}" ]; then
+  echo "FAIL (issue #6777): expected only ${ESM_LID} drifted before the revert, got '${DRIFTED_LIDS}' (rc=${DRIFT_RC}). Report: ${DRIFT_JSON_OUT}" >&2
+  exit 1
+fi
+echo "    OK: baseline DestinationConfig == {\"OnFailure\":{}}; only ${ESM_LID} drifted"
 revert_identity_snapshot "${REVERT_IDS_BEFORE}" "${STACK}" "${ESM_LID}" || exit 1
+# The rc is not this arm's subject (drift has no per-resource filter); the
+# mapping's live BatchSize below is.
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes 2>&1 | tee "${REVERT_LOG}" || REVERT_RC=$?
 revert_identity_verify "${REVERT_IDS_BEFORE}" "${REVERT_IDS_AFTER}" 1 "${REVERT_LOG}" || exit 1
-if [ "${REVERT_RC}" -ne 0 ]; then
-  echo "FAIL (issue #6777): drift --revert exited ${REVERT_RC}, expected 0" >&2
-  exit 1
-fi
+echo "    drift --revert rc=${REVERT_RC}"
 wait_esm_enabled "after drift --revert"
 REVERTED_BATCH="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
   --query BatchSize --output text)"
 if [ "${REVERTED_BATCH}" != "10" ]; then
-  echo "FAIL (issue #6777): drift --revert left BatchSize at ${REVERTED_BATCH}, expected 10" >&2
+  echo "FAIL (issue #6777): drift --revert left BatchSize at ${REVERTED_BATCH}, expected 10 (revert rc=${REVERT_RC}; its output is above)" >&2
   exit 1
 fi
 echo "    OK: drift --revert restored BatchSize 10 on the destination-less mapping"

@@ -486,7 +486,29 @@ describe('LambdaEventSourceMappingProvider', () => {
       });
     });
 
-    it('sends a read-back cleared OnFailure as the clearing shape on a drift revert (#6777)', async () => {
+    it('clears a live destination when a drift revert restores the read-back empty OnFailure (#6777)', async () => {
+      const bag = {
+        FunctionName: 'fn',
+        EventSourceArn: DDB_STREAM_ARN,
+        BatchSize: 10,
+        DestinationConfig: { OnFailure: {} },
+      };
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        bag,
+        { ...bag, BatchSize: 50, DestinationConfig: { OnFailure: { Destination: DLQ_ARN } } },
+        { desiredFromAwsReadback: true }
+      );
+
+      const input = getUpdateInput();
+      expect(input['BatchSize']).toBe(10);
+      expect(input['DestinationConfig']).toEqual({ OnFailure: { Destination: '' } });
+    });
+
+    it('sends no DestinationConfig when a drift revert restores an empty OnFailure over none (#6777)', async () => {
+      // Lambda refuses `{ OnFailure: {} }`, and nothing needs clearing.
       const bag = {
         FunctionName: 'fn',
         EventSourceArn: DDB_STREAM_ARN,
@@ -504,7 +526,58 @@ describe('LambdaEventSourceMappingProvider', () => {
 
       const input = getUpdateInput();
       expect(input['BatchSize']).toBe(10);
-      expect(input['DestinationConfig']).toEqual({ OnFailure: { Destination: '' } });
+      expect(input['DestinationConfig']).toBeUndefined();
+    });
+
+    it('sends no DestinationConfig to an SQS mapping whose read-back bag carries an empty OnFailure (#6777)', async () => {
+      const bag = {
+        FunctionName: 'fn',
+        EventSourceArn: SQS_ARN,
+        BatchSize: 10,
+        DestinationConfig: { OnFailure: {} },
+      };
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        bag,
+        { ...bag, BatchSize: 5, DestinationConfig: {} },
+        { desiredFromAwsReadback: true }
+      );
+
+      const input = getUpdateInput();
+      expect(input['BatchSize']).toBe(10);
+      expect(input['DestinationConfig']).toBeUndefined();
+    });
+
+    it('clears a destination when the template declares DestinationConfig: {} (#6777)', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN, DestinationConfig: {} },
+        {
+          FunctionName: 'fn',
+          EventSourceArn: DDB_STREAM_ARN,
+          DestinationConfig: { OnFailure: { Destination: DLQ_ARN } },
+        }
+      );
+
+      expect(getUpdateInput()['DestinationConfig']).toEqual({
+        OnFailure: { Destination: '' },
+      });
+    });
+
+    it('sends nothing for a removed DestinationConfig that named no destination (#6777)', async () => {
+      await provider.update(
+        'L',
+        UUID,
+        'AWS::Lambda::EventSourceMapping',
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN },
+        { FunctionName: 'fn', EventSourceArn: DDB_STREAM_ARN, DestinationConfig: { OnFailure: {} } }
+      );
+
+      expect(getUpdateInput()['DestinationConfig']).toBeUndefined();
     });
 
     it('sends a declared on-failure destination as it is (#6777)', async () => {
