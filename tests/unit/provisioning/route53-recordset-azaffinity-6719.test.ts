@@ -144,6 +144,36 @@ describe('AWS::Route53::RecordSet AZAffinity on the SDK route (#6719)', () => {
     });
   });
 
+  it.each([
+    ['a rollback replay', { replayingState: true }],
+    ['a drift revert', { desiredFromAwsReadback: true }],
+  ])('%s UPSERTs the state-borne AZAffinity', async (_label, context) => {
+    mockSend.mockResolvedValueOnce({});
+
+    await provider.update(
+      'AzaRecord',
+      PHYSICAL_ID,
+      TYPE,
+      record({ AZAffinity: { LocationType: 'AvailabilityZone', LocationId: 'use1-az1' } }),
+      record({ AZAffinity: { LocationType: 'Region', LocationId: 'us-east-1' } }),
+      context
+    );
+
+    const upsert = mockSend.mock.calls
+      .map((c) => c[0])
+      .find(
+        (cmd) =>
+          cmd instanceof ChangeResourceRecordSetsCommand &&
+          cmd.input.ChangeBatch?.Changes?.some((ch) => ch.Action === 'UPSERT')
+      ) as ChangeResourceRecordSetsCommand | undefined;
+    expect(upsert).toBeDefined();
+    const change = upsert!.input.ChangeBatch!.Changes!.find((ch) => ch.Action === 'UPSERT')!;
+    expect(change.ResourceRecordSet?.AZAffinity).toEqual({
+      LocationType: 'AvailabilityZone',
+      LocationId: 'use1-az1',
+    });
+  });
+
   it('delete addresses the record with its AZAffinity', async () => {
     mockSend.mockResolvedValueOnce({});
 

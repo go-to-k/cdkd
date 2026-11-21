@@ -655,7 +655,10 @@ assert_az_affinity() {
     console.log(JSON.stringify(hits.map((r) => r.AZAffinity
       ? { LocationType: r.AZAffinity.LocationType, LocationId: r.AZAffinity.LocationId }
       : null)));
-  ' "${PWD}/../../../package.json" "${REGION}" "${ZONE_ID}" "aza.cdkd-test-${ACCOUNT_ID}.internal")
+  ' "${PWD}/../../../package.json" "${REGION}" "${ZONE_ID}" "aza.cdkd-test-${ACCOUNT_ID}.internal") || {
+    echo "FAIL: ${phase}: the SDK read of the AZ-affinity record failed (#6719)" >&2
+    exit 1
+  }
   local want="[{\"LocationType\":\"${want_type}\",\"LocationId\":\"${want_id}\"}]"
   if [ "${live}" != "${want}" ]; then
     echo "FAIL: ${phase}: live AZAffinity of aza.* / aza-1 is ${live}, expected ${want} (#6719)" >&2
