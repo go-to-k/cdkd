@@ -36,8 +36,11 @@
  *     `deleteReplacedAfterCreate` fall through to its inline delete: each
  *     operand of the `&&` chain guarding the `deferToCleanupPhase(...)` call,
  *     and each `return` of `deferToCleanupPhase` that is not the literal
- *     `true`. Keyed by the operand, or the guarding `if` condition (comments
- *     stripped, whitespace collapsed).
+ *     `true`; also each exit of the recording it relies on
+ *     ({@link RECORDABILITY_FUNCTIONS}: a record not written makes its final
+ *     `return` answer false, the #6374 shape). Keyed by the operand, or the
+ *     guarding `if` condition, one per `||` operand (comments stripped,
+ *     whitespace collapsed).
  *   - gate-argument — a gate operand that is a negated PARAMETER of
  *     `deleteReplacedAfterCreate` (`!isRetry`) is decided by its callers, so
  *     every call passing that parameter anything but nothing or the literal
@@ -53,8 +56,10 @@
  *     diff, so those branches run only from a rollback or revert replay.
  *     Keyed by type + file + function, counted over its reached rows.
  *   - provider-own-delete — a `this.delete(...)` under `src/provisioning/**`
- *     outside a `delete` member and outside every replace-branch site's
- *     function: a provider deleting its own resource from another path (a
+ *     outside a `delete` member and outside the function of every replace
+ *     branch the shape above counts as reached: a provider deleting its own
+ *     resource from another path, or from a branch a deploy is assumed not to
+ *     reach (each such one is listed with why) (a
  *     delete-then-recreate that reports neither `wasReplaced` nor its own
  *     create escapes the shape above, and lands here).
  *
@@ -78,7 +83,9 @@
  * BOUNDS
  * ------
  * A provider delete reached through an alias (`provider.delete.bind(...)`,
- * a destructured method) or an SDK `Delete*Command` sent for the primary
+ * a destructured method) or a spread (`provider.delete(...args)`), another
+ * provider's `.delete(...)` called from a provider's `update()` (a delegate)
+ * outside `src/deployment/**`, or an SDK `Delete*Command` sent for the primary
  * resource from `update()` with no replace signal is out of reach; so is a
  * caller-decided gate parameter handed through a local wrapper (the
  * `send(isRetry)` of `cleanup-old-id.ts` is listed as one site).
@@ -247,7 +254,7 @@ export const EXCEPTIONS: readonly Exception[] = [
     count: 1,
     kind: 'early-delete',
     cannotDefer:
-      '`UpdateReplacePolicy: Snapshot` whose final snapshot the caller already took (no owed mark): a later delete would let writes reach the old copy after its snapshot',
+      '`UpdateReplacePolicy: Snapshot` whose final snapshot a caller already took (no owed mark): a later delete would let writes reach the old copy after its snapshot. No deploy caller reaches it today (both create-first callers hand over the owed mark, `prepareCreateFirstFinalSnapshot`); listed so a caller that does is reviewed',
     rollbackReports: `${ROLLBACK_LOSS_DURING_DEPLOY}; the data is in the final snapshot`,
   },
   {
@@ -268,6 +275,66 @@ export const EXCEPTIONS: readonly Exception[] = [
     kind: 'outside-a-deploy',
     reason:
       'false only when the old record was not recorded as superseded and its delete reads no NoEcho value: with the map set, `supersededHost` is set too (execute.ts), an inline policy returned above and a held id returned true, so only a caller without a deploy reaches it',
+  },
+  // The recording `deferToCleanupPhase` relies on: when it records nothing,
+  // that function's final `return` answers false and the delete runs inline.
+  {
+    shape: 'deferral-exit',
+    key: `${DELETE_REPLACED}:recordSupersededForDeferral: host === undefined`,
+    count: 1,
+    kind: 'outside-a-deploy',
+    reason: '`executeDeployment` sets `supersededHost` together with the deferral map (execute.ts)',
+  },
+  {
+    shape: 'deferral-exit',
+    key:
+      `${DELETE_REPLACED}:recordSupersededForDeferral: !canRecordSuperseded(oldResource, { ` +
+      'noEchoDeleteValues: context.noEchoDeleteValues, inlinePolicyClaimed: context.inlinePolicyClaimed, ' +
+      'persistedRecord: true, })',
+    count: 1,
+    kind: 'caller-decided',
+    reason: 'decided by the `canRecordSuperseded` exits listed below',
+  },
+  {
+    shape: 'deferral-exit',
+    key: `${DELETE_REPLACED}:recordSupersededForDeferral: oldIdHeldByAnotherRecord(deps, logicalId, oldResource)`,
+    count: 1,
+    kind: 'cleanup-phase',
+    reason:
+      '`deferToCleanupPhase` already returned true for a held id (#6712): the delete waits in memory only',
+  },
+  {
+    shape: 'deferral-exit',
+    key: 'src/deployment/superseded-resources.ts:canRecordSuperseded: deleteNeedsThisRunsNoEchoValues(record, deleteContext.noEchoDeleteValues)',
+    count: 1,
+    kind: 'cleanup-phase',
+    reason:
+      "`deferToCleanupPhase`'s final return answers true for the same predicate: the delete waits in memory only (#6445)",
+  },
+  {
+    shape: 'deferral-exit',
+    key:
+      'src/deployment/superseded-resources.ts:canRecordSuperseded: deleteContext.persistedRecord !== true && ' +
+      'Array.isArray(record.noEchoLeaves) && record.noEchoLeaves.length > 0',
+    count: 1,
+    kind: 'outside-a-deploy',
+    reason: "the deferral's recording passes `persistedRecord: true` (recordSupersededForDeferral)",
+  },
+  {
+    shape: 'deferral-exit',
+    key: 'src/deployment/superseded-resources.ts:canRecordSuperseded: deleteContext.inlinePolicyClaimed !== undefined',
+    count: 1,
+    kind: 'cleanup-phase',
+    reason:
+      "only the failed-first-attempt recording passes a claim (`deferToCleanupPhase` passes undefined): that delete was already sent and failed, and its entry is queued for the cleanup-phase retry",
+  },
+  {
+    shape: 'deferral-exit',
+    key: 'src/deployment/superseded-resources.ts:canRecordSuperseded: return !INLINE_POLICY_TYPES.has(record.resourceType)',
+    count: 1,
+    kind: 'caller-decided',
+    reason:
+      "false only for an IAM inline policy, which `deferToCleanupPhase` deletes inline before recording (its `isInlinePolicyType` row)",
   },
   // --- gate-argument -------------------------------------------------------
   {
@@ -324,7 +391,8 @@ export const EXCEPTIONS: readonly Exception[] = [
     kind: 'early-delete',
     cannotDefer:
       'Route 53 keys a record on its name, type and set identifier: the provider swaps the old record for the new one in ONE atomic change batch, so the two never coexist and the name never stops resolving',
-    rollbackReports: `${ROLLBACK_LOSS_DURING_DEPLOY}; a record set holds nothing beyond its recorded properties`,
+    rollbackReports:
+      "nothing lost: a record set holds nothing beyond its recorded properties. A Name or Type change gets a new id, so the reversal re-creates it and `earlyDeletedOld` answers 'during-deploy' (#6728); a SetIdentifier-only change keeps the id and is reverted in place",
   },
   {
     shape: 'provider-replace-in-update',
@@ -333,9 +401,25 @@ export const EXCEPTIONS: readonly Exception[] = [
     kind: 'early-delete',
     cannotDefer:
       'a `Description` change revokes and re-authorizes the rule only when AWS no longer has it or the recorded description is redacted (#6514); EC2 keys a rule on its whole tuple, so the new one cannot be added while the old is present',
-    rollbackReports: `${ROLLBACK_LOSS_DURING_DEPLOY}; an ingress rule holds nothing beyond its recorded properties`,
+    rollbackReports:
+      'nothing lost: the rule keeps its composite id (group|protocol|ports), so the rollback reverts it in place to its recorded properties, and a rule holds nothing beyond them',
   },
   // --- provider-own-delete -------------------------------------------------
+  ...(
+    [
+      ['acm-certificate/update.ts', 'AWS::CertificateManager::Certificate'],
+      ['iam-managed-policy/update.ts', 'AWS::IAM::ManagedPolicy'],
+      ['iam-role/update.ts', 'AWS::IAM::Role'],
+    ] as const
+  ).map(
+    ([path, type]): Exception => ({
+      shape: 'provider-own-delete',
+      key: `src/provisioning/providers/${path}:update`,
+      count: 1,
+      kind: 'outside-a-deploy',
+      reason: `the ${type} replace branch runs only for a change the diff answers as a replacement (provider-replace-branches), which the engine carries out create-first with the delete deferred; only a rollback or revert replay reaches it`,
+    })
+  ),
   {
     shape: 'provider-own-delete',
     key: 'src/provisioning/cloud-control/create.ts:cleanupFailedCreateRemnant',
@@ -535,30 +619,67 @@ export function scanDeferralGate(file: string, text: string): GateScan {
       `${file}: ${GATE_FUNCTION} has ${gates} \`if\` guarding ${DEFERRAL_FUNCTION}(...), expected 1: update this check`
     );
   }
-  const visitReturns = (n: ts.Node): void => {
-    if (ts.isFunctionLike(n) && n !== deferral) return; // a nested function's returns are its own
+  sites.push(...exitsOf(file, source, deferral, DEFERRAL_FUNCTION));
+  return { sites, callerParams };
+}
+
+/**
+ * The `deferral-exit` sites of one function: every `return` that is not the
+ * literal `true`. A `return false` / bare `return` that is the then-arm of an
+ * `if` is keyed by its condition, one site per `||` operand; any other return
+ * by its expression.
+ */
+function exitsOf(file: string, source: ts.SourceFile, fn: ts.FunctionDeclaration, name: string): Site[] {
+  const sites: Site[] = [];
+  const push = (label: string, node: ts.Node): void => {
+    sites.push({ shape: 'deferral-exit', key: `${file}:${name}: ${label}`, at: `${file}:${lineOf(node, source)}` });
+  };
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionLike(n)) return; // a nested function's returns are its own
     if (ts.isReturnStatement(n)) {
       const value = n.expression;
       if (value === undefined || value.kind !== ts.SyntaxKind.TrueKeyword) {
         const guard =
-          value !== undefined && value.kind === ts.SyntaxKind.FalseKeyword
-            ? enclosingIfCondition(n)
-            : undefined;
-        const label =
-          guard !== undefined
-            ? normalized(guard, source)
-            : `return ${value === undefined ? '' : normalized(value, source)}`.trim();
-        sites.push({
-          shape: 'deferral-exit',
-          key: `${file}:${DEFERRAL_FUNCTION}: ${label}`,
-          at: `${file}:${lineOf(n, source)}`,
-        });
+          value === undefined || value.kind === ts.SyntaxKind.FalseKeyword ? enclosingIfCondition(n) : undefined;
+        if (guard !== undefined) {
+          for (const operand of orOperands(guard)) push(normalized(operand, source), operand);
+        } else {
+          push(`return ${value === undefined ? '' : normalized(value, source)}`.trim(), n);
+        }
       }
     }
-    ts.forEachChild(n, visitReturns);
+    ts.forEachChild(n, visit);
   };
-  ts.forEachChild(deferral.body, visitReturns);
-  return { sites, callerParams };
+  if (fn.body !== undefined) ts.forEachChild(fn.body, visit);
+  return sites;
+}
+
+function orOperands(node: ts.Expression): ts.Expression[] {
+  const at = unwrapParens(node);
+  if (ts.isBinaryExpression(at) && at.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+    return [...orOperands(at.left), ...orOperands(at.right)];
+  }
+  return [at];
+}
+
+/**
+ * The functions whose exits decide whether `deferToCleanupPhase` records the
+ * old resource (and so defers it) or falls through to its final `return`,
+ * which deletes inline when it answers false. Each exit is a `deferral-exit`.
+ */
+export const RECORDABILITY_FUNCTIONS: readonly { file: string; name: string }[] = [
+  { file: DELETE_REPLACED, name: 'recordSupersededForDeferral' },
+  { file: 'src/deployment/superseded-resources.ts', name: 'canRecordSuperseded' },
+];
+
+/** `deferral-exit` sites of one recordability function; throws when it moved. */
+export function scanRecordability(file: string, text: string, name: string): Site[] {
+  const source = parse(file, text);
+  const fn = findFunction(source, name);
+  if (fn?.body === undefined) {
+    throw new Error(`${file}: no function ${name}: the deferral's recording moved; update this check`);
+  }
+  return exitsOf(file, source, fn, name);
 }
 
 /** The condition of the `if` whose then-arm is (or is a block holding only) `stmt`. */
@@ -694,10 +815,10 @@ export function audit(sites: readonly Site[], exceptions: readonly Exception[] =
  */
 export const FLOORS: Readonly<Record<Shape, number>> = {
   'provider-delete-call': 6,
-  'deferral-exit': 6,
+  'deferral-exit': 13,
   'gate-argument': 5,
   'provider-replace-in-update': 5,
-  'provider-own-delete': 2,
+  'provider-own-delete': 5,
 };
 
 /** Floor on replace-branch rows read and on `this.delete(` calls seen. */
@@ -728,9 +849,26 @@ export function scanTree(root: string = REPO_ROOT, rows?: readonly SiteRow[]): T
   if (gateFile === undefined) throw new Error(`${DELETE_REPLACED} is missing: update this check`);
   const gate = scanDeferralGate(gateFile.file, gateFile.text);
   sites.push(...gate.sites);
-  const replaceRows = rows ?? loadReport().report.sites;
+  for (const { file, name } of RECORDABILITY_FUNCTIONS) {
+    const at = files.find((f) => f.file === file);
+    if (at === undefined) throw new Error(`${file} is missing: update this check`);
+    sites.push(...scanRecordability(file, at.text, name));
+  }
+  let replaceRows = rows;
+  if (replaceRows === undefined) {
+    const loaded = loadReport();
+    // A provider the walk could not resolve would drop out of the shape silently.
+    if (loaded.unresolved.length > 0) {
+      throw new Error(`the replace-branch walk could not resolve: ${loaded.unresolved.join(', ')}`);
+    }
+    replaceRows = loaded.report.sites;
+  }
   sites.push(...scanProviderReplaceSites(replaceRows));
-  const replaceFunctions = new Set(replaceRows.map((r) => `${r.file}:${r.function}`));
+  // Only the functions of REACHED rows are covered by that shape: a delete in
+  // a branch the deploy never reaches, or beside it, is an own-delete site.
+  const replaceFunctions = new Set(
+    replaceRows.filter(deployReaches).map((r) => `${r.file}:${r.function}`)
+  );
   let ownDeleteCalls = 0;
   for (const { file, text } of files) {
     if (isEngineScanned(file)) sites.push(...scanProviderDeleteCalls(file, text));

@@ -24,7 +24,9 @@ import {
   scanProviderDeleteCalls,
   scanProviderOwnDeletes,
   scanProviderReplaceSites,
+  scanRecordability,
   scanTree,
+  RECORDABILITY_FUNCTIONS,
 } from '../../../scripts/check-replaced-delete-deferral.ts';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.ts';
 
@@ -93,6 +95,32 @@ describe('replaced-delete-deferral: deferral-exit and gate-argument', () => {
       ['isRetry', 3],
       ['holds', 4],
     ]);
+  });
+
+  it('keys each exit of a recordability function, one per `||` operand', () => {
+    const text = `
+function canRecord(record, ctx) {
+  if (ctx.a) return false;
+  if (record.type === 'AWS::Scheduler::ScheduleGroup') return false;
+  return !INLINE.has(record.type);
+}
+function recordFor(run, host) {
+  if (host === undefined || !canRecord(run, {})) {
+    return;
+  }
+  run.add(host);
+}`;
+    expect(scanRecordability('src/r.ts', text, 'canRecord').map((s) => s.key)).toEqual([
+      'src/r.ts:canRecord: ctx.a',
+      "src/r.ts:canRecord: record.type === 'AWS::Scheduler::ScheduleGroup'",
+      'src/r.ts:canRecord: return !INLINE.has(record.type)',
+    ]);
+    expect(scanRecordability('src/r.ts', text, 'recordFor').map((s) => s.key)).toEqual([
+      'src/r.ts:recordFor: host === undefined',
+      'src/r.ts:recordFor: !canRecord(run, {})',
+    ]);
+    expect(() => scanRecordability('src/r.ts', text, 'gone')).toThrow(/no function gone/);
+    expect(RECORDABILITY_FUNCTIONS.map((f) => f.name)).toEqual(['recordSupersededForDeferral', 'canRecordSuperseded']);
   });
 
   it('refuses a tree where the gate or the deferral moved', () => {
@@ -166,6 +194,18 @@ class P {
     const out = scanProviderOwnDeletes(file, text, new Set([`${file}:swap`]));
     expect(out.calls).toBe(3);
     expect(out.sites.map((s) => s.key)).toEqual([`${file}:update`]);
+  });
+});
+
+describe('replaced-delete-deferral: unreached replace rows do not cover their function', () => {
+  it('a this.delete( in a function whose only rows are not reached by a deploy is an own-delete site', () => {
+    const file = 'src/provisioning/providers/w.ts';
+    const text = `class W { async update(l, id, t) { await this.delete(l, id, t); return this.create(l, t, {}); } }`;
+    const rows = [row({ file, function: 'update', disposition: { kind: 'no-template-trigger', rationale: 'r' } })];
+    expect(scanProviderReplaceSites(rows)).toEqual([]);
+    // As scanTree builds the covered set: from reached rows only.
+    const reached = new Set(rows.filter(deployReaches).map((r) => `${r.file}:${r.function}`));
+    expect(scanProviderOwnDeletes(file, text, reached).sites.map((s) => s.key)).toEqual([`${file}:update`]);
   });
 });
 

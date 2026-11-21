@@ -42,12 +42,15 @@ A few cases delete the old copy before the deploy succeeds:
 | A new resource with the old one's physical id and type, such as a Glue table moved to another database | Right after the new one is created | The id now names the new resource, so a later delete could not address the old one. |
 | An SNS subscription whose change cannot be applied in place | Before the new one is created | SNS returns the existing subscription for the same topic, protocol and endpoint. |
 | A Route 53 record set whose name, type or set identifier changes | In the same change batch that creates the new one | Route 53 keys a record on them; one batch swaps the two at once, so the name never stops resolving. |
-| A security group ingress rule whose description changes while its recorded description is redacted, or that AWS no longer has | Before the new one is authorized | EC2 keys a rule on its protocol, ports and source, so the same rule cannot be added while the old one is there. |
+| A security group ingress rule whose description changes while its recorded description is redacted | Before the new one is authorized | EC2 keys a rule on its protocol, ports and source, so the same rule cannot be added while the old one is there. |
 | An update AWS rejects as unsupported, on a resource whose name cannot change | Before the new one is created | Only one copy can hold the name. A stateful type also needs `--force-stateful-recreation`. |
 | `--replace`, `--recreate-via-cc-api` or `--recreate-via-sdk-provider` | Before the new one is created | You asked for delete-first. A resource stored inside the re-created one goes with it. |
 
 The rollback re-creates such an old resource from the properties the journal
-saved. Nothing is lost for an inline policy. For any other type, the rollback
+saved. Nothing is lost for an inline policy. A security group ingress rule,
+and a Route 53 record set whose set identifier alone changed, keep their ID, so
+the rollback puts them back in place with their recorded properties. For any
+other type, the rollback
 output and the `cdkd rollback` plan say that what AWS held for the old
 resource beyond its recorded properties, such as queued messages or
 subscriptions made outside the stack, does not come back.
