@@ -4,7 +4,10 @@
 # Deploys the s3-vectors fixture (now with Tags on the L1 CfnVectorBucket)
 # and asserts that the user tags reach AWS via the CreateVectorBucket
 # wire path. ListTagsForResource is the read-back call; the assertion
-# matches what cdkd's readCurrentState surfaces.
+# matches what cdkd's readCurrentState surfaces. Phase 1.9 (issue #6749)
+# creates an index outside the stack in its VectorBucket and asserts
+# `cdkd destroy` is refused naming it, as CloudFormation refuses it, and that
+# the index survives.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -55,9 +58,18 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Issue #6749: the out-of-stack index Phase 1.9 creates, deleted here first
+# when a run stops before the phase deletes it, or the destroy below is refused.
+OOB_INDEX="cdkd-oob-index-6749"
+OOB_INDEX_BUCKET=""
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  if [ -n "${OOB_INDEX_BUCKET}" ]; then
+    aws s3vectors delete-index --vector-bucket-name "${OOB_INDEX_BUCKET}" --index-name "${OOB_INDEX}" \
+      --region "${REGION}" >/dev/null 2>&1
+  fi
   destroy_rc=0
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" >/dev/null 2>&1
@@ -247,6 +259,75 @@ if [ "${UPD_NAMELESS_NAME}" != "${NAMELESS_NAME}" ]; then
   exit 1
 fi
 echo "    OK: nameless VectorBucket kept its generated name across the update"
+
+# --- Phase 1.9: an out-of-stack index refuses the destroy (#6749) ------
+# CloudFormation's delete handler holds only s3vectors:DeleteVectorBucket, so a
+# bucket still holding an index the stack did not create fails its delete.
+# Before #6749 cdkd deleted every index first and the destroy succeeded. The
+# index goes in the SSE-S3 nameless bucket: the named one's CMK key policy is
+# CDK's default, which grants the S3 Vectors indexing service nothing.
+echo "==> Phase 1.9: destroy refuses a vector bucket holding an out-of-stack index (issue #6749)"
+OOB_INDEX_BUCKET="${NAMELESS_NAME}"
+aws s3vectors create-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
+  --data-type float32 --dimension 4 --distance-metric cosine --region "${REGION}" >/dev/null
+# Premise: the bucket holds exactly the in-stack StackIndex and the
+# out-of-stack index, so the destroy below really has the stack's own index to
+# delete first. StackIndex's record names it by ARN (Cloud Control's primary
+# identifier) or by bare name.
+STACK_INDEX_ID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.StackIndex.physicalId // empty')"
+[ -n "${STACK_INDEX_ID}" ] || { echo "FAIL: state records no physical id for StackIndex (premise, issue #6749)" >&2; exit 1; }
+STACK_INDEX_NAME="${STACK_INDEX_ID##*/index/}"
+PRE_INDEXES="$(aws s3vectors list-indexes --vector-bucket-name "${NAMELESS_NAME}" --region "${REGION}" \
+  --query 'indexes[].indexName' --output json | jq -r 'sort | join(" ")')"
+WANT_INDEXES="$(printf '%s\n%s\n' "${OOB_INDEX}" "${STACK_INDEX_NAME}" | sort | paste -sd' ' -)"
+if [ "${PRE_INDEXES}" != "${WANT_INDEXES}" ]; then
+  echo "FAIL: before the destroy the bucket lists '${PRE_INDEXES}', expected exactly '${WANT_INDEXES}' (StackIndex and the out-of-stack index; premise, issue #6749)" >&2
+  exit 1
+fi
+set +e
+REFUSE_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --force 2>&1)"
+refuse_rc=$?
+set -e
+REFUSE_PLAIN="$(printf '%s' "${REFUSE_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${refuse_rc}" -eq 0 ]; then
+  echo "FAIL: destroy succeeded although VectorBucket '${NAMELESS_NAME}' held the out-of-stack index '${OOB_INDEX}' (issue #6749)" >&2
+  exit 1
+fi
+NEEDLE="vector bucket ${NAMELESS_NAME} is not empty: it holds vector index(es) ${OOB_INDEX}."
+if ! grep -qF -- "${NEEDLE}" <<<"${REFUSE_PLAIN}"; then
+  # Which path the bucket delete took: a refusal naming more than the
+  # out-of-stack index means the in-stack StackIndex was still listed when the
+  # bucket delete ran, i.e. its Cloud Control delete returned before the
+  # bucket's listing cleared.
+  HELD_LINE="$(grep -F "vector bucket ${NAMELESS_NAME} is not empty: it holds vector index(es) " <<<"${REFUSE_PLAIN}" | head -1)"
+  if [ -n "${HELD_LINE}" ]; then
+    echo "FAIL: the bucket delete was refused with the in-stack index still listed (${HELD_LINE}); the Cloud Control index delete returned before the listing cleared (issue #6749)" >&2
+  else
+    echo "FAIL: the refused destroy does not name the out-of-stack index (expected: ${NEEDLE})" >&2
+  fi
+  printf '%s\n' "${REFUSE_PLAIN}" >&2
+  exit 1
+fi
+# The in-stack index is gone, the out-of-stack one is all that is left.
+LEFT_INDEXES="$(aws s3vectors list-indexes --vector-bucket-name "${NAMELESS_NAME}" --region "${REGION}" \
+  --query 'indexes[].indexName' --output text)"
+if [ "${LEFT_INDEXES}" != "${OOB_INDEX}" ]; then
+  echo "FAIL: after the refused destroy the bucket lists '${LEFT_INDEXES}', expected only '${OOB_INDEX}' (the in-stack StackIndex must be deleted; issue #6749)" >&2
+  exit 1
+fi
+echo "    NOTE (#6749): the bucket delete met only the out-of-stack index: the in-stack StackIndex's Cloud Control delete had cleared the listing"
+aws s3vectors get-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
+  --region "${REGION}" >/dev/null || {
+  echo "FAIL: the out-of-stack index '${OOB_INDEX}' did not survive the refused destroy (issue #6749)" >&2
+  exit 1
+}
+echo "    OK: destroy refused, naming the out-of-stack index, and the index survived"
+aws s3vectors delete-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
+  --region "${REGION}"
+OOB_INDEX_BUCKET=""
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

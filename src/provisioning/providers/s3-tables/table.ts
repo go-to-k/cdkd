@@ -6,8 +6,10 @@ import {
   GetTableCommand,
   RenameTableCommand,
   PutTableMaintenanceConfigurationCommand,
+  ListTablesCommand,
   NotFoundException,
 } from '@aws-sdk/client-s3tables';
+import { waitForGoneAfterDelete } from '../../delete-gone-wait.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
@@ -294,7 +296,6 @@ export async function deleteTable(
         name,
       })
     );
-    this.logger.debug(`Successfully deleted S3 Tables Table ${logicalId}`);
   } catch (error) {
     if (error instanceof NotFoundException) {
       const clientRegion = await this.getClient().config.region();
@@ -320,6 +321,54 @@ export async function deleteTable(
     // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
     throw error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
+  // go-to-k/cdkd#6749: `DeleteTable` returns before the table leaves its
+  // bucket's `ListTables`, and the bucket's own delete (right after this one in
+  // a destroy) refuses a bucket whose listing still shows a table. Waiting
+  // here until the very listing the bucket reads no longer shows it means the
+  // bucket never sees the stack's own table. The delete was accepted, so a
+  // wait that cannot finish warns and returns (`waitForGoneAfterDelete`).
+  await waitForGoneAfterDelete({
+    what: safeMsg`S3 Tables Table ${physicalId}`,
+    resourceType,
+    describe: () => tableStillListed.call(this, tableBucketARN, namespace, name),
+    consequence:
+      "Its table bucket's delete may be refused as not empty while the table is still listed; run the destroy again once it is gone.",
+    logger: this.logger,
+    pollIntervalMs: S3_TABLES_CHILD_GONE_POLL_MS,
+    maxWaitMs: S3_TABLES_CHILD_GONE_MAX_WAIT_MS,
+  });
+  this.logger.debug(`Successfully deleted S3 Tables Table ${logicalId}`);
+}
+
+/** The gone-wait after an accepted `DeleteTable` / `DeleteNamespace` (go-to-k/cdkd#6749). */
+export const S3_TABLES_CHILD_GONE_POLL_MS = 2000;
+export const S3_TABLES_CHILD_GONE_MAX_WAIT_MS = 120_000;
+
+/**
+ * `'listed'` while the bucket's `ListTables` still shows the table, or
+ * `undefined` once it does not (a bucket or namespace gone answers NotFound,
+ * which is gone too).
+ */
+async function tableStillListed(
+  this: S3TablesProvider,
+  tableBucketARN: string,
+  namespace: string,
+  name: string
+): Promise<string | undefined> {
+  let continuationToken: string | undefined;
+  try {
+    do {
+      const page = await this.getClient().send(
+        new ListTablesCommand({ tableBucketARN, namespace, prefix: name, continuationToken })
+      );
+      if ((page.tables ?? []).some((table) => table.name === name)) return 'listed';
+      continuationToken = page.continuationToken;
+    } while (continuationToken);
+  } catch (error) {
+    if (error instanceof NotFoundException) return undefined;
+    throw error;
+  }
+  return undefined;
 }
 
 /**

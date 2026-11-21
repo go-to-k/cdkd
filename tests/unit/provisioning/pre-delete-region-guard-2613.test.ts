@@ -174,7 +174,8 @@ const CASES: Case[] = [
     make: () => new S3TablesProvider(),
     type: 'AWS::S3Tables::TableBucket',
     physicalId: TABLE_BUCKET_ARN,
-    firstCommand: 'ListNamespacesCommand',
+    // go-to-k/cdkd#6749: the bucket is no longer emptied first.
+    firstCommand: 'DeleteTableBucketCommand',
     client: viaGetClient,
   },
   {
