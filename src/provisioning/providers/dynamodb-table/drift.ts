@@ -13,6 +13,10 @@ import {
   desiredIndexEntriesByName,
   projectIndexesOnto,
 } from './indexes.js';
+import {
+  CONTRIBUTOR_INSIGHTS_KEY,
+  completeTableContributorInsightsBaseline,
+} from '../../dynamodb-contributor-insights.js';
 import { isPlainCapacityBlock } from './table-helpers.js';
 import {
   declaresWarmThroughput,
@@ -284,6 +288,13 @@ export async function canonicalizeDriftPair(
     });
     if (changed) result = { ...result, [key]: trimmed };
   }
+  // go-to-k/cdkd#6778: a baseline captured while the table-level toggle read
+  // ENABLING has no ContributorInsightsSpecification, so the comparator never
+  // walked it. Completed from the declaration, which COMPLETES rather than
+  // drops; `drift --revert` sends the completed block, so a disable made
+  // outside cdkd is re-enabled on such a record too.
+  const insights = completeTableContributorInsightsBaseline(result, aws, properties);
+  if (insights !== undefined) result = { ...result, [CONTRIBUTOR_INSIGHTS_KEY]: insights };
   return { baseline: result, aws };
 }
 
