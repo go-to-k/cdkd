@@ -96,10 +96,10 @@ An `AWS::S3Tables::TableBucket` that still holds a table or a namespace, or an
 delete too. The stack's own tables, namespaces and indexes are deleted before
 their bucket, so what is left was created outside the stack (for example by
 Firehose, Athena or Spark) or kept by a `DeletionPolicy: Retain`. The error
-names up to five of each. These types have no opt-in: delete the content by
-hand (`aws s3tables delete-table`, then `aws s3tables delete-namespace`, or
-`aws s3vectors delete-index`) and run the destroy again. A replacement under `--force-stateful-recreation` empties the
-old bucket first.
+names up to five of each. A destroy has no opt-in for these types: delete the
+content by hand (`aws s3tables delete-table`, then `aws s3tables
+delete-namespace`, or `aws s3vectors delete-index`) and run the destroy again.
+A replacement under `--force-stateful-recreation` empties the old bucket first.
 
 ### Compared with other tools
 

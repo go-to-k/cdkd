@@ -923,7 +923,7 @@ if [ "${refuse_1f_rc}" -eq 0 ]; then
   echo "FAIL: destroy succeeded although TableBucket ${TABLE_BUCKET_ARN} held the out-of-stack table ${OOB_NS}.${OOB_TABLE} (issue #6749)" >&2
   exit 1
 fi
-NEEDLE_1F="table bucket ${TABLE_BUCKET_ARN} is not empty: it holds table(s) ${OOB_NS}.${OOB_TABLE} in namespace(s) ${OOB_NS}."
+NEEDLE_1F="table bucket ${TABLE_BUCKET_ARN} is not empty: it holds table(s) ${OOB_NS}.${OOB_TABLE}; namespace(s) ${OOB_NS}."
 if ! grep -qF -- "${NEEDLE_1F}" <<<"${REFUSE_1F_PLAIN}"; then
   echo "FAIL: the refused destroy does not name the out-of-stack table (expected: ${NEEDLE_1F})" >&2
   printf '%s\n' "${REFUSE_1F_PLAIN}" | tail -20 >&2
