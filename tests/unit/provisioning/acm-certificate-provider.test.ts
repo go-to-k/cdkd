@@ -55,6 +55,7 @@ import { resetIdempotencyTokensForTests } from '../../../src/provisioning/provid
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { loadSchemaFixture } from './_property-coverage-utils.js';
+import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.generated.js';
 import {
   FORGED_CTRL,
   FORGED_QUOTE,
@@ -1728,10 +1729,15 @@ describe('ACMCertificateProvider', () => {
         Tags: [{ Key: 'a', Value: '1' }],
         NotInTheSchema: 'x',
       };
-      // The bag is the type's whole writable CFn schema, read from the
-      // committed fixture, and exactly what handledProperties names.
+      // The bag is the type's writable CFn schema, read from the committed
+      // fixture, and exactly what handledProperties names. A property the SDK
+      // cannot send yet (sdkUnwired) routes the resource through Cloud Control,
+      // so the SDK provider never sees it and it is not in the bag.
       const schema = loadSchemaFixture(TYPE)!;
-      const writable = schema.properties.filter((p) => !schema.readOnlyProperties.includes(p));
+      const sdkUnwired = PROPERTY_COVERAGE_BY_TYPE.get(TYPE)!.sdkUnwired;
+      const writable = schema.properties.filter(
+        (p) => !schema.readOnlyProperties.includes(p) && !sdkUnwired.has(p)
+      );
       const declared = Object.keys(previous).filter((k) => k !== 'NotInTheSchema');
       expect(writable.length).toBeGreaterThan(0);
       expect(declared.sort()).toEqual([...writable].sort());
