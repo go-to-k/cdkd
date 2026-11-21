@@ -517,6 +517,33 @@ if [ "${AP_ID_P3}" != "${AP_ID}" ]; then
 fi
 echo "    OK: access point ${AP_ID} retagged in place (#5464)"
 
+# go-to-k/cdkd#6696: the AccessPoint readback never returned AccessPointTags,
+# so the captured baseline lacked them and an out-of-band tag read as no
+# drift. Negative control first: the access point is drift-clean, then a tag
+# added out of band is reported on AccessPointTags.
+ap_tag_drift_paths() { # prints the AccessPoint's drifted paths, comma-joined
+  local report rc=0
+  report=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || rc=$?
+  # 0 clean, 1 drift, 2 clean but a comparison incomplete: each carries a report.
+  if [ "${rc}" != "0" ] && [ "${rc}" != "1" ] && [ "${rc}" != "2" ]; then
+    echo "FAIL: cdkd drift exited ${rc} (#6696): ${report}" >&2
+    exit 1
+  fi
+  jq -r '[.[] | (.drifted // [])[] | select(.type == "AWS::EFS::AccessPoint") | .changes[].path] | join(",")' <<<"${report}" \
+    || { echo "FAIL: unreadable drift report (#6696): ${report}" >&2; exit 1; }
+}
+AP_PATHS_BEFORE=$(ap_tag_drift_paths)
+if [ -n "${AP_PATHS_BEFORE}" ]; then
+  echo "FAIL: access point drifted before the out-of-band tag (paths: ${AP_PATHS_BEFORE}) (#6696)" >&2
+  exit 1
+fi
+aws efs tag-resource --resource-id "${AP_ID}" --region "${REGION}" --tags Key=cdkdOutOfBand,Value=6696
+AP_PATHS_AFTER=$(ap_tag_drift_paths)
+case ",${AP_PATHS_AFTER}," in
+  *,AccessPointTags*) echo "    OK: an out-of-band access point tag is reported as AccessPointTags drift (#6696)" ;;
+  *) echo "FAIL: no AccessPointTags drift after an out-of-band tag (paths: '${AP_PATHS_AFTER}') (#6696)" >&2; exit 1 ;;
+esac
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -531,4 +558,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #1160 removal resets + #2762 MountTarget addressing + #5464 retag in place + clean destroy)"
+echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #1160 removal resets + #2762 MountTarget addressing + #5464 retag in place + #6696 tag drift + clean destroy)"

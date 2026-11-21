@@ -257,6 +257,31 @@ describe('EFSProvider.readCurrentState', () => {
           Path: '/data',
           CreationInfo: { OwnerUid: 1000, OwnerGid: 1000, Permissions: '755' },
         },
+        AccessPointTags: [],
+      });
+    });
+
+    // go-to-k/cdkd#6696: the deploy-time baseline is captured through this
+    // read, so a tag it never returned was never compared.
+    it('returns AccessPointTags without the aws: tags', async () => {
+      mockSend.mockResolvedValueOnce({
+        AccessPoints: [
+          {
+            AccessPointId: 'fsap-1',
+            FileSystemId: 'fs-1',
+            Tags: [
+              { Key: 'team', Value: 'storage' },
+              { Key: 'aws:cdk:path', Value: 'Stack/AccessPoint' },
+            ],
+          },
+        ],
+      });
+
+      const result = await provider.readCurrentState('fsap-1', 'L', 'AWS::EFS::AccessPoint');
+
+      expect(result).toEqual({
+        FileSystemId: 'fs-1',
+        AccessPointTags: [{ Key: 'team', Value: 'storage' }],
       });
     });
 

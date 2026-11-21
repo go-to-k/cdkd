@@ -1,0 +1,7499 @@
+{
+  "summary": {
+    "types": 146,
+    "noReadback": 5,
+    "properties": 1526,
+    "read": 1354,
+    "unknown": 128,
+    "baseline": 44,
+    "gap": 0,
+    "outsideSchema": 12
+  },
+  "types": [
+    {
+      "resourceType": "AWS::ApiGateway::Account",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CloudWatchRoleArn",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Authorizer",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AuthorizerCredentials",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerResultTtlInSeconds",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerUri",
+          "status": "read"
+        },
+        {
+          "property": "AuthType",
+          "status": "read"
+        },
+        {
+          "property": "IdentitySource",
+          "status": "read"
+        },
+        {
+          "property": "IdentityValidationExpression",
+          "status": "read"
+        },
+        {
+          "property": "JwtConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "ProviderARNs",
+          "status": "read"
+        },
+        {
+          "property": "RestApiId",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Deployment",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "RestApiId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Method",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiKeyRequired",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizationScopes",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizationType",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerId",
+          "status": "read"
+        },
+        {
+          "property": "HttpMethod",
+          "status": "read"
+        },
+        {
+          "property": "Integration",
+          "status": "read"
+        },
+        {
+          "property": "MethodResponses",
+          "status": "read"
+        },
+        {
+          "property": "OperationName",
+          "status": "read"
+        },
+        {
+          "property": "RequestModels",
+          "status": "read"
+        },
+        {
+          "property": "RequestParameters",
+          "status": "read"
+        },
+        {
+          "property": "RequestValidatorId",
+          "status": "read"
+        },
+        {
+          "property": "ResourceId",
+          "status": "read"
+        },
+        {
+          "property": "RestApiId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Resource",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ParentId",
+          "status": "read"
+        },
+        {
+          "property": "PathPart",
+          "status": "read"
+        },
+        {
+          "property": "RestApiId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::RestApi",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiKeySourceType",
+          "status": "read"
+        },
+        {
+          "property": "BinaryMediaTypes",
+          "status": "read"
+        },
+        {
+          "property": "Body",
+          "status": "unknown"
+        },
+        {
+          "property": "BodyS3Location",
+          "status": "unknown"
+        },
+        {
+          "property": "CloneFrom",
+          "status": "unknown"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DisableExecuteApiEndpoint",
+          "status": "read"
+        },
+        {
+          "property": "EndpointAccessMode",
+          "status": "read"
+        },
+        {
+          "property": "EndpointConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "FailOnWarnings",
+          "status": "unknown"
+        },
+        {
+          "property": "MinimumCompressionSize",
+          "status": "read"
+        },
+        {
+          "property": "Mode",
+          "status": "unknown"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Parameters",
+          "status": "unknown"
+        },
+        {
+          "property": "Policy",
+          "status": "read"
+        },
+        {
+          "property": "SecurityPolicy",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Version",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGateway::Stage",
+      "file": "src/provisioning/providers/apigateway-provider.ts",
+      "className": "ApiGatewayProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AccessLogSetting",
+          "status": "read"
+        },
+        {
+          "property": "CacheClusterEnabled",
+          "status": "read"
+        },
+        {
+          "property": "CacheClusterSize",
+          "status": "read"
+        },
+        {
+          "property": "CanarySetting",
+          "status": "read"
+        },
+        {
+          "property": "ClientCertificateId",
+          "status": "read"
+        },
+        {
+          "property": "DeploymentId",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DocumentationVersion",
+          "status": "read"
+        },
+        {
+          "property": "MethodSettings",
+          "status": "read"
+        },
+        {
+          "property": "RestApiId",
+          "status": "read"
+        },
+        {
+          "property": "StageName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TracingEnabled",
+          "status": "read"
+        },
+        {
+          "property": "Variables",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiKeySelectionExpression",
+          "status": "read"
+        },
+        {
+          "property": "CorsConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DisableExecuteApiEndpoint",
+          "status": "read"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "ProtocolType",
+          "status": "read"
+        },
+        {
+          "property": "RouteSelectionExpression",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Version",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Authorizer",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerCredentialsArn",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerPayloadFormatVersion",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerResultTtlInSeconds",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerType",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerUri",
+          "status": "read"
+        },
+        {
+          "property": "EnableSimpleResponses",
+          "status": "read"
+        },
+        {
+          "property": "IdentitySource",
+          "status": "read"
+        },
+        {
+          "property": "IdentityValidationExpression",
+          "status": "read"
+        },
+        {
+          "property": "JwtConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Integration",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "ConnectionId",
+          "status": "read"
+        },
+        {
+          "property": "ConnectionType",
+          "status": "read"
+        },
+        {
+          "property": "ContentHandlingStrategy",
+          "status": "read"
+        },
+        {
+          "property": "CredentialsArn",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "IntegrationMethod",
+          "status": "read"
+        },
+        {
+          "property": "IntegrationSubtype",
+          "status": "read"
+        },
+        {
+          "property": "IntegrationType",
+          "status": "read"
+        },
+        {
+          "property": "IntegrationUri",
+          "status": "read"
+        },
+        {
+          "property": "PassthroughBehavior",
+          "status": "read"
+        },
+        {
+          "property": "PayloadFormatVersion",
+          "status": "read"
+        },
+        {
+          "property": "RequestParameters",
+          "status": "read"
+        },
+        {
+          "property": "RequestTemplates",
+          "status": "read"
+        },
+        {
+          "property": "ResponseParameters",
+          "status": "read"
+        },
+        {
+          "property": "TemplateSelectionExpression",
+          "status": "read"
+        },
+        {
+          "property": "TimeoutInMillis",
+          "status": "read"
+        },
+        {
+          "property": "TlsConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Route",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "ApiKeyRequired",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizationScopes",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizationType",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerId",
+          "status": "read"
+        },
+        {
+          "property": "ModelSelectionExpression",
+          "status": "read"
+        },
+        {
+          "property": "OperationName",
+          "status": "read"
+        },
+        {
+          "property": "RequestModels",
+          "status": "read"
+        },
+        {
+          "property": "RequestParameters",
+          "status": "read"
+        },
+        {
+          "property": "RouteKey",
+          "status": "read"
+        },
+        {
+          "property": "RouteResponseSelectionExpression",
+          "status": "read"
+        },
+        {
+          "property": "Target",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ApiGatewayV2::Stage",
+      "file": "src/provisioning/providers/apigatewayv2-provider.ts",
+      "className": "ApiGatewayV2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AccessLogSettings",
+          "status": "read"
+        },
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "AutoDeploy",
+          "status": "read"
+        },
+        {
+          "property": "ClientCertificateId",
+          "status": "read"
+        },
+        {
+          "property": "DefaultRouteSettings",
+          "status": "read"
+        },
+        {
+          "property": "DeploymentId",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "RouteSettings",
+          "status": "read"
+        },
+        {
+          "property": "StageName",
+          "status": "read"
+        },
+        {
+          "property": "StageVariables",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppConfig::Environment",
+      "file": "src/provisioning/providers/appconfig-environment-provider.ts",
+      "className": "AppConfigEnvironmentProvider",
+      "hasReadback": false,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::ApiKey",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Expires",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::DataSource",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DynamoDBConfig",
+          "status": "read"
+        },
+        {
+          "property": "ElasticsearchConfig",
+          "status": "read"
+        },
+        {
+          "property": "EventBridgeConfig",
+          "status": "read"
+        },
+        {
+          "property": "HttpConfig",
+          "status": "read"
+        },
+        {
+          "property": "LambdaConfig",
+          "status": "read"
+        },
+        {
+          "property": "MetricsConfig",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OpenSearchServiceConfig",
+          "status": "read"
+        },
+        {
+          "property": "RelationalDatabaseConfig",
+          "status": "read"
+        },
+        {
+          "property": "ServiceRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLApi",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AdditionalAuthenticationProviders",
+          "status": "read"
+        },
+        {
+          "property": "ApiType",
+          "status": "read"
+        },
+        {
+          "property": "AuthenticationType",
+          "status": "read"
+        },
+        {
+          "property": "EnhancedMetricsConfig",
+          "status": "read"
+        },
+        {
+          "property": "EnvironmentVariables",
+          "status": "read"
+        },
+        {
+          "property": "IntrospectionConfig",
+          "status": "read"
+        },
+        {
+          "property": "LambdaAuthorizerConfig",
+          "status": "read"
+        },
+        {
+          "property": "LogConfig",
+          "status": "read"
+        },
+        {
+          "property": "MergedApiExecutionRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OpenIDConnectConfig",
+          "status": "read"
+        },
+        {
+          "property": "OwnerContact",
+          "status": "read"
+        },
+        {
+          "property": "QueryDepthLimit",
+          "status": "read"
+        },
+        {
+          "property": "ResolverCountLimit",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "UserPoolConfig",
+          "status": "read"
+        },
+        {
+          "property": "Visibility",
+          "status": "read"
+        },
+        {
+          "property": "XrayEnabled",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::GraphQLSchema",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "Definition",
+          "status": "read"
+        },
+        {
+          "property": "DefinitionS3Location",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AppSync::Resolver",
+      "file": "src/provisioning/providers/appsync-provider.ts",
+      "className": "AppSyncProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApiId",
+          "status": "read"
+        },
+        {
+          "property": "CachingConfig",
+          "status": "read"
+        },
+        {
+          "property": "Code",
+          "status": "read"
+        },
+        {
+          "property": "CodeS3Location",
+          "status": "unknown"
+        },
+        {
+          "property": "DataSourceName",
+          "status": "read"
+        },
+        {
+          "property": "FieldName",
+          "status": "read"
+        },
+        {
+          "property": "Kind",
+          "status": "read"
+        },
+        {
+          "property": "MaxBatchSize",
+          "status": "read"
+        },
+        {
+          "property": "MetricsConfig",
+          "status": "read"
+        },
+        {
+          "property": "PipelineConfig",
+          "status": "read"
+        },
+        {
+          "property": "RequestMappingTemplate",
+          "status": "read"
+        },
+        {
+          "property": "RequestMappingTemplateS3Location",
+          "status": "unknown"
+        },
+        {
+          "property": "ResponseMappingTemplate",
+          "status": "read"
+        },
+        {
+          "property": "ResponseMappingTemplateS3Location",
+          "status": "unknown"
+        },
+        {
+          "property": "Runtime",
+          "status": "read"
+        },
+        {
+          "property": "SyncConfig",
+          "status": "read"
+        },
+        {
+          "property": "TypeName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::AutoScaling::AutoScalingGroup",
+      "file": "src/provisioning/providers/asg-provider.ts",
+      "className": "ASGProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AutoScalingGroupName",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZoneDistribution",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZoneIds",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZoneImpairmentPolicy",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZones",
+          "status": "read"
+        },
+        {
+          "property": "CapacityRebalance",
+          "status": "read"
+        },
+        {
+          "property": "CapacityReservationSpecification",
+          "status": "read"
+        },
+        {
+          "property": "Context",
+          "status": "read"
+        },
+        {
+          "property": "Cooldown",
+          "status": "read"
+        },
+        {
+          "property": "DefaultCooldown",
+          "status": "baseline",
+          "reason": "a spelling of Cooldown outside the schema capture; the readback returns the live value as Cooldown",
+          "outsideSchema": true
+        },
+        {
+          "property": "DefaultInstanceWarmup",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read"
+        },
+        {
+          "property": "DesiredCapacity",
+          "status": "read"
+        },
+        {
+          "property": "DesiredCapacityType",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckGracePeriod",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckType",
+          "status": "read"
+        },
+        {
+          "property": "InstanceLifecyclePolicy",
+          "status": "read"
+        },
+        {
+          "property": "InstanceMaintenancePolicy",
+          "status": "read"
+        },
+        {
+          "property": "LaunchTemplate",
+          "status": "read"
+        },
+        {
+          "property": "LifecycleHookSpecificationList",
+          "status": "read"
+        },
+        {
+          "property": "LoadBalancerNames",
+          "status": "read"
+        },
+        {
+          "property": "MaxInstanceLifetime",
+          "status": "read"
+        },
+        {
+          "property": "MaxSize",
+          "status": "read"
+        },
+        {
+          "property": "MetricsCollection",
+          "status": "read"
+        },
+        {
+          "property": "MinSize",
+          "status": "read"
+        },
+        {
+          "property": "MixedInstancesPolicy",
+          "status": "read"
+        },
+        {
+          "property": "NewInstancesProtectedFromScaleIn",
+          "status": "read"
+        },
+        {
+          "property": "NotificationConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "PlacementGroup",
+          "status": "read"
+        },
+        {
+          "property": "ServiceLinkedRoleARN",
+          "status": "read"
+        },
+        {
+          "property": "SkipZonalShiftValidation",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TargetGroupARNs",
+          "status": "read"
+        },
+        {
+          "property": "TerminationPolicies",
+          "status": "read"
+        },
+        {
+          "property": "TrafficSources",
+          "status": "read"
+        },
+        {
+          "property": "VPCZoneIdentifier",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Browser",
+      "file": "src/provisioning/providers/agentcore-browser-provider.ts",
+      "className": "AgentCoreBrowserProvider",
+      "hasReadback": true,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::CodeInterpreter",
+      "file": "src/provisioning/providers/agentcore-code-interpreter-provider.ts",
+      "className": "AgentCoreCodeInterpreterProvider",
+      "hasReadback": true,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Evaluator",
+      "file": "src/provisioning/providers/agentcore-evaluator-provider.ts",
+      "className": "AgentCoreEvaluatorProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EvaluatorConfig",
+          "status": "read"
+        },
+        {
+          "property": "EvaluatorName",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "read"
+        },
+        {
+          "property": "Level",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::BedrockAgentCore::Runtime",
+      "file": "src/provisioning/providers/agentcore-runtime-provider.ts",
+      "className": "AgentCoreRuntimeProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AgentRuntimeArtifact",
+          "status": "read"
+        },
+        {
+          "property": "AgentRuntimeName",
+          "status": "read"
+        },
+        {
+          "property": "AuthorizerConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "CapacityProviderConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ClientToken",
+          "status": "baseline",
+          "reason": "an idempotency token outside the schema capture: no read returns it",
+          "outsideSchema": true
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EnvironmentVariables",
+          "status": "read"
+        },
+        {
+          "property": "FilesystemConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "HooksConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LifecycleConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "NetworkConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "PlatformVersion",
+          "status": "read"
+        },
+        {
+          "property": "ProtocolConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "RequestHeaderConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ResourceConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "RoleArn",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Budgets::Budget",
+      "file": "src/provisioning/providers/budgets-budget-provider.ts",
+      "className": "BudgetsBudgetProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Budget",
+          "status": "read"
+        },
+        {
+          "property": "NotificationsWithSubscribers",
+          "status": "read"
+        },
+        {
+          "property": "ResourceTags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CertificateManager::Certificate",
+      "file": "src/provisioning/providers/acm-certificate-provider.ts",
+      "className": "ACMCertificateProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CertificateAuthorityArn",
+          "status": "read"
+        },
+        {
+          "property": "CertificateExport",
+          "status": "read"
+        },
+        {
+          "property": "CertificateTransparencyLoggingPreference",
+          "status": "read"
+        },
+        {
+          "property": "DomainName",
+          "status": "read"
+        },
+        {
+          "property": "DomainValidationOptions",
+          "status": "unknown"
+        },
+        {
+          "property": "KeyAlgorithm",
+          "status": "read"
+        },
+        {
+          "property": "SubjectAlternativeNames",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "ValidationMethod",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::Stack",
+      "file": "src/provisioning/providers/nested-stack-provider.ts",
+      "className": "NestedStackProvider",
+      "hasReadback": false,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitCondition",
+      "file": "src/provisioning/providers/wait-condition-provider.ts",
+      "className": "WaitConditionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Count",
+          "status": "baseline",
+          "reason": "cdkd-side input to the S3 signal poll: no AWS resource holds it"
+        },
+        {
+          "property": "Handle",
+          "status": "baseline",
+          "reason": "cdkd-side input to the S3 signal poll: no AWS resource holds it"
+        },
+        {
+          "property": "Timeout",
+          "status": "baseline",
+          "reason": "cdkd-side input to the S3 signal poll: no AWS resource holds it"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "file": "src/provisioning/providers/wait-condition-handle-provider.ts",
+      "className": "WaitConditionHandleProvider",
+      "hasReadback": true,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+      "file": "src/provisioning/providers/cloudfront-oai-provider.ts",
+      "className": "CloudFrontOAIProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CloudFrontOriginAccessIdentityConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::Distribution",
+      "file": "src/provisioning/providers/cloudfront-distribution-provider.ts",
+      "className": "CloudFrontDistributionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DistributionConfig",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudFront::OriginAccessControl",
+      "file": "src/provisioning/providers/cloudfront-oac-provider.ts",
+      "className": "CloudFrontOACProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "OriginAccessControlConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudTrail::Trail",
+      "file": "src/provisioning/providers/cloudtrail-provider.ts",
+      "className": "CloudTrailProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AdvancedEventSelectors",
+          "status": "read"
+        },
+        {
+          "property": "AggregationConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "CloudWatchLogsLogGroupArn",
+          "status": "read"
+        },
+        {
+          "property": "CloudWatchLogsRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "EnableLogFileValidation",
+          "status": "read"
+        },
+        {
+          "property": "EventSelectors",
+          "status": "read"
+        },
+        {
+          "property": "IncludeGlobalServiceEvents",
+          "status": "read"
+        },
+        {
+          "property": "InsightSelectors",
+          "status": "read"
+        },
+        {
+          "property": "IsLogging",
+          "status": "read"
+        },
+        {
+          "property": "IsMultiRegionTrail",
+          "status": "read"
+        },
+        {
+          "property": "IsOrganizationTrail",
+          "status": "read"
+        },
+        {
+          "property": "KMSKeyId",
+          "status": "read"
+        },
+        {
+          "property": "RecursiveLogging",
+          "status": "read"
+        },
+        {
+          "property": "S3BucketName",
+          "status": "read"
+        },
+        {
+          "property": "S3KeyPrefix",
+          "status": "read"
+        },
+        {
+          "property": "SnsTopicName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TrailName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudWatch::Alarm",
+      "file": "src/provisioning/providers/cloudwatch-alarm-provider.ts",
+      "className": "CloudWatchAlarmProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ActionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ActionsEnabled",
+          "status": "read"
+        },
+        {
+          "property": "AlarmActions",
+          "status": "read"
+        },
+        {
+          "property": "AlarmDescription",
+          "status": "read"
+        },
+        {
+          "property": "AlarmName",
+          "status": "read"
+        },
+        {
+          "property": "ComparisonOperator",
+          "status": "read"
+        },
+        {
+          "property": "DatapointsToAlarm",
+          "status": "read"
+        },
+        {
+          "property": "Dimensions",
+          "status": "read"
+        },
+        {
+          "property": "EvaluateLowSampleCountPercentile",
+          "status": "read"
+        },
+        {
+          "property": "EvaluationCriteria",
+          "status": "read"
+        },
+        {
+          "property": "EvaluationInterval",
+          "status": "read"
+        },
+        {
+          "property": "EvaluationPeriods",
+          "status": "read"
+        },
+        {
+          "property": "EvaluationWindow",
+          "status": "read"
+        },
+        {
+          "property": "ExtendedStatistic",
+          "status": "read"
+        },
+        {
+          "property": "InsufficientDataActions",
+          "status": "read"
+        },
+        {
+          "property": "MetricName",
+          "status": "read"
+        },
+        {
+          "property": "Metrics",
+          "status": "read"
+        },
+        {
+          "property": "Namespace",
+          "status": "read"
+        },
+        {
+          "property": "OKActions",
+          "status": "read"
+        },
+        {
+          "property": "Period",
+          "status": "read"
+        },
+        {
+          "property": "Statistic",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Threshold",
+          "status": "read"
+        },
+        {
+          "property": "ThresholdMetricId",
+          "status": "read"
+        },
+        {
+          "property": "TreatMissingData",
+          "status": "read"
+        },
+        {
+          "property": "Unit",
+          "status": "read"
+        },
+        {
+          "property": "WarmUpConfiguration",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CloudWatch::AnomalyDetector",
+      "file": "src/provisioning/providers/cloudwatch-anomaly-detector-provider.ts",
+      "className": "CloudWatchAnomalyDetectorProvider",
+      "hasReadback": false,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CodeBuild::Project",
+      "file": "src/provisioning/providers/codebuild-provider.ts",
+      "className": "CodeBuildProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Artifacts",
+          "status": "read"
+        },
+        {
+          "property": "AutoRetryLimit",
+          "status": "read"
+        },
+        {
+          "property": "BadgeEnabled",
+          "status": "read"
+        },
+        {
+          "property": "BuildBatchConfig",
+          "status": "read"
+        },
+        {
+          "property": "Cache",
+          "status": "read"
+        },
+        {
+          "property": "ConcurrentBuildLimit",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EncryptionKey",
+          "status": "read"
+        },
+        {
+          "property": "Environment",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemLocations",
+          "status": "read"
+        },
+        {
+          "property": "LogsConfig",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "QueuedTimeoutInMinutes",
+          "status": "read"
+        },
+        {
+          "property": "ResourceAccessRole",
+          "status": "read"
+        },
+        {
+          "property": "SecondaryArtifacts",
+          "status": "read"
+        },
+        {
+          "property": "SecondarySources",
+          "status": "read"
+        },
+        {
+          "property": "SecondarySourceVersions",
+          "status": "read"
+        },
+        {
+          "property": "ServiceRole",
+          "status": "read"
+        },
+        {
+          "property": "Source",
+          "status": "read"
+        },
+        {
+          "property": "SourceVersion",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TimeoutInMinutes",
+          "status": "read"
+        },
+        {
+          "property": "Triggers",
+          "status": "unknown"
+        },
+        {
+          "property": "Visibility",
+          "status": "read"
+        },
+        {
+          "property": "VpcConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::CodeCommit::Repository",
+      "file": "src/provisioning/providers/codecommit-repository-provider.ts",
+      "className": "CodeCommitRepositoryProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Code",
+          "status": "unknown"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "RepositoryDescription",
+          "status": "read"
+        },
+        {
+          "property": "RepositoryName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Triggers",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Cognito::UserPool",
+      "file": "src/provisioning/providers/cognito-provider.ts",
+      "className": "CognitoUserPoolProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AccountRecoverySetting",
+          "status": "read"
+        },
+        {
+          "property": "AdminCreateUserConfig",
+          "status": "read"
+        },
+        {
+          "property": "AliasAttributes",
+          "status": "read"
+        },
+        {
+          "property": "AutoVerifiedAttributes",
+          "status": "read"
+        },
+        {
+          "property": "DcrConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read"
+        },
+        {
+          "property": "DeviceConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "EmailAuthenticationMessage",
+          "status": "read"
+        },
+        {
+          "property": "EmailAuthenticationSubject",
+          "status": "read"
+        },
+        {
+          "property": "EmailConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "EmailVerificationMessage",
+          "status": "read"
+        },
+        {
+          "property": "EmailVerificationSubject",
+          "status": "read"
+        },
+        {
+          "property": "EnabledMfas",
+          "status": "read"
+        },
+        {
+          "property": "IssuerConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "KeyConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LambdaConfig",
+          "status": "read"
+        },
+        {
+          "property": "MfaConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Policies",
+          "status": "read"
+        },
+        {
+          "property": "Schema",
+          "status": "read"
+        },
+        {
+          "property": "SmsAuthenticationMessage",
+          "status": "read"
+        },
+        {
+          "property": "SmsConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SmsVerificationMessage",
+          "status": "read"
+        },
+        {
+          "property": "UserAttributeUpdateSettings",
+          "status": "read"
+        },
+        {
+          "property": "UsernameAttributes",
+          "status": "read"
+        },
+        {
+          "property": "UsernameConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "UserPoolAddOns",
+          "status": "read"
+        },
+        {
+          "property": "UserPoolName",
+          "status": "read"
+        },
+        {
+          "property": "UserPoolTags",
+          "status": "read"
+        },
+        {
+          "property": "UserPoolTier",
+          "status": "read"
+        },
+        {
+          "property": "VerificationMessageTemplate",
+          "status": "read"
+        },
+        {
+          "property": "WebAuthnFactorConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "WebAuthnRelyingPartyID",
+          "status": "read"
+        },
+        {
+          "property": "WebAuthnUserVerification",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DLM::LifecyclePolicy",
+      "file": "src/provisioning/providers/dlm-lifecycle-policy-provider.ts",
+      "className": "DLMLifecyclePolicyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CopyTags",
+          "status": "unknown"
+        },
+        {
+          "property": "CreateInterval",
+          "status": "unknown"
+        },
+        {
+          "property": "CrossRegionCopyTargets",
+          "status": "unknown"
+        },
+        {
+          "property": "DefaultPolicy",
+          "status": "unknown"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Exclusions",
+          "status": "unknown"
+        },
+        {
+          "property": "ExecutionRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "ExtendDeletion",
+          "status": "unknown"
+        },
+        {
+          "property": "PolicyDetails",
+          "status": "unknown"
+        },
+        {
+          "property": "RetainInterval",
+          "status": "unknown"
+        },
+        {
+          "property": "State",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBCluster",
+      "file": "src/provisioning/providers/docdb-provider.ts",
+      "className": "DocDBProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AvailabilityZones",
+          "status": "unknown"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterParameterGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "read"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "read"
+        },
+        {
+          "property": "GlobalClusterIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "ManageMasterUserPassword",
+          "status": "read"
+        },
+        {
+          "property": "MasterUsername",
+          "status": "read"
+        },
+        {
+          "property": "MasterUserPassword",
+          "status": "baseline",
+          "reason": "a password: DescribeDBClusters never returns it"
+        },
+        {
+          "property": "MasterUserSecretKmsKeyId",
+          "status": "unknown"
+        },
+        {
+          "property": "NetworkType",
+          "status": "read"
+        },
+        {
+          "property": "Port",
+          "status": "read"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "read"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "RestoreToTime",
+          "status": "unknown"
+        },
+        {
+          "property": "RestoreType",
+          "status": "unknown"
+        },
+        {
+          "property": "RotateMasterUserPassword",
+          "status": "unknown"
+        },
+        {
+          "property": "ServerlessV2ScalingConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SnapshotIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "read"
+        },
+        {
+          "property": "StorageType",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "unknown"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBInstance",
+      "file": "src/provisioning/providers/docdb-provider.ts",
+      "className": "DocDBProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "read"
+        },
+        {
+          "property": "CACertificateIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "CertificateRotationRestart",
+          "status": "unknown"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceClass",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "EnablePerformanceInsights",
+          "status": "read"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DocDB::DBSubnetGroup",
+      "file": "src/provisioning/providers/docdb-subnet-group-provider.ts",
+      "className": "DocDBSubnetGroupProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DBSubnetGroupDescription",
+          "status": "read"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DynamoDB::GlobalTable",
+      "file": "src/provisioning/providers/dynamodb-globaltable-provider.ts",
+      "className": "DynamoDBGlobalTableProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AttributeDefinitions",
+          "status": "read"
+        },
+        {
+          "property": "BillingMode",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtectionEnabled",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "GlobalSecondaryIndexes",
+          "status": "read"
+        },
+        {
+          "property": "KeySchema",
+          "status": "read"
+        },
+        {
+          "property": "LocalSecondaryIndexes",
+          "status": "read"
+        },
+        {
+          "property": "ReadOnDemandThroughputSettings",
+          "status": "read"
+        },
+        {
+          "property": "ReadProvisionedThroughputSettings",
+          "status": "read"
+        },
+        {
+          "property": "Replicas",
+          "status": "read"
+        },
+        {
+          "property": "SSESpecification",
+          "status": "read"
+        },
+        {
+          "property": "StreamSpecification",
+          "status": "read"
+        },
+        {
+          "property": "TableClass",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "TableName",
+          "status": "read"
+        },
+        {
+          "property": "TableType",
+          "status": "unknown"
+        },
+        {
+          "property": "TimeToLiveSpecification",
+          "status": "read"
+        },
+        {
+          "property": "VectorIndexes",
+          "status": "read"
+        },
+        {
+          "property": "WarmThroughput",
+          "status": "read"
+        },
+        {
+          "property": "WriteOnDemandThroughputSettings",
+          "status": "read"
+        },
+        {
+          "property": "WriteProvisionedThroughputSettings",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::DynamoDB::Table",
+      "file": "src/provisioning/providers/dynamodb-table-provider.ts",
+      "className": "DynamoDBTableProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AttributeDefinitions",
+          "status": "read"
+        },
+        {
+          "property": "BillingMode",
+          "status": "read"
+        },
+        {
+          "property": "ContributorInsightsSpecification",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtectionEnabled",
+          "status": "read"
+        },
+        {
+          "property": "GlobalSecondaryIndexes",
+          "status": "read"
+        },
+        {
+          "property": "KeySchema",
+          "status": "read"
+        },
+        {
+          "property": "KinesisStreamSpecification",
+          "status": "read"
+        },
+        {
+          "property": "LocalSecondaryIndexes",
+          "status": "read"
+        },
+        {
+          "property": "OnDemandThroughput",
+          "status": "read"
+        },
+        {
+          "property": "PointInTimeRecoverySpecification",
+          "status": "read"
+        },
+        {
+          "property": "ProvisionedThroughput",
+          "status": "read"
+        },
+        {
+          "property": "ResourcePolicy",
+          "status": "read"
+        },
+        {
+          "property": "SSESpecification",
+          "status": "read"
+        },
+        {
+          "property": "StreamSpecification",
+          "status": "read"
+        },
+        {
+          "property": "TableClass",
+          "status": "read"
+        },
+        {
+          "property": "TableName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TimeToLiveSpecification",
+          "status": "read"
+        },
+        {
+          "property": "VectorIndexes",
+          "status": "read"
+        },
+        {
+          "property": "WarmThroughput",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::EIP",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Domain",
+          "status": "read"
+        },
+        {
+          "property": "InstanceId",
+          "status": "read"
+        },
+        {
+          "property": "NetworkBorderGroup",
+          "status": "read"
+        },
+        {
+          "property": "PublicIpv4Pool",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::Instance",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AdditionalInfo",
+          "status": "unknown"
+        },
+        {
+          "property": "Affinity",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "read"
+        },
+        {
+          "property": "BlockDeviceMappings",
+          "status": "read"
+        },
+        {
+          "property": "CpuOptions",
+          "status": "read"
+        },
+        {
+          "property": "CreditSpecification",
+          "status": "read"
+        },
+        {
+          "property": "DisableApiTermination",
+          "status": "read"
+        },
+        {
+          "property": "EbsOptimized",
+          "status": "read"
+        },
+        {
+          "property": "EnclaveOptions",
+          "status": "read"
+        },
+        {
+          "property": "HibernationOptions",
+          "status": "read"
+        },
+        {
+          "property": "HostId",
+          "status": "read"
+        },
+        {
+          "property": "HostResourceGroupArn",
+          "status": "read"
+        },
+        {
+          "property": "IamInstanceProfile",
+          "status": "read"
+        },
+        {
+          "property": "ImageId",
+          "status": "read"
+        },
+        {
+          "property": "InstanceInitiatedShutdownBehavior",
+          "status": "read"
+        },
+        {
+          "property": "InstanceType",
+          "status": "read"
+        },
+        {
+          "property": "Ipv6AddressCount",
+          "status": "unknown"
+        },
+        {
+          "property": "Ipv6Addresses",
+          "status": "unknown"
+        },
+        {
+          "property": "KernelId",
+          "status": "read"
+        },
+        {
+          "property": "KeyName",
+          "status": "read"
+        },
+        {
+          "property": "LaunchTemplate",
+          "status": "unknown"
+        },
+        {
+          "property": "LicenseSpecifications",
+          "status": "unknown"
+        },
+        {
+          "property": "MetadataOptions",
+          "status": "read"
+        },
+        {
+          "property": "Monitoring",
+          "status": "read"
+        },
+        {
+          "property": "NetworkInterfaces",
+          "status": "unknown"
+        },
+        {
+          "property": "PlacementGroupName",
+          "status": "read"
+        },
+        {
+          "property": "PrivateDnsNameOptions",
+          "status": "read"
+        },
+        {
+          "property": "PrivateIpAddress",
+          "status": "read"
+        },
+        {
+          "property": "PropagateTagsToVolumeOnCreation",
+          "status": "unknown"
+        },
+        {
+          "property": "RamdiskId",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroupIds",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroups",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "not read back"
+        },
+        {
+          "property": "SourceDestCheck",
+          "status": "read"
+        },
+        {
+          "property": "SsmAssociations",
+          "status": "read"
+        },
+        {
+          "property": "SubnetId",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Tenancy",
+          "status": "read"
+        },
+        {
+          "property": "UserData",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "not read back"
+        },
+        {
+          "property": "Volumes",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::InternetGateway",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the Describe response carries the tags; the readback drops them"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::NatGateway",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AllocationId",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityMode",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZoneAddresses",
+          "status": "read"
+        },
+        {
+          "property": "ConnectivityType",
+          "status": "read"
+        },
+        {
+          "property": "PrivateIpAddress",
+          "status": "read"
+        },
+        {
+          "property": "SecondaryAllocationIds",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the readback takes only NatGatewayAddresses[0]"
+        },
+        {
+          "property": "SecondaryPrivateIpAddressCount",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the readback takes only NatGatewayAddresses[0]"
+        },
+        {
+          "property": "SecondaryPrivateIpAddresses",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the readback takes only NatGatewayAddresses[0]"
+        },
+        {
+          "property": "SubnetId",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the Describe response carries the tags; the readback drops them"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAcl",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the Describe response carries the tags; the readback drops them"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::NetworkAclEntry",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "Egress",
+          "status": "read"
+        },
+        {
+          "property": "Icmp",
+          "status": "read"
+        },
+        {
+          "property": "Ipv6CidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "NetworkAclId",
+          "status": "read"
+        },
+        {
+          "property": "PortRange",
+          "status": "read"
+        },
+        {
+          "property": "Protocol",
+          "status": "read"
+        },
+        {
+          "property": "RuleAction",
+          "status": "read"
+        },
+        {
+          "property": "RuleNumber",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::Route",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CarrierGatewayId",
+          "status": "read"
+        },
+        {
+          "property": "CoreNetworkArn",
+          "status": "read"
+        },
+        {
+          "property": "DestinationCidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "DestinationIpv6CidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "DestinationPrefixListId",
+          "status": "read"
+        },
+        {
+          "property": "EgressOnlyInternetGatewayId",
+          "status": "read"
+        },
+        {
+          "property": "GatewayId",
+          "status": "read"
+        },
+        {
+          "property": "InstanceId",
+          "status": "read"
+        },
+        {
+          "property": "LocalGatewayId",
+          "status": "read"
+        },
+        {
+          "property": "NatGatewayId",
+          "status": "read"
+        },
+        {
+          "property": "NetworkInterfaceId",
+          "status": "read"
+        },
+        {
+          "property": "OdbNetworkArn",
+          "status": "read"
+        },
+        {
+          "property": "RouteTableId",
+          "status": "read"
+        },
+        {
+          "property": "TransitGatewayId",
+          "status": "read"
+        },
+        {
+          "property": "VpcEndpointId",
+          "status": "read"
+        },
+        {
+          "property": "VpcPeeringConnectionId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::RouteTable",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the Describe response carries the tags; the readback drops them"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "GroupDescription",
+          "status": "read"
+        },
+        {
+          "property": "GroupName",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroupEgress",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroupIngress",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SecurityGroupIngress",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CidrIp",
+          "status": "read"
+        },
+        {
+          "property": "CidrIpv6",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "FromPort",
+          "status": "read"
+        },
+        {
+          "property": "GroupId",
+          "status": "read"
+        },
+        {
+          "property": "IpProtocol",
+          "status": "read"
+        },
+        {
+          "property": "SourcePrefixListId",
+          "status": "read"
+        },
+        {
+          "property": "SourceSecurityGroupId",
+          "status": "read"
+        },
+        {
+          "property": "SourceSecurityGroupOwnerId",
+          "status": "read"
+        },
+        {
+          "property": "ToPort",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::Subnet",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AssignIpv6AddressOnCreation",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZoneId",
+          "status": "read"
+        },
+        {
+          "property": "CidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "EnableDns64",
+          "status": "read"
+        },
+        {
+          "property": "Ipv4IpamPoolId",
+          "status": "unknown"
+        },
+        {
+          "property": "Ipv4NetmaskLength",
+          "status": "read"
+        },
+        {
+          "property": "Ipv6CidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "Ipv6IpamPoolId",
+          "status": "unknown"
+        },
+        {
+          "property": "Ipv6Native",
+          "status": "read"
+        },
+        {
+          "property": "Ipv6NetmaskLength",
+          "status": "read"
+        },
+        {
+          "property": "MapPublicIpOnLaunch",
+          "status": "read"
+        },
+        {
+          "property": "PrivateDnsNameOptionsOnLaunch",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the Describe response carries the tags; the readback drops them"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetNetworkAclAssociation",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "NetworkAclId",
+          "status": "read"
+        },
+        {
+          "property": "SubnetId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::SubnetRouteTableAssociation",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "RouteTableId",
+          "status": "read"
+        },
+        {
+          "property": "SubnetId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPC",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CidrBlock",
+          "status": "read"
+        },
+        {
+          "property": "EnableDnsHostnames",
+          "status": "read"
+        },
+        {
+          "property": "EnableDnsSupport",
+          "status": "read"
+        },
+        {
+          "property": "InstanceTenancy",
+          "status": "read"
+        },
+        {
+          "property": "Ipv4IpamPoolId",
+          "status": "unknown"
+        },
+        {
+          "property": "Ipv4NetmaskLength",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6754,
+          "reason": "the Describe response carries the tags; the readback drops them"
+        },
+        {
+          "property": "VpcEncryptionControl",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EC2::VPCGatewayAttachment",
+      "file": "src/provisioning/providers/ec2-provider.ts",
+      "className": "EC2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "InternetGatewayId",
+          "status": "read"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        },
+        {
+          "property": "VpnGatewayId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECR::Repository",
+      "file": "src/provisioning/providers/ecr-provider.ts",
+      "className": "ECRProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "EmptyOnDelete",
+          "status": "unknown"
+        },
+        {
+          "property": "EncryptionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ImageScanningConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ImageTagMutability",
+          "status": "read"
+        },
+        {
+          "property": "ImageTagMutabilityExclusionFilters",
+          "status": "read"
+        },
+        {
+          "property": "LifecyclePolicy",
+          "status": "read"
+        },
+        {
+          "property": "RepositoryName",
+          "status": "read"
+        },
+        {
+          "property": "RepositoryPolicyText",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECS::Cluster",
+      "file": "src/provisioning/providers/ecs-provider.ts",
+      "className": "ECSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CapacityProviders",
+          "status": "read"
+        },
+        {
+          "property": "ClusterName",
+          "status": "read"
+        },
+        {
+          "property": "ClusterSettings",
+          "status": "read"
+        },
+        {
+          "property": "Configuration",
+          "status": "read"
+        },
+        {
+          "property": "DefaultCapacityProviderStrategy",
+          "status": "read"
+        },
+        {
+          "property": "ServiceConnectDefaults",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECS::Service",
+      "file": "src/provisioning/providers/ecs-provider.ts",
+      "className": "ECSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AvailabilityZoneRebalancing",
+          "status": "read"
+        },
+        {
+          "property": "CapacityProviderStrategy",
+          "status": "read"
+        },
+        {
+          "property": "Cluster",
+          "status": "read"
+        },
+        {
+          "property": "DeploymentConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "DeploymentController",
+          "status": "read"
+        },
+        {
+          "property": "DesiredCount",
+          "status": "read"
+        },
+        {
+          "property": "EnableECSManagedTags",
+          "status": "read"
+        },
+        {
+          "property": "EnableExecuteCommand",
+          "status": "read"
+        },
+        {
+          "property": "ForceNewDeployment",
+          "status": "unknown"
+        },
+        {
+          "property": "GatewayConnectors",
+          "status": "unknown"
+        },
+        {
+          "property": "HealthCheckGracePeriodSeconds",
+          "status": "read"
+        },
+        {
+          "property": "LaunchType",
+          "status": "read"
+        },
+        {
+          "property": "LoadBalancers",
+          "status": "read"
+        },
+        {
+          "property": "Monitoring",
+          "status": "unknown"
+        },
+        {
+          "property": "NetworkConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "PlacementConstraints",
+          "status": "read"
+        },
+        {
+          "property": "PlacementStrategies",
+          "status": "read"
+        },
+        {
+          "property": "PlatformVersion",
+          "status": "read"
+        },
+        {
+          "property": "PropagateTags",
+          "status": "read"
+        },
+        {
+          "property": "Role",
+          "status": "unknown"
+        },
+        {
+          "property": "SchedulingStrategy",
+          "status": "read"
+        },
+        {
+          "property": "ServiceConnectConfiguration",
+          "status": "unknown"
+        },
+        {
+          "property": "ServiceName",
+          "status": "read"
+        },
+        {
+          "property": "ServiceRegistries",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TaskDefinition",
+          "status": "read"
+        },
+        {
+          "property": "VolumeConfigurations",
+          "status": "unknown"
+        },
+        {
+          "property": "VpcLatticeConfigurations",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ECS::TaskDefinition",
+      "file": "src/provisioning/providers/ecs-provider.ts",
+      "className": "ECSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ContainerDefinitions",
+          "status": "read"
+        },
+        {
+          "property": "Cpu",
+          "status": "read"
+        },
+        {
+          "property": "EnableFaultInjection",
+          "status": "read"
+        },
+        {
+          "property": "EphemeralStorage",
+          "status": "read"
+        },
+        {
+          "property": "ExecutionRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "Family",
+          "status": "read"
+        },
+        {
+          "property": "IpcMode",
+          "status": "read"
+        },
+        {
+          "property": "Memory",
+          "status": "read"
+        },
+        {
+          "property": "NetworkMode",
+          "status": "read"
+        },
+        {
+          "property": "PidMode",
+          "status": "read"
+        },
+        {
+          "property": "PlacementConstraints",
+          "status": "read"
+        },
+        {
+          "property": "ProxyConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "RequiresCompatibilities",
+          "status": "read"
+        },
+        {
+          "property": "RuntimePlatform",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TaskRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "TrustedExecutionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Volumes",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EFS::AccessPoint",
+      "file": "src/provisioning/providers/efs-provider.ts",
+      "className": "EFSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AccessPointTags",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemId",
+          "status": "read"
+        },
+        {
+          "property": "PosixUser",
+          "status": "read"
+        },
+        {
+          "property": "RootDirectory",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EFS::FileSystem",
+      "file": "src/provisioning/providers/efs-provider.ts",
+      "className": "EFSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AvailabilityZoneName",
+          "status": "read"
+        },
+        {
+          "property": "BackupPolicy",
+          "status": "read"
+        },
+        {
+          "property": "BypassPolicyLockoutSafetyCheck",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "Encrypted",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemPolicy",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemProtection",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemTags",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "LifecyclePolicies",
+          "status": "read"
+        },
+        {
+          "property": "PerformanceMode",
+          "status": "read"
+        },
+        {
+          "property": "ProvisionedThroughputInMibps",
+          "status": "read"
+        },
+        {
+          "property": "ThroughputMode",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EFS::MountTarget",
+      "file": "src/provisioning/providers/efs-provider.ts",
+      "className": "EFSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "FileSystemId",
+          "status": "read"
+        },
+        {
+          "property": "IpAddress",
+          "status": "read"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "read"
+        },
+        {
+          "property": "Ipv6Address",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroups",
+          "status": "read"
+        },
+        {
+          "property": "SubnetId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElastiCache::CacheCluster",
+      "file": "src/provisioning/providers/elasticache-provider.ts",
+      "className": "ElastiCacheProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "read"
+        },
+        {
+          "property": "AZMode",
+          "status": "baseline",
+          "issue": 6757,
+          "reason": "not read back"
+        },
+        {
+          "property": "CacheNodeType",
+          "status": "read"
+        },
+        {
+          "property": "CacheParameterGroupName",
+          "status": "read"
+        },
+        {
+          "property": "CacheSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "ClusterName",
+          "status": "read"
+        },
+        {
+          "property": "Engine",
+          "status": "read"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "read"
+        },
+        {
+          "property": "IpDiscovery",
+          "status": "read"
+        },
+        {
+          "property": "LogDeliveryConfigurations",
+          "status": "baseline",
+          "issue": 6757,
+          "reason": "not read back"
+        },
+        {
+          "property": "NetworkType",
+          "status": "read"
+        },
+        {
+          "property": "NotificationTopicArn",
+          "status": "read"
+        },
+        {
+          "property": "NumCacheNodes",
+          "status": "read"
+        },
+        {
+          "property": "Port",
+          "status": "read"
+        },
+        {
+          "property": "PreferredAvailabilityZone",
+          "status": "read"
+        },
+        {
+          "property": "PreferredAvailabilityZones",
+          "status": "baseline",
+          "issue": 6757,
+          "reason": "not read back"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "SnapshotArns",
+          "status": "unknown"
+        },
+        {
+          "property": "SnapshotName",
+          "status": "unknown"
+        },
+        {
+          "property": "SnapshotRetentionLimit",
+          "status": "read"
+        },
+        {
+          "property": "SnapshotWindow",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TransitEncryptionEnabled",
+          "status": "read"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElastiCache::SubnetGroup",
+      "file": "src/provisioning/providers/elasticache-provider.ts",
+      "className": "ElastiCacheProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CacheSubnetGroupDescription",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "CacheSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::Listener",
+      "file": "src/provisioning/providers/elbv2-provider.ts",
+      "className": "ELBv2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AlpnPolicy",
+          "status": "read"
+        },
+        {
+          "property": "Certificates",
+          "status": "read"
+        },
+        {
+          "property": "DefaultActions",
+          "status": "read"
+        },
+        {
+          "property": "ListenerAttributes",
+          "status": "read"
+        },
+        {
+          "property": "LoadBalancerArn",
+          "status": "read"
+        },
+        {
+          "property": "MutualAuthentication",
+          "status": "read"
+        },
+        {
+          "property": "Port",
+          "status": "read"
+        },
+        {
+          "property": "Protocol",
+          "status": "read"
+        },
+        {
+          "property": "SslPolicy",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "file": "src/provisioning/providers/elbv2-provider.ts",
+      "className": "ELBv2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "EnableCapacityReservationProvisionStabilize",
+          "status": "unknown"
+        },
+        {
+          "property": "EnablePrefixForIpv6SourceNat",
+          "status": "read"
+        },
+        {
+          "property": "EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic",
+          "status": "read"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "read"
+        },
+        {
+          "property": "Ipv4IpamPoolId",
+          "status": "read"
+        },
+        {
+          "property": "LoadBalancerAttributes",
+          "status": "read"
+        },
+        {
+          "property": "MinimumLoadBalancerCapacity",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Scheme",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroups",
+          "status": "read"
+        },
+        {
+          "property": "SubnetMappings",
+          "status": "baseline",
+          "issue": 6756,
+          "reason": "only Subnets is read back; the per-subnet addresses are not"
+        },
+        {
+          "property": "Subnets",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "file": "src/provisioning/providers/elbv2-provider.ts",
+      "className": "ELBv2Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "HealthCheckEnabled",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckIntervalSeconds",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckPath",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckPort",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckProtocol",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckTimeoutSeconds",
+          "status": "read"
+        },
+        {
+          "property": "HealthyThresholdCount",
+          "status": "read"
+        },
+        {
+          "property": "IpAddressType",
+          "status": "read"
+        },
+        {
+          "property": "Matcher",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Port",
+          "status": "read"
+        },
+        {
+          "property": "Protocol",
+          "status": "read"
+        },
+        {
+          "property": "ProtocolVersion",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TargetControlPort",
+          "status": "read"
+        },
+        {
+          "property": "TargetGroupAttributes",
+          "status": "read"
+        },
+        {
+          "property": "Targets",
+          "status": "read"
+        },
+        {
+          "property": "TargetType",
+          "status": "read"
+        },
+        {
+          "property": "UnhealthyThresholdCount",
+          "status": "read"
+        },
+        {
+          "property": "VpcId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EMR::Cluster",
+      "file": "src/provisioning/providers/emr-cluster-provider.ts",
+      "className": "EMRClusterProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AdditionalInfo",
+          "status": "unknown"
+        },
+        {
+          "property": "Applications",
+          "status": "read"
+        },
+        {
+          "property": "AutoScalingRole",
+          "status": "read"
+        },
+        {
+          "property": "AutoTerminationPolicy",
+          "status": "unknown"
+        },
+        {
+          "property": "BootstrapActions",
+          "status": "unknown"
+        },
+        {
+          "property": "Configurations",
+          "status": "unknown"
+        },
+        {
+          "property": "CustomAmiId",
+          "status": "read"
+        },
+        {
+          "property": "EbsRootVolumeIops",
+          "status": "read"
+        },
+        {
+          "property": "EbsRootVolumeSize",
+          "status": "read"
+        },
+        {
+          "property": "EbsRootVolumeThroughput",
+          "status": "read"
+        },
+        {
+          "property": "Instances",
+          "status": "read"
+        },
+        {
+          "property": "JobFlowRole",
+          "status": "read"
+        },
+        {
+          "property": "KerberosAttributes",
+          "status": "unknown"
+        },
+        {
+          "property": "LogEncryptionKmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "LogUri",
+          "status": "read"
+        },
+        {
+          "property": "ManagedScalingPolicy",
+          "status": "unknown"
+        },
+        {
+          "property": "MonitoringConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OSReleaseLabel",
+          "status": "read"
+        },
+        {
+          "property": "PlacementGroupConfigs",
+          "status": "unknown"
+        },
+        {
+          "property": "ReleaseLabel",
+          "status": "read"
+        },
+        {
+          "property": "ScaleDownBehavior",
+          "status": "read"
+        },
+        {
+          "property": "SecurityConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ServiceRole",
+          "status": "read"
+        },
+        {
+          "property": "SessionEnabled",
+          "status": "read"
+        },
+        {
+          "property": "StepConcurrencyLevel",
+          "status": "read"
+        },
+        {
+          "property": "Steps",
+          "status": "unknown"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "VisibleToAllUsers",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceFleetConfig",
+      "file": "src/provisioning/providers/emr-instance-fleet-config-provider.ts",
+      "className": "EMRInstanceFleetConfigProvider",
+      "hasReadback": false,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::EMR::InstanceGroupConfig",
+      "file": "src/provisioning/providers/emr-instance-group-config-provider.ts",
+      "className": "EMRInstanceGroupConfigProvider",
+      "hasReadback": false,
+      "properties": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Events::Archive",
+      "file": "src/provisioning/providers/eventbridge-archive-provider.ts",
+      "className": "EventBridgeArchiveProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ArchiveName",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EventPattern",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "RetentionDays",
+          "status": "read"
+        },
+        {
+          "property": "SourceArn",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Events::EventBus",
+      "file": "src/provisioning/providers/eventbridge-bus-provider.ts",
+      "className": "EventBridgeBusProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DeadLetterConfig",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EventSourceName",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "KmsKeyIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "LogConfig",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Policy",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Events::Rule",
+      "file": "src/provisioning/providers/eventbridge-rule-provider.ts",
+      "className": "EventBridgeRuleProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EventBusName",
+          "status": "read"
+        },
+        {
+          "property": "EventPattern",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "RoleArn",
+          "status": "read"
+        },
+        {
+          "property": "ScheduleExpression",
+          "status": "read"
+        },
+        {
+          "property": "State",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Targets",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::FSx::FileSystem",
+      "file": "src/provisioning/providers/fsx-filesystem-provider.ts",
+      "className": "FSxFileSystemProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "BackupId",
+          "status": "unknown"
+        },
+        {
+          "property": "FileSystemType",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemTypeVersion",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "LustreConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "NetworkType",
+          "status": "read"
+        },
+        {
+          "property": "OntapConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "OpenZFSConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SecurityGroupIds",
+          "status": "unknown"
+        },
+        {
+          "property": "StorageCapacity",
+          "status": "read"
+        },
+        {
+          "property": "StorageType",
+          "status": "read"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "WindowsConfiguration",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Connection",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueConnectionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CatalogId",
+          "status": "read"
+        },
+        {
+          "property": "ConnectionInput",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Crawler",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueCrawlerProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Classifiers",
+          "status": "read"
+        },
+        {
+          "property": "Configuration",
+          "status": "read"
+        },
+        {
+          "property": "CrawlerSecurityConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "LakeFormationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LineageConfiguration",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "RecrawlPolicy",
+          "status": "read"
+        },
+        {
+          "property": "Role",
+          "status": "read"
+        },
+        {
+          "property": "Schedule",
+          "status": "read"
+        },
+        {
+          "property": "SchemaChangePolicy",
+          "status": "read"
+        },
+        {
+          "property": "TablePrefix",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Targets",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Database",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CatalogId",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseInput",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Job",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueJobProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AllocatedCapacity",
+          "status": "read"
+        },
+        {
+          "property": "Command",
+          "status": "read"
+        },
+        {
+          "property": "Connections",
+          "status": "read"
+        },
+        {
+          "property": "DefaultArguments",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "ExecutionClass",
+          "status": "read"
+        },
+        {
+          "property": "ExecutionProperty",
+          "status": "read"
+        },
+        {
+          "property": "GlueVersion",
+          "status": "read"
+        },
+        {
+          "property": "JobMode",
+          "status": "read"
+        },
+        {
+          "property": "JobRunQueuingEnabled",
+          "status": "read"
+        },
+        {
+          "property": "LogUri",
+          "status": "read"
+        },
+        {
+          "property": "MaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "MaxCapacity",
+          "status": "read"
+        },
+        {
+          "property": "MaxRetries",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "NonOverridableArguments",
+          "status": "read"
+        },
+        {
+          "property": "NotificationProperty",
+          "status": "read"
+        },
+        {
+          "property": "NumberOfWorkers",
+          "status": "read"
+        },
+        {
+          "property": "Role",
+          "status": "read"
+        },
+        {
+          "property": "SecurityConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SourceControlDetails",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Timeout",
+          "status": "read"
+        },
+        {
+          "property": "WorkerType",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::SecurityConfiguration",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueSecurityConfigurationProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "EncryptionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Table",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CatalogId",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OpenTableFormatInput",
+          "status": "unknown"
+        },
+        {
+          "property": "TableInput",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Trigger",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueTriggerProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Actions",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EventBatchingCondition",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Predicate",
+          "status": "read"
+        },
+        {
+          "property": "Schedule",
+          "status": "read"
+        },
+        {
+          "property": "StartOnCreation",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        },
+        {
+          "property": "WorkflowName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Glue::Workflow",
+      "file": "src/provisioning/providers/glue-provider.ts",
+      "className": "GlueWorkflowProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DefaultRunProperties",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "MaxConcurrentRuns",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::AccessKey",
+      "file": "src/provisioning/providers/iam-access-key-provider.ts",
+      "className": "IAMAccessKeyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Serial",
+          "status": "unknown"
+        },
+        {
+          "property": "Status",
+          "status": "read"
+        },
+        {
+          "property": "UserName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::Group",
+      "file": "src/provisioning/providers/iam-user-group-provider.ts",
+      "className": "IAMUserGroupProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "GroupName",
+          "status": "read"
+        },
+        {
+          "property": "ManagedPolicyArns",
+          "status": "read"
+        },
+        {
+          "property": "Path",
+          "status": "read"
+        },
+        {
+          "property": "Policies",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::InstanceProfile",
+      "file": "src/provisioning/providers/iam-instance-profile-provider.ts",
+      "className": "IAMInstanceProfileProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "InstanceProfileName",
+          "status": "read"
+        },
+        {
+          "property": "Path",
+          "status": "read"
+        },
+        {
+          "property": "Roles",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::ManagedPolicy",
+      "file": "src/provisioning/providers/iam-managed-policy-provider.ts",
+      "className": "IAMManagedPolicyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Groups",
+          "status": "read"
+        },
+        {
+          "property": "ManagedPolicyName",
+          "status": "read"
+        },
+        {
+          "property": "Path",
+          "status": "read"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "read"
+        },
+        {
+          "property": "Roles",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "Users",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::Policy",
+      "file": "src/provisioning/providers/iam-policy-provider.ts",
+      "className": "IAMPolicyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Groups",
+          "status": "read"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "read"
+        },
+        {
+          "property": "PolicyName",
+          "status": "read"
+        },
+        {
+          "property": "Roles",
+          "status": "read"
+        },
+        {
+          "property": "Users",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::Role",
+      "file": "src/provisioning/providers/iam-role-provider.ts",
+      "className": "IAMRoleProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AssumeRolePolicyDocument",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "ManagedPolicyArns",
+          "status": "read"
+        },
+        {
+          "property": "MaxSessionDuration",
+          "status": "read"
+        },
+        {
+          "property": "Path",
+          "status": "read"
+        },
+        {
+          "property": "PermissionsBoundary",
+          "status": "read"
+        },
+        {
+          "property": "Policies",
+          "status": "read"
+        },
+        {
+          "property": "RoleName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::User",
+      "file": "src/provisioning/providers/iam-user-group-provider.ts",
+      "className": "IAMUserGroupProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Groups",
+          "status": "read"
+        },
+        {
+          "property": "LoginProfile",
+          "status": "baseline",
+          "issue": 6755,
+          "reason": "PasswordResetRequired is readable; Password is write-only"
+        },
+        {
+          "property": "ManagedPolicyArns",
+          "status": "read"
+        },
+        {
+          "property": "Path",
+          "status": "read"
+        },
+        {
+          "property": "PermissionsBoundary",
+          "status": "read"
+        },
+        {
+          "property": "Policies",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "baseline",
+          "issue": 6755,
+          "reason": "not read back"
+        },
+        {
+          "property": "UserName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::IAM::UserToGroupAddition",
+      "file": "src/provisioning/providers/iam-user-group-provider.ts",
+      "className": "IAMUserGroupProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "GroupName",
+          "status": "baseline",
+          "reason": "readCurrentState returns undefined for the type: drift reports it as drift unknown"
+        },
+        {
+          "property": "Users",
+          "status": "baseline",
+          "reason": "readCurrentState returns undefined for the type: drift reports it as drift unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Kinesis::Stream",
+      "file": "src/provisioning/providers/kinesis-provider.ts",
+      "className": "KinesisStreamProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DesiredShardLevelMetrics",
+          "status": "read"
+        },
+        {
+          "property": "MaxRecordSizeInKiB",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "RecordDistributionStrategy",
+          "status": "read"
+        },
+        {
+          "property": "RetentionPeriodHours",
+          "status": "read"
+        },
+        {
+          "property": "ShardCount",
+          "status": "read"
+        },
+        {
+          "property": "StreamEncryption",
+          "status": "read"
+        },
+        {
+          "property": "StreamModeDetails",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Kinesis::StreamConsumer",
+      "file": "src/provisioning/providers/kinesis-streamconsumer-provider.ts",
+      "className": "KinesisStreamConsumerProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ConsumerName",
+          "status": "read"
+        },
+        {
+          "property": "StreamARN",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::KinesisFirehose::DeliveryStream",
+      "file": "src/provisioning/providers/firehose-provider.ts",
+      "className": "FirehoseProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AmazonOpenSearchServerlessDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "AmazonopensearchserviceDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "DeliveryStreamEncryptionConfigurationInput",
+          "status": "read"
+        },
+        {
+          "property": "DeliveryStreamName",
+          "status": "read"
+        },
+        {
+          "property": "DeliveryStreamType",
+          "status": "read"
+        },
+        {
+          "property": "DirectPutSourceConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ElasticsearchDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ExtendedS3DestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "HttpEndpointDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "IcebergDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "KinesisStreamSourceConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "MSKSourceConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "RedshiftDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "S3DestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SplunkDestinationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::KMS::Alias",
+      "file": "src/provisioning/providers/kms-provider.ts",
+      "className": "KMSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AliasName",
+          "status": "read"
+        },
+        {
+          "property": "TargetKeyId",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::KMS::Key",
+      "file": "src/provisioning/providers/kms-provider.ts",
+      "className": "KMSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "BypassPolicyLockoutSafetyCheck",
+          "status": "unknown"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Enabled",
+          "status": "read"
+        },
+        {
+          "property": "EnableKeyRotation",
+          "status": "read"
+        },
+        {
+          "property": "KeyPolicy",
+          "status": "read"
+        },
+        {
+          "property": "KeySpec",
+          "status": "read"
+        },
+        {
+          "property": "KeyUsage",
+          "status": "read"
+        },
+        {
+          "property": "MultiRegion",
+          "status": "read"
+        },
+        {
+          "property": "Origin",
+          "status": "read"
+        },
+        {
+          "property": "PendingWindowInDays",
+          "status": "unknown"
+        },
+        {
+          "property": "RotationPeriodInDays",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventInvokeConfig",
+      "file": "src/provisioning/providers/lambda-event-invoke-config-provider.ts",
+      "className": "LambdaEventInvokeConfigProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DestinationConfig",
+          "status": "read"
+        },
+        {
+          "property": "FunctionName",
+          "status": "read"
+        },
+        {
+          "property": "MaximumEventAgeInSeconds",
+          "status": "read"
+        },
+        {
+          "property": "MaximumRetryAttempts",
+          "status": "read"
+        },
+        {
+          "property": "Qualifier",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::EventSourceMapping",
+      "file": "src/provisioning/providers/lambda-eventsource-provider.ts",
+      "className": "LambdaEventSourceMappingProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AmazonManagedKafkaEventSourceConfig",
+          "status": "read"
+        },
+        {
+          "property": "BatchSize",
+          "status": "read"
+        },
+        {
+          "property": "BisectBatchOnFunctionError",
+          "status": "read"
+        },
+        {
+          "property": "DestinationConfig",
+          "status": "read"
+        },
+        {
+          "property": "DocumentDBEventSourceConfig",
+          "status": "read"
+        },
+        {
+          "property": "Enabled",
+          "status": "read"
+        },
+        {
+          "property": "EventSourceArn",
+          "status": "read"
+        },
+        {
+          "property": "FilterCriteria",
+          "status": "read"
+        },
+        {
+          "property": "FunctionName",
+          "status": "read"
+        },
+        {
+          "property": "FunctionResponseTypes",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "read"
+        },
+        {
+          "property": "LoggingConfig",
+          "status": "read"
+        },
+        {
+          "property": "MaximumBatchingWindowInSeconds",
+          "status": "read"
+        },
+        {
+          "property": "MaximumRecordAgeInSeconds",
+          "status": "read"
+        },
+        {
+          "property": "MaximumRetryAttempts",
+          "status": "read"
+        },
+        {
+          "property": "MetricsConfig",
+          "status": "read"
+        },
+        {
+          "property": "ParallelizationFactor",
+          "status": "read"
+        },
+        {
+          "property": "ProvisionedPollerConfig",
+          "status": "read"
+        },
+        {
+          "property": "Queues",
+          "status": "read"
+        },
+        {
+          "property": "ScalingConfig",
+          "status": "read"
+        },
+        {
+          "property": "SelfManagedEventSource",
+          "status": "read"
+        },
+        {
+          "property": "SelfManagedKafkaEventSourceConfig",
+          "status": "read"
+        },
+        {
+          "property": "SourceAccessConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "StartingPosition",
+          "status": "read"
+        },
+        {
+          "property": "StartingPositionTimestamp",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Topics",
+          "status": "read"
+        },
+        {
+          "property": "TumblingWindowInSeconds",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Function",
+      "file": "src/provisioning/providers/lambda-function-provider.ts",
+      "className": "LambdaFunctionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Architectures",
+          "status": "read"
+        },
+        {
+          "property": "CapacityProviderConfig",
+          "status": "read"
+        },
+        {
+          "property": "Code",
+          "status": "read"
+        },
+        {
+          "property": "CodeSigningConfigArn",
+          "status": "read"
+        },
+        {
+          "property": "DeadLetterConfig",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DurableConfig",
+          "status": "read"
+        },
+        {
+          "property": "Environment",
+          "status": "read"
+        },
+        {
+          "property": "EphemeralStorage",
+          "status": "read"
+        },
+        {
+          "property": "FileSystemConfigs",
+          "status": "read"
+        },
+        {
+          "property": "FunctionName",
+          "status": "read"
+        },
+        {
+          "property": "FunctionScalingConfig",
+          "status": "read"
+        },
+        {
+          "property": "Handler",
+          "status": "read"
+        },
+        {
+          "property": "ImageConfig",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "read"
+        },
+        {
+          "property": "Layers",
+          "status": "read"
+        },
+        {
+          "property": "LoggingConfig",
+          "status": "read"
+        },
+        {
+          "property": "MemorySize",
+          "status": "read"
+        },
+        {
+          "property": "PackageType",
+          "status": "read"
+        },
+        {
+          "property": "PublishToLatestPublished",
+          "status": "unknown"
+        },
+        {
+          "property": "RecursiveLoop",
+          "status": "read"
+        },
+        {
+          "property": "ReservedConcurrentExecutions",
+          "status": "read"
+        },
+        {
+          "property": "Role",
+          "status": "read"
+        },
+        {
+          "property": "Runtime",
+          "status": "read"
+        },
+        {
+          "property": "RuntimeConfig",
+          "status": "read"
+        },
+        {
+          "property": "RuntimeManagementConfig",
+          "status": "read"
+        },
+        {
+          "property": "SnapStart",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TenancyConfig",
+          "status": "read"
+        },
+        {
+          "property": "Timeout",
+          "status": "read"
+        },
+        {
+          "property": "TracingConfig",
+          "status": "read"
+        },
+        {
+          "property": "VpcConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::LayerVersion",
+      "file": "src/provisioning/providers/lambda-layer-provider.ts",
+      "className": "LambdaLayerVersionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "CompatibleArchitectures",
+          "status": "read"
+        },
+        {
+          "property": "CompatibleRuntimes",
+          "status": "read"
+        },
+        {
+          "property": "Content",
+          "status": "unknown"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "LayerName",
+          "status": "read"
+        },
+        {
+          "property": "LicenseInfo",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::MicrovmImage",
+      "file": "src/provisioning/providers/lambda-microvm-image-provider.ts",
+      "className": "LambdaMicrovmImageProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AdditionalOsCapabilities",
+          "status": "unknown"
+        },
+        {
+          "property": "BaseImageArn",
+          "status": "unknown"
+        },
+        {
+          "property": "BaseImageVersion",
+          "status": "unknown"
+        },
+        {
+          "property": "BuildRoleArn",
+          "status": "unknown"
+        },
+        {
+          "property": "CodeArtifact",
+          "status": "unknown"
+        },
+        {
+          "property": "CpuConfigurations",
+          "status": "unknown"
+        },
+        {
+          "property": "Description",
+          "status": "unknown"
+        },
+        {
+          "property": "EgressNetworkConnectors",
+          "status": "unknown"
+        },
+        {
+          "property": "EnvironmentVariables",
+          "status": "unknown"
+        },
+        {
+          "property": "Hooks",
+          "status": "unknown"
+        },
+        {
+          "property": "Logging",
+          "status": "unknown"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Resources",
+          "status": "unknown"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::NetworkConnector",
+      "file": "src/provisioning/providers/lambda-network-connector-provider.ts",
+      "className": "LambdaNetworkConnectorProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Configuration",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OperatorRole",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Permission",
+      "file": "src/provisioning/providers/lambda-permission-provider.ts",
+      "className": "LambdaPermissionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Action",
+          "status": "read"
+        },
+        {
+          "property": "EventSourceToken",
+          "status": "baseline",
+          "issue": 6758,
+          "reason": "a condition of the policy statement the readback parses, not returned"
+        },
+        {
+          "property": "FunctionName",
+          "status": "read"
+        },
+        {
+          "property": "FunctionUrlAuthType",
+          "status": "baseline",
+          "issue": 6758,
+          "reason": "a condition of the policy statement the readback parses, not returned"
+        },
+        {
+          "property": "InvokedViaFunctionUrl",
+          "status": "read"
+        },
+        {
+          "property": "Principal",
+          "status": "read"
+        },
+        {
+          "property": "PrincipalOrgID",
+          "status": "read"
+        },
+        {
+          "property": "SourceAccount",
+          "status": "read"
+        },
+        {
+          "property": "SourceArn",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::Url",
+      "file": "src/provisioning/providers/lambda-url-provider.ts",
+      "className": "LambdaUrlProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AuthType",
+          "status": "read"
+        },
+        {
+          "property": "Cors",
+          "status": "read"
+        },
+        {
+          "property": "InvokeMode",
+          "status": "read"
+        },
+        {
+          "property": "Qualifier",
+          "status": "baseline",
+          "reason": "create-only and part of the physical id: it cannot change out of band"
+        },
+        {
+          "property": "TargetFunctionArn",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionEndpoint",
+      "file": "src/provisioning/providers/lambda-web-function-endpoint-provider.ts",
+      "className": "LambdaWebFunctionEndpointProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AuthType",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EndpointName",
+          "status": "read"
+        },
+        {
+          "property": "EndpointType",
+          "status": "read"
+        },
+        {
+          "property": "FunctionName",
+          "status": "read"
+        },
+        {
+          "property": "Regions",
+          "status": "read"
+        },
+        {
+          "property": "RevisionWeights",
+          "status": "read"
+        },
+        {
+          "property": "ScalingConfig",
+          "status": "read"
+        },
+        {
+          "property": "ThrottleConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lambda::WebFunctionRevision",
+      "file": "src/provisioning/providers/lambda-web-function-revision-provider.ts",
+      "className": "LambdaWebFunctionRevisionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "BuildConfig",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "FunctionName",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "read"
+        },
+        {
+          "property": "ServiceConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::Delivery",
+      "file": "src/provisioning/providers/logs-delivery-provider.ts",
+      "className": "LogsDeliveryProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DeliveryDestinationArn",
+          "status": "read"
+        },
+        {
+          "property": "DeliverySourceName",
+          "status": "read"
+        },
+        {
+          "property": "FieldDelimiter",
+          "status": "read"
+        },
+        {
+          "property": "RecordFields",
+          "status": "read"
+        },
+        {
+          "property": "S3EnableHiveCompatiblePath",
+          "status": "read"
+        },
+        {
+          "property": "S3SuffixPath",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::DeliveryDestination",
+      "file": "src/provisioning/providers/logs-delivery-destination-provider.ts",
+      "className": "LogsDeliveryDestinationProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DeliveryDestinationPolicy",
+          "status": "read"
+        },
+        {
+          "property": "DeliveryDestinationType",
+          "status": "read"
+        },
+        {
+          "property": "DestinationResourceArn",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OutputFormat",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::DeliverySource",
+      "file": "src/provisioning/providers/logs-delivery-source-provider.ts",
+      "className": "LogsDeliverySourceProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DeliverySourceConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LogType",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "ResourceArn",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Logs::LogGroup",
+      "file": "src/provisioning/providers/logs-loggroup-provider.ts",
+      "className": "LogsLogGroupProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "BearerTokenAuthenticationEnabled",
+          "status": "read"
+        },
+        {
+          "property": "DataProtectionPolicy",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtectionEnabled",
+          "status": "read"
+        },
+        {
+          "property": "FieldIndexPolicies",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "LogGroupClass",
+          "status": "read"
+        },
+        {
+          "property": "LogGroupName",
+          "status": "read"
+        },
+        {
+          "property": "RetentionInDays",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBCluster",
+      "file": "src/provisioning/providers/neptune-provider.ts",
+      "className": "NeptuneProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AssociatedRoles",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZones",
+          "status": "unknown"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterParameterGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceParameterGroupName",
+          "status": "unknown"
+        },
+        {
+          "property": "DBPort",
+          "status": "read"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "read"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "read"
+        },
+        {
+          "property": "IamAuthEnabled",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "NetworkType",
+          "status": "read"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "read"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "RestoreToTime",
+          "status": "unknown"
+        },
+        {
+          "property": "RestoreType",
+          "status": "unknown"
+        },
+        {
+          "property": "ServerlessScalingConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SnapshotIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "unknown"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBInstance",
+      "file": "src/provisioning/providers/neptune-provider.ts",
+      "className": "NeptuneProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AllowMajorVersionUpgrade",
+          "status": "unknown"
+        },
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceClass",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBParameterGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "PubliclyAccessible",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Neptune::DBSubnetGroup",
+      "file": "src/provisioning/providers/neptune-provider.ts",
+      "className": "NeptuneProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DBSubnetGroupDescription",
+          "status": "read"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Pipes::Pipe",
+      "file": "src/provisioning/providers/pipes-provider.ts",
+      "className": "PipesPipeProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DesiredState",
+          "status": "read"
+        },
+        {
+          "property": "Enrichment",
+          "status": "read"
+        },
+        {
+          "property": "EnrichmentParameters",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "LogConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "RoleArn",
+          "status": "read"
+        },
+        {
+          "property": "Source",
+          "status": "read"
+        },
+        {
+          "property": "SourceParameters",
+          "status": "unknown"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Target",
+          "status": "read"
+        },
+        {
+          "property": "TargetParameters",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBCluster",
+      "file": "src/provisioning/providers/rds-provider.ts",
+      "className": "RDSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AllocatedStorage",
+          "status": "read"
+        },
+        {
+          "property": "AssociatedRoles",
+          "status": "read"
+        },
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZones",
+          "status": "unknown"
+        },
+        {
+          "property": "BacktrackWindow",
+          "status": "read"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "ClusterScalabilityType",
+          "status": "unknown"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseInsightsMode",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseName",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterInstanceClass",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterParameterGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceParameterGroupName",
+          "status": "unknown"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "read"
+        },
+        {
+          "property": "EnableGlobalWriteForwarding",
+          "status": "unknown"
+        },
+        {
+          "property": "EnableHttpEndpoint",
+          "status": "read"
+        },
+        {
+          "property": "EnableIAMDatabaseAuthentication",
+          "status": "read"
+        },
+        {
+          "property": "EnableLocalWriteForwarding",
+          "status": "read"
+        },
+        {
+          "property": "Engine",
+          "status": "read"
+        },
+        {
+          "property": "EngineLifecycleSupport",
+          "status": "read"
+        },
+        {
+          "property": "EngineMode",
+          "status": "unknown"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "read"
+        },
+        {
+          "property": "GlobalClusterIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "Iops",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "ManageMasterUserPassword",
+          "status": "baseline",
+          "reason": "no Describe field; its effect is MasterUserSecret, which is read back"
+        },
+        {
+          "property": "MasterUserAuthenticationType",
+          "status": "unknown"
+        },
+        {
+          "property": "MasterUsername",
+          "status": "read"
+        },
+        {
+          "property": "MasterUserPassword",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "MasterUserSecret",
+          "status": "read"
+        },
+        {
+          "property": "MonitoringInterval",
+          "status": "read"
+        },
+        {
+          "property": "MonitoringRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "NetworkType",
+          "status": "read"
+        },
+        {
+          "property": "PerformanceInsightsEnabled",
+          "status": "read"
+        },
+        {
+          "property": "PerformanceInsightsKmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "PerformanceInsightsRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "Port",
+          "status": "read"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "read"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "PubliclyAccessible",
+          "status": "read"
+        },
+        {
+          "property": "ReplicationSourceIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "RestoreToTime",
+          "status": "unknown"
+        },
+        {
+          "property": "RestoreType",
+          "status": "unknown"
+        },
+        {
+          "property": "ServerlessV2ScalingConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "SnapshotIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceDbClusterResourceId",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceRegion",
+          "status": "unknown"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "read"
+        },
+        {
+          "property": "StorageType",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "unknown"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "read"
+        },
+        {
+          "property": "WithExpressConfiguration",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBInstance",
+      "file": "src/provisioning/providers/rds-provider.ts",
+      "className": "RDSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AdditionalStorageVolumes",
+          "status": "read"
+        },
+        {
+          "property": "AllocatedStorage",
+          "status": "read"
+        },
+        {
+          "property": "AllowMajorVersionUpgrade",
+          "status": "unknown"
+        },
+        {
+          "property": "AssociatedRoles",
+          "status": "read"
+        },
+        {
+          "property": "AutomaticBackupReplicationKmsKeyId",
+          "status": "unknown"
+        },
+        {
+          "property": "AutomaticBackupReplicationRegion",
+          "status": "read"
+        },
+        {
+          "property": "AutomaticBackupReplicationRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "AutoMinorVersionUpgrade",
+          "status": "read"
+        },
+        {
+          "property": "AvailabilityZone",
+          "status": "read"
+        },
+        {
+          "property": "BackupRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "CACertificateIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "CertificateRotationRestart",
+          "status": "unknown"
+        },
+        {
+          "property": "CharacterSetName",
+          "status": "read"
+        },
+        {
+          "property": "CopyTagsToSnapshot",
+          "status": "read"
+        },
+        {
+          "property": "DatabaseInsightsMode",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterSnapshotIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "DBInstanceClass",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "DBName",
+          "status": "read"
+        },
+        {
+          "property": "DBParameterGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DBSnapshotIdentifier",
+          "status": "unknown"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "DedicatedLogVolume",
+          "status": "read"
+        },
+        {
+          "property": "DeletionProtection",
+          "status": "read"
+        },
+        {
+          "property": "EnableCloudwatchLogsExports",
+          "status": "read"
+        },
+        {
+          "property": "EnableIAMDatabaseAuthentication",
+          "status": "read"
+        },
+        {
+          "property": "EnablePerformanceInsights",
+          "status": "read"
+        },
+        {
+          "property": "Engine",
+          "status": "read"
+        },
+        {
+          "property": "EngineLifecycleSupport",
+          "status": "read"
+        },
+        {
+          "property": "EngineVersion",
+          "status": "read"
+        },
+        {
+          "property": "Iops",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "LicenseModel",
+          "status": "read"
+        },
+        {
+          "property": "ManageMasterUserPassword",
+          "status": "baseline",
+          "reason": "no Describe field; its effect is MasterUserSecret, which is read back"
+        },
+        {
+          "property": "MasterUserAuthenticationType",
+          "status": "baseline",
+          "reason": "no DescribeDBInstances member (the DBCluster getDriftUnknownPaths declares the same key unread)"
+        },
+        {
+          "property": "MasterUsername",
+          "status": "read"
+        },
+        {
+          "property": "MasterUserPassword",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "MasterUserSecret",
+          "status": "read"
+        },
+        {
+          "property": "MaxAllocatedStorage",
+          "status": "read"
+        },
+        {
+          "property": "MonitoringInterval",
+          "status": "read"
+        },
+        {
+          "property": "MonitoringRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "MultiAZ",
+          "status": "read"
+        },
+        {
+          "property": "NcharCharacterSetName",
+          "status": "read"
+        },
+        {
+          "property": "NetworkType",
+          "status": "read"
+        },
+        {
+          "property": "OptionGroupName",
+          "status": "read"
+        },
+        {
+          "property": "PerformanceInsightsKMSKeyId",
+          "status": "read"
+        },
+        {
+          "property": "PerformanceInsightsRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "Port",
+          "status": "read"
+        },
+        {
+          "property": "PreferredBackupWindow",
+          "status": "read"
+        },
+        {
+          "property": "PreferredMaintenanceWindow",
+          "status": "read"
+        },
+        {
+          "property": "ProcessorFeatures",
+          "status": "read"
+        },
+        {
+          "property": "PromotionTier",
+          "status": "read"
+        },
+        {
+          "property": "PubliclyAccessible",
+          "status": "read"
+        },
+        {
+          "property": "RestoreTime",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceDBClusterIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "SourceDBInstanceAutomatedBackupsArn",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceDBInstanceIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "SourceDbiResourceId",
+          "status": "unknown"
+        },
+        {
+          "property": "SourceRegion",
+          "status": "unknown"
+        },
+        {
+          "property": "StorageEncrypted",
+          "status": "read"
+        },
+        {
+          "property": "StorageThroughput",
+          "status": "read"
+        },
+        {
+          "property": "StorageType",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Timezone",
+          "status": "read"
+        },
+        {
+          "property": "UseDefaultProcessorFeatures",
+          "status": "unknown"
+        },
+        {
+          "property": "UseLatestRestorableTime",
+          "status": "unknown"
+        },
+        {
+          "property": "VPCSecurityGroups",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxy",
+      "file": "src/provisioning/providers/rds-dbproxy-provider.ts",
+      "className": "RDSDBProxyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Auth",
+          "status": "read"
+        },
+        {
+          "property": "DBProxyName",
+          "status": "read"
+        },
+        {
+          "property": "DebugLogging",
+          "status": "read"
+        },
+        {
+          "property": "DefaultAuthScheme",
+          "status": "read"
+        },
+        {
+          "property": "EndpointNetworkType",
+          "status": "read"
+        },
+        {
+          "property": "EngineFamily",
+          "status": "read"
+        },
+        {
+          "property": "IdleClientTimeout",
+          "status": "read"
+        },
+        {
+          "property": "RequireTLS",
+          "status": "read"
+        },
+        {
+          "property": "RoleArn",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TargetConnectionNetworkType",
+          "status": "read"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "read"
+        },
+        {
+          "property": "VpcSubnetIds",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyEndpoint",
+      "file": "src/provisioning/providers/rds-dbproxy-endpoint-provider.ts",
+      "className": "RDSDBProxyEndpointProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DBProxyEndpointName",
+          "status": "read"
+        },
+        {
+          "property": "DBProxyName",
+          "status": "read"
+        },
+        {
+          "property": "EndpointNetworkType",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TargetRole",
+          "status": "read"
+        },
+        {
+          "property": "VpcSecurityGroupIds",
+          "status": "read"
+        },
+        {
+          "property": "VpcSubnetIds",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBProxyTargetGroup",
+      "file": "src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts",
+      "className": "RDSDBProxyTargetGroupProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ConnectionPoolConfigurationInfo",
+          "status": "read"
+        },
+        {
+          "property": "DBClusterIdentifiers",
+          "status": "read"
+        },
+        {
+          "property": "DBInstanceIdentifiers",
+          "status": "read"
+        },
+        {
+          "property": "DBProxyName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TargetGroupName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::RDS::DBSubnetGroup",
+      "file": "src/provisioning/providers/rds-provider.ts",
+      "className": "RDSProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DBSubnetGroupDescription",
+          "status": "read"
+        },
+        {
+          "property": "DBSubnetGroupName",
+          "status": "read"
+        },
+        {
+          "property": "SubnetIds",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Route53::HostedZone",
+      "file": "src/provisioning/providers/route53-provider.ts",
+      "className": "Route53Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DelegationSetId",
+          "status": "read"
+        },
+        {
+          "property": "HostedZoneConfig",
+          "status": "read"
+        },
+        {
+          "property": "HostedZoneFeatures",
+          "status": "read"
+        },
+        {
+          "property": "HostedZoneTags",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "QueryLoggingConfig",
+          "status": "read"
+        },
+        {
+          "property": "VPCs",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSet",
+      "file": "src/provisioning/providers/route53-provider.ts",
+      "className": "Route53Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AliasTarget",
+          "status": "read"
+        },
+        {
+          "property": "AZAffinity",
+          "status": "read"
+        },
+        {
+          "property": "CidrRoutingConfig",
+          "status": "read"
+        },
+        {
+          "property": "Comment",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "Failover",
+          "status": "read"
+        },
+        {
+          "property": "GeoLocation",
+          "status": "read"
+        },
+        {
+          "property": "GeoProximityLocation",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "HealthCheckId",
+          "status": "read"
+        },
+        {
+          "property": "HostedZoneId",
+          "status": "read"
+        },
+        {
+          "property": "HostedZoneName",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "MultiValueAnswer",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Region",
+          "status": "read"
+        },
+        {
+          "property": "ResourceRecords",
+          "status": "read"
+        },
+        {
+          "property": "SetIdentifier",
+          "status": "read"
+        },
+        {
+          "property": "TTL",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        },
+        {
+          "property": "Weight",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Route53::RecordSetGroup",
+      "file": "src/provisioning/providers/route53-provider.ts",
+      "className": "Route53Provider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Comment",
+          "status": "baseline",
+          "reason": "the change-batch comment, kept by no record set: nothing returns it"
+        },
+        {
+          "property": "HostedZoneId",
+          "status": "read"
+        },
+        {
+          "property": "HostedZoneName",
+          "status": "read"
+        },
+        {
+          "property": "RecordSets",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3::Bucket",
+      "file": "src/provisioning/providers/s3-bucket-provider.ts",
+      "className": "S3BucketProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AbacStatus",
+          "status": "read"
+        },
+        {
+          "property": "AccelerateConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "AnalyticsConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "BucketEncryption",
+          "status": "read"
+        },
+        {
+          "property": "BucketName",
+          "status": "read"
+        },
+        {
+          "property": "BucketNamePrefix",
+          "status": "unknown"
+        },
+        {
+          "property": "BucketNamespace",
+          "status": "unknown"
+        },
+        {
+          "property": "CorsConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "IntelligentTieringConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "InventoryConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "LifecycleConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LoggingConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "MetadataConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "MetricsConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "NotificationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ObjectLockConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ObjectLockEnabled",
+          "status": "read"
+        },
+        {
+          "property": "OwnershipControls",
+          "status": "read"
+        },
+        {
+          "property": "PublicAccessBlockConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ReplicationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "VersioningConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "WebsiteConfiguration",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3::BucketPolicy",
+      "file": "src/provisioning/providers/s3-bucket-policy-provider.ts",
+      "className": "S3BucketPolicyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Bucket",
+          "status": "read"
+        },
+        {
+          "property": "PolicyDocument",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Express::DirectoryBucket",
+      "file": "src/provisioning/providers/s3-directory-bucket-provider.ts",
+      "className": "S3DirectoryBucketProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "BucketEncryption",
+          "status": "read"
+        },
+        {
+          "property": "BucketName",
+          "status": "read"
+        },
+        {
+          "property": "DataRedundancy",
+          "status": "read"
+        },
+        {
+          "property": "InventoryConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "LifecycleConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LocationName",
+          "status": "baseline",
+          "reason": "create-only and part of the physical id: it cannot change out of band"
+        },
+        {
+          "property": "MetricsConfigurations",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Namespace",
+      "file": "src/provisioning/providers/s3-tables-provider.ts",
+      "className": "S3TablesProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Namespace",
+          "status": "read"
+        },
+        {
+          "property": "TableBucketARN",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::Table",
+      "file": "src/provisioning/providers/s3-tables-provider.ts",
+      "className": "S3TablesProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Compaction",
+          "status": "read"
+        },
+        {
+          "property": "Format",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "IcebergMetadata",
+          "status": "unknown"
+        },
+        {
+          "property": "Name",
+          "status": "read",
+          "outsideSchema": true
+        },
+        {
+          "property": "Namespace",
+          "status": "read"
+        },
+        {
+          "property": "OpenTableFormat",
+          "status": "read"
+        },
+        {
+          "property": "SnapshotManagement",
+          "status": "read"
+        },
+        {
+          "property": "StorageClassConfiguration",
+          "status": "unknown"
+        },
+        {
+          "property": "TableBucketARN",
+          "status": "read"
+        },
+        {
+          "property": "TableName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "WithoutMetadata",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Tables::TableBucket",
+      "file": "src/provisioning/providers/s3-tables-provider.ts",
+      "className": "S3TablesProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "EncryptionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LoggingConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "MetricsConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "ReplicationConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "StorageClassConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "TableBucketName",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "UnreferencedFileRemoval",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::S3Vectors::VectorBucket",
+      "file": "src/provisioning/providers/s3-vectors-provider.ts",
+      "className": "S3VectorsProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "EncryptionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "VectorBucketName",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Scheduler::Schedule",
+      "file": "src/provisioning/providers/scheduler-schedule-provider.ts",
+      "className": "SchedulerScheduleProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "EndDate",
+          "status": "read"
+        },
+        {
+          "property": "FlexibleTimeWindow",
+          "status": "read"
+        },
+        {
+          "property": "GroupName",
+          "status": "read"
+        },
+        {
+          "property": "KmsKeyArn",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "ScheduleExpression",
+          "status": "read"
+        },
+        {
+          "property": "ScheduleExpressionTimezone",
+          "status": "read"
+        },
+        {
+          "property": "StartDate",
+          "status": "read"
+        },
+        {
+          "property": "State",
+          "status": "read"
+        },
+        {
+          "property": "Target",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SecretsManager::Secret",
+      "file": "src/provisioning/providers/secretsmanager-secret-provider.ts",
+      "className": "SecretsManagerSecretProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "GenerateSecretString",
+          "status": "unknown"
+        },
+        {
+          "property": "KmsKeyId",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "ReplicaRegions",
+          "status": "read"
+        },
+        {
+          "property": "SecretString",
+          "status": "unknown"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::HttpNamespace",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PrivateDnsNamespace",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Properties",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Vpc",
+          "status": "unknown"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::PublicDnsNamespace",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Properties",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::ServiceDiscovery::Service",
+      "file": "src/provisioning/providers/servicediscovery-provider.ts",
+      "className": "ServiceDiscoveryProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "DnsConfig",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckConfig",
+          "status": "read"
+        },
+        {
+          "property": "HealthCheckCustomConfig",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "NamespaceId",
+          "status": "read"
+        },
+        {
+          "property": "ServiceAttributes",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SNS::Subscription",
+      "file": "src/provisioning/providers/sns-subscription-provider.ts",
+      "className": "SNSSubscriptionProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "DeliveryPolicy",
+          "status": "read"
+        },
+        {
+          "property": "Endpoint",
+          "status": "read"
+        },
+        {
+          "property": "FilterPolicy",
+          "status": "read"
+        },
+        {
+          "property": "FilterPolicyScope",
+          "status": "read"
+        },
+        {
+          "property": "Protocol",
+          "status": "read"
+        },
+        {
+          "property": "RawMessageDelivery",
+          "status": "read"
+        },
+        {
+          "property": "RedrivePolicy",
+          "status": "read"
+        },
+        {
+          "property": "ReplayPolicy",
+          "status": "read"
+        },
+        {
+          "property": "SubscriptionRoleArn",
+          "status": "read"
+        },
+        {
+          "property": "TopicArn",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SNS::Topic",
+      "file": "src/provisioning/providers/sns-topic-provider.ts",
+      "className": "SNSTopicProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ArchivePolicy",
+          "status": "read"
+        },
+        {
+          "property": "ContentBasedDeduplication",
+          "status": "read"
+        },
+        {
+          "property": "DataProtectionPolicy",
+          "status": "read"
+        },
+        {
+          "property": "DeliveryStatusLogging",
+          "status": "read"
+        },
+        {
+          "property": "DisplayName",
+          "status": "read"
+        },
+        {
+          "property": "FifoThroughputScope",
+          "status": "read"
+        },
+        {
+          "property": "FifoTopic",
+          "status": "read"
+        },
+        {
+          "property": "KmsMasterKeyId",
+          "status": "read"
+        },
+        {
+          "property": "MaximumMessageSize",
+          "status": "read"
+        },
+        {
+          "property": "SignatureVersion",
+          "status": "read"
+        },
+        {
+          "property": "Subscription",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TopicName",
+          "status": "read"
+        },
+        {
+          "property": "TracingConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SNS::TopicPolicy",
+      "file": "src/provisioning/providers/sns-topic-policy-provider.ts",
+      "className": "SNSTopicPolicyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "PolicyDocument",
+          "status": "read"
+        },
+        {
+          "property": "Topics",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SQS::Queue",
+      "file": "src/provisioning/providers/sqs-queue-provider.ts",
+      "className": "SQSQueueProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ContentBasedDeduplication",
+          "status": "read"
+        },
+        {
+          "property": "DeduplicationScope",
+          "status": "read"
+        },
+        {
+          "property": "DelaySeconds",
+          "status": "read"
+        },
+        {
+          "property": "FifoQueue",
+          "status": "read"
+        },
+        {
+          "property": "FifoThroughputLimit",
+          "status": "read"
+        },
+        {
+          "property": "KmsDataKeyReusePeriodSeconds",
+          "status": "read"
+        },
+        {
+          "property": "KmsMasterKeyId",
+          "status": "read"
+        },
+        {
+          "property": "MaximumMessageSize",
+          "status": "read"
+        },
+        {
+          "property": "MessageRetentionPeriod",
+          "status": "read"
+        },
+        {
+          "property": "QueueName",
+          "status": "read"
+        },
+        {
+          "property": "ReceiveMessageWaitTimeSeconds",
+          "status": "read"
+        },
+        {
+          "property": "RedriveAllowPolicy",
+          "status": "read"
+        },
+        {
+          "property": "RedrivePolicy",
+          "status": "read"
+        },
+        {
+          "property": "SqsManagedSseEnabled",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "VisibilityTimeout",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SQS::QueuePolicy",
+      "file": "src/provisioning/providers/sqs-queue-policy-provider.ts",
+      "className": "SQSQueuePolicyProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "PolicyDocument",
+          "status": "read"
+        },
+        {
+          "property": "Queues",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::SSM::Parameter",
+      "file": "src/provisioning/providers/ssm-parameter-provider.ts",
+      "className": "SSMParameterProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AllowedPattern",
+          "status": "read"
+        },
+        {
+          "property": "DataType",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "Policies",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "Tier",
+          "status": "read"
+        },
+        {
+          "property": "Type",
+          "status": "read"
+        },
+        {
+          "property": "Value",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::StepFunctions::StateMachine",
+      "file": "src/provisioning/providers/stepfunctions-provider.ts",
+      "className": "StepFunctionsProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Definition",
+          "status": "read"
+        },
+        {
+          "property": "DefinitionS3Location",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "DefinitionString",
+          "status": "baseline",
+          "reason": "read back parsed, as Definition, which the captured baseline compares"
+        },
+        {
+          "property": "DefinitionSubstitutions",
+          "status": "baseline",
+          "reason": "write-only in the CloudFormation registry schema: AWS never returns it"
+        },
+        {
+          "property": "EncryptionConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "LoggingConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "RoleArn",
+          "status": "read"
+        },
+        {
+          "property": "StateMachineName",
+          "status": "read"
+        },
+        {
+          "property": "StateMachineType",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TracingConfiguration",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::WAFv2::WebACL",
+      "file": "src/provisioning/providers/wafv2-provider.ts",
+      "className": "WAFv2WebACLProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ApplicationConfig",
+          "status": "read"
+        },
+        {
+          "property": "AssociationConfig",
+          "status": "read"
+        },
+        {
+          "property": "CaptchaConfig",
+          "status": "read"
+        },
+        {
+          "property": "ChallengeConfig",
+          "status": "read"
+        },
+        {
+          "property": "CustomResponseBodies",
+          "status": "read"
+        },
+        {
+          "property": "DataProtectionConfig",
+          "status": "read"
+        },
+        {
+          "property": "DefaultAction",
+          "status": "read"
+        },
+        {
+          "property": "Description",
+          "status": "read"
+        },
+        {
+          "property": "MonetizationConfig",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "OnSourceDDoSProtectionConfig",
+          "status": "read"
+        },
+        {
+          "property": "Rules",
+          "status": "read"
+        },
+        {
+          "property": "Scope",
+          "status": "read"
+        },
+        {
+          "property": "Tags",
+          "status": "read"
+        },
+        {
+          "property": "TokenDomains",
+          "status": "read"
+        },
+        {
+          "property": "VisibilityConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    }
+  ]
+}

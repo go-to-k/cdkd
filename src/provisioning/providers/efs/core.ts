@@ -358,10 +358,8 @@ export async function retryOnTransientControlPlane<T>(
  *
  * `FileSystemTags` (the CFn property name on `AWS::EFS::FileSystem`) is
  * surfaced from the same `DescribeFileSystems` response — `aws:*`
- * auto-tags filtered, key omitted when empty. `AccessPoint` and
- * `MountTarget` are not surfaced for tags here (`AccessPointTags` would
- * mirror this approach but the test scope below covers `FileSystem`
- * only; further coverage can land in a follow-up).
+ * auto-tags filtered, `[]` when none; `AccessPointTags` the same way from
+ * `DescribeAccessPoints` (go-to-k/cdkd#6696). `MountTarget` has no tags.
  * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`*NotFound`, or an
  * empty describe list for the id).
  */

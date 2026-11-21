@@ -434,6 +434,7 @@ const FREE_TEXT_SITES_BY_FILE: Readonly<Record<string, number>> = {
   // cell that actually carries `invoke|start-api`.
   'build-scenario-coverage-matrix.ts': 2,
   'gen-cc-update-measurements.ts': 1,
+  'gen-drift-readback-coverage.ts': 1,
   'gen-nested-key-coverage.ts': 3,
   'gen-provider-replace-branches.ts': 1,
   'gen-ref-segment-coverage.ts': 1,
