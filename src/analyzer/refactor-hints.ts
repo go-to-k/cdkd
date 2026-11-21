@@ -122,17 +122,20 @@ export function findRefactorHints(stacks: readonly RefactorHintStack[]): Refacto
     // CREATE referencing one (A -> B -> C, C new), so repeat until the new set
     // stops growing, at most once per CREATE.
     const isNew = new Set<Create>();
-    let pairs = pairUp(() => false);
+    // A CREATE no record can pair with (not a candidate: an unpairable type,
+    // or one referencing a change) is new from the start.
+    const referencesNew = (c: Create, logicalId: string): boolean => {
+      const referenced = creates.find(
+        (other) => other.stack === c.stack && other.row.logicalId === logicalId
+      );
+      return referenced === undefined || isNew.has(referenced);
+    };
+    let pairs = pairUp(referencesNew);
     for (;;) {
       const grown = creates.filter((c) => !pairs.has(c) && !isNew.has(c));
       if (grown.length === 0) break;
       for (const c of grown) isNew.add(c);
-      pairs = pairUp((c, logicalId) =>
-        creates.some(
-          (other) =>
-            other.stack === c.stack && other.row.logicalId === logicalId && isNew.has(other)
-        )
-      );
+      pairs = pairUp(referencesNew);
     }
     for (const [c, d] of pairs) {
       let byId = hints.get(d.stack.id);

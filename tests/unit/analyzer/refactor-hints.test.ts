@@ -503,6 +503,19 @@ describe('hintSidesOf', () => {
       },
     ]).get('s');
     expect(chained).toBeUndefined();
+    // A referenced CREATE that is no candidate at all (here: not offered) is new.
+    const notOffered = findRefactorHints([
+      {
+        id: 's',
+        stackName: 'S',
+        env: 'e',
+        creates: [sub('Q2')],
+        deletes: [
+          { logicalId: 'Sub1', resourceType: 'AWS::SNS::Subscription', properties: { Endpoint: 'arn:q1' } },
+        ],
+      },
+    ]).get('s');
+    expect(notOffered).toBeUndefined();
     // Q2 is Q1 renamed: the subscription may be renamed with it.
     expect(Object.fromEntries(run('q1') ?? [])).toEqual({
       Q1: { stackName: 'S', logicalId: 'Q2' },
