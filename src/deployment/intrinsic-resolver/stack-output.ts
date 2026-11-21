@@ -360,6 +360,27 @@ export async function resolveGetStackOutput(
       `OutputName=${loggedOutputName}${roleArn ? `, RoleArn=${shownRoleArn}` : ''}`
   );
 
+  // `cdkd diff` (go-to-k/cdkd#6796): a same-account producer diffed earlier in
+  // this run that changes the output decides it, as its deploy will first.
+  const previewed = roleArn
+    ? undefined
+    : context.crossStackPreview?.stackOutput(region, stackName, outputName);
+  if (previewed) {
+    if (previewed.kind === 'unknown') {
+      // The diff keeps the raw intrinsic and shows the value as known after deploy.
+      throw markNonRetryable(
+        new Error(
+          `Fn::GetStackOutput: StackName=${loggedStackName}, OutputName=${loggedOutputName}: ` +
+            `the stack, diffed in this run, publishes a new value only when it deploys`
+        )
+      );
+    }
+    resolver.logger.info(
+      safeMsg`Resolved Fn::GetStackOutput: StackName=${loggedStackName}, OutputName=${loggedOutputName} (from this diff of the stack, which changes it)`
+    );
+    return previewed.value;
+  }
+
   // The aws-cdk-lib-generated cross-account reference: its role trusts only the
   // consumer's CloudFormation execution role, so the producer's state is read
   // through the producer account's CDK lookup role instead, by the same

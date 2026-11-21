@@ -1758,11 +1758,16 @@
     {
       "resourceType": "AWS::EC2::EIP",
       "integs": [
+        "ec2-eip-instance-association",
         "ec2-vpc",
         "export",
         "vpc-nat-gateway"
       ],
       "signals": {
+        "ec2-eip-instance-association": [
+          "l1",
+          "literal"
+        ],
         "ec2-vpc": [
           "l1"
         ],
@@ -1779,6 +1784,7 @@
       "integs": [
         "creation-policy-cfn-init",
         "deletion-ordering-complex",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -1795,6 +1801,9 @@
         ],
         "deletion-ordering-complex": [
           "l2"
+        ],
+        "ec2-eip-instance-association": [
+          "l1"
         ],
         "ec2-instance": [
           "l1",
@@ -1859,6 +1868,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -2008,6 +2018,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -2243,6 +2256,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -2383,6 +2397,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -2644,6 +2661,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -2787,6 +2805,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -3019,6 +3040,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -3167,6 +3189,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -3703,6 +3728,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -3863,6 +3889,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -4146,6 +4175,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -4286,6 +4316,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -4511,6 +4544,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -4686,6 +4720,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -4986,6 +5023,7 @@
         "drift-revert-arrays",
         "drift-revert-vpc",
         "drift-sg-sibling-rules",
+        "ec2-eip-instance-association",
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-instance-volume-attachment-drift",
@@ -5130,6 +5168,9 @@
           "l2"
         ],
         "drift-sg-sibling-rules": [
+          "l2"
+        ],
+        "ec2-eip-instance-association": [
           "l2"
         ],
         "ec2-instance": [
@@ -6715,6 +6756,7 @@
         "composite-stack",
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
+        "cross-stack-export-in-use",
         "custom-resource-payload-types",
         "datasync-location-role",
         "deep-getatt-chains",
@@ -6908,6 +6950,9 @@
         "cross-backend-same-stack-migration": [
           "l2",
           "literal"
+        ],
+        "cross-stack-export-in-use": [
+          "l1"
         ],
         "custom-resource-payload-types": [
           "l2"

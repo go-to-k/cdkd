@@ -681,8 +681,11 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'ValidationMethod',
       ]),
-      sdkUnwired: new Map<string, string>(),
-      createOnlyDrops: new Set<string>(),
+      sdkUnwired: new Map<string, string>([
+        ['CertificateUsage', 'not yet implemented by cdkd'],
+        ['RootHierarchyType', 'not yet implemented by cdkd'],
+      ]),
+      createOnlyDrops: new Set<string>(['CertificateUsage', 'RootHierarchyType']),
       readOnly: new Set<string>(['CertificateArn']),
       primaryIdentifier: new Set<string>(['CertificateArn']),
       ccRouteUnavailable: false,

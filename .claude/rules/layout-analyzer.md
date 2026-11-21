@@ -14,12 +14,13 @@ of every area: [code-layout.md](code-layout.md).
   over a resource record whose `properties` map cannot be read:
   [state-malformed-properties.md](state-malformed-properties.md).
 - **skipped-outputs.ts** — the `skippedOutputs` record; see its doc comment.
+- **cross-stack-preview.ts** — `cdkd diff`'s same-run producer exports (#6796).
 - **read-provenance-promotion.ts** — v12 #4852: [state-schema.md](state-schema.md).
 
 ## `outputs-diff.ts`
 
 The `Outputs` resolution and comparison behind `cdkd diff`'s Outputs section
-([#1921](https://github.com/go-to-k/cdkd/issues/1921)).
+(#1921).
 
 - `resolveTemplateOutputs` builds the exact bag shape
   `resolveOutputs` (`deployment/deploy-engine/outputs/resolve.ts`) writes to `StackState.outputs`: a condition-false
@@ -118,4 +119,4 @@ other names are control-stripped.
 deploy-side block would edit `src/deployment/deploy-engine/` and pull a
 diff-only fix into the `integ-destroy` gate scope.
 `tests/unit/analyzer/outputs-diff.test.ts` pays with an anti-drift fence.
-- **parameter-dependence.ts** - which resources of a RAW template depend on which template parameters ([#2854](https://github.com/go-to-k/cdkd/issues/2854)). Two consumers must agree: `cdkd import`'s ARM 4 and `cdkd deploy`'s fail-closed reading of a reason-less `observedBaselineRefused` marker (`resourcesNamingDeclaredParameter`, [#3468](https://github.com/go-to-k/cdkd/issues/3468)). An `Fn::` key outside `KNOWN_INTRINSICS` is UNCLASSIFIABLE and refuses; a new resolver intrinsic must be added there.
+- **parameter-dependence.ts** - which resources of a RAW template depend on which template parameters (#2854). Two consumers must agree: `cdkd import`'s ARM 4 and `cdkd deploy`'s fail-closed reading of a reason-less `observedBaselineRefused` marker (`resourcesNamingDeclaredParameter`, #3468). An `Fn::` key outside `KNOWN_INTRINSICS` is UNCLASSIFIABLE and refuses; a new resolver intrinsic must be added there.

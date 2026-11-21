@@ -21,8 +21,9 @@ const CRAWLER_CONFIGURATION =
  *     `NumberOfWorkers` / `MaxRetries` / `ExecutionProperty.MaxConcurrentRuns`
  *     are set as NUMBERS in CDK (they synth as STRINGS in the template), so the
  *     provider must coerce them back to numbers before the Glue SDK call.
- *  2. Glue Crawler running-state delete handling (verified by unit test; here
- *     the crawler is idle so it just creates + deletes cleanly).
+ *  2. Glue Crawler running-state delete handling (issue #6752): verify.sh
+ *     starts a crawl right before the destroy, which must stop it and delete
+ *     the crawler.
  *  3. Glue Trigger state-machine — an ON_DEMAND trigger that runs the Job.
  *     CDKD_TEST_UPDATE flips its description to exercise the update path.
  *  4. Glue Workflow Tags from a MAP shape (CfnWorkflow `tags` is a `{k:v}` map)
@@ -87,8 +88,8 @@ const CRAWLER_CONFIGURATION =
  *     field it is not sent, and cdkd names them in a warning.
  *
  * All resources are idle (no schedule; ON_DEMAND / EVENT triggers, and nothing
- * sends the event), so deploy + destroy
- * is fast and clean — no quota, no running jobs.
+ * sends the event) until verify.sh's one crawl before the destroy, so deploy +
+ * destroy is fast and clean — no quota, no running jobs.
  */
 export class GlueUpdateHardeningStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -139,9 +140,9 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     });
 
     // DynamoDB table referenced by the Crawler's `dynamoDbTargets` entry below.
-    // Never crawled (the crawler is idle) — it only has to exist so the target
-    // is a real table. `tableName` is a Ref, which gives the DAG the
-    // Crawler -> Table edge for free.
+    // Empty (verify.sh starts one crawl, right before the destroy) — it only has
+    // to exist so the target is a real table. `tableName` is a Ref, which gives
+    // the DAG the Crawler -> Table edge for free.
     const crawlerTable = new dynamodb.Table(this, 'CrawlerTable', {
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -149,12 +150,12 @@ export class GlueUpdateHardeningStack extends cdk.Stack {
     });
     // CreateCrawler VALIDATES a DynamoDB target eagerly — it calls
     // dynamodb:DescribeTable as the crawler role — so the grant is required at
-    // create time even though this crawler never runs. Without it the create
-    // fails with AccessDeniedException on DescribeTable.
+    // create time, before any crawl. Without it the create fails with
+    // AccessDeniedException on DescribeTable.
     crawlerTable.grantReadData(glueRole);
 
-    // Glue Crawler — idle (no schedule). Targets a path under the script bucket
-    // plus the DynamoDB table above.
+    // Glue Crawler — no schedule (verify.sh starts its one crawl itself). Targets
+    // a path under the script bucket plus the DynamoDB table above.
     //
     // The scan tuning (issue #1391) deliberately uses NON-DEFAULT values so the
     // readback cannot be satisfied by an AWS-side default: `ScanAll` defaults to

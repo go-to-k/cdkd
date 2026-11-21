@@ -56,6 +56,7 @@ import {
 import { loadStateOrEmpty } from './load-state.js';
 import { diffPrintingSecrets } from './printing.js';
 import { computeStackDiff } from './compute-stack-diff.js';
+import type { CrossStackPreview } from '../../../analyzer/cross-stack-preview.js';
 import {
   noEchoFedChildParameters,
   resolveChildStackParameters,
@@ -148,6 +149,11 @@ export async function buildDiffTree(args: {
   createRouteOf?: CreateRouteOf;
   /** As `computeStackDiff`'s `producerLookup`; handed to every node of the tree. */
   producerLookup?: ProducerLookup;
+  /**
+   * As `computeStackDiff`'s `crossStackPreview` (go-to-k/cdkd#6796); handed to
+   * every node, and recorded into by the root.
+   */
+  crossStackPreview?: CrossStackPreview;
   /** As `computeStackDiff`'s `consumerAccount`; handed to every node of the tree. */
   consumerAccount?: string;
   /**
@@ -255,6 +261,7 @@ export async function buildDiffTree(args: {
     updatePolicy,
     createRouteOf,
     producerLookup,
+    crossStackPreview,
     consumerAccount,
     previewOrphanAdoption,
     attributeHealerFor,
@@ -347,6 +354,7 @@ export async function buildDiffTree(args: {
         ...(createRouteOf && { createRouteOf }),
         ...(producerLookup && { producerLookup }),
         ...(consumerAccount && { consumerAccount }),
+        ...(crossStackPreview && { crossStackPreview, recordCrossStackPreview: !isNestedChild }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(inheritedSecrets && { inheritedSecrets }),
         ...(inheritedDerivedNames && { inheritedDerivedNames }),
@@ -631,6 +639,7 @@ export async function buildDiffTree(args: {
         ...(createRouteOf && { createRouteOf }),
         ...(producerLookup && { producerLookup }),
         ...(consumerAccount && { consumerAccount }),
+        ...(crossStackPreview && { crossStackPreview }),
         ...(previewOrphanAdoption && { previewOrphanAdoption }),
         ...(attributeHealerFor && { attributeHealerFor }),
         ancestorTemplatePaths: childAncestorTemplatePaths,

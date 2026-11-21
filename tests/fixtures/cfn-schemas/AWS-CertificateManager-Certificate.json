@@ -1,14 +1,16 @@
 {
   "resourceType": "AWS::CertificateManager::Certificate",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-21",
   "properties": [
     "CertificateArn",
     "CertificateAuthorityArn",
     "CertificateExport",
     "CertificateTransparencyLoggingPreference",
+    "CertificateUsage",
     "DomainName",
     "DomainValidationOptions",
     "KeyAlgorithm",
+    "RootHierarchyType",
     "SubjectAlternativeNames",
     "Tags",
     "ValidationMethod"
@@ -19,9 +21,11 @@
   "createOnlyProperties": [
     "CertificateAuthorityArn",
     "CertificateExport",
+    "CertificateUsage",
     "DomainName",
     "DomainValidationOptions",
     "KeyAlgorithm",
+    "RootHierarchyType",
     "SubjectAlternativeNames"
   ],
   "createOnlyPropertyPaths": [
@@ -32,6 +36,9 @@
       "CertificateExport"
     ],
     [
+      "CertificateUsage"
+    ],
+    [
       "DomainName"
     ],
     [
@@ -39,6 +46,9 @@
     ],
     [
       "KeyAlgorithm"
+    ],
+    [
+      "RootHierarchyType"
     ],
     [
       "SubjectAlternativeNames"
@@ -80,7 +90,9 @@
       "Tags": "array",
       "SubjectAlternativeNames": "array",
       "ValidationMethod": "scalar",
-      "CertificateExport": "scalar"
+      "CertificateExport": "scalar",
+      "RootHierarchyType": "scalar",
+      "CertificateUsage": "scalar"
     },
     "DomainValidationOption": {
       "DomainName": "scalar",
@@ -119,6 +131,7 @@
     "CertificateAuthorityArn": "string",
     "CertificateExport": "string",
     "CertificateTransparencyLoggingPreference": "string",
+    "CertificateUsage": "string",
     "DomainName": "string",
     "DomainValidationOptions": "array",
     "DomainValidationOptions[]": "object",
@@ -126,6 +139,7 @@
     "DomainValidationOptions[].HostedZoneId": "string",
     "DomainValidationOptions[].ValidationDomain": "string",
     "KeyAlgorithm": "string",
+    "RootHierarchyType": "string",
     "SubjectAlternativeNames": "array",
     "SubjectAlternativeNames[]": "string",
     "Tags": "array",
@@ -142,6 +156,14 @@
     "CertificateTransparencyLoggingPreference": [
       "DISABLED",
       "ENABLED"
+    ],
+    "CertificateUsage": [
+      "CLIENT_AND_SERVER_AUTH",
+      "CLIENT_AUTH_ONLY"
+    ],
+    "RootHierarchyType": [
+      "N2_AMAZON_MANAGED",
+      "N2_SFG2_AMAZON_MANAGED"
     ]
   }
 }

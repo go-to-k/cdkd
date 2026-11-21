@@ -8,6 +8,9 @@ paths:
 
 # `cdkd diff`
 
+`diff.ts` diffs producers first; a ROOT node records the exports its deploy
+changes into the run's `CrossStackPreview`, which every resolver reads before
+state (#6796).
 `diff-recursive.ts` re-exports the recursive helpers, which live in
 `diff-recursive/*.ts` (`computeStackDiff` in `compute-stack-diff.ts`, its
 parameter / condition, orphan-splice and failed-outputs steps beside it,
@@ -29,10 +32,10 @@ of CONDITION-PRUNED template nested rows (CREATE/UPDATE) and state-only rows
 **It refuses a nested template already on the root-to-node path** — a REFUSAL,
 not a depth cap, since a cyclic assembly has no correct diff; keyed on the
 ANCESTOR CHAIN, not a global visited set, since two siblings may name one child
-([#3239](https://github.com/go-to-k/cdkd/issues/3239)). That check sees only
+(#3239). That check sees only
 PRUNED rows, so the root also runs `findNestedTemplateTreeDefect` over the RAW
 tree after its template loop — the walk `cdkd deploy` refuses on, which must
-agree ([#3815](https://github.com/go-to-k/cdkd/issues/3815)).
+agree (#3815).
 
 `loadStateOrEmpty` holds the read-only container repairs
 ([state-malformed-properties.md](state-malformed-properties.md)). Every
@@ -41,8 +44,8 @@ container it repairs or drops is a refusal on the deploy, so each returns a
 `orphans` container, and in `computeStackDiff` an `orphans` row) ALSO keeps its
 unreadable entry — in `unreadable`, `unreadableContainers` or
 `unreadableOrphans`, never a stand-in an entry key could spell
-([#3339](https://github.com/go-to-k/cdkd/issues/3339)) — so `--fail` and exit 3 overlap and exit 3 wins
-([#3512](https://github.com/go-to-k/cdkd/issues/3512)). `computeStackDiff`'s SECOND
+(#3339) — so `--fail` and exit 3 overlap and exit 3 wins
+(#3512). `computeStackDiff`'s SECOND
 `properties` repair, over the records the rollback-orphan splice brought in,
 returns its own under the same name. The TOP-LEVEL node puts one reason per
 (REPAIR PASS × damaged container) on `blocking`, and `countBlocking` sums them:
@@ -52,7 +55,7 @@ reports two `properties` reasons. Each carries its own pass's record COUNT, so
 two `properties` reasons read alike only when those counts match. That count is
 what makes exit 3 rather than a silent 0
 when the template declares nothing in the damaged container
-([#3335](https://github.com/go-to-k/cdkd/issues/3335)). The splice arm is
+(#3335). The splice arm is
 returned rather than appended to `blocking` in place precisely so that ONE gate
 governs both, and the root test is the explicit `isNestedChild` argument rather
 than `ancestorTemplatePaths` being empty — that set is for CYCLE detection, and
@@ -65,7 +68,7 @@ does say the child is reached, which is where a later lane should start.
 `readNestedTemplate` / `indexNestedChildTemplates` duplicate
 `NestedStackProvider`'s copies to keep the CLI off provisioning; their refusals
 use `displaySafe`, as does the synth-time twin in `assembly-reader.ts`
-([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Both twins run
+(#3277). Both twins run
 `resolveAssemblyPath` beside their absolute-path tripwire, against the PARENT
 TEMPLATE's directory — CDK emits nested templates as siblings, so the base is
 that directory and not the assembly root

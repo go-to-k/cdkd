@@ -224,6 +224,24 @@ P1=()
 W0=()
 W1=()
 
+# AgentCore creates a log group per runtime and nothing deletes it on destroy.
+# Best-effort sweep of this fixture's groups (the prefix is a literal, so it can
+# never widen to the account); never a FAIL assertion.
+sweep_runtime_log_groups() { (
+  # A subshell with strict mode off: on the success path a failed listing
+  # must not abort a run that already passed.
+  set +eu
+  set +o pipefail
+  local name
+  aws logs describe-log-groups --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/cdkd_reroute_ct6_" \
+    --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null | tr '\t' '\n' |
+    while IFS= read -r name || [ -n "${name}" ]; do
+      [ -n "${name}" ] || continue
+      aws logs delete-log-group --log-group-name "${name}" --region "${REGION}" >/dev/null 2>&1
+    done
+  return 0
+); }
+
 cleanup() {
   echo "==> Cleanup"
   set +eu
@@ -241,6 +259,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/rollback-journal.json" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
+  sweep_runtime_log_groups
   set -eu
 }
 trap cleanup EXIT
@@ -401,17 +420,18 @@ EVAL_FN_ROLE=$(output EvalFnRoleName)
 RUNTIME_ROLE=$(output RuntimeRoleName)
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # AgentCore deletes a runtime or an evaluator asynchronously, so it can stay
-# readable (DELETING) for a while after the delete is accepted. Each poll still
+# readable (DELETING) for a while after the delete is accepted. Measured: more
+# than 2 min, up to ~11 min (#6798), hence the 15 min budget. Each poll still
 # goes through gone_probe, so a throttle or auth error hard-fails instead of
 # reading as gone.
 assert_gone_within() { # usage: assert_gone_within "<leak description>" aws <service> <read-verb> [args...]
   local desc="$1"
   shift
-  for _ in $(seq 1 24); do
+  for _ in $(seq 1 180); do
     gone_probe "$@" && return 0
     sleep 5
   done
-  echo "FAIL: ${desc} (still readable 120s after destroy)" >&2
+  echo "FAIL: ${desc} (still readable 15 min after destroy)" >&2
   exit 1
 }
 assert_gone "table bucket ${TABLE_BUCKET_ARN} survived destroy" \
@@ -432,6 +452,7 @@ assert_gone "role ${EVAL_FN_ROLE} survived destroy" aws iam get-role --role-name
 assert_gone "role ${RUNTIME_ROLE} survived destroy" aws iam get-role --role-name "${RUNTIME_ROLE}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+sweep_runtime_log_groups
 echo "    OK: destroyed clean"
 
 echo "[verify] PASS -- cc-to-sdk-reroute-common-types-6 (physicalId parity observed on ${#SUBJECTS[@]} live resources)"
