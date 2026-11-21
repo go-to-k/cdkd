@@ -1877,6 +1877,7 @@
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -2088,6 +2089,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-accelerator-config": [
+          "l2"
+        ],
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
@@ -2259,6 +2263,7 @@
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -2455,6 +2460,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "lambda-accelerator-config": [
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
@@ -2662,6 +2670,7 @@
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -2867,6 +2876,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "lambda-accelerator-config": [
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
@@ -3037,6 +3049,7 @@
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -3247,6 +3260,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-accelerator-config": [
+          "l2"
+        ],
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
@@ -3394,6 +3410,7 @@
         "fsx-lustre",
         "generated-name-security-group",
         "getatt-cache-kinesis-lambda-ec2",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-vpc-update-while-pending",
         "local-start-alb-from-state",
@@ -3529,6 +3546,9 @@
           "literal"
         ],
         "getatt-cache-kinesis-lambda-ec2": [
+          "l2"
+        ],
+        "lambda-accelerator-config": [
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
@@ -3726,6 +3746,7 @@
         "import-attribute-readback-network",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -3961,6 +3982,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-accelerator-config": [
+          "l2"
+        ],
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
@@ -4162,6 +4186,7 @@
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -4360,6 +4385,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-accelerator-config": [
+          "l2"
+        ],
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
@@ -4536,6 +4564,7 @@
         "import-attribute-readback-network",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -4800,6 +4829,9 @@
         "infra-security": [
           "l2"
         ],
+        "lambda-accelerator-config": [
+          "l2"
+        ],
         "lambda-capacity-provider-default-name": [
           "l2"
         ],
@@ -5004,6 +5036,7 @@
         "getatt-vpc-managed-policy",
         "import-migrate-vpc",
         "infra-security",
+        "lambda-accelerator-config",
         "lambda-capacity-provider-default-name",
         "lambda-esm-documentdb",
         "lambda-vpc-update-while-pending",
@@ -5210,6 +5243,9 @@
           "l2"
         ],
         "infra-security": [
+          "l2"
+        ],
+        "lambda-accelerator-config": [
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
@@ -7753,6 +7789,7 @@
         "import-lambda-url-attributes",
         "kinesis-esm-filter",
         "lambda",
+        "lambda-accelerator-config",
         "lambda-alias-provisioned-concurrency",
         "lambda-arch-switch",
         "lambda-capacity-provider-default-name",
@@ -8032,6 +8069,10 @@
         ],
         "lambda": [
           "l2"
+        ],
+        "lambda-accelerator-config": [
+          "l2",
+          "literal"
         ],
         "lambda-alias-provisioned-concurrency": [
           "l2"

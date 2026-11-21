@@ -1,0 +1,21 @@
+{
+  "name": "cdkd-integ-lambda-accelerator-config",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd Lambda Function AcceleratorConfig on a GPU Lambda Managed Instances capacity provider (issue #6352) deploy/UPDATE/removal-refusal/destroy integ",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-lambda": "3.1175.0",
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.269.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -117,6 +117,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'FunctionScalingConfig',
         'PublishToLatestPublished',
         'RuntimeConfig',
+        'AcceleratorConfig',
       ]),
     ],
   ]);
@@ -192,6 +193,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // Cleared by the `Runtime` change away from 'custom' it must ride
         // with; kept with 'custom', it is refused.
         'RuntimeConfig',
+        // No reset payload exists (its one member is required), so a removal
+        // is refused.
+        'AcceleratorConfig',
       ]),
     ],
   ]);

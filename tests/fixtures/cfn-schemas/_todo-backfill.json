@@ -26,9 +26,6 @@
     "AWS::ApiGateway::Authorizer": [
       "JwtConfiguration"
     ],
-    "AWS::Lambda::Function": [
-      "AcceleratorConfig"
-    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ]

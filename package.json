@@ -80,7 +80,7 @@
     "@aws-sdk/client-iam": "^3.1169.0",
     "@aws-sdk/client-kinesis": "^3.1169.0",
     "@aws-sdk/client-kms": "^3.1169.0",
-    "@aws-sdk/client-lambda": "^3.1169.0",
+    "@aws-sdk/client-lambda": "^3.1175.0",
     "@aws-sdk/client-lambda-core": "^3.1170.0",
     "@aws-sdk/client-lambda-microvms": "^3.1169.0",
     "@aws-sdk/client-lambda-web": "^3.1169.0",
