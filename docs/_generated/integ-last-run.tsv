@@ -236,12 +236,8 @@ iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 error
 iam-profile-policy-fix-forward-orphan	2026-11-21T08:50:03Z	PASS	147	verify.sh	PR6748 447e12b3b; rc ok, orph clean; own bucket
 iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean, 3x AFTER at 92e003a70 (#6703); destroy span med 15587ms vs BEFORE 15546ms
 iam-recreate-reattach	2026-11-21T06:16:00Z	PASS	263	verify.sh	PR6737 22576bbcc; rc ok, orph clean; own bucket
-iam-role-fix-forward-orphan	2026-11-20T11:06:50Z	PASS	105	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-role-policies-drift-clean	2026-11-21T08:39:12Z	PASS	567	verify.sh	rc ok incl Phase 2p/2r, orph clean, own state bucket, head c1e4bcf96 (#6747)
-iam-role-prefixed-name-update	2026-11-20T11:06:50Z	PASS	135	verify.sh	rc ok, orph clean; #6679 d7cb3dddb
-iam-secret-derived-principals	2026-11-21T06:16:00Z	PASS	163	verify.sh	PR6737 22576bbcc; rc ok, orph clean
 iam-role-fix-forward-orphan	2026-11-21T08:50:03Z	PASS	107	verify.sh	PR6748 447e12b3b; rc ok, orph clean; own bucket
-iam-role-policies-drift-clean	2026-11-21T06:16:00Z	PASS	458	verify.sh	PR6737 22576bbcc; 3x AFTER rc ok, orph clean; own bucket
+iam-role-policies-drift-clean	2026-11-21T08:39:12Z	PASS	567	verify.sh	rc ok incl Phase 2p/2r, orph clean, own state bucket, head c1e4bcf96 (#6747)
 iam-role-prefixed-name-update	2026-11-21T08:50:03Z	PASS	133	verify.sh	PR6748 447e12b3b; 3x AFTER rc ok, orph clean
 iam-secret-derived-principals	2026-11-21T08:50:03Z	PASS	198	verify.sh	PR6748 447e12b3b; rc ok, orph clean
 iam-sibling-managed-policy-drift	2026-11-21T06:16:00Z	PASS	608	verify.sh	PR6737 22576bbcc; rc ok, orph clean; own bucket
