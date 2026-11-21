@@ -17,7 +17,7 @@ apigatewayv2-update-removal	2026-11-06T16:39:58Z	PASS	210	verify.sh	#5885 split 
 apigw-cloudwatch-role-redeploy	2026-11-12T11:22:31Z	PASS	350	verify.sh	rc ok, orph clean; #6140 (ap-northeast-1; 1st try UpdateAccount throttled in teardown, re-run alone passed)
 apigw-gateway-response	2026-11-12T11:22:31Z	PASS	180	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 apigw-restapi-spec	2026-11-20T11:22:10Z	PASS	571	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
-apigw-stage-props	2026-11-12T11:22:31Z	PASS	171	verify.sh	rc ok, orph clean; #6140 (us-west-2)
+apigw-stage-props	2026-11-21T14:47:26Z	PASS	123	verify.sh	rc 0 at 8ee78065c; Phase 2b Tags + ApiKeyRequired drift OK; orph clean
 apigw-stage-throttling	2026-11-12T11:22:31Z	PASS	191	verify.sh	rc ok, orph clean; #6140 (eu-west-1)
 apigw-usage-plan-key	2026-11-12T11:22:31Z	PASS	120	verify.sh	rc ok, orph clean; #6140 (us-east-1)
 apigw-vpclink-integration-target	2026-11-12T11:22:31Z	PASS	346	verify.sh	rc ok, orph clean; #6140 (us-east-1)
@@ -183,7 +183,7 @@ ecs-service-update-props	2026-10-30T09:15:32Z	PASS	866	verify.sh	rc ok, destroy 
 ecs-taskdef-tags-launch-type	2026-11-14T16:34:49Z	PASS	171	verify.sh	rc ok, destroy clean, orph clean; PR #6306 TrustedExecutionConfiguration on the SDK route (pre-fix probe RED at provisionedBy=cc-api)
 efs-immutable-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph clean (#6374 sweep)
 efs-lambda	2026-11-04T06:21:47Z	PASS	476	standard	batch 7; 22 deleted/0 errors, orph clean (no EFS/ENI/VPC left)
-efs-standalone	2026-11-19T12:17:26Z	PASS	286	verify.sh	#6620 f519ac2dd; rc ok, orph clean, member baselines OK x2
+efs-standalone	2026-11-21T14:47:26Z	PASS	288	verify.sh	rc 0 at 8ee78065c; AccessPointTags drift OK; orph clean
 elasticache-replicationgroup-getatt	2026-11-05T07:34:57Z	PASS	1193	verify.sh	rc ok, PrimaryEndPoint.Address real endpoint verified, destroy 0 errors, orph clean (own temp state bucket, deleted)
 elasticache-snapshot-arns	2026-11-06T20:58:31Z	PASS	692	verify.sh	#5915 elasticache split head; rc ok, orph clean
 elbv2-same-name-replacement	2026-11-16T08:22:27Z	PASS	95	verify.sh	rc ok, orph clean (#6374 sweep)

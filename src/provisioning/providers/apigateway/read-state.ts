@@ -281,6 +281,10 @@ export async function readCurrentStateStage(
         return entry;
       });
     }
+    // go-to-k/cdkd#6696: `aws:` keys are AWS-managed, as on the RestApi read.
+    result['Tags'] = Object.entries(resp.tags ?? {})
+      .filter(([key]) => !key.startsWith('aws:'))
+      .map(([Key, Value]) => ({ Key, Value }));
     return result;
   } catch (err) {
     if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
@@ -343,6 +347,16 @@ export async function readCurrentStateMethod(
     if (authType === 'COGNITO_USER_POOLS') {
       result['AuthorizationScopes'] = resp.authorizationScopes ? [...resp.authorizationScopes] : [];
     }
+    // go-to-k/cdkd#6696: emitted with the value an unset field has (as
+    // updateMethod sends on a removal). An out-of-band set of a
+    // never-declared ApiKeyRequired / OperationName / RequestValidatorId
+    // shows as drift; one of the two maps does not, as drift skips an
+    // undeclared key captured empty.
+    result['ApiKeyRequired'] = resp.apiKeyRequired ?? false;
+    result['OperationName'] = resp.operationName ?? '';
+    result['RequestValidatorId'] = resp.requestValidatorId ?? '';
+    result['RequestParameters'] = resp.requestParameters ?? {};
+    result['RequestModels'] = resp.requestModels ?? {};
     result['Integration'] = resp.methodIntegration ?? {};
     result['MethodResponses'] = resp.methodResponses ?? {};
     return result;

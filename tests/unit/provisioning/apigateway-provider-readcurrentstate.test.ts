@@ -87,8 +87,41 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       ResourceId: 'res-1',
       HttpMethod: 'GET',
       AuthorizationType: 'NONE',
+      ApiKeyRequired: false,
+      OperationName: '',
+      RequestValidatorId: '',
+      RequestParameters: {},
+      RequestModels: {},
       Integration: { type: 'AWS_PROXY', uri: 'arn:aws:lambda:...' },
       MethodResponses: {},
+    });
+  });
+
+  // go-to-k/cdkd#6696: the deploy-time baseline is captured through this
+  // read, so a field it never returned was never compared.
+  it('returns the Method request settings GetMethod reports', async () => {
+    mockSend.mockResolvedValueOnce({
+      httpMethod: 'POST',
+      authorizationType: 'NONE',
+      apiKeyRequired: true,
+      operationName: 'CreateOrder',
+      requestValidatorId: 'val-1',
+      requestParameters: { 'method.request.querystring.id': true },
+      requestModels: { 'application/json': 'OrderModel' },
+    });
+
+    const result = await provider.readCurrentState(
+      'api-1|res-1|POST',
+      'MethodLogical',
+      'AWS::ApiGateway::Method'
+    );
+
+    expect(result).toMatchObject({
+      ApiKeyRequired: true,
+      OperationName: 'CreateOrder',
+      RequestValidatorId: 'val-1',
+      RequestParameters: { 'method.request.querystring.id': true },
+      RequestModels: { 'application/json': 'OrderModel' },
     });
   });
 
@@ -275,7 +308,23 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       StageName: 'prod',
       DeploymentId: 'dep-1',
       Description: 'production stage',
+      Tags: [],
     });
+  });
+
+  // go-to-k/cdkd#6696: GetStage carries the stage's tags.
+  it('returns Stage Tags without the aws: tags', async () => {
+    mockSend.mockResolvedValueOnce({
+      stageName: 'prod',
+      deploymentId: 'dep-1',
+      tags: { team: 'api', 'aws:cdk:path': 'Stack/Stage' },
+    });
+
+    const result = await provider.readCurrentState('prod', 'StageLogical', 'AWS::ApiGateway::Stage', {
+      RestApiId: 'api-1',
+    });
+
+    expect((result as Record<string, unknown>)['Tags']).toEqual([{ Key: 'team', Value: 'api' }]);
   });
 
   it('emits Stage TracingEnabled/Variables when GetStage returns them (#609 backfill)', async () => {
@@ -298,6 +347,7 @@ describe('ApiGatewayProvider.readCurrentState', () => {
       Description: 'production stage',
       TracingEnabled: true,
       Variables: { appVersion: '1.0.0' },
+      Tags: [],
     });
   });
 
@@ -344,6 +394,7 @@ describe('ApiGatewayProvider.readCurrentState', () => {
         StageVariableOverrides: { flag: 'canary' },
         UseStageCache: false,
       },
+      Tags: [],
     });
   });
 

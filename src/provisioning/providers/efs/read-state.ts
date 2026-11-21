@@ -237,6 +237,9 @@ export async function readAccessPoint(
     }
     if (Object.keys(root).length > 0) result['RootDirectory'] = root;
   }
+  // go-to-k/cdkd#6696: from the same DescribeAccessPoints response, `aws:*`
+  // auto-tags filtered, as FileSystemTags is read.
+  result['AccessPointTags'] = normalizeAwsTagsToCfn(ap.Tags);
   return result;
 }
 
