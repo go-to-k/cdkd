@@ -27,6 +27,10 @@ import {
   startInterruptWatch,
   type InterruptWatch,
 } from '../../interrupt-watch.js';
+import {
+  enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
+} from '../../../deployment/resource-deadline.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceUpdateResult } from '../../../types/resource.js';
@@ -485,21 +489,26 @@ export async function deleteFileSystem(
       replicationDeleted = await deleteOwnReplication.call(this, physicalId);
       if (!replicationDeleted) throw error;
       const watch = startInterruptWatch(`EFS FileSystem ${logicalId} (replication teardown)`);
+      // The per-resource deadline does not cancel this call, so the wait never
+      // outlives it and sends no DeleteFileSystem once it has expired.
+      const deadline = Date.now() + enclosingDeadlineRemainingMs();
+      let lastRefusal: unknown = error;
       try {
-        for (let attempt = 1; ; attempt++) {
-          await sleepUnlessInterrupted(REPLICATION_TEARDOWN_WAIT.intervalMs, watch);
+        for (let attempt = 1; attempt <= REPLICATION_TEARDOWN_WAIT.attempts; attempt++) {
+          const left = deadline - Date.now();
+          if (left <= 0 || enclosingDeadlineExpired()) break;
+          await sleepUnlessInterrupted(Math.min(REPLICATION_TEARDOWN_WAIT.intervalMs, left), watch);
+          if (enclosingDeadlineExpired()) break;
           try {
             await send();
+            lastRefusal = undefined;
             break;
           } catch (retryError) {
-            if (
-              !isReplicationRefusal(retryError) ||
-              attempt >= REPLICATION_TEARDOWN_WAIT.attempts
-            ) {
-              throw retryError;
-            }
+            if (!isReplicationRefusal(retryError)) throw retryError;
+            lastRefusal = retryError;
           }
         }
+        if (lastRefusal !== undefined) throw lastRefusal;
       } finally {
         watch.dispose();
       }

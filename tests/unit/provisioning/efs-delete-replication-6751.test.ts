@@ -56,6 +56,18 @@ vi.mock('../../../src/provisioning/interrupt-watch.js', async () => {
   };
 });
 
+const deadline = vi.hoisted(() => ({ expiredAfterChecks: Infinity, checks: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/deployment/resource-deadline.js')>(
+    '../../../src/deployment/resource-deadline.js'
+  );
+  return {
+    ...actual,
+    // A deadline that has expired once it has been asked `expiredAfterChecks` times.
+    enclosingDeadlineExpired: () => ++deadline.checks > deadline.expiredAfterChecks,
+  };
+});
+
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
 import { REPLICATION_TEARDOWN_WAIT } from '../../../src/provisioning/providers/efs/file-system.js';
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
@@ -88,6 +100,8 @@ describe('EFS FileSystem delete with a replication configuration (#6751)', () =>
     mockSend.mockReset();
     interrupt.afterChecks = Infinity;
     interrupt.checks = 0;
+    deadline.expiredAfterChecks = Infinity;
+    deadline.checks = 0;
     REPLICATION_TEARDOWN_WAIT.intervalMs = 0;
     REPLICATION_TEARDOWN_WAIT.attempts = 3;
   });
@@ -145,6 +159,24 @@ describe('EFS FileSystem delete with a replication configuration (#6751)', () =>
     const error = await new EFSProvider().delete('Fs', FS, 'AWS::EFS::FileSystem').catch((e: unknown) => e);
 
     expect(isInterruptedWaitError(error)).toBe(true);
+    expect(isDeleteStarted(error)).toBe(true);
+    expect(names().filter((n) => n === 'DeleteFileSystemCommand')).toHaveLength(2);
+  });
+
+  it('sends no further DeleteFileSystem once the enclosing resource deadline has expired', async () => {
+    // Checks 1-2 are the first retry's (before its sleep and before its send);
+    // the third, before the second retry, sees the deadline expired.
+    deadline.expiredAfterChecks = 2;
+    mockSend
+      .mockRejectedValueOnce(inReplication())
+      .mockResolvedValueOnce({ Replications: [{ SourceFileSystemId: FS }] })
+      .mockResolvedValueOnce({}) // DeleteReplicationConfiguration
+      .mockRejectedValueOnce(inReplication()) // first retry: still tearing down
+      .mockResolvedValue({});
+
+    const error = await new EFSProvider().delete('Fs', FS, 'AWS::EFS::FileSystem').catch((e: unknown) => e);
+
+    expect(String(error)).toContain('its replication configuration was deleted, and the teardown had not finished');
     expect(isDeleteStarted(error)).toBe(true);
     expect(names().filter((n) => n === 'DeleteFileSystemCommand')).toHaveLength(2);
   });
