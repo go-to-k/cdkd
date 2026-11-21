@@ -30,6 +30,7 @@ import {
   type TenancyConfig,
   type UpdateRuntimeOn,
   type FunctionRuntimeConfig,
+  type AcceleratorConfig,
 } from '@aws-sdk/client-lambda';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -170,6 +171,9 @@ export async function create(
       // Customer-managed runtime + alias; AWS requires it with Runtime
       // 'custom' and refuses it with any other (go-to-k/cdkd#6352).
       RuntimeConfig: properties['RuntimeConfig'] as FunctionRuntimeConfig | undefined,
+      // GPU memory for a function on a GPU Lambda Managed Instances capacity
+      // provider; CFn and the SDK share the spelling (go-to-k/cdkd#6352).
+      AcceleratorConfig: properties['AcceleratorConfig'] as AcceleratorConfig | undefined,
       Tags: tags,
       ...(capacityProviderConfig !== undefined && {
         CapacityProviderConfig: capacityProviderConfig,

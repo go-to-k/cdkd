@@ -2,8 +2,8 @@
   "summary": {
     "types": 146,
     "noReadback": 5,
-    "properties": 1526,
-    "read": 1372,
+    "properties": 1527,
+    "read": 1373,
     "unknown": 129,
     "baseline": 25,
     "gap": 0,
@@ -4920,6 +4920,10 @@
       "className": "LambdaFunctionProvider",
       "hasReadback": true,
       "properties": [
+        {
+          "property": "AcceleratorConfig",
+          "status": "read"
+        },
         {
           "property": "Architectures",
           "status": "read"
