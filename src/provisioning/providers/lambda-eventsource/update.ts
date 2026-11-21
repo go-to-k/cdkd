@@ -148,7 +148,7 @@ type LambdaDestinationConfig = import('@aws-sdk/client-lambda').DestinationConfi
  * `Destination` clears it, after which the mapping reads back
  * `{ OnFailure: {} }`. CloudFormation clears it on the same template change.
  */
-export function clearedDestinationConfig(): LambdaDestinationConfig {
+function clearedDestinationConfig(): LambdaDestinationConfig {
   return { OnFailure: { Destination: '' } };
 }
 
@@ -161,7 +161,7 @@ export function clearedDestinationConfig(): LambdaDestinationConfig {
  * through as it is. `OnSuccess` is not touched: UpdateEventSourceMapping does
  * not take it.
  */
-export function destinationConfigForUpdate(value: unknown): LambdaDestinationConfig {
+function destinationConfigForUpdate(value: unknown): LambdaDestinationConfig {
   if (value === null || typeof value !== 'object' || Array.isArray(value))
     return value as LambdaDestinationConfig;
   const onFailure = (value as Record<string, unknown>)['OnFailure'];

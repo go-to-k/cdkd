@@ -198,7 +198,7 @@ wait_esm_enabled() { # $1 = label
   local state=""
   for _ in $(seq 1 60); do
     state="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
-      --query State --output text)"
+      --query State --output text)" || return 1
     [ "${state}" = "Enabled" ] && return 0
     sleep 5
   done
