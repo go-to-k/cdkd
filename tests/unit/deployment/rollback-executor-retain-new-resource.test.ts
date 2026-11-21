@@ -174,6 +174,8 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
 
       expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, {
         expectedRegion: 'us-east-1',
+        // go-to-k/cdkd#6770: the new copy is the rolled-back run's.
+        stackHoldersStillAttached: true,
         deletionPolicy: 'Delete',
         recordedAttributes: {},
         maskSecrets: expect.any(Function),

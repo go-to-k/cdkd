@@ -342,6 +342,8 @@ describe('a rollback re-create that made its resource and failed (go-to-k/cdkd#4
     expect(del.mock.calls[0]![2]).toBe(TYPE);
     expect(del.mock.calls[0]![4]).toEqual({
       expectedRegion: 'us-east-1',
+      // go-to-k/cdkd#6770: the failed re-create made it.
+      stackHoldersStillAttached: true,
       deletionPolicy: 'Delete',
       maskSecrets: expect.any(Function),
     });

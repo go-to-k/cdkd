@@ -927,6 +927,7 @@ describe('replayRollback', () => {
     });
     expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::SQS::Queue', { a: 2 }, {
       expectedRegion: 'us-east-1',
+      stackHoldersStillAttached: true, // go-to-k/cdkd#6770: the run's own copy
       deletionPolicy: 'Delete',
       recordedAttributes: {},
       maskSecrets: expect.any(Function),
@@ -1810,6 +1811,7 @@ describe('replayRollback', () => {
     expect(create).not.toHaveBeenCalled();
     expect(del).toHaveBeenCalledWith('B', 'phys-new', 'AWS::S3::Bucket', { a: 2 }, {
       expectedRegion: 'us-east-1',
+      stackHoldersStillAttached: true, // go-to-k/cdkd#6770: the run's own copy
       deletionPolicy: 'Delete',
       recordedAttributes: {},
       maskSecrets: expect.any(Function),
@@ -2049,6 +2051,7 @@ describe('replayFailedOperations (#1198)', () => {
     const result = await replayFailedOperations(failedOps, state, 'S', ctx);
     expect(del).toHaveBeenCalledWith('C', 'pC', 'T', undefined, {
       expectedRegion: 'us-east-1',
+      stackHoldersStillAttached: true, // go-to-k/cdkd#6770: the failed run made it
       deletionPolicy: 'Delete',
       recordedAttributes: {},
       maskSecrets: expect.any(Function),
@@ -2895,6 +2898,7 @@ describe('replayFailedOperations — DeletionPolicy on a FAILED CREATE (#1362)',
     expect(result.failures).toBe(0);
     expect(del).toHaveBeenCalledWith('Res', 'phys-res', 'AWS::EC2::Volume', { Size: 1 }, {
       expectedRegion: 'us-east-1',
+      stackHoldersStillAttached: true, // go-to-k/cdkd#6770: the failed run made it
       deletionPolicy: 'Delete',
       recordedAttributes: {},
       maskSecrets: expect.any(Function),

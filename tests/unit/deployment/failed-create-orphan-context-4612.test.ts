@@ -66,6 +66,8 @@ describe('the failed-CREATE delete arm flags a proven orphan (go-to-k/cdkd#4612)
     expect(del.mock.calls[0]![1]).toBe('q1,q2');
     expect(del.mock.calls[0]![3]).toEqual(op().attemptedProperties);
     expect(del.mock.calls[0]![4]).toMatchObject({ failedCreateOrphan: true });
+    // go-to-k/cdkd#6770: the failed run made it, so its holders are that run's.
+    expect(del.mock.calls[0]![4]).toHaveProperty('stackHoldersStillAttached', true);
     expect(result.remainingFailedOps).toEqual([]);
   });
 

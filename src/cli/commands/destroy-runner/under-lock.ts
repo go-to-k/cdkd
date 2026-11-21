@@ -687,11 +687,8 @@ export async function destroyStackUnderLock({
       await Promise.all(deletePromises);
     }
 
-    // AFTER the stack's own resources, any of which may still have used one.
-    // A custom resource's old physical id went BEFORE them (above), unless
-    // that attempt did not delete it. Dependents first (go-to-k/cdkd#6770): a
-    // replaced profile or membership before the replaced role or group it
-    // holds, which would otherwise refuse it as a holder outside the stack.
+    // AFTER the stack's own resources (a custom resource's old id went above),
+    // dependents first: a replaced profile before its role (go-to-k/cdkd#6770).
     for (const entry of supersededDependentsFirst(supersededResourcesOf(state))) {
       if (lock.interrupted) break;
       if (isCustomResourceType(entry.state.resourceType) && !retryLate.has(entry)) continue;
