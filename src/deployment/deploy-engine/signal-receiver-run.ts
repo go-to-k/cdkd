@@ -8,6 +8,8 @@
 import type { DeployEngine } from '../deploy-engine.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../types/state.js';
+import { markNonRetryable } from '../retryable-errors.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { TemplateParser } from '../../analyzer/template-parser.js';
 import { buildResolverContext } from './resolver-context.js';
@@ -67,7 +69,13 @@ export async function armSignalReceiver(
   const receiver = engine.signalReceiver;
   if (receiver === undefined) return;
   const armIds = new Set<string>();
+  // The receiver is updated only for a row creating, replacing or changing a
+  // resource it serves: an unrelated change costs no CloudFormation update.
+  let touchesCandidate = false;
   for (const change of changes.values()) {
+    if (change.changeType !== 'NO_CHANGE' && receiver.candidate(change.logicalId) !== undefined) {
+      touchesCandidate = true;
+    }
     const creates =
       change.changeType === 'CREATE' ||
       (change.changeType === 'UPDATE' &&
@@ -76,6 +84,7 @@ export async function armSignalReceiver(
       armIds.add(change.logicalId);
     }
   }
+  if (!touchesCandidate) return;
   await receiver.arm(armIds, (id) =>
     resolveTemplateMetadata(
       engine,
@@ -97,10 +106,15 @@ export async function armSignalReceiver(
 export async function awaitCreationSignals(
   engine: DeployEngine,
   logicalId: string,
-  startedAt: number
+  startedAt: number,
+  created: boolean
 ): Promise<void> {
   const receiver = engine.signalReceiver;
   if (receiver === undefined || !receiver.isArmed(logicalId)) return;
+  if (!created) {
+    receiver.disarm(logicalId);
+    return;
+  }
   try {
     await receiver.awaitSignals(logicalId, startedAt, () => engine.interrupted);
   } catch (error) {
@@ -173,4 +187,39 @@ export async function settledAfter<T>(engine: DeployEngine, run: () => Promise<T
   } finally {
     await engine.signalReceiver?.settle();
   }
+}
+
+/**
+ * A `CreationPolicy`-signalled `AWS::CloudFormation::WaitCondition` (no
+ * `Handle`) exists only to wait: one the receiver does not wait on this
+ * deploy is refused before it is created, as before go-to-k/cdkd#6705, rather
+ * than letting its dependents pass an unenforced gate.
+ */
+export function refuseUnservedSignalWait(
+  engine: DeployEngine,
+  logicalId: string,
+  change: ResourceChange,
+  template: CloudFormationTemplate | undefined
+): void {
+  if (change.changeType !== 'CREATE' && change.changeType !== 'UPDATE') return;
+  const resource = template?.Resources?.[logicalId];
+  if (resource?.Type !== 'AWS::CloudFormation::WaitCondition') return;
+  const handle = (resource.Properties as Record<string, unknown> | undefined)?.['Handle'];
+  if (handle !== undefined && handle !== null) return;
+  if (engine.signalReceiver?.isArmed(logicalId) === true) return;
+  if (
+    change.changeType === 'UPDATE' &&
+    change.propertyChanges?.some((pc) => pc.requiresReplacement) !== true
+  ) {
+    return;
+  }
+  throw markNonRetryable(
+    new ProvisioningError(
+      `WaitCondition ${logicalId} has no Handle, and no CloudFormation signal receiver waits on ` +
+        'it this deploy (a nested stack, or a receiver that could not be used), so its ' +
+        'CreationPolicy signals cannot be received.',
+      'AWS::CloudFormation::WaitCondition',
+      logicalId
+    )
+  );
 }

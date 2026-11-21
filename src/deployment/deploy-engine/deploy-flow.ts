@@ -302,6 +302,9 @@ export async function doDeployWithPrefetch(
         : undefined;
     firstDeployIdentityRead?.catch(() => undefined);
     let firstDeployIdentity: StackInstanceIdentity | undefined;
+    // go-to-k/cdkd#6705: a recorded signal receiver answers `AWS::StackId`
+    // from the first resolution on (conditions included).
+    engine.signalReceiverStackId = currentState.signalReceiverStackId;
     engine.runStackIdTail = () =>
       stackIdTailOf(
         currentState.stackInstanceId === undefined && firstDeployIdentity !== undefined

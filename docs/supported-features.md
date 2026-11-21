@@ -275,8 +275,9 @@ cdkd destroy MyStack   # deletes the receiver with the stack
 | `cdkd state orphan` | Keeps the receiver and prints the command that deletes it |
 
 A stack declaring neither never gets a receiver and makes no CloudFormation
-call. A deploy that creates or replaces nothing signalling makes one
-`DescribeStacks` call. Secret dynamic references in `Metadata` stay
+call. Otherwise a deploy checks the receiver with a `DescribeStacks` call, and
+updates it only when it creates, replaces or changes a resource that declares
+a signal or `cfn-init` metadata. Secret dynamic references in `Metadata` stay
 `{{resolve:...}}` tokens in the receiver's template, as in CloudFormation's.
 
 In these cases cdkd creates the resource without waiting and logs a warning;
@@ -288,7 +289,13 @@ the warning does not change the exit code or fail `--strict`:
 - The credentials may not call CloudFormation.
 - The resource is in a nested stack (its name cannot be a CloudFormation
   stack's).
-- The resource's `Metadata` reads a `NoEcho` parameter or attribute.
+- The resource's `Metadata` reads a `NoEcho` parameter or attribute, or
+  something not created yet.
+- The receiver stays mid-update or rolled back (for example after someone
+  changed it by hand) for more than ten minutes. A receiver a killed deploy
+  left waiting is cancelled, and one whose creation failed is made again.
+- The stack's `cfn-init` metadata adds up to more than 51,200 bytes (the
+  receiver's template is sent inline).
 - The replacement is decided only while the deploy runs (an update the
   provider cannot make in place).
 - `--dry-run`: no receiver is made, and the preview keeps cdkd's own
@@ -298,10 +305,15 @@ When a stack that already exists starts declaring one of these, its
 `AWS::StackId` moves to the receiver's ARN once; resources reading it update
 in that deploy.
 
-Signals must name the stack by `${AWS::StackName}`, as CDK's
-`applyCloudFormationInit` and `signals` do; a `--stack ${AWS::StackId}` does
-not reach the receiver. An Auto Scaling group's `MinSuccessfulInstancesPercent`
-is not applied: the receiver waits for the full `Count`.
+A change to a resource's `Metadata` alone reaches the receiver with the next
+deploy that changes that resource, since `cdkd` plans by properties. A
+`CreationPolicy`-signalled `AWS::CloudFormation::WaitCondition` (no `Handle`)
+that no receiver waits on is refused rather than created unenforced.
+
+Signals may name the stack by `${AWS::StackName}` (as CDK's
+`applyCloudFormationInit` and `signals` do) or `${AWS::StackId}`. An Auto
+Scaling group's `MinSuccessfulInstancesPercent` is not applied: the receiver
+waits for the full `Count`.
 
 ### Waiting for slow resources
 

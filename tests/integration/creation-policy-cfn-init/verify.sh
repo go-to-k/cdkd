@@ -113,10 +113,18 @@ grep -q 'Created the CloudFormation signal receiver stack' "${DEPLOY_LOG}" \
   || { echo "FAIL: the deploy did not create a signal receiver" >&2; exit 1; }
 grep -q 'Instance[0-9A-F]*: received its CreationPolicy signal' "${DEPLOY_LOG}" \
   || { echo "FAIL: the deploy did not wait for the instance's signal" >&2; exit 1; }
+# Sentinel: the fallback warning's other half without "not honored" is a reword.
+if grep -q 'cfn-signal success signals' "${DEPLOY_LOG}" && ! grep -q 'CreationPolicy is not honored' "${DEPLOY_LOG}"; then
+  echo "FAIL: the fallback warning was reworded; update this check" >&2
+  exit 1
+fi
 if grep -q 'CreationPolicy is not honored' "${DEPLOY_LOG}"; then
   echo "FAIL: the deploy fell back to not waiting" >&2
   exit 1
 fi
+# Phase 2 asserts the ABSENCE of these two lines; prove here they still read so.
+grep -q 'waiting for CreationPolicy signals from' "${DEPLOY_LOG}" \
+  || { echo "FAIL: the arming line was reworded; update Phase 2's check" >&2; exit 1; }
 rm -f "${DEPLOY_LOG}"
 echo "    OK: the instance's cfn-init + cfn-signal reached the receiver"
 RECEIVER_ID=$(assert_receiver_recorded)
@@ -134,7 +142,7 @@ echo "==> Phase 2: a no-change redeploy reuses the receiver and waits for nothin
 NOCHANGE_LOG=$(mktemp)
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${NOCHANGE_LOG}"
 grep -q 'No changes' "${NOCHANGE_LOG}" || { echo "FAIL: the redeploy was not a no-change deploy" >&2; exit 1; }
-if grep -qE 'Created the CloudFormation signal receiver|waiting for .* CreationPolicy signal' "${NOCHANGE_LOG}"; then
+if grep -qE 'Created the CloudFormation signal receiver|waiting for CreationPolicy signals from' "${NOCHANGE_LOG}"; then
   echo "FAIL: the no-change redeploy touched the receiver" >&2
   exit 1
 fi
@@ -163,10 +171,8 @@ FAIL_RC=$?
 set -e
 tail -20 "${FAIL_LOG}"
 [ "${FAIL_RC}" -ne 0 ] || { echo "FAIL: the deploy with a failing init succeeded" >&2; exit 1; }
-grep -q 'FailingInstance' "${FAIL_LOG}" \
-  || { echo "FAIL: the failure does not name FailingInstance (sentinel)" >&2; exit 1; }
-grep -qE 'FailingInstance[0-9A-F]* received a FAILURE signal|FailingInstance[0-9A-F]* did not receive' "${FAIL_LOG}" \
-  || { echo "FAIL: the deploy did not fail on the CreationPolicy signal" >&2; exit 1; }
+grep -qE 'FailingInstance[0-9A-F]* received a FAILURE signal' "${FAIL_LOG}" \
+  || { echo "FAIL: the deploy did not fail on FailingInstance's FAILURE signal" >&2; exit 1; }
 rm -f "${FAIL_LOG}"
 echo "    OK: the deploy failed on the FAILURE signal (rc=${FAIL_RC})"
 LEFT=$(state_field 'Object.keys(s.resources).some((k) => k.startsWith("FailingInstance")) ? "yes" : "no"')

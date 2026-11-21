@@ -22,6 +22,7 @@
 
 import {
   CancelUpdateStackCommand,
+  ContinueUpdateRollbackCommand,
   CreateStackCommand,
   DeleteStackCommand,
   DescribeStackResourceCommand,
@@ -46,6 +47,8 @@ const MAX_SIGNAL_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 /** CloudFormation's default `ResourceSignal.Timeout`. */
 const DEFAULT_SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 5000;
+/** CloudFormation's limit for an inline `TemplateBody`. */
+const MAX_TEMPLATE_BODY_BYTES = 51_200;
 /** How long a deploy waits for the receiver to settle or become ready. */
 const SETTLE_WAIT_MS = 10 * 60 * 1000;
 
@@ -182,6 +185,10 @@ const SETTLED = /(_COMPLETE|_FAILED)$/;
 export class SignalReceiver {
   private stackId: string | undefined;
   private armed = new Set<string>();
+  /** Armed waiters whose signals arrived. */
+  private finished = new Set<string>();
+  /** Every waiter `arm()` added, disarmed ones included. */
+  private armedIds: string[] = [];
   private armedUpdate = false;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
@@ -217,6 +224,11 @@ export class SignalReceiver {
   /** Whether this deploy armed a waiter for `logicalId`. */
   isArmed(logicalId: string): boolean {
     return this.armed.has(logicalId);
+  }
+
+  /** An armed resource that was not created after all: no wait, cancelled at `settle()`. */
+  disarm(logicalId: string): void {
+    this.armed.delete(logicalId);
   }
 
   /**
@@ -257,8 +269,11 @@ export class SignalReceiver {
         this.stackId = stack.StackId;
       }
       if (this.stackId === undefined) return undefined;
+      await this.recover(client, stack?.StackStatus);
       const settled = await this.awaitSettled(client);
-      if (settled === undefined) return undefined;
+      if (settled === undefined) {
+        throw new Error('the receiver stack did not settle in a usable state');
+      }
       return this.stackId;
     } catch (error) {
       this.fallbackWarn(error);
@@ -289,8 +304,8 @@ export class SignalReceiver {
         try {
           metadata = candidate.hasInitMetadata ? await resolveMetadata(id) : undefined;
         } catch {
-          this.logger.debug(
-            safeMsg`Signal receiver: ${id}'s Metadata cannot be sent; it is not covered`
+          this.logger.warn(
+            safeMsg`${id}: its Metadata cannot be sent to the CloudFormation signal receiver (it reads a NoEcho value or a resource not created yet), so cfn-init and cfn-signal for it are not served this deploy`
           );
           if (current[id] !== undefined) desired[id] = current[id];
           continue;
@@ -322,6 +337,7 @@ export class SignalReceiver {
       if (changed) this.armedUpdate = toArm.size > 0;
       if (toArm.size > 0) await this.awaitWaiting(client, toArm);
       this.armed = toArm;
+      this.armedIds = [...toArm];
       if (toArm.size > 0) {
         this.logger.info(
           safeMsg`Signal receiver ${this.stackName}: waiting for CreationPolicy signals from ${[...toArm].join(', ')}`
@@ -370,6 +386,7 @@ export class SignalReceiver {
         status = 'GONE';
       }
       if (status === 'CREATE_COMPLETE') {
+        this.finished.add(logicalId);
         this.logger.info(safeMsg`${logicalId}: received its CreationPolicy signal(s)`);
         return;
       }
@@ -398,6 +415,9 @@ export class SignalReceiver {
    */
   async settle(): Promise<void> {
     if (!this.armedUpdate || this.stackId === undefined) return;
+    // Every waiter this deploy armed received its signals: CloudFormation
+    // completes the update itself; a cancel now would roll it back.
+    if (this.armedIds.every((id) => this.finished.has(id))) return;
     try {
       const client = this.client();
       const stack = await this.describe(client, this.stackId);
@@ -409,6 +429,39 @@ export class SignalReceiver {
       this.logger.debug(
         safeMsg`Could not cancel the signal receiver's update: ${describeAwsFailure(error).summary}`
       );
+    }
+  }
+
+  /**
+   * A receiver a killed deploy left waiting (`UPDATE_IN_PROGRESS`; its
+   * waiters time out only after 12 hours) is cancelled: this deploy holds the
+   * stack's lock, so no other deploy is using it. One stuck in
+   * `UPDATE_ROLLBACK_FAILED` continues its rollback. One whose creation failed
+   * (`ROLLBACK_COMPLETE`, unusable) is deleted and made again.
+   */
+  private async recover(client: CloudFormationClient, status: string | undefined): Promise<void> {
+    if (status === 'UPDATE_IN_PROGRESS') {
+      this.logger.info(
+        safeMsg`Cancelling the signal receiver update a previous deploy left waiting`
+      );
+      await client.send(new CancelUpdateStackCommand({ StackName: this.stackId }));
+    } else if (status === 'UPDATE_ROLLBACK_FAILED') {
+      await client.send(new ContinueUpdateRollbackCommand({ StackName: this.stackId }));
+    } else if (status === 'ROLLBACK_COMPLETE' || status === 'CREATE_FAILED') {
+      await client.send(new DeleteStackCommand({ StackName: this.stackId }));
+      const deadline = this.now() + SETTLE_WAIT_MS;
+      while ((await this.describe(client, this.stackId!)) !== undefined) {
+        if (this.now() >= deadline) throw new Error('the failed receiver stack was not deleted');
+        await this.sleep(POLL_INTERVAL_MS);
+      }
+      const out = await client.send(
+        new CreateStackCommand({
+          StackName: this.stackName,
+          TemplateBody: receiverTemplateBody({ [ANCHOR_ID]: anchorResource() }),
+          Tags: [{ Key: RECEIVER_TAG_KEY, Value: 'true' }],
+        })
+      );
+      this.stackId = out.StackId;
     }
   }
 
@@ -467,11 +520,17 @@ export class SignalReceiver {
     client: CloudFormationClient,
     resources: TemplateResources
   ): Promise<boolean> {
+    const body = receiverTemplateBody(resources);
+    if (body.length > MAX_TEMPLATE_BODY_BYTES) {
+      throw new Error(
+        `the receiver template (${body.length} bytes of cfn-init metadata) exceeds the ${MAX_TEMPLATE_BODY_BYTES}-byte inline TemplateBody limit`
+      );
+    }
     try {
       await client.send(
         new UpdateStackCommand({
           StackName: this.stackId,
-          TemplateBody: receiverTemplateBody(resources),
+          TemplateBody: body,
           Tags: [{ Key: RECEIVER_TAG_KEY, Value: 'true' }],
         })
       );
