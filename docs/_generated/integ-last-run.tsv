@@ -130,7 +130,7 @@ destroy-failed-delete-keeps-dependencies	2026-11-07T16:28:42Z	PASS	66	verify.sh	
 destroy-interrupt	2026-11-19T08:29:09Z	PASS	370	verify.sh	rc 0; 1 auto-created /aws/lambda log group deleted; orphans clean
 destroy-manifest-deps	2026-11-11T17:17:53Z	PASS	246	verify.sh	rc ok, orph clean, XR log-group sweep ok
 destroy-nested-cross-region	2026-11-12T11:22:31Z	PASS	296	verify.sh	rc ok, orph clean; #6140 (us-east-1)
-diff-fail-on-destructive	2026-11-17T17:54:15Z	PASS	95	verify.sh	rc ok, orph clean
+diff-fail-on-destructive	2026-11-21T06:02:26Z	PASS	95	verify.sh	rc ok, orph clean (#6713 plan)
 diff-intrinsic-target-change	2026-11-10T15:28:15Z	PASS	75	verify.sh	rc ok, orph clean
 dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
@@ -498,7 +498,7 @@ sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic s
 sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-sqs-event	2026-11-19T18:50:43Z	PASS	339	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 sns-subscription-filter	2026-11-20T11:22:10Z	PASS	305	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean; probe with pre-helper src (f410830a4~1) RED at identity assertion
-sns-subscription-update	2026-11-21T02:00:14Z	PASS	215	verify.sh	rc ok, orph clean (#6731)
+sns-subscription-update	2026-11-21T06:00:49Z	PASS	215	verify.sh	rc ok, orph clean (#6713 plan)
 sns-topic-attr-removal	2026-11-20T11:22:10Z	PASS	105	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean
