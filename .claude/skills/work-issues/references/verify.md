@@ -34,7 +34,9 @@ live fixture's `dist/`), no rebase or install, never the live fixture's
 directory, and stage only its own test files (the integ's ledger row lands
 there, #4302). A lane REPORTS
 `mise exec -- markgate status integ-destroy --explain`'s line, never "integ not
-needed": comment-only edits count (#3873).
+needed": comment- and display-only edits count (#3873). The PARENT names the
+fixture at DISPATCH whenever the plan touches a scoped file, not at merge
+(#6762's display-only wraps met the gate at `gh pr merge`).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture

@@ -42,7 +42,9 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
   re-run on each fixture ADDED, #6438).
 
 The PARENT checks all six before granting each further lane's integ. ANY
-turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
+wait the user can see (CI, integ, a lane) tells the user its ETA and queue
+unasked, at its start and every ~30 min, not only an HOURS-long turn (asked
+twice on #6762's CI + integ). A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
@@ -67,7 +69,9 @@ only WRAPS an AWS error code, naming the call, not the cause (AWS's text: CloudT
 `errorMessage` (lags), else a `--region` replay, deleting what it makes, #6079): CloudTrail's
 create/delete sequence for that resource decides blamed vs cleared (a race
 already on `main`, #5744) — cleared when the grep hits only outside the diff,
-else UNATTRIBUTED (#4981). Size it for ONE context (§8-d probe alone, then
+else UNATTRIBUTED (#4981). A cleared FAIL whose fixture main outgrew (a
+narrowed IAM policy missing a call main added) is fixed in its OWN PR from a
+sibling worktree, merged first; the lane then rebases and re-runs (#6782). Size it for ONE context (§8-d probe alone, then
 fixture batches), each run's fixture,
 `pid=<N>` (bare digits), log, state
 prefix appended as a line to `<scratch>/integ-<PR>.live` at launch. BEFORE
