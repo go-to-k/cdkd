@@ -488,8 +488,8 @@ shows both methods for this provider.
 
 ### 8. Test it and finish the pull request
 
-The provider now works, but a pull request needs four more things. Each one is
-a section of [Testing and shipping a provider](provider-development-testing.md):
+The provider now works, but a pull request needs five more things. The first
+four are sections of [Testing and shipping a provider](provider-development-testing.md):
 
 1. Fetch the type's CloudFormation schema, and account for every property in
    it. The `property-coverage` unit test fails until you do.
@@ -497,6 +497,10 @@ a section of [Testing and shipping a provider](provider-development-testing.md):
 3. Add an integration fixture that deploys and destroys the type in real AWS.
 4. List the type in the supported-resources tables, regenerate the coverage
    matrix, and add a changelog entry.
+5. Record what the type's CloudFormation delete handler removes before the
+   delete, and how `delete()` meets it, in the
+   [delete-blocker inventory](provider-rules.md#preparing-a-delete-the-way-the-cloudformation-handler-does).
+   The `delete-blocker-inventory` unit test fails until you do.
 
 Then run the checks, and go through
 [the rules every provider obeys](provider-development-reference.md#rules-every-provider-obeys):

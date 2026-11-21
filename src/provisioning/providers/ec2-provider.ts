@@ -593,7 +593,7 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::InternetGateway':
         return this.deleteInternetGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::EIP':
-        return this.deleteEip(logicalId, physicalId, resourceType, context);
+        return this.deleteEip(logicalId, physicalId, resourceType, context, properties);
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.deleteVpcGatewayAttachment(
           logicalId,
