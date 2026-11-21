@@ -54,6 +54,8 @@ import { awaitNoEchoMacsFor } from './noecho-macs.js';
 import { provisionUpdate } from './update.js';
 import { honorCreationPolicy } from './update-policy.js';
 import { buildResolverContext } from './resolver-context.js';
+import { noEchoParameterNamesOf } from './noecho.js';
+import { TemplateParser } from '../../analyzer/template-parser.js';
 
 /**
  * go-to-k/cdkd#6705: before a resource the signal receiver lists is created,
@@ -101,6 +103,19 @@ async function resolveTemplateMetadata(
 ): Promise<unknown> {
   const metadata = template?.Resources?.[logicalId]?.Metadata;
   if (metadata === undefined || template === undefined) return undefined;
+  // The resolved metadata becomes a CloudFormation TEMPLATE body (readable
+  // through GetTemplate), so no secret may be resolved into it. A `NoEcho`
+  // parameter or a resource holding a `NoEcho` attribute it reads is refused
+  // (the resource falls back to not waiting), and a secret `{{resolve:...}}`
+  // reference stays a token, as CloudFormation keeps it in its own template.
+  const references = metadataParser.extractReferences(metadata);
+  const noEchoParameters = noEchoParameterNamesOf(template);
+  const noEchoAttributes = engine.noEchoRun.noEchoAttributeResources;
+  for (const ref of references) {
+    if (noEchoParameters.has(ref) || noEchoAttributes.has(ref)) {
+      throw new Error(`${logicalId}'s Metadata reads a NoEcho value`);
+    }
+  }
   const context = buildResolverContext(
     engine.resolverContextDeps(),
     {
@@ -111,8 +126,10 @@ async function resolveTemplateMetadata(
     },
     stackName
   );
-  return engine.resolver.resolve(metadata, context);
+  return engine.resolver.resolve(metadata, { ...context, skipDynamicReferences: true });
 }
+
+const metadataParser = new TemplateParser();
 
 /** The row type whose provider runs a nested child engine. */
 const NESTED_STACK_ROW_TYPE = 'AWS::CloudFormation::Stack';

@@ -135,6 +135,24 @@ export function receiverTemplate(
 
 export type CoverVerdict = 'covered' | 'not-covered';
 
+interface LiveStack {
+  StackId?: string | undefined;
+  StackStatus?: string | undefined;
+  Description?: string | undefined;
+  Tags?: { Key?: string | undefined; Value?: string | undefined }[] | undefined;
+}
+
+/** A cdkd receiver: its tag AND its description, never one alone. */
+function isReceiver(stack: LiveStack): boolean {
+  return (
+    stack.Tags?.some((t) => t.Key === RECEIVER_TAG_KEY && t.Value === 'true') === true &&
+    stack.Description === RECEIVER_DESCRIPTION
+  );
+}
+
+const RECEIVER_DESCRIPTION =
+  'cdkd signal receiver: answers cfn-signal / cfn-init for a cdkd deploy; deleted when the deploy ends';
+
 /**
  * One deploy's receiver. `candidates` are the CREATE rows asking for one;
  * `resolveMetadata` resolves a candidate's `Metadata` against the deploy's
@@ -142,7 +160,10 @@ export type CoverVerdict = 'covered' | 'not-covered';
  */
 export class SignalReceiver {
   private ensured: Promise<ReadonlySet<string>> | undefined;
+  /** Set once the create is SENT (it may have succeeded even if it threw). */
   private created = false;
+  /** The receiver's StackId, as the create returned it. */
+  private stackId: string | undefined;
   private readonly stackName: string;
   private readonly candidates: ReadonlyMap<string, SignalCandidate>;
   private readonly client: () => CloudFormationClient;
@@ -218,15 +239,20 @@ export class SignalReceiver {
         entries.push({ logicalId, count: candidate.count, metadata });
       }
       if (entries.length === 0) return new Set();
-      await client.send(
+      // Sent: from here a failure may still have created it, so `dispose`
+      // looks for it (by name, then its tag) when no id came back.
+      this.created = true;
+      const out = await client.send(
         new CreateStackCommand({
           StackName: this.stackName,
           TemplateBody: receiverTemplate(entries),
           Tags: [{ Key: RECEIVER_TAG_KEY, Value: 'true' }],
-          OnFailure: 'DELETE',
+          // One resource's FAILURE must not delete the others' receivers
+          // mid-wait; `dispose` deletes the stack.
+          OnFailure: 'DO_NOTHING',
         })
       );
-      this.created = true;
+      this.stackId = out.StackId;
       this.logger.info(
         safeMsg`Created the CloudFormation signal receiver stack ${this.stackName} for ${entries.length} resource(s) declaring a CreationPolicy or cfn-init metadata (deleted when the deploy ends)`
       );
@@ -249,40 +275,38 @@ export class SignalReceiver {
    * the receiver is not created. `true` when the name is free.
    */
   private async clearStaleReceiver(client: CloudFormationClient): Promise<boolean> {
-    let stack:
-      | {
-          StackStatus?: string | undefined;
-          Tags?: { Key?: string | undefined; Value?: string | undefined }[] | undefined;
-        }
-      | undefined;
-    try {
-      const out = await client.send(new DescribeStacksCommand({ StackName: this.stackName }));
-      stack = out.Stacks?.[0];
-    } catch (error) {
-      if (/does not exist/i.test(error instanceof Error ? error.message : '')) return true;
-      throw error;
-    }
-    if (stack === undefined || stack.StackStatus === 'DELETE_COMPLETE') return true;
-    const ours = stack.Tags?.some((t) => t.Key === RECEIVER_TAG_KEY && t.Value === 'true') === true;
-    if (!ours) {
+    const stack = await this.findByName(client);
+    if (stack === undefined) return true;
+    if (!isReceiver(stack)) {
       this.logger.warn(
         safeMsg`A CloudFormation stack named ${this.stackName} exists (not a cdkd signal receiver), so it is left alone; resources declaring a CreationPolicy are created without waiting for signals.`
       );
       return false;
     }
-    await client.send(new DeleteStackCommand({ StackName: this.stackName }));
+    // Addressed by the id just read, never the name: a stack that took the
+    // name in between is another stack.
+    const staleId = stack.StackId;
+    await client.send(new DeleteStackCommand({ StackName: staleId }));
     const deadline = this.now() + READY_WAIT_MS;
     while (this.now() < deadline) {
-      try {
-        const out = await client.send(new DescribeStacksCommand({ StackName: this.stackName }));
-        if (out.Stacks?.[0]?.StackStatus === 'DELETE_COMPLETE') return true;
-      } catch (error) {
-        if (/does not exist/i.test(error instanceof Error ? error.message : '')) return true;
-        throw error;
-      }
+      const out = await client.send(new DescribeStacksCommand({ StackName: staleId }));
+      if (out.Stacks?.[0]?.StackStatus === 'DELETE_COMPLETE') return true;
       await this.sleep(POLL_INTERVAL_MS);
     }
     throw new Error('the signal receiver an earlier deploy left did not finish deleting');
+  }
+
+  /** The live stack holding the name, or `undefined` when none does. */
+  private async findByName(client: CloudFormationClient): Promise<LiveStack | undefined> {
+    try {
+      const out = await client.send(new DescribeStacksCommand({ StackName: this.stackName }));
+      const stack = out.Stacks?.[0];
+      if (stack === undefined || stack.StackStatus === 'DELETE_COMPLETE') return undefined;
+      return stack;
+    } catch (error) {
+      if (/does not exist/i.test(error instanceof Error ? error.message : '')) return undefined;
+      throw error;
+    }
   }
 
   /** Wait until every receiver resource exists (so the instance's first call finds it). */
@@ -293,7 +317,7 @@ export class SignalReceiver {
     const deadline = this.now() + READY_WAIT_MS;
     while (this.now() < deadline) {
       const out = await client.send(
-        new DescribeStackResourcesCommand({ StackName: this.stackName })
+        new DescribeStackResourcesCommand({ StackName: this.stackId ?? this.stackName })
       );
       const present = new Set((out.StackResources ?? []).map((r) => r.LogicalResourceId));
       if ([...ids].every((id) => present.has(id))) return;
@@ -319,12 +343,20 @@ export class SignalReceiver {
     try {
       for (;;) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
-        const out = await client.send(
-          new DescribeStackResourceCommand({
-            StackName: this.stackName,
-            LogicalResourceId: logicalId,
-          })
-        );
+        let out;
+        try {
+          out = await client.send(
+            new DescribeStackResourceCommand({
+              StackName: this.stackId ?? this.stackName,
+              LogicalResourceId: logicalId,
+            })
+          );
+        } catch (error) {
+          if (/does not exist/i.test(error instanceof Error ? error.message : '')) {
+            throw new Error(safeMsg`${logicalId}'s signal receiver is gone before it signalled (CreationPolicy)`);
+          }
+          throw error;
+        }
         const status = out.StackResourceDetail?.ResourceStatus;
         if (status === 'CREATE_COMPLETE') {
           this.logger.info(safeMsg`${logicalId}: received its CreationPolicy signal(s)`);
@@ -347,11 +379,22 @@ export class SignalReceiver {
     }
   }
 
-  /** Delete the receiver if this deploy created one. Never throws. */
+  /**
+   * Delete the receiver if this deploy sent its create. Never throws. By the
+   * id the create returned; when none came back (an ambiguous failure), only
+   * a stack holding the name that carries the receiver tag is deleted.
+   */
   async dispose(): Promise<void> {
     if (!this.created) return;
     try {
-      await this.client().send(new DeleteStackCommand({ StackName: this.stackName }));
+      const client = this.client();
+      let id = this.stackId;
+      if (id === undefined) {
+        const stack = await this.findByName(client);
+        if (stack === undefined || !isReceiver(stack)) return;
+        id = stack.StackId;
+      }
+      await client.send(new DeleteStackCommand({ StackName: id }));
       this.logger.debug(safeMsg`Deleting the signal receiver stack ${this.stackName}`);
     } catch (error) {
       this.logger.warn(
