@@ -111,37 +111,47 @@ export async function deleteImpl(
     const stackDestroy = context?.stackDestroy === true;
     if (!stackDestroy) await this.removeFromAllInstanceProfiles(physicalId, log, progress);
 
-    // Step 4: Delete the role
-    try {
-      await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
-    } catch (error) {
-      if (stackDestroy && error instanceof DeleteConflictException) {
-        // Read only after the refusal, so a delete that succeeds costs no
-        // extra call; a listing that fails or shows nothing leaves AWS's error.
-        const held = await confirmedInstanceProfiles.call(this, physicalId).catch(() => undefined);
-        if (held && held.names.length > 0) {
-          const refusal = markNonRetryable(
-            new ProvisioningError(
-              log.mask(
-                `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
-                  `instance profile(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, ` +
-                  `which this destroy did not delete (a profile created outside the stack, or ` +
-                  `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
-                  `does not remove the role from them. If nothing still needs the role there, ` +
-                  `remove it (aws iam remove-role-from-instance-profile --instance-profile-name ` +
-                  `<profile> --role-name <role>) or delete the profile, then destroy again.`
-              ),
-              resourceType,
-              logicalId,
-              physicalId,
-              error
-            )
-          );
-          PROFILE_REFUSALS.add(refusal);
-          throw refusal;
+    // Step 4: Delete the role. Two attempts at most on a stack destroy: the
+    // second only after the settle below saw no profile still holding it,
+    // i.e. what refused the first was the stack's own profile being deleted.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
+        break;
+      } catch (error) {
+        if (!stackDestroy || attempt > 1 || !(error instanceof DeleteConflictException)) {
+          throw error;
         }
+        // Read only after the refusal, so a delete that succeeds costs no
+        // extra call; a listing that fails leaves AWS's error.
+        const held = await settledInstanceProfiles.call(this, physicalId).catch((listError) => {
+          log.debug(
+            `Could not list the instance profiles of role ${v(physicalId)} after DeleteRole was refused: ${listError instanceof Error ? listError.name : typeof listError}`
+          );
+          return undefined;
+        });
+        if (held === 'empty') continue;
+        if (held === undefined) throw error;
+        const refusal = markNonRetryable(
+          new ProvisioningError(
+            log.mask(
+              `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
+                `instance profile(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, ` +
+                `which this destroy did not delete (a profile created outside the stack, or ` +
+                `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
+                `does not remove the role from them. If nothing still needs the role there, ` +
+                `remove it (aws iam remove-role-from-instance-profile --instance-profile-name ` +
+                `<profile> --role-name <role>) or delete the profile, then destroy again.`
+            ),
+            resourceType,
+            logicalId,
+            physicalId,
+            error
+          )
+        );
+        PROFILE_REFUSALS.add(refusal);
+        throw refusal;
       }
-      throw error;
     }
 
     log.debug(`Successfully deleted IAM role ${logicalId}`);
@@ -187,12 +197,20 @@ const PROFILE_REFUSALS = new WeakSet<Error>();
 const HELD_NAME_LIMIT = 5;
 
 /**
- * How long the refusal waits before listing the role's instance profiles a
- * second time. IAM is eventually consistent: a listing right after the stack's
- * own `DeleteInstanceProfile` may still show that profile, so only what BOTH
- * listings show is named, and the refusal is made only when that is non-empty.
+ * The refusal's settle (go-to-k/cdkd#6750): the role's instance profiles are
+ * listed every {@link HELD_POLL_MS} until the list has stayed the same for
+ * {@link HELD_STABLE_POLLS} listings in a row, or {@link HELD_MAX_POLLS} have
+ * run. An in-stack profile can be deleted at the same moment as its role (one
+ * naming the role by a literal string has no edge to it), and IAM lists a
+ * profile for a while after `DeleteInstanceProfile`; a list that changes is
+ * still draining, and one that empties lets `DeleteRole` be tried again. Only
+ * profiles that stay put for the whole window (10 s), and that
+ * `GetInstanceProfile` then shows still holding the role, are refused; the cap
+ * (60 s) bounds a list that keeps changing.
  */
-const HELD_RECHECK_MS = 2000;
+const HELD_POLL_MS = 2000;
+const HELD_STABLE_POLLS = 5;
+const HELD_MAX_POLLS = 30;
 
 async function listInstanceProfileNames(
   this: IAMRoleProvider,
@@ -210,23 +228,31 @@ async function listInstanceProfileNames(
 }
 
 /**
- * The instance profiles two listings {@link HELD_RECHECK_MS} apart both show
- * and that `GetInstanceProfile` confirms still hold the role, or undefined
- * (with no wait) when the first listing shows none.
+ * The instance profiles still holding the role once the list has settled (see
+ * {@link HELD_POLL_MS}) and `GetInstanceProfile` confirms each, or `'empty'`
+ * when a listing shows none or none is confirmed.
  */
-async function confirmedInstanceProfiles(
+async function settledInstanceProfiles(
   this: IAMRoleProvider,
   roleName: string
-): Promise<{ names: string[]; truncated: boolean } | undefined> {
-  const first = await listInstanceProfileNames.call(this, roleName);
-  if (first.names.length === 0) return undefined;
-  await new Promise((resolve) => setTimeout(resolve, HELD_RECHECK_MS));
-  const second = await listInstanceProfileNames.call(this, roleName);
+): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
+  const key = (held: { names: string[]; truncated: boolean }) =>
+    JSON.stringify([held.names, held.truncated]);
+  let held = await listInstanceProfileNames.call(this, roleName);
+  if (held.names.length === 0) return 'empty';
+  let unchanged = 0;
+  for (let poll = 0; poll < HELD_MAX_POLLS && unchanged < HELD_STABLE_POLLS; poll++) {
+    await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
+    const next = await listInstanceProfileNames.call(this, roleName);
+    if (next.names.length === 0) return 'empty';
+    unchanged = key(next) === key(held) ? unchanged + 1 : 0;
+    held = next;
+  }
   const names: string[] = [];
-  for (const name of second.names.filter((n) => first.names.includes(n))) {
+  for (const name of held.names) {
     // Read the profile itself too: a profile gone, or no longer holding the
     // role, is the listing lagging. Any other read failure keeps the name, as
-    // the listings showed it twice.
+    // the settled listing shows it.
     try {
       const profile = await this.iamClient.send(
         new GetInstanceProfileCommand({ InstanceProfileName: name })
@@ -238,9 +264,10 @@ async function confirmedInstanceProfiles(
       if (!(error instanceof NoSuchEntityException)) names.push(name);
     }
   }
+  if (names.length === 0) return 'empty';
   return {
     names: names.slice(0, HELD_NAME_LIMIT),
-    truncated: names.length > HELD_NAME_LIMIT || second.truncated,
+    truncated: names.length > HELD_NAME_LIMIT || held.truncated,
   };
 }
 

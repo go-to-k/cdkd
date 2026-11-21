@@ -159,6 +159,8 @@ describe('IAM role delete on a stack destroy (#6750)', () => {
     expect((error as Error).message).toMatch(/^Failed to delete IAM role Role: /);
     expect((error as Error).message).not.toContain('is still in instance profile');
     expect(isMarkedNonRetryable(error)).toBe(false);
+    // Listed empty: DeleteRole is tried once more, and its refusal surfaces.
+    expect(sent.filter((n) => n === 'DeleteRoleCommand')).toHaveLength(2);
   });
 
   it('a profile GetInstanceProfile shows gone, or without the role, is the listing lagging', async () => {
@@ -193,6 +195,37 @@ describe('IAM role delete on a stack destroy (#6750)', () => {
     const error = await destroy();
     expect((error as Error).message).not.toContain('is still in instance profile');
     expect(isMarkedNonRetryable(error)).toBe(false);
+  });
+
+  it("an in-stack profile deleted alongside the role (listed for several polls, then gone): DeleteRole is retried and succeeds", async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      DeleteRoleCommand: () => {
+        deletes++;
+        if (deletes === 1) conflict();
+        return {};
+      },
+      ListInstanceProfilesForRoleCommand: profiles(['own'], ['own'], ['own'], []),
+    });
+
+    await expect(destroy()).resolves.toBeUndefined();
+    expect(deletes).toBe(2);
+    expect(sent.filter((n) => n === 'ListInstanceProfilesForRoleCommand')).toHaveLength(4);
+    expect(sent).not.toContain('RemoveRoleFromInstanceProfileCommand');
+  });
+
+  it('a list that keeps changing is refused at the cap with the profiles it shows last', async () => {
+    let call = 0;
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: () => ({
+        InstanceProfiles: [{ InstanceProfileName: `p${++call}` }],
+      }),
+    });
+
+    expect(((await destroy()) as Error).message).toContain('instance profile(s) p31, which');
+    expect(call).toBe(31);
   });
 
   it('a DeleteRole that succeeds lists no profiles at all', async () => {
