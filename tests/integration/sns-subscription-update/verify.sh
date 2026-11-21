@@ -23,6 +23,10 @@
 #     replacement the provider makes (#6509); `--fail-on=destructive` must
 #     fail; the deploy re-creates the subscription (new ARN) with kind=c and
 #     the MessageBody scope.
+#   Phase 2r (filter-c + fail-after, before 2c): the same re-create in a deploy
+#     that a later resource fails (#6731). The rollback's Subscribe returns the
+#     live new subscription, so it is adopted: state must record its policy c,
+#     and a redeploy of the 2b template must clear it.
 #   Phase 3 (unreadable record): the state physicalId is rewritten to a
 #     malformed subscription ARN; the in-place path's readback is refused, so
 #     cdkd fails the deploy WITHOUT unsubscribing or subscribing anything.
@@ -435,6 +439,79 @@ if [ "$(raw_delivery_of "${SUB_ARN_1}")" != "true" ]; then
 fi
 echo "    OK: FilterPolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still true"
 SUB_ARN_2="${SUB_ARN_1}"
+
+# --- Phase 2r: the same re-create in a deploy that then fails (#6731) --------
+# The provider re-creates the subscription (delete, then Subscribe with policy
+# c on the message body), then Breaker fails the deploy. The rollback's
+# re-create of the old subscription is a Subscribe for the same topic,
+# protocol and endpoint, which SNS answers with the LIVE new subscription, so
+# the rollback adopts it. State must then describe what AWS holds (policy c),
+# so the next deploy of the 2b template clears it; before the fix state kept
+# 2b's record, that deploy diffed no change, and the filter stayed on.
+echo "==> Phase 2r: the 2c change in a deploy that fails after the re-create (rollback adopts the live subscription)"
+FAIL_LOG_2R="$(mktemp)"
+FAIL_RC_2R=0
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,filter-c,fail-after node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes </dev/null >"${FAIL_LOG_2R}" 2>&1 || FAIL_RC_2R=$?
+if [ "${FAIL_RC_2R}" -eq 0 ] || ! grep -qF 'Failed to create SSM parameter Breaker' "${FAIL_LOG_2R}"; then
+  echo "FAIL: phase 2r premise: the deploy did not fail on Breaker (rc ${FAIL_RC_2R})" >&2
+  cat "${FAIL_LOG_2R}" >&2
+  exit 1
+fi
+# PREMISE: the rollback adopted the live new subscription (the arm under test).
+if ! grep -qF 'StandaloneSubscription adopted the live resource' "${FAIL_LOG_2R}"; then
+  # Sentinel: the subscription's replacement line, present whatever the rollback did.
+  grep -qF 'Resource StandaloneSubscription was replaced' "${FAIL_LOG_2R}" \
+    || { echo "FAIL: phase 2r premise: no replacement line for StandaloneSubscription (wording drift?)" >&2; cat "${FAIL_LOG_2R}" >&2; exit 1; }
+  echo "FAIL: phase 2r premise: the rollback did not adopt the live subscription, so this run does not reach #6731" >&2
+  cat "${FAIL_LOG_2R}" >&2
+  exit 1
+fi
+rm -f "${FAIL_LOG_2R}"
+assert_exactly_one_subscription "phase 2r"
+SUB_ARN_2R=$(sub_arn)
+if [ "$(filter_policy_of "${SUB_ARN_2R}")" != '{"kind":["c"]}' ]; then
+  echo "FAIL: phase 2r premise: the adopted subscription does not carry the failed deploy's policy c" >&2
+  exit 1
+fi
+STATE_FILTER_2R=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -c --arg t "${SUB_TYPE}" \
+  '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.properties.FilterPolicy] | first // null') || {
+  echo "FAIL: phase 2r: state.json unreadable" >&2
+  exit 1
+}
+if [ "${STATE_FILTER_2R}" != '{"kind":["c"]}' ]; then
+  echo "FAIL: phase 2r: state records FilterPolicy ${STATE_FILTER_2R} while AWS holds kind=c, so the next deploy cannot see the difference (#6731)" >&2
+  exit 1
+fi
+if [ "$(state_sub_physical_id)" != "${SUB_ARN_2R}" ]; then
+  echo "FAIL: phase 2r: state physicalId does not name the live ${SUB_ARN_2R}" >&2
+  exit 1
+fi
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+assert_exactly_one_subscription "phase 2r (redeploy)"
+FILTER_2R=$(filter_policy_of "$(sub_arn)")
+if [ "${FILTER_2R}" != "None" ] && [ -n "${FILTER_2R}" ]; then
+  echo "FAIL: phase 2r: the redeploy of the 2b template left FilterPolicy '${FILTER_2R}' on (#6731)" >&2
+  exit 1
+fi
+if [ "$(raw_delivery_of "$(sub_arn)")" != "true" ]; then
+  echo "FAIL: phase 2r: RawMessageDelivery changed, expected the untouched 'true'" >&2
+  exit 1
+fi
+DRIFT_RC_2R=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" </dev/null >/dev/null 2>&1 || DRIFT_RC_2R=$?
+if [ "${DRIFT_RC_2R}" -ne 0 ]; then
+  echo "FAIL: phase 2r: cdkd drift exited ${DRIFT_RC_2R} after the redeploy (expected 0, no drift)" >&2
+  exit 1
+fi
+echo "    OK: the rollback adopted ${SUB_ARN_2R} and recorded its policy; the redeploy cleared it; drift clean"
+# 2c reads the subscription the arm left.
+SUB_ARN_1=$(sub_arn)
 
 # --- Phase 2c: a policy and scope change in one deploy (#6509) ---------------
 # After 2b the subscription has no policy and no scope (SNS drops the scope

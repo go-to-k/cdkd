@@ -401,7 +401,7 @@ describe('sibling messages in the rollback executor keep untrusted values off a 
       );
       const warn = lines.find((l) => l.includes('the re-create returned the LIVE new'));
       expect(warn).toContain('LIVE new resource (a physical id that is not a plain identifier)');
-      expect(warn).toContain("run 'cdkd deploy' to reconcile");
+      expect(warn).toContain("'cdkd deploy' re-applies the template's");
       expect(warn).toContain('A physical id is left out of the prose above');
       withPasteDir((dir) => expectDescribedAndInert([warn!], payload, dir));
     }

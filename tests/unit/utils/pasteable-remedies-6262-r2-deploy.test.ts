@@ -425,7 +425,7 @@ describe('rollback-executor/replay-reverse-replacement/finish.ts', () => {
     previousState: res({ physicalId: 'phys-old', properties: { QueueName: 'q', a: 1 } }),
   };
 
-  it('an adopted live new resource names drift and deploy with the typed flag', async () => {
+  it('an adopted live new resource names deploy with the typed flag', async () => {
     const { plain, emulated } = await replayBothWays(async () => {
       const create = vi.fn().mockResolvedValue({ physicalId: 'phys-new', attributes: {} });
       const { ctx, texts } = makeCtx({ create, delete: vi.fn() });
@@ -437,12 +437,10 @@ describe('rollback-executor/replay-reverse-replacement/finish.ts', () => {
       );
       return texts();
     });
-    expect(plain).toContain("run 'cdkd deploy' to reconcile");
-    expect(plain).toContain('with `cdkd drift` and run `cdkd deploy` to reconcile.');
-    expect(emulated).toContain(`run 'cdkd deploy ${WITH}' to reconcile`);
-    expect(emulated).toContain(
-      `with \`cdkd drift ${WITH}\` and run \`cdkd deploy ${WITH}\` to reconcile.`
-    );
+    expect(plain).toContain("'cdkd deploy' re-applies the template's");
+    expect(plain).toContain("so `cdkd deploy` re-applies the template's.");
+    expect(emulated).toContain(`'cdkd deploy ${WITH}' re-applies the template's`);
+    expect(emulated).toContain(`so \`cdkd deploy ${WITH}\` re-applies the template's.`);
   });
 });
 

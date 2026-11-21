@@ -1653,10 +1653,9 @@ describe('replayRollback', () => {
     expect(state.B!.properties).toEqual({ QueueName: 'q', a: 1, fixed: true });
   });
 
-  it('reverse-replacement same-id ADOPT path records effectiveProperties too (issue #1682 x #1247)', async () => {
-    // The adopt warning says state records "the pre-replacement properties" —
-    // and it still does: a substitution repairs an unusable field of that same
-    // bag, it does not swap in the new generation's values.
+  it('reverse-replacement same-id ADOPT path keeps the live record, not the create\'s effectiveProperties (go-to-k/cdkd#6731)', async () => {
+    // The re-create returned the live new resource, so its effectiveProperties
+    // describe a create that applied nothing: state keeps what AWS holds.
     const create = vi
       .fn()
       .mockResolvedValue({ physicalId: 'phys-new', effectiveProperties: { a: 1, fixed: true } });
@@ -1672,7 +1671,7 @@ describe('replayRollback', () => {
     const result = await replayRollback(ops, state, 'S', ctx);
     expect(del).not.toHaveBeenCalled();
     expect(result.warnings).toBe(1);
-    expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 1, fixed: true } });
+    expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 2 } });
   });
 
   it('reverse-replacement same-id (issue #1247): name-idempotent create returns the LIVE new resource — no delete, warn-and-adopt', async () => {
@@ -1691,6 +1690,7 @@ describe('replayRollback', () => {
     const state: Record<string, ResourceState> = {
       B: res({ resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', properties: { a: 2 } }),
     };
+    const liveRecord = state.B;
     const result = await replayRollback(ops, state, 'S', ctx, { afterOp });
     // The delete-new step must NOT run — it would delete the live resource.
     expect(del).not.toHaveBeenCalled();
@@ -1701,13 +1701,50 @@ describe('replayRollback', () => {
     expect(result.warnings).toBe(1);
     expect(silentLogger.warn).toHaveBeenCalledWith(expect.stringContaining('name-idempotent'));
     expect(silentLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('may NOT have been re-applied')
+      expect.stringContaining('were NOT re-applied')
     );
-    // State records the intended post-rollback record (prev properties) with
-    // the live physical id, so drift / the next deploy can reconcile.
-    expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 1 } });
+    // go-to-k/cdkd#6731: state keeps the live resource's record (the failed
+    // deploy's properties, which AWS holds), so the next deploy diffs the
+    // template against them and re-applies it. The previous properties would
+    // have diffed as no change.
+    expect(state.B).toMatchObject({ ...liveRecord });
+    expect(state.B).toMatchObject({ physicalId: 'phys-new', properties: { a: 2 } });
     expect(afterOp).toHaveBeenCalledWith('B');
     expect(events.map((e) => e.eventType)).toContain('ROLLBACK_RESOURCE_SUCCEEDED');
+  });
+
+  it('reverse-replacement same-id ADOPT keeps the pre-deploy DeletionPolicy, metadata and dependencies (go-to-k/cdkd#6731)', async () => {
+    const create = vi.fn().mockResolvedValue({ physicalId: 'phys-new', attributes: {} });
+    const { ctx } = makeCtx({ create, delete: vi.fn() });
+    const prev = res({
+      resourceType: 'AWS::Some::NamedType',
+      physicalId: 'phys-old',
+      properties: { a: 1 },
+      deletionPolicy: 'Retain',
+      dependencies: ['Old'],
+      constructPath: 'S/B-old',
+    });
+    const ops: CompletedOperation[] = [
+      { logicalId: 'B', changeType: 'UPDATE', resourceType: 'AWS::Some::NamedType', physicalId: 'phys-new', previousState: prev },
+    ];
+    const state: Record<string, ResourceState> = {
+      B: res({
+        resourceType: 'AWS::Some::NamedType',
+        physicalId: 'phys-new',
+        properties: { a: 2 },
+        deletionPolicy: 'Delete',
+        dependencies: ['New'],
+        constructPath: 'S/B-new',
+      }),
+    };
+    await replayRollback(ops, state, 'S', ctx);
+    expect(state.B).toMatchObject({
+      physicalId: 'phys-new',
+      properties: { a: 2 },
+      deletionPolicy: 'Retain',
+      dependencies: ['Old'],
+      constructPath: 'S/B-old',
+    });
   });
 
   it('reverse-replacement same-id after delete-new-first is the EXPECTED outcome — no warning (issue #1247 exemption)', async () => {
