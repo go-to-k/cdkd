@@ -156,7 +156,7 @@ dynamodb-globaltable	2026-11-20T15:08:45Z	PASS	1784	verify.sh	rc ok, orph clean;
 dynamodb-globaltable-implied-stream	2026-11-06T16:08:16Z	PASS	335	verify.sh	post-hoc on main after #5839 split; rc ok, orph clean
 dynamodb-globaltable-replica-settings	2026-11-20T11:50:48Z	PASS	3875	verify.sh	PR6652 be63cc056, us-west-2 (second us-east-1); rc 0, revert-identity kept identity x2, orph clean
 dynamodb-gsi-update	2026-11-20T11:50:48Z	PASS	4442	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-dynamodb-ondemand	2026-11-21T02:43:57Z	PASS	448	verify.sh	PR6738 e22f0ed07; rc ok, orph clean
+dynamodb-ondemand	2026-11-21T13:51:47Z	PASS	485	verify.sh	rc ok, orph clean; #6778 insights transient
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
