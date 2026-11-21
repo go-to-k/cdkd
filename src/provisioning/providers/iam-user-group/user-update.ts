@@ -497,8 +497,10 @@ function refuseLoginProfileWithoutPassword(
   throw markNonRetryable(
     new ProvisioningError(
       `Cannot create the login profile of IAM user ${logicalId}: there is no password to send ` +
-        '(it is write-only, so a drift readback carries none). Deploy the template, which ' +
-        'declares the password, to create it.',
+        '(it is write-only, so a drift readback carries none). An unchanged deploy does not ' +
+        'create it either, since the state record still holds the login profile: create it ' +
+        'outside cdkd with IAM CreateLoginProfile, or remove LoginProfile from the template, ' +
+        'deploy, then add it back and deploy again.',
       resourceType,
       logicalId,
       physicalId

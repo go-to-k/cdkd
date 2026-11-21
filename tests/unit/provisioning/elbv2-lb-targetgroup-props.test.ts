@@ -549,6 +549,21 @@ describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
         LoadBalancerArn: LB_ARN,
         SubnetMappings: live.slice(0, 2),
       });
+
+      // Both changed: the mappings carry what Subnets cannot, so they win.
+      vi.clearAllMocks();
+      await provider.update(
+        'MyNlb',
+        LB_ARN,
+        LB_TYPE,
+        { Subnets: ['subnet-111'], SubnetMappings: live.slice(0, 1) },
+        { Subnets: ['subnet-111', 'subnet-222'], SubnetMappings: live.slice(0, 2) }
+      );
+      const [bothCall] = callsOf('SetSubnetsCommand');
+      expect(bothCall[0].input).toEqual({
+        LoadBalancerArn: LB_ARN,
+        SubnetMappings: live.slice(0, 1),
+      });
     });
 
     it('sets the IPAM pool via ModifyIpPools and removes it via RemoveIpamPools', async () => {
