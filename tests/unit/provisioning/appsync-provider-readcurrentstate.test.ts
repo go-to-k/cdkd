@@ -530,6 +530,50 @@ describe('AppSyncProvider.readCurrentState', () => {
   describe('AWS::AppSync::GraphQLSchema', () => {
     const encode = (sdl: string): Uint8Array => new TextEncoder().encode(sdl);
 
+    describe('schema definition normalization (#6779)', () => {
+      const body = `type Item {
+  id: ID!
+  name: String
+}
+
+type Query {
+  getItem(id: ID!): Item
+}`;
+      const read = async (awsSdl: string, stateSdl: string) => {
+        mockSend.mockResolvedValueOnce({ schema: encode(awsSdl) });
+        return provider.readCurrentState('api-1', 'L', 'AWS::AppSync::GraphQLSchema', {
+          ApiId: 'api-1',
+          Definition: stateSdl,
+        });
+      };
+
+      it('treats a state SDL without a schema block as equal to AWS SDL carrying the default one', async () => {
+        const stateSdl = 'type Item { id: ID! name: String }\ntype Query { getItem(id: ID!): Item }\n';
+        const result = await read(`schema {\n  query: Query\n}\n\n${body}`, stateSdl);
+        expect(result).toEqual({ ApiId: 'api-1', Definition: stateSdl });
+      });
+
+      it('drops a default schema block that names mutation and subscription too', async () => {
+        const stateSdl = `${body}\ntype Mutation { m: String }\ntype Subscription { s: String }\n`;
+        const awsSdl = `schema {\n  query: Query\n  mutation: Mutation\n  subscription: Subscription\n}\n\n${body}\n\ntype Mutation {\n  m: String\n}\n\ntype Subscription {\n  s: String\n}`;
+        const result = await read(awsSdl, stateSdl);
+        expect(result).toEqual({ ApiId: 'api-1', Definition: stateSdl });
+      });
+
+      it('keeps a schema block with a non-default root type so the change is drift', async () => {
+        const awsSdl = `schema {\n  query: RootQuery\n}\n\n${body.replace('type Query', 'type RootQuery')}`;
+        const result = (await read(awsSdl, body)) as { Definition: string };
+        expect(result.Definition).toContain('query: RootQuery');
+        expect(result.Definition).not.toBe(body);
+      });
+
+      it('keeps a schema block carrying a directive', async () => {
+        const awsSdl = `schema @aws_cognito_user_pools {\n  query: Query\n}\n\n${body}`;
+        const result = (await read(awsSdl, body)) as { Definition: string };
+        expect(result.Definition).toContain('schema @aws_cognito_user_pools');
+      });
+    });
+
     it('canonicalizes whitespace/comment-only differences to a no-drift result', async () => {
       // State holds the user-authored SDL with comments + extra whitespace.
       const stateSdl = `# This is a comment
