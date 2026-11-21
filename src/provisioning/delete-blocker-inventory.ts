@@ -107,10 +107,6 @@ function handled(
   return { blocker, disposition: { kind: 'handled', site, call, test } };
 }
 
-function open(blocker: string, issue: number): DeleteBlocker {
-  return { blocker, disposition: { kind: 'open', issue } };
-}
-
 const P = 'src/provisioning/providers/';
 const T = 'tests/unit/provisioning/';
 const IAM_STARTED = `${T}iam-delete-started-4946.test.ts`;
@@ -121,9 +117,7 @@ const GROUP_STRIP = '%s, then DeleteGroup refused: unconfirmed';
  * Types not yet audited. SHRINK-ONLY: the test pins its length, so a new
  * provider cannot join it unnoticed. #6751 settles these by live probe.
  */
-export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = [
-  'AWS::FSx::FileSystem',
-];
+export const UNAUDITED_DELETE_BLOCKER_TYPES: readonly string[] = ['AWS::FSx::FileSystem'];
 
 export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   // --- IAM ---
@@ -544,9 +538,17 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
   {
     type: 'AWS::EMR::InstanceGroupConfig',
     source: perms(
-      'elasticmapreduce:ModifyInstanceGroups, elasticmapreduce:RemoveAutoScalingPolicy'
+      "elasticmapreduce:ModifyInstanceGroups, elasticmapreduce:RemoveAutoScalingPolicy (#6751 probe: CloudTrail shows the handler sending RemoveAutoScalingPolicy, then ModifyInstanceGroups to 0. Without the removal the scale-in still succeeds, but the policy's alarm and scaling target outlive the group)"
     ),
-    blockers: [open('an automatic scaling policy', 6751)],
+    blockers: [
+      handled(
+        'an automatic scaling policy',
+        `${P}emr-instance-group-config/remove-scaling-policy.ts`,
+        'RemoveAutoScalingPolicyCommand',
+        `${T}emr-instance-group-delete-scaling-policy-6751.test.ts`,
+        'removes the automatic scaling policy before scaling the TASK group to 0'
+      ),
+    ],
   },
   none(
     'AWS::EMR::InstanceFleetConfig',

@@ -27,7 +27,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * raising it, which a reviewer sees. Literals, never derived from the lists.
  */
 const UNAUDITED_COUNT = 1;
-const OPEN_COUNT = 1;
+const OPEN_COUNT = 0;
 
 const registry = new ProviderRegistry();
 registerAllProviders(registry, await loadProviderClasses());
