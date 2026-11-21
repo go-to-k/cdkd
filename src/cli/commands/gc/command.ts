@@ -531,6 +531,8 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       // that is not exactly a minted signal key, a second fence beside the
       // listing's shape filter. Its client is region-corrected for the STATE
       // bucket, like the backend.
+      // A record that moved in while the confirmation prompt waited.
+      await refuseWhileLocked(stateBackend);
       const store = new WaitConditionSignalStore();
       store.setBucket(bucketName);
       await deleteWaitConditionSignalCandidates(

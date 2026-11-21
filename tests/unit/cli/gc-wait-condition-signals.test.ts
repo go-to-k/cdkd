@@ -222,6 +222,21 @@ describe('cdkd gc: orphaned wait condition signal objects (#6699)', () => {
     expect(removedKeys()).toEqual([ORPHAN_KEY]);
   });
 
+  it('keeps a key a wait condition still names after its handle record was orphaned', async () => {
+    withOrphanAndLive({
+      stackName: 'App',
+      resources: {
+        Wait: {
+          resourceType: 'AWS::CloudFormation::WaitCondition',
+          physicalId: 'cdkd-wait-condition-Wait-1',
+          properties: { Handle: urlFor(LIVE_KEY), Count: 1 },
+        },
+      },
+    });
+    await runGc(['--yes']);
+    expect(removedKeys()).toEqual([ORPHAN_KEY]);
+  });
+
   it('keeps a key referenced from supersededResources[].state', async () => {
     withOrphanAndLive({
       stackName: 'App',

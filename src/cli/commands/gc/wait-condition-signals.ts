@@ -166,6 +166,14 @@ function visitResource(
   refs: Set<string>
 ): string | undefined {
   if (!isRecord(record)) return `${where} is not an object`;
+  // A wait condition still in state whose handle record was orphaned keeps
+  // its signals: its `Handle` (the URL) is a reference too. Keep-only.
+  if (record['resourceType'] === 'AWS::CloudFormation::WaitCondition') {
+    const props = record['properties'];
+    const handle = isRecord(props) ? props['Handle'] : undefined;
+    if (typeof handle === 'string') addHandleReferences(handle, bucket, refs);
+    return undefined;
+  }
   if (record['resourceType'] !== WAIT_CONDITION_HANDLE_TYPE) return undefined;
   const physicalId = record['physicalId'];
   if (typeof physicalId !== 'string') return `${where} is a handle with no string physicalId`;
