@@ -110,7 +110,9 @@ and `force_delete` on a repository.
 cdkd also follows CloudFormation in two deletes that go the other way. An
 `AWS::SecretsManager::Secret` is deleted at once, with no recovery window. IAM
 role policy attachments that were made outside the template are
-force-detached.
+force-detached. An IAM role that an instance profile outside the stack still
+holds is the exception: CloudFormation's delete cannot remove a role from a
+profile, so `cdkd destroy` refuses the role, naming the profile.
 
 ## `DeletionPolicy: Snapshot`: final snapshots on delete (`--skip-final-snapshot`)
 

@@ -112,6 +112,13 @@ export default defineConfig({
       './tests/assemble-changelog-setup.ts',
       './tests/run-tmpdir-setup.ts',
     ],
+    // The lock above serializes large runs but does not narrow one: vitest's
+    // default is `cpus - 1` forks, many spawning the paste harness's bash and
+    // zsh per span. A single full run at that width froze a 15-cpu, 48 GB host
+    // within seconds of starting, while the same suite at 4 forks had just
+    // completed on it. Any non-empty CI keeps the default (sharded runners,
+    // nothing else on them); an explicit `--maxWorkers` still overrides this.
+    maxWorkers: process.env.CI ? undefined : 4,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
@@ -542,6 +549,16 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-update-path-coverage.ts --check',
         cache: false,
       },
+      // Issue #6696: every handled property of an SDK provider is returned by
+      // its drift readback, declared unreadable, or in the committed baseline.
+      'gen:drift-readback-coverage': {
+        command: 'node --experimental-strip-types scripts/gen-drift-readback-coverage.ts',
+        cache: false,
+      },
+      'audit:drift-readback-coverage:check': {
+        command: 'node --experimental-strip-types scripts/gen-drift-readback-coverage.ts --check',
+        cache: false,
+      },
       // Issue #6676: the measured table of Cloud Control update paths; every type
       // measured as refusing has a registered fix or a recorded exemption.
       'gen:cc-update-measurements': {
@@ -735,6 +752,7 @@ export default defineConfig({
           'vp run gen:sdk-attr-coverage',
           'vp run gen:update-wrap-coverage',
           'vp run gen:update-path-coverage',
+          'vp run gen:drift-readback-coverage',
           'vp run gen:cc-update-measurements',
           'vp run gen:ref-segment-coverage',
           'vp run gen:provider-replace-branches',

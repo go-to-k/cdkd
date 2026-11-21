@@ -16,6 +16,8 @@
 #      clear), CanarySetting kept with PercentTraffic 10 -> 25 and the
 #      StageVariableOverrides key dropped (per-key remove). Assert each
 #      removal/change reached AWS and drift is clean.
+#   2b. Out-of-band ApiKeyRequired on the method and the stage's declared tag changed:
+#      drift reports both (#6696; the readbacks returned neither before).
 #   3. Destroy + assert the REST API, client certificate, and log group are
 #      gone and the cdkd state file is removed.
 #
@@ -217,6 +219,43 @@ echo "    canary updated in place (percentTraffic=25, override key removed)"
 echo "==> Phase 2: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 echo "    drift clean after update"
+
+# --- Phase 2b: out-of-band change to fields the readback now returns (#6696) --
+# Before #6696 the Method readback never returned ApiKeyRequired and the Stage
+# readback never returned Tags, so the deploy-time baseline lacked both and
+# drift reported "no drift" for either change. The stage DECLARES the tag
+# changed here (lib: cdkdIntegStage=original): a key the template does not
+# declare and the deploy captured empty is deliberately not compared
+# (undeclaredEmptyObservedKeys), so tagging an untagged stage is not drift.
+# Phase 2's clean drift, with that tag in place, is the negative control.
+echo "==> Phase 2b: out-of-band ApiKeyRequired on the method + the stage's declared tag changed (expect drift on both)"
+ROOT_ID="$(aws apigateway get-resources --region "${REGION}" --rest-api-id "${API_ID}" \
+  --query "items[?path=='/'].id | [0]" --output text)"
+aws apigateway update-method --region "${REGION}" --rest-api-id "${API_ID}" \
+  --resource-id "${ROOT_ID}" --http-method GET \
+  --patch-operations op=replace,path=/apiKeyRequired,value=true >/dev/null
+aws apigateway tag-resource --region "${REGION}" \
+  --resource-arn "arn:aws:apigateway:${REGION}::/restapis/${API_ID}/stages/${STAGE_NAME}" \
+  --tags cdkdIntegStage=changed-out-of-band
+DRIFT_RC=0
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || DRIFT_RC=$?
+if [ "${DRIFT_RC}" != "1" ]; then
+  echo "FAIL: drift after the out-of-band change exited ${DRIFT_RC}, expected 1: ${DRIFT_OUT}" >&2
+  exit 1
+fi
+drift_paths() { # usage: drift_paths <type>
+  printf '%s' "${DRIFT_OUT}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);const t=process.argv[1];process.stdout.write(r.flatMap(x=>x.drifted||[]).filter(d=>d.type===t).flatMap(d=>(d.changes||[]).map(c=>c.path)).join(","))})' "$1"
+}
+METHOD_PATHS="$(drift_paths AWS::ApiGateway::Method)"
+STAGE_PATHS="$(drift_paths AWS::ApiGateway::Stage)"
+case ",${METHOD_PATHS}," in
+  *,ApiKeyRequired,*) echo "    method ApiKeyRequired drift reported" ;;
+  *) echo "FAIL: no ApiKeyRequired drift on the method (paths: '${METHOD_PATHS}'): ${DRIFT_OUT}" >&2; exit 1 ;;
+esac
+case ",${STAGE_PATHS}," in
+  *,Tags*) echo "    stage Tags drift reported" ;;
+  *) echo "FAIL: no Tags drift on the stage (paths: '${STAGE_PATHS}'): ${DRIFT_OUT}" >&2; exit 1 ;;
+esac
 
 # --- Phase 3: destroy ---------------------------------------------------------
 echo "==> Phase 3: destroy"

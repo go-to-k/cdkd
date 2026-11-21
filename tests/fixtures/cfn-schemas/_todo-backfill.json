@@ -23,8 +23,9 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::ApiGateway::Authorizer": [
-      "JwtConfiguration"
+    "AWS::CertificateManager::Certificate": [
+      "CertificateUsage",
+      "RootHierarchyType"
     ],
     "AWS::Lambda::Function": [
       "AcceleratorConfig"

@@ -91,6 +91,7 @@ describe('CI regenerates through gen:all-matrices (#1417)', () => {
       [
         'cli-flag-coverage',
         'format',
+        'gen:drift-readback-coverage',
         'gen:enrichment-coverage',
         'gen:cc-update-measurements',
         'gen:getatt-attributes',

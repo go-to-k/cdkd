@@ -83,6 +83,7 @@ import { trustedResourceNames } from './trust.js';
 import { healerUnderRecordPrintingBag } from './child-parameters.js';
 import { stackIdTailOf } from '../../../state/stack-id-tail.js';
 import { previewNoEchoMacChanges } from './noecho-macs.js';
+import { recordProducerPreview } from '../../../analyzer/cross-stack-preview.js';
 
 /**
  * Compute the per-resource diff for one stack: `currentState` (cdkd state)
@@ -131,6 +132,8 @@ export async function computeStackDiff(
     inheritedNoEchoParameters,
     inheritedNoEchoParametersAnyVerdict,
     ssmNameHeal = 'apply',
+    crossStackPreview,
+    recordCrossStackPreview,
   } = options;
   // go-to-k/cdkd#6274: the deploy re-spells a pre-#6272 generated SSM
   // parameter name `/<name>` as `<name>` before its diff; so does the preview,
@@ -386,6 +389,7 @@ export async function computeStackDiff(
         resources: currentState.resources,
         stateBackend,
         stackName,
+        ...(crossStackPreview && { crossStackPreview }),
         // go-to-k/cdkd#6170: the tail the deploy resolves `AWS::StackId` with.
         stackIdTail: () => stackIdTailOf(currentState, stackName),
         // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
@@ -889,6 +893,19 @@ export async function computeStackDiff(
       noEchoSeed,
       diffOutputsAgainst,
       stackName,
+    });
+  }
+
+  // go-to-k/cdkd#6796: what this deploy publishes, for a consumer diffed after it.
+  if (crossStackPreview && recordCrossStackPreview) {
+    await recordProducerPreview(crossStackPreview, region, resolveFn, {
+      stackName,
+      template: effectiveTemplate,
+      changes,
+      desiredOutputs: resolved.outputs,
+      storedOutputs: currentState.outputs,
+      ...(knownConditions !== undefined && { conditions: knownConditions }),
+      holdsSecret: (text) => printing.mask(text) !== text,
     });
   }
 
