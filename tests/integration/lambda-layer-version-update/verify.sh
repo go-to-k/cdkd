@@ -20,6 +20,9 @@
 #      succeeds WITHOUT any manual --replace flag, a new layer version :N+1
 #      is published, and the function now points at :N+1 (the replacement
 #      was propagated to the dependent).
+#   1.5 Issue #6761: reorder OrderFn's two layers out of band; `cdkd drift`
+#      must report OrderFn's `Layers`, and read it clean again once the
+#      configured order is restored.
 #   2.5 Re-deploy with CDKD_TEST_REMOVAL=true as well: RefFn drops
 #      S3ObjectStorageMode together with a code change (issue #5300).
 #   3. Destroy + assert the function is gone and the cdkd state file is removed.
@@ -85,6 +88,7 @@ LAYER_NAME="cdkd-layer-version-update-test"
 FN_NAME="cdkd-layer-version-update-test-fn"
 REF_FN="cdkd-layer-version-update-test-ref-fn"
 COPY_FN="cdkd-layer-version-update-test-copy-fn"
+ORDER_FN="cdkd-layer-version-update-test-order-fn"
 REF_LAYER_NAME="cdkd-layer-version-update-test-ref"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 REF_BUCKET="cdkd-integ-ref-${ACCOUNT_ID}-${REGION}"
@@ -103,7 +107,7 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  for f in "${FN_NAME}" "${REF_FN}" "${COPY_FN}"; do
+  for f in "${FN_NAME}" "${REF_FN}" "${COPY_FN}" "${ORDER_FN}"; do
     aws lambda delete-function --function-name "${f}" --region "${REGION}" >/dev/null 2>&1 || true
   done
   # Delete every published version of the test layers.
@@ -280,6 +284,54 @@ echo "    function points at layer version :${V1}"
 assert_issue_5300 "Phase 1" "${V1}" v1
 REF_SHA_P1="$(fn_sha "${REF_FN}")"
 
+# --- Phase 1.5: reorder OrderFn's layers out of band (issue #6761) -----
+# Lambda returns the layers in their configured order, and that order is
+# configuration, so a reorder must read as drift on `Layers`. Only OrderFn is
+# asserted: the issue #5300 resources are not part of this claim.
+# usage: order_fn_drift -> the drifted paths of OrderFn, comma-joined ("" = clean)
+order_fn_drift() {
+  local report
+  report=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json) || true
+  jq -r --arg stack "${STACK}" '
+    [.[] | select(.stack == $stack)] as $r |
+    if ($r | length) != 1 then error("no single report for the stack") else
+    $r[0] as $s |
+    if ([$s.clean[]?, $s.drifted[]? | select(.logicalId | startswith("OrderFn"))] | length) != 1
+    then error("OrderFn was not compared") else
+    ([$s.drifted[] | select(.logicalId | startswith("OrderFn")) | .changes[].path] | sort | join(","))
+    end end
+  ' <<<"${report}" || { echo "FAIL: unreadable drift report: ${report}" >&2; exit 1; }
+}
+order_fn_layers() {
+  aws lambda get-function-configuration --function-name "${ORDER_FN}" --region "${REGION}" \
+    --query 'Layers[].Arn' --output text
+}
+set_order_fn_layers() {
+  aws lambda update-function-configuration --function-name "${ORDER_FN}" --region "${REGION}" \
+    --layers "$@" >/dev/null
+  aws lambda wait function-updated-v2 --function-name "${ORDER_FN}" --region "${REGION}"
+}
+echo "==> Phase 1.5: reorder OrderFn's layers out of band (issue #6761)"
+read -r ORDER_FIRST ORDER_SECOND <<<"$(order_fn_layers)"
+case "${ORDER_FIRST}|${ORDER_SECOND}" in
+  *":layer:${LAYER_NAME}:"*"|"*":layer:${REF_LAYER_NAME}:"*) ;;
+  *) echo "FAIL: OrderFn layers are '${ORDER_FIRST}' '${ORDER_SECOND}', expected ${LAYER_NAME} then ${REF_LAYER_NAME}" >&2; exit 1 ;;
+esac
+GOT="$(order_fn_drift)"
+[ -z "${GOT}" ] || { echo "FAIL: OrderFn drifted before the reorder: ${GOT}" >&2; exit 1; }
+echo "    OK: OrderFn clean in the configured order"
+set_order_fn_layers "${ORDER_SECOND}" "${ORDER_FIRST}"
+[ "$(order_fn_layers)" = "${ORDER_SECOND}	${ORDER_FIRST}" ] \
+  || { echo "FAIL: the out-of-band reorder did not land: $(order_fn_layers)" >&2; exit 1; }
+GOT="$(order_fn_drift)"
+[ "${GOT}" = "Layers" ] \
+  || { echo "FAIL: reordered layers did not drift on exactly Layers (issue #6761): '${GOT}'" >&2; exit 1; }
+echo "    OK: drift reports OrderFn Layers after the reorder"
+set_order_fn_layers "${ORDER_FIRST}" "${ORDER_SECOND}"
+GOT="$(order_fn_drift)"
+[ -z "${GOT}" ] || { echo "FAIL: OrderFn still drifted after restoring the order: ${GOT}" >&2; exit 1; }
+echo "    OK: OrderFn clean again once the order is restored"
+
 # --- Phase 2: change layer content (REPLACEMENT, must NOT need --replace) ---
 echo "==> Phase 2: re-deploy with v2 layer content (replacement + dependent re-point)"
 put_ref_objects v2
@@ -338,7 +390,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 
 assert_gone "function ${FN_NAME} still exists after destroy" aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}"
 echo "    function deleted"
-for f in "${REF_FN}" "${COPY_FN}"; do
+for f in "${REF_FN}" "${COPY_FN}" "${ORDER_FN}"; do
   assert_gone "function ${f} still exists after destroy" aws lambda get-function-configuration --function-name "${f}" --region "${REGION}"
 done
 REF_LAYER_LEFT="$(aws lambda list-layer-versions --layer-name "${REF_LAYER_NAME}" --region "${REGION}" \
@@ -352,4 +404,4 @@ echo "    issue #5300 functions and REFERENCE layer deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — Lambda LayerVersion content change auto-replaces (no --replace) and re-points the consuming function; REFERENCE storage mode reaches AWS on layer and function create and on UpdateFunctionCode (issue #5300); all 3 phases passed"
+echo "[verify] PASS — Lambda LayerVersion content change auto-replaces (no --replace) and re-points the consuming function; REFERENCE storage mode reaches AWS on layer and function create and on UpdateFunctionCode (issue #5300); a reordered layer list reads as drift (issue #6761); all phases passed"

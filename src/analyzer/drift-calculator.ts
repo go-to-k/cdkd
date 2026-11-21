@@ -31,6 +31,7 @@ import {
   canonicalizeTagListsDeep,
   canonicalizeUnorderedArraysAtPaths,
   matchesPathPrefix,
+  orderSignificantIdArrayPaths,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
 import { isOmittedVersionDefault, isVerbatimStatementPath } from './drift-verbatim-paths.js';
@@ -95,6 +96,11 @@ export interface PropertyDrift {
  * `<entry>.Statement` a statement object equals a one-element list holding it
  * (go-to-k/cdkd#6624), so entries must be `verbatimEchoDriftKeys` values: a
  * non-verbatim entry would take the fold too.
+ *
+ * `options.resourceType` keeps that type's ORDER-SIGNIFICANT id/ARN lists
+ * (Lambda `Layers`, go-to-k/cdkd#6761) out of the id/ARN sort, on both sides.
+ * A caller comparing a resource type should always pass it: without it a
+ * reordered list compares equal.
  */
 export function calculateResourceDrift(
   stateProperties: Record<string, unknown>,
@@ -104,6 +110,7 @@ export function calculateResourceDrift(
     unionWalkObjects?: boolean;
     unorderedPaths?: readonly string[];
     unionWalkPaths?: readonly string[];
+    resourceType?: string;
   }
 ): PropertyDrift[] {
   const drifts: PropertyDrift[] = [];
@@ -111,17 +118,18 @@ export function calculateResourceDrift(
   const union = options?.unionWalkObjects ?? false;
   const unordered = options?.unorderedPaths ?? [];
   const unionPaths = options?.unionWalkPaths ?? [];
+  const orderedIdPaths = orderSignificantIdArrayPaths(options?.resourceType);
   // Canonicalize tag lists and AWS resource-id/ARN arrays on BOTH sides before
   // any comparison. AWS does not guarantee element ordering across reads, so a
   // reorder between the deploy-time observedProperties snapshot and a later
   // drift read would otherwise surface as phantom drift (the deepEqual walk
   // below compares arrays positionally). See drift-normalize.ts.
   stateProperties = canonicalizeUnorderedArraysAtPaths(
-    canonicalizeIdArraysDeep(canonicalizeTagListsDeep(stateProperties)),
+    canonicalizeIdArraysDeep(canonicalizeTagListsDeep(stateProperties), orderedIdPaths),
     unordered
   ) as Record<string, unknown>;
   awsProperties = canonicalizeUnorderedArraysAtPaths(
-    canonicalizeIdArraysDeep(canonicalizeTagListsDeep(awsProperties)),
+    canonicalizeIdArraysDeep(canonicalizeTagListsDeep(awsProperties), orderedIdPaths),
     unordered
   ) as Record<string, unknown>;
   // Top-level walk is intentionally state-keys-only even with union mode:

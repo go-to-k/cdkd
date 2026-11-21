@@ -81,10 +81,54 @@ const ID_RE = /^[a-z][a-z0-9]*-[0-9a-f]{6,}$/;
 const isIdLike = (s: unknown): boolean =>
   typeof s === 'string' && (s.startsWith('arn:') || ID_RE.test(s));
 
-export function canonicalizeIdArraysDeep(v: unknown): unknown {
+/**
+ * Id/ARN lists whose ORDER is configuration, per resource type
+ * (go-to-k/cdkd#6761). {@link canonicalizeIdArraysDeep} sorts every list of
+ * two or more ids/ARNs on BOTH comparison sides, which maps two different live
+ * orders to one form — right for a set (`SubnetIds`), wrong for a list whose
+ * order AWS acts on, where a reorder out of band is real drift.
+ *
+ * - `AWS::Lambda::Function` `Layers`: Lambda extracts the layers in list order
+ *   and a later layer overwrites a file an earlier one placed at the same
+ *   path, so the order decides which file the function runs. `GetFunction`
+ *   returns the layers in that configured order, so both baselines (the
+ *   deploy-time readback and the template) already hold it.
+ *
+ * Entries use the {@link matchesPathPrefix} rule. Add a type here only for a
+ * list AWS documents as ordered; an entry on a set brings back the phantom
+ * reorder drift the sort exists to remove.
+ */
+const ORDER_SIGNIFICANT_ID_ARRAY_PATHS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::Lambda::Function': ['Layers'],
+};
+
+/**
+ * The paths of `resourceType` that {@link canonicalizeIdArraysDeep} must not
+ * sort. An unknown or absent type has none.
+ */
+export function orderSignificantIdArrayPaths(resourceType: string | undefined): readonly string[] {
+  if (resourceType === undefined || !Object.hasOwn(ORDER_SIGNIFICANT_ID_ARRAY_PATHS, resourceType))
+    return [];
+  return ORDER_SIGNIFICANT_ID_ARRAY_PATHS[resourceType]!;
+}
+
+/**
+ * Sort every array of two or more AWS ids/ARNs, except at a path in
+ * `orderedPaths` (matched by {@link matchesPathPrefix}; array elements inherit
+ * their parent's path, as in {@link canonicalizeUnorderedArraysAtPaths}).
+ * Callers pass {@link orderSignificantIdArrayPaths} for the resource type.
+ */
+export function canonicalizeIdArraysDeep(
+  v: unknown,
+  orderedPaths: readonly string[] = []
+): unknown {
+  return walkIdArrays(v, '', orderedPaths);
+}
+
+function walkIdArrays(v: unknown, path: string, orderedPaths: readonly string[]): unknown {
   if (Array.isArray(v)) {
-    const mapped = v.map(canonicalizeIdArraysDeep);
-    if (mapped.length > 1 && mapped.every(isIdLike))
+    const mapped = v.map((el) => walkIdArrays(el, path, orderedPaths));
+    if (mapped.length > 1 && mapped.every(isIdLike) && !matchesPathPrefix(path, orderedPaths))
       return [...(mapped as string[])].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return mapped;
   }
@@ -92,7 +136,7 @@ export function canonicalizeIdArraysDeep(v: unknown): unknown {
     if (!hasPlainPrototype(v)) return v;
     const out = nullPrototypeRecord();
     for (const [k, val] of Object.entries(v as Record<string, unknown>))
-      out[k] = canonicalizeIdArraysDeep(val);
+      out[k] = walkIdArrays(val, path === '' ? k : `${path}.${k}`, orderedPaths);
     return out;
   }
   return v;

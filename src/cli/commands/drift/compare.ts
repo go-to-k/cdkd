@@ -535,6 +535,9 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     // go-to-k/cdkd#6622: a key added out of band inside a verbatim-echo
     // document is drift on the template-only baseline too.
     unionWalkPaths: verbatimEchoDriftKeys(resource.resourceType),
+    // go-to-k/cdkd#6761: an order-significant ARN list (Lambda `Layers`) is
+    // not sorted, so `--accept` also records the live order.
+    resourceType: resource.resourceType,
   });
   // Issue #1914: redacted BEFORE the outcome exists, so no reader can be
   // added later that sees the plaintext. Every consumer of a drifted

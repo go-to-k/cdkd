@@ -288,7 +288,7 @@ export async function unsettledAfterUpdate(
       const drift = calculateResourceDrift(
         canonical({ [name]: desired[name] }),
         canonical({ [name]: live[name] }),
-        { ignorePaths, unorderedPaths }
+        { ignorePaths, unorderedPaths, resourceType: args.resourceType }
       );
       if (drift.length > 0) kept.push(name);
     }
