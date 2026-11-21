@@ -256,7 +256,7 @@ describe('renderNameHeldElsewhere', () => {
       heldName: 'my-fn',
       heldProperty: 'FunctionName',
       physicalId: 'my-fn',
-    });
+    }, 'AWS::Lambda::Function');
     expect(text).toContain('asks for FunctionName "taken-name"');
     expect(text).toContain('holds FunctionName "my-fn"');
     expect(text).toContain('held by ANOTHER existing resource');
@@ -269,7 +269,7 @@ describe('renderNameHeldElsewhere', () => {
       heldName: undefined,
       heldProperty: undefined,
       physicalId: 'MyStack-Fn',
-    });
+    }, 'AWS::Lambda::Function');
     expect(text).toContain('(MyStack-Fn) does not hold that name');
   });
 
@@ -280,7 +280,7 @@ describe('renderNameHeldElsewhere', () => {
       heldName: 'my-fn',
       heldProperty: 'FunctionName',
       physicalId: 'my-fn',
-    });
+    }, 'AWS::Lambda::Function');
     expect(text).not.toContain('\n');
   });
 });
@@ -1162,12 +1162,12 @@ describe('probeErrorMeansNameHeld / renderReplacementNameChange', () => {
       heldProperty: 'EventBusName',
       physicalId: 'arn',
     };
-    expect(renderReplacementNameChange(change, { Name: 'r' })).toBe(
+    expect(renderReplacementNameChange(change, { Name: 'r' }, 'AWS::Events::Rule')).toBe(
       'The replacement moves rule "r" from bus "busA" to bus "busB", where another rule already holds that name'
     );
-    expect(renderReplacementNameChange(change, { Name: 'a"b' })).toContain('the rule (by its Name)');
+    expect(renderReplacementNameChange(change, { Name: 'a"b' }, 'AWS::Events::Rule')).toContain('the rule (by its Name)');
     const rename = { ...change, property: 'QueueName', desiredName: 'b', heldName: 'a' };
-    expect(renderReplacementNameChange(rename, {})).toContain('asks for QueueName "b"');
+    expect(renderReplacementNameChange(rename, {}, 'AWS::SQS::Queue')).toContain('asks for QueueName "b"');
   });
 
   it('derives a state machine ARN from any ARN of the old resource, or refuses', () => {

@@ -17,6 +17,7 @@ import {
   replacementDeletePolicy,
 } from '../provisioning/final-snapshot.js';
 import { CdkdError } from '../utils/error-handler.js';
+import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import {
   type HolderJudgement,
   incomparableHolderNote,
@@ -120,7 +121,7 @@ export function supersededHeldByOtherTypeWarning(
   holderType: string
 ): string {
   return (
-    `the superseded ${entry.state.resourceType} of ${entry.logicalId} (${entry.state.physicalId}) ` +
+    `the superseded ${entry.state.resourceType} of ${entry.logicalId} (${displayPhysicalId(entry.state.resourceType, entry.state.physicalId)}) ` +
     `was not deleted: a ${holderType} record of this stack has the same physical id, and cdkd never ` +
     `deletes an id a record names. If the ${entry.state.resourceType} still exists, delete it by hand; ` +
     `it is no longer tracked in state.`

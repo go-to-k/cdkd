@@ -161,13 +161,13 @@ export async function deleteReplacedAfterCreate(
         ),
     });
     deps.logger.info(
-      safeMsg`  Old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) is deleted after the rest of the deploy succeeds`
+      safeMsg`  Old ${logicalId} (${displayPhysicalId(oldResourceType, currentResource.physicalId)}) is deleted after the rest of the deploy succeeds`
     );
     return;
   }
   if (!isRetry) {
     deps.logger.info(
-      safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
+      safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(oldResourceType, currentResource.physicalId)})...`
     );
   } else if (
     !(await journaledHolderIsOurs(run, deps, logicalId, oldResourceType, currentResource))
@@ -257,7 +257,7 @@ export async function deleteReplacedAfterCreate(
     const deferred = run.deferredReplacedDeletes;
     if (!isRetry && deferred !== undefined) {
       deps.logger.info(
-        safeMsg`  Could not delete old ${logicalId} (${currentResource.physicalId}) yet: ${deleteMsg}. Retrying after the rest of the deploy.`
+        safeMsg`  Could not delete old ${logicalId} (${displayPhysicalId(oldResourceType, currentResource.physicalId)}) yet: ${deleteMsg}. Retrying after the rest of the deploy.`
       );
       // go-to-k/cdkd#5111: recorded BEFORE the row's save, which persists it:
       // a deploy killed before the retry below left the old resource in AWS
@@ -305,8 +305,8 @@ export async function deleteReplacedAfterCreate(
     const kept = isRetry && run.supersededEntries.has(logicalId);
     deps.logger.warn(
       kept
-        ? safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}. ${SUPERSEDED_KEPT_REMEDY}.`
-        : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${currentResource.physicalId}): ${deleteMsg}`
+        ? safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(oldResourceType, currentResource.physicalId)}): ${deleteMsg}. ${SUPERSEDED_KEPT_REMEDY}.`
+        : safeMsg`  ⚠ Failed to delete old resource ${logicalId} (${displayPhysicalId(oldResourceType, currentResource.physicalId)}): ${deleteMsg}`
     );
   }
   // go-to-k/cdkd#5111: a retry that deleted it, or that the provider skipped
@@ -332,12 +332,12 @@ export async function deleteReplacedAfterCreate(
     // `--allow-unaddressed` (the #1819 survivor contract), not a clean one.
     run.replacedDeleteSkips.set(
       logicalId,
-      `the replaced ${oldResourceType} (${currentResource.physicalId}) was not deleted (${skipReason}) and is no longer tracked by cdkd`
+      `the replaced ${oldResourceType} (${displayPhysicalId(oldResourceType, currentResource.physicalId)}) was not deleted (${skipReason}) and is no longer tracked by cdkd`
     );
     deps.logger.warn(
       safeMsg`  ⚠ ${deleteSkippedMessage(
         logicalId,
-        currentResource.physicalId,
+        displayPhysicalId(oldResourceType, currentResource.physicalId),
         skipReason,
         'while cleaning up the replaced resource',
         // No command on this line, and the id is the only trace left of the
@@ -353,7 +353,7 @@ export async function deleteReplacedAfterCreate(
     if (isRetry) run.replacedOldMaySurvive.delete(logicalId);
     deps.logger.info(
       isRetry
-        ? safeMsg`  ${green('✓')} Old ${logicalId} (${currentResource.physicalId}) deleted`
+        ? safeMsg`  ${green('✓')} Old ${logicalId} (${displayPhysicalId(oldResourceType, currentResource.physicalId)}) deleted`
         : safeMsg`  ${green('✓')} Old resource deleted`
     );
   }
@@ -414,7 +414,7 @@ async function journaledHolderIsOurs(
       run.replacedOldMaySurvive.set(logicalId, 'unconfirmed');
       run.replacedDeleteSkips.set(
         logicalId,
-        `the replaced ${oldResourceType} (${oldResource.physicalId}) was not deleted (${why}) and is no longer tracked by cdkd`
+        `the replaced ${oldResourceType} (${displayPhysicalId(oldResourceType, oldResource.physicalId)}) was not deleted (${why}) and is no longer tracked by cdkd`
       );
     }
     deps.logger.warn(
@@ -474,7 +474,7 @@ async function takeOwedSnapshot(
         : 'untracked';
   if (isRetry && deps.interrupted()) {
     deps.logger.warn(
-      safeMsg`  ⚠ Old ${logicalId} (${oldResource.physicalId}) was not deleted: the deploy was interrupted before its final snapshot (UpdateReplacePolicy: Snapshot). ` +
+      safeMsg`  ⚠ Old ${logicalId} (${displayPhysicalId(oldResource.resourceType, oldResource.physicalId)}) was not deleted: the deploy was interrupted before its final snapshot (UpdateReplacePolicy: Snapshot). ` +
         (tracking() === 'kept'
           ? safeMsg`${SUPERSEDED_KEPT_REMEDY}.`
           : tracking() === 'held'
@@ -511,7 +511,7 @@ async function takeOwedSnapshot(
     // later run to snapshot and delete.
     if (!isRetry) run.replacedOldMaySurvive.set(logicalId, 'kept');
     deps.logger.warn(
-      safeMsg`  ⚠ Final snapshot for old ${logicalId} (${oldResource.physicalId}) ` +
+      safeMsg`  ⚠ Final snapshot for old ${logicalId} (${displayPhysicalId(oldResource.resourceType, oldResource.physicalId)}) ` +
         safeMsg`failed: ${asIsMessage(snapshotMask(describeAwsFailure(snapshotError).detail))}. ` +
         `The old resource was NOT deleted (UpdateReplacePolicy: Snapshot). ` +
         (tracking() === 'kept'

@@ -3,6 +3,7 @@
  * Split out of `../drift.ts`, which re-exports the public names.
  */
 import { differingIdentityWarning } from '../../../provisioning/recorded-identity.js';
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { ResourceUpdateNotSupportedError } from '../../../utils/error-handler.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { updatePartialReason, updatePartialMessage } from '../../../deployment/update-outcome.js';
@@ -221,7 +222,11 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
     // (counted failed, exit non-zero) and the record still takes the identity
     // AWS now holds: keeping the old id would name a resource that is gone and
     // orphan the new one.
-    const replacedBy = revertReplacementOf(stateResource.physicalId, updateResult);
+    const replacedBy = revertReplacementOf(
+      stateResource.physicalId,
+      updateResult,
+      stateResource.resourceType
+    );
     if (replacedBy !== undefined) {
       tally.totalFailed++;
       logger.error(
@@ -470,18 +475,21 @@ async function applyRevertUpdateInScope(args: ApplyRevertUpdateArgs): Promise<vo
  */
 export function revertReplacementOf(
   recordedPhysicalId: string,
-  updateResult: ResourceUpdateResult | undefined
+  updateResult: ResourceUpdateResult | undefined,
+  resourceType: string
 ): string | undefined {
   if (updateResult === undefined) return undefined;
   const idChanged =
     typeof updateResult.physicalId === 'string' &&
     updateResult.physicalId !== '' &&
     updateResult.physicalId !== recordedPhysicalId;
+  // Shown masked: a returned id is in no bag yet (go-to-k/cdkd#6716).
+  const recordedShown = displayPhysicalId(resourceType, recordedPhysicalId);
   if (idChanged) {
-    return `physical id ${recordedPhysicalId} became ${updateResult.physicalId}`;
+    return `physical id ${recordedShown} became ${displayPhysicalId(resourceType, updateResult.physicalId)}`;
   }
   return updateResult.wasReplaced === true
-    ? `reported a replacement under the same physical id ${recordedPhysicalId}`
+    ? `reported a replacement under the same physical id ${recordedShown}`
     : undefined;
 }
 

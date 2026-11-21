@@ -1,5 +1,6 @@
 /** The failed-op replay, split out of `rollback-executor.ts` (go-to-k/cdkd#5835). */
 
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { identityWarner } from '../../provisioning/recorded-identity.js';
 import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
@@ -187,7 +188,7 @@ export async function replayFailedOperationsUnbound(
           // the only place it appears. The event, like every skip event,
           // carries no physical id.
           logger.warn(
-            safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it recorded ${mask(String(op.physicalId))}, which is not the resource state tracks under this id; manual attention may be required`
+            safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it recorded ${mask(String(displayPhysicalId(op.resourceType, op.physicalId)))}, which is not the resource state tracks under this id; manual attention may be required`
           );
           recordRollbackSkip(
             skipScope,
@@ -201,11 +202,10 @@ export async function replayFailedOperationsUnbound(
           // go-to-k/cdkd#4604: a delete-first replacement removed the old
           // resource before its create failed. Nothing is reverted (there is
           // nothing to revert onto); the record still names the removed id.
-          // Cleared with its orphan like every warned skip: kept alone, a
-          // later `--revert-failed` would aim a force-revert at a resource
-          // that is gone.
+          // Cleared with its orphan like every warned skip: kept alone, a later
+          // `--revert-failed` would aim a force-revert at a resource that is gone.
           logger.warn(
-            safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(op.physicalId))} before the new one's create failed, so there is nothing to revert` +
+            safeMsg`  Rollback: Skipping failed UPDATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — its replacement deleted the old resource ${mask(String(displayPhysicalId(op.previousState?.resourceType ?? op.resourceType, op.physicalId)))} before the new one's create failed, so there is nothing to revert` +
               (options.forDestroy === true
                 ? '; the destroy drops its record with the stack'
                 : '; state still records it, and a deploy whose template still replaces it creates it again')
@@ -225,7 +225,7 @@ export async function replayFailedOperationsUnbound(
           // is named, masked, since once the op leaves the journal this line is
           // the only place it appears.
           logger.warn(
-            safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, and a later deploy or rollback may own a resource under that id now; if it is not in use, delete it manually`
+            safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(displayPhysicalId(op.resourceType, op.physicalId)))} before failing, and a later deploy or rollback may own a resource under that id now; if it is not in use, delete it manually`
           );
           recordRollbackSkip(
             skipScope,
@@ -417,7 +417,7 @@ export async function replayFailedOperationsUnbound(
               // counts it a failure and keeps the op for a re-run
               // (`--drop-failed` drops one that can never be read).
               throw new Error(
-                `${String(op.physicalId)} is not deleted: ${verdict.retry}. The journal keeps it for ` +
+                `${String(displayPhysicalId(op.resourceType, op.physicalId))} is not deleted: ${verdict.retry}. The journal keeps it for ` +
                   `a re-run; ${proseQuoted(cdkdRemedy('cdkd rollback', '--drop-failed'), '`')} removes only that record and leaves the ` +
                   `resource in AWS`
               );
@@ -428,7 +428,7 @@ export async function replayFailedOperationsUnbound(
               // As `skip-failed-superseded`: nothing is deleted, the recorded
               // id is named, masked, and the skip counts as unaddressed.
               logger.warn(
-                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(op.physicalId))} before failing, but ${keep}. It is left in AWS: ${finish}`
+                safeMsg`  Rollback: Skipping failed CREATE of ${shownLogicalId(op.logicalId)} (${refusalResourceType(op.resourceType)}) — it created ${mask(String(displayPhysicalId(op.resourceType, op.physicalId)))} before failing, but ${keep}. It is left in AWS: ${finish}`
               );
               recordRollbackSkip(
                 skipScope,

@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { stackInstanceIdCarriedFrom } from '../../types/state/helpers.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { CompletedOperation } from '../rollback-executor.js';
@@ -214,7 +215,7 @@ async function runQueuedNestedCleanup(
           // hold it, as the top-level cleanup pass never asks.
           run.deferredReplacedDeletes?.delete(logicalId);
           engine.logger.warn(
-            safeMsg`  ⚠ Old ${logicalId} of nested stack ${display} (${entry.physicalId}) was not deleted: a record of that stack names its physical id again, and cdkd never deletes an id a record names`
+            safeMsg`  ⚠ Old ${logicalId} of nested stack ${display} (${displayPhysicalId(entry.resourceType, entry.physicalId)}) was not deleted: a record of that stack names its physical id again, and cdkd never deletes an id a record names`
           );
         }
       }
@@ -326,7 +327,10 @@ async function persistDropped(
         : null;
     if (again === null || again === undefined) {
       const ids = dropped
-        .map((entry) => `${entry.logicalId} (${entry.state.physicalId})`)
+        .map(
+          (entry) =>
+            `${entry.logicalId} (${displayPhysicalId(entry.state.resourceType, entry.state.physicalId)})`
+        )
         .join(', ');
       engine.logger.warn(
         safeMsg`  ⚠ Could not record in the state of nested stack ${displayStackName(stackName)} (region ${region}) that these replaced resources were deleted: ${ids}: ${asIsMessage(describeAwsFailure(failure).summary)}. They stay listed there, and its next deploy sends their deletes again`

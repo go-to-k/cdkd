@@ -177,6 +177,7 @@ describe('deploy-engine/name-collision.ts', () => {
       logicalId: 'Q',
       change: { desiredName: 'App-Q-abc', generated: true },
       oldPhysicalId: 'old-Q',
+      oldResourceType: 'AWS::SQS::Queue',
       mask: (text) => text,
     });
 

@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { guardedReplacementCreate } from '../create.js';
 import { InterruptedError, type DeployEngine } from '../../deploy-engine.js';
 import { printingSecretsFor, secretNameBagFor } from '../masking.js';
@@ -96,14 +97,14 @@ export async function recreateDestroyThenCreate(
     await noteRetainedResource(oldResourceType, logicalId);
     engine.logger.warn(
       safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — ${recreateFlagName} will ` +
-        safeMsg`leak the old physical resource (${currentResource.physicalId}). The new ` +
+        safeMsg`leak the old physical resource (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}). The new ` +
         `resource shares the same name where applicable; if the type ` +
         `has user-supplied names (e.g. functionName, bucketName), the create will ` +
         `deterministically collide with the retained orphan.`
     );
   } else {
     engine.logger.info(
-      safeMsg`  Destroying old ${logicalId} (${currentResource.physicalId}) before recreate...`
+      safeMsg`  Destroying old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) before recreate...`
     );
     // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
     // old resource before the recreate's delete. OUTSIDE the try
@@ -205,7 +206,7 @@ export async function recreateDestroyThenCreate(
       const destroyFailureText = (text: string): string =>
         // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
         safeMsg`Failed to destroy old resource ${maskSecretsInText(logicalId, shownSecrets)} ` +
-        safeMsg`(${maskSecretsInText(currentResource.physicalId, shownSecrets)}) during ${recreateFlagName}: ` +
+        safeMsg`(${maskSecretsInText(String(displayPhysicalId(currentResource.resourceType, currentResource.physicalId)), shownSecrets)}) during ${recreateFlagName}: ` +
         // go-to-k/cdkd#2676: the wrapped error's (masked) message is
         // embedded as-is and last but for the #6589 line, which starts its
         // own: it can end in cdkd's own remedy lines.
@@ -241,7 +242,7 @@ export async function recreateDestroyThenCreate(
       throw new Error(
         deleteSkippedMessage(
           logicalId,
-          currentResource.physicalId,
+          displayPhysicalId(currentResource.resourceType, currentResource.physicalId),
           recreateSkipReason,
           `during ${recreateFlagName}`
         )
@@ -347,7 +348,7 @@ export async function recreateDestroyThenCreate(
   ) {
     throw new CdkdError(
       safeMsg`${logicalId} (${resourceType}) recreate returned the existing resource ` +
-        safeMsg`(${currentResource.physicalId}) instead of creating a new one — its Create ` +
+        safeMsg`(${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)}) instead of creating a new one — its Create ` +
         `API is name-idempotent — and UpdateReplacePolicy: Retain means the old ` +
         `resource was never destroyed, so the new properties were not applied. ` +
         `Rename the resource in your CDK code (or remove the explicit physical ` +

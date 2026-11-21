@@ -1,4 +1,5 @@
 import { noteRolledBackCreate, withReplayDeletePrinting } from './replay-scope.js';
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { prepareCreateRollbackFinalSnapshot } from './names.js';
 import {
   safe,
@@ -84,7 +85,7 @@ export async function replayOrphanFlag(s: ReplayOpScope): Promise<void> {
         // itself holds in the same bucket.
         reason: mask(
           `--orphan left ${op.logicalId} (${op.resourceType}) in AWS as ` +
-            `${record.physicalId} and dropped it from state; it is live, still billing, ` +
+            `${displayPhysicalId(record.resourceType, record.physicalId)} and dropped it from state; it is live, still billing, ` +
             `and no longer tracked by cdkd.`
         ),
       }),
@@ -171,7 +172,7 @@ export async function replayOrphanRetain(s: ReplayOpScope): Promise<void> {
       // Prose masked, field exact: the `--orphan` twin's note.
       reason: mask(
         `DeletionPolicy: Retain left ${op.logicalId} (${op.resourceType}) in AWS as ` +
-          `${record.physicalId} and dropped it from state; it is live, still billing, and ` +
+          `${displayPhysicalId(record.resourceType, record.physicalId)} and dropped it from state; it is live, still billing, and ` +
           `no longer tracked by cdkd.`
       ),
     }),

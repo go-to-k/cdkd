@@ -38,6 +38,7 @@
 
 import type { ResourceChange, ResourceState } from '../types/state.js';
 import { isCustomResource } from '../provisioning/provider-registry.js';
+import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import { carriesSecretMask } from './secret-redaction.js';
 import { segmentAfterAnchor } from '../provisioning/composite-id.js';
 import { parseLambdaFunctionAddress } from '../utils/lambda-function-name.js';
@@ -273,14 +274,15 @@ export function renderNestedStackTypeChangeRefusal(
   stackName: string
 ): string {
   const rows = typeChanges.map((tc) => {
+    const shownId = displayPhysicalId(tc.currentType, tc.physicalId);
     const head =
       `  - ${tc.logicalId}: Type changes from ${tc.currentType} to ${tc.desiredType} ` +
-      `(the existing ${tc.currentType} is ${tc.physicalId}).`;
+      `(the existing ${tc.currentType} is ${shownId}).`;
     const damage =
       tc.direction === 'into-nested-stack'
         ? `    Replacing a single resource BY a nested stack is not supported: the create half ` +
           `of the replacement would deploy a whole child stack "${stackName}~${tc.logicalId}" ` +
-          `as one row, while ${tc.physicalId} is still recorded under this logical id.`
+          `as one row, while ${shownId} is still recorded under this logical id.`
         : `    Replacing a nested stack BY a single resource is not supported: a replacement ` +
           `deletes its old half as a best-effort cleanup step whose failure is only a warning, ` +
           `so the child stack "${stackName}~${tc.logicalId}" and every resource it owns could ` +

@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from '../confirm-prompt.js';
@@ -214,7 +215,7 @@ export function printSummary(rows: ImportRow[]): void {
     const tag = formatOutcome(r.outcome);
     const detail =
       r.outcome === 'imported'
-        ? ` (${r.physicalIdShown ?? r.physicalId})`
+        ? ` (${r.physicalIdShown ?? displayPhysicalId(r.resourceType, r.physicalId)})`
         : r.reason
           ? ` — ${r.reason}`
           : '';

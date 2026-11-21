@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { showRecordValue } from './render.js';
 import {
   EIP_ALLOCATION_ID_PREFIX,
@@ -690,20 +691,22 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     }
     if (trimmed.startsWith('arn:')) {
       throw new Error(
-        `${showRecordValue(physicalId)} looks like an ARN but is not an AppSync API key ARN ` +
+        `${showRecordValue(displayPhysicalId('AWS::AppSync::ApiKey', physicalId))} looks like an ARN but is not an AppSync API key ARN ` +
           `(expected arn:<partition>:appsync:<region>:<account>:apis/<apiId>/apikeys/<apiKeyId>)`
       );
     }
     const parts = trimmed.split('|');
     if (parts.length > 2) {
       throw new Error(
-        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: ${showRecordValue(physicalId)}`
+        `expected 'apiId|apiKeyId', the key ARN, or a bare apiKeyId, got ${parts.length} parts: ${showRecordValue(displayPhysicalId('AWS::AppSync::ApiKey', physicalId))}`
       );
     }
     if (parts.length === 2) {
       const [apiId, apiKeyId] = parts as [string, string];
       if (!apiId.trim() || !apiKeyId.trim()) {
-        throw new Error(`empty part in 'apiId|apiKeyId': ${showRecordValue(physicalId)}`);
+        throw new Error(
+          `empty part in 'apiId|apiKeyId': ${showRecordValue(displayPhysicalId('AWS::AppSync::ApiKey', physicalId))}`
+        );
       }
       return {
         resourceIdentifier: { ApiId: apiId, ApiKeyId: apiKeyId },

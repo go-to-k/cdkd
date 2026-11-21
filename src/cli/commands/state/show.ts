@@ -17,6 +17,7 @@ import { buildCdkdStateStackTree, type CdkdStateStackTree } from '../export.js';
 import type { LockInfo, StackState, ResourceState } from '../../../types/state.js';
 import { withStackInstanceIdWithheld } from '../../../state/stack-instance-id.js';
 import {
+  displayPhysicalId,
   secretSegmentsOfState,
   withSecretPhysicalIdsMaskedInState,
 } from '../../../provisioning/secret-physical-id.js';
@@ -376,7 +377,9 @@ function renderStateBlock(
     // renders as the literal `null`, which the string `"null"` also does. That
     // ambiguity is the trade already accepted for every Outputs, attribute and
     // property value here, and `--json` is where a reader settles it.
-    lines.push(`  PhysicalID: ${formatAttributeValue(resource.physicalId)}`);
+    lines.push(
+      `  PhysicalID: ${formatAttributeValue(displayPhysicalId(resource.resourceType, resource.physicalId))}`
+    );
     // v7+ (#614): show the provisioning layer so users can see which
     // resources took the Cloud Control auto-route. Absent on pre-v7
     // state — print "(sdk, legacy default)" so the absence is explicit.

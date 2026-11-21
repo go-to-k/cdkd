@@ -1,4 +1,5 @@
 import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import {
   currentNameGeneration,
   getCurrentStackInstanceId,
@@ -805,7 +806,7 @@ async function refuseTakenCreateName(
   if (ownHolder !== undefined) {
     return refuse(
       `${subject} is created with ${named}, which this stack's ${displaySafe(ownHolder[0])} ` +
-        `(${shown(holderId)}) already holds — a construct moved or renamed keeps its explicit ` +
+        `(${shown(displayPhysicalId(resourceType, holderId))}) already holds — a construct moved or renamed keeps its explicit ` +
         `name under a new logical id. ` +
         (refusesItself
           ? ''
@@ -848,7 +849,7 @@ async function refuseTakenCreateName(
         `'<logicalId>=<physicalId>', shell-quoted.`;
   return refuse(
     `${subject} is created with ${named}, and an existing resource ` +
-      `(${shown(holderId)}) already holds that name. ` +
+      `(${shown(displayPhysicalId(resourceType, holderId))}) already holds that name. ` +
       (refusesItself
         ? `A log group's create refuses a taken name, as CloudFormation's does. `
         : `Since ${adoptsText}, creating it would take that resource over and record it as ` +

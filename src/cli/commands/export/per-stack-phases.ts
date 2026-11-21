@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import {
   deleteSignalReceiver,
   removeSignalReceiverNamed,
@@ -526,7 +527,7 @@ export async function runPerStackImportPhases(
             `Phase 1 (IMPORT) succeeded for cdkd stack ${quotedOrNotShown(plan.cdkdName)} (CFn ` +
               `name ${quotedOrNotShown(plan.cfnName)}); pre-delete of ${plainOrNotShown(entry.logicalId)} ` +
               `(${plainOrNotShown(entry.resourceType)}, physicalId: ` +
-              `${recordValueOrNotShown(entry.physicalId)}) failed: ${displayAwsMessage(msg)}\n\n` +
+              `${recordValueOrNotShown(displayPhysicalId(entry.resourceType, entry.physicalId))}) failed: ${displayAwsMessage(msg)}\n\n` +
               `Stacks IMPORTed so far (each CFn-managed): ${importedSummary}. cdkd state ` +
               `for every stack in the tree is preserved. This stack's IMPORT-unsupported ` +
               `resources may still exist in AWS unmanaged. To recover: fix the failure ` +
@@ -540,7 +541,9 @@ export async function runPerStackImportPhases(
             { cause: err instanceof Error ? err : undefined }
           );
         }
-        logger.info(`    ${preDeletedLine(entry.physicalId)}`);
+        logger.info(
+          `    ${preDeletedLine(displayPhysicalId(entry.resourceType, entry.physicalId))}`
+        );
       }
     }
 

@@ -17,6 +17,7 @@
  * value for this run only. It has no state handle: nothing it reads is merged
  * into a record or saved.
  */
+import { displayPhysicalId } from '../provisioning/secret-physical-id.js';
 import type { ResourceState } from '../types/state.js';
 import type { ResourceProvider } from '../types/resource.js';
 import { hasAddressablePhysicalId } from '../state/malformed-resources-bag.js';
@@ -86,7 +87,7 @@ export async function readRecordAttributes(input: {
     // (nor, on the deploy, merged into the record).
     // not-in-class: the resolver renders this message at debug only, masked.
     throw new Error(
-      `the provider answered for a different resource (${found.physicalId}) than the one asked about (${physicalId})`
+      `the provider answered for a different resource (${displayPhysicalId(resource.resourceType, found.physicalId)}) than the one asked about (${displayPhysicalId(resource.resourceType, physicalId)})`
     );
   }
   // go-to-k/cdkd#6490: an SDK id read from the record (a CodeCommit name) can

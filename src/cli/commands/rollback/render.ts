@@ -489,7 +489,7 @@ export function failedActionLabel(item: FailedOpPlanItem, skipFinalSnapshot: boo
       // go-to-k/cdkd#4604: named (masked) like the skips around it.
       return (
         `  - skip     ${logicalIdShown(op.logicalId)} (${resourceTypeShown(op.resourceType)}) ` +
-        `— failed replacement deleted the old resource ${displacedPhysicalIdShown(op, getLogger()) ?? 'a physical id'} ` +
+        `— failed replacement deleted the old resource ${displacedPhysicalIdShown(op, getLogger(), undefined, op.previousState?.resourceType ?? op.resourceType) ?? 'a physical id'} ` +
         `before its create failed; nothing to revert, state still records it`
       );
     case 'skip-failed-superseded':

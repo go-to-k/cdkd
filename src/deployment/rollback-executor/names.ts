@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import type { ResourceState } from '../../types/state.js';
 import type { Logger } from '../../types/config.js';
 import {
@@ -204,7 +205,7 @@ export function replayPrefixScope(
           `user-supplied-name prefix setting that created ` +
           (withheld
             ? `it (its physical id is withheld, as its name is secret-derived): `
-            : `${shown(input.physicalId)} (`) +
+            : `${shown(displayPhysicalId(input.resourceType, input.physicalId))} (`) +
           `stack-name prefix ${setting(choice.skipPrefix)}; the failed deploy ran with it ` +
           `${setting(choice.recorded)}${withheld ? '' : ')'}`
       )
@@ -229,7 +230,7 @@ export function replayPrefixScope(
           `old resource (` +
           (withheld
             ? `its physical id is withheld, as its name is secret-derived or unreadable`
-            : shown(input.physicalId)) +
+            : shown(displayPhysicalId(input.resourceType, input.physicalId))) +
           `) — ` +
           (choice.names === undefined
             ? unreadable !== undefined
