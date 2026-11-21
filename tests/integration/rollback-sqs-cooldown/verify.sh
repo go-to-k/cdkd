@@ -262,8 +262,8 @@ if ! grep -qi 'reverse-replace\|Reversing replacement' /tmp/rollback-sqs-rb.log;
 fi
 # The deferred old queue is gone, so the rollback re-creates it rather than
 # re-adopting it (replay-reverse-replacement.ts).
-if ! grep -qF -- 'Rollback: the old resource of NamedQueue (' /tmp/rollback-sqs-rb.log \
-  || ! grep -F -- 'Rollback: the old resource of NamedQueue (' /tmp/rollback-sqs-rb.log | grep -qF -- 'is gone — re-creating it'; then
+if ! awk 'index($0, "Rollback: the old resource of NamedQueue (") && index($0, "is gone — re-creating it") { found = 1 } END { exit !found }' \
+  /tmp/rollback-sqs-rb.log; then
   echo "[verify] FAIL: rollback output has no 'Rollback: the old resource of NamedQueue (...) is gone — re-creating it' line (it re-adopted, or the wording drifted)"
   exit 1
 fi
@@ -287,6 +287,15 @@ fi
 RB_COUNT="$(state_resource_count)"
 if [ "${RB_COUNT}" != "1" ]; then
   echo "[verify] FAIL: post-rollback state records ${RB_COUNT} resource(s) (expected 1)"
+  exit 1
+fi
+# The re-created queue-x is the record's again, so no superseded entry may
+# still name it: a later successful deploy would send that entry's delete at
+# the live queue.
+RB_SUPERSEDED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq '[(.supersededResources // [])[] | select(.logicalId == "NamedQueue")] | length')"
+if [ "${RB_SUPERSEDED}" != "0" ]; then
+  echo "[verify] FAIL: post-rollback state still records ${RB_SUPERSEDED} superseded NamedQueue entr(y/ies) (expected 0: the re-created ${QUEUE_X_NAME} is the record's)"
   exit 1
 fi
 echo "[verify] step 4 ok: cooldown retried, x re-created, y deleted, journal gone"
@@ -444,7 +453,13 @@ if grep -qi 'automatically rolled back\|revert-failed' /tmp/rollback-sqs-clean.l
   echo "[verify] FAIL: the journal note survived the fix-forward deploy"
   exit 1
 fi
-echo "[verify] step 10 ok: note cleared"
+# None of the deploys since the rollback may have deleted the re-created
+# queue-x (a leftover superseded entry naming it would).
+if ! aws sqs get-queue-url --queue-name "${QUEUE_X_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+  echo "[verify] FAIL: ${QUEUE_X_NAME} is gone after the clean deploys (a superseded entry's delete reached the live queue?)"
+  exit 1
+fi
+echo "[verify] step 10 ok: note cleared, ${QUEUE_X_NAME} still live"
 
 # ---------------------------------------------------------------------------
 # PHASE 3: destroy clean

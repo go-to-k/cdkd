@@ -1648,6 +1648,12 @@ promo_queue_arn() { # usage: promo_queue_arn <queue name> (a strict capture: a f
   aws sqs get-queue-attributes --region "${REGION}" --queue-url "${url}" \
     --attribute-names QueueArn --query 'Attributes.QueueArn' --output text
 }
+promo_queue_created() { # usage: promo_queue_created <queue name> -> its CreatedTimestamp (a strict capture: a failed read aborts)
+  local url
+  url="$(aws sqs get-queue-url --region "${REGION}" --queue-name "$1" --query QueueUrl --output text)" || return 1
+  aws sqs get-queue-attributes --region "${REGION}" --queue-url "${url}" \
+    --attribute-names CreatedTimestamp --query 'Attributes.CreatedTimestamp' --output text
+}
 promo_param_value() { # usage: promo_param_value <parameter name> (a strict capture)
   aws ssm get-parameter --region "${REGION}" --name "$1" --query Parameter.Value --output text
 }
@@ -1741,17 +1747,19 @@ promo_superseded_ids() { # usage: promo_superseded_ids <logical id> -> the recor
 # to succeed, so a FAILED deploy keeps the old queue live and records it in
 # state as superseded (delete-replaced.ts `recordSupersededForDeferral`;
 # deferred-deletes.ts `warnUnretriedReplacedDeletes` prints the info line).
-promo_assert_old_queue_kept() { # usage: promo_assert_old_queue_kept <which> <logical id> <queue name> <its ARN before the deploy>
-  local which="$1" lid="$2" qname="$3" arn_before="$4" kept_arn ids
+promo_assert_old_queue_kept() { # usage: promo_assert_old_queue_kept <which> <logical id> <queue name> <its CreatedTimestamp before the deploy>
+  local which="$1" lid="$2" qname="$3" created_before="$4" kept_created ids
   if ! promo_log_line_has "Old ${lid} (" "was not deleted: the deploy failed first" "cdkd keeps it in state, and the next deploy deletes it"; then
     echo "FAIL: premise: the ${which} log has no 'Old ${lid} (...) was not deleted: the deploy failed first ... cdkd keeps it in state, and the next deploy deletes it' line (the old queue was deleted inline, kept untracked, or the wording drifted)" >&2
     log_tail
     exit 1
   fi
-  # The old queue is still the live holder of its name: the same ARN as before.
-  promo_capture kept_arn "the old ${lid}'s live ARN after the ${which} (promo_queue_arn)" promo_queue_arn "${qname}"
-  if [ "${kept_arn}" != "${arn_before}" ]; then
-    echo "FAIL: premise: the old ${lid}'s name is held by another queue after the ${which} (not the one kept)" >&2
+  # The old queue itself is still live: its name answers with the SAME
+  # CreatedTimestamp as before (an ARN is name-derived, so a queue deleted and
+  # re-created under the name would match it).
+  promo_capture kept_created "the old ${lid}'s CreatedTimestamp after the ${which} (promo_queue_created)" promo_queue_created "${qname}"
+  if [ "${kept_created}" != "${created_before}" ]; then
+    echo "FAIL: premise: the old ${lid}'s name answers with another CreatedTimestamp after the ${which} (it was deleted and re-created, not kept)" >&2
     exit 1
   fi
   promo_capture ids "${lid}'s superseded entries after the ${which}" promo_superseded_ids "${lid}"
@@ -1802,6 +1810,7 @@ if ! promo_log_has "PromoReader" "(AWS::SSM::Parameter)" "updated"; then
   exit 1
 fi
 promo_capture PQ_ARN_1 "PQ_ARN_1 (promo_queue_arn)" promo_queue_arn "${PQ_NAME}"
+promo_capture PQ_CREATED_1 "PQ_CREATED_1 (promo_queue_created)" promo_queue_created "${PQ_NAME}"
 if [ "${PQ_ARN_1##*:}" != "${PQ_NAME}" ]; then
   echo "FAIL: premise: PromoQueue's live ARN does not end with the secret's pqueue value" >&2
   exit 1
@@ -1852,7 +1861,7 @@ fi
 promo_assert_masked "step 5h fault deploy" PQ_NAME PQ_NAME_2
 # The failed deploy kept the old queue (its delete waits for a successful
 # deploy, go-to-k/cdkd#6445): live, and recorded as superseded.
-promo_assert_old_queue_kept "step 5h fault deploy" PromoQueue "${PQ_NAME}" "${PQ_ARN_1}"
+promo_assert_old_queue_kept "step 5h fault deploy" PromoQueue "${PQ_NAME}" "${PQ_CREATED_1}"
 promo_capture PQ_ARN_2 "PQ_ARN_2 (promo_queue_arn)" promo_queue_arn "${PQ_NAME_2}"
 if [ "${PQ_ARN_2##*:}" != "${PQ_NAME_2}" ]; then
   echo "FAIL: premise: the replacement PromoQueue's live ARN does not end with the rotated pqueue value" >&2
@@ -1930,6 +1939,7 @@ if ! promo_log_has "PromoChild" "(AWS::CloudFormation::Stack)" "updated"; then
   exit 1
 fi
 promo_capture NQ_ARN_1 "NQ_ARN_1 (promo_queue_arn)" promo_queue_arn "${NQ_NAME}"
+promo_capture NQ_CREATED_1 "NQ_CREATED_1 (promo_queue_created)" promo_queue_created "${NQ_NAME}"
 if [ "${NQ_ARN_1##*:}" != "${NQ_NAME}" ]; then
   echo "FAIL: premise: NestQueue's live ARN does not end with the secret's nqueue value" >&2
   exit 1
@@ -1978,7 +1988,7 @@ if ! grep -qF -- "Failed to update SSM parameter PromoChildReader" "${DEPLOY_LOG
   exit 1
 fi
 promo_assert_masked "step 5i fault deploy" NQ_NAME NQ_NAME_2
-promo_assert_old_queue_kept "step 5i fault deploy" NestQueue "${NQ_NAME}" "${NQ_ARN_1}"
+promo_assert_old_queue_kept "step 5i fault deploy" NestQueue "${NQ_NAME}" "${NQ_CREATED_1}"
 promo_capture NQ_ARN_2 "NQ_ARN_2 (promo_queue_arn)" promo_queue_arn "${NQ_NAME_2}"
 if [ "${NQ_ARN_2##*:}" != "${NQ_NAME_2}" ]; then
   echo "FAIL: premise: the replacement NestQueue's live ARN does not end with the rotated nqueue value" >&2
