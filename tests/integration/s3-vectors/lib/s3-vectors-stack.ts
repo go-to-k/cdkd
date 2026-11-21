@@ -73,8 +73,10 @@ export class S3VectorsStack extends cdk.Stack {
     // bucket still listing an index, so the destroys measure that the index
     // has left the listing by then; Phase 1.9's needle names the out-of-stack
     // index alone.
+    // By ARN: the index's `VectorBucketName` is a bare name (at most 63
+    // characters), and this bucket's `Ref` resolves to its ARN there.
     new s3vectors.CfnIndex(this, 'StackIndex', {
-      vectorBucketName: namelessBucket.ref,
+      vectorBucketArn: namelessBucket.attrVectorBucketArn,
       dataType: 'float32',
       dimension: 4,
       distanceMetric: 'cosine',

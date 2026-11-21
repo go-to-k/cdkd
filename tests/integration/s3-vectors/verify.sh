@@ -284,10 +284,27 @@ if [ "${refuse_rc}" -eq 0 ]; then
 fi
 NEEDLE="vector bucket ${NAMELESS_NAME} is not empty: it holds vector index(es) ${OOB_INDEX}."
 if ! grep -qF -- "${NEEDLE}" <<<"${REFUSE_PLAIN}"; then
-  echo "FAIL: the refused destroy does not name the out-of-stack index (expected: ${NEEDLE})" >&2
-  printf '%s\n' "${REFUSE_PLAIN}" | tail -20 >&2
+  # Which path the bucket delete took: a refusal naming more than the
+  # out-of-stack index means the in-stack StackIndex was still listed when the
+  # bucket delete ran, i.e. its Cloud Control delete returned before the
+  # bucket's listing cleared.
+  HELD_LINE="$(grep -oE "vector bucket ${NAMELESS_NAME} is not empty: it holds vector index\(es\) [^.]*" <<<"${REFUSE_PLAIN}" | head -1)"
+  if [ -n "${HELD_LINE}" ]; then
+    echo "FAIL: the bucket delete was refused with the in-stack index still listed (${HELD_LINE}); the Cloud Control index delete returned before the listing cleared (issue #6749)" >&2
+  else
+    echo "FAIL: the refused destroy does not name the out-of-stack index (expected: ${NEEDLE})" >&2
+  fi
+  printf '%s\n' "${REFUSE_PLAIN}" >&2
   exit 1
 fi
+# The in-stack index is gone, the out-of-stack one is all that is left.
+LEFT_INDEXES="$(aws s3vectors list-indexes --vector-bucket-name "${NAMELESS_NAME}" --region "${REGION}" \
+  --query 'indexes[].indexName' --output text)"
+if [ "${LEFT_INDEXES}" != "${OOB_INDEX}" ]; then
+  echo "FAIL: after the refused destroy the bucket lists '${LEFT_INDEXES}', expected only '${OOB_INDEX}' (the in-stack StackIndex must be deleted; issue #6749)" >&2
+  exit 1
+fi
+echo "    NOTE (#6749): the bucket delete met only the out-of-stack index: the in-stack StackIndex's Cloud Control delete had cleared the listing"
 aws s3vectors get-index --vector-bucket-name "${NAMELESS_NAME}" --index-name "${OOB_INDEX}" \
   --region "${REGION}" >/dev/null || {
   echo "FAIL: the out-of-stack index '${OOB_INDEX}' did not survive the refused destroy (issue #6749)" >&2
