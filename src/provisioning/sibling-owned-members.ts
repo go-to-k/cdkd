@@ -340,14 +340,16 @@ export function siblingRecordedMembers(
  * recorded: a sibling's inline policy as the sibling recorded it
  * ({@link siblingRecordedMembers}), and the ARN of a sibling managed policy
  * whose own template declares the attachment list
- * (`managedPoliciesDeclaringAttachments`).
+ * (`managedPoliciesDeclaringAttachments`), unless this drift run did not
+ * compare that policy (`notComparedPolicyArns`, go-to-k/cdkd#6697).
  */
 export function undeclaredGrantSiblingMembers(
   resourceType: string,
   physicalId: string | undefined,
   grantKeys: readonly string[],
   properties: Record<string, unknown> | undefined,
-  context: ReadCurrentStateContext | undefined
+  context: ReadCurrentStateContext | undefined,
+  notComparedPolicyArns?: ReadonlySet<string>
 ): Record<string, unknown[]> {
   const out: Record<string, unknown[]> = {};
   if (grantKeys.includes('Policies')) {
@@ -360,7 +362,11 @@ export function undeclaredGrantSiblingMembers(
     );
   }
   if (grantKeys.includes('ManagedPolicyArns')) {
-    out['ManagedPolicyArns'] = managedPoliciesDeclaringAttachments(resourceType, context);
+    out['ManagedPolicyArns'] = managedPoliciesDeclaringAttachments(
+      resourceType,
+      context,
+      notComparedPolicyArns
+    );
   }
   return out;
 }

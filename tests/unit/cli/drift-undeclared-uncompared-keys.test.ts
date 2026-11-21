@@ -50,18 +50,10 @@ describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741, #6323, #6328)
     ).toEqual([]);
   });
 
-  // go-to-k/cdkd#6328: IAM attachment lists a SIBLING writes (a
-  // UserToGroupAddition, a ManagedPolicy's lists, a principal's
-  // ManagedPolicyArns) are compared only where the template declares them.
+  // go-to-k/cdkd#6328: a ManagedPolicy's attachment lists, which a
+  // principal's ManagedPolicyArns writes, are compared only where the template
+  // declares them.
   it.each([
-    ['AWS::IAM::User', { UserName: 'u' }, ['Groups', 'ManagedPolicyArns']],
-    ['AWS::IAM::User', { Groups: ['g'] }, ['ManagedPolicyArns']],
-    ['AWS::IAM::User', { ManagedPolicyArns: [] }, ['Groups']],
-    ['AWS::IAM::User', { Groups: [], ManagedPolicyArns: ['a'] }, []],
-    ['AWS::IAM::Role', { RoleName: 'r' }, ['ManagedPolicyArns']],
-    ['AWS::IAM::Role', { ManagedPolicyArns: ['a'] }, []],
-    ['AWS::IAM::Group', {}, ['ManagedPolicyArns']],
-    ['AWS::IAM::Group', { ManagedPolicyArns: ['a'] }, []],
     ['AWS::IAM::ManagedPolicy', { PolicyDocument: {} }, ['Groups', 'Roles', 'Users']],
     ['AWS::IAM::ManagedPolicy', { Roles: ['r'] }, ['Groups', 'Users']],
     ['AWS::IAM::ManagedPolicy', { Roles: ['r'], Users: [], Groups: ['g'] }, []],
@@ -73,6 +65,11 @@ describe('undeclaredUncomparedDriftKeys (go-to-k/cdkd#5736, #5741, #6323, #6328)
     // The membership resource and the inline policy carry no such list.
     ['AWS::IAM::UserToGroupAddition'],
     ['AWS::IAM::Policy'],
+    // go-to-k/cdkd#6627 / #6647: a principal's undeclared grant keys are
+    // compared on both baselines (`drift-undeclared-grants.ts`), not skipped.
+    ['AWS::IAM::User'],
+    ['AWS::IAM::Role'],
+    ['AWS::IAM::Group'],
   ])('skips nothing on %s (IAM)', (resourceType) => {
     expect(undeclaredUncomparedDriftKeys(resourceType, {})).toEqual([]);
   });

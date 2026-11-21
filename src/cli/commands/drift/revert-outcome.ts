@@ -36,6 +36,7 @@ import { getSettledWriteOnlyPropertyPaths } from '../../../provisioning/write-on
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
 import { buildReadCurrentStateContext } from './compare.js';
+import { notComparedManagedPolicyArns } from './not-compared-policies.js';
 import {
   siblingOwnedRevertDesired,
   undeclaredGrantSiblingMembers,
@@ -435,7 +436,10 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
           stateResource.physicalId,
           grantKeys,
           stateResource.properties,
-          siblingContext
+          siblingContext,
+          // go-to-k/cdkd#6697: a sibling managed policy detection did not
+          // compare left its attachment to this principal, as here.
+          notComparedManagedPolicyArns(report.state.resources, report.outcomes)
         )
       ),
       grantKeys
