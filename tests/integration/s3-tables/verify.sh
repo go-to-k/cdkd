@@ -859,7 +859,9 @@ fi
 # here: the seed is a fiction): a selective `cdkd import --force` re-records
 # the table from AWS with no evidence. Then a flag-less redeploy of the same
 # template must succeed with nothing to do.
-grep -qF -- "cdkd import with --resource 'IcebergTable=PHYSICAL_ID'" <<<"${REFUSE_1E_PLAIN}" || {
+# Copied from cdkd's output: since #6265 the remedy carries the run's typed
+# --state-bucket between the verb and its arguments.
+grep -qF -- "cdkd import --state-bucket ${STATE_BUCKET} with --resource 'IcebergTable=PHYSICAL_ID'" <<<"${REFUSE_1E_PLAIN}" || {
   echo "FAIL: the #5572 refusal does not name the cdkd import remedy this phase takes next" >&2; exit 1; }
 echo "==> Phase 1e: re-record IcebergTable with cdkd import --force"
 # `cdkd import` takes no --region: pin the region through the environment, or
