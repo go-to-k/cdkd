@@ -409,6 +409,9 @@ describe('Cloud Control delete compares a recorded AWS-minted id (issue #6666)',
     expect(readOnly('AWS::IAM::User')).not.toContain('UserId');
     expect(readOnly('AWS::IAM::Group')).not.toContain('GroupId');
     expect(readOnly('AWS::IAM::InstanceProfile')).not.toContain('InstanceProfileId');
+    expect(readOnly('AWS::Logs::LogGroup')).not.toContain('LogGroupIdentity');
+    expect(readOnly('AWS::StepFunctions::StateMachine')).not.toContain('CreationDate');
+    expect(readOnly('AWS::ECR::Repository')).not.toContain('CreatedAt');
     // Derived from the shared table: every entry but the types CC omits.
     expect(SURVIVOR_IDENTITY_ATTRIBUTES['AWS::DynamoDB::Table']).toBe('TableId');
     for (const omitted of [
@@ -416,6 +419,9 @@ describe('Cloud Control delete compares a recorded AWS-minted id (issue #6666)',
       'AWS::IAM::User',
       'AWS::IAM::Group',
       'AWS::IAM::InstanceProfile',
+      'AWS::Logs::LogGroup',
+      'AWS::StepFunctions::StateMachine',
+      'AWS::ECR::Repository',
     ]) {
       expect(SURVIVOR_IDENTITY_ATTRIBUTES[omitted]).toBeDefined();
       expect(CC_DELETE_RECORDED_IDENTITY_ATTRIBUTES.has(omitted)).toBe(false);

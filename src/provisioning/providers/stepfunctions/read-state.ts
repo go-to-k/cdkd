@@ -1,4 +1,5 @@
 import type { StepFunctionsProvider } from '../stepfunctions-provider.js';
+import { identityTimestamp } from '../../../deployment/recorded-identity-attributes.js';
 import {
   DescribeStateMachineCommand,
   ListTagsForResourceCommand,
@@ -147,6 +148,8 @@ export async function importImpl(
           Arn: input.knownPhysicalId,
           Name: resp.name,
           StateMachineRevisionId: stateMachineRevisionId(resp),
+          // go-to-k/cdkd#6665: the identity a later delete compares.
+          CreationDate: identityTimestamp(resp.creationDate),
         }),
       };
     } catch (err) {

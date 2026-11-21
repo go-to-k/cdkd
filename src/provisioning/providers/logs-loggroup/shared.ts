@@ -162,3 +162,31 @@ export function assertUsableRetention(
     logicalId
   );
 }
+
+/** What `readIdentityIfExists` (`identity.ts`) reads of a listed log group. */
+export interface LogGroupIdentityRead {
+  arn: string;
+  creationTime: number | undefined;
+  /** `deletionProtectionEnabled === true` in the same listing. */
+  deletionProtectionEnabled: boolean;
+}
+
+/**
+ * go-to-k/cdkd#4655 / #6665: the identity token of a listed log group,
+ * `<logGroupArn>@<creationTime epoch ms>`, or `undefined` without a creation
+ * time. What `resourceIdentity` answers and what the create, update and
+ * import record as `LogGroupIdentity` (the delete compares the two).
+ */
+export function logGroupIdentityToken(group: LogGroupIdentityRead): string | undefined {
+  return group.creationTime === undefined ? undefined : `${group.arn}@${group.creationTime}`;
+}
+
+/**
+ * A listed group's `creationTime` (epoch ms) when it is a positive integer,
+ * else `undefined` (read as absent).
+ */
+export function listedCreationTime(created: unknown): number | undefined {
+  return typeof created === 'number' && Number.isSafeInteger(created) && created > 0
+    ? created
+    : undefined;
+}

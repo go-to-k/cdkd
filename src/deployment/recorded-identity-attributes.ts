@@ -1,4 +1,5 @@
 import { holdsSecretDerivedEntry } from '../provisioning/iam-policy-targets.js';
+import { isoTimestampAttribute } from '../provisioning/attribute-timestamp.js';
 import { SECRET_MASK } from './secret-redaction/pairs.js';
 
 /**
@@ -29,11 +30,23 @@ import { SECRET_MASK } from './secret-redaction/pairs.js';
  * - `AWS::IAM::InstanceProfile` `InstanceProfileId`:
  *   `instanceProfileIdentityToken(GetInstanceProfile.InstanceProfile
  *   .InstanceProfileId)`; the create, update and import record the same.
+ * - `AWS::Logs::LogGroup` `LogGroupIdentity` (go-to-k/cdkd#6665): no id is
+ *   minted, so the token is `<logGroupArn>@<creationTime epoch ms>`
+ *   (`logGroupIdentityToken`, the `resourceIdentity` the provider had
+ *   already); the create, update and import record it from their own
+ *   `DescribeLogGroups`.
+ * - `AWS::StepFunctions::StateMachine` `CreationDate` /
+ *   `AWS::ECR::Repository` `CreatedAt` (go-to-k/cdkd#6665):
+ *   {@link identityTimestamp} of `DescribeStateMachine.creationDate` /
+ *   `DescribeRepositories.repositories[].createdAt`; the create, update and
+ *   import record the same of their own response.
  *
  * A type whose physical id is already AWS-minted (a KMS key id) needs none;
  * one whose every id is name-derived (an SNS topic ARN) has none to compare.
- * Add a type only when its SDK provider records the attribute at create and
- * its `resourceIdentity` token equals it.
+ * Add a type only when its SDK provider records the attribute at create,
+ * its `resourceIdentity` token equals it, and its `import()` returns the
+ * attribute under the same key in the same format, or not at all (a
+ * re-adoption compares the import's value with the recorded one).
  *
  * Trust on first use: a record without the id (one written before cdkd
  * recorded it) acquires it once from a read the deploy makes while acting on
@@ -50,7 +63,23 @@ export const SURVIVOR_IDENTITY_ATTRIBUTES: Readonly<Record<string, string>> = {
   'AWS::IAM::User': 'UserId',
   'AWS::IAM::Group': 'GroupId',
   'AWS::IAM::InstanceProfile': 'InstanceProfileId',
+  'AWS::Logs::LogGroup': 'LogGroupIdentity',
+  'AWS::StepFunctions::StateMachine': 'CreationDate',
+  'AWS::ECR::Repository': 'CreatedAt',
 };
+
+/**
+ * go-to-k/cdkd#6665: a creation timestamp as an identity value, ISO UTC at
+ * whole-second precision (`2026-11-21T03:04:05Z`), or `undefined` for no /
+ * an invalid date. The fraction is dropped so a create response and a later
+ * describe cannot disagree on precision alone: a differing value refuses
+ * the delete, and a same-name successor created within the same second is
+ * not a case this check claims.
+ */
+export function identityTimestamp(value: Date | undefined | null): string | undefined {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return undefined;
+  return isoTimestampAttribute(new Date(Math.floor(value.getTime() / 1000) * 1000));
+}
 
 /** Is `key` the identity attribute {@link SURVIVOR_IDENTITY_ATTRIBUTES} lists for `resourceType`? */
 export function isRecordedIdentityAttribute(resourceType: string, key: string): boolean {

@@ -30,13 +30,20 @@ import {
 } from './logs-loggroup/core.js';
 import { create } from './logs-loggroup/create.js';
 import { update, applyUpdate } from './logs-loggroup/update.js';
-import { deleteImpl, deleteOnce, logGoneOnDelete } from './logs-loggroup/delete.js';
+import {
+  deleteImpl,
+  deleteOnce,
+  logGoneOnDelete,
+  wrapDeleteError,
+} from './logs-loggroup/delete.js';
 import {
   isSameResource,
   resourceIdentity,
   readIdentityIfExists,
   buildArn,
+  createdAttributes,
 } from './logs-loggroup/identity.js';
+import type { LogGroupIdentityRead } from './logs-loggroup/shared.js';
 import { getAttribute, readCurrentState } from './logs-loggroup/read-state.js';
 import { importImpl } from './logs-loggroup/import.js';
 
@@ -222,6 +229,16 @@ export class LogsLogGroupProvider implements ResourceProvider {
     return logGoneOnDelete.call(this, logicalId, physicalId, context);
   }
 
+  wrapDeleteError(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: DeleteContext | undefined,
+    error: unknown
+  ): ProvisioningError {
+    return wrapDeleteError.call(this, logicalId, physicalId, resourceType, context, error);
+  }
+
   isSameResource(
     journaledPhysicalId: string,
     record: { physicalId: string },
@@ -239,10 +256,12 @@ export class LogsLogGroupProvider implements ResourceProvider {
     return resourceIdentity.call(this, physicalId, resourceType, context);
   }
 
-  readIdentityIfExists(
-    name: string
-  ): Promise<{ arn: string; creationTime: number | undefined } | undefined> {
+  readIdentityIfExists(name: string): Promise<LogGroupIdentityRead | undefined> {
     return readIdentityIfExists.call(this, name);
+  }
+
+  createdAttributes(name: string): Promise<Record<string, unknown>> {
+    return createdAttributes.call(this, name);
   }
 
   buildArn(logGroupName: string): Promise<string> {

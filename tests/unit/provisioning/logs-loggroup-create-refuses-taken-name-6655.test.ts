@@ -150,7 +150,12 @@ describe('LogsLogGroupProvider.create on a taken name (go-to-k/cdkd#6655)', () =
 
     expect(result.physicalId).toBe(NAME);
     expect(result.attributes?.['Arn']).toBe(`arn:aws:logs:us-east-1:123456789012:log-group:${NAME}:*`);
-    expect(sentCommands()).toEqual(['CreateLogGroupCommand', 'PutRetentionPolicyCommand']);
+    // go-to-k/cdkd#6665: the identity read (unanswered here: the STS-built ARN).
+    expect(sentCommands()).toEqual([
+      'CreateLogGroupCommand',
+      'PutRetentionPolicyCommand',
+      'DescribeLogGroupsCommand',
+    ]);
   });
 
   it('a free name creates as before', async () => {
@@ -160,7 +165,11 @@ describe('LogsLogGroupProvider.create on a taken name (go-to-k/cdkd#6655)', () =
     const result = await provider.create('Lg', TYPE, PROPS);
 
     expect(result.physicalId).toBe(NAME);
-    expect(sentCommands()).toEqual(['CreateLogGroupCommand', 'PutRetentionPolicyCommand']);
+    expect(sentCommands()).toEqual([
+      'CreateLogGroupCommand',
+      'PutRetentionPolicyCommand',
+      'DescribeLogGroupsCommand',
+    ]);
   });
 });
 
@@ -198,6 +207,7 @@ describe('LogsLogGroupProvider.create meeting its OWN group after a lost answer 
       'CreateLogGroupCommand',
       'DescribeLogGroupsCommand',
       'PutRetentionPolicyCommand',
+      'DescribeLogGroupsCommand',
     ]);
   });
 

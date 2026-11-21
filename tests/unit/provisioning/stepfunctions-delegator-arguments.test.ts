@@ -80,6 +80,7 @@ const KEPT_ON_CLASS = new Set([
   'getDriftSecretPathAliases',
   'generatedCreateName',
   'holderCreatedAt',
+  'resourceIdentity',
   'buildDefinitionString',
   'fetchDefinitionFromS3',
 ]);

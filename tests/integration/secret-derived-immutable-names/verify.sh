@@ -171,9 +171,10 @@
 #      deletes the stream from the journal, and its --verbose log, the
 #      provider's DELETE line included, does not name it.
 #   6c. The ECR variant (ECR makes the repository, then rejects its lifecycle
-#      policy), then a plain `cdkd rollback`: the repository journals no
-#      creation identity, so it is kept (exit 2, go-to-k/cdkd#4658) and the
-#      fixture deletes it by hand; the log does not name it either (the
+#      policy); the fixture then deletes the repository and creates it again
+#      under the name, and a plain `cdkd rollback` keeps it, since its
+#      `createdAt` differs from the journaled one (exit 2, go-to-k/cdkd#6665),
+#      and the fixture deletes it by hand; the log does not name it either (the
 #      failed-op replay's warning, go-to-k/cdkd#3869),
 #      nor SecretRollbackQueue, the completed CREATE each rollback deletes
 #      (the completed-op replay); 6d checks the same queue.
@@ -2358,8 +2359,8 @@ echo "==> Step 6b: a failed-CREATE orphan named from the secret, deleted by a de
 # go-to-k/cdkd#3869: the journal-path delete runs under the batch's printing
 # bag, so the provider's DELETE line must not name the stream. A Kinesis
 # stream journals its creation identity, so the destroy proves it is the one
-# the failed deploy made and deletes it (go-to-k/cdkd#4658); step 6c keeps the
-# ECR repository, which journals none.
+# the failed deploy made and deletes it (go-to-k/cdkd#4658); step 6c keeps an
+# ECR repository created again under the name, whose identity differs.
 orphan_deploy_failing stream
 set +e
 SDIN_ORPHAN_STREAM=true node "${LOCAL_DIST}" destroy "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -2401,22 +2402,29 @@ echo "==> Step 6c: the same orphan, kept by a plain cdkd rollback from the journ
 # go-to-k/cdkd#3869: a plain rollback replays the journal's proven orphans
 # through its own failed-op replay, which ran under no printing bag. The stack
 # is gone after step 6b, so this deploy is an initial one and the rollback
-# removes state.json and the journal with it. go-to-k/cdkd#4658: it keeps the
-# unproven repository (exit 2) and warns naming it, masked; the fixture
-# deletes it by hand.
+# removes state.json and the journal with it. The repository journals its
+# `createdAt` (go-to-k/cdkd#6665), so the fixture deletes it and creates it
+# again under the name first: the rollback keeps that one as another resource
+# (exit 2) and warns naming it, masked; the fixture deletes it by hand.
 orphan_deploy_failing
+aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null
+assert_gone "orphan repository ${REPO_NAME} still exists after the fixture deleted it" \
+  aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
+# The identity is whole seconds: a re-create in the same second would match.
+sleep 2
+aws ecr create-repository --region "${REGION}" --repository-name "${REPO_NAME}" >/dev/null
 set +e
 node "${LOCAL_DIST}" rollback "${ORPHAN_STACK}" --state-bucket "${STATE_BUCKET}" \
   --stack-region "${REGION}" --force --verbose > "${ORPHAN_LOG}" 2>&1
 ORPHAN_ROLLBACK_RC=$?
 set -e
 if [ "${ORPHAN_ROLLBACK_RC}" -ne 2 ]; then
-  echo "FAIL: the orphan stack's rollback exited ${ORPHAN_ROLLBACK_RC} (expected 2: the unproven repository is kept)" >&2
+  echo "FAIL: the orphan stack's rollback exited ${ORPHAN_ROLLBACK_RC} (expected 2: the re-created repository is kept)" >&2
   tail -60 "${ORPHAN_LOG}" >&2
   exit 1
 fi
 # PREMISE: the warning that keeps the orphan is in the log.
-if ! grep -q -- "Skipping failed CREATE of SecretOrphanRepo.*the journal recorded no identity for it" "${ORPHAN_LOG}"; then
+if ! grep -q -- "Skipping failed CREATE of SecretOrphanRepo.*its identity differs from the one the failed deploy recorded" "${ORPHAN_LOG}"; then
   echo "FAIL: premise: the rollback log has no warning keeping SecretOrphanRepo (the orphan was deleted, or the wording drifted)" >&2
   tail -60 "${ORPHAN_LOG}" >&2
   exit 1
@@ -2438,7 +2446,7 @@ assert_rollback_queue_deleted rollback
 aws ecr delete-repository --region "${REGION}" --repository-name "${REPO_NAME}" --force >/dev/null
 assert_gone "orphan repository ${REPO_NAME} still exists after the fixture deleted it" \
   aws ecr describe-repositories --region "${REGION}" --repository-names "${REPO_NAME}"
-echo "    OK: the rollback kept the unproven orphan, deleted the completed CREATE, and its log withholds both names"
+echo "    OK: the rollback kept the re-created repository, deleted the completed CREATE, and its log withholds both names"
 
 echo "==> Step 6d: the same failed deploy WITHOUT --no-rollback: the automatic rollback deletes the orphan"
 # go-to-k/cdkd#3869: the deploy engine's own rollback replays the orphan
