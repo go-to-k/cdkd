@@ -106,8 +106,8 @@ group, naming the user, rather than removing the user from it. A `cdkd deploy`
 refuses both the same way when it deletes the role or group because the
 template no longer has it, a nested stack holding it was removed, or it was
 replaced. Only a same-name re-create (`--recreate-via-*`, `--replace`'s
-delete-first) still removes them, since the stack's own profile or membership
-adds the new copy back.
+delete-first), whose new copy the stack's own profile or membership takes back,
+and a rollback deleting what the failed deploy created still remove them.
 
 ## `DeletionPolicy: Snapshot`: final snapshots on delete (`--skip-final-snapshot`)
 
