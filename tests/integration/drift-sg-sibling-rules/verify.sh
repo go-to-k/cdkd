@@ -425,9 +425,10 @@ expect_ports "SgB ingress (after the 6c revert)" "${B_IN}" "22 8080"
 assert_drift_clean "the phase 6c revert" CDKD_TEST_UPDATE=nofrom
 
 # go-to-k/cdkd#6761: the drifted members of ONE group, named by logical id.
-group_lid() { # usage: group_lid <group id>
-  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg g "$1" \
-    '.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and .value.physicalId == $g) | .key'
+group_lid() { # usage: group_lid <group id>; reads the STATE_JSON Phase 6c fetched
+  jq -r --arg g "$1" \
+    '.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and .value.physicalId == $g) | .key' \
+    <<<"${STATE_JSON}"
 }
 group_drifted_paths() { # usage: group_drifted_paths <drift JSON> <logical id>
   jq -r --arg l "$2" '[.[] | (.drifted // [])[] | select(.logicalId == $l) | .changes[].path] | unique | join(",")' <<<"$1"

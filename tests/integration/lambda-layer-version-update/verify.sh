@@ -296,9 +296,9 @@ order_fn_drift() {
     [.[] | select(.stack == $stack)] as $r |
     if ($r | length) != 1 then error("no single report for the stack") else
     $r[0] as $s |
-    if ([$s.clean[]?, $s.drifted[]? | select(.logicalId | startswith("OrderFn"))] | length) != 1
+    if ([$s.clean[]?, $s.drifted[]? | select(.type == "AWS::Lambda::Function" and (.logicalId | startswith("OrderFn")))] | length) != 1
     then error("OrderFn was not compared") else
-    ([$s.drifted[] | select(.logicalId | startswith("OrderFn")) | .changes[].path] | sort | join(","))
+    ([$s.drifted[] | select(.type == "AWS::Lambda::Function" and (.logicalId | startswith("OrderFn"))) | .changes[].path] | sort | join(","))
     end end
   ' <<<"${report}" || { echo "FAIL: unreadable drift report: ${report}" >&2; exit 1; }
 }

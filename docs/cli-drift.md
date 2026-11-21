@@ -247,7 +247,9 @@ egress rule AWS creates with it, as CloudFormation's group does, and drift
 compares it: revoking it out of band is reported and `--revert` re-authorizes
 it. A snapshot recorded before cdkd read that rule back holds no egress rule
 for such a group and reports nothing until `cdkd state refresh-observed --yes`
-re-reads it.
+re-reads it. An egress rule a resource in another stack adds to such a
+group is reported too, and `--revert` revokes it; only rules a resource in the
+same stack adds are left out.
 
 The same rule covers the other resources that write into another resource's
 property:
