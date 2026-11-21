@@ -334,8 +334,9 @@ on a `!` line and how to clear it.
 
 ### When there is no drift but not everything was compared
 
-The `✓` appears only when cdkd fully compared every resource it tried to read.
-Otherwise the line starts with `⚠` and says how much was checked:
+The `✓` appears only when cdkd fully compared every resource it drift-checks.
+Custom resources are never drift-checked, and the line counts them separately
+(see below). Otherwise the line starts with `⚠` and says how much was checked:
 
 ```text
 ⚠ MyStack (us-east-1): no drift detected, but 1 of 3 resources fully checked (2 only partially compared), 1 unsupported
@@ -350,22 +351,33 @@ When cdkd could compare nothing in the stack, the line says so:
 ⚠ MyStack (us-east-1): no drift detected, but NOTHING was compared — 0 of 1 resource checked (1 unsupported, 0 skipped)
 ```
 
+A stack holding a drift unknown resource gets the `⚠` too, naming how many
+could not be compared:
+
+```text
+⚠ MyStack (us-east-1): no drift detected in 4 resources checked, but 1 resource could not be compared (1 unsupported, drift unknown)
+```
+
 Two kinds of resource are left out of the "checked" count: unsupported ones
-(drift unknown) and skipped ones. Custom resources (`Custom::*`) are always
-skipped. A stack where nothing could be compared still exits `0`, and only the
-wording changes.
+(drift unknown) and skipped ones. Custom resources (`Custom::*` and
+`AWS::CloudFormation::CustomResource`) are always skipped. They get no line of
+their own, but the summary line says how many it left out:
+
+```text
+✓ MyStack (us-east-1): no drift detected (3 resources checked, 0 unsupported) — excludes 1 custom resource, which cdkd does not drift-check
+```
 
 ## Exit codes
 
 In short: `0` means no drift, `1` means drift or a failed command, and `2`
-means cdkd could not finish the job.
+means the comparison was incomplete or cdkd could not finish the job.
 
 | Code | Mode | Meaning |
 | --- | --- | --- |
-| `0` | detection | Nothing drifted, and no comparison is missing for a reason you can fix. |
+| `0` | detection | Nothing drifted, and the comparison was complete, apart from the gaps listed below. |
 | `0` | `--accept` / `--revert` | The run completed. |
 | `1` | any | Drift was detected, or the command failed. |
-| `2` | detection | Nothing drifted, but a comparison is missing for a reason you can fix. |
+| `2` | detection | Nothing drifted, but the comparison was incomplete. |
 | `2` | `--revert` | One or more resources were not reverted. |
 | `2` | `--accept` / `--revert` | The run refused a [deleted resource](cli-drift-accept-revert.md#deleted-resources). |
 
@@ -377,10 +389,14 @@ AWS error, or was given bad arguments. The table for every command is in
 Three rules settle the cases the table leaves open:
 
 - Drift outranks a missing comparison, so a run with both exits `1`.
-- Only some reasons for a missing comparison produce exit `2`. The
+- A drift unknown resource makes the comparison incomplete, so a run with one
+  and no drift exits `2`.
+- A few reasons for a missing comparison still exit `0`, because nothing can
+  ever clear them: a skipped custom resource, a `{{resolve:...}}` spelling cdkd
+  cannot resolve, and a `NoEcho` parameter value. The report still names them.
+  A nested stack's row exits `0` too, because its own block compares it. The
   [lookup table](cli-drift-not-compared.md#why-a-resource-was-not-compared)
-  says which.
-- Drift unknown and skipped resources never change the exit code.
+  gives the code for each reason.
 
 Exit `0` from `--accept` or `--revert` says the run completed. It does not say
 every resource was compared. When the comparison was incomplete, the run
@@ -388,12 +404,13 @@ prints `Comparison INCOMPLETE — nothing to accept/revert, and that is NOT a
 clean bill of health` and names what was not compared.
 
 To make CI fail unless everything was compared and nothing drifted, run
-`cdkd drift` without `--accept` or `--revert` and require exit `0`. With
-`--json` the same check is:
+`cdkd drift` without `--accept` or `--revert` and require exit `0`. To accept a
+known gap (for example a type cdkd cannot read yet) but still fail on drift,
+treat `2` as a pass and fail on `1`. With `--json` the strict check is:
 
 ```bash
 cdkd drift --all --json \
-  | jq -e 'all(.[]; .drifted == [] and .deleted == [] and .notCompared == [])'
+  | jq -e 'all(.[]; .drifted == [] and .deleted == [] and .notCompared == [] and .notSupported == [])'
 ```
 
 ## Resolving drift: `--accept` and `--revert`
@@ -553,7 +570,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::Events` | `Archive`, `EventBus`, `Rule` |
 | `AWS::FSx` | `FileSystem` |
 | `AWS::Glue` | `Connection`, `Crawler`, `Database`, `Job`, `SecurityConfiguration`, `Table`, `Trigger`, `Workflow` |
-| `AWS::IAM` | `AccessKey`, `Group`, `InstanceProfile`, `ManagedPolicy`, `Policy`, `Role`, `User`, `UserToGroupAddition` |
+| `AWS::IAM` | `AccessKey`, `Group`, `InstanceProfile`, `ManagedPolicy`, `Policy`, `Role`, `User` |
 | `AWS::Kinesis` | `Stream`, `StreamConsumer` |
 | `AWS::KinesisFirehose` | `DeliveryStream` |
 | `AWS::KMS` | `Alias`, `Key` |
@@ -590,16 +607,18 @@ described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md).
 
 ### Types that are always drift unknown
 
-For four types, what Cloud Control returns differs from what state holds even
-when nothing changed, or Cloud Control cannot address the resource by its
-physical id. Asking Cloud Control would report false drift or a read failure
-on every run, so cdkd reports them as drift unknown.
+For the first four types below, what Cloud Control returns differs from what
+state holds even when nothing changed, or Cloud Control cannot address the
+resource by its physical id. Asking Cloud Control would report false drift or a
+read failure on every run, so cdkd reports them as drift unknown. The last one
+has no read-back of its own.
 
 | Type | Reason |
 | --- | --- |
 | `AWS::EC2::LaunchTemplate` | The response carries version-bumped `LaunchTemplateData` and a synthetic `LatestVersionNumber`. |
 | `AWS::CloudWatch::AnomalyDetector` | Its physical id is a cdkd-derived descriptor Cloud Control cannot address. |
 | `AWS::EMR::InstanceFleetConfig`, `AWS::EMR::InstanceGroupConfig` | The physical id is the bare fleet / group id; Cloud Control needs the cluster id with it. |
+| `AWS::IAM::UserToGroupAddition` | It only adds users to a group, and cdkd does not read the membership back for it. |
 
 > [!NOTE]
 > Several types above (`AWS::ApiGateway::Method`, `AWS::Route53::RecordSet`,

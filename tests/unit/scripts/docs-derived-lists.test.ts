@@ -105,6 +105,16 @@ async function classesWithReadCurrentState(): Promise<Set<string>> {
   return out;
 }
 
+/**
+ * Types whose provider HAS a `readCurrentState` that returns `undefined` for
+ * the type by design, so drift reports them drift unknown (go-to-k/cdkd#6696)
+ * and `cli-drift.md` lists them under "always drift unknown", not in the
+ * read-back table. The test below CALLS each reader and requires `undefined`,
+ * so an entry whose reader starts reading back fails here and moves to the
+ * table.
+ */
+const READER_RETURNS_UNDEFINED_BY_DESIGN = new Set(['AWS::IAM::UserToGroupAddition']);
+
 describe('docs lists derived from source', () => {
   it('cli-drift.md names exactly the types whose provider reads current state', async () => {
     const registered = registeredTypes();
@@ -117,7 +127,9 @@ describe('docs lists derived from source', () => {
     expect(implementing.size).toBeGreaterThanOrEqual(60);
 
     const expected = new Set(
-      [...registered].filter(([, cls]) => implementing.has(cls)).map(([type]) => type)
+      [...registered]
+        .filter(([type, cls]) => implementing.has(cls) && !READER_RETURNS_UNDEFINED_BY_DESIGN.has(type))
+        .map(([type]) => type)
     );
     expect(expected.size).toBeGreaterThanOrEqual(120);
 
@@ -135,6 +147,22 @@ describe('docs lists derived from source', () => {
       extra,
       'cli-drift.md names these types as having a drift read-back, but no registered provider implements one for them'
     ).toEqual([]);
+  });
+
+  it('each by-design undefined reader returns undefined, and cli-drift.md names it as drift unknown', async () => {
+    const registry = new ProviderRegistry();
+    registerAllProviders(registry, await loadProviderClasses());
+    const unknownSection = docs('cli-drift.md').split('### Types that are always drift unknown')[1] ?? '';
+    for (const type of READER_RETURNS_UNDEFINED_BY_DESIGN) {
+      const provider = registry.getProvider(type) as {
+        readCurrentState?: (id: string, logicalId: string, type: string) => Promise<unknown>;
+      };
+      expect(typeof provider.readCurrentState, `${type} has no readCurrentState`).toBe('function');
+      await expect(provider.readCurrentState!('id', 'Logical', type)).resolves.toBeUndefined();
+      expect(unknownSection, `${type} missing from cli-drift.md's always-drift-unknown table`).toContain(
+        `\`${type}\``
+      );
+    }
   });
 
   it('cli-export.md names every registered composite-id splitter', () => {

@@ -9,6 +9,7 @@ import type { ProducerRegionEvidence } from '../../../deployment/producer-region
 import type { RecordedSecretValues } from '../../../deployment/secret-redaction.js';
 import type { StackState } from '../../../types/state.js';
 import type { SecretPathSet } from './secret-resolution.js';
+import { NESTED_STACK_RESOURCE_TYPE } from '../retire-cfn-stack.js';
 
 /**
  * Why cdkd did not compare every property a resource records.
@@ -44,7 +45,7 @@ import type { SecretPathSet } from './secret-resolution.js';
  * So the split is: as INFORMATION both causes mean the resource was not fully
  * compared, and the `--json` `notCompared` roll-up / the human `PARTIALLY
  * compared` block cover both unchanged. Only the EXIT CODE — the thing CI keys
- * on — is confined to `refused`.
+ * on — leaves `unresolvedToken` out (see `outcomeExitSignal`).
  *
  *   - `readFailed` — the per-resource READ or COMPARISON threw, so no
  *     comparison happened at all (issues
@@ -58,9 +59,10 @@ import type { SecretPathSet } from './secret-resolution.js';
  *     missing `cloudcontrol:GetResource`, a throttle, a provider bug — which is
  *     exactly the property `unresolvedToken` lacks. The one population that is
  *     permanent by construction, a type with NO Cloud Control READ handler, is
- *     deliberately NOT routed here: it reports `unsupported`, which is what it
- *     already reported when the same condition arrived as an `undefined` return
- *     instead of a throw. See `isNoReadHandlerError`.
+ *     deliberately NOT routed here: it reports `unsupported` (drift unknown,
+ *     also exit 2 since go-to-k/cdkd#6696), which is what it already reported
+ *     when the same condition arrived as an `undefined` return instead of a
+ *     throw. See `isNoReadHandlerError`.
  *
  * A resource hitting BOTH causes is `refused`: that is the wider signal of the
  * two, and it is what the pre-#2135 `comparisonRefused = secretResolutionFailed`
@@ -154,9 +156,10 @@ export const PRE_V10_BASELINE_WARNING_FLOOR = 10;
  *     `clean` one, so "clean" cannot mean anything but "compared and matched".
  *   - `notCompared` — nothing drifted, but cdkd did not compare every property
  *     the resource records, so "no drift" is not a clean bill of health.
- *   - `unsupported` — the provider does not implement `readCurrentState`
- *     yet (the optional method returned `undefined`). Reported separately
- *     so users see what's still uncovered.
+ *   - `unsupported` — no provider can read the resource back (the optional
+ *     `readCurrentState` is absent or returned `undefined`): drift unknown.
+ *     Reported separately so users see what's still uncovered, and exits 2
+ *     like an incomplete comparison (go-to-k/cdkd#6696).
  *   - `skipped` — drift detection is not conceptually applicable (see the
  *     member's own note).
  *
@@ -321,8 +324,9 @@ export type DriftOutcome =
    * (go-to-k/cdkd#4283). The provider's read returned `RESOURCE_NOT_FOUND`.
    *
    * Its own member rather than `unsupported`, which it was folded into before:
-   * that one is a coverage limit and exits `0`, while a missing resource is the
-   * most important drift there is, so this one exits `1` like `drifted`. It
+   * that one is a coverage limit (exit `2`, go-to-k/cdkd#6696), while a missing
+   * resource is the most important drift there is, so this one exits `1` like
+   * `drifted`. It
    * carries no `awsProperties` — there is nothing to read — so `--accept` and
    * `--revert` cannot act on it and REFUSE it by name: neither can recreate a
    * resource (and nor does a deploy that leaves its template unchanged).
@@ -343,10 +347,12 @@ export type DriftOutcome =
    * conceptually applicable (`Custom::*`), and for a nested stack's row whose
    * own record this run compares in its own block (go-to-k/cdkd#4533). Unlike `unsupported`
    * (= "provider does not YET implement drift detection — user might want
-   * to know"), `skipped` is silent in the human report so it doesn't
-   * generate noise on every drift run for stacks that contain Custom
+   * to know"), `skipped` gets no per-resource line in the human report so it
+   * doesn't generate noise on every drift run for stacks that contain Custom
    * Resources (the CDK-built-in `Custom::S3AutoDeleteObjects` helper is
-   * by far the most common case).
+   * by far the most common case). It exits 0. The stack's summary line still
+   * COUNTS a custom resource it excludes (go-to-k/cdkd#6696), so a clean line
+   * never claims more than was compared.
    */
   | { kind: 'skipped'; logicalId: string; resourceType: string };
 
@@ -447,26 +453,27 @@ export class DriftDetectedError extends CdkdError {
 }
 
 /**
- * Detection found NO drift, but at least one resource's comparison did not
- * happen for a reason the user can ACT ON: cdkd deliberately refused to resolve
- * its secret-bearing properties (issue #2108), or the read / comparison itself
- * threw (issues [#2151](https://github.com/go-to-k/cdkd/issues/2151) /
- * [#1945](https://github.com/go-to-k/cdkd/issues/1945)).
+ * Detection found NO drift, but the comparison was INCOMPLETE: cdkd
+ * deliberately refused to resolve a resource's secret-bearing properties (issue
+ * #2108), the read / comparison itself threw (issues
+ * [#2151](https://github.com/go-to-k/cdkd/issues/2151) /
+ * [#1945](https://github.com/go-to-k/cdkd/issues/1945)), or no provider can
+ * read the resource at all (`unsupported`, drift unknown; go-to-k/cdkd#6696).
  *
  * The class was `DriftComparisonRefusedError` while `refused` was the only
- * clearable cause. `readFailed` joins it on exactly the property the scoping
- * argument below turns on -- actionable and clearable on a re-run -- so it takes
- * the same exit code rather than a fourth one, and the name now states the
- * CONDITION rather than one of its causes.
+ * cause, and the name now states the CONDITION rather than one of its causes.
+ * Until #6696 the condition was "a reason you can fix", and `unsupported` was
+ * kept at 0 because nothing the user does clears it. That made a stack whose
+ * only out-of-band change sat on an unreadable type (#6660) a passing CI run,
+ * so the meaning is now "the comparison was incomplete", whether or not a
+ * re-run can clear it.
  *
- * SCOPED TO THE CLEARABLE CAUSES, not to everything the report calls
- * `notCompared`. The roll-up also contains resources whose only problem is a
- * surviving `{{resolve:...}}` token cdkd resolves for nobody — a look-alike
- * spelling, since issue #2482 moved `ssm-secure` onto the `ssm` path — which
- * can never clear on a re-run, and which this change did not create. Exiting
- * non-zero for them would break `cdkd drift` in CI forever over an unrelated
- * defect, so the exit reads `refused` and `readFailed` while the report covers
- * all three. See `NotComparedCause` and `outcomeExitSignal`.
+ * NOT everything the report calls `notCompared`: `unresolvedToken` (a
+ * `{{resolve:...}}` spelling cdkd resolves for nobody) and `noEchoParameter`
+ * (a value state holds only as the mask) still exit 0. Both leave one masked
+ * or unresolvable POSITION of a resource cdkd otherwise compared, by design,
+ * and exiting non-zero would fail every such stack forever. The report names
+ * them all the same. See `NotComparedCause` and `outcomeExitSignal`.
  *
  * WHY A NON-ZERO EXIT, and why it is a PRESERVATION rather than a new signal.
  * Pre-#2108 that population resolved the reference in the WRONG region, the
@@ -498,15 +505,11 @@ export class DriftDetectedError extends CdkdError {
  * honest SENTENCE, since their no-drift line claimed a clean bill of health for
  * a stack they had not read. See {@link incompleteRemediationMessage}.
  *
- * WHAT DOES NOT TRIGGER IT: a stack whose properties carry a `{{resolve:...}}`
- * spelling cdkd resolves for nobody still exits 0. Those properties genuinely
- * are not compared and the report says so, but nothing REFUSED them — cdkd has
- * never resolved that spelling — so the condition is permanent, unclearable by
- * any action the user can take, and predates this change. It is reported as
- * information and kept out of the exit code. (`ssm-secure` was that spelling
- * when this was written; since issue #2482 it resolves like `ssm`, and a
- * lookup that fails for it lands with the other resolution failures, not
- * here.)
+ * WHAT DOES NOT TRIGGER IT: the two causes named above, and `skipped` (a
+ * `Custom::*` type drift does not apply to, or a nested row its own block
+ * compares). (`ssm-secure` was the unresolvable spelling when this was
+ * written; since issue #2482 it resolves like `ssm`, and a lookup that fails
+ * for it lands with the other resolution failures.)
  *
  * Carries no message of its own for the same reason {@link DriftDetectedError}
  * does -- the report was already printed.
@@ -583,14 +586,12 @@ export function notComparedOutcomes(
  * compared as a pass is precisely the round-2 defect #2135 exists to make
  * impossible.
  *
- * `incomplete` is a STRICT SUBSET of what {@link notComparedOutcomes} rolls up,
- * and the asymmetry is the point: the REPORT covers everything that was not
- * compared, because as information every cause matters equally, while the exit
- * code covers only the CLEARABLE ones — `refused` (the population #2108 created)
- * and `readFailed` (issues #2151 / #1945). Exiting non-zero on
- * `unresolvedToken` would break `cdkd drift` in CI forever for every stack
- * holding such a spelling — permanent, unclearable, and unrelated. See
- * {@link NotComparedCause}.
+ * `incomplete` covers every cause {@link notComparedOutcomes} rolls up but
+ * `unresolvedToken` and `noEchoParameter`, plus the `unsupported` variant
+ * (go-to-k/cdkd#6696: drift unknown is an incomplete comparison). The two
+ * excluded causes leave a property cdkd masks or cannot resolve BY DESIGN, so
+ * exiting non-zero on them would fail every such stack in CI forever. The
+ * report still names them. See {@link NotComparedCause}.
  *
  * A `drifted` outcome reports `drifted` even when its own comparison was
  * refused: drift is the stronger, actionable signal and the caller ranks it
@@ -611,10 +612,15 @@ export function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplet
         ? 'none'
         : 'incomplete',
     clean: () => 'none',
-    // A provider that cannot read a resource back, and a type drift does not
-    // apply to, are both pre-existing and permanent — same "unclearable in CI"
-    // argument as `unresolvedToken`, and both predate #2108 entirely.
-    unsupported: () => 'none',
+    // go-to-k/cdkd#6696: a resource no provider can read back is drift
+    // UNKNOWN, not clean. It used to exit 0 on the "permanent, so unclearable
+    // in CI" argument, and that made a Route 53 record deleted out of band
+    // (#6660) a passing run. Exit 2 means "the comparison was incomplete",
+    // which is what this is; a CI job that accepts the gap gates on `0 || 2`.
+    unsupported: () => 'incomplete',
+    // A type drift does not apply to (`Custom::*`, #323), or a nested row its
+    // own block in this run compares (#4533): nothing is missing from the
+    // comparison, so it stays `none`.
     skipped: () => 'none',
     // go-to-k/cdkd#4283: a resource deleted outside cdkd is drift — the most
     // important kind — and exits 1 like any other. It used to be folded into
@@ -633,11 +639,12 @@ export function outcomeExitSignal(outcome: DriftOutcome): 'drifted' | 'incomplet
  * no member for either because neither is a not-compared CAUSE in the report's
  * sense; they are their own outcome VARIANTS, rendered -- or not -- on their own
  * terms. `unsupported` gets its own `drift unknown` heading; `skipped` gets NO
- * human-report output at all, deliberately (issue
+ * per-resource line, deliberately (issue
  * [#323](https://github.com/go-to-k/cdkd/issues/323): `Custom::S3AutoDeleteObjects`
  * rides along in most CDK stacks, and a per-run line about it would be noise).
- * It surfaces only inside the #2154 `NOTHING was compared` parenthetical and in
- * `--json`'s `skipped[]`.
+ * It surfaces only as a COUNT on the stack's summary line (go-to-k/cdkd#6696,
+ * the #2154 `NOTHING was compared` parenthetical included) and in `--json`'s
+ * `skipped[]`.
  *
  * WHY #323's SILENCE IS DELIBERATELY NOT HONOURED BY
  * {@link incompleteRemediationMessage}, since the next reader will otherwise
@@ -657,8 +664,10 @@ export type UncomparedReason = NotComparedCause | 'unsupported' | 'skipped';
 /**
  * Which of the two claims the line may make about a reason.
  *
- *   - `unknown` -- cdkd TRIED, or would have, and cannot say. The user can act:
- *     grant the permission, respell the ARN, re-run past the throttle.
+ *   - `unknown` -- cdkd TRIED, or would have, and cannot say. Usually the user
+ *     can act: grant the permission, respell the ARN, re-run past the throttle.
+ *     `unsupported` is here too (go-to-k/cdkd#6696): the resource may well
+ *     have drifted, and no provider could read it to say.
  *   - `byDesign` -- cdkd was never going to look. There is nothing to act on and
  *     nothing uncertain about it; the resource simply is not in the drift
  *     command's remit.
@@ -689,7 +698,8 @@ type UncomparedKind = 'unknown' | 'byDesign';
  *
  * The insertion ORDER is the order the phrases are emitted in, so the line is
  * deterministic without a second list to keep in sync: "not compared at all"
- * first, then the partial ones, then the two structural reasons.
+ * first (`unsupported` among them since go-to-k/cdkd#6696), then the partial
+ * ones, then `skipped`, the one structural reason.
  *
  * The wording splits on "was ANY of it compared", which is the same split the
  * human report's `NOT fully compared` heading makes -- a `readFailed` resource
@@ -731,6 +741,13 @@ export const UNCOMPARED_REASONS: Record<
     kind: 'unknown',
     phrase: 'not compared AT ALL: a `cdkd import` run refused to capture their observed baseline',
   },
+  // `unknown` since go-to-k/cdkd#6696: drift unknown IS uncertainty, and it
+  // exits 2 like the other `unknown` reasons. Beside the other
+  // "not compared AT ALL" reasons, so emit order keeps that group first.
+  unsupported: {
+    kind: 'unknown',
+    phrase: 'not compared AT ALL: their provider does not support drift detection yet',
+  },
   refused: {
     kind: 'unknown',
     phrase:
@@ -753,10 +770,6 @@ export const UNCOMPARED_REASONS: Record<
     phrase:
       'only PARTIALLY compared: their state holds a NoEcho parameter value only as the ' +
       'redaction mask, which no re-run can clear',
-  },
-  unsupported: {
-    kind: 'byDesign',
-    phrase: 'not compared AT ALL: their provider does not support drift detection yet',
   },
   skipped: {
     kind: 'byDesign',
@@ -837,7 +850,12 @@ function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, num
         // Counted above, through the shared spelling rather than a second one.
         notCompared: () => {},
         unsupported: () => bump('unsupported'),
-        skipped: () => bump('skipped'),
+        // A nested stack's row is compared in its own block in this run
+        // (go-to-k/cdkd#4533), so it is not uncompared, and saying "cdkd does
+        // not drift-check the type" of it would be false.
+        skipped: (sk) => {
+          if (sk.resourceType !== NESTED_STACK_RESOURCE_TYPE) bump('skipped');
+        },
         // Compared — AWS answered that it is gone — so not an uncompared reason.
         deleted: () => {},
       });
@@ -873,7 +891,8 @@ function uncomparedTally(reports: StackDriftReport[]): Map<UncomparedReason, num
  * collapsing them is the defect review round 1 found here.
  *
  *   - The TRIGGER is `anyIncomplete`, i.e. {@link outcomeExitSignal}'s
- *     `incomplete`. It is narrow on purpose: a stack whose ONLY uncompared
+ *     `incomplete` (which counts `unsupported` since go-to-k/cdkd#6696). It
+ *     is narrow on purpose: a stack whose ONLY uncompared
  *     resource holds a `{{resolve:...}}` token cdkd resolves for nobody must
  *     not start shouting on every run about a comparison no action of the
  *     user's can ever complete -- the same CI-forever hazard that cause is

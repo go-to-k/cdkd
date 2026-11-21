@@ -476,9 +476,9 @@ export async function runDriftForStack(
       // have already decided not to compare, and fetching it would pull the
       // plaintext into this process for no reason — the lookup itself is local
       // and issues no AWS call. After the lookup because a type whose provider
-      // cannot be resolved is `unsupported`, which exits 0; classifying it
-      // `baselineRefused` instead would make such a stack permanently non-zero
-      // for a reason that has nothing to do with the refusal.
+      // cannot be resolved is `unsupported` (drift unknown); classifying it
+      // `baselineRefused` instead would report it for a reason that has
+      // nothing to do with the refusal.
       if (resource.observedBaselineRefused === true) {
         outcomes.push({
           kind: 'notCompared',
@@ -629,8 +629,9 @@ export async function runDriftForStack(
 
           // go-to-k/cdkd#4283: AWS reports the resource is not there. Checked
           // BEFORE the `undefined` arm, which means "no read path for the type"
-          // and is reported as an uncovered type that does not affect the exit
-          // code; a resource deleted out of band is drift, and exits 1.
+          // and is reported as drift unknown (exit 2 when nothing drifted,
+          // go-to-k/cdkd#6696); a resource deleted out of band is drift, and
+          // exits 1.
           if (aws === RESOURCE_NOT_FOUND) {
             outcomes.push({
               kind: 'deleted',
@@ -678,12 +679,12 @@ export async function runDriftForStack(
           // returning `undefined` (handled above, reports `unsupported`) or by
           // throwing `UnsupportedActionException`, and the same condition must not
           // report two different things depending on which spelling AWS picked.
-          // Routing it to `unsupported` also keeps the exit code at 0 for it:
-          // the condition is permanent by construction -- the type will not grow a
-          // handler because this run failed -- which is the same "unclearable in
-          // CI forever" argument `unresolvedToken` is excluded on. This is the
+          // Routing it to `unsupported` reports it as drift unknown rather than
+          // a failed read: the condition is permanent by construction -- the
+          // type will not grow a handler because this run failed. This is the
           // taxonomy question #2151 raised (read-failure vs no-read-path), settled
-          // by which of the two a re-run can clear.
+          // by which of the two a re-run can clear. Both exit 2 since
+          // go-to-k/cdkd#6696.
           if (isNoReadHandlerError(err)) {
             // Logged, because this arm is the one place the guard is QUIETER than
             // main: main aborted loudly on this throw, and the report line it now

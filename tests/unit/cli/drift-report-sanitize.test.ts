@@ -218,11 +218,16 @@ describe('writeHumanReport treats record- and readback-derived values as untrust
 
   it('renders the ✓ heading and the ! and ? rows byte-for-byte as before', () => {
     const { joined } = render(
-      report({ outcomes: [clean(), unsupported()] }),
+      report({ outcomes: [clean()] }),
+      // go-to-k/cdkd#6696: a stack holding a drift-unknown resource gets the ⚠
+      // line naming it, not the ✓; its `?` rows are unchanged.
+      report({ stackName: 'Other', outcomes: [clean(), unsupported()] }),
       report({ stackName: 'Parent~Child', region: 'eu-west-1', outcomes: [notCompared()] })
     );
     expect(joined).toBe(
-      '✓ Prod (us-east-1): no drift detected (1 resource checked, 1 unsupported)\n' +
+      '✓ Prod (us-east-1): no drift detected (1 resource checked, 0 unsupported)\n' +
+        '⚠ Other (us-east-1): no drift detected in 1 resource checked, but 1 resource could ' +
+        'not be compared (1 unsupported, drift unknown)\n' +
         '\n  1 resource(s) reported as drift unknown — provider does not yet support drift detection:\n' +
         '    ? Thing (AWS::X::Y)\n' +
         '⚠ Parent~Child (eu-west-1): no drift detected, but 0 of 1 resource fully checked ' +

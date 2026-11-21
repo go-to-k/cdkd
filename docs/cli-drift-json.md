@@ -16,7 +16,7 @@ To fail a CI job unless everything was compared and nothing drifted:
 
 ```bash
 cdkd drift --all --json \
-  | jq -e 'all(.[]; .drifted == [] and .deleted == [] and .notCompared == [])'
+  | jq -e 'all(.[]; .drifted == [] and .deleted == [] and .notCompared == [] and .notSupported == [])'
 ```
 
 ## The report for one stack

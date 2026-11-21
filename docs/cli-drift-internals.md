@@ -68,11 +68,26 @@ resource is unsupported prints:
 ```
 
 The glyph follows the question "was everything actually compared", so a stack
-in which nothing was compared does not get a reassuring `✓`. The **exit code
-is still `0`** — only the claim about coverage changes. The same applies to a
-stack whose resources are all Custom Resources, which are reported as
-`skipped`. A parent whose only rows are nested stacks is the exception: each is
-checked in its own block, so it gets a `✓` (see [Nested stacks](cli-drift-nested-stacks.md)).
+in which nothing was compared does not get a reassuring `✓`. That stack exits
+`2`, because an unsupported resource makes the comparison incomplete. A stack
+whose resources are all Custom Resources, which are reported as `skipped`, gets
+the same `⚠` line and exits `0`. A parent whose only rows are nested stacks is
+the exception: each is checked in its own block, so it gets a `✓` (see
+[Nested stacks](cli-drift-nested-stacks.md)).
+
+A stack where something was compared and something is unsupported gets a `⚠`
+too, never the `✓`:
+
+```text
+⚠ MyStack (us-east-1): no drift detected in 2 resources checked, but 1 resource could not be compared (1 unsupported, drift unknown)
+```
+
+Custom Resources get no line of their own. The `✓` line, the drift unknown `⚠`
+line and the partially compared `⚠` line end by counting the ones they left out
+(` — excludes 1 custom resource, which cdkd does not drift-check`), after the
+counts, so the `(N resources checked, M unsupported)` part reads the same with
+or without them. The `NOTHING was compared` line counts them as `skipped`
+instead, and the report of a stack that drifted does not count them.
 
 Both the `N checked` and the `N of M fully checked` spellings count only
 resources a comparison was attempted for. In the `N of M` spelling the
@@ -172,8 +187,12 @@ leaves something uncompared exits `1`, not `2`. Both the drift case and the
 crash case go through the same error handler; drift detection emits the full
 human report before throwing, so that report is the only output for it.
 
-**Exit `2` on detection is narrower than `notCompared`, deliberately.** Seven of
-the causes in the [table above](cli-drift-not-compared.md#why-a-resource-was-not-compared) produce it: a
+**Exit `2` on detection means the comparison was incomplete.** It covers every
+`drift unknown` (unsupported) resource: a type no provider reads back, a type
+Cloud Control has no READ handler for (whether the fallback signals that by
+returning nothing or by throwing `UnsupportedActionException`), and a
+deny-listed type. It also covers seven of the causes in the
+[table above](cli-drift-not-compared.md#why-a-resource-was-not-compared): a
 resource cdkd `refused` to compare, one whose read or comparison `readFailed`,
 one cdkd stopped reading after repeated read failures (`readAborted`),
 one whose baseline an import refused (`baselineRefused`), one whose baseline
@@ -187,10 +206,9 @@ not-fully-compared block, but does not produce this exit code — cdkd resolves
 that spelling for nobody, the condition is permanent, and exiting non-zero for
 it would fail such a stack's CI forever over something unrelated. The same
 holds for `noEchoParameter`: state never holds a `NoEcho` parameter's value, so
-no re-run can compare it. A type
-Cloud Control has no READ handler for is excluded on the same grounds and
-reports `drift unknown` instead, whether the fallback signals that by
-returning nothing or by throwing `UnsupportedActionException`.
+no re-run can compare it. A skipped Custom Resource, and a nested stack's row
+that its own block compares, exit `0` too. All of these are still named in the
+report; none of them gets a `✓` line that hides it.
 
 **A remediation run keeps exit `0` even when the comparison was incomplete.**
 `--accept` and `--revert` keep their own exit codes, so a run whose reads were
@@ -198,9 +216,9 @@ refused or failed still exits `0`. It says so in words instead: such a run
 prints `Comparison INCOMPLETE — nothing to accept/revert, and that is NOT a
 clean bill of health`, names how many of the stack's resources were not
 compared and why, splits them into the ones cdkd is genuinely uncertain about
-(a failed read, a refused or unresolvable dynamic reference) and the ones it
-never drift-checks by design (`Custom::*`, and types no provider reads back
-yet, reported without any uncertainty claim), and points at the detection-only
+(a failed read, a refused or unresolvable dynamic reference, a type no
+provider reads back yet) and the ones it never drift-checks by design
+(`Custom::*`, reported without any uncertainty claim), and points at the detection-only
 run, which DOES report exit `2`. Nothing is written on the strength of a
 comparison that did not happen: `--accept` and `--revert` act on drifted
 resources only. `--accept` likewise exits `0` when it deliberately refused a
@@ -209,7 +227,7 @@ refusal is warned about by name, and the drift is still reported next run.
 
 **To gate CI on "everything was actually compared"**, run `cdkd drift`
 WITHOUT `--accept` / `--revert` and read its exit code, or read `--json`'s
-`notCompared[].cause`.
+`notCompared[].cause` and `notSupported`.
 
 **Exit `2` on `--revert`** (`PartialFailureError`) covers four shapes: a
 resource refused because it was deleted outside cdkd (see
