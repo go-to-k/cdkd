@@ -18,6 +18,8 @@ import {
   instanceVolumesRefusal,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { inDeclaredOrder } from '../../declared-order.js';
+import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
 
 export async function readInstanceCurrentState(
   this: EC2Provider,
@@ -50,6 +52,20 @@ export async function readInstanceCurrentState(
     .map((g) => g.GroupId)
     .filter((id): id is string => typeof id === 'string')
     .sort();
+  // SecurityGroups (go-to-k/cdkd#6754): the same groups by NAME, the
+  // CloudFormation spelling for a default-VPC instance. Read only for a bag
+  // that declares it, in the declared order: an instance declaring
+  // `SecurityGroupIds` (every CDK instance) would otherwise record names the
+  // template never set.
+  if (properties?.['SecurityGroups'] != null) {
+    result['SecurityGroups'] = inDeclaredOrder(
+      (instance.SecurityGroups ?? []).flatMap((g) =>
+        typeof g.GroupName === 'string' ? [g.GroupName] : []
+      ),
+      (name) => name,
+      Array.isArray(properties['SecurityGroups']) ? properties['SecurityGroups'] : undefined
+    );
+  }
 
   // PrivateIpAddress: AWS-assigned for default subnets, user-assigned
   // when CFn templates the property. Always emit so the v3 baseline
@@ -343,6 +359,21 @@ export async function readInstanceCurrentState(
         describeAwsFailure(err).detail
       }`
     );
+  }
+
+  // UserData (go-to-k/cdkd#6754): the base64 text CloudFormation declares, as
+  // `DescribeInstanceAttribute userData` returns it. Another call, made only
+  // for a bag that declares UserData. An instance with none reads back without
+  // the key, so a declared value removed out of band differs from it. A failed
+  // read throws rather than omitting the key, which would read as that
+  // removal. A record holding the mask in its place (a secret under
+  // `Fn::Base64` is persisted as `***`) is not read: the value cannot be
+  // compared, and `getDriftUnknownPaths` declares it unknown.
+  if (properties?.['UserData'] != null && !carriesSecretMask(properties['UserData'])) {
+    const attrResp = await this.ec2Client.send(
+      new DescribeInstanceAttributeCommand({ InstanceId: physicalId, Attribute: 'userData' })
+    );
+    if (attrResp.UserData?.Value !== undefined) result['UserData'] = attrResp.UserData.Value;
   }
 
   // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): another

@@ -174,6 +174,46 @@ describe('IAMUserGroupProvider read-update round-trip', () => {
     }
   });
 
+  it('User: a drift --revert of a flipped PasswordResetRequired sends no password (go-to-k/cdkd#6755)', async () => {
+    // The revert's previous side is the readback, which never holds the
+    // write-only password: the live one is unknown, so it is left alone.
+    mockSend.mockResolvedValue({
+      User: { UserName: USER_NAME, Arn: `arn:aws:iam::123:user/${USER_NAME}` },
+    });
+    await provider.update(
+      'L',
+      USER_NAME,
+      'AWS::IAM::User',
+      {
+        UserName: USER_NAME,
+        LoginProfile: { Password: 'Template-Passw0rd!', PasswordResetRequired: false },
+      },
+      { UserName: USER_NAME, LoginProfile: { PasswordResetRequired: true } }
+    );
+    const sent = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c): c is UpdateLoginProfileCommand => c instanceof UpdateLoginProfileCommand);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.input).toEqual({ UserName: USER_NAME, PasswordResetRequired: false });
+  });
+
+  it('User: a login profile to create with no password is refused before any call (go-to-k/cdkd#6755)', async () => {
+    // A drift --revert of a profile deleted out of band: the readback-shaped
+    // desired side carries no password, and IAM refuses CreateLoginProfile
+    // without one after the update's other writes had landed.
+    mockSend.mockResolvedValue({});
+    await expect(
+      provider.update(
+        'L',
+        USER_NAME,
+        'AWS::IAM::User',
+        { UserName: USER_NAME, Groups: ['engineers'], LoginProfile: { PasswordResetRequired: false } },
+        { UserName: USER_NAME, Groups: [] }
+      )
+    ).rejects.toThrow(/no password to send/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('User: round-trip with empty ManagedPolicyArns and Groups arrays does not emit Class-2-shaped requests', async () => {
     // Class 2 guard: a user with NO managed policies and NO groups
     // produces `ManagedPolicyArns: []` / `Groups: []` placeholders from

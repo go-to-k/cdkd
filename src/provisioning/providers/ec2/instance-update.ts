@@ -701,6 +701,26 @@ export function planInstanceMemberUpdates(
     }
   }
 
+  // go-to-k/cdkd#6754: `SecurityGroups` (group NAMES) is create-only in the
+  // schema, so the engine replaces the instance for a template change and only
+  // `cdkd drift --revert` brings one here. When `SecurityGroupIds` changes in
+  // the same update (an observed baseline holds both), its
+  // ModifyInstanceAttribute sets the same groups by id; otherwise nothing here
+  // can apply the names, so the update is refused before any call rather than
+  // reported as reverted.
+  if (
+    plan.securityGroups === undefined &&
+    changed('SecurityGroups', (a, b) => sameStringSet(a, b))
+  ) {
+    throw refusedBeforeApplying(
+      new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        `replace the instance (${deployReplaceCommand()}). SecurityGroups names the groups only when the instance is launched, and CloudFormation creates a new instance for this change`
+      )
+    );
+  }
+
   // BlockDeviceMappings: only a DeleteOnTermination-only change reaches an
   // in-place update; anything else the replacement rule routes away, and
   // what is left here (a readback bag, a direct call) has no API.

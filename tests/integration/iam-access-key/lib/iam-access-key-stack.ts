@@ -19,6 +19,9 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
  * provider omits attributes on update so the create-time secret is not wiped).
  * The same update moves the user and a group to another `Path`, which is
  * mutable in place (#3723: cdkd used to drop it on update).
+ *
+ * The user also has a console login profile (go-to-k/cdkd#6755): verify.sh
+ * flips its PasswordResetRequired out of band and expects drift.
  */
 export class IamAccessKeyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -28,10 +31,23 @@ export class IamAccessKeyStack extends cdk.Stack {
 
     const path = isUpdate ? '/cdkd-moved/' : undefined;
 
+    // go-to-k/cdkd#6755: a console login profile, so drift reads its
+    // PasswordResetRequired back. The password is a generated secret, read by
+    // a plain-NAME dynamic reference (a CDK token would render an Fn::Join), so
+    // cdkd persists the reference and never the value; the explicit dependency
+    // stands in for the edge a name reference does not create.
+    const loginPassword = new secretsmanager.Secret(this, 'CiLoginPassword', {
+      secretName: 'cdkd-iam-access-key-login-password',
+      generateSecretString: { passwordLength: 32 },
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     const user = new iam.User(this, 'CiUser', {
       userName: 'cdkd-iam-access-key-user',
       path,
+      password: cdk.SecretValue.secretsManager('cdkd-iam-access-key-login-password'),
+      passwordResetRequired: false,
     });
+    user.node.addDependency(loginPassword);
 
     new iam.Group(this, 'CiGroup', {
       groupName: 'cdkd-iam-access-key-group',

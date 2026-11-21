@@ -119,42 +119,6 @@ export const DRIFT_READBACK_BASELINE: ReadonlyMap<string, BaselineEntry> = new M
   string,
   BaselineEntry
 >([
-  // ---- known gaps, each tracked by its issue ----
-  ...['InternetGateway', 'NatGateway', 'NetworkAcl', 'RouteTable', 'Subnet', 'VPC'].map(
-    (t): [string, BaselineEntry] => [
-      `AWS::EC2::${t}#Tags`,
-      { issue: 6754, reason: 'the Describe response carries the tags; the readback drops them' },
-    ]
-  ),
-  ...['SecondaryAllocationIds', 'SecondaryPrivateIpAddressCount', 'SecondaryPrivateIpAddresses'].map(
-    (p): [string, BaselineEntry] => [
-      `AWS::EC2::NatGateway#${p}`,
-      { issue: 6754, reason: 'the readback takes only NatGatewayAddresses[0]' },
-    ]
-  ),
-  ...['SecurityGroups', 'UserData'].map((p): [string, BaselineEntry] => [
-    `AWS::EC2::Instance#${p}`,
-    { issue: 6754, reason: 'not read back' },
-  ]),
-  ['AWS::IAM::User#Tags', { issue: 6755, reason: 'not read back' }],
-  [
-    'AWS::IAM::User#LoginProfile',
-    { issue: 6755, reason: 'PasswordResetRequired is readable; Password is write-only' },
-  ],
-  [
-    'AWS::ElasticLoadBalancingV2::LoadBalancer#SubnetMappings',
-    { issue: 6756, reason: 'only Subnets is read back; the per-subnet addresses are not' },
-  ],
-  ...['AZMode', 'LogDeliveryConfigurations', 'PreferredAvailabilityZones'].map(
-    (p): [string, BaselineEntry] => [
-      `AWS::ElastiCache::CacheCluster#${p}`,
-      { issue: 6757, reason: 'not read back' },
-    ]
-  ),
-  ...['EventSourceToken', 'FunctionUrlAuthType'].map((p): [string, BaselineEntry] => [
-    `AWS::Lambda::Permission#${p}`,
-    { issue: 6758, reason: "a condition of the policy statement the readback parses, not returned" },
-  ]),
   // ---- nothing to read back ----
   ...(
     [

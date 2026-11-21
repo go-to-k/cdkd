@@ -718,6 +718,10 @@ export function initializeRules(this: ReplacementRulesRegistry): void {
       'Ipv6Addresses',
       'EnclaveOptions',
       'HostResourceGroupArn',
+      // go-to-k/cdkd#6754: createOnly per the CFn schema; `updateInstance`
+      // refuses a names-only change, so a failed DescribeType must still
+      // classify it as a replacement.
+      'SecurityGroups',
     ]),
     // Issue #5446: InstanceType / UserData (a stop-modify-start),
     // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in

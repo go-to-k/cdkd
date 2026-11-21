@@ -18,6 +18,7 @@ import {
   UpdateUserCommand,
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { MaskedLogSinks } from '../../masked-retry-logger.js';
 import { SECRET_DERIVED_READ_LIVE } from '../../iam-policy-targets.js';
@@ -53,6 +54,13 @@ export async function updateUser(
   log.debug(`Updating IAM user ${logicalId}: ${v(physicalId)}`);
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+  refuseLoginProfileWithoutPassword(
+    properties,
+    previousProperties,
+    resourceType,
+    logicalId,
+    physicalId
+  );
   // go-to-k/cdkd#6609: a note an earlier update that threw left behind.
   clearOwnWriteRemovals(USER_TYPE, physicalId);
   // `Groups` on BOTH sides before any call (go-to-k/cdkd#3888): a string was
@@ -187,14 +195,19 @@ export async function updateUser(
       // a group the deploy re-created -- must not reset the password and
       // re-force a reset at the next sign-in. A secret-derived password is
       // recorded as its reference, so it still compares unequal and is sent.
-      (newLoginProfile.Password !== oldLoginProfile.Password ||
+      (loginPasswordChanged(newLoginProfile, oldLoginProfile) ||
         (newLoginProfile.PasswordResetRequired ?? false) !==
           (oldLoginProfile.PasswordResetRequired ?? false))
     ) {
+      // go-to-k/cdkd#6755: a side without a password is a drift readback,
+      // which never holds one (write-only). The live password is unknown
+      // there, so the update sends none and leaves it as it is.
       await this.iamClient.send(
         new UpdateLoginProfileCommand({
           UserName: physicalId,
-          Password: newLoginProfile.Password,
+          ...(loginPasswordChanged(newLoginProfile, oldLoginProfile) && {
+            Password: newLoginProfile.Password,
+          }),
           PasswordResetRequired: newLoginProfile.PasswordResetRequired ?? false,
         })
       );
@@ -448,4 +461,49 @@ export async function updateUserInlinePolicies(
       recordOwnWriteRemoval(USER_TYPE, userName, 'Policies', policyName);
     }
   }
+}
+
+type LoginProfileBag = { Password?: string; PasswordResetRequired?: boolean };
+
+/**
+ * Whether the login profile's password changed: only when BOTH sides hold one
+ * (go-to-k/cdkd#6755). A drift readback never holds the write-only password,
+ * so a side without one says nothing about it.
+ */
+function loginPasswordChanged(next: LoginProfileBag, previous: LoginProfileBag): boolean {
+  return (
+    next.Password !== undefined &&
+    previous.Password !== undefined &&
+    next.Password !== previous.Password
+  );
+}
+
+/**
+ * Refuse, before any call, a login profile to CREATE with no password
+ * (go-to-k/cdkd#6755). A template always declares one; a `drift --revert` of
+ * a profile deleted out of band does not, since the readback never holds the
+ * write-only password, and IAM refuses `CreateLoginProfile` without it after
+ * the update's other writes had landed.
+ */
+function refuseLoginProfileWithoutPassword(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId: string
+): void {
+  const next = properties['LoginProfile'] as LoginProfileBag | undefined;
+  if (!next || previousProperties['LoginProfile'] || next.Password != null) return;
+  throw markNonRetryable(
+    new ProvisioningError(
+      `Cannot create the login profile of IAM user ${logicalId}: there is no password to send ` +
+        '(it is write-only, so a drift readback carries none). An unchanged deploy does not ' +
+        'create it either, since the state record still holds the login profile: create it ' +
+        'outside cdkd with IAM CreateLoginProfile, or remove LoginProfile from the template, ' +
+        'deploy, then add it back and deploy again.',
+      resourceType,
+      logicalId,
+      physicalId
+    )
+  );
 }

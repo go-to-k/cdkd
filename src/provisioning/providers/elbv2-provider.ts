@@ -611,15 +611,17 @@ export class ELBv2Provider implements ResourceProvider {
   readCurrentState(
     physicalId: string,
     _logicalId: string,
-    resourceType: string
+    resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readCurrentState.call(this, physicalId, _logicalId, resourceType);
+    return readCurrentState.call(this, physicalId, _logicalId, resourceType, properties);
   }
 
   readLoadBalancer(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    return readLoadBalancer.call(this, physicalId);
+    return readLoadBalancer.call(this, physicalId, properties);
   }
 
   readTargetGroup(
