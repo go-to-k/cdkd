@@ -46,7 +46,7 @@ export class CrossStackPreview {
 }
 
 function key(region: string, ...parts: string[]): string {
-  return [canonicalizeRegion(region), ...parts].join('\0');
+  return JSON.stringify([canonicalizeRegion(region), ...parts]);
 }
 
 /** A producer's changed exports (by `Export.Name`) and outputs (by output name). */
@@ -87,11 +87,15 @@ function isScalar(value: unknown): value is Scalar {
 /**
  * The exports and outputs of one producer whose value the deploy changes.
  *
- * - An output referencing a resource the deploy creates or replaces is
- *   UNKNOWN: its `Ref` / `Fn::GetAtt` resolved here against the old record.
+ * - An output referencing a resource the deploy creates or replaces, or a
+ *   nested stack it updates (`Outputs.*`), is UNKNOWN: its `Ref` /
+ *   `Fn::GetAtt` resolved here against the old record.
+ * - So is one that failed to resolve because it reads another stack's output:
+ *   that stack, diffed earlier in this run, previews it as unknown.
  * - Otherwise an output whose desired value differs from the stored one is
- *   KNOWN when it is a plain scalar holding no secret or dynamic reference,
- *   and UNKNOWN when it is not.
+ *   KNOWN when it is a plain scalar holding no secret, mask or dynamic
+ *   reference, and UNKNOWN when it is not. An `Export.Name` the stored bag
+ *   lacks (a renamed export) is previewed the same way, as an export only.
  * - An unchanged output, or one that did not resolve for another reason, is
  *   left out, so its consumers read state as before.
  */
@@ -103,16 +107,26 @@ export function previewProducerValues(input: ProducerPreviewInput): ProducerPrev
     if (
       change.changeType === 'CREATE' ||
       (change.changeType === 'UPDATE' &&
-        (change.propertyChanges ?? []).some((p) => p.requiresReplacement))
+        (change.resourceType === 'AWS::CloudFormation::Stack' ||
+          (change.propertyChanges ?? []).some((p) => p.requiresReplacement)))
     ) {
       renewed.add(change.logicalId);
     }
   }
   const producerStack = input.stackName;
+  const stored = input.storedOutputs ?? {};
+  const verdict = (desired: unknown): PreviewedValue =>
+    isScalar(desired) &&
+    desired !== SECRET_MASK &&
+    !String(desired).includes('{{resolve:') &&
+    !input.holdsSecret(String(desired))
+      ? { kind: 'known', value: desired, producerStack }
+      : { kind: 'unknown', producerStack };
   for (const [outputName, definition] of Object.entries(input.template.Outputs ?? {})) {
     const condition = (definition as { Condition?: unknown } | undefined)?.Condition;
     if (typeof condition === 'string' && input.conditions?.[condition] === false) continue;
     const value = (definition as { Value?: unknown } | undefined)?.Value;
+    const exportName = input.exportNameOf.get(outputName);
     const refs = referencedLogicalIds(
       { Resources: { output: { Type: 'Output', Properties: { value } } } },
       'output'
@@ -122,22 +136,20 @@ export function previewProducerValues(input: ProducerPreviewInput): ProducerPrev
       previewed = { kind: 'unknown', producerStack };
     } else if (Object.hasOwn(input.desiredOutputs, outputName)) {
       const desired = input.desiredOutputs[outputName];
-      const stored = input.storedOutputs?.[outputName];
       // A `NoEcho`-served output is stored as the mask, so the producer's own
       // diff cannot tell it changed either (go-to-k/cdkd#4043); neither can this.
-      if (stored === SECRET_MASK) continue;
-      if (desired !== undefined && JSON.stringify(desired) !== JSON.stringify(stored)) {
-        previewed =
-          isScalar(desired) &&
-          !String(desired).includes('{{resolve:') &&
-          !input.holdsSecret(String(desired))
-            ? { kind: 'known', value: desired, producerStack }
-            : { kind: 'unknown', producerStack };
+      if (stored[outputName] === SECRET_MASK || desired === undefined) continue;
+      if (JSON.stringify(desired) !== JSON.stringify(stored[outputName])) {
+        previewed = verdict(desired);
+      } else if (exportName !== undefined && !Object.hasOwn(stored, exportName)) {
+        exports.set(exportName, verdict(desired));
+        continue;
       }
+    } else if (/"Fn::(ImportValue|GetStackOutput)"/.test(JSON.stringify(value) ?? '')) {
+      previewed = { kind: 'unknown', producerStack };
     }
     if (previewed === undefined) continue;
     outputs.set(outputName, previewed);
-    const exportName = input.exportNameOf.get(outputName);
     if (exportName !== undefined) exports.set(exportName, previewed);
   }
   return { exports, outputs };

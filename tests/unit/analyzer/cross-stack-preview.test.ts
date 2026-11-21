@@ -31,7 +31,17 @@ function input(overrides: Partial<ProducerPreviewInput> = {}): ProducerPreviewIn
     template: TEMPLATE,
     changes: new Map<string, ResourceChange>(),
     desiredOutputs: { TableName: 't1', Res: 'arn:new', QueueUrl: 'q-url', Gated: 'gated-new' },
-    storedOutputs: { TableName: 't1', Res: 'arn:old', QueueUrl: 'q-url', Gated: 'gated-old' },
+    // The stored bag aliases each export under its name, as the deploy writes it.
+    storedOutputs: {
+      TableName: 't1',
+      'p-table': 't1',
+      Res: 'arn:old',
+      'p-res': 'arn:old',
+      QueueUrl: 'q-url',
+      'p-queue': 'q-url',
+      Gated: 'gated-old',
+      'p-gated': 'gated-old',
+    },
     exportNameOf: new Map([
       ['TableName', 'p-table'],
       ['Res', 'p-res'],
@@ -110,6 +120,71 @@ describe('previewProducerValues', () => {
         input({ desiredOutputs: { Res: '{{resolve:secretsmanager:s}}' } })
       ).exports.get('p-res')
     ).toEqual({ kind: 'unknown', producerStack: 'Producer' });
+  });
+
+  it('previews an output reading another stack the preview answered unknown (A -> B -> C)', () => {
+    const preview = previewProducerValues(
+      input({
+        template: {
+          Resources: {},
+          Outputs: { Fwd: { Value: { 'Fn::ImportValue': 'a-x' }, Export: { Name: 'b-x' } } },
+        },
+        desiredOutputs: {},
+        storedOutputs: { Fwd: 'old' },
+        exportNameOf: new Map([['Fwd', 'b-x']]),
+      })
+    );
+    expect(preview.exports.get('b-x')).toEqual({ kind: 'unknown', producerStack: 'Producer' });
+  });
+
+  it('previews an output of a nested stack the deploy updates as unknown', () => {
+    const preview = previewProducerValues(
+      input({
+        template: {
+          Resources: { Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} } },
+          Outputs: {
+            FromChild: { Value: { 'Fn::GetAtt': ['Child', 'Outputs.X'] }, Export: { Name: 'p-child' } },
+          },
+        },
+        changes: new Map<string, ResourceChange>([
+          [
+            'Child',
+            {
+              logicalId: 'Child',
+              changeType: 'UPDATE',
+              resourceType: 'AWS::CloudFormation::Stack',
+              propertyChanges: [],
+            },
+          ],
+        ]),
+        desiredOutputs: { FromChild: 'v' },
+        storedOutputs: { FromChild: 'v' },
+        exportNameOf: new Map([['FromChild', 'p-child']]),
+      })
+    );
+    expect(preview.exports.get('p-child')).toEqual({ kind: 'unknown', producerStack: 'Producer' });
+  });
+
+  it('previews a renamed export with an unchanged value as an export only', () => {
+    const preview = previewProducerValues(
+      input({
+        desiredOutputs: { Res: 'arn:same' },
+        storedOutputs: { Res: 'arn:same', 'p-res-old': 'arn:same' },
+      })
+    );
+    expect(preview.exports.get('p-res')).toEqual({
+      kind: 'known',
+      value: 'arn:same',
+      producerStack: 'Producer',
+    });
+    expect(preview.outputs.has('Res')).toBe(false);
+  });
+
+  it('never hands the mask on as a value', () => {
+    const preview = previewProducerValues(
+      input({ desiredOutputs: { Res: '***' }, storedOutputs: {} })
+    );
+    expect(preview.exports.get('p-res')).toEqual({ kind: 'unknown', producerStack: 'Producer' });
   });
 
   it('skips an output stored as the mask, which the producer diff cannot compare either', () => {
