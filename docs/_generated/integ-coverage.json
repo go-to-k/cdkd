@@ -6715,6 +6715,7 @@
         "composite-stack",
         "cross-backend-same-stack",
         "cross-backend-same-stack-migration",
+        "cross-stack-export-in-use",
         "custom-resource-payload-types",
         "datasync-location-role",
         "deep-getatt-chains",
@@ -6908,6 +6909,9 @@
         "cross-backend-same-stack-migration": [
           "l2",
           "literal"
+        ],
+        "cross-stack-export-in-use": [
+          "l1"
         ],
         "custom-resource-payload-types": [
           "l2"
@@ -10770,7 +10774,6 @@
           "l1"
         ],
         "cross-stack-export-in-use": [
-          "l1",
           "l2"
         ],
         "cross-stack-references": [
