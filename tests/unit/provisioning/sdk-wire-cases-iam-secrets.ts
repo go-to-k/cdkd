@@ -103,7 +103,17 @@ export const CASES_IAM_SECRETS: TypeCase[] = [
             { Key: 'k2', Value: 'v2' },
           ],
         },
-        expectedSilent: INLINE_POLICY_DOCS_SILENT,
+        expectedSilent: {
+          ...INLINE_POLICY_DOCS_SILENT,
+          // go-to-k/cdkd#6755: the password goes out only when BOTH sides
+          // hold one and they differ. A side without one is a drift readback
+          // (the password is write-only), so it says nothing about the live
+          // password; CloudFormation's LoginProfile always declares one.
+          'update-add:LoginProfile.Password':
+            'a previous LoginProfile without a Password is a readback: the live password is unknown',
+          'update-remove:LoginProfile.Password':
+            'a desired LoginProfile without a Password is a readback: there is no password to send',
+        },
         expectedRemovalThrows: TAG_THROWS(['create', 'update-add', 'update-remove'], 2),
       },
     ],
