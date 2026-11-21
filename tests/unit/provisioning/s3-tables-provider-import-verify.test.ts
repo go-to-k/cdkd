@@ -229,8 +229,11 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
 
       await provider.delete('MyTable', `${BUCKET_ARN}|ns|tbl`, 'AWS::S3Tables::Table', {});
 
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      // No lookup before the delete; after it, the gone-wait's one listing
+      // (go-to-k/cdkd#6749).
+      expect(mockSend).toHaveBeenCalledTimes(2);
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DeleteTableCommand);
+      expect(mockSend.mock.calls[1]?.[0]?.constructor.name).toBe('ListTablesCommand');
     });
   });
 

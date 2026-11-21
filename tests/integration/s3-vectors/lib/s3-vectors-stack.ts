@@ -68,6 +68,18 @@ export class S3VectorsStack extends cdk.Stack {
     // generated name must survive that redeploy.
     const namelessBucket = new s3vectors.CfnVectorBucket(this, 'NamelessVectorBucket', {});
 
+    // Issue #6749: an in-stack index (Cloud Control route: no SDK provider).
+    // Every destroy deletes it just before its bucket, whose delete refuses a
+    // bucket still listing an index, so the destroys measure that the index
+    // has left the listing by then; Phase 1.9's needle names the out-of-stack
+    // index alone.
+    new s3vectors.CfnIndex(this, 'StackIndex', {
+      vectorBucketName: namelessBucket.ref,
+      dataType: 'float32',
+      dimension: 4,
+      distanceMetric: 'cosine',
+    });
+
     new cdk.CfnOutput(this, 'NamelessVectorBucketName', {
       value: namelessBucket.ref,
       description: 'Generated name of the nameless S3 Vector Bucket',
