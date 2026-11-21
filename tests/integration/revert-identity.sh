@@ -546,7 +546,10 @@ revert_identity_assert_unchanged() {
 #   - src/cli/commands/drift/command.ts: "... it cannot recreate one."
 #   - ResourceUpdateNotSupportedError (src/utils/error-handler/deploy-errors.ts):
 #     "<Type> (<id>) cannot be updated in place: use cdkd deploy with --replace ..."
-_REVERT_IDENTITY_REFUSAL_RE='never replaces|cannot be (reverted|updated) in place|cannot recreate one'
+#   - the IAM policy attach refusal (src/provisioning/providers/iam-policy/
+#     principal-identity.ts): "... so cdkd sent the policy to no principal
+#     ... if you replaced it yourself, adopt the new one ..."
+_REVERT_IDENTITY_REFUSAL_RE='never replaces|cannot be (reverted|updated) in place|cannot recreate one|cdkd sent the policy to no principal'
 # The IAM providers' in-place proof line, allowed in BOTH modes: the revert
 # kept the live name rather than replace (src/provisioning/providers/iam-role/
 # update.ts, iam-managed-policy/update.ts): "IAM role X: RoleName is not

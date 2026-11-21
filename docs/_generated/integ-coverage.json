@@ -6536,6 +6536,7 @@
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
+        "iam-role-policies-drift-clean",
         "iam-secret-derived-principals",
         "iam-sibling-managed-policy-drift",
         "import-attributes",
@@ -6573,6 +6574,9 @@
         "iam-recreate-reattach": [
           "l1",
           "literal"
+        ],
+        "iam-role-policies-drift-clean": [
+          "l1"
         ],
         "iam-secret-derived-principals": [
           "l1",

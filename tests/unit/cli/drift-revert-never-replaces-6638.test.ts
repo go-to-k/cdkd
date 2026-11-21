@@ -34,7 +34,7 @@ function harness(update: ResourceProvider['update']) {
   const args = {
     logger,
     tally,
-    report: { stackName: 'MyStack', region: 'us-east-1' },
+    report: { stackName: 'MyStack', region: 'us-east-1', state: { resources: {} } },
     narrowedByLogicalId: new Map(),
     reRecordedByLogicalId,
     settledByRevert: new Map(),

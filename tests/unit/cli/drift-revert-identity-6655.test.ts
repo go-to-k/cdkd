@@ -22,7 +22,7 @@ function harness(update: ResourceProvider['update'], recorded: Record<string, un
   const args = {
     logger,
     tally,
-    report: { stackName: 'MyStack', region: 'us-east-1' },
+    report: { stackName: 'MyStack', region: 'us-east-1', state: { resources: {} } },
     narrowedByLogicalId: new Map(),
     reRecordedByLogicalId: new Map(),
     settledByRevert: new Map(),

@@ -821,6 +821,8 @@ describe('revert_output_assert_no_replacement', () => {
     'a drift revert never replaces a resource. Nothing was changed; re-deploy with cdkd deploy --replace to replace it',
     '1 resource(s) cannot be reverted in place — re-deploy the stack with cdkd deploy --replace, or destroy + redeploy',
     'AWS::Lambda::Permission (Perm1) cannot be updated in place: use cdkd deploy with --replace, or change the resource definition',
+    // go-to-k/cdkd#6734: the IAM policy attach refusal's remedy.
+    '  ✗ Stack/SharedPolicy (AWS::IAM::Policy): AWS update failed — Cannot attach IAM policy SharedPolicy to IAM role MixedRole1 (its RoleId differs): the principal holding the name cdkd recorded is not the one cdkd created, so cdkd sent the policy to no principal (granting nothing) and kept the principals\' records. For MixedRole1: if you replaced it yourself, adopt the new one with cdkd import --force and re-run',
   ])('expect-refusal allows refusal wording: %j', (line) => {
     const r = check(`${line}\n`, 'expect-refusal');
     expect(r.stderr).toBe('');
