@@ -44,7 +44,7 @@ bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 
 budgets	2026-11-20T10:54:34Z	PASS	140	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 cache-streaming	2026-10-30T13:07:14Z	PASS	3339	verify.sh	rc ok, #5558 AZ-removal replacement verified (probe red at the zone-list removal assertion), orph clean
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
-cc-api-fallback	2026-11-18T12:47:19Z	PASS	240	verify.sh	rc ok, orph clean (#6553 PR #6554 r2)
+cc-api-fallback	2026-11-21T02:43:57Z	PASS	207	verify.sh	PR6738 e22f0ed07; rc ok, orph clean
 cc-api-fallback-transitions	2026-11-18T12:47:19Z	PASS	130	verify.sh	rc ok, orph clean (#6553 PR #6554 r2)
 cc-api-lookup	2026-11-18T08:37:35Z	PASS	85	verify.sh	rc ok, orph clean; #6542 cc-api arrays + stale-entry heal + cdk synth --no-lookups parity
 cc-final-snapshot-handlers	2026-11-06T12:35:19Z	PASS	867	verify.sh	rc ok, destroy 0 errors, orph clean (#5846 a87a46584)
@@ -98,6 +98,7 @@ connect-instance	2026-11-20T17:56:22Z	PASS	220	verify.sh	rc ok, orph clean; depl
 context-test	2026-11-07T00:10:22Z	PASS	30	standard	#5938 ssm-parameter split head; rc ok, orph clean
 created-before-failure-revert	2026-11-21T01:28:31Z	PASS	197	verify.sh	PR6710 260d5664a; rc ok, orph clean; own bucket
 creation-policy-cfn-init	2026-11-21T02:26:09Z	PASS	800	verify.sh	rc 0, 5 phases, receiver gone, orph clean
+created-before-failure-revert	2026-11-21T02:43:57Z	PASS	197	verify.sh	PR6738 e22f0ed07; rc ok, orph clean; own bucket
 cross-backend-same-stack	2026-11-20T10:58:39Z	PASS	316	verify.sh	rc ok, orph clean; #6674 824a7e947 us-east-1
 cross-backend-same-stack-migration	2026-11-04T10:52:56Z	PASS	241	verify.sh	#5760 arm (c)3 rewritten; rc 0, destroy clean, orph clean
 cross-region-concurrent-stacks	2026-11-19T17:43:38Z	PASS	209	verify.sh	rc 0 us-east-1 + us-west-2; orph clean (#6637 TopicPolicy)
@@ -155,7 +156,7 @@ dynamodb-globaltable	2026-11-20T15:08:45Z	PASS	1784	verify.sh	rc ok, orph clean;
 dynamodb-globaltable-implied-stream	2026-11-06T16:08:16Z	PASS	335	verify.sh	post-hoc on main after #5839 split; rc ok, orph clean
 dynamodb-globaltable-replica-settings	2026-11-20T11:50:48Z	PASS	3875	verify.sh	PR6652 be63cc056, us-west-2 (second us-east-1); rc 0, revert-identity kept identity x2, orph clean
 dynamodb-gsi-update	2026-11-20T11:50:48Z	PASS	4442	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
-dynamodb-ondemand	2026-11-20T19:36:46Z	PASS	459	verify.sh	PR6691 84afba18c; rc ok, orph clean
+dynamodb-ondemand	2026-11-21T02:43:57Z	PASS	448	verify.sh	PR6738 e22f0ed07; rc ok, orph clean
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
 dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 dynamodb-streams	2026-11-20T11:50:48Z	PASS	268	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
@@ -395,7 +396,7 @@ rds-dbinstance-processor-features	2026-11-09T14:21:43Z	PASS	1985	verify.sh	rc ok
 rds-dbinstance-snapshot-restore	2026-11-13T06:47:48Z	PASS	3933	verify.sh	rc ok, orph clean (#5640 snapshot + PITR + cluster replica, PR #6176 merged head)
 rds-express-cluster	2026-11-20T19:36:46Z	PASS	1715	verify.sh	PR6691 run at 3d802a13c, same PR delta; rc ok, orph clean
 rds-fix-forward-orphan	2026-11-20T19:36:46Z	PASS	1225	verify.sh	PR6691 84afba18c; rc ok, orph clean; own bucket (1st try failed on account id in bucket name)
-rds-full-stack	2026-11-20T19:36:46Z	PASS	1136	verify.sh	PR6691 run at 3d802a13c, same PR delta; rc ok, orph clean
+rds-full-stack	2026-11-21T02:43:57Z	PASS	1040	verify.sh	PR6738 e22f0ed07; rc ok, orph clean
 rds-multiaz-cluster	2026-11-08T20:08:02Z	PASS	4107	verify.sh	3 phases ok; class change ~40m on 3 instances (90m floor), orph clean
 recreate-mixed-direction	2026-11-04T19:47:52Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-nested-logical-id-collision	2026-11-04T19:21:11Z	PASS	113	verify.sh	rc ok, orph clean

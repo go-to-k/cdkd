@@ -128,6 +128,44 @@ function expectMismatch(error: Error, attribute: string, logicalId: string): voi
   );
 }
 
+/**
+ * An authorization failure as the SDK raises it (go-to-k/cdkd#6655), with
+ * AWS's text naming the caller. Measured spellings: DynamoDB answers
+ * `AccessDeniedException` / 400, RDS `AccessDenied` / 403.
+ */
+function deniedError(name: string, status: number): Error {
+  return Object.assign(
+    new Error(
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is not authorized to perform: x on resource: y'
+    ),
+    { name, $fault: 'client', $metadata: { httpStatusCode: status } }
+  );
+}
+
+/** A credential failure answering 403 (measured on RDS): not a missing permission. */
+const badSignature = (): Error =>
+  Object.assign(new Error('The request signature we calculated does not match'), {
+    name: 'SignatureDoesNotMatch',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 403 },
+  });
+
+/** Asserts the denied-read refusal's shape, shared by every type. */
+function expectDenied(error: Error, permission: string, errorClass: string, logicalId: string): void {
+  expect(error).toBeInstanceOf(RecordedIdentityError);
+  expect(error).not.toBeInstanceOf(RecordedIdentityMismatchError);
+  expect(isMarkedNonRetryable(error)).toBe(true);
+  expect(isMarkedNotGone(error)).toBe(true);
+  expect(error.message).toContain(`AWS refused the ${permission} read`);
+  expect(error.message).toContain(`(${errorClass})`);
+  expect(error.message).toContain(`Allow ${permission} for the identity running cdkd`);
+  expect(error.message).toContain('permission boundary, SCP or VPC endpoint policy');
+  expect(error.message).toContain(`cdkd state orphan`);
+  expect(error.message).toContain(`--resource ${logicalId}`);
+  expect(error.message).not.toContain('123456789012');
+  expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+}
+
 const flipWarnings = (): string[] =>
   log.warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('deletion protection off'));
 
@@ -313,6 +351,49 @@ describe('AWS::DynamoDB::Table delete compares the recorded TableId (go-to-k/cdk
     const error = await thrownBy(del(recorded()));
     expect(error).not.toBeInstanceOf(RecordedIdentityError);
     expect(isRetryableTransientError(error, error.message)).toBe(true);
+    expect(names()).toEqual(['DescribeTableCommand']);
+  });
+
+  it('DescribeTable denied: refused non-retryably naming the permission, nothing written', async () => {
+    table({ describeError: () => deniedError('AccessDeniedException', 400) });
+    const error = await thrownBy(del(recorded()));
+    expectDenied(error, 'dynamodb:DescribeTable', 'AccessDeniedException', 'T');
+    expect(names()).toEqual(['DescribeTableCommand']);
+  });
+
+  it('DescribeTable denied under --remove-protection: refused before the protection flip', async () => {
+    table({ describeError: () => deniedError('AccessDeniedException', 400) });
+    const error = await thrownBy(del(recorded({ removeProtection: true })));
+    expectDenied(error, 'dynamodb:DescribeTable', 'AccessDeniedException', 'T');
+    expect(names()).toEqual(['DescribeTableCommand']);
+  });
+
+  it('the re-read after a mismatch denied: the denied refusal, nothing written', async () => {
+    let reads = 0;
+    ddbSend.mockImplementation(async (command: Command) => {
+      sent.push(command);
+      if (command.constructor.name !== 'DescribeTableCommand') return {};
+      reads += 1;
+      if (reads > 1) throw deniedError('AccessDeniedException', 400);
+      return { Table: { TableName: NAME, TableStatus: 'ACTIVE', TableId: SUCCESSOR } };
+    });
+    const error = await thrownBy(del(recorded()));
+    expectDenied(error, 'dynamodb:DescribeTable', 'AccessDeniedException', 'T');
+    expect(names()).toEqual(['DescribeTableCommand', 'DescribeTableCommand']);
+  });
+
+  it('DescribeTable answering an expired token: not reported as a missing permission', async () => {
+    table({
+      describeError: () =>
+        Object.assign(new Error('The security token included in the request is expired'), {
+          name: 'ExpiredTokenException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 403 },
+        }),
+    });
+    const error = await thrownBy(del(recorded()));
+    expect(error).not.toBeInstanceOf(RecordedIdentityError);
+    expect(error.message).not.toContain('AWS refused the');
     expect(names()).toEqual(['DescribeTableCommand']);
   });
 
@@ -537,6 +618,39 @@ describe('AWS::RDS::DBInstance delete compares the recorded DbiResourceId (go-to
     expect(names()).toEqual(['DescribeDBInstancesCommand']);
   });
 
+  it('DescribeDBInstances denied: refused non-retryably naming the permission, nothing written', async () => {
+    rds({ kind: 'instance', identifier: ID, describeError: () => deniedError('AccessDenied', 403) });
+    const error = await thrownBy(del(recorded({ removeProtection: true })));
+    expectDenied(error, 'rds:DescribeDBInstances', 'AccessDenied', 'I');
+    expect(names()).toEqual(['DescribeDBInstancesCommand']);
+  });
+
+  it('the re-read after a mismatch denied: the denied refusal, nothing written', async () => {
+    let reads = 0;
+    rdsSend.mockImplementation(async (command: Command) => {
+      sent.push(command);
+      if (command.constructor.name !== 'DescribeDBInstancesCommand') return {};
+      reads += 1;
+      if (reads > 1) throw deniedError('AccessDenied', 403);
+      return {
+        DBInstances: [
+          { DBInstanceIdentifier: ID, DBInstanceStatus: 'available', DbiResourceId: SUCCESSOR },
+        ],
+      };
+    });
+    const error = await thrownBy(del(recorded()));
+    expectDenied(error, 'rds:DescribeDBInstances', 'AccessDenied', 'I');
+    expect(names()).toEqual(['DescribeDBInstancesCommand', 'DescribeDBInstancesCommand']);
+  });
+
+  it('DescribeDBInstances answering a bad signature (403): not reported as a missing permission', async () => {
+    rds({ kind: 'instance', identifier: ID, describeError: badSignature });
+    const error = await thrownBy(del(recorded()));
+    expect(error).not.toBeInstanceOf(RecordedIdentityError);
+    expect(error.message).not.toContain('AWS refused the');
+    expect(names()).toEqual(['DescribeDBInstancesCommand']);
+  });
+
   it('a describe answering without a DbiResourceId while one is recorded: thrown, nothing written', async () => {
     rds({ kind: 'instance', identifier: ID, liveIds: [undefined] });
     const error = await thrownBy(del(recorded()));
@@ -687,6 +801,21 @@ describe('AWS::RDS::DBCluster delete compares the recorded DBClusterResourceId (
     const error = await thrownBy(del(recorded()));
     expect(error).not.toBeInstanceOf(RecordedIdentityError);
     expect(isRetryableTransientError(error, error.message)).toBe(true);
+    expect(names()).toEqual(['DescribeDBClustersCommand']);
+  });
+
+  it('DescribeDBClusters denied: refused non-retryably naming the permission, nothing written', async () => {
+    rds({ kind: 'cluster', identifier: ID, describeError: () => deniedError('AccessDenied', 403) });
+    const error = await thrownBy(del(recorded({ removeProtection: true })));
+    expectDenied(error, 'rds:DescribeDBClusters', 'AccessDenied', 'C');
+    expect(names()).toEqual(['DescribeDBClustersCommand']);
+  });
+
+  it('DescribeDBClusters answering a bad signature (403): not reported as a missing permission', async () => {
+    rds({ kind: 'cluster', identifier: ID, describeError: badSignature });
+    const error = await thrownBy(del(recorded()));
+    expect(error).not.toBeInstanceOf(RecordedIdentityError);
+    expect(error.message).not.toContain('AWS refused the');
     expect(names()).toEqual(['DescribeDBClustersCommand']);
   });
 

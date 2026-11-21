@@ -14,6 +14,7 @@ import {
   recordedIdentityId,
   RecordedIdentityError,
 } from '../../recorded-identity.js';
+import { deniedIdentityReadRefusal } from '../../identity-read-denied.js';
 import {
   deleteWithProtectionCompensation,
   observeThenDisableProtection,
@@ -315,8 +316,9 @@ export async function deleteInstanceAfterProtectionFlip(
  *
  * No usable `DbiResourceId` recorded (a legacy, masked or secret-reference
  * value): `undefined` with NO read, the by-identifier delete as before. The
- * not-found fault propagates to the delete's idempotent not-found path; any
- * other failure to the retry classifiers. A response with no instance of
+ * not-found fault propagates to the delete's idempotent not-found path; a
+ * denied read is the non-retryable `deniedIdentityReadRefusal`; any other
+ * failure to the retry classifiers. A response with no instance of
  * this identifier carries no id, and refuses (`assertRecordedIdentity`).
  */
 export async function readRecordedInstanceIdentity(
@@ -328,7 +330,23 @@ export async function readRecordedInstanceIdentity(
 ): Promise<DBInstance | undefined> {
   if (recordedIdentityId(resourceType, context) === undefined) return undefined;
   const read = async (): Promise<DBInstance | undefined> => {
-    const instance = await this.describeDBInstance(physicalId);
+    let instance: DBInstance | undefined;
+    try {
+      instance = await this.describeDBInstance(physicalId);
+    } catch (error) {
+      // go-to-k/cdkd#6655: a denied read refuses, non-retryably, naming the
+      // permission; every other failure keeps its path.
+      throw (
+        deniedIdentityReadRefusal(error, {
+          label: 'RDS DB instance',
+          permission: 'rds:DescribeDBInstances',
+          resourceType,
+          logicalId,
+          physicalId,
+          context,
+        }) ?? error
+      );
+    }
     return instance?.DBInstanceIdentifier?.toLowerCase() === physicalId.toLowerCase()
       ? instance
       : undefined;

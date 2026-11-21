@@ -84,6 +84,7 @@ import {
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import type { DeleteContext } from '../../../src/provisioning/region-check.js';
 import { stateOrphanRecordRemedy } from '../../../src/provisioning/state-orphan-remedy.js';
+import { deniedIdentityReadRefusal } from '../../../src/provisioning/identity-read-denied.js';
 
 type Command = { constructor: { name: string }; input: Record<string, unknown> };
 const names = (send: ReturnType<typeof vi.fn>): string[] =>
@@ -125,7 +126,7 @@ function expectDeniedRefusal(error: Error | undefined, permission: string): void
   expect(isMarkedNotGone(error)).toBe(true);
   expect(error!.message).toContain(`AWS refused the ${permission} read`);
   expect(error!.message).toContain('(AccessDeniedException)');
-  expect(error!.message).toContain(`Grant ${permission}`);
+  expect(error!.message).toContain(`Allow ${permission} for the identity running cdkd`);
   expect(error!.message).toContain('cdkd state orphan');
   expect(error!.message).not.toContain('123456789012');
   expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
@@ -712,3 +713,56 @@ describe('AWS::ECR::Repository (go-to-k/cdkd#6665)', () => {
   });
 });
 
+describe('deniedIdentityReadRefusal (go-to-k/cdkd#6655)', () => {
+  const refuse = (name: string, status: number) =>
+    deniedIdentityReadRefusal(
+      Object.assign(new Error('x'), { name, $metadata: { httpStatusCode: status } }),
+      {
+        label: 'log group',
+        permission: 'logs:DescribeLogGroups',
+        resourceType: 'AWS::Logs::LogGroup',
+        logicalId: 'L',
+        physicalId: '/p',
+        context: undefined,
+      }
+    );
+
+  it.each([
+    ['AccessDenied', 403],
+    ['AccessDeniedException', 400],
+    ['UnauthorizedOperation', 403],
+    ['AuthorizationError', 403],
+    ['Forbidden', 403],
+  ])('%s (%i) is a missing permission: refused', (name, status) => {
+    expect(refuse(name, status)).toBeInstanceOf(RecordedIdentityError);
+  });
+
+  // Measured: RDS answers a wrong secret and a bad session token with 403.
+  it.each([
+    'ExpiredToken',
+    'ExpiredTokenException',
+    'RequestExpired',
+    'RequestTimeTooSkewed',
+    'SignatureDoesNotMatch',
+    'InvalidSignatureException',
+    'InvalidClientTokenId',
+    'UnrecognizedClientException',
+    'InvalidAccessKeyId',
+    'InvalidToken',
+    'IncompleteSignature',
+    'IncompleteSignatureException',
+    'MissingAuthenticationToken',
+    'MissingAuthenticationTokenException',
+    'AuthFailure',
+  ])('%s (403) is a credential or clock failure, not a missing permission: the normal path', (name) => {
+    expect(refuse(name, 403)).toBeUndefined();
+  });
+
+  it('names an allow, not a grant: an SCP or boundary can be what denies it', () => {
+    const message = refuse('AccessDenied', 403)!.message;
+    expect(message).toContain(
+      'Allow logs:DescribeLogGroups for the identity running cdkd (an IAM policy, permission boundary, SCP or VPC endpoint policy may deny it) and re-run'
+    );
+    expect(message).not.toContain('Grant ');
+  });
+});

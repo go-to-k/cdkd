@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { deniedIdentityReadRefusal } from '../../identity-read-denied.js';
 import { markNotGone } from '../../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
 import {
@@ -654,8 +655,9 @@ export async function deleteTableResource(
  * No usable `TableId` recorded (a legacy, masked or secret-reference value):
  * `undefined` with NO read, the by-name delete as before. A
  * `ResourceNotFoundException` propagates to the delete's idempotent
- * not-found path; any other failure propagates to the retry classifiers,
- * never to a by-name delete.
+ * not-found path; a denied read is the non-retryable
+ * `deniedIdentityReadRefusal`; any other failure propagates to the retry
+ * classifiers, never to a by-name delete.
  */
 export async function readRecordedTableIdentity(
   this: DynamoDBTableProvider,
@@ -665,7 +667,25 @@ export async function readRecordedTableIdentity(
   context: DeleteContext | undefined
 ): Promise<DescribeTableCommandOutput | undefined> {
   if (recordedIdentityId(resourceType, context) === undefined) return undefined;
-  let latest = await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+  const describe = async (): Promise<DescribeTableCommandOutput> => {
+    try {
+      return await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+    } catch (error) {
+      // go-to-k/cdkd#6655: a denied read refuses, non-retryably, naming the
+      // permission; every other failure keeps its path.
+      throw (
+        deniedIdentityReadRefusal(error, {
+          label: 'DynamoDB table',
+          permission: 'dynamodb:DescribeTable',
+          resourceType,
+          logicalId,
+          physicalId,
+          context,
+        }) ?? error
+      );
+    }
+  };
+  let latest = await describe();
   await assertRecordedIdentity({
     label: 'DynamoDB table',
     replacedBy: 'a restore from a backup or to a point in time under the same table name',
@@ -674,7 +694,7 @@ export async function readRecordedTableIdentity(
     physicalId,
     liveId: latest.Table?.TableId,
     reread: async () => {
-      latest = await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+      latest = await describe();
       return latest.Table?.TableId;
     },
     context,
