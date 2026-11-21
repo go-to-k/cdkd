@@ -128,6 +128,21 @@ describe('IAM role delete on a stack destroy (#6750)', () => {
     );
   });
 
+  it('caps the names after GetInstanceProfile, so a holder past the first five is still named', async () => {
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: profiles(['g1', 'g2', 'g3', 'g4', 'g5', 'held']),
+      GetInstanceProfileCommand: (input) => {
+        if (input['InstanceProfileName'] !== 'held') {
+          throw new NoSuchEntityException({ $metadata: {}, message: 'not found' });
+        }
+        return { InstanceProfile: { Roles: [{ RoleName: 'my-role' }] } };
+      },
+    });
+
+    expect(((await destroy()) as Error).message).toContain('instance profile(s) held, which');
+  });
+
   it('names only profiles both listings show', async () => {
     drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['own', 'kept'], ['kept']) });
 

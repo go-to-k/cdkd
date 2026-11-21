@@ -125,8 +125,8 @@ export async function deleteImpl(
               log.mask(
                 `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
                   `instance profile(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, ` +
-                  `which this destroy did not delete: they were created outside the stack, or ` +
-                  `retained by a DeletionPolicy. Matching CloudFormation (DeleteConflict), cdkd ` +
+                  `which this destroy did not delete (a profile created outside the stack, or ` +
+                  `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
                   `does not remove the role from them. If nothing still needs the role there, ` +
                   `remove it (aws iam remove-role-from-instance-profile --instance-profile-name ` +
                   `<profile> --role-name <role>) or delete the profile, then destroy again.`
@@ -198,16 +198,15 @@ async function listInstanceProfileNames(
   this: IAMRoleProvider,
   roleName: string
 ): Promise<{ names: string[]; truncated: boolean }> {
+  // One page (IAM's default of 100), every name on it: the cap applies after
+  // `GetInstanceProfile` has confirmed which ones still hold the role.
   const page = await this.iamClient.send(
     new ListInstanceProfilesForRoleCommand({ RoleName: roleName })
   );
   const names = (page.InstanceProfiles ?? [])
     .map((profile) => profile.InstanceProfileName)
     .filter((name): name is string => !!name);
-  return {
-    names: names.slice(0, HELD_NAME_LIMIT),
-    truncated: names.length > HELD_NAME_LIMIT || page.IsTruncated === true,
-  };
+  return { names, truncated: page.IsTruncated === true };
 }
 
 /**
@@ -239,7 +238,10 @@ async function confirmedInstanceProfiles(
       if (!(error instanceof NoSuchEntityException)) names.push(name);
     }
   }
-  return { names, truncated: second.truncated };
+  return {
+    names: names.slice(0, HELD_NAME_LIMIT),
+    truncated: names.length > HELD_NAME_LIMIT || second.truncated,
+  };
 }
 
 /**
