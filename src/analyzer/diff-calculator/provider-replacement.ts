@@ -54,6 +54,12 @@ interface ProviderReplacementEntry {
    */
   readonly properties: readonly string[];
   readonly plan: ProviderReplacementPlanner;
+  /**
+   * go-to-k/cdkd#6713: when `update()` deletes the old resource, for the
+   * plan's note (a reviewed early delete in
+   * `scripts/check-replaced-delete-deferral.ts`).
+   */
+  readonly oldDeleted: 'before-create' | 'during-deploy';
 }
 
 /**
@@ -77,11 +83,28 @@ export const PROVIDER_REPLACEMENT_PLANNERS: ReadonlyMap<string, ProviderReplacem
           'SubscriptionRoleArn',
         ],
         plan: snsSubscriptionReplacement,
+        // `replace()` unsubscribes before it subscribes again.
+        oldDeleted: 'before-create',
       },
     ],
-    ['AWS::Route53::RecordSet', { properties: ['Name'], plan: recordSetRenameReplacement }],
+    [
+      'AWS::Route53::RecordSet',
+      // One change batch deletes the old record and creates the new one.
+      { properties: ['Name'], plan: recordSetRenameReplacement, oldDeleted: 'during-deploy' },
+    ],
   ]
 );
+
+/**
+ * go-to-k/cdkd#6713: when a type's provider deletes the old resource in a
+ * `providerReplacement` update, or `undefined` for a type with no planner
+ * (the legacy-handle heal, which deletes nothing).
+ */
+export function providerReplacementOldDeleted(
+  resourceType: string
+): 'before-create' | 'during-deploy' | undefined {
+  return PROVIDER_REPLACEMENT_PLANNERS.get(resourceType)?.oldDeleted;
+}
 
 /**
  * go-to-k/cdkd#6509: why the resource's provider carries out this UPDATE by

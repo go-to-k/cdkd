@@ -49,3 +49,28 @@ export function earlyDeleteWhen(kind: 'before-create' | 'during-deploy'): string
     ? 'deleted the old resource before creating its replacement'
     : 'deleted the old resource before the deploy succeeded';
 }
+
+/**
+ * What the deploy's PLAN (`cdkd diff`, the `--require-approval` listing) can
+ * tell, before the deploy runs, about a replacement whose old copy goes before
+ * the deploy succeeds (go-to-k/cdkd#6713): the {@link earlyDeletedOld} verdict
+ * the rollback will reach, in the plan's tense. `'recreate'` is a
+ * `--recreate-via-*` target, deleted first unless its replacement takes
+ * another name, which only the deploy's name probe learns.
+ */
+export type PlannedEarlyDelete = 'before-create' | 'during-deploy' | 'recreate';
+
+/** The consequence, worded as the rollback words it, for the plan's lines. */
+export const PLANNED_EARLY_DELETE_CONSEQUENCE =
+  "a failed deploy's rollback does not restore what AWS held for it beyond its recorded properties";
+
+/** The plan's clause: when the deploy deletes the old resource, and what a rollback then lacks. */
+export function plannedEarlyDeleteNote(kind: PlannedEarlyDelete): string {
+  const when =
+    kind === 'during-deploy'
+      ? 'deletes the old resource before the deploy succeeds'
+      : kind === 'recreate'
+        ? 'deletes the old resource before creating its replacement (unless the replacement takes another name)'
+        : 'deletes the old resource before creating its replacement';
+  return `the deploy ${when}, so ${PLANNED_EARLY_DELETE_CONSEQUENCE}`;
+}
