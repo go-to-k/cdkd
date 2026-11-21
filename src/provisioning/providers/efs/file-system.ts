@@ -494,7 +494,7 @@ export async function deleteFileSystem(
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
     const step =
       replicationDeleted && isReplicationRefusal(error)
-        ? ' (cdkd deleted its replication configuration, and the teardown had not finished;' +
+        ? ' (its replication configuration was deleted, and the teardown had not finished;' +
           ' re-run destroy once it has)'
         : '';
     const thrown = this.wrapDeleteError(

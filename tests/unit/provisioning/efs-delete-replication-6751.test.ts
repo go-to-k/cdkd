@@ -151,7 +151,7 @@ describe('EFS FileSystem delete with a replication configuration (#6751)', () =>
 
     const error = await new EFSProvider().delete('Fs', FS, 'AWS::EFS::FileSystem').catch((e: unknown) => e);
 
-    expect(String(error)).toContain('cdkd deleted its replication configuration, and the teardown had not finished');
+    expect(String(error)).toContain('its replication configuration was deleted, and the teardown had not finished');
     expect(isDeleteStarted(error)).toBe(true);
     // The first refusal plus REPLICATION_TEARDOWN_WAIT.attempts retries.
     expect(names().filter((n) => n === 'DeleteFileSystemCommand')).toHaveLength(4);
