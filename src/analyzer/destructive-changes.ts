@@ -2,6 +2,12 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import { shouldRetainResource, type ResourceChange, type ResourceState } from '../types/state.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
 import { movedToHint, type MovedTo } from './refactor-hints.js';
+import { providerReplacementOldDeleted } from './diff-calculator/provider-replacement.js';
+import { isInlinePolicyType } from '../deployment/superseded-resources.js';
+import {
+  plannedEarlyDeleteNote,
+  type PlannedEarlyDelete,
+} from '../deployment/rollback-executor/early-deleted-old.js';
 
 /**
  * What a destructive change does to the existing physical resource. The same
@@ -23,6 +29,12 @@ export interface DestructiveChange {
   impact: DestructiveImpact;
   /** A removal a `cdkd refactor` would keep: where the resource reappears (go-to-k/cdkd#5203). */
   movedTo?: MovedTo;
+  /**
+   * go-to-k/cdkd#6713: a `WILL_REPLACE` whose old copy the deploy deletes
+   * before it succeeds, so a failed deploy's rollback re-creates it from its
+   * recorded properties only ({@link plannedEarlyDelete}).
+   */
+  earlyDelete?: PlannedEarlyDelete;
 }
 
 /** Not a physical resource, so removing or replacing it destroys nothing. */
@@ -78,12 +90,17 @@ export function findDestructiveChanges(
     // state.json is hand-editable: a non-string recorded path is ignored.
     const recorded = typeof record?.constructPath === 'string' ? record.constructPath : undefined;
     const constructPath = constructPathOf(template, change.logicalId) ?? recorded;
+    const earlyDelete =
+      impact === 'WILL_REPLACE'
+        ? plannedEarlyDelete(change, resourceType, template, recreateTargets)
+        : undefined;
     found.push({
       stackName,
       logicalId: change.logicalId,
       resourceType,
       ...(constructPath !== undefined && { constructPath }),
       impact,
+      ...(earlyDelete !== undefined && { earlyDelete }),
     });
   }
   return found;
@@ -118,6 +135,46 @@ function destructiveImpactOf(
     default:
       return undefined;
   }
+}
+
+/**
+ * go-to-k/cdkd#6713: whether this replacement deletes the old copy before the
+ * deploy succeeds, as far as the plan can tell from the template, the state
+ * and the flags; it reads nothing from AWS. It notes the replacements
+ * `earlyDeletedOld`, the rollback's verdict, will report, and may name the
+ * order more exactly: an SNS subscription's journal records no order, so the
+ * rollback says `during-deploy` where the plan knows `before-create`.
+ *
+ *
+ * - a `--recreate-via-*` target is destroyed, then created, unless the
+ *   template keeps it (`UpdateReplacePolicy: Retain`);
+ * - a provider replacement (`providerReplacement`: an SNS subscription, a
+ *   renamed Route 53 record set) is re-created inside `update()`;
+ * - an IAM inline policy never is noted: its record restores it whole.
+ *
+ * A create-first replacement waits for the cleanup phase. What the plan
+ * cannot see is left out: a new resource that takes the old one's physical
+ * id and type (only its create returns the id), the fallback after an update
+ * AWS rejects, and `--replace`'s delete-first after a name collision.
+ */
+function plannedEarlyDelete(
+  change: ResourceChange,
+  oldType: string,
+  template: CloudFormationTemplate | undefined,
+  recreateTargets: ReadonlySet<string>
+): PlannedEarlyDelete | undefined {
+  if (isInlinePolicyType(oldType)) return undefined;
+  if (change.changeType !== 'UPDATE') return undefined;
+  if (recreateTargets.has(change.logicalId)) {
+    const resources = template?.Resources;
+    const policy =
+      resources !== undefined && Object.hasOwn(resources, change.logicalId)
+        ? resources[change.logicalId]?.UpdateReplacePolicy
+        : undefined;
+    return policy === 'Retain' ? undefined : 'recreate';
+  }
+  if (change.providerReplacement === undefined || oldType !== change.resourceType) return undefined;
+  return providerReplacementOldDeleted(change.resourceType);
 }
 
 /** The template resource's `aws:cdk:path` metadata, if it declares one. */
@@ -156,6 +213,7 @@ export function formatDestructiveChange(change: DestructiveChange): string {
   return (
     `${displayIdent(change.stackName)}: ${displaySafe(change.resourceType)} ${path}` +
     `${displayIdent(change.logicalId)} ${describeDestructiveImpact(change.impact)}` +
+    (change.earlyDelete !== undefined ? ` — ${plannedEarlyDeleteNote(change.earlyDelete)}` : '') +
     (change.movedTo !== undefined ? movedToHint(change.movedTo) : '')
   );
 }

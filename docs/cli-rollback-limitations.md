@@ -55,6 +55,22 @@ output and the `cdkd rollback` plan say that what AWS held for the old
 resource beyond its recorded properties, such as queued messages or
 subscriptions made outside the stack, does not come back.
 
+The deploy's plan names the cases it can predict before anything runs:
+`cdkd diff` and the `cdkd deploy --require-approval` listing end the
+replacement's line with when the old resource is deleted and that a failed
+deploy's rollback does not restore what AWS held for it beyond its recorded
+properties. That covers the SNS subscription, the Route 53 record set whose
+name changes, and the `--recreate-via-*` flags (in the approval prompt; a
+target whose replacement takes another name is created first, so its note
+says "unless"). The others are decided during the deploy, so the plan cannot
+name them: an update AWS rejects, a new resource that turns out to hold the
+old one's physical ID and type, and `--replace` after a name collision. A
+Route 53 record set whose type changes is shown as an update, as CloudFormation
+shows it, so it gets no note, although the record gets a new ID and the
+rollback output says it is re-created. A set identifier change and a security
+group ingress rule keep their ID and are reverted in place. An inline policy
+loses nothing, so it gets no note.
+
 > [!WARNING]
 > For a type that holds data (DynamoDB, RDS, S3 and so on), an old resource
 > that was deleted right away, or first, lost its data. The rollback does not

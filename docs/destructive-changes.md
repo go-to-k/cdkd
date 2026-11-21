@@ -49,6 +49,11 @@ MyStack: AWS::DynamoDB::Table MyTable MyTable794EDED1 will be orphaned
 
 Nested stacks are always checked. `AWS::CDK::Metadata` is never reported.
 
+A replacement that deletes the old resource before the deploy succeeds says
+so on its line, since a failed deploy's rollback cannot bring back what the
+old resource held:
+[`--fail-on=destructive`](cli-diff.md#destructive) lists the cases.
+
 ## Fail a CI check: `cdkd diff --fail-on=destructive`
 
 Run the diff as a pull-request check. It prints the full diff, lists the

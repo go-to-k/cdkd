@@ -14,6 +14,8 @@ import { SDK_MIGRATION_TOKEN } from './routes.js';
 import { nodeHasChanges, unreadableCount } from './tree.js';
 import { outputNameRow } from './json.js';
 import { LEGACY_HANDLE_HEAL_REASON } from '../../../analyzer/diff-calculator/legacy-handle-heal.js';
+import { providerReplacementOldDeleted } from '../../../analyzer/diff-calculator/provider-replacement.js';
+import { PLANNED_EARLY_DELETE_CONSEQUENCE } from '../../../deployment/rollback-executor/early-deleted-old.js';
 
 /** The name the human preview prints for each {@link UnreadableContainer}. */
 const UNREADABLE_CONTAINER_NAMES: Record<UnreadableContainer, string> = {
@@ -214,9 +216,15 @@ export function renderChangeLines(
           // go-to-k/cdkd#6704: nothing exists behind the placeholder to delete.
           logFn(`      [new physical id: ${LEGACY_HANDLE_HEAL_REASON}]`);
         } else if (change.providerReplacement !== undefined) {
+          // go-to-k/cdkd#6713: the old resource goes before the deploy
+          // succeeds, so say what a failed deploy's rollback lacks. The
+          // template type is the record's here: `providerReplacementReason`
+          // marks no record of another type, as `plannedEarlyDelete` checks.
+          const early = providerReplacementOldDeleted(change.resourceType);
           logFn(
             `      [requires replacement: ${stripForDisplay(change.providerReplacement)}; ` +
-              `deleted, then created again]`
+              `deleted, then created again]` +
+              (early !== undefined ? ` — ${PLANNED_EARLY_DELETE_CONSEQUENCE}` : '')
           );
         }
         if (change.propertyChanges && change.propertyChanges.length > 0) {
