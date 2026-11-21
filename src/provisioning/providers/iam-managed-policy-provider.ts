@@ -18,6 +18,7 @@ import {
 } from '@aws-sdk/client-iam';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
+import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../own-write-removals.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
@@ -56,8 +57,31 @@ import {
   managedPolicyAttributes,
 } from './iam-managed-policy/shared.js';
 import { policyIdentityToken } from './iam-managed-policy/shared.js';
+import {
+  assertInlinePolicyAttachTargets,
+  MANAGED_POLICY_OWNER,
+  verifyInlinePolicyPrincipals,
+} from './iam-policy/principal-identity.js';
+import { injectiveKey } from '../../state/record-keys.js';
+import type { InlinePolicyPrincipalKind } from '../../types/resource.js';
 
 const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
+
+/** A managed policy's `Groups` / `Roles` / `Users` (each absent when not set). */
+type PrincipalLists = Readonly<
+  Partial<Record<'Groups' | 'Roles' | 'Users', readonly string[] | undefined>>
+>;
+
+/** Each listed principal as `[kind, name]`, the order `updatePrincipals` writes. */
+function principalPairs(
+  lists: PrincipalLists
+): Array<readonly [InlinePolicyPrincipalKind, string]> {
+  return [
+    ...(lists.Groups ?? []).map((n) => ['group', n] as const),
+    ...(lists.Roles ?? []).map((n) => ['role', n] as const),
+    ...(lists.Users ?? []).map((n) => ['user', n] as const),
+  ];
+}
 
 /**
  * A CUSTOMER-managed policy ARN, the physical id this provider records:
@@ -348,6 +372,78 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
 
   // ── helpers ───────────────────────────────────────────────────────
 
+  /**
+   * go-to-k/cdkd#6722: an attach addresses the principal by name, so each
+   * in-stack principal with a recorded identity id that this deploy did not
+   * itself create or replace is read and compared; a holder with another id
+   * refuses (non-retryable) with nothing written. Called by `create()` before
+   * `CreatePolicy`.
+   */
+  async assertAttachTargets(
+    logicalId: string,
+    physicalId: string,
+    lists: PrincipalLists
+  ): Promise<void> {
+    await assertInlinePolicyAttachTargets({
+      client: this.iamClient,
+      principals: principalPairs(lists),
+      policyLogicalId: logicalId,
+      physicalId,
+      owner: MANAGED_POLICY_OWNER,
+    });
+  }
+
+  /**
+   * go-to-k/cdkd#6722: the attach and detach `updatePrincipals` will send, both
+   * by name, compared first; called by `update()` before any write. An ADDED
+   * principal held by another id refuses the update (see
+   * {@link assertAttachTargets}); a LEAVING one is warned about and returned,
+   * for `updatePrincipals` to send it no detach, as an inline policy's leaving
+   * principal is (go-to-k/cdkd#6655). A rollback replaying an update backwards
+   * re-adds what the forward update removed, so a principal it skipped as a
+   * mismatch is refused here.
+   */
+  async comparePrincipalChanges(
+    logicalId: string,
+    policyArn: string,
+    desired: PrincipalLists,
+    recorded: PrincipalLists,
+    log: MaskedLogSinks
+  ): Promise<ReadonlySet<string>> {
+    const added = principalPairs(desired).filter(
+      ([kind, name]) => !principalPairs(recorded).some(([k, n]) => k === kind && n === name)
+    );
+    const leaving = principalPairs(recorded).filter(
+      ([kind, name]) => !principalPairs(desired).some(([k, n]) => k === kind && n === name)
+    );
+    const verdicts = await verifyInlinePolicyPrincipals({
+      client: this.iamClient,
+      principals: leaving,
+      policyLogicalId: logicalId,
+      physicalId: policyArn,
+      operation: 'update',
+      owner: MANAGED_POLICY_OWNER,
+    });
+    await assertInlinePolicyAttachTargets({
+      client: this.iamClient,
+      principals: added,
+      policyLogicalId: logicalId,
+      physicalId: policyArn,
+      owner: MANAGED_POLICY_OWNER,
+    });
+    const strangers = new Set<string>();
+    for (const [key, verdict] of verdicts) {
+      if (verdict.kind !== 'mismatch') continue;
+      strangers.add(key);
+      log.warn(
+        `IAM managed policy ${logicalId}: the ${verdict.label} ${verdict.principalLogicalId} ` +
+          `leaving its principals is not the one cdkd created (its ${verdict.attribute} differs ` +
+          `from the recorded one), so cdkd sent it no detach. Leave that ${verdict.label} alone.`
+      );
+    }
+    return strangers;
+  }
+
   async attachToPrincipals(
     policyArn: string,
     groups: string[] | undefined,
@@ -390,11 +486,25 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     oldRoles: string[] | undefined,
     newUsers: string[] | undefined,
     oldUsers: string[] | undefined,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    /**
+     * go-to-k/cdkd#6722: the leaving principals {@link comparePrincipalChanges}
+     * found held by another id (`injectiveKey(kind, name)`), sent no detach.
+     */
+    strangers: ReadonlySet<string> = new Set()
   ): Promise<void> {
     const { value: v } = log;
+    // go-to-k/cdkd#6609: each detach is noted once its call succeeds (a
+    // tolerated "not found" included), so the capture right after waits for
+    // it (`own-write-removals.ts`); a note an earlier update that threw left
+    // behind is dropped first. Only this method notes for the type.
+    clearOwnWriteRemovals(MANAGED_POLICY_TYPE, policyArn);
     const newGroupSet = new Set(newGroups || []);
     const oldGroupSet = new Set(oldGroups || []);
+    const newRoleSet = new Set(newRoles || []);
+    const oldRoleSet = new Set(oldRoles || []);
+    const newUserSet = new Set(newUsers || []);
+    const oldUserSet = new Set(oldUsers || []);
     for (const g of newGroupSet) {
       if (!oldGroupSet.has(g)) {
         await this.iamClient.send(
@@ -405,6 +515,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     }
     for (const g of oldGroupSet) {
       if (!newGroupSet.has(g)) {
+        if (strangers.has(injectiveKey('group', g))) continue;
         try {
           await this.iamClient.send(
             new DetachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
@@ -413,11 +524,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
+        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Groups', g);
       }
     }
 
-    const newRoleSet = new Set(newRoles || []);
-    const oldRoleSet = new Set(oldRoles || []);
     for (const r of newRoleSet) {
       if (!oldRoleSet.has(r)) {
         await this.iamClient.send(
@@ -428,6 +538,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     }
     for (const r of oldRoleSet) {
       if (!newRoleSet.has(r)) {
+        if (strangers.has(injectiveKey('role', r))) continue;
         try {
           await this.iamClient.send(
             new DetachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn })
@@ -436,11 +547,10 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
+        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Roles', r);
       }
     }
 
-    const newUserSet = new Set(newUsers || []);
-    const oldUserSet = new Set(oldUsers || []);
     for (const u of newUserSet) {
       if (!oldUserSet.has(u)) {
         await this.iamClient.send(
@@ -451,6 +561,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     }
     for (const u of oldUserSet) {
       if (!newUserSet.has(u)) {
+        if (strangers.has(injectiveKey('user', u))) continue;
         try {
           await this.iamClient.send(
             new DetachUserPolicyCommand({ UserName: u, PolicyArn: policyArn })
@@ -459,6 +570,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
         } catch (err) {
           if (!(err instanceof NoSuchEntityException)) throw err;
         }
+        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Users', u);
       }
     }
   }

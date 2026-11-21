@@ -610,6 +610,8 @@ export async function buildResolvedParametersPerStack(args: {
       stackName: parentNode.cdkdName,
       // go-to-k/cdkd#6170: the tail the deploy resolved the parent's row with.
       stackIdTail: () => stackIdTailOf(parentNode.state, parentNode.cdkdName),
+      // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+      stackIdOverride: () => parentNode.state?.signalReceiverStackId,
       ...(args.stateBackend && { stateBackend: args.stateBackend }),
     };
     const { params, intrinsicSkipped } = await resolveChildImportParameters(

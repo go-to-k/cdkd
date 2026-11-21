@@ -41,6 +41,9 @@ const CFN_EXPOSES: Readonly<Record<string, readonly [string, boolean]>> = {
   'AWS::IAM::User': ['UserId', false],
   'AWS::IAM::Group': ['GroupId', false],
   'AWS::IAM::InstanceProfile': ['InstanceProfileId', false],
+  'AWS::Logs::LogGroup': ['LogGroupIdentity', false],
+  'AWS::StepFunctions::StateMachine': ['CreationDate', false],
+  'AWS::ECR::Repository': ['CreatedAt', false],
 };
 
 const resolveAttr = (

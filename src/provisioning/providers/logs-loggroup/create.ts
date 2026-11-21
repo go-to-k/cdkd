@@ -327,14 +327,11 @@ export async function create(
 
     this.logger.debug(`Successfully created log group ${logicalId}: ${logGroupName}`);
 
-    // Construct ARN from region/account
-    const arn = await this.buildArn(logGroupName);
-
+    // `Arn` and (go-to-k/cdkd#6665) the `LogGroupIdentity` a later delete
+    // compares, from one `DescribeLogGroups`.
     return {
       physicalId: logGroupName,
-      attributes: {
-        Arn: arn,
-      },
+      attributes: await this.createdAttributes(logGroupName),
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;

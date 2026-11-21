@@ -112,7 +112,10 @@ deploy will treat that property.
   set is replaced this way when its `Name` changes: the old record is deleted
   and the new one created in one change batch. A `Type` or `SetIdentifier`
   change uses the same batch but is shown as an update, as CloudFormation
-  shows it, since the name keeps resolving throughout.
+  shows it, since the name keeps resolving throughout. Since the old resource
+  is gone before the deploy succeeds, the line ends `— a failed deploy's
+  rollback does not restore what AWS held for it beyond its recorded
+  properties`.
 - `(known after deploy)`: the new value refers to a resource this deploy will
   create, so the value does not exist yet.
 - `[metadata only, no AWS API call]`: a `DeletionPolicy` or
@@ -268,6 +271,7 @@ Running the diff again does not clear exit `3`. One of these has to be fixed:
 | Condition | What to do |
 | --- | --- |
 | A resource to adopt from a rollback is claimed by another cdkd stack | Remove it from the stack that should not own it. |
+| The resource holding the name of one to adopt from a rollback is not the one cdkd created | Adopt it with `cdkd import` if it belongs in this stack; otherwise free the name. |
 | Part of the state record cannot be read | Repair the state record. |
 | The record of a resource to adopt from a rollback is damaged | Repair the state record. |
 | A resource's `Type` changes to or from `AWS::CloudFormation::Stack` | Give the new resource a different logical ID, or remove it in one deploy and add the replacement in the next. |
@@ -418,6 +422,22 @@ ID, and the impact. The impact is one of:
 
 An orphaned resource stays in AWS, and cdkd stops managing it. `may be
 replaced` fails the check too. `AWS::CDK::Metadata` is never reported.
+
+A replacement that deletes the old resource before the deploy succeeds adds
+when it does so, and that a failed deploy's rollback does not restore what AWS
+held for the old resource beyond its recorded properties:
+
+```text
+MyStack: AWS::SNS::Subscription Sub SubF2C4E4F8 will be replaced — the deploy deletes the old resource before creating its replacement, so a failed deploy's rollback does not restore what AWS held for it beyond its recorded properties
+```
+
+The diff notes an SNS subscription or a renamed Route 53 record set its
+provider re-creates; the `cdkd deploy` approval prompt notes a
+`--recreate-via-*` target too. Every other replacement creates the new
+resource first and deletes the old one after the deploy succeeds. The cases
+only the deploy can see are not noted:
+[Reversing a replacement](cli-rollback-limitations.md#reversing-a-replacement)
+lists them.
 
 The construct path of a removed resource comes from state, where the last
 deploy recorded it. Older cdkd releases did not record paths. A stack one of

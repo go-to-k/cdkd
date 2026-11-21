@@ -500,6 +500,11 @@
       "scenarios": []
     },
     {
+      "name": "asg-rolling-signals",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "asg-update-policy",
       "annotated": false,
       "scenarios": []
@@ -865,12 +870,22 @@
       ]
     },
     {
+      "name": "connect-instance",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "context-test",
       "annotated": true,
       "scenarios": []
     },
     {
       "name": "created-before-failure-revert",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "creation-policy-cfn-init",
       "annotated": false,
       "scenarios": []
     },
@@ -2707,6 +2722,11 @@
       "scenarios": []
     },
     {
+      "name": "replaced-queue-topic-failed-rollback",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "replacement-fanout",
       "annotated": true,
       "scenarios": [
@@ -4157,6 +4177,7 @@
     "appconfig",
     "appconfig-environment-delete-protection",
     "asg-destroy-running-instances",
+    "asg-rolling-signals",
     "asg-update-policy",
     "athena-workgroup-update",
     "aws-custom-resource",
@@ -4200,7 +4221,9 @@
     "cognito-remove-protection-temp-password",
     "cognito-schema-rollback",
     "cognito-userpool-user-ref",
+    "connect-instance",
     "created-before-failure-revert",
+    "creation-policy-cfn-init",
     "cross-backend-same-stack",
     "cross-backend-same-stack-migration",
     "cross-region-concurrent-stacks",
@@ -4386,6 +4409,7 @@
     "replace-snapshot-failed-rollback",
     "replace-squatter-refusal",
     "replaced-delete-failed-rollback",
+    "replaced-queue-topic-failed-rollback",
     "replacement-immutable-name",
     "replacement-rename-onto-holder",
     "require-approval-broadening",

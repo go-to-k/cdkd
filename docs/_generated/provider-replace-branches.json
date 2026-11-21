@@ -1,7 +1,7 @@
 {
   "summary": {
-    "sites": 17,
-    "types": 9,
+    "sites": 19,
+    "types": 10,
     "triggers": 88,
     "replacement": 66,
     "conditional": 3,
@@ -9,7 +9,7 @@
     "exempt": 8,
     "gap": 0,
     "underived": 0,
-    "disposed": 3
+    "disposed": 5
   },
   "sites": [
     {
@@ -118,6 +118,34 @@
           "via": "rule"
         }
       ],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::CloudFormation::WaitConditionHandle src/provisioning/providers/wait-condition-handle-provider.ts:update own-create#1",
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "className": "WaitConditionHandleProvider",
+      "file": "src/provisioning/providers/wait-condition-handle-provider.ts",
+      "function": "update",
+      "signal": "own-create",
+      "disposition": {
+        "kind": "no-template-trigger",
+        "rationale": "only a recorded pre-#6694 placeholder id re-issues the handle (#6704); the type has no properties, and the diff marks that row itself (`providerReplacement`, legacy-handle-heal.ts)"
+      },
+      "triggers": [],
+      "status": "ok"
+    },
+    {
+      "key": "AWS::CloudFormation::WaitConditionHandle src/provisioning/providers/wait-condition-handle-provider.ts:update was-replaced#1",
+      "resourceType": "AWS::CloudFormation::WaitConditionHandle",
+      "className": "WaitConditionHandleProvider",
+      "file": "src/provisioning/providers/wait-condition-handle-provider.ts",
+      "function": "update",
+      "signal": "was-replaced",
+      "disposition": {
+        "kind": "no-template-trigger",
+        "rationale": "the answer of the placeholder re-issue above"
+      },
+      "triggers": [],
       "status": "ok"
     },
     {

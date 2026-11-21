@@ -574,6 +574,23 @@ describe('reverse replacement of an old resource that may survive (#2631)', () =
     expect(infos.join('\n')).toContain('the old resource of Topic (topic-old) is gone — re-creating it');
   });
 
+  // go-to-k/cdkd#6713: an `'unconfirmed'` delete was sent by the deploy, so a
+  // gone old resource is one the deploy deleted; a `'kept'` one was not sent.
+  it.each([
+    ['unconfirmed' as const, 1],
+    ['kept' as const, 0],
+  ])('a %s old resource found gone: the early-delete advisory lines %d', async (verdict, n) => {
+    live.delete('topic-old');
+    const result = await replayRollback([op({ oldResourceMaySurvive: verdict })], state(), 'S', ctx);
+    expect(provider.create).toHaveBeenCalledTimes(1);
+    expect(
+      warns.filter((m) =>
+        m.includes('the deploy deleted the old resource before the deploy succeeded')
+      )
+    ).toHaveLength(n);
+    expect(result.warnings).toBe(0);
+  });
+
   it('sends no read for an op without the flag (an ordinary reverse replacement)', async () => {
     const s = state();
     await replayRollback([op({ oldResourceMaySurvive: undefined })], s, 'S', ctx);

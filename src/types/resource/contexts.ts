@@ -288,6 +288,16 @@ export interface UpdateContext extends SecretMaskingContext {
   updatePolicy?: Readonly<Record<string, unknown>> | undefined;
 
   /**
+   * go-to-k/cdkd#6706: an `AutoScalingRollingUpdate` with
+   * `WaitOnResourceSignals` the stack's CloudFormation signal receiver waits
+   * on. A provider running the rolling update asks {@link
+   * RollingSignalWatch.failure} while it polls (a `FAILURE` signal stops the
+   * update) and {@link RollingSignalWatch.awaitAll} once it finished. Absent:
+   * no signals are waited for.
+   */
+  rollingSignals?: RollingSignalWatch | undefined;
+
+  /**
    * Region recorded in the stack state for the resource being updated
    * (`StackState.region`), issue #2301 item 1.
    *
@@ -628,4 +638,17 @@ export interface CreateContext extends SecretMaskingContext {
    * ABSENT means not known, and the payload keeps the pre-#6309 rule.
    */
   typedPayloadLeaves?: readonly (readonly (string | number)[])[] | undefined;
+}
+
+/** {@link UpdateContext.rollingSignals}. */
+export interface RollingSignalWatch {
+  /**
+   * Arm the wait for `count` signals, right before the refresh starts.
+   * `false` when the receiver cannot take it (busy, refused): no wait then.
+   */
+  arm(count: number): Promise<boolean>;
+  /** Why the signals failed so far (a `FAILURE` signal), or `undefined`. */
+  failure(): Promise<string | undefined>;
+  /** Resolve once every replaced instance signalled; throw on a failure or after `withinMs`. */
+  awaitAll(withinMs: number): Promise<void>;
 }

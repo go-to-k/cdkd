@@ -159,6 +159,22 @@ export const BRANCH_DISPOSITIONS: ReadonlyMap<string, BranchDisposition> = new M
     },
   ],
   [
+    'AWS::CloudFormation::WaitConditionHandle src/provisioning/providers/wait-condition-handle-provider.ts:update own-create#1',
+    {
+      kind: 'no-template-trigger',
+      rationale:
+        'only a recorded pre-#6694 placeholder id re-issues the handle (#6704); the type has no ' +
+        'properties, and the diff marks that row itself (`providerReplacement`, legacy-handle-heal.ts)',
+    },
+  ],
+  [
+    'AWS::CloudFormation::WaitConditionHandle src/provisioning/providers/wait-condition-handle-provider.ts:update was-replaced#1',
+    {
+      kind: 'no-template-trigger',
+      rationale: 'the answer of the placeholder re-issue above',
+    },
+  ],
+  [
     'AWS::Lambda::Permission src/provisioning/providers/lambda-permission-provider.ts:update own-create#1',
     {
       kind: 'every-property',

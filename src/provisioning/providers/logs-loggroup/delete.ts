@@ -18,6 +18,13 @@ import {
   type ProtectionFlipRecord,
 } from '../deletion-protection-compensation.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import {
+  assertRecordedIdentity,
+  recordedIdentityId,
+  RecordedIdentityError,
+} from '../../recorded-identity.js';
+import { logGroupIdentityToken, type LogGroupIdentityRead } from './shared.js';
+import { deniedIdentityReadRefusal } from '../../identity-read-denied.js';
 
 /**
  * Delete a CloudWatch Logs log group.
@@ -65,6 +72,58 @@ export async function deleteOnce(
 ): Promise<void> {
   this.logger.debug(`Deleting log group ${logicalId}: ${physicalId}`);
 
+  // go-to-k/cdkd#6665: a record holding a `LogGroupIdentity` refuses a holder
+  // of the name created at another time, before any write (the protection
+  // flip included). One `DescribeLogGroups`, made only for such a record,
+  // whose listing the `--remove-protection` observe below reuses. Not listed:
+  // no holder to compare at read time, so the by-name delete goes on and only
+  // its typed not-found says gone (a listing that lags must not drop the
+  // record of a live group). A denied read refuses, non-retryably. No identity
+  // recorded (a record written before cdkd recorded one): no read, the by-name
+  // delete.
+  let identityRead: LogGroupIdentityRead | undefined;
+  if (recordedIdentityId(resourceType, context) !== undefined) {
+    const read = async () => {
+      identityRead = await this.readIdentityIfExists(physicalId);
+      return identityRead;
+    };
+    try {
+      const first = await read();
+      if (first !== undefined) {
+        await assertRecordedIdentity({
+          label: 'log group',
+          resourceType,
+          logicalId,
+          physicalId,
+          liveId: logGroupIdentityToken(first),
+          // A re-read that no longer lists it answers no id: refused, re-run.
+          reread: async () => {
+            const again = await read();
+            return again === undefined ? undefined : logGroupIdentityToken(again);
+          },
+          context,
+          // The common benign holder: AWS services (Lambda, API Gateway, ECS,
+          // ...) create the group again under its fixed name when they write
+          // to it after it was deleted.
+          recreatedBy: 'for example Lambda writing to its /aws/lambda/<function> group',
+        });
+      }
+    } catch (error) {
+      // The identity refusals: already worded (no AWS text) and marked.
+      if (error instanceof RecordedIdentityError) throw error;
+      throw (
+        deniedIdentityReadRefusal(error, {
+          label: 'log group',
+          permission: 'logs:DescribeLogGroups',
+          resourceType,
+          logicalId,
+          physicalId,
+          context,
+        }) ?? this.wrapDeleteError(logicalId, physicalId, resourceType, context, error)
+      );
+    }
+  }
+
   // `--remove-protection`: flip DeletionProtectionEnabled off before
   // delete. Idempotent — AWS accepts the call when protection is
   // already disabled. Non-fatal: log at debug if the flip-off itself
@@ -80,6 +139,7 @@ export async function deleteOnce(
         mask: context?.maskSecrets,
         guardName: 'DeletionProtectionEnabled',
         observe: async () => {
+          if (identityRead !== undefined) return identityRead.deletionProtectionEnabled;
           const resp = await this.logsClient.send(
             new DescribeLogGroupsCommand({ logGroupNamePrefix: physicalId })
           );
@@ -122,24 +182,38 @@ export async function deleteOnce(
       this.logGoneOnDelete(logicalId, physicalId, context);
       return;
     }
-    const cause = error instanceof Error ? error : undefined;
-    const thrown = this.wrapCaughtError(
-      maskerOrIdentity(context?.maskSecrets),
-      error,
-      (text) =>
-        new ProvisioningError(
-          `Failed to delete log group ${logicalId}: ${text}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
-        )
-    );
-    // The wrap names an AWS failure by its CLASS, which the delete classifiers
-    // read as "already deleted" on a `NotFound` needle: only the typed
-    // not-found above means this one is gone (go-to-k/cdkd#2319).
-    throw error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+    throw this.wrapDeleteError(logicalId, physicalId, resourceType, context, error);
   }
+}
+
+/**
+ * The delete's failure wrap, for `DeleteLogGroup` and (go-to-k/cdkd#6665) the
+ * identity read before it. The wrap names an AWS failure by its CLASS, which
+ * the delete classifiers read as "already deleted" on a `NotFound` needle:
+ * only the typed not-found means this one is gone (go-to-k/cdkd#2319).
+ */
+export function wrapDeleteError(
+  this: LogsLogGroupProvider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  context: DeleteContext | undefined,
+  error: unknown
+): ProvisioningError {
+  const cause = error instanceof Error ? error : undefined;
+  const thrown = this.wrapCaughtError(
+    maskerOrIdentity(context?.maskSecrets),
+    error,
+    (text) =>
+      new ProvisioningError(
+        `Failed to delete log group ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      )
+  );
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
 }
 
 /**

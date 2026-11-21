@@ -28,6 +28,7 @@ import {
 } from './shared.js';
 import { warnUnsettledMember } from '../../settle-after-own-write.js';
 import { principalOwnWriteMembers, settleOwnWriteMembers } from '../../settle-own-write-members.js';
+import { takeOwnWriteRemovals } from '../../own-write-removals.js';
 
 /**
  * go-to-k/cdkd#4606: whether the user or group a failed CREATE journaled is
@@ -211,6 +212,12 @@ export async function readUserCurrentState(
   context?: import('../../../types/resource.js').ReadCurrentStateContext,
   logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  // go-to-k/cdkd#6609: what the write removed, taken before the first await
+  // (`own-write-removals.ts`).
+  const removed =
+    context?.afterOwnWrite === true
+      ? takeOwnWriteRemovals('AWS::IAM::User', physicalId)
+      : undefined;
   let user;
   try {
     const resp = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
@@ -253,17 +260,21 @@ export async function readUserCurrentState(
   if (context?.afterOwnWrite === true && properties !== undefined) {
     await settleOwnWriteMembers(
       result,
-      principalOwnWriteMembers(properties, {
-        boundary: async () => {
-          const resp = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
-          return resp.User
-            ? { value: resp.User.PermissionsBoundary?.PermissionsBoundaryArn ?? '' }
-            : 'failed';
+      principalOwnWriteMembers(
+        properties,
+        {
+          boundary: async () => {
+            const resp = await this.iamClient.send(new GetUserCommand({ UserName: physicalId }));
+            return resp.User
+              ? { value: resp.User.PermissionsBoundary?.PermissionsBoundaryArn ?? '' }
+              : 'failed';
+          },
+          managedPolicyArns: async () => ({ value: await reads.managedPolicyArns() }),
+          groups: async () => ({ value: await reads.groups() }),
+          policies: async () => ({ value: await reads.policies() }),
         },
-        managedPolicyArns: async () => ({ value: await reads.managedPolicyArns() }),
-        groups: async () => ({ value: await reads.groups() }),
-        policies: async () => ({ value: await reads.policies() }),
-      }),
+        removed
+      ),
       this.ownWriteRereadDelaysMs,
       (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::User', key)
     );
@@ -332,6 +343,11 @@ export async function readGroupCurrentState(
   context?: import('../../../types/resource.js').ReadCurrentStateContext,
   logicalId = physicalId
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  // go-to-k/cdkd#6609: taken before the first await, as for a user.
+  const removed =
+    context?.afterOwnWrite === true
+      ? takeOwnWriteRemovals('AWS::IAM::Group', physicalId)
+      : undefined;
   let group;
   try {
     const resp = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
@@ -382,10 +398,14 @@ export async function readGroupCurrentState(
   if (context?.afterOwnWrite === true && properties !== undefined) {
     await settleOwnWriteMembers(
       result,
-      principalOwnWriteMembers(properties, {
-        managedPolicyArns: async () => ({ value: await managedPolicyArns() }),
-        policies: async () => ({ value: await policies() }),
-      }),
+      principalOwnWriteMembers(
+        properties,
+        {
+          managedPolicyArns: async () => ({ value: await managedPolicyArns() }),
+          policies: async () => ({ value: await policies() }),
+        },
+        removed
+      ),
       this.ownWriteRereadDelaysMs,
       (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::Group', key)
     );

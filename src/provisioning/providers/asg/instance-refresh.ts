@@ -1,3 +1,4 @@
+import type { RollingSignalWatch } from '../../../types/resource.js';
 import type { ASGProvider } from '../asg-provider.js';
 import {
   CancelInstanceRefreshCommand,
@@ -332,6 +333,13 @@ export interface InstanceRefreshRun {
   /** `Date.now()` when `update()` began: the wait's limit counts from there. */
   startedAt?: number | undefined;
   mask: MaskerFn;
+  /**
+   * go-to-k/cdkd#6706: `UpdateContext.rollingSignals` (a rolling update with
+   * `WaitOnResourceSignals` the stack's signal receiver serves). A `FAILURE`
+   * signal cancels the refresh; once it succeeded, every replaced instance's
+   * signal must arrive within the `PauseTime`.
+   */
+  rollingSignals?: RollingSignalWatch | undefined;
 }
 
 /**
@@ -379,6 +387,7 @@ export async function runInstanceRefresh(
   const ignored: string[] = [];
   let strategy: 'Rolling' | 'ReplaceRootVolume' = 'Rolling';
   let preferences: RefreshPreferences;
+  let signals: RollingSignalWatch | undefined;
   if (selection.kind === 'rolling') {
     const group = await describeQuietly(provider, physicalId, mask);
     if (group !== undefined && (group.Instances ?? []).length === 0 && !group.DesiredCapacity) {
@@ -411,13 +420,38 @@ export async function runInstanceRefresh(
     ) {
       preferences = { ...preferences, SkipMatching: true };
     }
-    if (
+    const waitsOnSignals =
       selection.policy['WaitOnResourceSignals'] === true ||
-      selection.policy['WaitOnResourceSignals'] === 'true'
+      selection.policy['WaitOnResourceSignals'] === 'true';
+    // go-to-k/cdkd#6706: arm the receiver only now, for a refresh about to
+    // start, with one signal per instance it replaces: the group's in-service
+    // instances not protected from scale-in (a rolling refresh leaves those),
+    // at most the desired capacity. A rollback revert waits for no signal.
+    if (waitsOnSignals && run.rollingSignals !== undefined && !run.replayingState) {
+      const replaced = Math.min(
+        desired,
+        (group?.Instances ?? []).filter(
+          (i) => i.LifecycleState === 'InService' && i.ProtectedFromScaleIn !== true
+        ).length
+      );
+      signals =
+        replaced > 0 && (await run.rollingSignals.arm(replaced)) ? run.rollingSignals : undefined;
+    }
+    if (
+      waitsOnSignals &&
+      signals === undefined &&
+      !run.replayingState &&
+      run.rollingSignals !== undefined
     ) {
       provider.logger.warn(
         mask(
-          `${logicalId}: UpdatePolicy AutoScalingRollingUpdate WaitOnResourceSignals is not honored; cdkd does not wait for cfn-signal success signals, and waits PauseTime after each new instance is in service instead.`
+          `${logicalId}: UpdatePolicy AutoScalingRollingUpdate WaitOnResourceSignals is not honored this time (the signal receiver could not take the wait, or no instance is in service); cdkd waits PauseTime after each new instance is in service instead.`
+        )
+      );
+    } else if (waitsOnSignals && signals === undefined && !run.replayingState) {
+      provider.logger.warn(
+        mask(
+          `${logicalId}: UpdatePolicy AutoScalingRollingUpdate WaitOnResourceSignals is not honored (no signed cfn-signal --resource for it reaches the stack's CloudFormation signal receiver; CDK: initOptions.includeRole: true); cdkd waits PauseTime after each new instance is in service instead.`
         )
       );
     }
@@ -557,7 +591,21 @@ export async function runInstanceRefresh(
       }
       if (read.status === 'Successful') {
         provider.logger.info(mask(`${logicalId}: instance refresh ${refreshId} succeeded.`));
+        if (signals !== undefined) {
+          try {
+            await signals.awaitAll((preferences.InstanceWarmup ?? 300) * 1000);
+          } catch (error) {
+            throw wrapRefreshError(
+              `the replaced instances' WaitOnResourceSignals signals: ${describeAwsFailure(error).detail}`
+            );
+          }
+        }
         return;
+      }
+      const signalFailure = await signals?.failure();
+      if (signalFailure !== undefined) {
+        await cancelIfActive(provider, logicalId, physicalId, refreshId, mask, true);
+        throw wrapRefreshError(`instance refresh ${refreshId} stopped: ${signalFailure}`);
       }
       if (read.status !== undefined && !ACTIVE_STATUSES.has(read.status)) {
         throw wrapRefreshError(

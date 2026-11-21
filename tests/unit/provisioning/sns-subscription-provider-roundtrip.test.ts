@@ -4,6 +4,7 @@ import {
   SubscribeCommand,
   UnsubscribeCommand,
   GetSubscriptionAttributesCommand,
+  ListSubscriptionsByTopicCommand,
 } from '@aws-sdk/client-sns';
 
 const mockSend = vi.fn();
@@ -67,6 +68,8 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
         SubscriptionArn: SUB_ARN_OLD,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN_OLD }] });
     const observed = (await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
 
     // Pre-condition: observed has no protocol-only keys.
@@ -132,6 +135,8 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
         SubscriptionArn: SUB_ARN_OLD,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN_OLD }] });
     const observed = await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE);
 
     expect(observed).not.toHaveProperty('RedrivePolicy');
@@ -194,6 +199,8 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
         SubscriptionArn: SUB_ARN_OLD,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN_OLD }] });
     const observed = (await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
     expect(observed).toEqual({
       TopicArn: TOPIC_ARN,
@@ -248,12 +255,15 @@ describe('SNSSubscriptionProvider read-update round-trip', () => {
         SubscriptionArn: SUB_ARN_OLD,
       },
     });
+    // go-to-k/cdkd#6711: the topic still lists the subscription.
+    mockSend.mockResolvedValueOnce({ Subscriptions: [{ SubscriptionArn: SUB_ARN_OLD }] });
     const observed = await provider.readCurrentState(SUB_ARN_OLD, 'L', RESOURCE_TYPE);
     expect(observed).toBeDefined();
     expect(JSON.parse(JSON.stringify(observed))).toEqual(observed);
 
-    // Sanity: GetSubscriptionAttributes was the only call.
-    expect(mockSend.mock.calls).toHaveLength(1);
+    // Sanity: GetSubscriptionAttributes, then the topic-membership read.
+    expect(mockSend.mock.calls).toHaveLength(2);
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetSubscriptionAttributesCommand);
+    expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListSubscriptionsByTopicCommand);
   });
 });

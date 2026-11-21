@@ -39,6 +39,8 @@ import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import { updateSgRuleDescription } from './sg-rule-description.js';
 import { refuseRevertRevokingSiblingRules, sgRuleDiffKey } from './sg-revert-guard.js';
 import type { EC2Provider } from '../ec2-provider.js';
+import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
+import { sgRemovalRuleKey } from '../../sg-own-write-rules.js';
 
 // ─── AWS::EC2::SecurityGroup ──────────────────────────────────────
 
@@ -292,6 +294,9 @@ export async function applyInlineEgress(
 
   // Revoke the AWS-default "allow all egress" rule so it does not coexist
   // with user-specified rules. Tolerate "not found" if the default is absent.
+  // go-to-k/cdkd#6609: noted once revoked, so the capture right after this
+  // create never records the allow-all rule as the group's baseline.
+  const defaultEgress = { IpProtocol: '-1', CidrIp: '0.0.0.0/0' };
   try {
     await this.ec2Client.send(
       new RevokeSecurityGroupEgressCommand({
@@ -304,10 +309,12 @@ export async function applyInlineEgress(
         ],
       })
     );
+    noteRevokedRule(groupId, defaultEgress, 'egress');
   } catch (error) {
     if (!this.isNotFoundError(error)) {
       throw error;
     }
+    noteRevokedRule(groupId, defaultEgress, 'egress');
   }
 
   if (egressRules.length === 0) return;
@@ -331,6 +338,8 @@ export async function updateSecurityGroup(
   this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
   // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
   refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+  // go-to-k/cdkd#6609: a note an earlier update that threw left behind.
+  clearOwnWriteRemovals(SECURITY_GROUP_TYPE, physicalId);
   // go-to-k/cdkd#6641: before any write, a revert that would revoke a rule a
   // standalone rule record of the stack holds by id refuses.
   if (context?.desiredFromAwsReadback === true && (context.siblingSgRuleIds?.size ?? 0) > 0) {
@@ -746,6 +755,41 @@ export function buildIpPermission(
   return permission;
 }
 
+const SECURITY_GROUP_TYPE = 'AWS::EC2::SecurityGroup';
+
+/**
+ * Note a rule this write revoked (go-to-k/cdkd#6609, `own-write-removals.ts`)
+ * by its removal key, so the capture right after waits for it to be gone. An
+ * ingress peer named by `SourceSecurityGroupName` alone reads back as the
+ * group id, which the declaration does not carry: the id is taken from the
+ * revoke's answer (`RevokedSecurityGroupRules[].ReferencedGroupId`, measured
+ * us-east-1 2026-11-21) when it names exactly one rule. A tolerated "not
+ * found" has no answer, so such a rule is then not noted (there was nothing
+ * to wait on).
+ */
+function noteRevokedRule(
+  groupId: string,
+  rule: Record<string, unknown>,
+  direction: 'ingress' | 'egress',
+  revoked?: ReadonlyArray<{ ReferencedGroupId?: string | undefined }>
+): void {
+  let key = sgRemovalRuleKey(rule, direction);
+  const referenced = revoked?.length === 1 ? revoked[0]?.ReferencedGroupId : undefined;
+  if (key === undefined && direction === 'ingress' && referenced !== undefined) {
+    key = sgRemovalRuleKey(
+      { ...rule, SourceSecurityGroupName: undefined, SourceSecurityGroupId: referenced },
+      direction
+    );
+  }
+  if (key === undefined) return;
+  recordOwnWriteRemoval(
+    SECURITY_GROUP_TYPE,
+    groupId,
+    direction === 'egress' ? 'SecurityGroupEgress' : 'SecurityGroupIngress',
+    key
+  );
+}
+
 /**
  * Compute the diff between two sets of SecurityGroup rule definitions
  * (ingress or egress) and apply the resulting authorize/revoke calls.
@@ -805,23 +849,24 @@ export async function applySecurityGroupRuleDiff(
       }
     }
     try {
-      if (direction === 'egress') {
-        await this.ec2Client.send(
-          new RevokeSecurityGroupEgressCommand({
-            GroupId: groupId,
-            IpPermissions: [this.buildIpPermission(rule, 'egress')],
-          })
-        );
-      } else {
-        await this.ec2Client.send(
-          new RevokeSecurityGroupIngressCommand({
-            GroupId: groupId,
-            IpPermissions: [this.buildIpPermission(rule, 'ingress', true)],
-          })
-        );
-      }
+      const response =
+        direction === 'egress'
+          ? await this.ec2Client.send(
+              new RevokeSecurityGroupEgressCommand({
+                GroupId: groupId,
+                IpPermissions: [this.buildIpPermission(rule, 'egress')],
+              })
+            )
+          : await this.ec2Client.send(
+              new RevokeSecurityGroupIngressCommand({
+                GroupId: groupId,
+                IpPermissions: [this.buildIpPermission(rule, 'ingress', true)],
+              })
+            );
+      noteRevokedRule(groupId, rule, direction, response?.RevokedSecurityGroupRules);
     } catch (error) {
       if (!this.isNotFoundError(error)) throw error;
+      noteRevokedRule(groupId, rule, direction);
     }
   }
 

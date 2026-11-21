@@ -33,6 +33,14 @@ import type {
 import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './shared.js';
 import { definedAttributes } from '../../attribute-map.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
+import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
+
+/**
+ * go-to-k/cdkd#6609: each removal an update makes is noted once its call
+ * succeeds (a tolerated "not found" included), so the capture right after
+ * waits for it (`own-write-removals.ts`).
+ */
+const GROUP_TYPE = 'AWS::IAM::Group';
 
 export async function createGroup(
   this: IAMUserGroupProvider,
@@ -223,6 +231,8 @@ export async function updateGroup(
 ): Promise<ResourceUpdateResult> {
   const { value: v } = log;
   log.debug(`Updating IAM group ${logicalId}: ${v(physicalId)}`);
+  // go-to-k/cdkd#6609: a note an earlier update that threw left behind.
+  clearOwnWriteRemovals(GROUP_TYPE, physicalId);
 
   try {
     // `Path` in place, as for a user (#3723).
@@ -492,6 +502,7 @@ export async function updateGroupManagedPolicies(
           PolicyArn: policyArn,
         })
       );
+      recordOwnWriteRemoval(GROUP_TYPE, groupName, 'ManagedPolicyArns', policyArn);
       log.debug(`Detached managed policy ${v(policyArn)} from group ${v(groupName)}`);
     }
   }
@@ -587,6 +598,7 @@ export async function updateGroupInlinePolicies(
           throw error;
         }
       }
+      recordOwnWriteRemoval(GROUP_TYPE, groupName, 'Policies', policyName);
     }
   }
 }

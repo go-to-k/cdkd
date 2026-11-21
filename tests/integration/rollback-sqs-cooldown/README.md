@@ -12,10 +12,13 @@ SQS enforces a ~60s same-name re-creation cooldown after `DeleteQueue`
 2. Redeploys with the queue renamed to `-queue-y` (create-only `QueueName` →
    replacement, `--force-stateful-recreation`) plus an injected
    deterministically-failing resource (out-of-range `MessageRetentionPeriod`),
-   under `--no-rollback` — the journal records the completed replacement and
-   the old name's cooldown starts at its delete.
+   under `--no-rollback` — the journal records the completed replacement. The
+   old `-queue-x` is kept (a replaced resource's delete waits for the rest of
+   the deploy to succeed, #6374 / #6445) and recorded in state as superseded;
+   the fixture asserts that, then deletes `-queue-x` itself, which starts its
+   cooldown and is the verdict on which the rollback re-creates it.
 3. Runs `cdkd rollback --force --verbose` immediately (< 60s): the
-   reverse-replacement's initial re-create must hit `QueueDeletedRecently`,
+   reverse-replacement sees `-queue-x` gone, and its initial re-create must hit `QueueDeletedRecently`,
    retry through the window (asserted via the `--verbose` retry lines),
    restore `-queue-x`, delete `-queue-y`, and exit 0.
 
@@ -26,8 +29,10 @@ Runtime is dominated by this one ~60s cooldown wait (~3-4 min total).
 1. A failing deploy WITHOUT `--no-rollback` triggers a clean automatic
    rollback; the journal must survive as `reason: auto-rollback-clean` /
    `operations: []` / `failedOperations: [FailingQueue]` (asserted via a raw
-   S3 read).
-2. The next deploy must print the `--revert-failed` note, and its own clean
+   S3 read). It warns that FailingQueue's failed CREATE recorded no physical id
+   instead of printing the "restored the pre-deploy state" guidance (#6204).
+2. The next deploy prints no `--revert-failed` note (#6204: the kept failed
+   CREATE has no physical id, so there is nothing to revert), and its own clean
    auto-rollback must preserve the older failed-only segment (PR #1216 — the
    journal then holds exactly 2 failed-only segments).
 3. `cdkd rollback --force --revert-failed` consumes it — the #1198

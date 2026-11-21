@@ -192,6 +192,8 @@ export async function resolveChildStackParameters(
         stackName: parentStackName,
         // go-to-k/cdkd#6170: the tail the deploy resolves the parent's row with.
         stackIdTail: () => stackIdTailOf(parentState, parentStackName),
+        // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+        stackIdOverride: () => parentState?.signalReceiverStackId,
         // Best-effort like computeStackDiff's resolver: an unresolvable
         // parameter is expected (caught + omitted below), not warn-worthy.
         bestEffort: true,

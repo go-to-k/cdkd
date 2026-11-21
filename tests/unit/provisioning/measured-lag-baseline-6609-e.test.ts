@@ -138,7 +138,7 @@ const sentOf = (fn: ReturnType<typeof vi.fn>, ctor: { name: string }): number =>
 const warnings = (): string[] => childLogger.warn.mock.calls.map(([m]) => String(m));
 
 const UNSETTLED_WARNING =
-  /^(\S+) (\S+): the read right after the write never showed the declared Tags, so its drift baseline may not match the live resource; run .*cdkd state refresh-observed.* on the stack to re-capture it$/;
+  /^(\S+) (\S+): the read right after the write never showed Tags as the write left it \(a declared value missing, or a removed one still present\), so its drift baseline may not match the live resource; run .*cdkd state refresh-observed.* on the stack to re-capture it$/;
 
 function expectOneValueFreeWarning(resourceType: string, logicalId: string): void {
   const all = warnings();

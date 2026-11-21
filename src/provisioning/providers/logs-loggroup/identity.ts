@@ -11,7 +11,16 @@ import {
   RESOURCE_NOT_FOUND,
 } from '../../../types/resource.js';
 import { ambientRegion } from '../../../utils/stack-aws-scope.js';
-import { LOG_GROUP_TYPE, isLogGroupName } from './shared.js';
+import { definedAttributes } from '../../attribute-map.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { safeMsg } from '../../../utils/display-safe.js';
+import {
+  LOG_GROUP_TYPE,
+  isLogGroupName,
+  listedCreationTime,
+  logGroupIdentityToken,
+  type LogGroupIdentityRead,
+} from './shared.js';
 
 // ─── Identity (go-to-k/cdkd#4606) ────────────────────────────────
 
@@ -82,8 +91,43 @@ export async function resourceIdentity(
   if (clientRegion !== context.expectedRegion) return undefined;
   const group = await this.readIdentityIfExists(physicalId);
   if (group === undefined) return RESOURCE_NOT_FOUND;
-  if (group.creationTime === undefined) return undefined;
-  return `${group.arn}@${group.creationTime}`;
+  return logGroupIdentityToken(group);
+}
+
+/**
+ * go-to-k/cdkd#6665: the attributes a create or an in-place update records,
+ * from ONE `DescribeLogGroups` of `name`: `Arn` as AWS lists it (the
+ * `logGroupArn` with the `:*` suffix CloudFormation's `Arn` carries) and
+ * `LogGroupIdentity` ({@link logGroupIdentityToken}). That read replaces the
+ * STS `GetCallerIdentity` {@link buildArn} made, so the call count is
+ * unchanged. A read that fails or does not list the group (or lists an ARN
+ * not ending in the name) falls back to {@link buildArn} with no identity:
+ * the record is then deleted by name, as one written before cdkd recorded it.
+ */
+export async function createdAttributes(
+  this: LogsLogGroupProvider,
+  name: string
+): Promise<Record<string, unknown>> {
+  let group: LogGroupIdentityRead | undefined;
+  try {
+    group = await this.readIdentityIfExists(name);
+  } catch (error) {
+    this.logger.debug(
+      safeMsg`Could not read log group identity after writing it: ${describeAwsFailure(error).summary}`
+    );
+  }
+  const listedArn = group === undefined ? undefined : `${group.arn}:*`;
+  const arn =
+    listedArn !== undefined && listedArn.endsWith(`:log-group:${name}:*`)
+      ? listedArn
+      : await this.buildArn(name);
+  return {
+    Arn: arn,
+    ...definedAttributes({
+      LogGroupIdentity:
+        group !== undefined && listedArn === arn ? logGroupIdentityToken(group) : undefined,
+    }),
+  };
 }
 
 /**
@@ -99,7 +143,7 @@ export async function resourceIdentity(
 export async function readIdentityIfExists(
   this: LogsLogGroupProvider,
   name: string
-): Promise<{ arn: string; creationTime: number | undefined } | undefined> {
+): Promise<LogGroupIdentityRead | undefined> {
   let found;
   try {
     const response = await this.logsClient.send(
@@ -122,13 +166,10 @@ export async function readIdentityIfExists(
   if (typeof arn !== 'string' || arn === '') {
     throw new Error('CloudWatch Logs returned no logGroupArn');
   }
-  const created = found.creationTime;
   return {
     arn,
-    creationTime:
-      typeof created === 'number' && Number.isSafeInteger(created) && created > 0
-        ? created
-        : undefined,
+    creationTime: listedCreationTime(found.creationTime),
+    deletionProtectionEnabled: found.deletionProtectionEnabled === true,
   };
 }
 

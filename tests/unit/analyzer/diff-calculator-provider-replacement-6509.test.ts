@@ -256,7 +256,9 @@ describe('the replacement reaches every reader (#6509)', () => {
     const header = lines.findIndex((l) => l.includes('[~] Sub (AWS::SNS::Subscription)'));
     expect(header).toBeGreaterThanOrEqual(0);
     expect(lines[header + 1]).toBe(
-      '      [requires replacement: FilterPolicy and FilterPolicyScope change together; deleted, then created again]'
+      '      [requires replacement: FilterPolicy and FilterPolicyScope change together; deleted, then created again]' +
+        // go-to-k/cdkd#6713
+        " — a failed deploy's rollback does not restore what AWS held for it beyond its recorded properties"
     );
   });
 

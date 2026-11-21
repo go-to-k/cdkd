@@ -305,7 +305,11 @@ again helps:
 The third outcome is one of these: a new copy that
 `UpdateReplacePolicy: Retain` kept, a new copy whose delete failed, or a
 reversed replacement whose re-create returned the live new resource.
-`cdkd events` shows the events.
+`cdkd events` shows the events. In the last case the replacement is not
+reversed: state keeps the live resource's record, with the failed deploy's
+properties, so the next `cdkd deploy` applies the template's properties to it
+(an SNS subscription re-created to add a filter is one: SNS returns the live
+subscription to the rollback's `Subscribe`).
 
 ### Edge cases
 

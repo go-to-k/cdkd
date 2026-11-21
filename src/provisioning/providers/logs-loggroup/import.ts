@@ -5,6 +5,8 @@ import {
 } from '@aws-sdk/client-cloudwatch-logs';
 import { resolveExplicitPhysicalId } from '../../import-helpers.js';
 import type { ResourceImportInput, ResourceImportResult } from '../../../types/resource.js';
+import { definedAttributes } from '../../attribute-map.js';
+import { listedCreationTime, logGroupIdentityToken } from './shared.js';
 
 /**
  * Adopt an existing CloudWatch Logs log group into cdkd state.
@@ -26,7 +28,23 @@ export async function importImpl(
       // One page is enough: the response is ASCII-sorted by name, so the
       // exact name sorts first among every name it prefixes.
       const found = resp.logGroups?.find((g) => g.logGroupName === explicit);
-      return found ? { physicalId: explicit, attributes: {} } : null;
+      if (!found) return null;
+      // go-to-k/cdkd#6665: the `LogGroupIdentity` a later delete compares,
+      // from this same listing (a record lacking one acquires it).
+      const arn = found.logGroupArn;
+      return {
+        physicalId: explicit,
+        attributes: definedAttributes({
+          LogGroupIdentity:
+            typeof arn === 'string' && arn !== ''
+              ? logGroupIdentityToken({
+                  arn,
+                  creationTime: listedCreationTime(found.creationTime),
+                  deletionProtectionEnabled: found.deletionProtectionEnabled === true,
+                })
+              : undefined,
+        }),
+      };
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return null;
       throw err;

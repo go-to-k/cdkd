@@ -522,6 +522,10 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // deployment latency; cdkd retries. Surfaced by tests/integration/
   // propagation-races-2 (the fresh-instance-profile EC2 launch race edge).
   'Invalid IAM Instance Profile',
+  // go-to-k/cdkd#6740: the same race on an Auto Scaling launch configuration
+  // (Cloud Control route), which Auto Scaling spells `Invalid
+  // IamInstanceProfile: <name>` -- the EC2 pattern above does not match it.
+  'Invalid IamInstanceProfile',
   // EMR RunJobFlow: cdkd's fast SDK path creates the
   // AWS::IAM::InstanceProfile (the cluster's JobFlowRole) only ~1s before
   // RunJobFlow references it, but the instance profile takes a few seconds to

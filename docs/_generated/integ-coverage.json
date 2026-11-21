@@ -858,6 +858,7 @@
       "resourceType": "AWS::AutoScaling::AutoScalingGroup",
       "integs": [
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "drift-revert-vpc",
         "getatt-asg-arn-rule-name",
@@ -869,6 +870,9 @@
         "asg-destroy-running-instances": [
           "l2",
           "literal"
+        ],
+        "asg-rolling-signals": [
+          "l2"
         ],
         "asg-update-policy": [
           "l2",
@@ -1761,6 +1765,7 @@
     {
       "resourceType": "AWS::EC2::Instance",
       "integs": [
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "ec2-instance",
         "ec2-instance-fanout",
@@ -1773,6 +1778,9 @@
         "wait-condition-ec2-signal"
       ],
       "signals": {
+        "creation-policy-cfn-init": [
+          "l2"
+        ],
         "deletion-ordering-complex": [
           "l2"
         ],
@@ -1817,6 +1825,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -1828,6 +1837,7 @@
         "cc-to-sdk-reroute-common-types-2",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -1921,6 +1931,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -1953,6 +1966,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2194,6 +2210,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -2204,6 +2221,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2292,6 +2310,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -2320,6 +2341,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2587,6 +2611,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -2597,6 +2622,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2688,6 +2714,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -2716,6 +2745,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2953,6 +2985,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -2964,6 +2997,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3056,6 +3090,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -3088,6 +3125,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -3628,6 +3668,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -3640,6 +3681,7 @@
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3742,6 +3784,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -3777,6 +3822,9 @@
         ],
         "codebuild-project": [
           "l1"
+        ],
+        "creation-policy-cfn-init": [
+          "l2"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -4065,6 +4113,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -4075,6 +4124,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -4163,6 +4213,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -4191,6 +4244,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -4417,6 +4473,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -4432,6 +4489,7 @@
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -4539,6 +4597,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -4584,6 +4645,9 @@
         ],
         "codebuild-project": [
           "l1"
+        ],
+        "creation-policy-cfn-init": [
+          "l2"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -4889,6 +4953,7 @@
         "alb-listener-rule-update",
         "apigw-vpclink-integration-target",
         "asg-destroy-running-instances",
+        "asg-rolling-signals",
         "asg-update-policy",
         "batch",
         "bedrock-agentcore",
@@ -4899,6 +4964,7 @@
         "cc-to-sdk-reroute-common-types-11",
         "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
+        "creation-policy-cfn-init",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -4991,6 +5057,9 @@
         "asg-destroy-running-instances": [
           "l2"
         ],
+        "asg-rolling-signals": [
+          "l2"
+        ],
         "asg-update-policy": [
           "l2"
         ],
@@ -5019,6 +5088,9 @@
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
+          "l2"
+        ],
+        "creation-policy-cfn-init": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -7261,6 +7333,7 @@
     {
       "resourceType": "AWS::IAM::UserToGroupAddition",
       "integs": [
+        "drift-verbatim-readback",
         "iam-managed-policy",
         "iam-recreate-reattach",
         "iam-secret-derived-principals",
@@ -7268,6 +7341,10 @@
         "infra-security"
       ],
       "signals": {
+        "drift-verbatim-readback": [
+          "l1",
+          "literal"
+        ],
         "iam-managed-policy": [
           "l1",
           "literal"
@@ -9111,6 +9188,7 @@
         "codebuild-project",
         "composite-stack",
         "conditions",
+        "connect-instance",
         "context-test",
         "cross-stack-export-in-use",
         "cross-stack-references",
@@ -9220,6 +9298,9 @@
         ],
         "conditions": [
           "l1",
+          "l2"
+        ],
+        "connect-instance": [
           "l2"
         ],
         "context-test": [
@@ -9604,6 +9685,7 @@
         "composite-stack",
         "drift-sns-sibling-subscription",
         "noecho-named-producer",
+        "replaced-queue-topic-failed-rollback",
         "secret-derived-immutable-names",
         "sns-event-source",
         "sns-inline-subscription",
@@ -9621,6 +9703,9 @@
         ],
         "noecho-named-producer": [
           "l1",
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
           "literal"
         ],
         "secret-derived-immutable-names": [
@@ -9687,6 +9772,7 @@
         "perf-cross-backend-check",
         "refactor-command",
         "refactor-move",
+        "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -9844,6 +9930,10 @@
         "refactor-move": [
           "l2"
         ],
+        "replaced-queue-topic-failed-rollback": [
+          "l2",
+          "literal"
+        ],
         "replacement-fanout": [
           "l2",
           "literal"
@@ -9945,6 +10035,7 @@
         "iam-propagation-stress",
         "local-aws-emulator",
         "migrate-from-cfn",
+        "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "s3-lifecycle",
         "sns-sqs-event"
@@ -9968,6 +10059,9 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
           "literal"
         ],
         "replacement-fanout": [
@@ -10049,6 +10143,7 @@
         "rename-refactor",
         "replace-predelete-snapshot-failed-rollback",
         "replace-snapshot-failed-rollback",
+        "replaced-queue-topic-failed-rollback",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
         "retain-orphan-secret",
@@ -10297,6 +10392,10 @@
           "l1",
           "literal"
         ],
+        "replaced-queue-topic-failed-rollback": [
+          "l2",
+          "literal"
+        ],
         "replacement-rename-onto-holder": [
           "l1",
           "literal"
@@ -10426,6 +10525,7 @@
         "iam-propagation-stress",
         "local-aws-emulator",
         "migrate-from-cfn",
+        "replaced-queue-topic-failed-rollback",
         "secret-derived-immutable-names",
         "sns-subscription-filter"
       ],
@@ -10444,6 +10544,9 @@
           "literal"
         ],
         "migrate-from-cfn": [
+          "literal"
+        ],
+        "replaced-queue-topic-failed-rollback": [
           "literal"
         ],
         "secret-derived-immutable-names": [
@@ -10550,6 +10653,7 @@
         "refactor-move",
         "remove-protection-journaled-orphan",
         "rename-refactor",
+        "replaced-queue-topic-failed-rollback",
         "replacement-fanout",
         "replacement-immutable-name",
         "retain-orphan-redeploy",
@@ -10579,6 +10683,7 @@
         "secrets-dynamic-ref",
         "select-out-of-bounds",
         "shared-stackname-multi-region",
+        "sns-subscription-update",
         "ssm-generated-name-grant",
         "ssm-typed-parameter-not-found",
         "stack-id-uuid",
@@ -10910,6 +11015,10 @@
           "l2",
           "literal"
         ],
+        "replaced-queue-topic-failed-rollback": [
+          "l1",
+          "literal"
+        ],
         "replacement-fanout": [
           "l2",
           "literal"
@@ -11012,6 +11121,9 @@
         "shared-stackname-multi-region": [
           "l2",
           "literal"
+        ],
+        "sns-subscription-update": [
+          "l1"
         ],
         "ssm-generated-name-grant": [
           "l2",
@@ -11420,6 +11532,7 @@
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
     "AWS::CloudFormation::CustomResource",
+    "AWS::CloudFormation::Init",
     "AWS::CloudWatch::CompositeAlarm",
     "AWS::CloudWatch::MetricStream",
     "AWS::CodeDeploy::Application",
@@ -11433,6 +11546,8 @@
     "AWS::Cognito::UserPoolGroup",
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
+    "AWS::Connect::Instance",
+    "AWS::Connect::InstanceStorageConfig",
     "AWS::DSQL::Cluster",
     "AWS::DataSync::LocationS3",
     "AWS::DataSync::Task",

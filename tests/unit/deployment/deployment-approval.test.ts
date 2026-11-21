@@ -43,7 +43,14 @@ describe('requireDeploymentApproval', () => {
     await run('destructive', [change('Fn', 'UPDATE')], approve, { recreateTargetIds: ['Fn'] });
     expect(approve).toHaveBeenCalledTimes(1);
     expect(approve.mock.calls[0]![0].destructiveChanges).toEqual([
-      { stackName: 'S', logicalId: 'Fn', resourceType: 'AWS::SQS::Queue', impact: 'WILL_REPLACE' },
+      {
+        stackName: 'S',
+        logicalId: 'Fn',
+        resourceType: 'AWS::SQS::Queue',
+        impact: 'WILL_REPLACE',
+        // go-to-k/cdkd#6713: destroyed, then created.
+        earlyDelete: 'recreate',
+      },
     ]);
   });
 

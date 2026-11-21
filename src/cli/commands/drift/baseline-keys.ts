@@ -60,16 +60,16 @@ import {
  * stale document back, undoing the sibling's change (a removed `Condition`
  * widened access).
  *
- * IAM attachment lists (go-to-k/cdkd#6328): a user's `Groups` (an
- * `AWS::IAM::UserToGroupAddition` writes it), a role / user / group's
- * `ManagedPolicyArns` (an `AWS::IAM::ManagedPolicy`'s `Roles` / `Users` /
- * `Groups` writes it), and a managed policy's `Roles` / `Users` / `Groups` (a
- * principal's `ManagedPolicyArns` writes it). The baseline read races that
+ * `AWS::IAM::ManagedPolicy` `Roles` / `Users` / `Groups` (go-to-k/cdkd#6328):
+ * a principal's `ManagedPolicyArns` writes them. The baseline read races that
  * sibling's write, so it can record the sibling's member; when the sibling
  * later stops writing it (its list shrinks), drift reported the stale member
  * and `--revert` RE-GRANTED it against the template. A DECLARED list is still
  * compared, and the sibling's members are then stripped on both sides
- * (`stripSiblingOwnedMembers`).
+ * (`stripSiblingOwnedMembers`). An IAM role / user / group's undeclared
+ * `ManagedPolicyArns`, `Policies`, `PermissionsBoundary` and `Groups` are not
+ * here: they are compared on both baselines (go-to-k/cdkd#6627,
+ * `src/analyzer/drift-undeclared-grants.ts`).
  *
  * `AWS::EC2::Instance` `BlockDeviceMappings` (go-to-k/cdkd#6384): an
  * `AWS::EC2::VolumeAttachment` attaches its volume after the instance settles,
@@ -82,9 +82,6 @@ import {
 const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::S3::Bucket': ['NotificationConfiguration'],
   'AWS::Events::EventBus': ['Policy'],
-  'AWS::IAM::User': ['Groups', 'ManagedPolicyArns'],
-  'AWS::IAM::Role': ['ManagedPolicyArns'],
-  'AWS::IAM::Group': ['ManagedPolicyArns'],
   'AWS::IAM::ManagedPolicy': ['Groups', 'Roles', 'Users'],
   'AWS::EC2::Instance': ['BlockDeviceMappings'],
 };

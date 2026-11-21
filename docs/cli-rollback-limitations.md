@@ -34,15 +34,42 @@ A failed deploy takes no snapshot of the old resource. Both copies stay in
 AWS, and are billed, until the deploy ends, and writes that reach the old copy
 meanwhile are in its snapshot.
 
-Two cases delete the old resource right after the new one is created:
+A few cases delete the old copy before the deploy succeeds:
 
-| Case | Why |
-| --- | --- |
-| An IAM inline policy | Both policies attached until the deploy ends would grant the union of their permissions. Nothing is lost: the rollback re-creates the policy document exactly. |
-| An old physical id another resource of the stack now records | The other resource must be able to move off the id, and cdkd never leaves a delete pending for an id a record names. |
+| Case | When the old copy is deleted | Why |
+| --- | --- | --- |
+| An IAM inline policy | Right after the new one is created | Both policies attached until the deploy ends would grant the union of their permissions. |
+| A new resource with the old one's physical id and type, such as a Glue table moved to another database | Right after the new one is created | The id now names the new resource, so a later delete could not address the old one. |
+| An SNS subscription whose change cannot be applied in place | Before the new one is created | SNS returns the existing subscription for the same topic, protocol and endpoint. |
+| A Route 53 record set whose name, type or set identifier changes | In the same change batch that creates the new one | Route 53 keys a record on them; one batch swaps the two at once, so the name never stops resolving. |
+| A security group ingress rule whose description changes while its recorded description is redacted | Before the new one is authorized | EC2 keys a rule on its protocol, ports and source, so the same rule cannot be added while the old one is there. |
+| An update AWS rejects as unsupported, on a resource whose name cannot change | Before the new one is created | Only one copy can hold the name. A stateful type also needs `--force-stateful-recreation`. |
+| `--replace`, `--recreate-via-cc-api` or `--recreate-via-sdk-provider` | Before the new one is created | You asked for delete-first. A resource stored inside the re-created one goes with it. |
 
-The rollback re-creates the old resource of these, and of a delete-first
-replacement, from the properties the journal saved.
+The rollback re-creates such an old resource from the properties the journal
+saved. Nothing is lost for an inline policy. A security group ingress rule,
+and a Route 53 record set whose set identifier alone changed, keep their ID, so
+the rollback puts them back in place with their recorded properties. For any
+other type, the rollback
+output and the `cdkd rollback` plan say that what AWS held for the old
+resource beyond its recorded properties, such as queued messages or
+subscriptions made outside the stack, does not come back.
+
+The deploy's plan names the cases it can predict before anything runs:
+`cdkd diff` and the `cdkd deploy --require-approval` listing end the
+replacement's line with when the old resource is deleted and that a failed
+deploy's rollback does not restore what AWS held for it beyond its recorded
+properties. That covers the SNS subscription, the Route 53 record set whose
+name changes, and the `--recreate-via-*` flags (in the approval prompt; a
+target whose replacement takes another name is created first, so its note
+says "unless"). The others are decided during the deploy, so the plan cannot
+name them: an update AWS rejects, a new resource that turns out to hold the
+old one's physical ID and type, and `--replace` after a name collision. A
+Route 53 record set whose type changes is shown as an update, as CloudFormation
+shows it, so it gets no note, although the record gets a new ID and the
+rollback output says it is re-created. A set identifier change and a security
+group ingress rule keep their ID and are reverted in place. An inline policy
+loses nothing, so it gets no note.
 
 > [!WARNING]
 > For a type that holds data (DynamoDB, RDS, S3 and so on), an old resource
@@ -52,12 +79,18 @@ replacement, from the properties the journal saved.
 
 A waiting delete is kept in state, so a deploy that stops before its end
 leaves the old resource for the next `cdkd deploy` or `cdkd destroy` to
-delete. A custom resource or nested stack whose delete needs a NoEcho value
-is the exception: cdkd never writes that value to state, so its delete waits
-in memory only. A deploy killed before its end (SIGKILL, a power loss) leaves
-that old custom resource's physical id, or that old nested stack, in AWS,
-untracked; a deploy that fails or is stopped with Ctrl-C says so in its
-output.
+delete. Two cases wait in memory only, and are never written to state:
+
+| Case | Why it is not written to state |
+| --- | --- |
+| A custom resource or nested stack whose delete needs a NoEcho value | cdkd never writes that value to state. |
+| An old physical id another resource of the stack also records, such as a queue whose queue policy is recorded under the queue URL | A later run would delete the other record's resource. |
+
+A deploy killed before its end (SIGKILL, a power loss) leaves such an old
+resource in AWS, untracked; a deploy that fails or is stopped with Ctrl-C says
+so in its output. After a failed deploy run with `--no-rollback`, `cdkd rollback`
+adopts the old resource again; a later `cdkd deploy` does not track it, so
+delete it by hand if you deploy forward instead.
 
 Under `UpdateReplacePolicy: Snapshot`, that later delete takes the promised
 snapshot first:

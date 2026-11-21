@@ -7,6 +7,8 @@ import {
   type Tag,
 } from '@aws-sdk/client-sfn';
 import { ProvisioningError } from '../../../utils/error-handler.js';
+import { definedAttributes } from '../../attribute-map.js';
+import { identityTimestamp } from '../../../deployment/recorded-identity-attributes.js';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { assertRegionMatch } from '../../region-check.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
@@ -132,6 +134,8 @@ export async function update(
         Arn: physicalId,
         Name: describeResponse.name,
         StateMachineRevisionId: stateMachineRevisionId(describeResponse),
+        // go-to-k/cdkd#6665: a record lacking one acquires it here.
+        ...definedAttributes({ CreationDate: identityTimestamp(describeResponse.creationDate) }),
       },
     };
   } catch (error) {

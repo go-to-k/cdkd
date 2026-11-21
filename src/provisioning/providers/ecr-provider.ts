@@ -22,6 +22,13 @@ import {
 } from '@aws-sdk/client-ecr';
 import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { identityTimestamp } from '../../deployment/recorded-identity-attributes.js';
+import {
+  assertRecordedIdentity,
+  recordedIdentityId,
+  RecordedIdentityError,
+} from '../recorded-identity.js';
+import { deniedIdentityReadRefusal } from '../identity-read-denied.js';
 import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -42,6 +49,7 @@ import type {
   ResourceNotFound,
   ReadCurrentStateContext,
 } from '../../types/resource.js';
+import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -213,6 +221,7 @@ export class ECRProvider implements ResourceProvider {
     // Set once CreateRepository returns: a later failure is an auxiliary
     // call's, not this repository's name collision (#3826).
     let repositoryCreated = false;
+    let createdAt: string | undefined;
     try {
       // CFn Tags and the SDK share the `[{ Key, Value }]` shape.
       const tags: Tag[] | undefined =
@@ -244,9 +253,15 @@ export class ECRProvider implements ResourceProvider {
       );
 
       repositoryCreated = true;
-      // go-to-k/cdkd#5511: report before the policy calls.
-      reportCreatedResource(logicalId, resourceType, repositoryName);
       const repo = response.repository;
+      // go-to-k/cdkd#6665: the `createdAt` a later delete compares (and the
+      // failed-create journal's identity token), from the create's answer:
+      // it equals what the delete's `DescribeRepositories` reads (the
+      // `created-before-failure-revert` fixture's E1 compares the two), so no
+      // describe is added here.
+      createdAt = identityTimestamp(repo?.createdAt);
+      // go-to-k/cdkd#5511: report before the policy calls.
+      reportCreatedResource(logicalId, resourceType, repositoryName, createdAt);
       if (!repo?.repositoryName) {
         throw new Error('CreateRepository did not return repository name');
       }
@@ -288,6 +303,7 @@ export class ECRProvider implements ResourceProvider {
         attributes: definedAttributes({
           Arn: repo.repositoryArn,
           RepositoryUri: repo.repositoryUri,
+          CreatedAt: createdAt,
         }),
       };
     } catch (error) {
@@ -308,7 +324,7 @@ export class ECRProvider implements ResourceProvider {
       // go-to-k/cdkd#4583: the repository exists with no state record; name it
       // for the failed-CREATE journal once CreateRepository has returned.
       if (repositoryCreated)
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, repositoryName);
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, repositoryName, createdAt);
       throw thrown;
     }
   }
@@ -531,6 +547,8 @@ export class ECRProvider implements ResourceProvider {
         attributes: definedAttributes({
           Arn: repo?.repositoryArn,
           RepositoryUri: repo?.repositoryUri,
+          // go-to-k/cdkd#6665: a record lacking one acquires it here.
+          CreatedAt: identityTimestamp(repo?.createdAt),
         }),
       };
     } catch (error) {
@@ -611,6 +629,45 @@ export class ECRProvider implements ResourceProvider {
       hasCdkAutoDeleteTag(properties, ECR_AUTO_DELETE_IMAGES_TAG);
 
     try {
+      // go-to-k/cdkd#6665: a record holding a `CreatedAt` refuses a repository
+      // of the name created at another time, before the delete (which, with
+      // `force`, would take its images too). One `DescribeRepositories`, made
+      // only for such a record; its not-found is the typed one below.
+      if (recordedIdentityId(resourceType, context) !== undefined) {
+        const readCreatedAt = async () => {
+          const repo = (
+            await this.getClient().send(
+              new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
+            )
+          ).repositories?.[0];
+          // A response naming another repository carries no id of this one.
+          return repo?.repositoryName === physicalId
+            ? identityTimestamp(repo.createdAt)
+            : undefined;
+        };
+        try {
+          await assertRecordedIdentity({
+            label: 'ECR repository',
+            resourceType,
+            logicalId,
+            physicalId,
+            liveId: await readCreatedAt(),
+            reread: readCreatedAt,
+            context,
+          });
+        } catch (readError) {
+          throw (
+            deniedIdentityReadRefusal(readError, {
+              label: 'ECR repository',
+              permission: 'ecr:DescribeRepositories',
+              resourceType,
+              logicalId,
+              physicalId,
+              context,
+            }) ?? readError
+          );
+        }
+      }
       if (force) {
         this.logger.debug(
           `Force-deleting ECR Repository ${logicalId} (empty-on-delete opt-in present)`
@@ -624,6 +681,8 @@ export class ECRProvider implements ResourceProvider {
       );
       this.logger.debug(`Successfully deleted ECR Repository ${logicalId}`);
     } catch (error) {
+      // The identity refusals: already worded (no AWS text) and marked.
+      if (error instanceof RecordedIdentityError) throw error;
       if (error instanceof RepositoryNotEmptyException) {
         throw new ProvisioningError(
           `Failed to delete ECR Repository ${logicalId}: repository ${physicalId} still ` +
@@ -713,6 +772,36 @@ export class ECRProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#6665: the repository's `createdAt` as
+   * {@link identityTimestamp}, the `CreatedAt` the create, update and import
+   * record. A repository created again under the name repeats its ARN; the
+   * creation time tells the two apart. `undefined` for another type, a client
+   * in another region than `expectedRegion`, or a response without the
+   * repository or the time; `RESOURCE_NOT_FOUND` on
+   * `RepositoryNotFoundException`. Any other failure throws.
+   */
+  async resourceIdentity(
+    physicalId: string,
+    resourceType: string,
+    context: { expectedRegion: string }
+  ): Promise<string | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::ECR::Repository' || physicalId === '') return undefined;
+    const clientRegion = await this.getClient().config.region();
+    if (clientRegion !== context.expectedRegion) return undefined;
+    try {
+      const repo = (
+        await this.getClient().send(
+          new DescribeRepositoriesCommand({ repositoryNames: [physicalId] })
+        )
+      ).repositories?.[0];
+      return repo?.repositoryName === physicalId ? identityTimestamp(repo.createdAt) : undefined;
+    } catch (error) {
+      if (error instanceof RepositoryNotFoundException) return RESOURCE_NOT_FOUND;
+      throw error;
+    }
+  }
+
+  /**
    * Adopt an existing ECR repository into cdkd state.
    *
    * Lookup order:
@@ -726,8 +815,14 @@ export class ECRProvider implements ResourceProvider {
         const resp = await this.getClient().send(
           new DescribeRepositoriesCommand({ repositoryNames: [explicit] })
         );
-        return resp.repositories?.[0]?.repositoryName
-          ? { physicalId: explicit, attributes: {} }
+        const repo = resp.repositories?.[0];
+        // go-to-k/cdkd#6665: the `CreatedAt` a later delete compares, from
+        // this same read (a record lacking one acquires it).
+        return repo?.repositoryName
+          ? {
+              physicalId: explicit,
+              attributes: definedAttributes({ CreatedAt: identityTimestamp(repo.createdAt) }),
+            }
           : null;
       } catch (err) {
         if (err instanceof RepositoryNotFoundException) return null;

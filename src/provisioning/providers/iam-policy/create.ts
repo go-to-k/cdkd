@@ -24,6 +24,8 @@ import {
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 import type { CreateContext, ResourceCreateResult } from '../../../types/resource.js';
 import { type AttachedPrincipals, readPolicyTargetLists } from './shared.js';
+import { RecordedIdentityError } from '../../recorded-identity.js';
+import { assertInlinePolicyAttachTargets } from './principal-identity.js';
 
 /**
  * Create an IAM inline policy
@@ -81,6 +83,21 @@ export async function create(
   // ones a failed create may detach the policy from again.
   const attached: AttachedPrincipals = { roles: [], groups: [], users: [] };
   try {
+    // go-to-k/cdkd#6722: every in-stack principal with a recorded identity id
+    // that this deploy did not itself create or replace is read and compared
+    // BEFORE any put; another holder of the name refuses the create with
+    // nothing sent (a put to it would grant cdkd's policy to a stranger).
+    await assertInlinePolicyAttachTargets({
+      client: this.iamClient,
+      principals: [
+        ...(roles ?? []).map((name) => ['role', name] as const),
+        ...(groups ?? []).map((name) => ['group', name] as const),
+        ...(users ?? []).map((name) => ['user', name] as const),
+      ],
+      policyLogicalId: logicalId,
+      physicalId: policyName,
+    });
+
     // Serialize policy document
     const policyDoc =
       typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
@@ -143,6 +160,9 @@ export async function create(
       },
     };
   } catch (error) {
+    // go-to-k/cdkd#6722: a principal compare refused before any put (nothing
+    // attached), worded by cdkd with logical ids only, and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     // go-to-k/cdkd#4583: detach the policy from exactly the principals this
     // create attached it to. It is NOT marked for --revert-failed: delete()

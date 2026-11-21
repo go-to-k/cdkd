@@ -1,4 +1,5 @@
 import {
+  type DBCluster,
   DeleteDBClusterCommand,
   ModifyDBClusterCommand,
   DescribeGlobalClustersCommand,
@@ -14,6 +15,12 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js';
 import { markNotGone } from '../../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import {
+  assertRecordedIdentity,
+  recordedIdentityId,
+  RecordedIdentityError,
+} from '../../recorded-identity.js';
+import { deniedIdentityReadRefusal } from '../../identity-read-denied.js';
 import {
   deleteWithProtectionCompensation,
   observeThenDisableProtection,
@@ -122,6 +129,18 @@ export async function deleteDBClusterOnce(
   const progress: DeleteProgress = { stripped: false };
 
   try {
+    // go-to-k/cdkd#6655 (D1): with a `DBClusterResourceId` recorded, the
+    // cluster under the identifier must be the one cdkd created, checked
+    // before the protection flip, the global-cluster detach, the express
+    // writer's delete or the cluster delete. Its describe is reused below.
+    const identityRead = await readRecordedClusterIdentity.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      context
+    );
+
     // `--remove-protection`: flip DeletionProtection off in-place
     // before delete. Idempotent — RDS accepts the call when protection
     // is already disabled. Non-fatal: log at debug if the flip-off
@@ -137,7 +156,8 @@ export async function deleteDBClusterOnce(
           mask: context?.maskSecrets,
           guardName: 'DeletionProtection',
           observe: async () =>
-            (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
+            (identityRead ?? (await this.describeDBCluster(physicalId)))?.DeletionProtection ===
+            true,
           // go-to-k/cdkd#5639: RDS refuses the flip while the cluster is
           // busy (a member still taking its settings); wait that out and
           // resend, within a bounded budget.
@@ -229,7 +249,9 @@ export async function deleteDBClusterOnce(
         this,
         logicalId,
         physicalId,
-        await this.describeDBCluster(physicalId),
+        // The identity describe, when one was made: the flip in between is
+        // what `flippedOffByThisRun` covers, and the detach changes no member.
+        identityRead ?? (await this.describeDBCluster(physicalId)),
         recordedWriterId,
         // The read can lag the flip this run just made.
         flip.flippedOffByThisRun,
@@ -276,6 +298,25 @@ export async function deleteDBClusterOnce(
     // Wait for cluster to be fully deleted
     await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
   } catch (error) {
+    // go-to-k/cdkd#6655: the identity refusals, already worded (no AWS text)
+    // and marked; raised before any write, so never `markDeleteStarted`.
+    if (error instanceof RecordedIdentityError) {
+      // Raised before any write. A deletion-protection flip an EARLIER
+      // attempt made (latched on the record) is not put back: the
+      // compensation re-enables BY NAME, and the resource under the name is
+      // not proven ours -- another one (a mismatch), or unconfirmed (an
+      // answer without the id). Said instead, so the stripped guard is not
+      // silent (#1978 / #2204). No value is printed.
+      if (flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        flip.flippedOffByThisRun = false;
+        this.logger.warn(
+          safeMsg`RDS DB cluster ${logicalId}: an earlier attempt of this delete turned its deletion protection off, ` +
+            `and cdkd did not turn it back on because it cannot confirm the RDS DB cluster now under the ` +
+            `name is the one it recorded; check the deletion protection of the one you keep.`
+        );
+      }
+      throw error;
+    }
     if (error instanceof ExpressWriterRefusal) {
       // Raised before the writer or cluster delete. Not gone (#5228), and
       // non-retryable: a retry reads the same members.
@@ -593,4 +634,70 @@ export async function deleteAfterProtectionFlip(
     logger: this.logger,
     remainingMs: enclosingDeadlineRemainingMs(),
   });
+}
+
+/**
+ * go-to-k/cdkd#6655 (D1): a DB cluster delete addresses the cluster BY
+ * IDENTIFIER, and an identifier freed by a delete can be taken again by
+ * another cluster. With a `DBClusterResourceId` recorded, one
+ * `DescribeDBClusters` must answer with it, or the delete is refused
+ * (`RecordedIdentityMismatchError`) before any write: no protection flip, no
+ * global-cluster detach, no writer or cluster delete, no final snapshot.
+ * Returns that describe (the latest, after a mismatch's re-read) for the
+ * delete's own reads to reuse.
+ *
+ * No usable `DBClusterResourceId` recorded (a legacy, masked or
+ * secret-reference value): `undefined` with NO read, the by-identifier delete
+ * as before. The not-found fault propagates to the delete's idempotent
+ * not-found path; a denied read is the non-retryable
+ * `deniedIdentityReadRefusal`; any other failure to the retry classifiers. A
+ * response with no cluster of this identifier carries no id, and refuses
+ * (`assertRecordedIdentity`).
+ */
+export async function readRecordedClusterIdentity(
+  this: RDSProvider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  context: DeleteContext | undefined
+): Promise<DBCluster | undefined> {
+  if (recordedIdentityId(resourceType, context) === undefined) return undefined;
+  const read = async (): Promise<DBCluster | undefined> => {
+    let cluster: DBCluster | undefined;
+    try {
+      cluster = await this.describeDBCluster(physicalId);
+    } catch (error) {
+      // go-to-k/cdkd#6655: a denied read refuses, non-retryably, naming the
+      // permission; every other failure keeps its path.
+      throw (
+        deniedIdentityReadRefusal(error, {
+          label: 'RDS DB cluster',
+          permission: 'rds:DescribeDBClusters',
+          resourceType,
+          logicalId,
+          physicalId,
+          context,
+        }) ?? error
+      );
+    }
+    return cluster?.DBClusterIdentifier?.toLowerCase() === physicalId.toLowerCase()
+      ? cluster
+      : undefined;
+  };
+  let latest = await read();
+  await assertRecordedIdentity({
+    label: 'RDS DB cluster',
+    replacedBy:
+      'an RDS blue/green switchover, or a restore from a snapshot or to a point in time under the same identifier',
+    resourceType,
+    logicalId,
+    physicalId,
+    liveId: latest?.DbClusterResourceId,
+    reread: async () => {
+      latest = await read();
+      return latest?.DbClusterResourceId;
+    },
+    context,
+  });
+  return latest;
 }

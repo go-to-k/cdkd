@@ -81,12 +81,16 @@ export class WaitConditionProvider implements ResourceProvider {
     _resourceType: string,
     properties: Record<string, unknown>
   ): Promise<ResourceCreateResult> {
+    const physicalId = `cdkd-wait-condition-${logicalId}-${randomUUID()}`;
+    // go-to-k/cdkd#6705: the CreationPolicy form (no Handle) is signalled by
+    // `cfn-signal --resource`; the deploy engine waits on it through its
+    // CloudFormation signal receiver, so there is nothing to poll here.
+    if (properties['Handle'] === undefined || properties['Handle'] === null) {
+      return { physicalId, attributes: { Data: '{}' } };
+    }
     const spec = this.readSpec(logicalId, properties);
     const data = await this.waitForSignals(logicalId, spec);
-    return {
-      physicalId: `cdkd-wait-condition-${logicalId}-${randomUUID()}`,
-      attributes: { Data: JSON.stringify(data) },
-    };
+    return { physicalId, attributes: { Data: JSON.stringify(data) } };
   }
 
   /**

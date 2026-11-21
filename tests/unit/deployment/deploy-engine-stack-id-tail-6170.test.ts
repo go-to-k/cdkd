@@ -324,6 +324,29 @@ describe('DeployEngine — AWS::StackId tail (go-to-k/cdkd#6170)', () => {
     expect(h.stateBackend.stackInstanceIdForFirstWrite).not.toHaveBeenCalled();
   });
 
+  it('a recorded signal receiver (go-to-k/cdkd#6705) wins over the instance-derived tail', async () => {
+    const receiverId = 'arn:aws:cloudformation:us-east-1:123456789012:stack/rcv/abc';
+    const h = buildHarness({
+      currentState: {
+        version: 16,
+        stackName,
+        region: 'us-east-1',
+        resources: {},
+        outputs: {},
+        lastModified: 0,
+        stackInstanceId: INSTANCE_ID,
+        stackIdFromInstance: true,
+        signalReceiverStackId: receiverId,
+      },
+    });
+    const stackIdTemplate: CloudFormationTemplate = {
+      Resources: { A: { Type: 'AWS::S3::Bucket', Properties: { Id: { Ref: 'AWS::StackId' } } } },
+    };
+    await h.engine.deploy(stackName, stackIdTemplate);
+    expect(createdProperties(h)).toEqual({ Id: receiverId });
+    for (const state of savedStates(h)) expect(state.signalReceiverStackId).toBe(receiverId);
+  });
+
   describe('a first deploy settles its identity before its conditions (peekStackInstanceSibling)', () => {
     const tailIsDerived = {
       'Fn::Not': [{ 'Fn::Equals': [stackIdSegment(2), 'cdkd'] }],

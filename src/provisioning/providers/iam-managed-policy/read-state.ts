@@ -15,6 +15,7 @@ import type {
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { managedPolicyAttributes } from './shared.js';
+import { type OwnWriteRemovals, takeOwnWriteRemovals } from '../../own-write-removals.js';
 import {
   collectPrincipalsAttachingPolicy,
   withoutSiblingOwned,
@@ -83,6 +84,12 @@ export async function readCurrentState(
   properties?: Record<string, unknown>,
   context?: ReadCurrentStateContext
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  // go-to-k/cdkd#6609: what the write detached, taken before the first await
+  // (`own-write-removals.ts`).
+  const removed =
+    context?.afterOwnWrite === true
+      ? takeOwnWriteRemovals('AWS::IAM::ManagedPolicy', physicalId)
+      : undefined;
   let policy;
   try {
     const resp = await this.iamClient.send(new GetPolicyCommand({ PolicyArn: physicalId }));
@@ -138,7 +145,7 @@ export async function readCurrentState(
   if (context?.afterOwnWrite === true && properties !== undefined) {
     await settleOwnWriteMembers(
       result,
-      managedPolicyOwnWriteMembers.call(this, physicalId, properties, context),
+      managedPolicyOwnWriteMembers.call(this, physicalId, properties, context, removed),
       this.ownWriteRereadDelaysMs,
       (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::ManagedPolicy', key)
     );
@@ -209,13 +216,15 @@ async function readAttachments(
  * (go-to-k/cdkd#6609): the `PolicyDocument` (`CreatePolicyVersion` as the
  * new default; IAM is documented as eventually consistent, so the read right
  * after can still answer the replaced version) and the `Groups` / `Roles` /
- * `Users` attachments, each only when the template declares it.
+ * `Users` attachments, each when the template declares it or the write
+ * detached some of it (`removed`; `readAttachments` emits all three keys).
  */
 function managedPolicyOwnWriteMembers(
   this: IAMManagedPolicyProvider,
   physicalId: string,
   properties: Record<string, unknown>,
-  context: ReadCurrentStateContext
+  context: ReadCurrentStateContext,
+  removed: OwnWriteRemovals | undefined
 ): OwnWriteMember<unknown>[] {
   const members: OwnWriteMember<unknown>[] = [];
   const document = declaredMemberDocument(properties['PolicyDocument']);
@@ -239,13 +248,19 @@ function managedPolicyOwnWriteMembers(
   const served = { Groups: 0, Roles: 0, Users: 0 };
   for (const key of ['Groups', 'Roles', 'Users'] as const) {
     const declared = declaredStringList(properties[key]);
-    if (declared === undefined) continue;
+    const gone = removed?.get(key);
+    if (declared === undefined && (gone?.size ?? 0) === 0) continue;
     members.push(
-      stringListMember(key, declared, async () => {
-        const round = served[key]++;
-        rounds[round] ??= readAttachments.call(this, physicalId, properties, context);
-        return { value: (await rounds[round])[key] };
-      })
+      stringListMember(
+        key,
+        declared ?? [],
+        async () => {
+          const round = served[key]++;
+          rounds[round] ??= readAttachments.call(this, physicalId, properties, context);
+          return { value: (await rounds[round])[key] };
+        },
+        gone
+      )
     );
   }
   return members;

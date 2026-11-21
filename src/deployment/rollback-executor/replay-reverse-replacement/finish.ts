@@ -5,6 +5,7 @@ import { withNameGenerationReached } from '../../../state/name-generation.js';
 import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { equalIdNamesSameResource } from '../../type-change-guard.js';
+import { isCustomResource } from '../../../provisioning/provider-registry.js';
 import { acceptedCreateOnlyDropsEvidence } from '../../../provisioning/property-coverage.js';
 import { replacementDeletePolicy } from '../../../provisioning/final-snapshot.js';
 import { displaySafe, safeMsg } from '../../../utils/display-safe.js';
@@ -99,9 +100,14 @@ export async function finishReverseReplacement(
   //   accept that risk; the delete-first route, go-to-k/cdkd#4690, accepts
   //   it only because the deploy itself ran delete-first, and it never
   //   reaches this arm).
-  // State is rebuilt from previousState below (the intended
-  // post-rollback record), so the not-re-applied properties surface via
-  // `cdkd drift` / the next `cdkd deploy` for reconciliation. When
+  // State KEEPS the live new resource's record (go-to-k/cdkd#6731, the
+  // same-type arm, `keepLiveRecord`): the
+  // properties AWS holds are the failed deploy's, so the next `cdkd deploy`
+  // diffs the template against them and re-applies it. A record rebuilt from
+  // previousState claimed the old properties while AWS kept the new ones: the
+  // deploy then diffed no change, and drift, whose baseline the replay re-reads
+  // from AWS, reported none (an SNS subscription kept a filter the template
+  // no longer declared). When
   // deletedNewFirst is true the same-id outcome is the EXPECTED result
   // (re-acquiring the name after the new resource is gone) — exempt,
   // mirroring the deploy-side guard's delete-first exemption.
@@ -136,6 +142,11 @@ export async function finishReverseReplacement(
   });
   const adoptedLiveNewResource =
     equalIdIsSameResource && !deletedNewFirst && createResult.physicalId === current.physicalId;
+  // Not for the custom-resource family across a Type change: there the
+  // re-create really ran the old handler with the old properties
+  // (`equalIdNamesSameResource`), so the record rebuilt below is the true one.
+  const keepLiveRecord =
+    adoptedLiveNewResource && oldType === op.resourceType && !isCustomResource(oldType);
   if (adoptedLiveNewResource) {
     // Named only when plain, described otherwise: this line names
     // `cdkd deploy`, and the physical id used to print through the bare
@@ -148,10 +159,17 @@ export async function finishReverseReplacement(
         `one — its ` +
         `Create API is name-idempotent and the new resource still holds the same ` +
         `user-supplied name. Skipping the delete-new step (it would delete that very ` +
-        `resource). The old resource's ORIGINAL properties may NOT have been re-applied; ` +
-        `state now records the pre-replacement properties, so inspect the drift and ` +
-        safeMsg`run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to reconcile, or rename the resource to make the replacement ` +
-        `reversible.${describedPhysicalIdPointer(liveShown)}` +
+        `resource). ` +
+        (keepLiveRecord
+          ? `The old resource's ORIGINAL properties were NOT re-applied; ` +
+            `state keeps the live resource's record, with the failed deploy's properties, so ` +
+            safeMsg`${proseQuoted(cdkdRemedy('cdkd deploy'))} re-applies the template's, or rename the resource to make the replacement ` +
+            `reversible.`
+          : `The old resource's ORIGINAL properties may NOT have been re-applied; ` +
+            `state now records the pre-replacement properties, so inspect the drift and ` +
+            safeMsg`run ${proseQuoted(cdkdRemedy('cdkd deploy'))} to reconcile, or rename the resource to make the replacement ` +
+            `reversible.`) +
+        `${describedPhysicalIdPointer(liveShown)}` +
         // `--stack-region` for the same reason the destroy hints carry
         // it: without it `cdkd drift` resolves every region holding this
         // name. Read-only, so no data loss — but it reports on records
@@ -178,6 +196,31 @@ export async function finishReverseReplacement(
   // necessarily the value the deleted copy's `NoEcho` value MACs describe, so
   // they are dropped: the next deploy finds no MAC and re-sends once.
   const { observedProperties: _staleObserved, noEchoValueMacs: _staleMacs, ...prevRecord } = prev;
+  // go-to-k/cdkd#6731: the adopted resource is what AWS holds, so state keeps
+  // its record (as persisted, already redacted), never one rebuilt from the
+  // pre-deploy properties. Its template-level fields stay the pre-deploy
+  // record's, as the rolled-back template declares them: a destroy before the
+  // next deploy honours that DeletionPolicy, not the failed deploy's.
+  if (keepLiveRecord) {
+    const {
+      deletionPolicy: _failedDeletionPolicy,
+      updateReplacePolicy: _failedUpdateReplacePolicy,
+      dependencies: _failedDependencies,
+      metadata: _failedMetadata,
+      constructPath: _failedConstructPath,
+      ...live
+    } = current;
+    stateResources[op.logicalId] = {
+      ...live,
+      ...(prev.deletionPolicy !== undefined && { deletionPolicy: prev.deletionPolicy }),
+      ...(prev.updateReplacePolicy !== undefined && {
+        updateReplacePolicy: prev.updateReplacePolicy,
+      }),
+      ...(prev.dependencies !== undefined && { dependencies: prev.dependencies }),
+      ...(prev.metadata !== undefined && { metadata: prev.metadata }),
+      ...(prev.constructPath !== undefined && { constructPath: prev.constructPath }),
+    };
+  }
   // Redact resolved secret plaintext back out (GHSA fix): the create
   // result's `effectiveProperties` can echo the value we resolved for the
   // re-CREATE, so scrub the rebuilt record before it is persisted.
@@ -192,28 +235,29 @@ export async function finishReverseReplacement(
   // generation, and the record remembers the one the deleted copy reached, so
   // the next replacement never asks for that name again.
   const restoredProperties = recordedPropertiesAfterReplayCreate(prevRecord, createResult);
-  stateResources[op.logicalId] = redactRollbackRecord(
-    {
-      ...withNameGenerationReached(prevRecord, op.logicalId, op.nameGeneration),
-      physicalId: createResult.physicalId,
-      attributes: createResult.attributes ?? {},
-      properties: restoredProperties,
-      // go-to-k/cdkd#5572: the re-create is a NEW resource, so its evidence
-      // is rebuilt for the route it took, never carried from the deleted
-      // copy's record: a key today's SDK provider writes reached AWS this
-      // time, and a stale name would refuse the next unchanged deploy.
-      acceptedCreateOnlyDrops: acceptedCreateOnlyDropsEvidence(
-        restoredProperties,
-        oldType,
-        createProvisionedBy
-      ),
-    },
-    secrets,
-    prevRecord.properties,
-    // Read only as evidence of what was persisted, never copied in: a new
-    // attribute identical to a plaintext old one stays plaintext (#4801).
-    prevRecord.attributes
-  );
+  if (!keepLiveRecord)
+    stateResources[op.logicalId] = redactRollbackRecord(
+      {
+        ...withNameGenerationReached(prevRecord, op.logicalId, op.nameGeneration),
+        physicalId: createResult.physicalId,
+        attributes: createResult.attributes ?? {},
+        properties: restoredProperties,
+        // go-to-k/cdkd#5572: the re-create is a NEW resource, so its evidence
+        // is rebuilt for the route it took, never carried from the deleted
+        // copy's record: a key today's SDK provider writes reached AWS this
+        // time, and a stale name would refuse the next unchanged deploy.
+        acceptedCreateOnlyDrops: acceptedCreateOnlyDropsEvidence(
+          restoredProperties,
+          oldType,
+          createProvisionedBy
+        ),
+      },
+      secrets,
+      prevRecord.properties,
+      // Read only as evidence of what was persisted, never copied in: a new
+      // attribute identical to a plaintext old one stays plaintext (#4801).
+      prevRecord.attributes
+    );
   // go-to-k/cdkd#4225: the re-create put the old resource's inline
   // policies, as the deploy's replacement create does. A re-create that
   // returned the live NEW resource is not counted: its record may not
@@ -437,8 +481,11 @@ export async function finishReverseReplacement(
         reason: mask(
           `The re-create returned the live new resource instead of re-creating the old one ` +
             `(its Create API is name-idempotent), so the replacement was NOT fully reversed: ` +
-            `the old resource's original properties may not have been re-applied. Inspect it ` +
-            `with ${proseQuoted(cdkdRemedy('cdkd drift'), '`')} and run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to reconcile.`
+            (keepLiveRecord
+              ? `the old resource's original properties were not re-applied. State keeps the live ` +
+                `resource's record, so ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} re-applies the template's.`
+              : `the old resource's original properties may not have been re-applied. Inspect it ` +
+                `with ${proseQuoted(cdkdRemedy('cdkd drift'), '`')} and run ${proseQuoted(cdkdRemedy('cdkd deploy'), '`')} to reconcile.`)
         ),
       }),
     });

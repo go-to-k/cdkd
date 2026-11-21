@@ -80,10 +80,11 @@ describe('IAMManagedPolicyProvider delegators hand every argument to the moved b
     expect(Object.getOwnPropertyNames(IAMManagedPolicyProvider.prototype).length).toBe(
       // constructor, wrapMaskedError, goneOnDelete, getAttribute,
       // isSameResource, resourceIdentity, readPolicyIdIfExists,
+      // assertAttachTargets, comparePrincipalChanges,
       // attachToPrincipals, updatePrincipals, readLivePrincipals,
       // detachAllPrincipals, deleteAllNonDefaultVersions, ensureVersionCapacity,
       // updateTags, findPolicyByName, getDriftUnorderedPaths
-      own.length + 16
+      own.length + 18
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });

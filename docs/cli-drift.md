@@ -154,17 +154,47 @@ itself when a function pulls its image from the repository, so drift does not
 read a policy your template does not declare, and `--revert` and `--accept`
 leave it alone.
 
-IAM attachment lists follow the same rule. Drift does not compare these lists
-unless your template sets them on the resource itself: a user's `Groups`, the
-`ManagedPolicyArns` of a role, user or group, and a managed policy's `Roles`,
-`Users` and `Groups`. Another resource in the stack can write each of them: an
-`AWS::IAM::UserToGroupAddition` adds users to a group, an
-`AWS::IAM::ManagedPolicy` attaches itself through its `Roles` / `Users` /
-`Groups`, and a role attaches a policy through its own `ManagedPolicyArns`.
-When your template does set the list, drift compares it but leaves out the
-members such a resource in the same stack currently writes, unless your
-template lists them too. So `--revert` neither removes nor re-adds those
-members. When a deploy makes such a resource stop writing a member (the
+A role, user or group whose template does not set `ManagedPolicyArns` or
+`Policies` (or, on a role or user, `PermissionsBoundary`; on a user,
+`Groups`) holds none in AWS either, so drift compares each of them anyway, on either baseline. A
+managed policy, inline policy, boundary or group membership added outside
+the stack is reported, and `--revert` removes that one member (one detach,
+inline-policy delete, group removal or boundary delete each) without
+replacing the principal. The revert plan lists each member it will remove.
+A managed policy of the same stack whose template sets the list for that
+kind of principal (`Roles`, `Users` or `Groups`) reports and reverts its own
+attachments, so drift reports such an attachment made outside the stack on the
+policy, not a second time on the principal. This holds only when that list
+holds plain names; a list holding a `{{resolve:...}}` reference leaves the
+attachment to the principal. In a run where the policy itself is not
+compared (its read failed, or its baseline was refused), the principal
+reports such an attachment instead, and `--revert` detaches it from the
+principal. `--accept` in such a run records it on the principal only, so a
+later run that compares the policy reports it again, on the policy.
+If a member was granted on purpose, by another stack or by your
+organization's automation, run `cdkd drift --accept` instead: it records the
+member, and drift stops reporting it. An inline policy recorded this way is pinned to the document it
+had then: if the stack or tool that owns it later changes that document,
+drift reports the change and `--revert` puts the recorded document back, so
+accept again instead. An inline policy that a resource of the same stack writes (an
+`AWS::IAM::Policy` or `RolePolicy`) is different: drift compares it against
+that resource's template, so `--accept` does not silence an out-of-band edit
+of its document. `--revert` puts the template's document back; to keep the
+edit, put it in that resource's template and deploy. Under these keys drift reports only a
+member AWS holds that nothing recorded: a recorded member that is gone is not
+reported, and `--revert` never adds one back. The exception is a recorded
+permissions boundary removed outside the stack, which widens access: it is
+reported, and `--revert` puts it back.
+
+A managed policy's `Roles`, `Users` and `Groups` are compared only when your
+template sets them on the `AWS::IAM::ManagedPolicy` itself. Another resource
+in the stack can write each IAM list: an `AWS::IAM::UserToGroupAddition` adds
+users to a group, an `AWS::IAM::ManagedPolicy` attaches itself through its
+`Roles` / `Users` / `Groups`, and a role attaches a policy through its own
+`ManagedPolicyArns`. Drift leaves out of each compared list the members such
+a resource in the same stack currently writes, unless the template lists them
+too. So `--revert` neither removes nor re-adds those members. When a deploy
+makes such a resource stop writing a member (the
 policy drops the principal, is replaced under a new ARN, or is deleted; the
 addition drops the user; the role drops the policy), that deploy also removes
 the member from the other resource's recorded snapshot, even when that
@@ -177,7 +207,8 @@ stopped writing. So can a snapshot whose member cdkd recorded as `***` or as a
 `{{resolve:...}}` reference (a role, policy or group name taken from a
 secret): it does not match the name the stack writes, so cdkd leaves it. Run
 `cdkd state refresh-observed --yes` once to re-read either. As in CloudFormation, an
-out-of-band change to a list your template does not set is not reported.
+out-of-band change to a managed policy's `Roles`, `Users` or `Groups` your
+template does not set is not reported.
 
 Security-group rules work the same way. CDK writes a rule between two
 security groups (`connections.allowFrom(otherGroup, ...)`,

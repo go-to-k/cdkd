@@ -205,24 +205,29 @@ new CfnWaitCondition(this, 'Wait', { handle: handle.ref, timeout: '900' });
 
 Limits:
 
-- The URL is signed with the deploying credentials. Temporary credentials
-  (SSO, an assumed role) end its validity when they expire, at most seven days
-  later; cdkd warns when that is under 12 hours.
+- The URL is valid for 12 hours, as CloudFormation's is. It is signed with the
+  deploying credentials, so temporary credentials (SSO, an assumed role) that
+  expire sooner end it sooner; cdkd warns when they do.
 - The instance must reach Amazon S3, as it must under CloudFormation.
 - A wait condition without a `Handle` (the `CreationPolicy` form that
-  `cfn-signal --resource` signals) is refused.
-- A wait condition on a handle whose id is not a URL cdkd issued (an imported
-  handle) is refused: give the handle a new logical id so cdkd issues one.
-- A waiting wait condition holds one `--concurrency` slot. Give it a
-  dependency on the instance that signals it (`DependsOn`, or
-  `wait.node.addDependency(instance)` in CDK), so a low `--concurrency` cannot
-  run the wait before the instance exists.
+  `cfn-signal --resource` signals) waits through the deploy's signal receiver;
+  see [`CreationPolicy` and `cfn-init`](supported-features.md#creationpolicy-and-cfn-init).
+- A wait condition on a handle whose id is a URL cdkd did not issue (one
+  imported from CloudFormation) is refused: give the handle a new logical id
+  so cdkd issues one.
+- A wait condition runs after every resource that references its handle,
+  without a `DependsOn`, so it never holds a `--concurrency` slot while the
+  instance that signals it waits for one.
 - A handle that only serves as a placeholder resource still works: nothing
   needs to signal it.
 
 Changed in v0.359.0: a handle's `Ref` is a signal URL. A handle deployed by an
-earlier release keeps its placeholder id, which is not a URL, until it gets a
-new logical id.
+earlier release keeps its placeholder id until a wait condition in the
+template waits on it; that deploy issues its URL and updates the resources
+embedding it (an EC2 instance's `UserData` change stops and starts it). An
+instance that already booted does not run its user data again, so it signals
+the new URL only once it is replaced, as under CloudFormation when a wait
+condition is added to a running stack.
 
 ## Glue table Iceberg support (`IcebergTableInput` is refused)
 

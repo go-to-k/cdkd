@@ -148,8 +148,19 @@ withheld rows can then have the same `name`. The reasons are under
 
 Each entry is one change that `--fail-on=destructive` fails on. It has
 `logicalId`, `resourceType`, `impact`, `constructPath` when state records
-one, and `movedTo` on a `WILL_DESTROY` removal [`cdkd refactor`](cli-refactor.md)
-would keep.
+one, `movedTo` on a `WILL_DESTROY` removal [`cdkd refactor`](cli-refactor.md)
+would keep, and `earlyDelete` on a `WILL_REPLACE` whose old resource is deleted
+before the deploy succeeds.
+
+| `earlyDelete` | The old resource is deleted |
+| --- | --- |
+| `before-create` | Before its replacement is created (an SNS subscription its provider re-creates) |
+| `during-deploy` | Before the deploy succeeds (a renamed Route 53 record set, in the batch that creates the new one) |
+| `recreate` | Before its replacement is created, unless the replacement takes another name (a `--recreate-via-*` target; the deploy's approval prompt only) |
+
+A failed deploy's rollback re-creates such a resource from its recorded
+properties only. See
+[`--fail-on`](cli-diff.md#destructive).
 
 | `impact` | Text output |
 | --- | --- |

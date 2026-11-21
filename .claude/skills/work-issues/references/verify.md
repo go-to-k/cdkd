@@ -114,7 +114,8 @@ fixture is unattributable): BEFORE the final integ when §8-b's early run is
 that PASS, else AFTER it, never BESIDE any run of that fixture in any region
 (`ship.md` §9), the merge waiting on the probe's RED (#5827) —
 revert the fix, rebuild, run, confirm the arm goes RED
-**at YOUR assertion — read which one fired**. A red
+**at YOUR assertion — the probe's report QUOTES the line that fired** (a
+runner summary read a pre-revert snapshot line as the helper's verdict, #6652). A red
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
 means it is unreachable, so redo `triage.md`'s CFn premise (#5204), while a
 feature hitting an UNRELATED pre-fix limitation is dropped or worked around in

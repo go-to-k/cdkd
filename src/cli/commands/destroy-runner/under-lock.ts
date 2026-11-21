@@ -7,6 +7,7 @@ import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { displaySafe, displayStackName, safeMsg } from '../../../utils/display-safe.js';
 import { getLiveRenderer } from '../../../utils/live-renderer.js';
 import { AwsClients } from '../../../utils/aws-clients.js';
+import { deleteStateAndReceiver } from './state-and-receiver.js';
 import type { RetainedResource } from '../../../state/s3-state-backend.js';
 import { recordRetainedForReadoption } from '../../../deployment/retained-readoption.js';
 import type { LockRecoveryContext } from '../../../state/lock-contention-message.js';
@@ -742,9 +743,7 @@ export async function destroyStackUnderLock({
     // can never contradict a `deleteState` that has already happened.
     statePreserved = preserveState;
     if (!preserveState) {
-      await ctx.stateBackend.deleteState(stackName, regionForState);
-      result.stateDeleted = true;
-      logger.debug('State deleted');
+      result.stateDeleted = await deleteStateAndReceiver(resourceFrame, regionForState);
       // go-to-k/cdkd#4705: what this destroy kept, which the stack's next
       // create here may take back by name -- or, kept nothing, the tombstone
       // (review D-1); exactly one of the two, so the tombstone is never

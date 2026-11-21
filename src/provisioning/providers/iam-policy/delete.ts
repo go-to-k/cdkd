@@ -23,6 +23,12 @@ import {
   redactedDeleteAddressSkip,
 } from '../../redacted-delete-address.js';
 import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
+import { RecordedIdentityError } from '../../recorded-identity.js';
+import {
+  InlinePolicyPrincipalMismatchError,
+  verifyInlinePolicyPrincipals,
+  type PrincipalVerdict,
+} from './principal-identity.js';
 import {
   POLICY_NAME_SKIP_REASON,
   POLICY_NO_TARGET_SKIP_REASON,
@@ -278,8 +284,20 @@ export async function deleteImpl(
   // go-to-k/cdkd#4156: a principal another resource of this deploy already
   // wrote this name onto keeps it (the deploy's DELETE phase runs after every
   // create and update).
+  // Asked once per principal: the identity check below needs the answer
+  // before any removal, and the predicate is not asked twice for one name.
+  const claimAnswers = new Map<string, boolean>();
+  const isClaimed = (kind: InlinePolicyPrincipalKind, name: string): boolean => {
+    const key = injectiveKey(kind, name);
+    let answer = claimAnswers.get(key);
+    if (answer === undefined) {
+      answer = context?.inlinePolicyClaimed?.(kind, name, policyName) === true;
+      claimAnswers.set(key, answer);
+    }
+    return answer;
+  };
   const claimed = (kind: InlinePolicyPrincipalKind, name: string): boolean => {
-    if (context?.inlinePolicyClaimed?.(kind, name, policyName) !== true) {
+    if (!isClaimed(kind, name)) {
       return false;
     }
     this.logger.debug(
@@ -308,11 +326,61 @@ export async function deleteImpl(
     }
   };
 
+  // go-to-k/cdkd#6655: the principals of this stack named by the policy are
+  // read and compared with their recorded identity id before any removal
+  // (concurrently, one read each; none for a principal outside the stack or
+  // without a recorded id). A different holder is sent nothing and refuses
+  // the delete once every other principal is done.
+  const verdicts = new Map<string, PrincipalVerdict>();
+  const mismatches: Array<Extract<PrincipalVerdict, { kind: 'mismatch' }>> = [];
+  /** `true` when nothing may be sent to this principal (gone or not ours). */
+  const settledByVerdict = async (
+    kind: InlinePolicyPrincipalKind,
+    name: string,
+    target: string,
+    principal?: { kind: string; name: string }
+  ): Promise<boolean> => {
+    const verdict = verdicts.get(injectiveKey(kind, name));
+    if (verdict?.kind === 'mismatch') {
+      if (!mismatches.includes(verdict)) mismatches.push(verdict);
+      return true;
+    }
+    if (verdict?.kind === 'gone') {
+      await onNotFound(target, principal);
+      return true;
+    }
+    return false;
+  };
+
   try {
+    const toVerify: ReadonlyArray<readonly [InlinePolicyPrincipalKind, string]> = [
+      ...(legacyRoleFromPhysicalId ? [['role', legacyRoleFromPhysicalId] as const] : []),
+      ...(roles ?? []).map((name) => ['role', name] as const),
+      ...(groups ?? []).map((name) => ['group', name] as const),
+      ...(users ?? []).map((name) => ['user', name] as const),
+    ].filter(([kind, name]) => !isClaimed(kind, name));
+    for (const [key, verdict] of await verifyInlinePolicyPrincipals({
+      client: this.iamClient,
+      principals: toVerify,
+      policyLogicalId: logicalId,
+      physicalId,
+      operation: 'delete',
+    })) {
+      verdicts.set(key, verdict);
+    }
+
     // If no properties available, try legacy format (physicalId = "policyName:roleName").
     // The target lists and this role segment are computed above, so the
     // no-target guard sees exactly what this branch does.
-    if (legacyRoleFromPhysicalId && !claimed('role', legacyRoleFromPhysicalId)) {
+    if (
+      legacyRoleFromPhysicalId &&
+      !claimed('role', legacyRoleFromPhysicalId) &&
+      !(await settledByVerdict(
+        'role',
+        legacyRoleFromPhysicalId,
+        `role ${mask(legacyRoleFromPhysicalId)}`
+      ))
+    ) {
       const firstRole = legacyRoleFromPhysicalId;
       try {
         await this.iamClient.send(
@@ -335,6 +403,10 @@ export async function deleteImpl(
     if (roles) {
       for (const roleName of roles) {
         if (claimed('role', roleName)) continue;
+        const roleTarget = { kind: 'Roles', name: roleName };
+        if (await settledByVerdict('role', roleName, `role ${mask(roleName)}`, roleTarget)) {
+          continue;
+        }
         try {
           await this.iamClient.send(
             new DeleteRolePolicyCommand({
@@ -358,6 +430,10 @@ export async function deleteImpl(
     if (groups) {
       for (const groupName of groups) {
         if (claimed('group', groupName)) continue;
+        const groupTarget = { kind: 'Groups', name: groupName };
+        if (await settledByVerdict('group', groupName, `group ${mask(groupName)}`, groupTarget)) {
+          continue;
+        }
         try {
           await this.iamClient.send(
             new DeleteGroupPolicyCommand({
@@ -381,6 +457,10 @@ export async function deleteImpl(
     if (users) {
       for (const userName of users) {
         if (claimed('user', userName)) continue;
+        const userTarget = { kind: 'Users', name: userName };
+        if (await settledByVerdict('user', userName, `user ${mask(userName)}`, userTarget)) {
+          continue;
+        }
         try {
           await this.iamClient.send(
             new DeleteUserPolicyCommand({
@@ -400,6 +480,15 @@ export async function deleteImpl(
       }
     }
 
+    if (mismatches.length > 0) {
+      throw new InlinePolicyPrincipalMismatchError({
+        policyLogicalId: logicalId,
+        physicalId,
+        mismatches,
+        context,
+      });
+    }
+
     if (secretPrincipalLacksGrant) {
       this.logger.warn(
         safeMsg`IAM policy ${logicalId}: a principal the secret's CURRENT value names does not hold this inline policy. The value may have rotated since the policy was attached, so a principal only the OLD value named may still hold it; or an earlier cdkd run already removed it there, or that principal was deleted first. The record is KEPT rather than read as deleted: delete the inline policy from any old principal by hand (the principals the current value names are done), then drop this record with ${pasteableCommand('cdkd orphan', [{ hole: 'constructPath' }]).command}, or, with no CDK app, ${stateOrphanRecordRemedy(context, logicalId)}.`
@@ -408,6 +497,11 @@ export async function deleteImpl(
     }
     this.logger.debug(`Successfully deleted IAM policy ${logicalId}`);
   } catch (error) {
+    // go-to-k/cdkd#6655: the identity refusals are worded by cdkd (no AWS
+    // text, logical ids only) and already marked.
+    if (error instanceof RecordedIdentityError) {
+      throw removedAny ? markDeleteStarted(error) : error;
+    }
     // go-to-k/cdkd#4150: the whole chain is masked, cause included — an SDK
     // error body can quote a principal name resolved from a secret. The
     // clone keeps each link's prototype, `$metadata` and markers, so the

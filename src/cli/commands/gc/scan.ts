@@ -15,10 +15,66 @@ import { displayIdent, displaySafe, safeMsg, UNRENDERABLE } from '../../../utils
 import { pasteableCommand } from '../../../utils/pasteable-command.js';
 import { accountArgs, withheldAccountClause } from '../../../state/malformed-resources-bag.js';
 import { collectAssetReferences, type AssetReferences } from './asset-references.js';
+import {
+  collectRetainedSignalReferences,
+  collectSignalReferences,
+} from './wait-condition-signals.js';
+
+/** A destroy's kept-resources record, a `state.json` sibling (go-to-k/cdkd#4705). */
+const RETAINED_FILE_SUFFIX = '/retained.json';
+
+/**
+ * The refusal for a state document the signal arm cannot walk. Names the key
+ * and the container, never a value: the document is untrusted and may hold
+ * secrets.
+ */
+function signalScanRefusal(key: string, reason: string): CdkdError {
+  return new CdkdError(
+    `${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} cannot be read for ` +
+      `wait condition handle references (${reason}) — aborting: gc must know every handle ` +
+      `that references a signal object before deleting any, and one could be hidden there. ` +
+      `Repair or remove the malformed file (inspect the object at that key), then re-run.`,
+    'GC_STATE_UNREADABLE'
+  );
+}
+
+/**
+ * Add the handles in every `retained.json` in the bucket (any prefix, the same
+ * whole-bucket rule as the state listing). A body that is not JSON or not a
+ * retained record aborts, like a state file.
+ */
+async function collectRetainedReferences(
+  stateBackend: Pick<S3StateBackend, 'listRawKeys' | 'getRawObject'>,
+  bucket: string,
+  referenced: Set<string>,
+  logger: Logger
+): Promise<void> {
+  const keys = (await stateBackend.listRawKeys('')).filter((k) => k.endsWith(RETAINED_FILE_SUFFIX));
+  for (const key of keys) {
+    const body = await stateBackend.getRawObject(key);
+    if (body === null) {
+      logger.debug(
+        safeMsg`Retained record ${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} disappeared during the scan — skipping`
+      );
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      // No cause: V8's SyntaxError quotes the body (issue #5247).
+      throw signalScanRefusal(key, 'not valid JSON');
+    }
+    const malformed = collectRetainedSignalReferences(parsed, bucket, referenced);
+    if (malformed !== undefined) throw signalScanRefusal(key, malformed);
+  }
+}
 
 /**
  * Scan every state file in the state bucket and collect the referenced
- * asset keys / image tags / digests for the marker's bucket + repo.
+ * asset keys / image tags / digests for the marker's bucket + repo (none
+ * without a marker), and, when `signals` is passed, the wait condition signal
+ * keys every handle references (go-to-k/cdkd#6699).
  *
  * Fail safe: a state file that fails to JSON-parse aborts the whole run —
  * a reference we could not read is a reference we would otherwise delete.
@@ -27,7 +83,7 @@ import { collectAssetReferences, type AssetReferences } from './asset-references
  */
 export async function scanReferencedAssets(
   stateBackend: Pick<S3StateBackend, 'listRawKeys' | 'getRawObject'>,
-  marker: BootstrapMarker,
+  marker: BootstrapMarker | null,
   logger: Logger,
   /**
    * The run's `--profile` and the state bucket this scan reads (go-to-k/cdkd#4648),
@@ -35,7 +91,15 @@ export async function scanReferencedAssets(
    * record was found at ({@link keyPrefixOf}): this command takes no
    * `--state-prefix` and lists the whole bucket.
    */
-  account: { profile?: string | undefined; stateBucket: string }
+  account: { profile?: string | undefined; stateBucket: string },
+  /**
+   * go-to-k/cdkd#6699: also collect the wait condition signal keys every
+   * handle references, in the SAME pass (one read of each state file serves
+   * both arms). Set only when the signal arm has candidates; a malformed
+   * container it cannot walk then aborts, while the asset arm alone keeps its
+   * parse-failure-only rule.
+   */
+  signals?: { referenced: Set<string> }
 ): Promise<AssetReferences> {
   const refs: AssetReferences = {
     s3Keys: new Set(),
@@ -43,7 +107,13 @@ export async function scanReferencedAssets(
     imageDigests: new Set(),
   };
   const stateKeys = await listAllStateKeys(stateBackend);
-  logger.info(`Scanning ${stateKeys.length} state file(s) for asset references...`);
+  const purpose =
+    marker !== null && signals !== undefined
+      ? 'asset and wait condition handle references'
+      : marker !== null
+        ? 'asset references'
+        : 'wait condition handle references';
+  logger.info(safeMsg`Scanning ${stateKeys.length} state file(s) for ${purpose}...`);
   for (const key of stateKeys) {
     const body = await stateBackend.getRawObject(key);
     if (body === null) {
@@ -151,7 +221,15 @@ export async function scanReferencedAssets(
         // V8's text goes to `debug` only, below.
       );
     }
-    collectAssetReferences(parsed, marker, refs);
+    if (marker !== null) collectAssetReferences(parsed, marker, refs);
+    if (signals !== undefined) {
+      const malformed = collectSignalReferences(parsed, account.stateBucket, signals.referenced);
+      if (malformed !== undefined) throw signalScanRefusal(key, malformed);
+    }
+  }
+  if (signals !== undefined) {
+    await collectRetainedReferences(stateBackend, account.stateBucket, signals.referenced, logger);
+    logger.debug(safeMsg`Referenced: ${signals.referenced.size} wait condition signal key(s)`);
   }
   logger.debug(
     `Referenced: ${refs.s3Keys.size} S3 key(s), ${refs.imageTags.size} image tag(s), ` +

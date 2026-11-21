@@ -8,6 +8,7 @@ import {
   type SecretSafeKeyDisplay,
 } from '../../../deployment/outputs-export-alias.js';
 import type { DestructiveImpact } from '../../../analyzer/destructive-changes.js';
+import type { PlannedEarlyDelete } from '../../../deployment/rollback-executor/early-deleted-old.js';
 import type { DiffTreeNode, UnreadableContainer } from './types.js';
 
 /** Serializable per-resource change record for `--json`. */
@@ -149,6 +150,8 @@ export interface DestructiveChangeJson {
   constructPath?: string;
   impact: DestructiveImpact;
   movedTo?: MovedTo;
+  /** go-to-k/cdkd#6713: the old copy is deleted before the deploy succeeds. */
+  earlyDelete?: PlannedEarlyDelete;
 }
 
 /**
@@ -212,12 +215,13 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     unreadableContainers: node.unreadableContainers,
     unreadableOrphans: node.unreadableOrphans,
     destructiveChanges: node.destructiveChanges.map(
-      ({ logicalId, resourceType, constructPath, impact, movedTo }) => ({
+      ({ logicalId, resourceType, constructPath, impact, movedTo, earlyDelete }) => ({
         logicalId,
         resourceType,
         ...(constructPath !== undefined && { constructPath }),
         impact,
         ...(movedTo !== undefined && { movedTo }),
+        ...(earlyDelete !== undefined && { earlyDelete }),
       })
     ),
     children: node.children.map(diffTreeToJson),

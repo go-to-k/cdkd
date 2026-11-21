@@ -311,17 +311,25 @@ message that prints the adoption command. See
 [Recovering from Orphaned Resources](troubleshooting-failed-deploy.md#recovering-from-orphaned-resources).
 [Import Existing Resources](import.md) has the import flags.
 
+#### Types whose create API would take the existing resource
+
+Some create APIs hand back or overwrite an existing resource of the same name
+instead of failing: `AWS::S3::Bucket`, `AWS::SNS::Topic`, `AWS::SQS::Queue`
+and `AWS::Events::Rule` among them. When cdkd's own provider creates one of
+these, cdkd first checks whether the name is taken. A taken name is refused
+with cdkd's own message in place of the service's error, and nothing is
+created. The fixes above apply.
+
+For an S3 bucket the message prints no `cdkd import` command line: the check
+also finds a bucket another account lets you list. Confirm the bucket is
+yours before you import it. A bucket of that name in another region, or one S3
+answers `403` for, is refused with its own message.
+
 #### Types that do not fail on a collision
 
-For two groups of types the deploy succeeds where you might expect this
-error:
-
-- `AWS::S3::Bucket` and `AWS::SNS::Topic` adopt the existing resource, and
-  cdkd re-applies your configuration to it. An S3
-  bucket you own in a different region is refused instead of adopted.
-- A type whose id AWS assigns (a VPC, an EC2 instance, an ACM certificate, a
-  CloudFront distribution) gets a second resource, and nothing tracks the
-  first one any more.
+A type whose id AWS assigns (a VPC, an EC2 instance, an ACM certificate, a
+CloudFront distribution) gets a second resource, and nothing tracks the
+first one any more.
 
 ### "self-signed certificate in certificate chain" on the very first command
 

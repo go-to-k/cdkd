@@ -217,7 +217,13 @@ async function executeDeploymentBody(
     currentState.resources,
     deleteChanges,
     (logicalId) => startedUpdates.has(logicalId) && !settledUpdates.has(logicalId),
-    () => [...inFlightWrites.values()].map(({ write }) => write)
+    () => [...inFlightWrites.values()].map(({ write }) => write),
+    // go-to-k/cdkd#6722: created by this deploy, or replaced by an update
+    // that answered `wasReplaced`: the record's identity id is the one this
+    // run's create answered, so an attach to it needs no compare read.
+    (logicalId) =>
+      engine.replacementRun.updateWasReplaced.get(logicalId) === true ||
+      completedOperations.some((op) => op.logicalId === logicalId && op.changeType === 'CREATE')
   );
   engine.replacementRun.deferredReplacedDeletes = new Map();
   // go-to-k/cdkd#5111: a deferred delete records its old resource here, so the

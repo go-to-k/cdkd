@@ -14,6 +14,12 @@ import { createMaskedLogSinks, withDerivedNameMasks } from '../../masked-retry-l
 import type { UpdateContext, ResourceUpdateResult } from '../../../types/resource.js';
 import { IAM_POLICY_NAME, readPolicyTargetLists, refusalRepair } from './shared.js';
 import { isDriftRevert, revertReplacementRefusal } from '../../revert-no-replace.js';
+import { RecordedIdentityError } from '../../recorded-identity.js';
+import { injectiveKey } from '../../../state/record-keys.js';
+import {
+  assertInlinePolicyAttachTargets,
+  verifyInlinePolicyPrincipals,
+} from './principal-identity.js';
 
 /**
  * Update an IAM inline policy
@@ -262,6 +268,78 @@ export async function update(
     const renamedAway = oldPolicyNames.filter(
       (name) => name.toLowerCase() !== newPolicyName.toLowerCase()
     );
+    // go-to-k/cdkd#6655: a principal LEAVING the lists loses the policy by
+    // name, so one that is a record of this stack with a recorded identity id
+    // is read first, before any write (one read each, at most five at a time;
+    // none for a principal outside the stack or without a usable id). A holder
+    // with another id is sent nothing and WARNED about, not refused: the one
+    // cdkd created is gone, its inline policy with it, so the update has
+    // nothing left to remove there. The record then holds the desired lists,
+    // which is what the policy is attached to, so the next deploy has nothing
+    // to repeat and no `effectiveProperties` narrowing is needed. A read that
+    // fails throws before any write; a principal already gone is skipped.
+    // The claim predicate is asked once per (principal, name), up front: a
+    // leaver another resource of this deploy claimed for every name it holds
+    // loses nothing, so it is neither read nor written.
+    const claimAnswers = new Map<string, boolean>();
+    const isClaimed = (kind: (typeof kinds)[number]['kind'], name: string, policyName: string) => {
+      const key = injectiveKey(kind, name, policyName);
+      let answer = claimAnswers.get(key);
+      if (answer === undefined) {
+        answer = context?.inlinePolicyClaimed?.(kind, name, policyName) === true;
+        claimAnswers.set(key, answer);
+      }
+      return answer;
+    };
+    const leaving = kinds.flatMap(({ kind, desired, recorded }) => {
+      const stays = new Set([...desired].map((name) => name.toLowerCase()));
+      return [...recorded]
+        .filter((name) => !stays.has(name.toLowerCase()))
+        .filter((name) => oldPolicyNames.some((policyName) => !isClaimed(kind, name, policyName)))
+        .map((name) => [kind, name] as const);
+    });
+    const verdicts = await verifyInlinePolicyPrincipals({
+      client: this.iamClient,
+      principals: leaving,
+      policyLogicalId: logicalId,
+      physicalId,
+      operation: 'update',
+    });
+    // go-to-k/cdkd#6722: every principal the policy is put on is compared too
+    // (one read each for an in-stack principal with a recorded id that this
+    // deploy did not create or replace), and another holder of a name refuses
+    // the update before any write: a put to it would grant the policy to a
+    // stranger. A rollback replaying this method backwards (the recorded bag
+    // as the desired side) re-adds a principal the forward update left as a
+    // mismatch; its replay view keeps no pre-run records, so it is read and
+    // refused the same way.
+    await assertInlinePolicyAttachTargets({
+      client: this.iamClient,
+      principals: kinds.flatMap(({ kind, desired }) =>
+        [...desired].map((name) => [kind, name] as const)
+      ),
+      policyLogicalId: logicalId,
+      physicalId,
+    });
+    const warned = new Set<string>();
+    /** `true` when nothing may be sent to this leaving principal. */
+    const settledByVerdict = (kind: (typeof kinds)[number]['kind'], name: string): boolean => {
+      const key = injectiveKey(kind, name);
+      const verdict = verdicts.get(key);
+      if (verdict?.kind === 'mismatch') {
+        if (!warned.has(key)) {
+          warned.add(key);
+          log.warn(
+            `IAM policy ${logicalId}: the ${verdict.label} ${verdict.principalLogicalId} leaving ` +
+              `its principals is not the one cdkd created (its ${verdict.attribute} differs from ` +
+              `the recorded one), so cdkd sent it no removal: the one cdkd created is gone, and ` +
+              `its inline policy with it. Leave that ${verdict.label} alone.`
+          );
+        }
+        return true;
+      }
+      return verdict?.kind === 'gone';
+    };
     // Per kind, puts before removals: a principal belongs to one kind, so a
     // failing put never strips a still-listed principal of the policy, and
     // an earlier kind's leaving principals are already revoked when a later
@@ -278,12 +356,13 @@ export async function update(
       const stays = new Set([...desired].map((name) => name.toLowerCase()));
       for (const name of recorded) {
         for (const policyName of stays.has(name.toLowerCase()) ? renamedAway : oldPolicyNames) {
-          if (context?.inlinePolicyClaimed?.(kind, name, policyName) === true) {
+          if (isClaimed(kind, name, policyName)) {
             log.debug(
               `Kept inline policy ${v(policyName)} on ${kind} ${v(name)}: another resource of this deploy or rollback wrote it`
             );
             continue;
           }
+          if (!stays.has(name.toLowerCase()) && settledByVerdict(kind, name)) continue;
           try {
             await remove(name, policyName);
             log.debug(`Removed inline policy ${v(policyName)} from ${kind} ${v(name)}`);
@@ -312,6 +391,9 @@ export async function update(
       },
     };
   } catch (error) {
+    // go-to-k/cdkd#6655: a principal read answering without its id, worded by
+    // cdkd (logical ids only) and marked.
+    if (error instanceof RecordedIdentityError) throw error;
     const cause = error instanceof Error ? error : undefined;
     throw this.wrapMaskedError(
       log.mask,

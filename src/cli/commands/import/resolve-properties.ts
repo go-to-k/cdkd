@@ -422,6 +422,8 @@ export async function resolveImportedProperties(
     // go-to-k/cdkd#6170: the tail the stack's deploys resolve `AWS::StackId`
     // with, so an imported record holds the value the next deploy compares.
     stackIdTail: () => stackIdTailOf(stackState, stackState.stackName),
+    // go-to-k/cdkd#6705: the signal receiver's ARN, when the stack has one.
+    stackIdOverride: () => stackState?.signalReceiverStackId,
     // go-to-k/cdkd#6400: the cross-stack reads this resolution makes, persisted
     // onto the record after the loop the way a deploy persists its own. Without
     // them the destroy-time strong-reference scan cannot see that an imported

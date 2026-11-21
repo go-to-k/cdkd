@@ -34,19 +34,32 @@ import { purgeNoncurrentKeyVersions } from '../state/s3-noncurrent-version-purge
 import { listSignalVersions } from './wait-condition-signal-versions.js';
 import { WAIT_CONDITION_SIGNAL_PREFIX } from '../state/state-prefix.js';
 
-/** SigV4's ceiling for a pre-signed URL: seven days. */
-export const SIGNAL_URL_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60;
+/**
+ * 12 hours: what CloudFormation signs its own handle URL for (measured,
+ * `X-Amz-Expires=43199`), and the longest `Timeout` a wait condition takes.
+ * Longer would only widen the window the bearer URL is usable (#6704).
+ */
+export const SIGNAL_URL_EXPIRES_IN_SECONDS = 12 * 60 * 60;
 
 /** A signal body larger than this is ignored: CloudFormation's own cap is far smaller. */
 export const MAX_SIGNAL_BYTES = 64 * 1024;
 
-/** The physical id a pre-#6694 cdkd recorded for a handle: no URL behind it. */
-export const LEGACY_HANDLE_ID_PREFIX = 'cdkd-wait-condition-handle-';
+export { LEGACY_HANDLE_ID_PREFIX } from './wait-condition-handle-id.js';
+import { isLegacyHandleId } from './wait-condition-handle-id.js';
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const SIGNAL_KEY = new RegExp(
   `^${WAIT_CONDITION_SIGNAL_PREFIX}/[A-Za-z0-9]{1,255}-${UUID}\\.json$`
 );
+
+/**
+ * Whether `key` is EXACTLY a key {@link signalKeyFor} mints: under
+ * {@link WAIT_CONDITION_SIGNAL_PREFIX}, an alphanumeric logical id, a UUID.
+ * `cdkd gc`'s sweep (go-to-k/cdkd#6699) deletes only keys this accepts.
+ */
+export function isSignalKey(key: string): boolean {
+  return SIGNAL_KEY.test(key);
+}
 
 /** The one key a handle's URL writes to. Logical ids are alphanumeric. */
 export function signalKeyFor(logicalId: string): string {
@@ -66,7 +79,7 @@ export type HandleUrlVerdict =
   | { kind: 'foreign' };
 
 export function classifyHandleUrl(handle: string, bucket: string): HandleUrlVerdict {
-  if (handle.startsWith(LEGACY_HANDLE_ID_PREFIX)) return { kind: 'legacy' };
+  if (isLegacyHandleId(handle)) return { kind: 'legacy' };
   let parsed: URL;
   try {
     parsed = new URL(handle);
@@ -193,10 +206,13 @@ export class WaitConditionSignalStore {
 
   /**
    * Issue a handle URL for a new key. `expiresAt` is when the URL stops
-   * working: seven days, or sooner when the signing credentials are temporary
-   * and expire first (SigV4 cannot outlive its session).
+   * working: 12 hours, or sooner when the signing credentials are temporary
+   * and expire first (SigV4 cannot outlive its session) — then
+   * `limitedByCredentials` is set.
    */
-  async issueSignalUrl(logicalId: string): Promise<{ url: string; key: string; expiresAt: Date }> {
+  async issueSignalUrl(
+    logicalId: string
+  ): Promise<{ url: string; key: string; expiresAt: Date; limitedByCredentials: boolean }> {
     const bucket = this.requireBucket();
     const client = await this.client();
     const key = signalKeyFor(logicalId);
@@ -204,6 +220,7 @@ export class WaitConditionSignalStore {
       expiresIn: SIGNAL_URL_EXPIRES_IN_SECONDS,
     });
     let expiresAt = new Date(Date.now() + SIGNAL_URL_EXPIRES_IN_SECONDS * 1000);
+    let limitedByCredentials = false;
     try {
       const provider = (client as { config?: { credentials?: unknown } }).config?.credentials;
       const creds =
@@ -212,11 +229,12 @@ export class WaitConditionSignalStore {
           : undefined;
       if (creds?.expiration instanceof Date && creds.expiration < expiresAt) {
         expiresAt = creds.expiration;
+        limitedByCredentials = true;
       }
     } catch {
       // The URL is already signed; its lifetime is only reported.
     }
-    return { url, key, expiresAt };
+    return { url, key, expiresAt, limitedByCredentials };
   }
 
   /**
@@ -289,31 +307,45 @@ export class WaitConditionSignalStore {
    */
   async deleteSignals(key: string): Promise<void> {
     try {
-      const bucket = this.requireBucket();
-      const client = await this.client();
-      const owner = await expectedOwnerParam(client);
-      const deleted = await client.send(
-        new DeleteObjectCommand({ Bucket: bucket, Key: key, ...owner })
-      );
-      await purgeNoncurrentKeyVersions(client, bucket, [key], { requestFields: owner });
-      // On the versioned state bucket the delete left a marker; the prefix has
-      // no lifecycle rule, so remove it by its own version id too.
-      if (deleted.DeleteMarker === true && typeof deleted.VersionId === 'string') {
-        await client.send(
-          new DeleteObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            VersionId: deleted.VersionId,
-            ...owner,
-          })
-        );
-      }
+      await this.removeSignalObjects(key);
     } catch (error) {
       const failure = describeAwsFailure(error);
       this.logger.warn(
         safeMsg`Could not remove the wait condition signal object ${key}: ${failure.summary}`
       );
       this.logger.debug(safeMsg`Signal object delete failure detail: ${failure.detail}`);
+    }
+  }
+
+  /**
+   * As {@link deleteSignals}, but a failure THROWS: `cdkd gc` (go-to-k/cdkd#6699)
+   * must report a key it could not remove rather than print success. A key
+   * that is not exactly a minted signal key is refused before any call, so no
+   * caller can point this at anything else in the state bucket. The
+   * noncurrent-version purge warns rather than throwing, as on every caller.
+   */
+  async removeSignalObjects(key: string): Promise<void> {
+    if (!isSignalKey(key)) {
+      throw new Error('Refusing to delete a key that is not a wait condition signal key.');
+    }
+    const bucket = this.requireBucket();
+    const client = await this.client();
+    const owner = await expectedOwnerParam(client);
+    const deleted = await client.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: key, ...owner })
+    );
+    await purgeNoncurrentKeyVersions(client, bucket, [key], { requestFields: owner });
+    // On the versioned state bucket the delete left a marker; the prefix has
+    // no lifecycle rule, so remove it by its own version id too.
+    if (deleted.DeleteMarker === true && typeof deleted.VersionId === 'string') {
+      await client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          VersionId: deleted.VersionId,
+          ...owner,
+        })
+      );
     }
   }
 }

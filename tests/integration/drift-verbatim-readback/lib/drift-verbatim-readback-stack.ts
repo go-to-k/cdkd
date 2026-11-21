@@ -25,7 +25,10 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *   `PermissionsBoundary` or `Policies` (the Bare* principals), so the readback
  *   shows which of those keys AWS fills on its own. The Sibling* principals
  *   are the ones the inline and managed policies above attach to, so their
- *   readback shows what a sibling's write looks like on the principal.
+ *   readback shows what a sibling's write looks like on the principal; an
+ *   `AWS::IAM::UserToGroupAddition` adds the Sibling user to the Sibling group.
+ *   verify.sh grants each principal members out of band on both baselines and
+ *   checks that `drift --revert` removes exactly those, keeping the siblings'.
  *
  * Each `Deny` names an action nothing in the deploy / drift / destroy path
  * calls, so the policies cannot lock the fixture out of its own teardown.
@@ -44,6 +47,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * covers: AWS::IAM::Role
  * covers: AWS::IAM::User
  * covers: AWS::IAM::Group
+ * covers: AWS::IAM::UserToGroupAddition
  */
 export class DriftVerbatimReadbackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -176,6 +180,10 @@ export class DriftVerbatimReadbackStack extends cdk.Stack {
       // IAM refuses a managed policy without `Version`
       // (MalformedPolicyDocument); its readback was measured with one.
       policyDocument: { Version: '2012-10-17', ...denyLegalHold },
+    });
+    new iam.CfnUserToGroupAddition(this, 'ProbeUserToGroupAddition', {
+      groupName: siblingGroup.ref,
+      users: [siblingUser.ref],
     });
 
     // --- #6627: principals declaring no attachment-class key ---------------

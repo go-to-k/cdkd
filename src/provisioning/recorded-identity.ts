@@ -7,6 +7,8 @@ import { ProvisioningError } from '../utils/error-handler.js';
 import { markNotGone } from './not-gone.js';
 import type { DeleteContext } from './region-check.js';
 import { stateOrphanRecordRemedy } from './state-orphan-remedy.js';
+import { remedyLogicalId } from './import-helpers.js';
+import { commandHole, pasteableCommand } from '../utils/pasteable-command.js';
 import { safeMsg } from '../utils/display-safe.js';
 
 /**
@@ -72,13 +74,48 @@ export class RecordedIdentityMismatchError extends RecordedIdentityError {
     physicalId: string;
     attribute: string;
     context: DeleteContext | undefined;
+    /**
+     * How the USER can hand the name to another resource of their own (`an
+     * RDS blue/green switchover, or a restore ...`): static text, never a
+     * value. When set, the message says the resource under the name is not
+     * the recorded one without claiming the recorded one is gone (a
+     * blue/green switchover keeps it under another name), and names
+     * {@link reAdoptRemedy} for the user's own replacement before the
+     * `cdkd state orphan` step. Absent: the IAM wording.
+     */
+    replacedBy?: string | undefined;
+    /**
+     * go-to-k/cdkd#6665: how AWS ITSELF re-creates a resource of the type
+     * under its fixed name for a resource of the stack (`Lambda writing to
+     * its /aws/lambda/<function> group`): static text, never a value. When
+     * set (and `replacedBy` is not), the message names that benign cause
+     * with {@link reAdoptRemedy} and deleting it by hand, before the
+     * `cdkd state orphan` step for any other holder.
+     */
+    recreatedBy?: string | undefined;
   }) {
-    const { label, resourceType, logicalId, physicalId, attribute, context } = params;
+    const { label, resourceType, logicalId, physicalId, attribute, context, replacedBy } = params;
+    const { recreatedBy } = params;
     super(
-      `Cannot delete ${label} ${logicalId}: the ${label} holding the name cdkd recorded is not ` +
-        `the one cdkd created (its ${attribute} differs from the recorded one), so cdkd sent no ` +
-        `delete and kept the record. Leave that ${label} alone; if the one cdkd created is gone, ` +
-        `drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`,
+      replacedBy === undefined && recreatedBy !== undefined
+        ? `Cannot delete ${label} ${logicalId}: the ${label} now holding the name cdkd recorded ` +
+            `is not the one cdkd created (its ${attribute} differs from the recorded one), so cdkd ` +
+            `sent no delete and kept the record. If AWS re-created it for this stack's own ` +
+            `resource (${recreatedBy}), adopt it with ${reAdoptRemedy(logicalId)} and re-run, or ` +
+            `delete it yourself and re-run. Otherwise leave that ${label} alone and drop the ` +
+            `record with ${stateOrphanRecordRemedy(context, logicalId)}.`
+        : replacedBy === undefined
+          ? `Cannot delete ${label} ${logicalId}: the ${label} holding the name cdkd recorded is not ` +
+            `the one cdkd created (its ${attribute} differs from the recorded one), so cdkd sent no ` +
+            `delete and kept the record. Leave that ${label} alone; if the one cdkd created is gone, ` +
+            `drop the record with ${stateOrphanRecordRemedy(context, logicalId)}.`
+          : `Cannot delete ${label} ${logicalId}: the ${label} now holding the name cdkd recorded is ` +
+            `not the one cdkd recorded (its ${attribute} differs from the recorded one), so cdkd ` +
+            `sent no delete and kept the record; the recorded one may still exist under another ` +
+            `name. If you replaced it yourself (${replacedBy}), adopt the new one with ` +
+            `${reAdoptRemedy(logicalId)} and re-run. Otherwise leave that ${label} alone, and to ` +
+            `stop cdkd managing the recorded one, drop the record with ` +
+            `${stateOrphanRecordRemedy(context, logicalId)}.`,
       resourceType,
       logicalId,
       physicalId
@@ -88,6 +125,24 @@ export class RecordedIdentityMismatchError extends RecordedIdentityError {
     this.name = 'RecordedIdentityMismatchError';
     markNonRetryable(this);
   }
+}
+
+/**
+ * go-to-k/cdkd#6655: `cdkd import <stack> --resource <logicalId>=<physicalId>
+ * --force`, which re-reads the resource under the name and replaces the
+ * record, recorded identity id included (`reimportedAttributes`): the
+ * remedy for a resource the user put under the name themselves. The stack,
+ * region and physical id are quoted holes (no value is printed); the logical
+ * id is named only when plain.
+ */
+export function reAdoptRemedy(logicalId: string): string {
+  return pasteableCommand('cdkd import', [
+    { hole: 'stack' },
+    { flag: '--region', hole: 'region' },
+    { literal: '--resource' },
+    { literal: `${remedyLogicalId(logicalId)}=${commandHole('physicalId')}` },
+    { literal: '--force' },
+  ]).command;
 }
 
 /**
@@ -124,6 +179,10 @@ export async function assertRecordedIdentity(params: {
   /** The same read again, answering the live id (`undefined` when it has none). */
   reread: () => Promise<string | undefined>;
   context: DeleteContext | undefined;
+  /** {@link RecordedIdentityMismatchError}'s `replacedBy`. */
+  replacedBy?: string | undefined;
+  /** {@link RecordedIdentityMismatchError}'s `recreatedBy`. */
+  recreatedBy?: string | undefined;
 }): Promise<void> {
   const recorded = recordedIdentityId(params.resourceType, params.context);
   if (recorded === undefined) return;
@@ -154,6 +213,8 @@ export async function assertRecordedIdentity(params: {
     physicalId,
     attribute: recorded.key,
     context,
+    replacedBy: params.replacedBy,
+    recreatedBy: params.recreatedBy,
   });
 }
 

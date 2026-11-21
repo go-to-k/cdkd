@@ -66,6 +66,12 @@ import {
   stringListMember,
 } from '../settle-own-write-members.js';
 
+import {
+  clearOwnWriteRemovals,
+  recordOwnWriteRemoval,
+  takeOwnWriteRemovals,
+} from '../own-write-removals.js';
+
 const INSTANCE_PROFILE_TYPE = 'AWS::IAM::InstanceProfile';
 
 /**
@@ -392,6 +398,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Updating IAM instance profile ${logicalId}: ${v(physicalId)}`);
+    // go-to-k/cdkd#6609: a note an earlier update that threw left behind.
+    clearOwnWriteRemovals(INSTANCE_PROFILE_TYPE, physicalId);
 
     // BOTH sides before any call (go-to-k/cdkd#3906). A recorded string was
     // walked by character: the real role was removed (`.includes` on a string
@@ -465,6 +473,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
             }
             log.debug(`Role ${v(roleName)} already removed from instance profile ${v(physicalId)}`);
           }
+          // go-to-k/cdkd#6609: noted so the capture right after waits for it
+          // to be gone (`own-write-removals.ts`).
+          recordOwnWriteRemoval(INSTANCE_PROFILE_TYPE, physicalId, 'Roles', roleName);
         }
       }
 
@@ -826,6 +837,12 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    // go-to-k/cdkd#6609: what the write removed, taken before the first await
+    // (`own-write-removals.ts`).
+    const removed =
+      context?.afterOwnWrite === true
+        ? takeOwnWriteRemovals(INSTANCE_PROFILE_TYPE, physicalId)?.get('Roles')
+        : undefined;
     let profile;
     try {
       const resp = await this.iamClient.send(
@@ -847,18 +864,23 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
 
     const declared =
       context?.afterOwnWrite === true ? declaredStringList(properties?.['Roles']) : undefined;
-    if (declared !== undefined) {
+    if (declared !== undefined || (removed?.size ?? 0) > 0) {
       await settleOwnWriteMembers(
         result,
         [
-          stringListMember('Roles', declared, async () => {
-            const resp = await this.iamClient.send(
-              new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
-            );
-            return resp.InstanceProfile
-              ? { value: profileRoleNames(resp.InstanceProfile) }
-              : 'failed';
-          }),
+          stringListMember(
+            'Roles',
+            declared ?? [],
+            async () => {
+              const resp = await this.iamClient.send(
+                new GetInstanceProfileCommand({ InstanceProfileName: physicalId })
+              );
+              return resp.InstanceProfile
+                ? { value: profileRoleNames(resp.InstanceProfile) }
+                : 'failed';
+            },
+            removed
+          ),
         ],
         this.ownWriteRereadDelaysMs,
         (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::InstanceProfile', key)

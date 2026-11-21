@@ -200,7 +200,12 @@ export async function provisionUpdate(
     recreateDirectionFor(engine.options, stackName, logicalId) === undefined &&
     recordMatchesDesired &&
     unsettledNames.size === 0;
-  const mayTakeNoChangeSkip = unchangedApartFromHeal && change.nestedChildHeal !== true;
+  // go-to-k/cdkd#6704: nor is a row the diff marked for a provider re-create
+  // with no property change (a legacy wait condition handle issuing its URL).
+  const mayTakeNoChangeSkip =
+    unchangedApartFromHeal &&
+    change.nestedChildHeal !== true &&
+    !(change.providerReplacement !== undefined && change.propertyChanges?.length === 0);
   // ...unless it reads a redacted value all the same (the check's prediction
   // missed): sending it would take the #2274 refusal below, failing a deploy
   // of a stack nobody changed. It is skipped instead, and the parent's record

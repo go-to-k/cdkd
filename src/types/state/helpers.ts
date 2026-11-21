@@ -288,6 +288,7 @@ export function stackInstanceIdCarriedFrom(
         | 'pendingMovesOut'
         | 'terminationProtection'
         | 'nestedSsmNamesChecked'
+        | 'signalReceiverStackId'
       >
     | null
     | undefined
@@ -300,6 +301,7 @@ export function stackInstanceIdCarriedFrom(
   | 'pendingMovesOut'
   | 'terminationProtection'
   | 'nestedSsmNamesChecked'
+  | 'signalReceiverStackId'
 > {
   // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
   // its id -- a writer that dropped them would hand a re-added resource a
@@ -336,6 +338,11 @@ export function stackInstanceIdCarriedFrom(
     // go-to-k/cdkd#6282: so does the nested-children check -- a writer that
     // dropped it would make the next deploy read every child record again.
     ...(previous?.nestedSsmNamesChecked === true && { nestedSsmNamesChecked: true }),
+    // go-to-k/cdkd#6705: so does the signal receiver -- a writer that dropped
+    // it would move `AWS::StackId` off the receiver, and its CDK grant with it.
+    ...(typeof previous?.signalReceiverStackId === 'string' && {
+      signalReceiverStackId: previous.signalReceiverStackId,
+    }),
   };
 }
 

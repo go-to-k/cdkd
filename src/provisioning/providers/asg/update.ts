@@ -504,6 +504,7 @@ export async function update(
       markUnsettled: context?.markUnsettled,
       startedAt,
       mask,
+      rollingSignals: context?.rollingSignals,
     });
   }
   return result;

@@ -30,10 +30,16 @@ import {
   DEFAULT_STATE_PREFIX,
   CUSTOM_RESOURCE_RESPONSE_PREFIX,
 } from '../state-file-keys.js';
-import { displayIdent } from '../../../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../../../utils/display-safe.js';
 import { awsClientDefaults } from '../../../utils/aws-client-defaults.js';
 import { s3ClientDefaults } from '../../../utils/s3-client-defaults.js';
 import { scanReferencedAssets } from './scan.js';
+import type { AssetReferences } from './asset-references.js';
+import {
+  listAgedSignalObjects,
+  deleteWaitConditionSignalCandidates,
+} from './wait-condition-signals.js';
+import { WaitConditionSignalStore } from '../../../provisioning/wait-condition-signal-store.js';
 import {
   listS3Candidates,
   listResponsePlaceholderCandidates,
@@ -236,28 +242,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     //    account that has placeholders and no asset marker. The guard now also
     //    covers that case, which is the safe direction: gc refuses rather than
     //    acting while a deploy is in flight.
-    const lockKeys = await listAllLockKeys(stateBackend);
-    if (lockKeys.length > 0) {
-      const listing = lockKeys
-        // Both halves are sanitised: `describeStateKey` renders the split, and
-        // the raw KEY beside it is an S3 key with the same provenance — leaving
-        // it bare would have made the first half inert, since the same planted
-        // control characters reach the same terminal line either way
-        // (go-to-k/cdkd#3179 C).
-        .map(
-          (k) =>
-            `  - ${describeStateKey(k, LOCK_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${displayIdent(k, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })}]`
-        )
-        .join('\n');
-      throw new CdkdError(
-        `Refusing to gc while ${lockKeys.length} stack(s) hold an active lock ` +
-          `(a deploy in flight may have published assets whose state write has not ` +
-          `landed yet):\n${listing}\n` +
-          `Wait for the operation(s) to finish — or clear a stale lock with ` +
-          `${pasteableCommand('cdkd force-unlock', [{ hole: 'stack' }]).command} — then re-run ${proseQuoted(cdkdRemedy('cdkd gc'))}.`,
-        'GC_LOCKED'
-      );
-    }
+    await refuseWhileLocked(stateBackend);
 
     // 3. Abandoned custom-resource response placeholders in the STATE bucket
     //    (issue #2052). Collected here, before the asset-marker gate, because
@@ -269,9 +254,38 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       logger
     );
 
+    // 3b. Orphaned wait condition signal objects in the STATE bucket
+    //     (go-to-k/cdkd#6699), before the asset-marker gate for the same reason.
+    //     Listed BEFORE the state files are read: see the race note in
+    //     `gc/wait-condition-signals.ts`. The marker is parsed here, ahead of
+    //     the gate, so ONE state scan serves this arm and the asset arm.
+    const agedSignals = await listAgedSignalObjects(stateBackend, cutoffMs, logger);
+    const marker = markerBody === null ? null : parseBootstrapMarker(markerBody, resolvedMarkerKey);
+
+    // 4. Reference collection, one pass over every state file in the bucket.
+    //    Skipped entirely with no marker and no aged signal object: there is
+    //    nothing a reference could protect.
+    const referencedSignals = new Set<string>();
+    let refs: AssetReferences | null = null;
+    if (marker !== null || agedSignals.length > 0) {
+      refs = await scanReferencedAssets(
+        stateBackend,
+        marker,
+        logger,
+        { profile: options.profile, stateBucket: bucketName },
+        agedSignals.length > 0 ? { referenced: referencedSignals } : undefined
+      );
+    }
+    const signalCandidates = agedSignals.filter((c) => !referencedSignals.has(c.key));
+    if (signalCandidates.length > 0) {
+      // A record that moved between two state files during the scan could be
+      // missed in both; every such move holds a lock, so look again.
+      await refuseWhileLocked(stateBackend);
+    }
+
     if (markerBody === null) {
       const probed = rawMarkerKey === markerKey ? markerKey : `${markerKey}, ${rawMarkerKey}`;
-      if (responseCandidates.length === 0) {
+      if (responseCandidates.length === 0 && signalCandidates.length === 0) {
         logger.info(
           `No bootstrap marker for region '${region}' (${probed}) — the region is not ` +
             `opted in to cdkd asset storage; nothing to garbage-collect. ` +
@@ -286,22 +300,15 @@ export async function gcCommand(options: GcOptions): Promise<void> {
         `No bootstrap marker for region '${region}' (${probed}) — the region is not ` +
           `opted in to cdkd asset storage, so no assets are in scope. ` +
           `(CDK bootstrap storage is 'cdk gc' territory.) Continuing with the ` +
-          `state bucket's abandoned custom-resource response placeholders.`
+          `state bucket's ${stateBucketArmsNoun(responseCandidates.length, signalCandidates.length)}.`
       );
     }
-    const marker = markerBody === null ? null : parseBootstrapMarker(markerBody, resolvedMarkerKey);
 
-    // 4. Reference collection + asset candidates, age-guarded by --older-than.
-    //    Skipped entirely with no marker: there is no asset bucket to scan, and
-    //    `scanReferencedAssets` needs the marker to know what a reference to one
-    //    even looks like.
+    // 4b. Asset candidates, age-guarded by --older-than. Skipped with no
+    //     marker: there is no asset bucket to scan.
     let s3Candidates: S3Candidate[] = [];
     let ecrCandidates: EcrCandidate[] = [];
-    if (marker !== null) {
-      const refs = await scanReferencedAssets(stateBackend, marker, logger, {
-        profile: options.profile,
-        stateBucket: bucketName,
-      });
+    if (marker !== null && refs !== null) {
       s3Candidates = await listS3Candidates(
         awsClients.s3,
         marker.assetBucket,
@@ -328,13 +335,15 @@ export async function gcCommand(options: GcOptions): Promise<void> {
       marker !== null &&
       s3Candidates.length === 0 &&
       ecrCandidates.length === 0 &&
-      responseCandidates.length === 0
+      responseCandidates.length === 0 &&
+      signalCandidates.length === 0
     ) {
       logger.info(
         `Nothing to garbage-collect in region '${region}': every object in ` +
           `${marker.assetBucket} / image in ${marker.containerRepo} is either ` +
           `referenced by a deployed stack or newer than the --older-than cutoff, ` +
-          `and no abandoned custom-resource response placeholder is older than it either.`
+          `and no abandoned custom-resource response placeholder or orphaned wait ` +
+          `condition signal object is older than it either.`
       );
       return;
     }
@@ -343,6 +352,8 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     const s3Bytes = s3Candidates.reduce((sum, c) => sum + c.size, 0);
     const ecrBytes = ecrCandidates.reduce((sum, c) => sum + c.size, 0);
     const responseBytes = responseCandidates.reduce((sum, c) => sum + c.size, 0);
+    const signalBytes = signalCandidates.reduce((sum, c) => sum + c.size, 0);
+    const reclaimBytes = s3Bytes + ecrBytes + responseBytes + signalBytes;
     // Named from the marker when there is one. The asset arms are empty without
     // it, so these are only ever interpolated under a marker — spelled as a
     // narrowing rather than a `?? ''` fallback, which would quietly print
@@ -363,13 +374,22 @@ export async function gcCommand(options: GcOptions): Promise<void> {
           `s3://${bucketName}/${c.key} (${formatBytes(c.size)}, ${formatAge(c.lastModified)}) ` +
           `[abandoned custom-resource response]`
       ),
+      ...signalCandidates.map(
+        (c) =>
+          `s3://${bucketName}/${c.key} (${formatBytes(c.size)}, ${formatAge(c.lastModified)}) ` +
+          `[orphaned wait condition signal, all versions]`
+      ),
     ];
     const totals =
       `Total: ${s3Candidates.length} S3 object(s) (${formatBytes(s3Bytes)}) + ` +
       `${ecrCandidates.length} ECR image(s) (${formatBytes(ecrBytes)}) + ` +
       `${responseCandidates.length} custom-resource response placeholder(s) ` +
-      `(${formatBytes(responseBytes)}) = ` +
-      `${formatBytes(s3Bytes + ecrBytes + responseBytes)} reclaimable`;
+      `(${formatBytes(responseBytes)})` +
+      (signalCandidates.length > 0
+        ? ` + ${signalCandidates.length} wait condition signal object(s) ` +
+          `(${formatBytes(signalBytes)}, current versions)`
+        : '') +
+      ` = ${formatBytes(reclaimBytes)} reclaimable`;
 
     if (options.dryRun) {
       logger.info('');
@@ -504,7 +524,27 @@ export async function gcCommand(options: GcOptions): Promise<void> {
           `placeholder(s) (${formatBytes(responseBytes)}) from ${bucketName}`
       );
     }
-    logger.info(`\n✓ gc completed: ${formatBytes(s3Bytes + ecrBytes + responseBytes)} reclaimed`);
+    if (signalCandidates.length > 0) {
+      // go-to-k/cdkd#6699. Through the signal store, the producer's own
+      // delete: the key, every noncurrent version and the delete marker (the
+      // prefix has no lifecycle rule to expire either). The store refuses a key
+      // that is not exactly a minted signal key, a second fence beside the
+      // listing's shape filter. Its client is region-corrected for the STATE
+      // bucket, like the backend.
+      // A record that moved in while the confirmation prompt waited.
+      await refuseWhileLocked(stateBackend);
+      const store = new WaitConditionSignalStore();
+      store.setBucket(bucketName);
+      await deleteWaitConditionSignalCandidates(
+        signalCandidates,
+        (key) => store.removeSignalObjects(key),
+        bucketName
+      );
+      logger.info(
+        safeMsg`✓ Deleted ${signalCandidates.length} orphaned wait condition signal object(s) (${formatBytes(signalBytes)}) from ${bucketName}`
+      );
+    }
+    logger.info(`\n✓ gc completed: ${formatBytes(reclaimBytes)} reclaimed`);
   } finally {
     ecrClient.destroy();
     // If the backend rebuilt its client for the state bucket's region it
@@ -512,4 +552,39 @@ export async function gcCommand(options: GcOptions): Promise<void> {
     markerS3Client.destroy();
     awsClients.destroy();
   }
+}
+
+/**
+ * Lock guard: ANY stack lock in the bucket refuses the run. See step 2 of
+ * {@link gcCommand}; the signal arm calls it a second time after its scan.
+ */
+async function refuseWhileLocked(stateBackend: S3StateBackend): Promise<void> {
+  const lockKeys = await listAllLockKeys(stateBackend);
+  if (lockKeys.length === 0) return;
+  const listing = lockKeys
+    // Both halves are sanitised: `describeStateKey` renders the split, and
+    // the raw KEY beside it is an S3 key with the same provenance — leaving
+    // it bare would have made the first half inert, since the same planted
+    // control characters reach the same terminal line either way
+    // (go-to-k/cdkd#3179 C).
+    .map(
+      (k) =>
+        `  - ${describeStateKey(k, LOCK_FILE_SUFFIX, DEFAULT_STATE_PREFIX)}  [${displayIdent(k, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })}]`
+    )
+    .join('\n');
+  throw new CdkdError(
+    `Refusing to gc while ${lockKeys.length} stack(s) hold an active lock ` +
+      `(a deploy in flight may have published assets whose state write has not ` +
+      `landed yet):\n${listing}\n` +
+      `Wait for the operation(s) to finish — or clear a stale lock with ` +
+      `${pasteableCommand('cdkd force-unlock', [{ hole: 'stack' }]).command} — then re-run ${proseQuoted(cdkdRemedy('cdkd gc'))}.`,
+    'GC_LOCKED'
+  );
+}
+
+/** What the no-marker message says gc continues with. */
+function stateBucketArmsNoun(responses: number, signals: number): string {
+  if (signals === 0) return 'abandoned custom-resource response placeholders';
+  if (responses === 0) return 'orphaned wait condition signal objects';
+  return 'abandoned custom-resource response placeholders and orphaned wait condition signal objects';
 }

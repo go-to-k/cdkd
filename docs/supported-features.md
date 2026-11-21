@@ -20,7 +20,7 @@ locally.
 | Feature | Status | What cdkd does |
 | --- | --- | --- |
 | `UpdatePolicy` | ⚠️ Opt-in, partial | Skipped by default; honored with `--update-policy` (the Auto Scaling group policies and `CodeDeployLambdaAliasUpdate`) |
-| `CreationPolicy` | ⚠️ Not waited on | Creates or replaces the resource and logs a warning |
+| `CreationPolicy` | ✅ | Waits for `cfn-signal` through the stack's signal receiver; see [`CreationPolicy` and `cfn-init`](#creationpolicy-and-cfn-init) |
 | A resource type with no SDK provider and no Cloud Control support | Not supported | Fails the deploy with an error naming the type |
 
 ### `UpdatePolicy` is opt-in
@@ -184,9 +184,26 @@ the desired capacity instead, so cdkd translates:
 | Every instance replaced | `SkipMatching: false` |
 
 Where the percentages round, a batch can be smaller than `MaxBatchSize`, never
-larger. `WaitOnResourceSignals` cannot be honored, because `cfn-signal`
-signals a CloudFormation stack: cdkd logs a warning and waits `PauseTime`
-(`PT5M` when unset) after each new instance instead. A refresh has no setting
+larger.
+
+`WaitOnResourceSignals` is honored through the stack's
+[signal receiver](#creationpolicy-and-cfn-init) when the group's launch
+template sends a signed `cfn-signal --resource <group>` (AWS CDK
+`initOptions.includeRole: true`). Right before the refresh starts, cdkd arms
+the receiver for one signal per instance the refresh replaces (the group's
+in-service instances not protected from scale-in, at most its desired
+capacity); an update that runs no refresh never touches the receiver:
+
+| Signal outcome | Result |
+| --- | --- |
+| A `FAILURE` signal while the refresh runs | The refresh is cancelled and the update fails; the receiver serves the group's pre-deploy `cfn-init` metadata again, and the deploy's rollback reverts the group |
+| Not every signal within `PauseTime` (`PT5M` when unset) after the refresh finished | The update fails and is rolled back |
+
+The batches still advance after `InstanceWarmup` (`PauseTime`), as in a
+refresh without signals. Unsigned signals, a group without the receiver, or a
+receiver still waiting on another resource of the same deploy keep a warning
+and the plain `PauseTime` wait. A rollback's revert refresh waits for no
+signal. A refresh has no setting
 for `MinActiveInstancesPercent`, `MinSuccessfulInstancesPercent` or
 `SuspendProcesses`; when the template sets one, cdkd logs one line naming it.
 
@@ -249,13 +266,94 @@ replacing update, one that changes a property listed above, and for
 `CodeDeployLambdaAliasUpdate`, one that changes the alias's
 `FunctionVersion`.
 
-### `CreationPolicy` is not waited on
+### `CreationPolicy` and `cfn-init`
 
-`cfn-signal` sends its signal to a CloudFormation stack, and a cdkd deploy has
-none. When cdkd creates or replaces a resource that declares a
-`CreationPolicy`, it logs a warning and treats the resource as created
-without waiting for signals. The warning does not change the exit code or
-fail `--strict`.
+`cfn-signal --stack <name> --resource <id>` and `cfn-init --stack <name>
+--resource <id>` talk to the CloudFormation API, which only a CloudFormation
+stack can answer. A stack whose template declares a `CreationPolicy`
+`ResourceSignal` or `AWS::CloudFormation::Init` metadata, read by signed
+`cfn-init` / `cfn-signal` calls, gets a small
+**signal receiver**: a CloudFormation stack with the cdkd stack's exact name,
+tagged `cdkd:signal-receiver=true`, that lives as long as the cdkd stack.
+
+```bash
+cdkd deploy MyStack    # first deploy: creates the receiver stack "MyStack"
+cdkd destroy MyStack   # deletes the receiver with the stack
+```
+
+| When | What happens |
+| --- | --- |
+| The first deploy that needs it | cdkd creates the receiver (about 30 seconds, once) and records it in state |
+| Every deploy | `AWS::StackId` resolves to the receiver's ARN, so CDK's grant to call `cfn-signal` / `cfn-init` names it |
+| A resource with a `ResourceSignal` is created or replaced | The receiver holds a wait condition under its logical id, with its signal count and `Metadata` |
+| At the instance's boot | `cfn-init` reads the metadata and `cfn-signal` signals the receiver, as under CloudFormation |
+| After the resource is created | Its dependents wait for the signals; a `FAILURE` signal or the policy's `Timeout` fails the deploy and rolls the resource back |
+| `cdkd destroy` | Deletes the receiver after the stack's resources |
+| `cdkd export` | Deletes the receiver right before the export's own CloudFormation stack takes the name |
+| `cdkd state orphan` | Keeps the receiver and prints the command that deletes it |
+
+A stack declaring neither never gets a receiver and makes no CloudFormation
+call. Otherwise a deploy checks the receiver with a `DescribeStacks` call, and
+updates it only when it creates, replaces or changes a resource that declares
+a signal or `cfn-init` metadata. Secret dynamic references in `Metadata` stay
+`{{resolve:...}}` tokens in the receiver's template, as in CloudFormation's.
+
+> [!IMPORTANT]
+> `cfn-init` and `cfn-signal` must sign their calls: pass `--role` (with the
+> AWS CDK, `initOptions: { includeRole: true }`). Without it they call
+> CloudFormation unsigned, which it answers only for instances of its own
+> stacks, so cdkd cannot serve them: such a resource warns and is created
+> without waiting, and does not get a receiver.
+
+```ts
+new ec2.Instance(this, 'Web', {
+  // ...
+  init: ec2.CloudFormationInit.fromElements(/* ... */),
+  initOptions: { includeRole: true, timeout: Duration.minutes(10) },
+});
+```
+
+A `WaitConditionHandle` with a `WaitCondition` that names it never needs a
+receiver: the handle's URL is answered by cdkd's state bucket.
+
+In these cases cdkd creates the resource without waiting and logs a warning;
+the warning does not change the exit code or fail `--strict`:
+
+- `cfn-init` / `cfn-signal` in its user data run without `--role` (above),
+  or no user data in the template sends it a signed `cfn-signal --resource`
+  (or `aws cloudformation signal-resource`).
+
+- A CloudFormation stack with the cdkd stack's name already exists and is not
+  a receiver (for example the same app deployed with the AWS CDK CLI). cdkd
+  never touches it.
+- The credentials may not call CloudFormation.
+- The resource is in a nested stack (its name cannot be a CloudFormation
+  stack's).
+- The resource's `Metadata` reads a `NoEcho` parameter or attribute, or
+  something not created yet.
+- The receiver stays mid-update or rolled back (for example after someone
+  changed it by hand) for more than ten minutes. A receiver a killed deploy
+  left waiting is cancelled, and one whose creation failed is made again.
+- The stack's `cfn-init` metadata adds up to more than 51,200 bytes (the
+  receiver's template is sent inline).
+- The replacement is decided only while the deploy runs (an update the
+  provider cannot make in place).
+- `--dry-run`: no receiver is made, and the preview keeps cdkd's own
+  `AWS::StackId`.
+
+When a stack that already exists starts declaring one of these, its
+`AWS::StackId` moves to the receiver's ARN once; resources reading it update
+in that deploy.
+
+A change to a resource's `Metadata` alone reaches the receiver with the next
+deploy that changes that resource, since `cdkd` plans by properties. A
+`CreationPolicy`-signalled `AWS::CloudFormation::WaitCondition` (no `Handle`)
+that no receiver waits on is refused rather than created unenforced.
+
+Signals may name the stack by `${AWS::StackName}` (as CDK's
+`applyCloudFormationInit` and `signals` do) or `${AWS::StackId}`. An Auto
+Scaling group's `MinSuccessfulInstancesPercent` is not applied: the receiver
+waits for the full `Count`.
 
 ### Waiting for slow resources
 
@@ -352,7 +450,7 @@ routed.
 | DeletionPolicy: Retain | ✅ | Skips deletion of the retained resource |
 | UpdateReplacePolicy: Retain | ✅ | Keeps the old resource on replacement |
 | UpdatePolicy | ⚠️ Opt-in, partial | See [`UpdatePolicy` is opt-in](#updatepolicy-is-opt-in) |
-| CreationPolicy | ⚠️ Not waited on | See [`CreationPolicy` is not waited on](#creationpolicy-is-not-waited-on) |
+| CreationPolicy | ✅ | See [`CreationPolicy` and `cfn-init`](#creationpolicy-and-cfn-init) |
 | Custom Resources (SNS-backed) | ✅ | SNS Topic ServiceToken + S3 response |
 | Custom Resources (CDK Provider) | ✅ | `isCompleteHandler` / `onEventHandler` async pattern detection |
 

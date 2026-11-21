@@ -33,6 +33,7 @@ export interface ResolverContextDeps {
   recordedOutputReads: () => DeployEngine['recordedOutputReads'];
   runProducerRegionEvidence: () => DeployEngine['runProducerRegionEvidence'];
   runStackIdTail: () => DeployEngine['runStackIdTail'];
+  signalReceiverStackId: () => DeployEngine['signalReceiverStackId'];
 }
 
 /**
@@ -135,6 +136,8 @@ export function buildResolverContext(
     // the first write marks the record (the diff pass) and one built after it
     // (provisioning) each see the record as it is when they read it.
     stackIdTail: () => deps.runStackIdTail()?.(),
+    // go-to-k/cdkd#6705: the signal receiver's real ARN, read live too.
+    stackIdOverride: () => deps.signalReceiverStackId(),
     ...(deps.exportIndexStore && { exportIndex: deps.exportIndexStore }),
     recordedImports: deps.recordedImports(),
     recordedOutputReads: deps.recordedOutputReads(),

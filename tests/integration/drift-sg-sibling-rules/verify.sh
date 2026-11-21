@@ -25,6 +25,11 @@
 #      remove the standalone 5432 rule (CDKD_TEST_UPDATE=inline,nofrom). The
 #      deploy drops the rule from the baseline, `cdkd drift` exits 0 and
 #      `--revert -y` does not re-authorize 5432.
+#   6c. (go-to-k/cdkd#6609, slice D) UPDATE SgA dropping its inline 8443
+#      ingress (CDKD_TEST_UPDATE=nofrom): its baseline must not hold the
+#      revoked rule. Re-authorize 8443 and the allow-all egress the create
+#      revoked (SgA is allowAllOutbound: false) OUT OF BAND: `cdkd drift`
+#      reports both, `--revert -y` revokes both in place, drift is clean.
 #   7. Destroy + gone-probes.
 #
 # Required env vars:
@@ -371,6 +376,40 @@ revert_identity_verify "${REVERT_DIR}/revert-ids-6b-before" "${REVERT_DIR}/rever
 expect_drift_rc 0 "Phase 6b (--revert)"
 read_ports
 expect_ports "SgA ingress (after --revert)" "${A_IN}" "443 8443"
+
+echo "==> Phase 6c: UPDATE SgA, dropping its inline 8443 ingress (go-to-k/cdkd#6609, D)"
+CDKD_TEST_UPDATE=nofrom node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --yes
+read_ports
+expect_ports "SgA ingress (8443 dropped)" "${A_IN}" "443"
+expect_ports "SgA egress (8443 dropped)" "${A_OUT}" "443 8080"
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+# The capture right after the revoke must not record the revoked rule, nor
+# the allow-all egress the create revoked.
+expect_ports "SgA ingress baseline after the revoke (#6609 D)" "$(baseline_ports "${GROUP_A}" SecurityGroupIngress)" "443"
+expect_ports "SgA egress baseline after the revoke (#6609 D)" "$(baseline_ports "${GROUP_A}" SecurityGroupEgress)" "443"
+echo "==> Phase 6c: re-authorize the revoked 8443 ingress and the allow-all egress out of band"
+aws ec2 authorize-security-group-ingress --group-id "${GROUP_A}" --region "${REGION}" \
+  --ip-permissions 'IpProtocol=tcp,FromPort=8443,ToPort=8443,IpRanges=[{CidrIp=10.2.0.0/16}]' >/dev/null
+aws ec2 authorize-security-group-egress --group-id "${GROUP_A}" --region "${REGION}" \
+  --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null
+read_ports
+expect_ports "SgA ingress (8443 re-added out of band)" "${A_IN}" "443 8443"
+expect_ports "SgA egress (allow-all re-added out of band)" "${A_OUT}" "-1 443 8080"
+DRIFT_6C="$(revert_drift_json CDKD_TEST_UPDATE=nofrom)" || exit 1
+assert_member_drifted "${DRIFT_6C}" AWS::EC2::SecurityGroup SecurityGroupIngress "an out-of-band re-add of the revoked 8443 rule"
+assert_member_drifted "${DRIFT_6C}" AWS::EC2::SecurityGroup SecurityGroupEgress "an out-of-band re-add of the allow-all egress"
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-6c-before" "${STACK}" "${SG_A_LID}" || exit 1
+REVERT_6C_RC=0
+run_revert CDKD_TEST_UPDATE=nofrom >"${REVERT_DIR}/revert-6c.log" 2>&1 || REVERT_6C_RC=$?
+sed 's/^/    | /' "${REVERT_DIR}/revert-6c.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-6c-before" "${REVERT_DIR}/revert-ids-6c-after" 1 "${REVERT_DIR}/revert-6c.log" || exit 1
+[ "${REVERT_6C_RC}" -eq 0 ] || { echo "FAIL: Phase 6c: cdkd drift --revert exited ${REVERT_6C_RC}, want 0" >&2; exit 1; }
+read_ports
+expect_ports "SgA ingress (after the 6c revert)" "${A_IN}" "443"
+expect_ports "SgA egress (after the 6c revert)" "${A_OUT}" "443 8080"
+expect_ports "SgB ingress (after the 6c revert)" "${B_IN}" "22 8080"
+assert_drift_clean "the phase 6c revert" CDKD_TEST_UPDATE=nofrom
 
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force

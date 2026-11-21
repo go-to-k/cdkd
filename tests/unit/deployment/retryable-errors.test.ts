@@ -259,6 +259,12 @@ describe('isRetryableTransientError', () => {
         'Failed to create EMR Cluster Cluster: Invalid InstanceProfile: MyStack-EmrEc2InstanceProfile.',
         'EMR fresh-instance-profile propagation',
       ],
+      // go-to-k/cdkd#6740: Auto Scaling's spelling, on a launch configuration
+      // created right after its instance profile (Cloud Control route).
+      [
+        'CREATE failed for AsgLaunchConfig6D4F96BB: Invalid IamInstanceProfile: MyStack-AsgInstanceProfile-3d868a09fc9f (Service: AutoScaling, Status Code: 400, SDK Attempt Count: 1)',
+        'Auto Scaling fresh-instance-profile propagation',
+      ],
       // EMR AddInstanceGroups / RunJobFlow surfaces the SAME fresh-instance-
       // profile race with a different sentence when the profile exists but its
       // role membership has not propagated to EMR's authorization layer
@@ -1445,6 +1451,7 @@ describe('isIamPropagationError', () => {
     ['Invalid parameter: Policy Error: PrincipalNotFound', 'SNS topic policy'],
     ['Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:...]', 'ECS CC API'],
     ['Invalid InstanceProfile: EmrRole.', 'EMR'],
+    ['Invalid IamInstanceProfile: AsgProfile', 'Auto Scaling launch configuration'],
     ['Failed to authorize instance profile arn:aws:iam::1:instance-profile/p.', 'EMR authorize'],
     // IAM-to-IAM eventual consistency: CreateAccessKey right after the same
     // deploy's CreateUser (issue #1323 — User + AccessKey in one stack).

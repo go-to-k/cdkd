@@ -4,7 +4,8 @@
  * declared rule reads back, compared on a key both spellings share.
  */
 import { cfnIngressPortValue, sgProtocolKey } from './sg-rule-identity.js';
-import { mergeDeclaredEntries } from './settle-own-write-members.js';
+import { mergeDeclaredEntries, type OwnWriteMember } from './settle-own-write-members.js';
+import type { MemberRead } from './settle-after-own-write.js';
 
 type SgDirection = 'ingress' | 'egress';
 
@@ -51,6 +52,98 @@ export function sgSettleRuleKey(
     ),
     d: present(rule['Description']),
   });
+}
+
+/**
+ * A rule's REMOVAL key (go-to-k/cdkd#6609): {@link sgSettleRuleKey} without
+ * the description, because a revoke removes the rule whatever description it
+ * carries. The one key a revoke notes (`recordOwnWriteRemoval`, from the rule
+ * it revoked) and the capture matches a declared or read rule by, so the
+ * spellings `sgSettleRuleKey` folds (string ports, `'6'` / `'tcp'`, an
+ * added peer owner id, `''`) can never make a still-read revoked rule pass as
+ * gone. `undefined` where the settle key is.
+ */
+export function sgRemovalRuleKey(
+  rule: Record<string, unknown>,
+  direction: SgDirection
+): string | undefined {
+  return sgSettleRuleKey({ ...rule, Description: undefined }, direction);
+}
+
+/**
+ * The removal keys a capture waits to see gone: each of `removed` that no
+ * declared rule has (a declared rule with the key was put back by the write).
+ *
+ * A declared ingress rule naming its peer by `SourceSecurityGroupName` alone
+ * has no key, so it cannot be told apart from a revoked peer-group rule on the
+ * same protocol and ports: the same update may have revoked that peer's rule
+ * in another spelling (by id, `'443'` for `443`, with an owner id) and put it
+ * back by name, and the read then still shows it. Waiting for it would never
+ * settle, and dropping it would leave a declared live grant out of the
+ * baseline (phantom drift, and `drift --revert` revoking it). So a revoked
+ * PEER-GROUP rule whose protocol and ports (folded as the settle key folds
+ * them) are those of a declared name-only rule is not waited on; any other
+ * revoked rule still is. With such a rule declared, a key that does not parse
+ * is not waited on either.
+ */
+export function sgRemovedNotDeclared(
+  removed: ReadonlySet<string> | undefined,
+  declared: readonly unknown[],
+  direction: SgDirection
+): Set<string> {
+  const keep = new Set<string | undefined>();
+  const namedPeerPorts = new Set<string>();
+  for (const rule of declared) {
+    if (typeof rule !== 'object' || rule === null) continue;
+    const key = sgRemovalRuleKey(rule as Record<string, unknown>, direction);
+    keep.add(key);
+    if (key !== undefined) continue;
+    // A name-only rule: its protocol and ports, folded through the same key.
+    const asPeer = sgRemovalRuleKey(
+      {
+        ...(rule as Record<string, unknown>),
+        SourceSecurityGroupName: undefined,
+        SourceSecurityGroupId: 'named',
+      },
+      direction
+    );
+    const ports = asPeer === undefined ? undefined : protocolAndPorts(asPeer);
+    if (ports !== undefined) namedPeerPorts.add(ports);
+  }
+  return new Set(
+    [...(removed ?? [])].filter((key) => {
+      if (keep.has(key)) return false;
+      if (namedPeerPorts.size === 0) return true;
+      let parsed: { peer?: unknown };
+      try {
+        parsed = JSON.parse(key) as { peer?: unknown };
+      } catch {
+        return false;
+      }
+      return !(parsed.peer !== null && namedPeerPorts.has(protocolAndPorts(key) ?? ''));
+    })
+  );
+}
+
+/** A removal key's protocol and ports, as one comparable string. */
+function protocolAndPorts(key: string): string | undefined {
+  try {
+    const { p, f, t } = JSON.parse(key) as { p?: unknown; f?: unknown; t?: unknown };
+    return JSON.stringify([p, f, t]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether `rule`, as read, is one of `gone` (removal keys). */
+export function sgRuleIsRemoved(
+  rule: unknown,
+  gone: ReadonlySet<string>,
+  direction: SgDirection
+): boolean {
+  if (gone.size === 0 || typeof rule !== 'object' || rule === null) return false;
+  const key = sgRemovalRuleKey(rule as Record<string, unknown>, direction);
+  return key !== undefined && gone.has(key);
 }
 
 /**
@@ -176,4 +269,36 @@ export function mergeDeclaredSgRules(
         ? sgRuleReadbackShape(want as Record<string, unknown>, direction)
         : undefined
   );
+}
+
+/**
+ * A security group rule list as a post-write member: settled once every
+ * declared rule reads back and no rule this write revoked (`revoked`, removal
+ * keys) does. Unsettled, the read gains each declared rule still unread and
+ * loses each revoked rule still read (`settle-own-write-members.ts`), then
+ * `reorder` puts it in the read's own order.
+ */
+export function sgRuleListMember(
+  key: string,
+  direction: SgDirection,
+  declared: readonly unknown[],
+  revoked: ReadonlySet<string> | undefined,
+  reorder: (rules: unknown[]) => unknown,
+  read: () => Promise<MemberRead<unknown>>
+): OwnWriteMember<unknown> {
+  const gone = sgRemovedNotDeclared(revoked, declared, direction);
+  return {
+    key,
+    declared,
+    matches: (value) =>
+      declaredSgRulesRead(value, declared, direction) &&
+      !(value as unknown[]).some((rule) => sgRuleIsRemoved(rule, gone, direction)),
+    whenUnsettled: (newest) =>
+      reorder(
+        mergeDeclaredSgRules(newest, declared, direction).filter(
+          (rule) => !sgRuleIsRemoved(rule, gone, direction)
+        )
+      ),
+    read,
+  };
 }
