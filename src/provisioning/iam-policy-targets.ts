@@ -25,6 +25,37 @@
  */
 export const IAM_PRINCIPAL_NAME = /^[\w+=,.@-]{1,128}$/;
 
+/**
+ * go-to-k/cdkd#6774: the names a membership or attachment list gains and
+ * loses, compared ignoring case, as IAM compares role, user and group names.
+ * A case-only respelling (`my-user` -> `My-User`) is the SAME principal, so it
+ * is neither added nor removed: an add of the new spelling is a no-op, and the
+ * removal of the old one that followed took the membership away. Each side
+ * keeps its first spelling of a name; the record keeps the template's.
+ */
+export function diffPrincipalNames(
+  desired: readonly string[] | undefined,
+  recorded: readonly string[] | undefined
+): { added: string[]; removed: string[] } {
+  const keys = (names: readonly string[] | undefined) =>
+    new Set((names ?? []).map((name) => name.toLowerCase()));
+  const unique = (names: readonly string[] | undefined) => {
+    const seen = new Set<string>();
+    return (names ?? []).filter((name) => {
+      const key = name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const desiredKeys = keys(desired);
+  const recordedKeys = keys(recorded);
+  return {
+    added: unique(desired).filter((name) => !recordedKeys.has(name.toLowerCase())),
+    removed: unique(recorded).filter((name) => !desiredKeys.has(name.toLowerCase())),
+  };
+}
+
 /** What {@link readRecordedPrincipals} found for one kind. */
 export type RecordedPrincipals =
   | { kind: 'absent' }

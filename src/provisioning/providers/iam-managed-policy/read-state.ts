@@ -259,7 +259,10 @@ function managedPolicyOwnWriteMembers(
           rounds[round] ??= readAttachments.call(this, physicalId, properties, context);
           return { value: (await rounds[round])[key] };
         },
-        gone
+        gone,
+        // IAM names ignore case (go-to-k/cdkd#6774): a declared `My-Role` the
+        // read lists as `my-role` is attached.
+        (entry) => entry.toLowerCase()
       )
     );
   }

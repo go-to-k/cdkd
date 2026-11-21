@@ -63,6 +63,7 @@ import {
   verifyInlinePolicyPrincipals,
 } from './iam-policy/principal-identity.js';
 import { injectiveKey } from '../../state/record-keys.js';
+import { diffPrincipalNames } from '../iam-policy-targets.js';
 import type { InlinePolicyPrincipalKind } from '../../types/resource.js';
 
 const MANAGED_POLICY_TYPE = 'AWS::IAM::ManagedPolicy';
@@ -410,12 +411,24 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     recorded: PrincipalLists,
     log: MaskedLogSinks
   ): Promise<ReadonlySet<string>> {
-    const added = principalPairs(desired).filter(
-      ([kind, name]) => !principalPairs(recorded).some(([k, n]) => k === kind && n === name)
-    );
-    const leaving = principalPairs(recorded).filter(
-      ([kind, name]) => !principalPairs(desired).some(([k, n]) => k === kind && n === name)
-    );
+    // The same diff `updatePrincipals` sends (go-to-k/cdkd#6774): a name
+    // respelled only in case is neither attached nor detached, so neither
+    // compared.
+    const diffs = {
+      Groups: diffPrincipalNames(desired.Groups, recorded.Groups),
+      Roles: diffPrincipalNames(desired.Roles, recorded.Roles),
+      Users: diffPrincipalNames(desired.Users, recorded.Users),
+    };
+    const added = principalPairs({
+      Groups: diffs.Groups.added,
+      Roles: diffs.Roles.added,
+      Users: diffs.Users.added,
+    });
+    const leaving = principalPairs({
+      Groups: diffs.Groups.removed,
+      Roles: diffs.Roles.removed,
+      Users: diffs.Users.removed,
+    });
     const verdicts = await verifyInlinePolicyPrincipals({
       client: this.iamClient,
       principals: leaving,
@@ -499,79 +512,63 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
     // it (`own-write-removals.ts`); a note an earlier update that threw left
     // behind is dropped first. Only this method notes for the type.
     clearOwnWriteRemovals(MANAGED_POLICY_TYPE, policyArn);
-    const newGroupSet = new Set(newGroups || []);
-    const oldGroupSet = new Set(oldGroups || []);
-    const newRoleSet = new Set(newRoles || []);
-    const oldRoleSet = new Set(oldRoles || []);
-    const newUserSet = new Set(newUsers || []);
-    const oldUserSet = new Set(oldUsers || []);
-    for (const g of newGroupSet) {
-      if (!oldGroupSet.has(g)) {
-        await this.iamClient.send(
-          new AttachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
-        );
-        log.debug(`Attached ${v(policyArn)} to group ${v(g)}`);
-      }
+    // go-to-k/cdkd#6774: a principal respelled only in case is the one the
+    // policy is attached to (IAM names ignore case): neither attached nor
+    // detached, as `comparePrincipalChanges` diffs it.
+    const groups = diffPrincipalNames(newGroups, oldGroups);
+    const roles = diffPrincipalNames(newRoles, oldRoles);
+    const users = diffPrincipalNames(newUsers, oldUsers);
+    for (const g of groups.added) {
+      await this.iamClient.send(
+        new AttachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
+      );
+      log.debug(`Attached ${v(policyArn)} to group ${v(g)}`);
     }
-    for (const g of oldGroupSet) {
-      if (!newGroupSet.has(g)) {
-        if (strangers.has(injectiveKey('group', g))) continue;
-        try {
-          await this.iamClient.send(
-            new DetachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
-          );
-          log.debug(`Detached ${v(policyArn)} from group ${v(g)}`);
-        } catch (err) {
-          if (!(err instanceof NoSuchEntityException)) throw err;
-        }
-        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Groups', g);
+    for (const g of groups.removed) {
+      if (strangers.has(injectiveKey('group', g))) continue;
+      try {
+        await this.iamClient.send(
+          new DetachGroupPolicyCommand({ GroupName: g, PolicyArn: policyArn })
+        );
+        log.debug(`Detached ${v(policyArn)} from group ${v(g)}`);
+      } catch (err) {
+        if (!(err instanceof NoSuchEntityException)) throw err;
       }
+      recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Groups', g);
     }
 
-    for (const r of newRoleSet) {
-      if (!oldRoleSet.has(r)) {
-        await this.iamClient.send(
-          new AttachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn })
-        );
-        log.debug(`Attached ${v(policyArn)} to role ${v(r)}`);
-      }
+    for (const r of roles.added) {
+      await this.iamClient.send(new AttachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn }));
+      log.debug(`Attached ${v(policyArn)} to role ${v(r)}`);
     }
-    for (const r of oldRoleSet) {
-      if (!newRoleSet.has(r)) {
-        if (strangers.has(injectiveKey('role', r))) continue;
-        try {
-          await this.iamClient.send(
-            new DetachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn })
-          );
-          log.debug(`Detached ${v(policyArn)} from role ${v(r)}`);
-        } catch (err) {
-          if (!(err instanceof NoSuchEntityException)) throw err;
-        }
-        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Roles', r);
+    for (const r of roles.removed) {
+      if (strangers.has(injectiveKey('role', r))) continue;
+      try {
+        await this.iamClient.send(
+          new DetachRolePolicyCommand({ RoleName: r, PolicyArn: policyArn })
+        );
+        log.debug(`Detached ${v(policyArn)} from role ${v(r)}`);
+      } catch (err) {
+        if (!(err instanceof NoSuchEntityException)) throw err;
       }
+      recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Roles', r);
     }
 
-    for (const u of newUserSet) {
-      if (!oldUserSet.has(u)) {
-        await this.iamClient.send(
-          new AttachUserPolicyCommand({ UserName: u, PolicyArn: policyArn })
-        );
-        log.debug(`Attached ${v(policyArn)} to user ${v(u)}`);
-      }
+    for (const u of users.added) {
+      await this.iamClient.send(new AttachUserPolicyCommand({ UserName: u, PolicyArn: policyArn }));
+      log.debug(`Attached ${v(policyArn)} to user ${v(u)}`);
     }
-    for (const u of oldUserSet) {
-      if (!newUserSet.has(u)) {
-        if (strangers.has(injectiveKey('user', u))) continue;
-        try {
-          await this.iamClient.send(
-            new DetachUserPolicyCommand({ UserName: u, PolicyArn: policyArn })
-          );
-          log.debug(`Detached ${v(policyArn)} from user ${v(u)}`);
-        } catch (err) {
-          if (!(err instanceof NoSuchEntityException)) throw err;
-        }
-        recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Users', u);
+    for (const u of users.removed) {
+      if (strangers.has(injectiveKey('user', u))) continue;
+      try {
+        await this.iamClient.send(
+          new DetachUserPolicyCommand({ UserName: u, PolicyArn: policyArn })
+        );
+        log.debug(`Detached ${v(policyArn)} from user ${v(u)}`);
+      } catch (err) {
+        if (!(err instanceof NoSuchEntityException)) throw err;
       }
+      recordOwnWriteRemoval(MANAGED_POLICY_TYPE, policyArn, 'Users', u);
     }
   }
 
