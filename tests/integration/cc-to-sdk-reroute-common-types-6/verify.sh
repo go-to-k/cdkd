@@ -227,16 +227,20 @@ W1=()
 # AgentCore creates a log group per runtime and nothing deletes it on destroy.
 # Best-effort sweep of this fixture's groups (the prefix is a literal, so it can
 # never widen to the account); never a FAIL assertion.
-sweep_runtime_log_groups() {
+sweep_runtime_log_groups() { (
+  # A subshell with strict mode off: on the success path a failed listing
+  # must not abort a run that already passed.
+  set +eu
+  set +o pipefail
   local name
   aws logs describe-log-groups --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/cdkd_reroute_ct6_" \
     --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null | tr '\t' '\n' |
     while IFS= read -r name || [ -n "${name}" ]; do
       [ -n "${name}" ] || continue
-      aws logs delete-log-group --log-group-name "${name}" --region "${REGION}" >/dev/null 2>&1 || true
+      aws logs delete-log-group --log-group-name "${name}" --region "${REGION}" >/dev/null 2>&1
     done
   return 0
-}
+); }
 
 cleanup() {
   echo "==> Cleanup"
