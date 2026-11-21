@@ -335,18 +335,19 @@ echo "    OK: re-synth diff is clean (the new properties round-trip)"
 # introspection SDL always carries one; right after the deploy `drift` must
 # not report the GraphQLSchema (and exit 0).
 echo "==> Phase 1b': drift must be clean right after the deploy (schema without a schema block)"
-DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" \
+DRIFT_JSON="$(node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" 2>&1)" || {
-  echo "FAIL: cdkd drift exited non-zero right after the deploy (#6779)" >&2
-  echo "${DRIFT_OUT}" >&2
+  --region "${REGION}" --json)" || true
+jq -e --arg stack "${STACK}" '
+  [.[] | select(.stack == $stack)] as $r |
+  ($r | length) == 1 and
+  ([($r[0].drifted // [])[], ($r[0].notCompared // [])[]
+    | select(.logicalId == "GraphQLSchema" or .type == "AWS::AppSync::GraphQLSchema")] | length) == 0
+' <<<"${DRIFT_JSON}" >/dev/null || {
+  echo "FAIL: drift reported the GraphQLSchema (drifted or not compared) right after the deploy (#6779)" >&2
+  echo "${DRIFT_JSON}" >&2
   exit 1
 }
-if grep -q 'AWS::AppSync::GraphQLSchema' <<<"${DRIFT_OUT}"; then
-  echo "FAIL: drift reported the GraphQLSchema right after the deploy (#6779)" >&2
-  echo "${DRIFT_OUT}" >&2
-  exit 1
-fi
 echo "    OK: drift is clean (the default schema definition AWS adds is normalized away)"
 
 API_JSON="$(api_json)"

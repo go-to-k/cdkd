@@ -95,7 +95,9 @@ const DEFAULT_ROOT_TYPE_NAMES: Record<string, string> = {
  * (`schema { query: Query }`) while a CDK schema file usually omits it, which
  * made every such stack drift right after deploy (#6779). A schema definition
  * naming a non-default root type, or carrying directives, is kept so a real
- * change still shows as drift.
+ * change still shows as drift. It is also kept when it lists fewer roots than
+ * the document has default-named object types (`schema { query: Query }` plus
+ * `type Mutation`), since dropping it would promote Mutation to a root.
  *
  * Strips comments and normalizes whitespace; preserves source AST
  * ordering of types and fields. Returns the raw input on parse
@@ -116,13 +118,26 @@ export async function canonicalizeSdl(
   const { parse, print, Kind } = await import('graphql');
   try {
     const doc = parse(sdl);
+    // With a schema block present ONLY the operations it lists are roots, so
+    // dropping it is lossless only when, per operation, "the block lists it"
+    // equals "the document defines the default-named object type": otherwise
+    // `schema { query: Query }` + `type Mutation` would collapse onto a
+    // schema-less document whose Mutation IS a root.
+    const objectTypeNames = new Set<string>();
+    for (const def of doc.definitions) {
+      if (def.kind === Kind.OBJECT_TYPE_DEFINITION || def.kind === Kind.OBJECT_TYPE_EXTENSION) {
+        objectTypeNames.add(def.name.value);
+      }
+    }
     const definitions = doc.definitions.filter((def) => {
       if (def.kind !== Kind.SCHEMA_DEFINITION) return true;
+      const listed = new Map(def.operationTypes.map((op) => [op.operation, op.type.name.value]));
       const isDefault =
         !def.description &&
         (def.directives?.length ?? 0) === 0 &&
-        def.operationTypes.every(
-          (op) => op.type.name.value === DEFAULT_ROOT_TYPE_NAMES[op.operation]
+        [...listed].every(([op, name]) => name === DEFAULT_ROOT_TYPE_NAMES[op]) &&
+        Object.entries(DEFAULT_ROOT_TYPE_NAMES).every(
+          ([op, name]) => listed.has(op as never) === objectTypeNames.has(name)
         );
       return !isDefault;
     });

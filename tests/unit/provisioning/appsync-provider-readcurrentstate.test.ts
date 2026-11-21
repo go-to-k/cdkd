@@ -567,6 +567,22 @@ type Query {
         expect(result.Definition).not.toBe(body);
       });
 
+      it('keeps the block when it omits a default-named Mutation type that the document defines (AWS has the block)', async () => {
+        const withMutation = `${body}\n\ntype Mutation {\n  m: String\n}`;
+        const awsSdl = `schema {\n  query: Query\n}\n\n${withMutation}`;
+        const result = (await read(awsSdl, withMutation)) as { Definition: string };
+        expect(result.Definition).toBe(awsSdl);
+        expect(result.Definition).toContain('schema {');
+      });
+
+      it('keeps the block in the mirror case (state has the block, AWS does not)', async () => {
+        const withMutation = `${body}\n\ntype Mutation {\n  m: String\n}`;
+        const stateSdl = `schema {\n  query: Query\n}\n\n${withMutation}`;
+        const result = (await read(withMutation, stateSdl)) as { Definition: string };
+        expect(result.Definition).not.toBe(stateSdl);
+        expect(result.Definition).not.toContain('schema {');
+      });
+
       it('keeps a schema block carrying a directive', async () => {
         const awsSdl = `schema @aws_cognito_user_pools {\n  query: Query\n}\n\n${body}`;
         const result = (await read(awsSdl, body)) as { Definition: string };
