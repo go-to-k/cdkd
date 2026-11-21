@@ -177,6 +177,12 @@ describe('delete-blocker inventory (#6715)', () => {
       expect(blockerProblems(handled(over)).length).toBeGreaterThan(0);
     });
 
+    it('keeps the comment-only fixture in a comment', () => {
+      // The case above proves comment stripping only while the literal is
+      // still in the site's comment text.
+      expect(readRepoFile(site)).toContain('go-to-k/cdkd#6715');
+    });
+
     it('checks a refusal against its site', () => {
       const refused = (message: string): DeleteBlocker => ({
         blocker: 'x',

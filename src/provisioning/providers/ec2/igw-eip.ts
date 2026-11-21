@@ -688,8 +688,8 @@ type EipFreed = 'disassociated' | 'gone' | 'not-ours';
  * names, the association this EIP made itself. `'not-ours'`, sending
  * nothing, when the record names no instance, the address cannot be read, or
  * it is associated with anything else: that association belongs to another
- * resource, and AWS's refusal is the answer. `'gone'` when no association is
- * left to remove, so the release can simply retry.
+ * resource, and AWS's refusal is the answer. `'gone'` when the read shows no
+ * association left, so the release can simply retry.
  */
 async function disassociateOwnAssociation(
   this: EC2Provider,
@@ -725,8 +725,9 @@ async function disassociateOwnAssociation(
       new DisassociateAddressCommand({ AssociationId: address.AssociationId })
     );
   } catch (error) {
+    // Not-found counts as cdkd's own: an SDK retry can see it after the first
+    // attempt landed, and under-marking re-adopts a stripped survivor (#4946).
     if (!isNamedError(error, EIP_ASSOCIATION_NOT_FOUND_NAMES)) throw error;
-    return 'gone';
   }
   return 'disassociated';
 }

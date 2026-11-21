@@ -181,7 +181,7 @@ describe('AWS::EC2::EIP delete of an associated address (go-to-k/cdkd#6715)', ()
     expect(isDeleteStarted(error)).toBe(false);
   });
 
-  it('leaves a disassociation answered not-found unmarked when the retried release is refused', async () => {
+  it('marks a disassociation answered not-found when the retried release is refused', async () => {
     drive({
       release: [inUse(), awsError('UnauthorizedOperation')],
       describe: { AssociationId: 'eipassoc-1', InstanceId: INSTANCE },
@@ -193,7 +193,7 @@ describe('AWS::EC2::EIP delete of an associated address (go-to-k/cdkd#6715)', ()
         () => undefined,
         (e: unknown) => e
       );
-    expect(isDeleteStarted(error)).toBe(false);
+    expect(isDeleteStarted(error)).toBe(true);
   });
 
   it('surfaces the InUse refusal when the read returns no address', async () => {
