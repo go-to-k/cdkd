@@ -1,6 +1,6 @@
 ---
 title: cdkd gc
-description: "Delete unreferenced assets and abandoned custom-resource response placeholders from cdkd-owned storage with cdkd gc."
+description: "Delete unreferenced assets, abandoned custom-resource response placeholders and orphaned wait condition signal objects from cdkd-owned storage with cdkd gc."
 ---
 
 # cdkd gc
@@ -53,6 +53,7 @@ the job of `cdk gc`, which in turn cannot reach cdkd-owned storage.
 | Unreferenced file assets | The region's asset bucket | One region per run |
 | Unreferenced container images | The region's ECR repository | One region per run |
 | [Abandoned custom-resource response placeholders](#custom-resource-response-placeholders) | The state bucket | The whole account |
+| [Orphaned wait condition signal objects](#wait-condition-signal-objects) | The state bucket | The whole account |
 
 An asset is unreferenced when no state file in the state bucket mentions it.
 gc reads every state file, so it sees the stacks deployed under any
@@ -78,7 +79,8 @@ If any item fails to delete, the run ends with an error. gc does not report
 success while objects remain.
 
 > [!NOTE]
-> "Nothing to collect" includes the account's response placeholders. A cron
+> "Nothing to collect" includes the account's response placeholders and wait
+> condition signal objects. A cron
 > job that runs a bare `cdkd gc` in an idle-looking account can still find
 > some and be refused. Pass `--yes` to collect, or `--dry-run` to report only.
 
@@ -124,8 +126,8 @@ names. Custom names therefore work.
 
 | The region's marker | What gc does |
 | --- | --- |
-| Present | Collects the asset storage it names, then the placeholders. |
-| Absent | Says the region has no asset storage, then still collects the placeholders. |
+| Present | Collects the asset storage it names, then the placeholders and signal objects. |
+| Absent | Says the region has no asset storage, then still collects the placeholders and signal objects. |
 | Corrupt: unparseable, or naming an invalid bucket or repository | Stops before collecting anything. The error names the remedy. |
 
 ### Edge cases
@@ -191,8 +193,9 @@ Every `cdkd gc` run collects the placeholders older than `--older-than`. They
 appear in the plan marked `[abandoned custom-resource response]`, and
 `--dry-run` and the confirmation prompt cover them.
 
-This is the only place where gc deletes from the state bucket. Everywhere else
-it only reads the bucket.
+This and the [wait condition signal objects](#wait-condition-signal-objects)
+are the only places where gc deletes from the state bucket. Everywhere else it
+only reads the bucket.
 
 ### What the collection covers
 
@@ -227,6 +230,54 @@ The least-privilege policy is under
 [S3 replication keeps copies cdkd cannot delete](state-management-backup-and-security.md#s3-replication-keeps-copies-cdkd-cannot-delete)
 covers the replicated case.
 
+## Wait condition signal objects
+
+An `AWS::CloudFormation::WaitConditionHandle` is a pre-signed URL for one key,
+`wait-condition-signals/{logicalId}-{uuid}.json`, in the state bucket. Each
+signal sent to it is a new version of that key. Deleting the handle deletes
+the key, so gc collects the ones whose handle left state without that delete:
+
+- a deploy that was interrupted between the handle's creation and its state
+  write;
+- `cdkd orphan`, `cdkd state orphan` or a `cdkd rollback --orphan` of the
+  handle;
+- a handle delete whose cleanup of the key failed with a warning.
+
+Every `cdkd gc` run collects a key that matches all three rules below. They
+appear in the plan marked `[orphaned wait condition signal, all versions]`,
+and `--dry-run` and the confirmation prompt cover them.
+
+| Rule | Detail |
+| --- | --- |
+| Key shape | Exactly `{logicalId}-{uuid}.json` under the prefix. Any other key is kept. |
+| Age | The key's current version is older than `--older-than`. |
+| Unreferenced | No handle in any state file or `retained.json` in the bucket points at it. |
+
+gc deletes each collected key with all its earlier versions and its delete
+marker, since the prefix has no lifecycle rule to expire them. The plan's byte
+total counts current versions only.
+
+### What counts as a handle reference
+
+gc reads every state file in the bucket, under any `--state-prefix`, nested
+stacks included. A handle protects its key from any of these places:
+
+- the stack's resources;
+- its `orphans`, the resources a rollback kept;
+- its `supersededResources`, the replaced copies still waiting for deletion;
+- the `retained.json` that `cdkd destroy` writes for kept resources.
+
+A state file gc cannot walk aborts the run with `GC_STATE_UNREADABLE`, and
+nothing is deleted. That covers a file that is not valid JSON and one whose
+resource lists are malformed.
+
+### A deploy in progress
+
+A deploy in progress is safe. The lock guard stops the run while any stack is
+locked. A handle's signal URL is valid for at most 12 hours, so a key older
+than `--older-than` belongs to a handle created long before this run. gc also
+checks the locks again after reading the state files.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -237,7 +288,7 @@ covers the replicated case.
 | Refusal | When |
 | --- | --- |
 | `GC_LOCKED` | A stack in the state bucket holds an active lock. Wait for it, or clear a stale one with [`cdkd force-unlock`](cli-force-unlock.md). |
-| `GC_STATE_UNREADABLE` | A state file is not valid JSON, so its references cannot be read. Repair or remove it, then run again. |
+| `GC_STATE_UNREADABLE` | A state file is not valid JSON, or a wait condition sweep cannot walk it, so its references cannot be read. Repair or remove it, then run again. |
 | `ASSET_STORAGE_FOREIGN_BUCKET` | The asset bucket exists but is not owned by this account, or access is denied. Nothing is touched. |
 | `GC_DELETE_FAILED` | One or more objects or images could not be deleted. |
 | `NON_INTERACTIVE_CONFIRM` | The confirmation prompt was reached without a terminal. Pass `-y` / `--yes`, or `--dry-run` to report only. |

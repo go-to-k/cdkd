@@ -391,4 +391,20 @@ describe('WaitConditionSignalStore', () => {
     await expect(store.deleteSignals(KEY)).resolves.toBeUndefined();
     expect(mockPurge).not.toHaveBeenCalled();
   });
+
+  it('removeSignalObjects (cdkd gc, #6699) throws the failure deleteSignals swallows', async () => {
+    store.setBucket(BUCKET);
+    mockSend.mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+    await expect(store.removeSignalObjects(KEY)).rejects.toThrow('denied');
+  });
+
+  it('refuses to remove a key that is not a minted signal key, before any call', async () => {
+    store.setBucket(BUCKET);
+    mockSend.mockResolvedValue({});
+    for (const key of ['cdkd/S/us-east-1/state.json', 'wait-condition-signals/', `x/${KEY}`]) {
+      await expect(store.removeSignalObjects(key)).rejects.toThrow('not a wait condition signal key');
+    }
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockPurge).not.toHaveBeenCalled();
+  });
 });

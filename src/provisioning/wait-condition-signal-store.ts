@@ -52,6 +52,15 @@ const SIGNAL_KEY = new RegExp(
   `^${WAIT_CONDITION_SIGNAL_PREFIX}/[A-Za-z0-9]{1,255}-${UUID}\\.json$`
 );
 
+/**
+ * Whether `key` is EXACTLY a key {@link signalKeyFor} mints: under
+ * {@link WAIT_CONDITION_SIGNAL_PREFIX}, an alphanumeric logical id, a UUID.
+ * `cdkd gc`'s sweep (go-to-k/cdkd#6699) deletes only keys this accepts.
+ */
+export function isSignalKey(key: string): boolean {
+  return SIGNAL_KEY.test(key);
+}
+
 /** The one key a handle's URL writes to. Logical ids are alphanumeric. */
 export function signalKeyFor(logicalId: string): string {
   return `${WAIT_CONDITION_SIGNAL_PREFIX}/${logicalId}-${randomUUID()}.json`;
@@ -298,31 +307,45 @@ export class WaitConditionSignalStore {
    */
   async deleteSignals(key: string): Promise<void> {
     try {
-      const bucket = this.requireBucket();
-      const client = await this.client();
-      const owner = await expectedOwnerParam(client);
-      const deleted = await client.send(
-        new DeleteObjectCommand({ Bucket: bucket, Key: key, ...owner })
-      );
-      await purgeNoncurrentKeyVersions(client, bucket, [key], { requestFields: owner });
-      // On the versioned state bucket the delete left a marker; the prefix has
-      // no lifecycle rule, so remove it by its own version id too.
-      if (deleted.DeleteMarker === true && typeof deleted.VersionId === 'string') {
-        await client.send(
-          new DeleteObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            VersionId: deleted.VersionId,
-            ...owner,
-          })
-        );
-      }
+      await this.removeSignalObjects(key);
     } catch (error) {
       const failure = describeAwsFailure(error);
       this.logger.warn(
         safeMsg`Could not remove the wait condition signal object ${key}: ${failure.summary}`
       );
       this.logger.debug(safeMsg`Signal object delete failure detail: ${failure.detail}`);
+    }
+  }
+
+  /**
+   * As {@link deleteSignals}, but a failure THROWS: `cdkd gc` (go-to-k/cdkd#6699)
+   * must report a key it could not remove rather than print success. A key
+   * that is not exactly a minted signal key is refused before any call, so no
+   * caller can point this at anything else in the state bucket. The
+   * noncurrent-version purge warns rather than throwing, as on every caller.
+   */
+  async removeSignalObjects(key: string): Promise<void> {
+    if (!isSignalKey(key)) {
+      throw new Error('Refusing to delete a key that is not a wait condition signal key.');
+    }
+    const bucket = this.requireBucket();
+    const client = await this.client();
+    const owner = await expectedOwnerParam(client);
+    const deleted = await client.send(
+      new DeleteObjectCommand({ Bucket: bucket, Key: key, ...owner })
+    );
+    await purgeNoncurrentKeyVersions(client, bucket, [key], { requestFields: owner });
+    // On the versioned state bucket the delete left a marker; the prefix has
+    // no lifecycle rule, so remove it by its own version id too.
+    if (deleted.DeleteMarker === true && typeof deleted.VersionId === 'string') {
+      await client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          VersionId: deleted.VersionId,
+          ...owner,
+        })
+      );
     }
   }
 }
