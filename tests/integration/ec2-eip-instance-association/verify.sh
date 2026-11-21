@@ -224,7 +224,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force --verbose >"${DESTROY_LOG}" 2>&1 || DESTROY_RC=$?
-tail -40 "${DESTROY_LOG}"
+cat "${DESTROY_LOG}"
 DESTROY_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_LOG}")"
 
 if [ "${DESTROY_RC}" -ne 0 ]; then
@@ -232,8 +232,12 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   # InvalidIPAddress.InUse and still associated with the instance.
   if gone_probe aws ec2 describe-addresses --allocation-ids "${ALLOC_ID}" --region "${REGION}"; then
     LEFT="released"
+  elif LEFT_INSTANCE="$(aws ec2 describe-addresses --allocation-ids "${ALLOC_ID}" --region "${REGION}" \
+      --query 'Addresses[0].InstanceId' --output text 2>&1)"; then
+    LEFT="still allocated, associated with '${LEFT_INSTANCE}'"
   else
-    LEFT="still allocated, associated with '$(aws ec2 describe-addresses --allocation-ids "${ALLOC_ID}" --region "${REGION}" --query 'Addresses[0].InstanceId' --output text)'"
+    # Keep the FAIL line below: an unreadable association is not this arm's verdict.
+    LEFT="still allocated (association unreadable: ${LEFT_INSTANCE})"
   fi
   echo "FAIL: issue #6715 — destroy exited ${DESTROY_RC}; EIP ${ALLOC_ID} is ${LEFT}; InvalidIPAddress.InUse in the log: $(grep -cF 'InvalidIPAddress.InUse' <<<"${DESTROY_PLAIN}" || true)" >&2
   exit 1

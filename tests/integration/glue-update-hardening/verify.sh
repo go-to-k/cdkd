@@ -203,18 +203,18 @@ cleanup() {
       done
       # Assertion 13's log group, should a failed run leave it behind.
       aws logs delete-log-group --log-group-name "${TAGGED_LG_NAME}" --region "${REGION}" >/dev/null 2>&1
+      # Phase 3a's crawl may create its target database (and tables in it); the
+      # stack never declares it. Runs on every exit: the EXIT trap stays armed.
+      aws glue delete-database --name "${CRAWLER_DB_NAME}" --region "${REGION}" >/dev/null 2>&1
+      # ...and writes a stream named after the crawler into Glue's shared log
+      # group, which only that stream of is this fixture's.
+      aws logs delete-log-stream --log-group-name /aws-glue/crawlers \
+        --log-stream-name "${CRAWLER_NAME:-${CRAWLER_NAME_FALLBACK}}" --region "${REGION}" >/dev/null 2>&1
       ;;
     *)
       echo "WARN: teardown sweep refused: STACK '${STACK}' is not this fixture's stack" >&2
       ;;
   esac
-  # Phase 3a's crawl may create its target database (and tables in it); the
-  # stack never declares it. Runs on every exit: the EXIT trap stays armed.
-  aws glue delete-database --name "${CRAWLER_DB_NAME}" --region "${REGION}" >/dev/null 2>&1
-  # ...and writes a stream named after the crawler into Glue's shared log
-  # group, which only that stream of is this fixture's.
-  aws logs delete-log-stream --log-group-name /aws-glue/crawlers \
-    --log-stream-name "${CRAWLER_NAME:-${CRAWLER_NAME_FALLBACK}}" --region "${REGION}" >/dev/null 2>&1
   rm -f "${DESTROY_LOG}"
   if [ -n "${STATE_BUCKET:-}" ] && [ "${destroy_rc}" -eq 0 ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -1114,7 +1114,7 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force --verbose >"${DESTROY_LOG}" 2>&1 || DESTROY_RC=$?
-tail -40 "${DESTROY_LOG}"
+cat "${DESTROY_LOG}"
 DESTROY_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DESTROY_LOG}")"
 if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "FAIL: destroy exited ${DESTROY_RC}; CrawlerRunningException lines in the log: $(grep -cF 'CrawlerRunningException' <<<"${DESTROY_PLAIN}" || true)" >&2
