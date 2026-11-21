@@ -16,6 +16,7 @@ import {
   UpdateGroupCommand,
   type Group,
   type User,
+  type GetGroupCommandOutput,
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
@@ -35,7 +36,11 @@ import type {
 } from '../../../types/resource.js';
 import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './shared.js';
 import { definedAttributes } from '../../attribute-map.js';
-import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
+import {
+  assertRecordedIdentity,
+  RecordedIdentityError,
+  RecordedIdentityMismatchError,
+} from '../../recorded-identity.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 
@@ -344,10 +349,14 @@ export async function deleteGroup(
     // refuses (`DeleteConflict`) and the retry reads again.
     let members: User[] = [];
     let membersTruncated = false;
+    // The `GroupId` step 0's last read answered: every later read by name on
+    // a stack destroy is held to it (go-to-k/cdkd#6750).
+    let stepZeroGroupId: string | undefined;
     const readGroup = async () => {
       const response = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
       // The last read's: after a re-read, the group it answered for.
       members = response.Users ?? [];
+      stepZeroGroupId = response.Group?.GroupId;
       membersTruncated = response.IsTruncated === true;
       // A response naming another group carries no id of this one: with an
       // id recorded, that refuses rather than compares. Compared ignoring
@@ -389,6 +398,21 @@ export async function deleteGroup(
     const stackDestroy = context?.stackDestroy === true;
     if (!stackDestroy) await this.removeAllUsersFromGroup(physicalId, log, progress, members);
 
+    // A settle read answering another `GroupId` than step 0's: the name now
+    // holds another group, which the by-name `DeleteGroup` must not reach.
+    const sameGroup = (read: GetGroupCommandOutput): void => {
+      if (stepZeroGroupId !== undefined && read.Group?.GroupId !== stepZeroGroupId) {
+        throw new RecordedIdentityMismatchError({
+          label: 'IAM group',
+          resourceType,
+          logicalId,
+          physicalId,
+          attribute: 'GroupId',
+          context,
+        });
+      }
+    };
+
     // Step 4: Delete the group. Two attempts at most on a stack destroy: the
     // second only after the settle below saw no user still in the group, i.e.
     // what refused the first was the stack's own membership being removed.
@@ -397,24 +421,31 @@ export async function deleteGroup(
         await this.iamClient.send(new DeleteGroupCommand({ GroupName: physicalId }));
         break;
       } catch (error) {
-        if (!stackDestroy || attempt > 1 || !(error instanceof DeleteConflictException)) {
-          throw error;
-        }
+        if (!stackDestroy || !(error instanceof DeleteConflictException)) throw error;
         // Step 0's read is the first listing; the rest runs only after the
-        // refusal, so a delete that succeeds costs no extra call. A group
-        // gone meanwhile is deleted (the catch below); any other failed read
-        // leaves AWS's error.
-        const held = await settledMembers
-          .call(this, physicalId, members, membersTruncated)
-          .catch((readError) => {
-            if (readError instanceof NoSuchEntityException) throw readError;
-            log.debug(
-              `Could not read the members of group ${v(physicalId)} after DeleteGroup was refused: ${readError instanceof Error ? readError.name : typeof readError}`
-            );
-            return undefined;
-          });
-        if (held === 'empty') continue;
-        if (held === undefined) throw error;
+        // refusal, so a delete that succeeds costs no extra call. The second
+        // attempt's refusal reads the members once more (no settle) to name
+        // them. A group gone meanwhile is deleted (the catch below), another
+        // group under the name is refused; any other failed read leaves
+        // AWS's error.
+        const held = await (
+          attempt === 1
+            ? settledMembers.call(this, physicalId, members, membersTruncated, sameGroup)
+            : currentMembers.call(this, physicalId, sameGroup)
+        ).catch((readError) => {
+          if (
+            readError instanceof NoSuchEntityException ||
+            readError instanceof RecordedIdentityError
+          ) {
+            throw readError;
+          }
+          log.debug(
+            `Could not read the members of group ${v(physicalId)} after DeleteGroup was refused: ${readError instanceof Error ? readError.name : typeof readError}`
+          );
+          return undefined;
+        });
+        if (held === 'empty' && attempt === 1) continue;
+        if (held === undefined || held === 'empty') throw error;
         const refusal = markNonRetryable(
           new ProvisioningError(
             log.mask(
@@ -423,9 +454,10 @@ export async function deleteGroup(
                 `membership this destroy did not remove (a user added outside the stack, one ` +
                 `retained by a DeletionPolicy, or a stack user whose own delete has not finished ` +
                 `yet). Matching CloudFormation (DeleteConflict), cdkd ` +
-                `does not remove them from the group. If they no longer need it, remove them ` +
-                `(aws iam remove-user-from-group --group-name <group> --user-name <user>), ` +
-                `then destroy again.`
+                `does not remove them from the group. If a named user is one of this stack's ` +
+                `users, run the destroy again once its delete finishes. Otherwise, if they no ` +
+                `longer need the group, remove them (aws iam remove-user-from-group ` +
+                `--group-name <group> --user-name <user>), then destroy again.`
             ),
             resourceType,
             logicalId,
@@ -513,11 +545,10 @@ async function settledMembers(
   this: IAMUserGroupProvider,
   groupName: string,
   firstRead: User[],
-  firstTruncated: boolean
+  firstTruncated: boolean,
+  sameGroup: (read: GetGroupCommandOutput) => void
 ): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
-  const namesOf = (users: User[] | undefined) =>
-    (users ?? []).map((user) => user.UserName).filter((n): n is string => !!n);
-  let held = { names: namesOf(firstRead), truncated: firstTruncated };
+  let held = { names: memberNames(firstRead), truncated: firstTruncated };
   if (held.names.length === 0) return 'empty';
   const key = (h: { names: string[]; truncated: boolean }) =>
     JSON.stringify([h.names, h.truncated]);
@@ -525,15 +556,45 @@ async function settledMembers(
   for (let poll = 0; poll < HELD_MAX_POLLS && unchanged < HELD_STABLE_POLLS; poll++) {
     await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
     const read = await this.iamClient.send(new GetGroupCommand({ GroupName: groupName }));
-    const next = { names: namesOf(read.Users), truncated: read.IsTruncated === true };
+    sameGroup(read);
+    const next = { names: memberNames(read.Users), truncated: read.IsTruncated === true };
     if (next.names.length === 0) return 'empty';
     unchanged = key(next) === key(held) ? unchanged + 1 : 0;
     held = next;
   }
+  return confirmedMembers.call(this, groupName, held);
+}
+
+/** One `GetGroup` read's members, confirmed (the second attempt's refusal). */
+async function currentMembers(
+  this: IAMUserGroupProvider,
+  groupName: string,
+  sameGroup: (read: GetGroupCommandOutput) => void
+): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
+  const read = await this.iamClient.send(new GetGroupCommand({ GroupName: groupName }));
+  sameGroup(read);
+  const held = { names: memberNames(read.Users), truncated: read.IsTruncated === true };
+  if (held.names.length === 0) return 'empty';
+  return confirmedMembers.call(this, groupName, held);
+}
+
+function memberNames(users: User[] | undefined): string[] {
+  return (users ?? []).map((user) => user.UserName).filter((n): n is string => !!n);
+}
+
+/**
+ * The users of `held` that `ListGroupsForUser` shows still in the group, capped
+ * at {@link HELD_NAME_LIMIT}, or `'empty'` when none is.
+ */
+async function confirmedMembers(
+  this: IAMUserGroupProvider,
+  groupName: string,
+  held: { names: string[]; truncated: boolean }
+): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
   const names: string[] = [];
   for (const name of held.names) {
     // A user gone, or no longer in the group, is the read lagging. Any other
-    // failure keeps the name, as the settled read shows it.
+    // failure keeps the name, as the read shows it.
     try {
       const groups = await this.iamClient.send(new ListGroupsForUserCommand({ UserName: name }));
       if (

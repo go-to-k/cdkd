@@ -280,7 +280,7 @@ fi
 NEEDLE_2B="group ${GROUP_NAME} still has user(s) ${OOB_USER}, whose membership this destroy did not remove"
 if ! grep -qF -- "${NEEDLE_2B}" <<<"${REFUSE_2B_PLAIN}"; then
   echo "FAIL: the refused destroy does not name the out-of-stack user (expected: ${NEEDLE_2B})" >&2
-  printf '%s\n' "${REFUSE_2B_PLAIN}" | tail -20 >&2
+  printf '%s\n' "${REFUSE_2B_PLAIN}" >&2
   exit 1
 fi
 OOB_MEMBER="$(aws iam get-group --group-name "${GROUP_NAME}" \
