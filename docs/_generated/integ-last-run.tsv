@@ -231,7 +231,7 @@ glue-securityconfig-replace	2026-11-16T08:22:27Z	PASS	70	verify.sh	rc ok, orph c
 glue-update-hardening	2026-11-21T15:34:28Z	PASS	291	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc056, rc ok, no pre-existing detector, revert-identity kept x2, orph clean (eu-west-1)
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
-iam-access-key	2026-11-06T19:55:55Z	PASS	80	verify.sh	#5906 iam-user-group split head; rc ok, orph clean
+iam-access-key	2026-11-21T19:55:04Z	PASS	109	verify.sh	rc ok, orph clean; Phase 2b group refusal OK (#6783)
 iam-managed-policy	2026-11-21T12:11:14Z	PASS	230	verify.sh	PR6768 590d40673; rc ok, orph clean
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
 iam-profile-policy-fix-forward-orphan	2026-11-21T12:11:14Z	PASS	205	verify.sh	PR6768 590d40673; rc ok, orph clean; own bucket
