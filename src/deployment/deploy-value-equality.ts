@@ -74,7 +74,9 @@ const ACTION_IN_MESSAGE = [
 /**
  * The access-denial classes, by name only: a bare HTTP 403 also covers an
  * expired or invalid credential (`ExpiredToken`, `InvalidClientTokenId`,
- * `SignatureDoesNotMatch`), which fresh credentials and a re-run fix.
+ * `SignatureDoesNotMatch`), which fresh credentials and a re-run fix. The
+ * price: a bodiless 403 (S3's HEAD, named `Forbidden` / `403`) keeps the
+ * retry wording even when a permission is missing.
  */
 const DENIAL_CLASSES: ReadonlySet<string> = new Set([
   'AccessDenied',

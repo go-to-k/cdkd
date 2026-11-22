@@ -233,7 +233,14 @@ export async function readCurrentState(
     if (declared !== undefined) {
       dpp = await settleDeclaredMember(
         dpp,
-        () => readDataProtectionPolicy.call(this, physicalId),
+        async () => {
+          try {
+            return await readDataProtectionPolicy.call(this, physicalId);
+          } catch (err) {
+            if (standardOnly(err)) return 'refused';
+            throw err;
+          }
+        },
         (document) => policyDocumentMatchesDeclared(document, declared),
         declared,
         this.ownWriteRereadDelaysMs,

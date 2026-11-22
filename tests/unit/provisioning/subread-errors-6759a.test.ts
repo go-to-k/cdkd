@@ -747,6 +747,17 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
       ).rejects.toBe(other);
     });
 
+    it('an INFREQUENT_ACCESS group rejects on another ValidationException from DescribeIndexPolicies', async () => {
+      for (const [name, answer] of Object.entries(group('INFREQUENT_ACCESS'))) {
+        answers.set(name, answer);
+      }
+      const other = named('ValidationException', 'Invalid log group name');
+      answers.set('DescribeIndexPoliciesCommand', other);
+      await expect(
+        new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      ).rejects.toBe(other);
+    });
+
     it('a STANDARD group rejects on the Standard-only ValidationException from GetDataProtectionPolicy', async () => {
       for (const [name, answer] of Object.entries(group('STANDARD'))) answers.set(name, answer);
       const error = standardOnly();

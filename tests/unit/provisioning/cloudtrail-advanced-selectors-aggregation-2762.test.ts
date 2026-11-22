@@ -429,7 +429,11 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
     it('drops only the block whose own read fails, with a warning', async () => {
       mockSend.mockImplementation((command: unknown) => {
         if (command instanceof GetEventSelectorsCommand)
-          return Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
+          return Promise.reject(
+            Object.assign(new Error('arn:aws:sts::1:assumed-role/denied-role/x is not authorized'), {
+              name: 'AccessDeniedException',
+            })
+          );
         if (command instanceof GetEventConfigurationCommand)
           return Promise.resolve({ AggregationConfigurations: AGGREGATION });
         return Promise.resolve({});
@@ -445,6 +449,10 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
       expect(warnSpy.mock.calls.map((c) => String(c[0]))).toEqual(
         expect.arrayContaining([expect.stringContaining('EventSelectors / AdvancedEventSelectors')])
       );
+      // The class at warn, never the AWS text (#2319): it names the caller's role.
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('(AccessDeniedException)');
+      expect(warned).not.toContain('denied-role');
     });
 
     it('drops the key when the live read fails too', async () => {
