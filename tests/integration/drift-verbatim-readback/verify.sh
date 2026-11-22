@@ -120,6 +120,8 @@ delete_principal() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  # go-to-k/cdkd#6755: the login-profile input file, on a run that died mid-call.
+  [ -n "${LP_DIR:-}" ] && rm -rf "${LP_DIR}"
   [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   if [ -n "${ACCOUNT:-}" ]; then
     aws s3 rb "s3://${BUCKET_PREFIX}${ACCOUNT}-${REGION}" --force >/dev/null 2>&1 || true
@@ -529,10 +531,18 @@ echo "    OK: LoginProfile null"
 
 echo "==> #6755: create a login profile for ${BARE_USER} out of band"
 LP_PW=$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("base64url") + "Aa1!")')
-# Through stdin, not argv: an argument is visible to `ps` while the call runs.
-# The generated password is base64url plus `Aa1!`, so it needs no JSON escape.
-printf '{"UserName":"%s","Password":"%s","PasswordResetRequired":false}' "${BARE_USER}" "${LP_PW}" |
-  aws iam create-login-profile --cli-input-json file:///dev/stdin >/dev/null
+# Through a 0600 input file, not argv (an argument is visible to `ps` while
+# the call runs) and not `file:///dev/stdin`, which this CLI reads as empty
+# ("Invalid JSON received"). The file lives outside ARTIFACT_DIR and is removed
+# right after the call, and by cleanup on a failed run. `printf` is a shell
+# builtin, so the password is in no process's argv. The generated password is
+# base64url plus `Aa1!`, so it needs no JSON escape.
+LP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cdkd-dvr-lp.XXXXXX")
+(umask 077 && printf '{"UserName":"%s","Password":"%s","PasswordResetRequired":false}' \
+  "${BARE_USER}" "${LP_PW}" >"${LP_DIR}/in.json")
+aws iam create-login-profile --no-cli-auto-prompt --cli-input-json "file://${LP_DIR}/in.json" >/dev/null
+rm -rf "${LP_DIR}"
+LP_DIR=""
 sleep 10
 run_drift "${ARTIFACT_DIR}/drift-login-profile.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-login-profile.json")
