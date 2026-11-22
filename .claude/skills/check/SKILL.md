@@ -59,7 +59,8 @@ Run these sequentially and report results.
 
 4. `vp test run --maxWorkers=4` — the whole unit suite, only once
    `pgrep -fl vitest` shows no other run: an uncapped run beside a peer's
-   hung the host twice. Prefer this over `vp run test`.
+   has hung the host. Prefer this over `vp run test`: nothing sits between the
+   caller and the verdict.
 
    Read the summary's NUMBERS, not its colour, and read the `Errors` line, which
    is NOT `Type Errors`. `Test Files N passed (N)` is self-consistent over a
