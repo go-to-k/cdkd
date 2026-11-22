@@ -5,7 +5,8 @@
  * must carry the id cdkd's own `create()` records — the `PolicyName` — or the
  * first `cdkd drift` reports the policy DELETED.
  */
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { NoSuchEntityException } from '@aws-sdk/client-iam';
 
 const mockSend = vi.fn();
 
@@ -38,19 +39,66 @@ function policyInput(
 
 describe('AWS::IAM::Policy import records the PolicyName (#6841)', () => {
   const document = { Version: '2012-10-17', Statement: [] };
+  beforeEach(() => {
+    mockSend.mockReset();
+  });
 
-  it("records the template's PolicyName, not CloudFormation's generated id", async () => {
+  it("records the PolicyName, not CloudFormation's generated id, once a listed role holds it", async () => {
+    mockSend.mockImplementation(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      if (command.constructor.name === 'GetRolePolicyCommand' && command.input['RoleName'] === 'role-b') {
+        return { PolicyDocument: encodeURIComponent(JSON.stringify(document)) };
+      }
+      throw new NoSuchEntityException({ message: 'not found', $metadata: {} });
+    });
     const result = await new IAMPolicyProvider().import(
       policyInput(
         {
           PolicyName: 'CoverageAuditRoleDefaultPolicy8A0E635C',
           PolicyDocument: document,
-          Roles: ['role-a'],
+          Roles: ['role-a', 'role-b'],
         },
         CFN_ID
       )
     );
     expect(result).toEqual({ physicalId: 'CoverageAuditRoleDefaultPolicy8A0E635C', attributes: {} });
+    const asked = mockSend.mock.calls.map((c) => (c[0] as { input: Record<string, unknown> }).input);
+    expect(asked).toEqual([
+      { RoleName: 'role-a', PolicyName: 'CoverageAuditRoleDefaultPolicy8A0E635C' },
+      { RoleName: 'role-b', PolicyName: 'CoverageAuditRoleDefaultPolicy8A0E635C' },
+    ]);
+  });
+
+  it.each([
+    ['no listed principal holds it', () => {
+      throw new NoSuchEntityException({ message: 'not found', $metadata: {} });
+    }],
+    ['the lookup fails', () => {
+      const denied = new Error('User is not authorized to perform: iam:GetRolePolicy');
+      denied.name = 'AccessDenied';
+      throw denied;
+    }],
+  ])("keeps CloudFormation's id, and warns naming the logical id only, when %s", async (_label, answer) => {
+    mockSend.mockImplementation(async () => answer());
+    const provider = new IAMPolicyProvider();
+    const warn = vi.spyOn(provider.logger, 'warn').mockImplementation(() => undefined);
+    const result = await provider.import(
+      policyInput(
+        { PolicyName: 'RenamedInCode', PolicyDocument: document, Roles: ['role-a'], Users: ['u'] },
+        CFN_ID
+      )
+    );
+    expect(result?.physicalId).toBe(CFN_ID);
+    const warned = warn.mock.calls.flat().join(' ');
+    expect(warned).toContain('CoverageAuditRoleDefaultPolicy8A0E635C');
+    expect(warned).not.toContain('RenamedInCode');
+    expect(warned).not.toContain('role-a');
+  });
+
+  it("keeps CloudFormation's id when the principal list cannot be read", async () => {
+    const result = await new IAMPolicyProvider().import(
+      policyInput({ PolicyName: 'P1', PolicyDocument: document, Roles: [{ Ref: 'Gone' }] }, CFN_ID)
+    );
+    expect(result?.physicalId).toBe(CFN_ID);
     expect(mockSend).not.toHaveBeenCalled();
   });
 

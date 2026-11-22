@@ -60,14 +60,25 @@ describe('readDeployedTemplate', () => {
   });
 
   it.each([
-    ['no body', {}],
-    ['no Resources section', { TemplateBody: '{"Outputs":{}}' }],
-    ['an unparseable body', { TemplateBody: '{"Resources": {' }],
-  ])('refuses %s, ending in the caller\'s consequence', async (_label, response) => {
+    ['no body', {}, 'CloudFormation returned no template body for the stack being migrated.'],
+    [
+      'no Resources section',
+      { TemplateBody: '{"Outputs":{}}' },
+      'the template CloudFormation last deployed has no Resources section.',
+    ],
+    [
+      'an unparseable body',
+      { TemplateBody: '{"Resources": {' },
+      'the template CloudFormation last deployed could not be parsed:',
+    ],
+  ])("refuses %s, ending in the caller's consequence", async (_label, response, reason) => {
     const send = vi.fn(async () => response);
-    await expect(readDeployedTemplate({ send } as never, 'S', 'NOTHING WRITTEN.')).rejects.toThrow(
-      /^--migrate-from-cloudformation: .* NOTHING WRITTEN\.$/
+    const thrown = await readDeployedTemplate({ send } as never, 'S', 'NOTHING WRITTEN.').catch(
+      (err: unknown) => err as Error
     );
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/^--migrate-from-cloudformation: .* NOTHING WRITTEN\.$/);
+    expect((thrown as Error).message).toContain(reason);
   });
 });
 
@@ -140,6 +151,47 @@ describe('deployedPropertiesBlocker', () => {
       Parameters: (synth as unknown as { Parameters: unknown }).Parameters,
     });
     expect(deployedPropertiesBlocker({ P: { Ref: 'Added' } }, {}, grown, synth)).toBeUndefined();
+  });
+
+  it.each([
+    ['a parameter in code, a resource when deployed', 'Stage', tpl({ ...synth.Resources, Stage: { Type: 'AWS::SNS::Topic' } })],
+    ['a resource in code, a parameter when deployed', 'Sib', tpl(synth.Resources, { Parameters: { Sib: { Type: 'String' } } })],
+  ])('refuses a Ref whose target changed kind (%s)', (_label, target, deployed) => {
+    expect(deployedPropertiesBlocker({ P: { Ref: target } }, {}, synth, deployed)).toBe(
+      `they reference ${target}, which changed between a parameter and a resource`
+    );
+  });
+
+  it.each([
+    ['a literal', 'plaintext-pasted-in'],
+    ['nothing', undefined],
+    ['an intrinsic', { Ref: 'Stage' }],
+  ])('refuses a dynamic reference the code spells where CloudFormation deployed %s, naming the path only', (_label, deployedValue) => {
+    const deployed: Record<string, unknown> = { Env: { Variables: {} } };
+    if (deployedValue !== undefined) {
+      (deployed['Env'] as { Variables: Record<string, unknown> }).Variables['TOKEN'] = deployedValue;
+    }
+    const reason = deployedPropertiesBlocker(
+      deployed,
+      { Env: { Variables: { TOKEN: '{{resolve:secretsmanager:tok}}' } } },
+      synth,
+      synth
+    );
+    expect(reason).toBe(
+      'the synthesized properties hold a dynamic reference at Env.Variables.TOKEN where the deployed ones do not'
+    );
+    expect(reason).not.toContain('plaintext-pasted-in');
+  });
+
+  it('admits a dynamic reference on both sides, even a different one', () => {
+    expect(
+      deployedPropertiesBlocker(
+        { Env: { TOKEN: '{{resolve:secretsmanager:old}}' } },
+        { Env: { TOKEN: '{{resolve:secretsmanager:new}}' } },
+        synth,
+        synth
+      )
+    ).toBeUndefined();
   });
 
   it('refuses a sibling whose TYPE changed, which answers Ref / GetAtt as the new type', () => {
@@ -294,6 +346,21 @@ describe('overlayDeployedProperties', () => {
     );
     expect(out.template.Resources['B']!.Properties).toEqual({});
     expect([...out.overlaid]).toEqual(['B']);
+  });
+
+  it('keeps the synthesized Properties, silently, for a NULL row in the deployed Resources', () => {
+    const { log, warn, info } = logger();
+    const synth = tpl({ R: role(['a', 'b']) });
+    const out = overlayDeployedProperties(
+      synth,
+      tpl(JSON.parse('{"R": null}') as CloudFormationTemplate['Resources']),
+      log,
+      'S'
+    );
+    expect(out.template.Resources['R']).toBe(synth.Resources['R']);
+    expect(out.overlaid.size).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
   });
 
   it('withDeployedDefinitions swaps in only the overlaid definitions, keeping the rest by identity', () => {

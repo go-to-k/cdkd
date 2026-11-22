@@ -208,6 +208,36 @@ function collectNames(value: unknown, out: ReferencedNames): void {
   for (const child of Object.values(obj)) collectNames(child, out);
 }
 
+const DYNAMIC_REFERENCE_OPENER = '{{resolve:';
+
+/**
+ * The first path (`A.B.0`) at which `synth` holds a string spelling a dynamic
+ * reference while `deployed` holds anything but such a string, or `undefined`.
+ * Paths only, never values.
+ */
+function dynamicReferenceDowngradePath(
+  synth: unknown,
+  deployed: unknown,
+  path: string
+): string | undefined {
+  if (typeof synth === 'string') {
+    if (!synth.includes(DYNAMIC_REFERENCE_OPENER)) return undefined;
+    return typeof deployed === 'string' && deployed.includes(DYNAMIC_REFERENCE_OPENER)
+      ? undefined
+      : path || '(the whole bag)';
+  }
+  if (synth === null || typeof synth !== 'object') return undefined;
+  const deployedNode =
+    deployed !== null && typeof deployed === 'object' ? (deployed as Record<string, unknown>) : {};
+  for (const [key, child] of Object.entries(synth as Record<string, unknown>)) {
+    const childPath = path ? `${path}.${key}` : key;
+    const next = hasOwn(deployedNode, key) ? deployedNode[key] : undefined;
+    const found = dynamicReferenceDowngradePath(child, next, childPath);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 function section(template: CloudFormationTemplate, name: string): Record<string, unknown> {
   const value = (template as unknown as Record<string, unknown>)[name];
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -243,14 +273,33 @@ export function deployedPropertiesBlocker(
   synthTemplate: CloudFormationTemplate,
   deployedTemplate: CloudFormationTemplate
 ): string | undefined {
+  // A dynamic reference the code now spells where the deployed template held
+  // something else (a literal, typically a secret pasted in before): recording
+  // the deployed bag would persist that value, and the import's redaction
+  // pairs against the bag it records, which spells no reference there. Keep
+  // the synthesized bag, whose reference the redaction does see.
+  const downgraded = dynamicReferenceDowngradePath(synthProperties, deployedProperties, '');
+  if (downgraded !== undefined) {
+    return safeMsg`the synthesized properties hold a dynamic reference at ${downgraded} where the deployed ones do not`;
+  }
+
   const names = newNames();
   collectNames(deployedProperties, names);
 
   const synthParameters = section(synthTemplate, 'Parameters');
   const synthResources = section(synthTemplate, 'Resources');
   const deployedResources = section(deployedTemplate, 'Resources');
+  const deployedParameters = section(deployedTemplate, 'Parameters');
   for (const target of names.targets) {
     if (target.startsWith('AWS::')) continue;
+    // The same logical id as a parameter on one side and a resource on the
+    // other answers `Ref` with a different kind of value.
+    if (
+      (hasOwn(synthParameters, target) && hasOwn(deployedResources, target)) ||
+      (hasOwn(synthResources, target) && hasOwn(deployedParameters, target))
+    ) {
+      return safeMsg`they reference ${logicalIdShown(target)}, which changed between a parameter and a resource`;
+    }
     if (hasOwn(synthParameters, target)) continue;
     if (hasOwn(synthResources, target)) {
       // A sibling whose TYPE changed answers `Ref` / `Fn::GetAtt` as the new type.

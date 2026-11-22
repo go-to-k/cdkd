@@ -5449,6 +5449,8 @@ describe('cdkd import', () => {
         // so its own name/tag lookup is never needed.
         expect(importSpy.mock.calls[0]![0]).toMatchObject({
           knownPhysicalId: 'cfn-derived-bucket',
+          // Auto mode, no migration: the id is still CloudFormation's (#6841).
+          knownPhysicalIdFromCloudFormation: true,
         });
       });
 
@@ -5471,6 +5473,10 @@ describe('cdkd import', () => {
         await runImport(['import', '--app', 'x', '--yes', '--auto', '--resource', 'MyBucket=mine']);
 
         expect(importSpy.mock.calls[0]![0]).toMatchObject({ knownPhysicalId: 'mine' });
+        expect(
+          (importSpy.mock.calls[0]![0] as { knownPhysicalIdFromCloudFormation?: boolean })
+            .knownPhysicalIdFromCloudFormation
+        ).toBeUndefined();
       });
 
       it('falls through to the per-provider lookup when no CFn stack exists', async () => {

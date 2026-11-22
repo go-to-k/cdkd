@@ -138,7 +138,10 @@ cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
 1. cdkd reads every logical ID and physical id from the CloudFormation stack
    with `DescribeStackResources`. A `--resource` value you pass takes
    precedence over CloudFormation's.
-2. cdkd adopts each resource by that physical id.
+2. cdkd reads the template CloudFormation last deployed with `GetTemplate`,
+   and takes each resource's properties from it (see
+   [Code you changed after the last `cdk deploy`](#code-you-changed-after-the-last-cdk-deploy)).
+   It adopts each resource by its physical id.
 3. cdkd updates the CloudFormation stack so that every resource has
    `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`.
 4. When that update completed, cdkd reads the ids again. If a root resource's
@@ -182,6 +185,7 @@ template:
 | They read another stack's value your code no longer reads | An `Fn::ImportValue` of an export the producer dropped |
 | They use a condition or mapping your template defines differently | A `Conditions` entry you edited |
 | The resource's type changed | A logical ID now used by another type |
+| Your code spells a dynamic reference where the deployed template held a value | A `{{resolve:secretsmanager:...}}` replacing a pasted-in literal |
 
 For such a resource, `cdkd diff` does not show your change. Compare the
 resource in AWS with your template before you rely on the record.
