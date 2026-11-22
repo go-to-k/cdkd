@@ -287,6 +287,15 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
  * `Code` re-added succeeds (measured on an inline zip function, x86_64 ->
  * arm64, go-to-k/cdkd#6709).
  *
+ * go-to-k/cdkd#6788 measured the rest the same way (us-east-1, CloudTrail per
+ * update): a patch changing only an unrelated property (usually `Tags`)
+ * succeeded and kept the value, while the same patch re-adding the unchanged
+ * key either made the handler call the API noted beside the entry or made the
+ * update fail. A sibling listed beside one of them was NOT measured: it names
+ * a property the service may need with the key (an API that takes both
+ * together, or one that decides how the key applies), so a change to it keeps
+ * today's re-send.
+ *
  * Require handler measurements before adding an entry, or before dropping a
  * sibling. Readback omits write-only values, so omitting them from a Cloud
  * Control patch can lose them (go-to-k/cdkd#809).
@@ -294,12 +303,99 @@ export function getTopLevelKeysHoldingUnreadableCreateOnly(
 const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   string,
   ReadonlyMap<string, readonly string[]>
-> = new Map([['AWS::Lambda::Function', new Map([['Code', ['Architectures']]])]]);
+> = new Map<string, ReadonlyMap<string, readonly string[]>>([
+  ['AWS::Lambda::Function', new Map([['Code', ['Architectures']]])],
+  // Re-send called UpdateBroker + UpdateUser + RebootBroker (196 s vs 1 s).
+  [
+    'AWS::AmazonMQ::Broker',
+    new Map([
+      ['Users', []],
+      ['Configuration', []],
+      ['EngineVersion', []],
+    ]),
+  ],
+  // Re-send called UpdateAppAuthorization.
+  ['AWS::AppFabric::AppAuthorization', new Map([['Credential', []]])],
+  // Re-send FAILED on a Fargate environment ("parameters can't be updated for
+  // Fargate compute environment"). An infrastructure update, which these two
+  // govern on EC2, comes only from a `ComputeResources` change.
+  [
+    'AWS::Batch::ComputeEnvironment',
+    new Map([
+      ['ReplaceComputeEnvironment', ['ComputeResources']],
+      ['UpdatePolicy', ['ComputeResources']],
+    ]),
+  ],
+  // Re-send called UpdateApiKeyCredentialProvider and wrote a new Secrets
+  // Manager secret version.
+  [
+    'AWS::BedrockAgentCore::ApiKeyCredentialProvider',
+    new Map([['ApiKey', ['ApiKeySecretConfig', 'ApiKeySecretSource']]]),
+  ],
+  // Re-send called UpdateOauth2CredentialProvider and wrote a new secret version.
+  ['AWS::BedrockAgentCore::OAuth2CredentialProvider', new Map([['Oauth2ProviderConfigInput', []]])],
+  // Re-send FAILED: the read model holds `Definition`, and the handler refuses
+  // both ("only one of Definition, DefinitionString or DefinitionS3Location").
+  ['AWS::Bedrock::Flow', new Map([['DefinitionString', ['DefinitionSubstitutions']]])],
+  // Re-send FAILED ("is not updatable with parameters provided").
+  ['AWS::CloudFront::KeyValueStore', new Map([['ImportSource', []]])],
+  // Re-send FAILED ("Password cannot be updated.").
+  ['AWS::Connect::User', new Map([['Password', []]])],
+  // Re-send called ModifyEndpoint.
+  ['AWS::DMS::Endpoint', new Map([['Password', []]])],
+  // Re-send rewrote the location's managed secret (Secrets Manager UpdateSecret).
+  [
+    'AWS::DataSync::LocationAzureBlob',
+    new Map([
+      [
+        'AzureBlobSasConfiguration',
+        ['AzureBlobAuthenticationType', 'CmkSecretConfig', 'CustomSecretConfig'],
+      ],
+    ]),
+  ],
+  // Re-send called UpdateCluster (37 s vs 2 s).
+  ['AWS::DocDBElastic::Cluster', new Map([['AdminUserPassword', []]])],
+  // Re-send called ModifyVpnTunnelOptions per tunnel (427 s vs 2 s).
+  ['AWS::EC2::VPNConnection', new Map([['VpnTunnelOptionsSpecifications', []]])],
+  // Re-send called ModifyReplicationGroup with the token (67 s vs 35 s).
+  ['AWS::ElastiCache::ReplicationGroup', new Map([['AuthToken', []]])],
+  // Re-send called ModifyUser.
+  [
+    'AWS::ElastiCache::User',
+    new Map([['Passwords', ['AuthenticationMode', 'NoPasswordRequired']]]),
+  ],
+  // Re-send ran an extra configuration deployment. A configuration template
+  // or platform change may reapply settings the options override.
+  [
+    'AWS::ElasticBeanstalk::Environment',
+    new Map([['OptionSettings', ['TemplateName', 'PlatformArn']]]),
+  ],
+  // Re-send called UpdateStorageVirtualMachine.
+  ['AWS::FSx::StorageVirtualMachine', new Map([['SvmAdminPassword', []]])],
+  // Re-send called UpdateUser.
+  ['AWS::MemoryDB::User', new Map([['AuthenticationMode', []]])],
+  // Re-send called ModifyCluster with the password (407 s vs 8 s).
+  ['AWS::Redshift::Cluster', new Map([['MasterUserPassword', ['ManageMasterPassword']]])],
+  // Re-send made UpdateNamespace re-set the admin password. UpdateNamespace
+  // takes `adminUsername` and `adminUserPassword` together.
+  [
+    'AWS::RedshiftServerless::Namespace',
+    new Map([['AdminUserPassword', ['AdminUsername', 'ManageAdminPassword']]]),
+  ],
+  // Re-send called UpdateFirewallDomains (REPLACE).
+  ['AWS::Route53Resolver::FirewallDomainList', new Map([['Domains', ['DomainFileUrl']]])],
+  // Re-send FAILED: the read model holds `RoutingConfiguration` ("Specify
+  // exactly one of 'RoutingConfiguration' or 'DeploymentPreference'").
+  ['AWS::StepFunctions::StateMachineAlias', new Map([['DeploymentPreference', []]])],
+  // Re-send called the canary Lambda's UpdateFunctionCode.
+  ['AWS::Synthetics::Canary', new Map([['Code', ['RuntimeVersion']]])],
+]);
 
 /**
  * The write-only top-level keys of `resourceType` that
  * `CloudControlProvider.update` must not re-add while UNCHANGED
- * (go-to-k/cdkd#6709). A changed one is still re-added: that is the update.
+ * (go-to-k/cdkd#6709, go-to-k/cdkd#6788). A changed one is still re-added:
+ * that is the update.
  * A key is left out of the result when a sibling it travels with differs
  * between the two sides, so the caller re-adds it for that update.
  */

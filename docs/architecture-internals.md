@@ -456,7 +456,10 @@ unchanged write-only property the type's handler keeps when the patch omits
 it and acts on when the patch re-sends it: a Lambda function's `Code`, whose
 unchanged re-send made the handler call `UpdateFunctionCode` (issue #6709).
 `Code` is still re-added when the same update changes `Architectures`, which
-Lambda takes on `UpdateFunctionCode`.
+Lambda takes on `UpdateFunctionCode`. Issue #6788 measured more: passwords
+and tokens the handler re-sets (a Redshift cluster's `MasterUserPassword`),
+a Synthetics canary's `Code`, and re-sends the handler refuses (a CloudFront
+KeyValueStore's `ImportSource`).
 These are listed per type in `getWriteOnlyKeysKeptWhenOmitted`, each from a
 measurement of that handler. If `DescribeType` is
 unavailable (missing permission, throttling), cdkd warns and falls back to

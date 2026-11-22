@@ -266,21 +266,21 @@ describe('CloudControlProvider update: an unchanged Lambda Code is not re-added 
   it('still re-adds an unchanged write-only key of a type with no entry', async () => {
     // Same top-level key name, another type: the exception is per type.
     mockCloudFormationSend.mockResolvedValue({
-      Schema: JSON.stringify({ writeOnlyProperties: ['/properties/Code/Script'] }),
+      Schema: JSON.stringify({ writeOnlyProperties: ['/properties/Code'] }),
     });
-    const code = { Script: 'exports.handler = async () => {};', Handler: 'index.handler' };
+    const code = { S3: { Bucket: 'seed-bucket', Key: 'seed.zip' }, BranchName: 'main' };
 
     await provider.update(
-      'Canary',
-      'canary-1',
-      'AWS::Synthetics::Canary',
-      { Code: code, FailureRetentionPeriod: 14 },
-      { Code: code, FailureRetentionPeriod: 7 }
+      'Repo',
+      'repo-1',
+      'AWS::CodeCommit::Repository',
+      { Code: code, RepositoryDescription: 'b' },
+      { Code: code, RepositoryDescription: 'a' }
     );
 
     const patch = sentPatch();
     expect(patch).toContainEqual({ op: 'add', path: '/Code', value: code });
-    expect(paths(patch)).toEqual(['/Code', '/FailureRetentionPeriod']);
+    expect(paths(patch)).toEqual(['/Code', '/RepositoryDescription']);
   });
 });
 
@@ -307,6 +307,6 @@ describe('getWriteOnlyKeysKeptWhenOmitted (go-to-k/cdkd#6709)', () => {
 
   it('is empty for a type with no measured entry', () => {
     expect(kept('AWS::ECS::Service')).toEqual([]);
-    expect(kept('AWS::Synthetics::Canary')).toEqual([]);
+    expect(kept('AWS::Lex::Bot')).toEqual([]);
   });
 });

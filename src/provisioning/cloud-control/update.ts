@@ -218,6 +218,8 @@ export async function updateInIdLogScope(
     // takes on `UpdateFunctionCode`: a patch changing it without `Code` fails
     // with Lambda's "Please provide a source for function code" (measured on
     // an inline zip function, x86_64 -> arm64, go-to-k/cdkd#6709).
+    // go-to-k/cdkd#6788 measured more such keys (passwords re-set, a canary's
+    // code redeployed, re-sends a handler refuses); see the table.
     // See `create()`: started alongside the update, awaited at its end.
     const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
     const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
