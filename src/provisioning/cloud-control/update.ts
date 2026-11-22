@@ -220,7 +220,7 @@ export async function updateInIdLogScope(
     // an inline zip function, x86_64 -> arm64, go-to-k/cdkd#6709).
     // go-to-k/cdkd#6788 measured more such keys (passwords re-set, a canary's
     // code redeployed, re-sends a handler refuses); see the table. A key
-    // whose declared sibling is itself write-only (so re-added here) is
+    // whose declared sibling is itself write-only and re-added here is
     // re-added with it: that pairing was never measured apart.
     // See `create()`: started alongside the update, awaited at its end.
     const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
