@@ -17,8 +17,9 @@ import type { TestProject } from 'vite-plus/test/node';
  * not hold. A lock on full runs alone (more than 25% of the files) did not
  * hold either: one lane's `tests/unit` ran beside two lanes'
  * `tests/unit/deployment` runs (~20% of the files each, so never waiting),
- * spawning ~5,000 processes a second, and the host crashed again. So a run counts as large when its filters select more
- * than `LARGE_RUN_FILES` test files — any directory-sized run (a filter such
+ * spawning ~5,000 processes a second, and the host crashed again. So a run
+ * counts as large when its filters select more than `LARGE_RUN_FILES` test
+ * files — any directory-sized run (a filter such
  * as `tests/unit` is a substring match over nearly everything). Targeted runs,
  * watch mode, `--changed` / `related`, and a run spawned by a suite that
  * already holds the lock (`HOLDER_ENV`) never wait.
