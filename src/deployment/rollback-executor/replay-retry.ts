@@ -174,7 +174,13 @@ export async function updateWithRollbackRetry(
  * (`ResourceConflict`, "There is an operation running on the namespace").
  * Measured on `AWS::RedshiftServerless::Namespace`, whose password change
  * keeps it `MODIFYING` for minutes: the revert sent right after the forward
- * update reached neither `UpdateNamespace` call (CloudTrail).
+ * update sent no `UpdateNamespace` (CloudTrail).
+ *
+ * CloudFormation parity gives way here, on the rollback path only: CFn's own
+ * rollback of the same update fails the same way (`UPDATE_ROLLBACK_FAILED`,
+ * `NotStabilized`, measured) and needs a manual `continue-update-rollback`,
+ * which then succeeds. Re-sending costs a deploy nothing and turns that manual
+ * step into the automatic rollback the user asked for.
  */
 const UNSETTLED_UPDATE_CC_ERROR_CODES: ReadonlySet<string> = new Set([
   'NotStabilized',
