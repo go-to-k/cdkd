@@ -172,7 +172,7 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
     expect(result['Tags']).toEqual({ Env: 'dev', lowerKey: 'v' });
   });
 
-  it('emits an empty Tags map for an untagged runtime, and omits Tags when the read fails', async () => {
+  it('emits an empty Tags map for an untagged runtime, and rejects when the tag read is denied (go-to-k/cdkd#6759)', async () => {
     const base = {
       agentRuntimeId: 'runtime-1',
       agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123:runtime/runtime-1',
@@ -190,13 +190,9 @@ describe('AgentCoreRuntimeProvider.readCurrentState', () => {
     mockSend
       .mockResolvedValueOnce(base)
       .mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
-    const unreadable = (await provider.readCurrentState(
-      'runtime-1',
-      'Logical',
-      'AWS::BedrockAgentCore::Runtime'
-    )) as Record<string, unknown>;
-    expect('Tags' in unreadable).toBe(false);
-    expect(unreadable['AgentRuntimeName']).toBe('my-runtime');
+    await expect(
+      provider.readCurrentState('runtime-1', 'Logical', 'AWS::BedrockAgentCore::Runtime')
+    ).rejects.toMatchObject({ name: 'AccessDeniedException' });
   });
 
   it('returns RESOURCE_NOT_FOUND when runtime gone', async () => {

@@ -17,7 +17,7 @@ import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound, ReadCurrentStateContext } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
-import { VPC_ENCRYPTION_CONTROL_EXCLUSIONS } from './common.js';
+import { VPC_ENCRYPTION_CONTROL_EXCLUSIONS, isEc2NotFoundCode } from './common.js';
 import { readbackEc2Tags } from './read-network-state.js';
 import {
   type CfnSgRule,
@@ -753,6 +753,14 @@ export async function readSgIngressByIdentity(
     );
     owned = resp.SecurityGroupRules?.find((r) => r.SecurityGroupRuleId === recordedId);
   } catch (err) {
+    // go-to-k/cdkd#6759: only an answer about the recorded id itself (stale:
+    // `.NotFound`, unusable: `.Malformed`) leaves the rule unknown; any other
+    // failure (UnauthorizedOperation, throttling) throws, so `cdkd drift`
+    // reports the rule not compared with its cause.
+    const idUnusable =
+      isEc2NotFoundCode(err) ||
+      (err as { name?: unknown } | null)?.name === 'InvalidSecurityGroupRuleId.Malformed';
+    if (!idUnusable) throw err;
     this.logger.debug(
       safeMsg`readCurrentState: recorded rule ${recordedId} could not be read (${describeAwsFailure(err).summary}); the ingress rule stays unknown`
     );

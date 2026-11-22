@@ -829,14 +829,18 @@ describe('ECSProvider.readCurrentState', () => {
       expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBeUndefined();
     });
 
-    it('Cluster: ClusterNotFoundException is gone; AccessDenied is not', async () => {
+    it('Cluster: ClusterNotFoundException is gone; AccessDenied is not (it rejects)', async () => {
       mockSend.mockRejectedValueOnce(named('ClusterNotFoundException', 'Cluster not found.'));
       expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBe(
         RESOURCE_NOT_FOUND
       );
 
+      // go-to-k/cdkd#6759: not gone, and not a bare unknown either -- the
+      // error reaches `cdkd drift` as a failed read.
       mockSend.mockRejectedValueOnce(named('AccessDeniedException', 'denied'));
-      expect(await provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).toBeUndefined();
+      await expect(provider.readCurrentState('gone', 'C', 'AWS::ECS::Cluster')).rejects.toMatchObject(
+        { name: 'AccessDeniedException' }
+      );
     });
 
     it('Service: empty list with MISSING failure is gone; another reason is not', async () => {
@@ -859,9 +863,11 @@ describe('ECSProvider.readCurrentState', () => {
       }
     );
 
-    it('Service: AccessDenied is not gone', async () => {
+    it('Service: AccessDenied is not gone (it rejects)', async () => {
       mockSend.mockRejectedValueOnce(named('AccessDeniedException', 'denied'));
-      expect(await provider.readCurrentState(svcArn, 'S', 'AWS::ECS::Service')).toBeUndefined();
+      await expect(provider.readCurrentState(svcArn, 'S', 'AWS::ECS::Service')).rejects.toMatchObject(
+        { name: 'AccessDeniedException' }
+      );
     });
 
     it('TaskDefinition: "Unable to describe task definition" is gone', async () => {
@@ -876,11 +882,11 @@ describe('ECSProvider.readCurrentState', () => {
     it.each([
       ['ClientException', 'User is not authorized to perform ecs:DescribeTaskDefinition'],
       ['AccessDeniedException', 'denied'],
-    ])('TaskDefinition: %s (%s) is not gone', async (name, message) => {
+    ])('TaskDefinition: %s (%s) is not gone (it rejects)', async (name, message) => {
       mockSend.mockRejectedValueOnce(named(name, message));
-      expect(
-        await provider.readCurrentState(tdArn, 'T', 'AWS::ECS::TaskDefinition')
-      ).toBeUndefined();
+      await expect(
+        provider.readCurrentState(tdArn, 'T', 'AWS::ECS::TaskDefinition')
+      ).rejects.toMatchObject({ name });
     });
   });
 

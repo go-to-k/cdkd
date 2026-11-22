@@ -81,6 +81,7 @@ describe('KinesisStreamProvider read-update round-trip', () => {
           EncryptionType: 'NONE',
         },
       })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({ Tags: [] });
 
     const observed = (await provider.readCurrentState(
@@ -104,6 +105,7 @@ describe('KinesisStreamProvider read-update round-trip', () => {
           EncryptionType: 'NONE',
         },
       })
+      .mockResolvedValueOnce({ StreamDescriptionSummary: {} })
       .mockResolvedValueOnce({ Tags: [] });
 
     const observed = (await provider.readCurrentState(

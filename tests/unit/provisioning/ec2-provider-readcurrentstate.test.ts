@@ -1534,13 +1534,26 @@ describe('EC2Provider.readCurrentState', () => {
       it.each([
         ['InvalidSecurityGroupRuleId.NotFound', `The security group rule ID '${ID}' does not exist`],
         ['InvalidSecurityGroupRuleId.Malformed', `Invalid id: "${ID}"`],
-        ['UnauthorizedOperation', 'You are not authorized to perform this operation.'],
       ])('keeps undefined, never gone, when the by-id read fails with %s (a stranger’s rule)', async (name, message) => {
         mockSend.mockResolvedValueOnce(edited).mockRejectedValueOnce(awsError(name, message));
 
         const result = await provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own);
 
         expect(result).toBeUndefined();
+      });
+
+      // go-to-k/cdkd#6759: a failure that says nothing about the recorded id
+      // rejects (still never gone), so `cdkd drift` reports it read-failed.
+      it('rejects, never gone, when the by-id read fails with UnauthorizedOperation', async () => {
+        mockSend
+          .mockResolvedValueOnce(edited)
+          .mockRejectedValueOnce(
+            awsError('UnauthorizedOperation', 'You are not authorized to perform this operation.')
+          );
+
+        await expect(
+          provider.readCurrentState(PHYS, 'Logical', TYPE, declared, own)
+        ).rejects.toMatchObject({ name: 'UnauthorizedOperation' });
       });
 
       it('keeps undefined with no recorded Id (a legacy record), and makes no by-id call', async () => {

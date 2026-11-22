@@ -243,17 +243,15 @@ export async function readCurrentStateService(
     // for a cluster the id NAMED: with none, the call asked the DEFAULT
     // cluster, whose answer says nothing about a service in a named one.
     if (
-      cluster !== undefined &&
       isEcsErrorNamed(err, [
         'ClusterNotFoundException',
         'ServiceNotFoundException',
         'ServiceNotActiveException',
       ])
     ) {
-      return RESOURCE_NOT_FOUND;
+      return cluster !== undefined ? RESOURCE_NOT_FOUND : undefined;
     }
-    // go-to-k/cdkd#6759: any other failure (and a not-found answer from the
-    // DEFAULT cluster, which proves nothing) throws, so `cdkd drift` reports
+    // go-to-k/cdkd#6759: any other failure throws, so `cdkd drift` reports
     // the service not compared with its cause.
     throw err;
   }

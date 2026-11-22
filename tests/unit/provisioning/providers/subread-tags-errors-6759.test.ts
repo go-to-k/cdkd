@@ -37,6 +37,7 @@ import { RDSDBProxyProvider } from '../../../../src/provisioning/providers/rds-d
 import { RDSDBProxyEndpointProvider } from '../../../../src/provisioning/providers/rds-dbproxy-endpoint-provider.js';
 import { S3VectorsProvider } from '../../../../src/provisioning/providers/s3-vectors-provider.js';
 import { ECSProvider } from '../../../../src/provisioning/providers/ecs-provider.js';
+import { EC2Provider } from '../../../../src/provisioning/providers/ec2-provider.js';
 
 type Handler = (input: Record<string, unknown>) => unknown;
 type Handlers = Record<string, Handler>;
@@ -527,5 +528,72 @@ describe('ECS readCurrentState throws on a non-not-found describe failure (go-to
       const { result } = ecsRead(row, row.notFound());
       await expect(result).resolves.toBe(RESOURCE_NOT_FOUND);
     });
+  });
+});
+
+describe('EC2 SecurityGroupIngress by-id read throws on a non-NotFound failure (go-to-k/cdkd#6759)', () => {
+  const ID = 'sgr-0a1b2c3d4e5f60718';
+  const declared = {
+    GroupId: 'sg-1',
+    IpProtocol: 'tcp',
+    FromPort: 443,
+    ToPort: 443,
+    CidrIp: '10.0.0.0/16',
+    Description: 'from the VPC',
+  };
+  // The listing holds the rule under another description, so only the
+  // identity fallback's by-id call (go-to-k/cdkd#4447) can answer.
+  const edited = {
+    SecurityGroups: [
+      {
+        GroupId: 'sg-1',
+        IpPermissions: [
+          {
+            IpProtocol: 'tcp',
+            FromPort: 443,
+            ToPort: 443,
+            IpRanges: [
+              { CidrIp: '10.0.0.0/16', Description: 'edited in the console' },
+              { CidrIp: '192.168.0.0/16', Description: 'from the VPC' },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  function ec2Read(error: Error) {
+    const { client, sent } = fakeClient({
+      DescribeSecurityGroupsCommand: () => edited,
+      DescribeSecurityGroupRulesCommand: () => {
+        throw error;
+      },
+    });
+    const provider = new EC2Provider();
+    (provider as unknown as { ec2Client: unknown }).ec2Client = client;
+    vi.spyOn(provider, 'listGroupRules').mockResolvedValue(undefined);
+    const result = provider.readCurrentState(
+      'sg-1|tcp|443|443',
+      'L',
+      'AWS::EC2::SecurityGroupIngress',
+      declared,
+      { attributes: { Id: ID } }
+    );
+    return { result, sent };
+  }
+
+  it.each(['UnauthorizedOperation', 'RequestLimitExceeded'])(
+    'rejects when the by-id read fails with %s (was a bare undefined)',
+    async (name) => {
+      const { result, sent } = ec2Read(awsError(name));
+      await expect(result).rejects.toMatchObject({ name });
+      expect(sent).toContain('DescribeSecurityGroupRulesCommand');
+    }
+  );
+
+  it('still reads unknown when the recorded rule id is gone (.NotFound)', async () => {
+    const { result, sent } = ec2Read(awsError('InvalidSecurityGroupRuleId.NotFound'));
+    await expect(result).resolves.toBeUndefined();
+    expect(sent).toContain('DescribeSecurityGroupRulesCommand');
   });
 });

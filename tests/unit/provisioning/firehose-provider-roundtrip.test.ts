@@ -109,11 +109,10 @@ describe('FirehoseProvider read-update round-trip', () => {
     });
   });
 
-  it('always emits Tags (even when ListTagsForDeliveryStream fails on a non-NotFound error)', async () => {
-    // Per docs/provider-rules.md#readcurrentstate-for-drift-detection: omitting `Tags` on the
-    // failure path means the comparator's state-keys-only walk skips
-    // Tags forever, hiding console-side tag adds from drift on the
-    // unlucky run that hit the Tags API throttle.
+  it('rejects when ListTagsForDeliveryStream fails on a non-NotFound error (go-to-k/cdkd#6759)', async () => {
+    // A `[]` here would read as "has no tags" and report every recorded tag
+    // removed; omitting the key would leave Tags never compared. The read
+    // fails instead, so `cdkd drift` reports the stream not compared.
     mockSend
       .mockResolvedValueOnce({
         DeliveryStreamDescription: {
@@ -123,9 +122,9 @@ describe('FirehoseProvider read-update round-trip', () => {
       })
       .mockRejectedValueOnce(new Error('throttled'));
 
-    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<string, unknown> | undefined;
-    expect(observed).toBeDefined();
-    expect(observed?.Tags).toEqual([]);
+    await expect(provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)).rejects.toThrow(
+      'throttled'
+    );
   });
 
   it('round-trip: update() no-op when before/after are identical (no destination + no tag diff) — only DescribeDeliveryStream for attributes', async () => {
