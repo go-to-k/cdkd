@@ -334,7 +334,9 @@ if deploy p5 five after --no-rollback; then
   exit 1
 fi
 echo "    OK: the deploy failed"
-ns_available
+# Its update re-set the password: the revert must wait for that to settle, or
+# AWS refuses it ("There is an operation running on the namespace", measured).
+ns_settled_after_change
 set +e
 node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose \
   >"${LOG_DIR}/p5r.log" 2>&1
@@ -342,7 +344,7 @@ RB_RC=$?
 set -e
 grep -E 'Rollback|rollback|FAIL|Error|error' "${LOG_DIR}/p5r.log" | tail -10 | sed 's/^/  /' || true
 [ "${RB_RC}" -eq 0 ] || { echo "FAIL: cdkd rollback exited ${RB_RC}" >&2; exit 1; }
-ns_available
+ns_settled_after_change
 expect_login_refused "the rollback restored the recorded (pre-rotation) password, so the current one is refused"
 # ...and positively: the restored password IS the recorded version's.
 stage_back "${V1}"
