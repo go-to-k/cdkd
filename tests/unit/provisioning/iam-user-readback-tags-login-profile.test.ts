@@ -220,18 +220,20 @@ describe('IAM user readback: Tags and LoginProfile (go-to-k/cdkd#6755)', () => {
         expect(loginProfileCalls()).toBe(1);
       });
 
-      it('reads a profile added out of band as its flag, never the password', async () => {
+      it('reads a profile added out of band as present only: no password, no reset flag', async () => {
         const result = await read({
           profile: { PasswordResetRequired: true, Password: 'leak' } as never,
           properties: {},
         });
-        expect(result['LoginProfile']).toEqual({ PasswordResetRequired: true });
+        expect(result['LoginProfile']).toEqual({});
         expect(JSON.stringify(result)).not.toContain('leak');
+        // IAM clears a required reset at sign-in: a recorded flag would drift.
+        expect(JSON.stringify(result)).not.toContain('PasswordResetRequired');
       });
 
       it('reads it when the record has no properties at all', async () => {
         const result = await read({ profile: {} });
-        expect(result['LoginProfile']).toEqual({ PasswordResetRequired: false });
+        expect(result['LoginProfile']).toEqual({});
       });
 
       it('throws on a failed read rather than reading it as none', async () => {
@@ -292,13 +294,13 @@ describe('IAM user readback: Tags and LoginProfile (go-to-k/cdkd#6755)', () => {
           properties: {},
           afterOwnWrite: true,
         });
-        expect(result['LoginProfile']).toEqual({ PasswordResetRequired: false });
+        expect(result['LoginProfile']).toEqual({});
       });
 
       it('reads the live profile outside that capture even with a removal noted', async () => {
         recordOwnWriteRemoval('AWS::IAM::User', 'alice', 'LoginProfile', 'LoginProfile');
         const result = await read({ profile: { PasswordResetRequired: false }, properties: {} });
-        expect(result['LoginProfile']).toEqual({ PasswordResetRequired: false });
+        expect(result['LoginProfile']).toEqual({});
       });
     });
 

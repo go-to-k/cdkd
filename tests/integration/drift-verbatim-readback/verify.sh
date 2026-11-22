@@ -529,8 +529,10 @@ echo "    OK: LoginProfile null"
 
 echo "==> #6755: create a login profile for ${BARE_USER} out of band"
 LP_PW=$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("base64url") + "Aa1!")')
-aws iam create-login-profile --user-name "${BARE_USER}" --password "${LP_PW}" \
-  --no-password-reset-required >/dev/null
+# Through stdin, not argv: an argument is visible to `ps` while the call runs.
+# The generated password is base64url plus `Aa1!`, so it needs no JSON escape.
+printf '{"UserName":"%s","Password":"%s","PasswordResetRequired":false}' "${BARE_USER}" "${LP_PW}" |
+  aws iam create-login-profile --cli-input-json file:///dev/stdin >/dev/null
 sleep 10
 run_drift "${ARTIFACT_DIR}/drift-login-profile.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-login-profile.json")
@@ -556,10 +558,11 @@ got=$(drift_paths "${ARTIFACT_DIR}/drift-login-profile-after.json")
 [ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-login-profile-after.json" ||
   { echo "FAIL: #6755: drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
 show_state "${ARTIFACT_DIR}/state-show-login-profile.json"
-# -F: the password is a literal. -l: a hit prints the file name, never the
-# line. Exit 1 is "no hit"; any other failure fails the run.
+# -F: the password is a literal, read from a pattern file on stdin, not argv.
+# -l: a hit prints the file name, never the line. Exit 1 is "no hit"; any
+# other failure fails the run.
 hits_rc=0
-hits=$(grep -rlF -- "${LP_PW}" "${ARTIFACT_DIR}") || hits_rc=$?
+hits=$(printf '%s\n' "${LP_PW}" | grep -rlF -f - "${ARTIFACT_DIR}") || hits_rc=$?
 [ "${hits_rc}" -le 1 ] || { echo "FAIL: #6755: grep for the password exited ${hits_rc}" >&2; exit 1; }
 [ -z "${hits}" ] || { echo "FAIL: #6755: the out-of-band login password appears in:" >&2; echo "${hits}" >&2; exit 1; }
 unset LP_PW

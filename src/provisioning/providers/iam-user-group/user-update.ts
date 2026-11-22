@@ -504,7 +504,9 @@ function refuseLoginProfileWithoutPassword(
         '(it is write-only, so a drift readback carries none). An unchanged deploy does not ' +
         'create it either, since the state record still holds the login profile: create it ' +
         'outside cdkd with IAM CreateLoginProfile, or remove LoginProfile from the template, ' +
-        'deploy, then add it back and deploy again.',
+        'deploy, then add it back and deploy again. If the template declares no LoginProfile ' +
+        '(the profile was recorded by `cdkd drift --accept`), record its removal with ' +
+        '`cdkd drift --accept` instead.',
       resourceType,
       logicalId,
       physicalId

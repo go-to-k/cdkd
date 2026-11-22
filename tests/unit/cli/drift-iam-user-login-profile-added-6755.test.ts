@@ -142,8 +142,11 @@ function stateWith(observed: Record<string, unknown>): { state: StackState; etag
   };
 }
 
-/** IAM: user `alice`, no groups or policies; a login profile while `profile.live`. */
-function iamWith(profile: { live: boolean }): void {
+/**
+ * IAM: user `alice`, no groups or policies; a login profile while
+ * `profile.live`, its reset flag `profile.reset`.
+ */
+function iamWith(profile: { live: boolean; reset?: boolean }): void {
   mockIamSend.mockImplementation((command: unknown) => {
     if (command instanceof GetUserCommand) {
       return Promise.resolve({
@@ -152,7 +155,9 @@ function iamWith(profile: { live: boolean }): void {
     }
     if (command instanceof GetLoginProfileCommand) {
       return profile.live
-        ? Promise.resolve({ LoginProfile: { UserName: NAME, PasswordResetRequired: false } })
+        ? Promise.resolve({
+            LoginProfile: { UserName: NAME, PasswordResetRequired: profile.reset === true },
+          })
         : Promise.reject(new NoSuchEntityException({ message: 'none', $metadata: {} }));
     }
     if (command instanceof DeleteLoginProfileCommand) {
@@ -253,7 +258,7 @@ describe('cdkd drift on a login profile added to an IAM user declaring none (go-
           expect.objectContaining({
             path: 'LoginProfile',
             stateValue: null,
-            awsValue: { PasswordResetRequired: false },
+            awsValue: {},
           }),
         ],
       }),
@@ -298,6 +303,47 @@ describe('cdkd drift on a login profile added to an IAM user declaring none (go-
     ).toBe(false);
   });
 
+  it('an accepted profile stays clean when IAM clears its reset flag at sign-in', async () => {
+    mockGetState.mockResolvedValueOnce(stateWith({ ...BASELINE, LoginProfile: {} }));
+    iamWith({ live: true, reset: false });
+
+    const [stack] = parseReport(await runDrift(['--json']));
+    expect(stack!.drifted).toEqual([]);
+    expect(stack!.clean).toEqual([expect.objectContaining({ logicalId: 'User' })]);
+  });
+
+  it('--revert of an accepted profile deleted out of band is refused before any write, naming --accept', async () => {
+    mockGetState.mockResolvedValueOnce(stateWith({ ...BASELINE, LoginProfile: {} }));
+    iamWith({ live: false });
+
+    const errors: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown) => {
+      errors.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let report: string;
+    try {
+      report = await runDrift(['--revert', '--yes']);
+    } finally {
+      process.stderr.write = original;
+    }
+
+    expect(writesSent()).toEqual([]);
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const logged = [
+      report,
+      ...errors,
+      ...(['error', 'warn', 'info'] as const).flatMap((level) =>
+        (getLogger()[level] as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+          c.map(String).join(' ')
+        )
+      ),
+    ].join('\n');
+    expect(logged).toContain('no password to send');
+    expect(logged).toContain('cdkd drift --accept');
+  });
+
   it('--accept records the profile in the baseline without a password', async () => {
     mockGetState.mockResolvedValueOnce(stateWith(BASELINE));
     iamWith({ live: true });
@@ -307,7 +353,7 @@ describe('cdkd drift on a login profile added to an IAM user declaring none (go-
     expect(writesSent()).toEqual([]);
     const saved = savedState();
     const record = saved.resources['User']!;
-    expect(record.observedProperties?.['LoginProfile']).toEqual({ PasswordResetRequired: false });
+    expect(record.observedProperties?.['LoginProfile']).toEqual({});
     expect(record.properties).not.toHaveProperty('LoginProfile');
     expect(JSON.stringify(saved)).not.toMatch(/Password"/);
   });

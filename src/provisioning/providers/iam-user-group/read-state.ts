@@ -168,8 +168,8 @@ export async function readIdIfExists(
  *    `GetUserPolicy` per name for inline `Policies` (URL-decoded +
  *    JSON-parsed, capped at IAM's documented 10-per-user limit, order
  *    reconciled against state's `Policies` array); `Tags` from `GetUser`;
- *    `LoginProfile.PasswordResetRequired` via `GetLoginProfile`, or `null`
- *    for a user without one whose record declares none (go-to-k/cdkd#6755;
+ *    `LoginProfile.PasswordResetRequired` via `GetLoginProfile` (for a
+ *    record declaring none: `{}` when the user has one, `null` when not (go-to-k/cdkd#6755;
  *    the password is write-only).
  *  - **AWS::IAM::Group**: `GetGroup` for `GroupName`, `Path`;
  *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`;
@@ -477,8 +477,13 @@ async function readLoginProfile(
 /**
  * The `LoginProfile` of a user whose record declares none (go-to-k/cdkd#6755):
  * `null` when the user has no login profile (`NoSuchEntityException`), else
- * `{ PasswordResetRequired }` as AWS reports it. Never the write-only password:
- * `GetLoginProfile` returns none.
+ * `{}`: its presence only. Never the write-only password: `GetLoginProfile`
+ * returns none. Not `PasswordResetRequired` either: IAM clears a required
+ * reset itself at the user's first sign-in, so an `--accept`ed `true` would
+ * then read as drift on every run, and `--revert` would force the reset again
+ * (the declared reader handles that one-directionally; with no template value
+ * there is nothing to anchor it to). `{}` and `null` still differ, so an add
+ * or a removal is drift.
  *
  * Always emitted, so the observed baseline holds `null` for a user deployed
  * without console access. `null` is an empty value the comparator skips for
@@ -489,7 +494,10 @@ async function readLoginProfile(
  * `drift --revert` sends `null`, which `update()` turns into one
  * `DeleteLoginProfile`. A baseline written before this change has no
  * `LoginProfile` key; the top-level walk visits only the baseline's keys, so
- * it is not compared there until the next capture.
+ * it is not compared there until the next capture. Nor is it compared on the
+ * template-only baseline (no `observedProperties`). A profile added out of
+ * band and not reported before a deploy that updates the user is captured
+ * into that deploy's baseline, as any other undeclared key is.
  *
  * Any failure other than `NoSuchEntityException` throws (go-to-k/cdkd#6696):
  * `null` would read as "no profile" and hide one.
@@ -505,8 +513,8 @@ async function readUndeclaredLoginProfile(
 ): Promise<Record<string, unknown> | null> {
   if (removedByOwnWrite) return null;
   try {
-    const resp = await this.iamClient.send(new GetLoginProfileCommand({ UserName: userName }));
-    return { PasswordResetRequired: resp.LoginProfile?.PasswordResetRequired === true };
+    await this.iamClient.send(new GetLoginProfileCommand({ UserName: userName }));
+    return {};
   } catch (err) {
     if (err instanceof NoSuchEntityException) return null;
     throw err;
