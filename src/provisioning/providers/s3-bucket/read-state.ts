@@ -147,8 +147,10 @@ export async function readCurrentState(
     this.readAnalyticsList(physicalId),
     this.readIntelligentTieringList(physicalId),
     this.readInventoryList(physicalId),
-    this.readAbacStatus(physicalId),
-    this.readMetadataForDrift(physicalId),
+    // Strict (go-to-k/cdkd#6759): a denied or throttled read fails the drift
+    // read instead of letting the declared value stand in for it.
+    this.readAbacStatus(physicalId, true),
+    this.readMetadataForDrift(physicalId, true),
   ]);
 
   return {

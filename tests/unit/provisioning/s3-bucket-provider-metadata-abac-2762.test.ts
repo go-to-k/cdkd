@@ -1054,13 +1054,34 @@ describe('drift readback (go-to-k/cdkd#2762)', () => {
     expect(JSON.stringify(state)).not.toContain('TableArn');
   });
 
-  it('keeps a declared value when its read fails, so a narrow role reports no drift', async () => {
+  // go-to-k/cdkd#6759: on the drift read a denied or throttled read of either
+  // property fails the whole read (`readFailed`), rather than the declared
+  // value standing in for it and the run reporting the bucket clean.
+  it.each([
+    ['AbacStatus', 'GetBucketAbac'],
+    ['MetadataConfiguration', 'GetBucketMetadataConfiguration'],
+  ])('rejects the drift read when the %s read (%s) is denied', async (_key, call) => {
     head();
-    readAbac = () => {
+    const deny = (): never => {
       throw named('AccessDenied');
     };
+    if (call === 'GetBucketAbac') readAbac = deny;
+    else readMetadata = deny;
+    await expect(
+      new S3BucketProvider().readCurrentState(BUCKET, 'B', TYPE, {
+        AbacStatus: 'Enabled',
+        MetadataConfiguration: METADATA,
+      })
+    ).rejects.toThrow('AccessDenied');
+  });
+
+  it('keeps the declared value when the bucket is gone under either read (NoSuchBucket)', async () => {
+    head();
+    readAbac = () => {
+      throw named('NoSuchBucket');
+    };
     readMetadata = () => {
-      throw named('AccessDenied');
+      throw named('NoSuchBucket');
     };
     const state = await new S3BucketProvider().readCurrentState(BUCKET, 'B', TYPE, {
       AbacStatus: 'Enabled',
@@ -1086,17 +1107,44 @@ describe('drift readback (go-to-k/cdkd#2762)', () => {
     expect(state).toMatchObject({ AbacStatus: 'Disabled' });
   });
 
-  it('keeps every other readback when a narrow role cannot read these two', async () => {
-    head();
+  it('the create re-adoption reads stay tolerant: a denied read answers, never throws', async () => {
     readAbac = () => {
       throw named('AccessDenied');
     };
     readMetadata = () => {
       throw named('AccessDenied');
     };
-    await expect(new S3BucketProvider().readCurrentState(BUCKET, 'B', TYPE)).resolves.toMatchObject({
-      BucketName: BUCKET,
+    const provider = new S3BucketProvider();
+    // The calls `s3-bucket/create.ts` makes for a bucket that already existed.
+    await expect(provider.readAbacStatus(BUCKET)).resolves.toBeUndefined();
+    await expect(provider.readMetadataForDrift(BUCKET)).resolves.toBe('unread');
+  });
+
+  it('a create that adopts an existing bucket still succeeds when both re-adoption reads are denied', async () => {
+    readAbac = () => {
+      throw named('AccessDenied');
+    };
+    // Denied for the re-adoption read only: the attribute read after the
+    // writes is strict by design (state would lose the table ARNs).
+    let metadataReads = 0;
+    readMetadata = () => {
+      metadataReads += 1;
+      if (metadataReads === 1) throw named('AccessDenied');
+      return metadataResult();
+    };
+    mockSend.mockImplementation(async (command: unknown) => {
+      if (command instanceof CreateBucketCommand) throw named('BucketAlreadyOwnedByYou');
+      if (command instanceof GetBucketMetadataConfigurationCommand) return readMetadata();
+      if (command instanceof GetBucketAbacCommand) return readAbac();
+      if (command instanceof GetBucketLocationCommand) return { LocationConstraint: 'eu-west-1' };
+      return { $metadata: {}, $response: { headers: { 'x-amz-bucket-region': 'eu-west-1' } } };
     });
+    await expect(
+      new S3BucketProvider().create('B', TYPE, { MetadataConfiguration: METADATA })
+    ).resolves.toHaveProperty('physicalId');
+    expect(sent(GetBucketAbacCommand)).toHaveLength(1);
+    // The unread configuration converged through the create, as before.
+    expect(sent(CreateBucketMetadataConfigurationCommand)).toHaveLength(1);
   });
 
   it('round-trips a readback through update() with no write', async () => {
