@@ -13,7 +13,7 @@ import {
   type ReplayFailedOperationsOptions,
 } from './replay-failed-checks.js';
 import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
-import { noteRolledBackCreate, withReplayDeletePrinting } from './replay-scope.js';
+import { noteRolledBackCreate, replayStackMask, withReplayDeletePrinting } from './replay-scope.js';
 import type { ResourceState } from '../../types/state.js';
 import {
   createSecretMasker,
@@ -514,7 +514,7 @@ export async function replayFailedOperationsUnbound(
                 op.attemptedProperties,
                 {
                   expectedRegion: ctx.region,
-                  maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
+                  maskStackSecretNames: replayStackMask({ ctx, op, secrets }), // #6772
                   stackHoldersStillAttached: true, // #6770, #6808: the run's own holders
                   ...(removeProtection && { removeProtection: true }),
                   ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
@@ -795,7 +795,7 @@ export async function replayFailedOperationsUnbound(
                 // As on the `revert` arm (#2301, #3141, #4051, #6104, #6457): a state-record desired bag.
                 {
                   maskSecrets: createSecretMasker(secrets),
-                  maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
+                  maskStackSecretNames: replayStackMask({ ctx, op, secrets }), // #6772
                   expectedRegion: ctx.region,
                   replayingState: true,
                   recordedAttributes: current.attributes,

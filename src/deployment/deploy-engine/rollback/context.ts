@@ -64,7 +64,7 @@ export function rollbackExecutorContext(
     // re-resolution of the journal cannot re-derive.
     logOnlyNeedlesFor: (logicalId) => deps.secretsRun().perResourceSecrets.get(logicalId),
     // go-to-k/cdkd#6772: a refusal naming a sibling the stack retained.
-    maskStackSecretNames: (text) => stackSecretNameMasker(deps.secretsRun())(text),
+    maskStackSecretNames: (own) => (text) => stackSecretNameMasker(deps.secretsRun(), own)(text),
     // See `producerRegionEvidence`.
     importedProducerRegions: producerRegions.regions,
     producerRegionsIncomplete: !producerRegions.complete,

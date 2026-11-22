@@ -425,7 +425,7 @@ export async function destroyStackUnderLock({
           importedProducerRegions: producerRegionsFromState(state),
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
-          maskStackSecretNames: printingBagOf.stackMaskerFor([]), // go-to-k/cdkd#6772
+          maskStackSecretNames: printingBagOf.stackMaskerFor, // go-to-k/cdkd#6772
         },
         {
           isInterrupted: () => lock.interrupted,

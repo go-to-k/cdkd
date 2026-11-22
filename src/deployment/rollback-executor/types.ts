@@ -512,12 +512,15 @@ export interface RollbackExecutorContext {
    */
   logOnlyNeedlesFor?: ((logicalId: string) => RecordedSecretValues | undefined) | undefined;
   /**
-   * `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772), handed to every
-   * replay delete: a PRINTING masker over the secret-named records of the
-   * stack, retained ones included, for a refusal naming a sibling. Never a
-   * judge. Absent, a refusal masks with the op's own masker alone.
+   * `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772), for the op's own
+   * bags (`replayStackMask`), handed to every replay delete: a PRINTING masker
+   * over them and the secret-named records of the stack, retained ones
+   * included, in one union pass. Never a judge. Absent, a refusal masks with
+   * the op's own masker alone.
    */
-  maskStackSecretNames?: ((text: string) => string) | undefined;
+  maskStackSecretNames?:
+    | ((own: ReadonlyArray<RecordedSecretValues | undefined>) => (text: string) => string)
+    | undefined;
   /**
    * go-to-k/cdkd#4612: the final state records of the resources THIS run
    * wrote, supplied only by a successful deploy's settle. Handed to a proven

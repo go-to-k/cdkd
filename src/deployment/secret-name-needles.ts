@@ -500,24 +500,33 @@ export function secretNamedRecordNeedles(
 }
 
 /**
- * A replay's `maskStackSecretNames` (go-to-k/cdkd#6772): a PRINTING masker over
- * the needles of every record of `resources` named from a secret
- * ({@link secretNamedRecordNeedles}, judged once, on the first call, from a
- * copy taken now) and the `extra` bags, read at each call. For a delete
- * refusal naming a sibling the stack retained; never a judge.
+ * A replay's `maskStackSecretNames` (go-to-k/cdkd#6772): for the `own` bags of a
+ * replay delete, a PRINTING masker over them, the `extra` bags (read at each
+ * call) and the needles of every record of `resources` named from a secret
+ * ({@link secretNamedRecordNeedles}, judged once, on the first refusal, inside
+ * the replay's stack scope, from a snapshot of the records taken now). One
+ * union, so no needle cuts another (go-to-k/cdkd#4049). For a delete refusal
+ * naming a sibling the stack retained; never a judge.
  */
 export function stackSecretNamesMasker(
   resources: Readonly<Record<string, ResourceState>>,
   secrets: StateNamingSecrets,
   extra: () => ReadonlyArray<RecordedSecretValues | undefined> = () => []
-): (text: string) => string {
-  const records = { ...resources };
+): StackSecretNameMaskerFor {
+  const records = structuredClone(resources);
   let needles: RecordedSecretValues | undefined;
-  return (text) =>
-    createUnionSecretMasker([...extra(), (needles ??= secretNamedRecordNeedles(records, secrets))])(
-      text
-    );
+  return (own) => (text) =>
+    createUnionSecretMasker([
+      ...own,
+      ...extra(),
+      (needles ??= secretNamedRecordNeedles(records, secrets)),
+    ])(text);
 }
+
+/** A stack-wide printing masker over a delete's own bags (go-to-k/cdkd#6772). */
+export type StackSecretNameMaskerFor = (
+  own: ReadonlyArray<RecordedSecretValues | undefined>
+) => (text: string) => string;
 
 /**
  * The PRINTING bag one resource's operation runs under when a command

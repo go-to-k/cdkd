@@ -1,6 +1,6 @@
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { newCopyDeleteAttributes } from '../../recorded-identity-attributes.js';
-import { withReplayDeletePrinting } from '../replay-scope.js';
+import { replayStackMask, withReplayDeletePrinting } from '../replay-scope.js';
 import type { ResourceCreateResult } from '../../../types/resource.js';
 import { reverseReplacementNewHoldsName } from '../../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../../resource-secrets-scope.js';
@@ -91,7 +91,7 @@ export async function recreateOldResource(
         current.properties,
         {
           expectedRegion: ctx.region,
-          maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
+          maskStackSecretNames: replayStackMask(s), // #6772: printing only
           ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),

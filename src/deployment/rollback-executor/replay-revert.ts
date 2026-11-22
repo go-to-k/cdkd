@@ -2,7 +2,7 @@ import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { identityWarner } from '../../provisioning/recorded-identity.js';
 import { cdkdRemedy, proseQuoted } from '../../utils/pasteable-command.js';
 import { revertUpdatePolicyContext } from '../deploy-engine/update-policy.js';
-import { withReplayDeletePrinting } from './replay-scope.js';
+import { replayStackMask, withReplayDeletePrinting } from './replay-scope.js';
 import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
@@ -289,7 +289,7 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
         current.properties,
         {
           expectedRegion: ctx.region,
-          maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
+          maskStackSecretNames: replayStackMask(s), // #6772: printing only
           // go-to-k/cdkd#6770 / #6808: the new copy is the rolled-back run's,
           // so the holders the records or journal name are that run's.
           stackHoldersStillAttached: true,
@@ -652,7 +652,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
         // the record `current.physicalId` came from.
         {
           maskSecrets: createSecretMasker(secrets),
-          maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
+          maskStackSecretNames: replayStackMask(s), // #6772: printing only
           expectedRegion: ctx.region,
           replayingState: true,
           // go-to-k/cdkd#6519: the snapshot of the record being restored.

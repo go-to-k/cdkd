@@ -103,6 +103,22 @@ export function withReplayDeletePrinting<T>(
 }
 
 /**
+ * A replay delete's `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772):
+ * the stack-wide masker over the bags {@link withReplayDeletePrinting} binds,
+ * the op's and the failed deploy's, so the refusal masks in one pass.
+ */
+export function replayStackMask(scope: {
+  ctx: Pick<ReplayOpScope['ctx'], 'maskStackSecretNames' | 'logOnlyNeedlesFor'>;
+  op: { logicalId: string };
+  secrets: RecordedSecretValues;
+}): ((text: string) => string) | undefined {
+  return scope.ctx.maskStackSecretNames?.([
+    scope.secrets,
+    scope.ctx.logOnlyNeedlesFor?.(scope.op.logicalId),
+  ]);
+}
+
+/**
  * go-to-k/cdkd#5064: report that a CREATE's resource was taken back and its
  * record (`undefined` for none) left `stateResources`: onto `result`, and to
  * the caller's callback BEFORE the arm's `afterOp` saves, so every save from

@@ -699,11 +699,15 @@ export function secretNameBagFor(run: SecretsRunState, logicalId: string): Recor
  * derived-name registry, and every bag a delete's own masker reads, so a
  * refusal naming a sibling masks it in one pass. Read at each call, so a needle
  * the run records later is masked too; it runs only on a refusal. Never a
- * judge.
+ * judge. `own`: a replay delete's bags, which the run's do not hold.
  */
-export function stackSecretNameMasker(run: SecretsRunState): SecretMasker {
+export function stackSecretNameMasker(
+  run: SecretsRunState,
+  own: ReadonlyArray<RecordedSecretValues | undefined> = []
+): SecretMasker {
   return (text) =>
     createUnionSecretMasker([
+      ...own,
       run.preDeploySecretNamedRecords,
       run.fingerprintNoEchoValues,
       ...run.secretNameNeedles.values(),
