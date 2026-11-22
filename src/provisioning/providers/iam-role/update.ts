@@ -271,6 +271,7 @@ export async function update(
       // old name is refused rather than deleted.
       const deleteResult = await this.delete(logicalId, physicalId, resourceType, undefined, {
         maskSecrets: log.mask,
+        maskStackSecretNames: context?.maskStackSecretNames, // go-to-k/cdkd#6772
         // go-to-k/cdkd#6770: the stack's profile still holds the old role
         // here; its own update points it at the new one afterwards.
         stackHoldersStillAttached: true,

@@ -19,7 +19,7 @@ import {
   supersededHeldByOtherTypeWarning,
   supersededHolderOf,
 } from '../superseded-resources.js';
-import { secretNameBagFor } from './masking.js';
+import { secretNameBagFor, stackSecretNameMasker } from './masking.js';
 
 /**
  * Retry the deletes an EARLIER deploy recorded in
@@ -95,6 +95,8 @@ export async function retryCarriedSupersededResources(
             provider: route.provider,
             region: engine.stackRegion,
             maskSecrets: createSecretMasker(bag),
+            // go-to-k/cdkd#6772: a refusal naming a sibling the stack retained.
+            maskStackSecretNames: stackSecretNameMasker(engine.secretsRun),
             stop: () => engine.interrupted,
             // One attempt unless this deploy released a possible user: an
             // entry still in use must not slow every deploy.

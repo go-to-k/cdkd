@@ -773,7 +773,7 @@ describe('rollbackCommand', () => {
       // does its job — it now pins the flag's PRESENCE here as tightly as it
       // pinned its absence before, and `deploy-engine-provider-secret-masker`
       // carries the matching negative control for the template path.
-      { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() }
+      { maskSecrets: expect.any(Function), maskStackSecretNames: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() }
     );
     expect(backend.saveState).toHaveBeenCalled();
     expect(backend.popRollbackJournalSegment).toHaveBeenCalled();

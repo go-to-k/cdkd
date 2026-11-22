@@ -91,6 +91,7 @@ export async function recreateOldResource(
         current.properties,
         {
           expectedRegion: ctx.region,
+          maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
           ...(newCopyClaimed && { inlinePolicyClaimed: newCopyClaimed }),
           ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
           deletionPolicy: replacementDeletePolicy(current.updateReplacePolicy),

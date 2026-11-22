@@ -583,6 +583,25 @@ describe('IAMRoleProvider', () => {
       expect(del.mock.calls[0]![4]).toHaveProperty('stackHoldersStillAttached', true);
     });
 
+    it("forwards the deploy's stack-wide printing masker to the old role's delete (go-to-k/cdkd#6772)", async () => {
+      mockSend.mockResolvedValueOnce({
+        Role: { RoleName: 'new-role', Arn: 'arn:aws:iam::0:role/new-role', RoleId: 'r2' },
+      });
+      const del = vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
+      const maskStackSecretNames = (text: string) => text.split('SECRET').join('***');
+
+      await provider.update(
+        'L',
+        'old-role',
+        'AWS::IAM::Role',
+        { RoleName: 'new-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { RoleName: 'old-role', AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] } },
+        { maskStackSecretNames }
+      );
+
+      expect(del.mock.calls[0]![4]).toHaveProperty('maskStackSecretNames', maskStackSecretNames);
+    });
+
     // `reason` here is PERSISTED as the row's `outcome: 'partial'` text, so the
     // rule for this site is that its wording does not move. The case above
     // cannot enforce that: it drives the failure through `this.delete`, which

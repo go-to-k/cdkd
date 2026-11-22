@@ -298,6 +298,7 @@ export async function runMovedIdCleanups(
         () =>
           entry.provider.delete(logicalId, sent.physicalId, sent.resourceType, sent.properties, {
             expectedRegion: ctx.region,
+            maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
             deletionPolicy: replacementDeletePolicy(sent.updateReplacePolicy),
             recordedAttributes: sent.attributes,
             recordedCreateOnlyDrops: sent.acceptedCreateOnlyDrops,

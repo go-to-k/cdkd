@@ -782,6 +782,18 @@ describe('the supersededResources field travels with the record (#5111)', () => 
     expect(del.mock.calls[0]![4]).not.toHaveProperty('stackHoldersStillAttached');
   });
 
+  it("forwards the stack-wide printing masker to the delete (go-to-k/cdkd#6772)", async () => {
+    const del = vi.fn(async (..._args: unknown[]) => undefined);
+    const provider = { delete: del } as unknown as ResourceProvider;
+    const maskStackSecretNames = (t: string) => t.split('SECRET').join('***');
+    const input = { provider, region: 'us-east-1', maskSecrets: (t: string) => t, stop: () => false };
+    await deleteSupersededEntry(entry, { ...input, maskStackSecretNames });
+    expect(del.mock.calls[0]![4]).toHaveProperty('maskStackSecretNames', maskStackSecretNames);
+    // Absent, none is sent.
+    await deleteSupersededEntry(entry, input);
+    expect(del.mock.calls[1]![4]).not.toHaveProperty('maskStackSecretNames');
+  });
+
   it('the in-use wait stops on an interrupt during the wait, sending nothing more', async () => {
     const defaults = { ...supersededInUseRetry };
     supersededInUseRetry.delayMs = 0;

@@ -693,6 +693,25 @@ export function secretNameBagFor(run: SecretsRunState, logicalId: string): Recor
 }
 
 /**
+ * The deploy's `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772): a
+ * PRINTING masker over the secret-named records as the deploy found them
+ * (retained ones included, which the template no longer declares), the
+ * derived-name registry, and every bag a delete's own masker reads, so a
+ * refusal naming a sibling masks it in one pass. Read at each call, so a needle
+ * the run records later is masked too; it runs only on a refusal. Never a
+ * judge.
+ */
+export function stackSecretNameMasker(run: SecretsRunState): SecretMasker {
+  return (text) =>
+    createUnionSecretMasker([
+      run.preDeploySecretNamedRecords,
+      run.fingerprintNoEchoValues,
+      ...run.secretNameNeedles.values(),
+      ...run.perResourceSecrets.values(),
+    ])(text);
+}
+
+/**
  * Register `record` of `logicalId` in this deploy's derived-name registry
  * when it is named from a secret (go-to-k/cdkd#3869), and return its needles.
  * A name is judged with `namingSecretsFor` (the resource's own bag plus the

@@ -194,6 +194,27 @@ describe('S3 Tables table bucket delete refuses a non-empty bucket (#6749)', () 
     expect((error as Error).message).not.toContain('SECRET');
   });
 
+  // go-to-k/cdkd#6772: a namespace the stack retained, whose name is
+  // secret-derived, is in no bag of the bucket's own.
+  it("masks a retained in-stack child's secret-derived name with the stack-wide masker", async () => {
+    const run = (maskStackSecretNames?: (text: string) => string) => {
+      tablesAnswer({ deleteBucket: notEmpty, namespaces: ['SECRETns'] });
+      return provider
+        .delete('Bucket', TABLE_BUCKET_ARN, 'AWS::S3Tables::TableBucket', undefined, {
+          maskSecrets: (text: string) => text,
+          ...(maskStackSecretNames && { maskStackSecretNames }),
+        })
+        .then(() => undefined, (e: unknown) => e);
+    };
+
+    const masked = ((await run((text) => text.split('SECRET').join('***'))) as Error).message;
+    expect(masked).toContain('namespace(s) ***ns');
+    expect(masked).not.toContain('SECRET');
+    // Absent, the bucket's own masker alone: the wording is unchanged.
+    const plain = ((await run()) as Error).message;
+    expect(plain).toBe(masked.replace('***ns', 'SECRETns'));
+  });
+
   it('a failure on a bucket listed as empty keeps the original error, retryable', async () => {
     tablesAnswer({
       deleteBucket: () => {
@@ -486,6 +507,27 @@ describe('S3 Vectors vector bucket delete refuses a non-empty bucket (#6749)', (
     expect((error as Error).message).toContain(`vector bucket ***-${VECTOR_BUCKET} is not empty`);
     expect((error as Error).message).toContain('vector index(es) ***idx');
     expect((error as Error).message).not.toContain('SECRET');
+  });
+
+  // go-to-k/cdkd#6772: an index the stack retained, whose name is
+  // secret-derived, is in no bag of the bucket's own.
+  it("masks a retained in-stack index's secret-derived name with the stack-wide masker", async () => {
+    const run = (maskStackSecretNames?: (text: string) => string) => {
+      vectorsAnswer({ deleteBucket: vectorsNotEmpty, indexes: ['SECRETidx'] });
+      return provider
+        .delete('Bucket', VECTOR_BUCKET, 'AWS::S3Vectors::VectorBucket', undefined, {
+          maskSecrets: (text: string) => text,
+          ...(maskStackSecretNames && { maskStackSecretNames }),
+        })
+        .then(() => undefined, (e: unknown) => e);
+    };
+
+    const masked = ((await run((text) => text.split('SECRET').join('***'))) as Error).message;
+    expect(masked).toContain('vector index(es) ***idx');
+    expect(masked).not.toContain('SECRET');
+    // Absent, the bucket's own masker alone: the wording is unchanged.
+    const plain = ((await run()) as Error).message;
+    expect(plain).toBe(masked.replace('***idx', 'SECRETidx'));
   });
 
   it('a failure on a bucket listed as empty keeps the original error, retryable', async () => {

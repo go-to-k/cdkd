@@ -336,6 +336,23 @@ export interface DeleteContext extends SecretMaskingContext {
   stackHoldersStillAttached?: boolean | undefined;
 
   /**
+   * A PRINTING masker over the secret-derived name needles of EVERY record of
+   * the stack, retained ones included (go-to-k/cdkd#6772), for a refusal that
+   * names resources OTHER than the one deleted: the profiles still holding a
+   * role, a group's members, a bucket's tables or indexes. `maskSecrets` holds
+   * only the deleted record's own names and those it reads, and a role does
+   * not read the profile that blocks it. The builders also union in the bags
+   * `maskSecrets` masks with, so one pass masks overlapping needles
+   * (go-to-k/cdkd#4049). Apply it through {@link holderRefusalMask}.
+   *
+   * PRINTING ONLY, NEVER A JUDGE: a provider asks `maskSecrets` whether a
+   * value is secret-derived (`isSecretDerivedValue`, a withheld pasteable
+   * command), and a stack-wide needle there would misjudge every sibling's
+   * name. Absent, the refusal masks with `maskSecrets` alone.
+   */
+  maskStackSecretNames?: ((text: string) => string) | undefined;
+
+  /**
    * The delete removes what a CREATE proved it made before failing
    * (go-to-k/cdkd#1710): no state record ever held it, and `properties` is the
    * ATTEMPTED bag. Set only by the rollback executor's failed-CREATE delete
@@ -389,6 +406,21 @@ export function holderRefusalRun(context: DeleteContext | undefined): {
   return context?.stackDestroy === true
     ? { noun: 'destroy', again: 'destroy again', rerun: 'run the destroy again' }
     : { noun: 'run', again: 'run the command again', rerun: 'run the command again' };
+}
+
+/**
+ * The masker of a refusal naming resources other than the one deleted
+ * (go-to-k/cdkd#6772): the stack-wide names first
+ * ({@link DeleteContext.maskStackSecretNames}, a superset union where its
+ * builder could form one), then the delete's own `mask`. For a printed
+ * message only; never hand it to a judge.
+ */
+export function holderRefusalMask(
+  context: DeleteContext | undefined,
+  mask: (text: string) => string
+): (text: string) => string {
+  const stack = context?.maskStackSecretNames;
+  return stack === undefined ? mask : (text) => mask(stack(text));
 }
 
 /**

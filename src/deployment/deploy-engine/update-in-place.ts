@@ -2,7 +2,12 @@ import { rollingSignalsFor, warnUnwaitedCreationPolicy } from './signal-receiver
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
-import { noteSecretNamedRecord, printingSecretsFor, registerNoEchoAttributes } from './masking.js';
+import {
+  noteSecretNamedRecord,
+  printingSecretsFor,
+  registerNoEchoAttributes,
+  stackSecretNameMasker,
+} from './masking.js';
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import {
@@ -176,19 +181,15 @@ export async function updateInPlace(
     // provisioning layers and says so only at debug level. It fires
     // once, because the record says 'sdk' from this write on.
     //
-    // The wording is per MODE, because the two flips happen for
-    // opposite reasons and only one of them can be declined. A first
-    // revision printed the coverage sentence for both and told a
-    // 'cc-broken' user to pass `--pin-cc-api`, which that mode
-    // deliberately ignores -- recommending a flag that silently no-ops
-    // is the same class of defect as the typo this lane just closed.
-    // Exhaustive rather than a ternary: a THIRD mode added later would
-    // otherwise inherit the coverage wording AND a `--pin-cc-api`
-    // suggestion, which is precisely the wrong-remedy defect this
-    // per-mode split exists to fix. `exemptMode` cannot be undefined
-    // here — `sdkMigration` is set only after `wouldReturnToSdkProvider`
-    // found an entry in this same table — but the default arm keeps
-    // that from being load-bearing.
+    // The wording is per MODE, because the two flips happen for opposite reasons and only one of
+    // them can be declined. A first revision printed the coverage sentence for both and told a
+    // 'cc-broken' user to pass `--pin-cc-api`, which that mode deliberately ignores -- recommending
+    // a flag that silently no-ops is the same class of defect as the typo this lane just closed.
+    // Exhaustive rather than a ternary: a THIRD mode added later would otherwise inherit the
+    // coverage wording AND a `--pin-cc-api` suggestion, which is precisely the wrong-remedy defect
+    // this per-mode split exists to fix. `exemptMode` cannot be undefined here — `sdkMigration` is
+    // set only after `wouldReturnToSdkProvider` found an entry in this same table — but the default
+    // arm keeps that from being load-bearing.
     const exemptMode = STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode;
     const preserved =
       currentResource.physicalId === recordedResource.physicalId
@@ -476,6 +477,7 @@ export async function updateInPlace(
             // of the record `currentResource.physicalId` came from.
             {
               maskSecrets: createSecretMasker(updateSecrets),
+              maskStackSecretNames: stackSecretNameMasker(engine.secretsRun), // #6772
               expectedRegion: engine.stackRegion,
               recordedAttributes: currentResource.attributes,
               recordedCreateOnlyDrops: currentResource.acceptedCreateOnlyDrops,
@@ -777,20 +779,16 @@ export async function updateInPlace(
     }
   }
 
-  // Issue #3462 — the ONE refusal class an in-place UPDATE may not
-  // clear. The rebuild below enumerates its fields, which is what
-  // clears every other `observedBaselineRefused` (see
-  // `drainObservedCaptures`); for an unverifiable-parameter refusal
-  // that is the leak. `cdkd import` refused because a template
-  // parameter was not provably deployed at its `Default`, and a
-  // top-level deploy binds that SAME `Default` (a nested child is handed
-  // its values by the parent, where keeping the refusal is merely
-  // conservative): the record's placeholder leaf is unchanged, so the
-  // provider need not have rewritten it, AWS can still hold the
-  // deployed value there, and a readback positioned against the
-  // placeholder pairs it as an ordinary drifted literal. The engine
-  // cannot know which leaves a provider wrote, so NO in-place update
-  // discharges it, whatever it changed.
+  // Issue #3462 — the ONE refusal class an in-place UPDATE may not clear. The rebuild below
+  // enumerates its fields, which is what clears every other `observedBaselineRefused` (see
+  // `drainObservedCaptures`); for an unverifiable-parameter refusal that is the leak. `cdkd import`
+  // refused because a template parameter was not provably deployed at its `Default`, and a
+  // top-level deploy binds that SAME `Default` (a nested child is handed its values by the parent,
+  // where keeping the refusal is merely conservative): the record's placeholder leaf is unchanged,
+  // so the provider need not have rewritten it, AWS can still hold the deployed value there, and a
+  // readback positioned against the placeholder pairs it as an ordinary drifted literal. The engine
+  // cannot know which leaves a provider wrote, so NO in-place update discharges it, whatever it
+  // changed.
   //
   // A replacement does, but only one that is EVIDENCED: `wasReplaced`
   // AND a physical id that actually changed, so the capture below reads

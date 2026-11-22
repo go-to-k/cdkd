@@ -52,10 +52,8 @@ import {
   destroyStackRecordsView,
   withStackRecords,
 } from '../../../deployment/stack-records-scope.js';
-import {
-  createUnionSecretMasker,
-  type RecordedSecretValues,
-} from '../../../deployment/secret-redaction.js';
+import { createUnionSecretMasker } from '../../../deployment/secret-redaction.js';
+import type { DestroyPrintingBags } from './under-lock-steps.js';
 import type { DestroyRunnerContext, DestroyRunnerResult, DestroyLogger } from './types.js';
 import { NESTED_STACK_TYPE, maskedSnapshotLogger, recordDestroyEvent } from './helpers.js';
 import type { HeldStackLock } from '../stack-lock-guard.js';
@@ -80,7 +78,7 @@ export interface DeleteResourceFrame {
   guardIndeterminateTargets: Set<string>;
   remainingResources: Record<string, ResourceState>;
   persistStateAfterDelete: (logicalId: string) => void;
-  printingBagOf: (logicalId: string) => RecordedSecretValues;
+  printingBagOf: DestroyPrintingBags;
   destroyProviderRegistry: DestroyRunnerContext['providerRegistry'];
   destroyAwsClients: AwsClients | undefined;
   secretPrincipalRegions: string[] | undefined;
@@ -446,6 +444,10 @@ export async function deleteStackResource(
                         // runs under, so a provider that asks whether a
                         // name is secret-derived sees what the sink masks.
                         maskSecrets: createUnionSecretMasker([printingBagOf(logicalId)]),
+                        // go-to-k/cdkd#6772: printing only, never a judge.
+                        maskStackSecretNames: printingBagOf.stackMaskerFor([
+                          printingBagOf(logicalId),
+                        ]),
                       }
                     )
                   )

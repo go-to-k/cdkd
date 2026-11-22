@@ -361,6 +361,7 @@ export async function finishReverseReplacement(
             current.properties,
             {
               expectedRegion: ctx.region,
+              maskStackSecretNames: ctx.maskStackSecretNames, // #6772: printing only
               // go-to-k/cdkd#6770 / #6808: the new copy is the rolled-back
               // run's, so the holders the records or journal name are its.
               stackHoldersStillAttached: true,

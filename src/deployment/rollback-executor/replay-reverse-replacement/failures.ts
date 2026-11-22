@@ -123,6 +123,7 @@ export async function deleteMarkedRecreate(
     const outcome = await withReplayDeletePrinting(s, () =>
       s.provider.delete(s.op.logicalId, madeId, s.oldType, s.properties, {
         expectedRegion: s.region,
+        maskStackSecretNames: s.ctx.maskStackSecretNames, // #6772: printing only
         // go-to-k/cdkd#6770 / #6808: the failed re-create made it, so the
         // holders the records or journal name are this rollback's.
         stackHoldersStillAttached: true,

@@ -12,6 +12,7 @@ import {
 } from '../../producer-regions-scope.js';
 import { type RollbackExecutorContext, producerRegionsFromState } from '../../rollback-executor.js';
 import { maskEventTextWithBoundBags } from '../../secret-name-needles.js';
+import { stackSecretNameMasker } from '../masking.js';
 import type { RollbackDeps } from './deps.js';
 
 /**
@@ -62,6 +63,8 @@ export function rollbackExecutorContext(
     // value) this deploy recorded per resource, which the replay's own
     // re-resolution of the journal cannot re-derive.
     logOnlyNeedlesFor: (logicalId) => deps.secretsRun().perResourceSecrets.get(logicalId),
+    // go-to-k/cdkd#6772: a refusal naming a sibling the stack retained.
+    maskStackSecretNames: (text) => stackSecretNameMasker(deps.secretsRun())(text),
     // See `producerRegionEvidence`.
     importedProducerRegions: producerRegions.regions,
     producerRegionsIncomplete: !producerRegions.complete,

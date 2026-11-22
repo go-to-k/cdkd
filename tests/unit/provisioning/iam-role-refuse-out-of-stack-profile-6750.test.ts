@@ -276,6 +276,31 @@ describe('IAM role delete on a stack destroy (#6750)', () => {
     expect((error as Error).message).toContain('instance profile(s) ***-profile');
     expect((error as Error).message).not.toContain('SECRET');
   });
+
+  // go-to-k/cdkd#6772: a profile the stack retained, whose name is secret-derived,
+  // is in no bag of the role's own: the stack-wide printing masker masks it.
+  it("masks a retained in-stack profile's secret-derived name with the stack-wide masker", async () => {
+    drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['SECRET-profile']) });
+    const run = (maskStackSecretNames?: (text: string) => string) =>
+      new IAMRoleProvider()
+        .delete('Role', 'my-role', 'AWS::IAM::Role', undefined, {
+          stackDestroy: true,
+          maskSecrets: (text) => text,
+          ...(maskStackSecretNames && { maskStackSecretNames }),
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+    const masked = ((await run((text) => text.split('SECRET').join('***'))) as Error).message;
+    expect(masked).toContain('instance profile(s) ***-profile, which this destroy did not delete');
+    expect(masked).not.toContain('SECRET');
+    // Absent, the role's own masker alone: the wording is unchanged.
+    sent = [];
+    const plain = ((await run()) as Error).message;
+    expect(plain).toBe(masked.replace('***-profile', 'SECRET-profile'));
+  });
 });
 
 describe("a same-name re-create's delete-first keeps removing it from its profiles (#4461, #6770)", () => {

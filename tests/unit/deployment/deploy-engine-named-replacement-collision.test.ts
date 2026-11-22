@@ -253,6 +253,8 @@ describe('DeployEngine — custom-named replacement collision', () => {
         stackHoldersStillAttached: true,
         recordedAttributes: {},
         maskSecrets: expect.any(Function),
+        // go-to-k/cdkd#6772: a refusal naming a sibling the stack retained.
+        maskStackSecretNames: expect.any(Function),
       }
     );
   });

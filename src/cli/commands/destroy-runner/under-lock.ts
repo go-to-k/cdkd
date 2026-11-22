@@ -398,6 +398,7 @@ export async function destroyStackUnderLock({
       logger,
     });
     const noEchoValues = await stackNoEchoValues();
+    const printingBagOf = makePrintingBagOf({ ctx, state, noEchoValues, stackName, logger });
     if (journaledUnderLock.count > 0) {
       const orphanOutcome = await deleteJournaledOrphans(
         journaledUnderLock,
@@ -424,6 +425,7 @@ export async function destroyStackUnderLock({
           importedProducerRegions: producerRegionsFromState(state),
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
+          maskStackSecretNames: printingBagOf.stackMaskerFor([]), // go-to-k/cdkd#6772
         },
         {
           isInterrupted: () => lock.interrupted,
@@ -460,18 +462,16 @@ export async function destroyStackUnderLock({
 
     const { dagBuilder, blockingGraph, executionLevels } = buildDeleteGraph(state, logger);
 
-    // go-to-k/cdkd#5670: a resource whose delete FAILED may still need what it
-    // depends on to be deleted later -- an ECS gateway's infrastructure role,
-    // a VPC gateway attachment's internet gateway. So every resource it
-    // TRANSITIVELY depends on (over `blockingGraph`) is left in AWS and in state, mapped to the first
-    // failed resource that blocked it, as CloudFormation's DELETE_FAILED
-    // leaves them; resources unrelated to it are still deleted, as
-    // CloudFormation also does. A dependency always sits on a LATER deletion
-    // level than its dependent, so marking it when the dependent's delete
-    // settles is in time. A SKIP does not block: like the deploy engine's
-    // DELETE phase, which stops on a failure but not on a skip, the destroy
-    // still deletes what a skipped resource depends on -- the custom-resource
-    // skip flow relies on its backing Lambda being gone for the re-run.
+    // go-to-k/cdkd#5670: a resource whose delete FAILED may still need what it depends on to be
+    // deleted later -- an ECS gateway's infrastructure role, a VPC gateway attachment's internet
+    // gateway. So every resource it TRANSITIVELY depends on (over `blockingGraph`) is left in AWS
+    // and in state, mapped to the first failed resource that blocked it, as CloudFormation's
+    // DELETE_FAILED leaves them; resources unrelated to it are still deleted, as CloudFormation
+    // also does. A dependency always sits on a LATER deletion level than its dependent, so marking
+    // it when the dependent's delete settles is in time. A SKIP does not block: like the deploy
+    // engine's DELETE phase, which stops on a failure but not on a skip, the destroy still deletes
+    // what a skipped resource depends on -- the custom-resource skip flow relies on its backing
+    // Lambda being gone for the re-run.
     const blockedBy = new Map<string, string>();
     const blockedIds: string[] = [];
     const blockDependenciesOf = (logicalId: string): void => {
@@ -480,7 +480,6 @@ export async function destroyStackUnderLock({
       }
     };
 
-    const printingBagOf = makePrintingBagOf({ ctx, state, noEchoValues, stackName, logger });
     const resourceFrame: DeleteResourceFrame = {
       lock,
       state,
@@ -568,6 +567,7 @@ export async function destroyStackUnderLock({
                 ...(ctx.removeProtection === true && { removeProtection: true }),
                 ...(ctx.stackDestroy === true && { stackDestroy: true }),
                 maskSecrets: createUnionSecretMasker([bag]),
+                maskStackSecretNames: printingBagOf.stackMaskerFor([bag]),
                 stop: () => lock.interrupted,
                 // go-to-k/cdkd#6668: the TYPE's provider reads the holder.
                 holderProvider: () => destroyProviderRegistry.getProvider(resourceType),

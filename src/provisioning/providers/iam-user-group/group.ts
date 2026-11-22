@@ -20,7 +20,12 @@ import {
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
-import { assertRegionMatch, holderRefusalRun, type DeleteContext } from '../../region-check.js';
+import {
+  assertRegionMatch,
+  holderRefusalMask,
+  holderRefusalRun,
+  type DeleteContext,
+} from '../../region-check.js';
 import { generateResourceNameWithFallback } from '../../resource-name.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
@@ -408,7 +413,11 @@ export async function deleteGroup(
       const run = holderRefusalRun(context);
       const refusal = markNonRetryable(
         new ProvisioningError(
-          log.mask(
+          // go-to-k/cdkd#6772: a user the stack retained can be named from a secret.
+          holderRefusalMask(
+            context,
+            log.mask
+          )(
             `Failed to delete IAM group ${logicalId}: group ${physicalId} still has ` +
               `user(s) ${heldText(held)}, whose ` +
               `membership this ${run.noun} did not remove (a user added outside the stack, one ` +

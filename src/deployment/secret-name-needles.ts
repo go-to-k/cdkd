@@ -22,6 +22,7 @@ import { currentLogLineMasker } from '../utils/log-line-masker.js';
 import {
   type RecordedSecretValues,
   carryLogOnlyValues,
+  createUnionSecretMasker,
   hasMaskableValues,
   maskSecretsInText,
   MIN_NEEDLE_LENGTH,
@@ -496,6 +497,26 @@ export function secretNamedRecordNeedles(
     }
   }
   return bag;
+}
+
+/**
+ * A replay's `maskStackSecretNames` (go-to-k/cdkd#6772): a PRINTING masker over
+ * the needles of every record of `resources` named from a secret
+ * ({@link secretNamedRecordNeedles}, judged once, on the first call, from a
+ * copy taken now) and the `extra` bags, read at each call. For a delete
+ * refusal naming a sibling the stack retained; never a judge.
+ */
+export function stackSecretNamesMasker(
+  resources: Readonly<Record<string, ResourceState>>,
+  secrets: StateNamingSecrets,
+  extra: () => ReadonlyArray<RecordedSecretValues | undefined> = () => []
+): (text: string) => string {
+  const records = { ...resources };
+  let needles: RecordedSecretValues | undefined;
+  return (text) =>
+    createUnionSecretMasker([...extra(), (needles ??= secretNamedRecordNeedles(records, secrets))])(
+      text
+    );
 }
 
 /**

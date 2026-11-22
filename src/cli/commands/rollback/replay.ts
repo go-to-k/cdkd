@@ -48,6 +48,7 @@ import {
   completedReplayEntries,
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
+  stackSecretNamesMasker,
 } from '../../../deployment/secret-name-needles.js';
 import {
   replayRollback,
@@ -554,20 +555,16 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
       // on that record either. Not left to the stale ETag alone: an explicit
       // skip does not depend on the backend refusing the conditional write.
       if (declinedDivergentRewrite) return;
-      // `skippedOutputs` (issue #2740) is dropped rather than spread through,
-      // as `cdkd import`, `cdkd drift --accept` and the orphan rewrite drop
-      // it. Like `import`, this writer can ADD an attribute key: the
-      // replacement / re-adopt arm rebuilds a record with
-      // `attributes: createResult.attributes ?? {}`
-      // (`rollback-executor/replay-reverse-replacement.ts`), the two UPDATE
-      // arms take the attributes `update()` returned
-      // (`recordAfterRollbackUpdate`, go-to-k/cdkd#4434), and either can
-      // return a fuller set than the record the old state held — the same "a provider now builds
-      // an attribute an output reads" shape the module doc lists as a blind
-      // spot. Every resource then reports NO_CHANGE against the reverted
-      // template, so the diff's change map cannot un-bind and the digest is
-      // unmoved; carried, the record would preview a key as absent while the
-      // next deploy publishes it.
+      // `skippedOutputs` (issue #2740) is dropped rather than spread through, as `cdkd import`,
+      // `cdkd drift --accept` and the orphan rewrite drop it. Like `import`, this writer can ADD an
+      // attribute key: the replacement / re-adopt arm rebuilds a record with `attributes:
+      // createResult.attributes ?? {}` (`rollback-executor/replay-reverse-replacement.ts`), the two
+      // UPDATE arms take the attributes `update()` returned (`recordAfterRollbackUpdate`,
+      // go-to-k/cdkd#4434), and either can return a fuller set than the record the old state held —
+      // the same "a provider now builds an attribute an output reads" shape the module doc lists as
+      // a blind spot. Every resource then reports NO_CHANGE against the reverted template, so the
+      // diff's change map cannot un-bind and the digest is unmoved; carried, the record would
+      // preview a key as absent while the next deploy publishes it.
       const { skippedOutputs: _droppedByRollback, ...carriedState } = withoutSuperseded(baseState);
       const next = (): StackState => ({
         ...carriedState,
@@ -647,6 +644,9 @@ export async function runRollbackReplay(ctx: RollbackReplayContext): Promise<voi
       journal.segments.flatMap((s) => s.failedOperations ?? []),
       stateResources
     );
+    ctx.maskStackSecretNames = stackSecretNamesMasker(stateResources, undefined, () => [
+      failedOpsPrinting, // go-to-k/cdkd#6772: the records judged before any replay
+    ]);
     await snapshotSegmentSurvivors(ctx, journal.segments);
     try {
       while (journal.segments.length > 0) {
