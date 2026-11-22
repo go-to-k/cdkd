@@ -179,6 +179,7 @@ These are mostly third-party CLI flags (`--query` for `aws` / `--region` for `aw
 - `--code-interpreter-id`
 - `--code-signing-config-arn`
 - `--collection-name`
+- `--configuration`
 - `--configuration-profile-id`
 - `--configuration-profile-identifier`
 - `--configuration-set-name`
