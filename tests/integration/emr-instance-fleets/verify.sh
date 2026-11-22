@@ -216,6 +216,8 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
+  [ -n "${REVERT_WORK:-}" ] && rm -rf "${REVERT_WORK}"
+  [ -n "${DRIFT_JSON:-}" ] && rm -f "${DRIFT_JSON}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   # Drop a stale lock BEFORE `state destroy`: an interrupted run leaves
   # lock.json behind, `state destroy` then refuses to acquire it and exits

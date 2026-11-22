@@ -15,6 +15,7 @@ import {
   type Dimension,
 } from '@aws-sdk/client-cloudwatch';
 import { createHash } from 'node:crypto';
+import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -442,8 +443,8 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
    * The live detector whose descriptor is the record's, or `undefined`. A
    * single-metric detector matches on namespace, metric name, stat, the
    * dimension SET, and the account when the record declares one (one AWS
-   * answers with no account is the fallback either way, as an own-account
-   * detector may read back with none); a metric-math one on its query list, each
+   * answers with no account stands in only when the record names the caller's
+   * own account); a metric-math one on its query list, each
    * recorded leaf equal to the live one (scalars compared as strings, a
    * `Dimensions` list as a set).
    */
@@ -493,13 +494,18 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
         leavesMatch(dims ?? [], live.Dimensions ?? [])
       );
     });
-    // An own-account detector may come back with no AccountId whatever the
-    // record spells, so one with no AccountId is the fallback either way.
     const noAccount = matches.find((d) => liveSingle(d).AccountId === undefined);
-    return account === undefined
-      ? (noAccount ?? matches[0])
-      : (matches.find((d) => scalarText(liveSingle(d).AccountId) === scalarText(account)) ??
-          noAccount);
+    if (account === undefined) return noAccount ?? matches[0];
+    const exact = matches.find((d) => scalarText(liveSingle(d).AccountId) === scalarText(account));
+    if (exact !== undefined || noAccount === undefined) return exact;
+    // An own-account detector may read back with no AccountId: it is the
+    // record's only when the record names the caller's own account, else a
+    // deleted cross-account detector would read as this one. One STS call,
+    // made only here.
+    const identity = await getAwsClients().sts.send(new GetCallerIdentityCommand({}));
+    return identity.Account !== undefined && identity.Account === scalarText(account)
+      ? noAccount
+      : undefined;
   }
 
   /**
@@ -669,7 +675,6 @@ function leavesMatch(recorded: unknown, live: unknown): boolean {
 
 /** Metric-math query members AWS may omit when they hold the default. */
 const OPTIONAL_QUERY_MEMBERS: ReadonlySet<string> = new Set([
-  'AccountId',
   'Label',
   'Period',
   'ReturnData',

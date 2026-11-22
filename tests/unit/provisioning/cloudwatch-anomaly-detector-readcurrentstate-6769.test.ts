@@ -11,11 +11,13 @@ import {
  */
 
 const mockSend = vi.fn();
+const mockStsSend = vi.fn();
 const warn = vi.fn();
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     cloudWatch: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    sts: { send: mockStsSend },
   }),
 }));
 
@@ -212,12 +214,22 @@ describe('CloudWatchAnomalyDetectorProvider.readCurrentState (go-to-k/cdkd#6769)
     expect(((await read({ SingleMetricAnomalyDetector: single })) as Record<string, unknown>)['Configuration']).toEqual({
       MetricTimeZone: 'UTC',
     });
-    // No live AccountId at all: the own-account detector.
+    expect(mockStsSend).not.toHaveBeenCalled();
+    // No live AccountId at all, and the record names the caller's account.
+    mockStsSend.mockResolvedValue({ Account: '111111111111' });
     answer([liveSingle({ Configuration: { MetricTimezone: 'Z' } })]);
     expect(await read({ SingleMetricAnomalyDetector: single })).toEqual({
       SingleMetricAnomalyDetector: TUPLE,
       Configuration: { MetricTimeZone: 'Z' },
     });
+  });
+
+  it('does not take an own-account detector for a deleted cross-account one', async () => {
+    mockStsSend.mockResolvedValue({ Account: '999999999999' });
+    answer([liveSingle()]);
+    expect(await read({ SingleMetricAnomalyDetector: { ...TUPLE, AccountId: '111111111111' } })).toBe(
+      RESOURCE_NOT_FOUND
+    );
   });
 
   it('reads the deprecated top-level fields when AWS answers only those', async () => {

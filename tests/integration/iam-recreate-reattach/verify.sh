@@ -167,7 +167,8 @@ cleanup() {
   aws iam delete-group --group-name "${GROUP}" >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE}" >/dev/null 2>&1
   if [ -n "${REVERT_WORK:-}" ]; then
-    rm -f "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" "${REVERT_WORK}/revert-1b.log"
+    rm -f "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" "${REVERT_WORK}/revert-1b.log" \
+      "${REVERT_WORK}/revert-ids-1c-before" "${REVERT_WORK}/revert-ids-1c-after" "${REVERT_WORK}/revert-1c.log"
     rmdir "${REVERT_WORK}" >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -312,8 +313,8 @@ echo "    OK: cdkd drift reports Membership's Users after the out-of-band remova
 revert_identity_snapshot "${REVERT_WORK}/revert-ids-1c-before" "${STACK}" "${GROUP_ID}" Added || exit 1
 REVERT_RC=0
 run_revert 2>&1 | tee "${REVERT_WORK}/revert-1c.log" || REVERT_RC=$?
-wait_added_in_group 1 || exit 1
 revert_identity_verify "${REVERT_WORK}/revert-ids-1c-before" "${REVERT_WORK}/revert-ids-1c-after" 2 "${REVERT_WORK}/revert-1c.log" ignore=CdkdIamRecreateReattachExample || exit 1
+wait_added_in_group 1 || exit 1
 [ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 1c)" >&2; exit 1; }
 [ "$(group_added)" = "1" ] || { echo "FAIL: ${ADDED} is not back in ${GROUP} after the revert (phase 1c)" >&2; exit 1; }
 [ "$(state_json | jq -r '.resources.Membership.physicalId')" = "Membership" ] \
