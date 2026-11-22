@@ -249,6 +249,8 @@ describe('DeployEngine — custom-named replacement collision', () => {
         expectedRegion: 'us-east-1',
         forceDataDelete: false,
         deletionPolicy: 'Delete',
+        // go-to-k/cdkd#6770: a same-name delete-first strips the holders.
+        stackHoldersStillAttached: true,
         recordedAttributes: {},
         maskSecrets: expect.any(Function),
       }

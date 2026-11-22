@@ -20,7 +20,7 @@ import {
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
-import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { assertRegionMatch, holderRefusalRun, type DeleteContext } from '../../region-check.js';
 import { generateResourceNameWithFallback } from '../../resource-name.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
@@ -346,8 +346,9 @@ export async function deleteGroup(
     // refuses (`DeleteConflict`) and the retry reads again.
     let members: User[] = [];
     let membersTruncated = false;
-    // The `GroupId` step 0's last read answered: every later read by name on
-    // a stack destroy is held to it (go-to-k/cdkd#6750).
+    // The `GroupId` step 0's last read answered: every later read by name
+    // where step 3 leaves the members alone is held to it
+    // (go-to-k/cdkd#6750).
     let stepZeroGroupId: string | undefined;
     const readGroup = async () => {
       const response = await this.iamClient.send(new GetGroupCommand({ GroupName: physicalId }));
@@ -380,20 +381,20 @@ export async function deleteGroup(
     // Step 2: Delete all inline policies
     await this.deleteAllGroupInlinePolicies(physicalId, log, progress);
 
-    // Step 3: Remove all users from group (those step 0 read) — except on a
-    // stack destroy (go-to-k/cdkd#6750). CloudFormation's delete handler holds
-    // no `iam:RemoveUserFromGroup`, so `DeleteGroup` fails with
-    // `DeleteConflict` while a user is still in the group; and a destroy
-    // removes the stack's own memberships (a user's `Groups`, an
-    // `AWS::IAM::UserToGroupAddition`) before their group, so a member left
-    // here is not this destroy's to change. A deploy's delete keeps the
-    // removal: a same-name re-create (`--recreate-via-*`, `--replace`'s
-    // delete-first fallback) deletes the group while the stack's own
-    // memberships still hold it and adds them back afterwards
-    // (go-to-k/cdkd#4461), and the provider cannot tell that delete from a
-    // template removal (go-to-k/cdkd#6770 for the role's twin).
-    const stackDestroy = context?.stackDestroy === true;
-    if (!stackDestroy) await this.removeAllUsersFromGroup(physicalId, log, progress, members);
+    // Step 3: Remove all users from group (those step 0 read) — only where
+    // the stack's own memberships may still hold it and are re-added
+    // afterwards (`stackHoldersStillAttached`: a same-name re-create's
+    // delete-first, go-to-k/cdkd#4461). Every other delete — a destroy
+    // (go-to-k/cdkd#6750), a template removal, a nested child's teardown, a
+    // replaced group's cleanup, whose in-stack members already moved to the
+    // new group (go-to-k/cdkd#6770) — leaves the members alone:
+    // CloudFormation's delete handler holds no `iam:RemoveUserFromGroup`, so
+    // `DeleteGroup` fails with `DeleteConflict` while a user is still in the
+    // group, and the run removes or moves the stack's own memberships (a
+    // user's `Groups`, an `AWS::IAM::UserToGroupAddition`) before this
+    // delete, so a member left here is not this run's to change.
+    const stripHolders = context?.stackHoldersStillAttached === true;
+    if (stripHolders) await this.removeAllUsersFromGroup(physicalId, log, progress, members);
 
     // A settle read answering another `GroupId` than step 0's: the name now
     // holds another group, which the by-name `DeleteGroup` must not reach.
@@ -421,15 +422,16 @@ export async function deleteGroup(
       }
     };
 
-    // Step 4: Delete the group. Two attempts at most on a stack destroy: the
-    // second only after the settle below saw no user still in the group, i.e.
-    // what refused the first was the stack's own membership being removed.
+    // Step 4: Delete the group. Two attempts at most where step 3 left the
+    // members alone: the second only after the settle below saw no user still
+    // in the group, i.e. what refused the first was the stack's own
+    // membership being removed.
     for (let attempt = 1; ; attempt++) {
       try {
         await this.iamClient.send(new DeleteGroupCommand({ GroupName: physicalId }));
         break;
       } catch (error) {
-        if (!stackDestroy || !(error instanceof DeleteConflictException)) throw error;
+        if (stripHolders || !(error instanceof DeleteConflictException)) throw error;
         // Step 0's read is the first listing; the rest runs only after the
         // refusal, so a delete that succeeds costs no extra call. The second
         // attempt's refusal reads the members once more (no settle) to name
@@ -454,18 +456,19 @@ export async function deleteGroup(
         });
         if (held === 'empty' && attempt === 1) continue;
         if (held === undefined || held === 'empty') throw error;
+        const run = holderRefusalRun(context);
         const refusal = markNonRetryable(
           new ProvisioningError(
             log.mask(
               `Failed to delete IAM group ${logicalId}: group ${physicalId} still has ` +
                 `user(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, whose ` +
-                `membership this destroy did not remove (a user added outside the stack, one ` +
+                `membership this ${run.noun} did not remove (a user added outside the stack, one ` +
                 `retained by a DeletionPolicy, or a stack user whose own delete has not finished ` +
                 `yet). Matching CloudFormation (DeleteConflict), cdkd ` +
                 `does not remove them from the group. If a named user is one of this stack's ` +
-                `users, run the destroy again once its delete finishes. Otherwise, if they no ` +
+                `users, ${run.rerun} once its delete finishes. Otherwise, if they no ` +
                 `longer need the group, remove them (aws iam remove-user-from-group ` +
-                `--group-name <group> --user-name <user>), then destroy again.`
+                `--group-name <group> --user-name <user>), then ${run.again}.`
             ),
             resourceType,
             logicalId,
@@ -518,7 +521,7 @@ export async function deleteGroup(
 }
 
 /**
- * A stack destroy's refusals of a group a user is still in (go-to-k/cdkd#6750),
+ * The refusals of a group a user is still in (go-to-k/cdkd#6750),
  * passed through the delete's wrap unchanged. A set, not a subclass:
  * `ProvisioningError` resets its prototype, so `instanceof` on a subclass of
  * it never holds.

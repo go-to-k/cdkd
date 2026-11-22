@@ -46,6 +46,39 @@ export function supersededResourcesOf(
   return rows.filter(isSupersededResourceRecord);
 }
 
+/**
+ * `entries` in the order their deletes must run (go-to-k/cdkd#6770): an entry
+ * goes once no other remaining entry depends on it, by its record's
+ * `dependencies` — a replaced instance profile before the replaced role it
+ * holds, a replaced `UserToGroupAddition` before its group — as the cleanup
+ * phase orders a deploy's own deferred deletes. Entries no dependency orders
+ * keep their order; a cycle keeps what is left in its order.
+ */
+export function supersededDependentsFirst<T extends SupersededResourceRecord>(
+  entries: readonly T[]
+): T[] {
+  const ordered: T[] = [];
+  let pending = [...entries];
+  while (pending.length > 0) {
+    const dependedOn = new Set<string>();
+    for (const entry of pending) {
+      const deps: unknown = entry.state.dependencies;
+      if (!Array.isArray(deps)) continue;
+      for (const dep of deps) {
+        if (typeof dep === 'string' && dep !== entry.logicalId) dependedOn.add(dep);
+      }
+    }
+    const wave = pending.filter((entry) => !dependedOn.has(entry.logicalId));
+    if (wave.length === 0) {
+      ordered.push(...pending);
+      break;
+    }
+    ordered.push(...wave);
+    pending = pending.filter((entry) => !wave.includes(entry));
+  }
+  return ordered;
+}
+
 export function isSupersededResourceRecord(row: unknown): row is SupersededResourceRecord {
   if (typeof row !== 'object' || row === null) return false;
   const entry = row as Record<string, unknown>;

@@ -147,6 +147,17 @@ describe('DeployEngine rollback context threading (#1363)', () => {
     return deleteMock.mock.calls[0][4] as Record<string, unknown>;
   }
 
+  it.each(['AWS::IAM::Group', 'AWS::IAM::Role'])(
+    "a rolled-back CREATE of an %s strips its holders, which are the run's own (go-to-k/cdkd#6770)",
+    async (resourceType) => {
+      // A UserToGroupAddition that failed after adding a user records no
+      // physical id, so nothing removes that user before the group's delete;
+      // refusing it would leave the rollback failed.
+      await rollbackSnapshotCreate(makeEngine({ skipFinalSnapshot: true }), resourceType);
+      expect(deleteContextArg()['stackHoldersStillAttached']).toBe(true);
+    }
+  );
+
   it('threads finalSnapshotClients into the pre-delete snapshot call', async () => {
     const state = await rollbackSnapshotCreate(
       makeEngine({ finalSnapshotClients: pinnedClients }),

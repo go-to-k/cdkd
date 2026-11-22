@@ -15,6 +15,7 @@ import {
   addSuperseded,
   deleteSupersededEntry,
   removeSuperseded,
+  supersededDependentsFirst,
   supersededHeldByOtherTypeWarning,
   supersededHolderOf,
 } from '../superseded-resources.js';
@@ -45,7 +46,10 @@ export async function retryCarriedSupersededResources(
     live: () => Object.entries(resources),
     survivors: () => Object.entries(resources),
   };
-  for (const entry of carried) {
+  // go-to-k/cdkd#6770: dependents first, so a replaced profile or membership
+  // goes before the replaced role or group it holds, which would otherwise
+  // refuse it as a holder outside the stack.
+  for (const entry of supersededDependentsFirst(carried)) {
     if (engine.interrupted) break;
     const { logicalId } = entry;
     const { physicalId, resourceType } = entry.state;

@@ -36,7 +36,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * succeeds with no `--replace`, re-pointing the function and the policies
  * attached by name at the new role.
  *
- * covers: AWS::IAM::Role, AWS::Lambda::Function
+ * covers: AWS::IAM::Role, AWS::IAM::Group, AWS::Lambda::Function
  */
 export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -107,5 +107,19 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
       code: lambda.Code.fromInline('exports.handler = async () => ({ ok: true });'),
       role: pathRole,
     });
+
+    // CDKD_TEST_DROP_HELD=true removes this role and group from the template
+    // (go-to-k/cdkd#6770): the deploy's template-removal delete must refuse
+    // while an instance profile / user created outside the stack still holds
+    // them, as CloudFormation's DeleteConflict does, and never strip them.
+    if (process.env.CDKD_TEST_DROP_HELD !== 'true') {
+      new iam.Role(this, 'HeldRole', {
+        roleName: `${cdk.Stack.of(this).stackName}-held-role`,
+        assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      });
+      new iam.Group(this, 'HeldGroup', {
+        groupName: `${cdk.Stack.of(this).stackName}-held-group`,
+      });
+    }
   }
 }

@@ -518,6 +518,7 @@ export async function replayFailedOperationsUnbound(
                 op.attemptedProperties,
                 {
                   expectedRegion: ctx.region,
+                  stackHoldersStillAttached: true, // #6770: its holders are the failed run's
                   ...(removeProtection && { removeProtection: true }),
                   ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),
@@ -528,13 +529,12 @@ export async function replayFailedOperationsUnbound(
                   recordedCreateOnlyDrops: failedCreateRecord?.acceptedCreateOnlyDrops,
                   // go-to-k/cdkd#4043: where the bag holds a NoEcho mask. The
                   // journal records no coordinates, and its bag is masked by
-                  // position, so every whole-`***` leaf of it counts (review
-                  // round 9 n1): the caller decides the coordinates, and this
-                  // caller has no list. Only `CustomResourceProvider` reads the
-                  // field, and a custom resource reaches this arm only through a
-                  // record naming the op's physical id (it never marks
-                  // `createdBeforeFailure`), so this is a fail-safe, not a path
-                  // a handler is known to take (review round 10).
+                  // position, so every whole-`***` leaf of it counts: the caller
+                  // decides the coordinates, and this caller has no list. Only
+                  // `CustomResourceProvider` reads the field, and a custom
+                  // resource reaches this arm only through a record naming the
+                  // op's physical id (it never marks `createdBeforeFailure`), so
+                  // this is a fail-safe, not a path a handler is known to take.
                   recordedNoEchoLeaves: nonEmptyOrUndefined([
                     ...maskedLeafCoordinatesOf(op.attemptedProperties ?? {}),
                     ...(failedCreateRecord?.noEchoLeaves ?? []),

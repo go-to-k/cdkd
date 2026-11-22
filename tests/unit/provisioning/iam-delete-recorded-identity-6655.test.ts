@@ -207,7 +207,8 @@ describe('AWS::IAM::Role delete compares the recorded RoleId (go-to-k/cdkd#6655)
       'DetachRolePolicyCommand',
       'ListRolePoliciesCommand',
       'DeleteRolePolicyCommand',
-      'ListInstanceProfilesForRoleCommand',
+      // No instance-profile listing: outside a delete-first, a profile is
+      // read only after DeleteRole refuses (go-to-k/cdkd#6770).
       'DeleteRoleCommand',
     ]);
   });

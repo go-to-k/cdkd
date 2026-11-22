@@ -160,6 +160,22 @@ describe('runDestroyForStack — DeletionPolicy: Snapshot (#1352)', () => {
     mockCreatePreDeleteFinalSnapshot.mockResolvedValue('snap-unit');
   });
 
+  // go-to-k/cdkd#6770: neither a destroy nor a deploy's teardown of a removed
+  // nested child (the same runner, without `stackDestroy`) tells a role or
+  // group delete the stack still holds it, so both refuse an out-of-stack
+  // instance profile or user instead of stripping it.
+  it.each([
+    ['a stack destroy', { stackDestroy: true }],
+    ["a deploy's nested-child teardown", {}],
+  ])('%s: the DeleteContext carries no stackHoldersStillAttached', async (_what, extra) => {
+    await runDestroyForStack(
+      'TestStack',
+      makeState({ R: res({ resourceType: 'AWS::IAM::Role' }) }),
+      makeCtx(extra)
+    );
+    expect(deleteContextArg()).not.toHaveProperty('stackHoldersStillAttached');
+  });
+
   // go-to-k/cdkd#4150: the secret-principal opt-in reaches the provider only
   // when the CALLER (cdkd destroy / state destroy) sets it, carrying the
   // stack's producer-region evidence plus any a parent passed down.

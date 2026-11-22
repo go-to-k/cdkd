@@ -43,6 +43,7 @@ import {
   supersededHeldByOtherTypeWarning,
   supersededHolderOf,
   supersededResourcesOf,
+  supersededDependentsFirst,
   withoutSuperseded,
 } from '../../../deployment/superseded-resources.js';
 import {
@@ -686,10 +687,9 @@ export async function destroyStackUnderLock({
       await Promise.all(deletePromises);
     }
 
-    // AFTER the stack's own resources, any of which may still have used one.
-    // A custom resource's old physical id went BEFORE them (above), unless
-    // that attempt did not delete it.
-    for (const entry of supersededResourcesOf(state)) {
+    // AFTER the stack's own resources (a custom resource's old id went above),
+    // dependents first: a replaced profile before its role (go-to-k/cdkd#6770).
+    for (const entry of supersededDependentsFirst(supersededResourcesOf(state))) {
       if (lock.interrupted) break;
       if (isCustomResourceType(entry.state.resourceType) && !retryLate.has(entry)) continue;
       await deleteSupersededRow(entry);

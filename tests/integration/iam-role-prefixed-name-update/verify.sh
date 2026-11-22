@@ -40,6 +40,11 @@
 #   5b. (issue #6750) Add the named role to an instance profile created out of
 #      band, and assert `cdkd destroy` refuses the role naming that profile (as
 #      CloudFormation's DeleteConflict does) and leaves the role in it.
+#   5c. (issue #6770; runs BEFORE 5b, whose refused destroy deletes every
+#      unheld resource) Hold HeldRole and HeldGroup with an instance profile and
+#      a user created out of band, then deploy with CDKD_TEST_DROP_HELD=true:
+#      the template removal refuses both deletes naming the holders and leaves
+#      them held; once the holders are removed, the same deploy deletes both.
 #   6. Destroy + assert the roles, the function and cdkd state are gone.
 #
 # Required env vars:
@@ -88,6 +93,14 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ROLE_NAME="${STACK}-role"
 # Issue #6750: the out-of-stack instance profile Phase 5b adds the role to.
 OOB_PROFILE="${STACK}-oob-6750"
+# Issue #6770: the role and group CDKD_TEST_DROP_HELD removes from the
+# template, and the out-of-stack profile and user Phase 5c holds them with.
+HELD_ROLE="${STACK}-held-role"
+HELD_GROUP="${STACK}-held-group"
+OOB_PROFILE_5C="${STACK}-oob-6770"
+OOB_USER_5C="${STACK}-oob-6770-user"
+# Only Phase 5c sets it, per deploy.
+unset CDKD_TEST_DROP_HELD
 FN_NAME="${STACK}-path-fn"
 # cdkd's generated name for the unnamed PathRole: `${STACK}-<logicalId>` (CDK
 # suffixes the logical id with a hash) cut to 64 - 13 characters, then `-` and
@@ -190,10 +203,22 @@ cleanup() {
   aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE}" \
     --role-name "${ROLE_NAME}" >/dev/null 2>&1
   aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE}" >/dev/null 2>&1
+  # Likewise Phase 5c's holders (#6770), which refuse the held role's and
+  # group's deletes.
+  aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" \
+    --role-name "${HELD_ROLE}" >/dev/null 2>&1
+  aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" >/dev/null 2>&1
+  aws iam remove-user-from-group --group-name "${HELD_GROUP}" \
+    --user-name "${OOB_USER_5C}" >/dev/null 2>&1
+  aws iam delete-user --user-name "${OOB_USER_5C}" >/dev/null 2>&1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
   delete_role
+  # Phase 5c's role and group, by their fixed names, should state destroy
+  # have left them.
+  aws iam delete-role --role-name "${HELD_ROLE}" >/dev/null 2>&1
+  aws iam delete-group --group-name "${HELD_GROUP}" >/dev/null 2>&1
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   delete_path_managed_policy
   delete_path_roles
@@ -404,6 +429,75 @@ if [ "$(path_role_record physicalId)" != "${PATH_ROLE_NAME}" ] || [ "$(path_role
   exit 1
 fi
 echo "    ${PATH_ROLE_NAME} unchanged (RoleId ${PATH_ROLE_ID_P5}, nameGeneration 1)"
+
+# --- Phase 5c: a deploy's template removal refuses like a destroy (#6770) ---
+# The deploy drops HeldRole and HeldGroup from the template while an instance
+# profile and a user created outside the stack still hold them. Before #6770
+# the removal stripped both holders and the deploy succeeded; now the role and
+# group deletes refuse (CloudFormation's DeleteConflict) and leave them held.
+# Runs before Phase 5b, whose refused destroy still deletes every unheld
+# resource, HeldRole and HeldGroup included.
+echo "==> Phase 5c: a deploy removing a held role and group refuses, leaving the holders (issue #6770)"
+aws iam get-role --role-name "${HELD_ROLE}" >/dev/null \
+  || { echo "FAIL: ${HELD_ROLE} does not exist before Phase 5c (premise)" >&2; exit 1; }
+aws iam get-group --group-name "${HELD_GROUP}" >/dev/null \
+  || { echo "FAIL: ${HELD_GROUP} does not exist before Phase 5c (premise)" >&2; exit 1; }
+aws iam create-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" >/dev/null
+aws iam add-role-to-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" --role-name "${HELD_ROLE}"
+aws iam create-user --user-name "${OOB_USER_5C}" >/dev/null
+aws iam add-user-to-group --group-name "${HELD_GROUP}" --user-name "${OOB_USER_5C}"
+# IAM is eventually consistent: wait until both associations list, so the
+# deploy below meets them.
+for _ in $(seq 1 15); do
+  HELD_PROFILES="$(aws iam list-instance-profiles-for-role --role-name "${HELD_ROLE}" \
+    --query "length(InstanceProfiles[?InstanceProfileName=='${OOB_PROFILE_5C}'])" --output text)"
+  HELD_USERS="$(aws iam get-group --group-name "${HELD_GROUP}" \
+    --query "length(Users[?UserName=='${OOB_USER_5C}'])" --output text)"
+  [ "${HELD_PROFILES}" = "1" ] && [ "${HELD_USERS}" = "1" ] && break
+  sleep 2
+done
+if [ "${HELD_PROFILES}" != "1" ] || [ "${HELD_USERS}" != "1" ]; then
+  echo "FAIL: ${OOB_PROFILE_5C} / ${OOB_USER_5C} never listed as holding ${HELD_ROLE} / ${HELD_GROUP} (premise)" >&2
+  exit 1
+fi
+set +e
+REFUSE_5C_LOG="$(CDKD_TEST_DROP_HELD=true CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)"
+refuse_5c_rc=$?
+set -e
+REFUSE_5C_PLAIN="$(printf '%s' "${REFUSE_5C_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${refuse_5c_rc}" -eq 0 ]; then
+  echo "FAIL: the deploy removing ${HELD_ROLE} and ${HELD_GROUP} succeeded although out-of-stack holders held them (issue #6770)" >&2
+  exit 1
+fi
+NEEDLE_5C_ROLE="role ${HELD_ROLE} is still in instance profile(s) ${OOB_PROFILE_5C}, which this run did not delete"
+NEEDLE_5C_GROUP="group ${HELD_GROUP} still has user(s) ${OOB_USER_5C}, whose membership this run did not remove"
+for needle in "${NEEDLE_5C_ROLE}" "${NEEDLE_5C_GROUP}"; do
+  if ! grep -qF -- "${needle}" <<<"${REFUSE_5C_PLAIN}"; then
+    echo "FAIL: the refused deploy does not name the out-of-stack holder (expected: ${needle})" >&2
+    printf '%s\n' "${REFUSE_5C_PLAIN}" | tail -30 >&2
+    exit 1
+  fi
+done
+HELD_PROFILES="$(aws iam get-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" \
+  --query "length(InstanceProfile.Roles[?RoleName=='${HELD_ROLE}'])" --output text)"
+HELD_USERS="$(aws iam get-group --group-name "${HELD_GROUP}" \
+  --query "length(Users[?UserName=='${OOB_USER_5C}'])" --output text)"
+if [ "${HELD_PROFILES}" != "1" ] || [ "${HELD_USERS}" != "1" ]; then
+  echo "FAIL: the refused deploy stripped a holder (${OOB_PROFILE_5C} holds ${HELD_PROFILES} of ${HELD_ROLE}, ${HELD_GROUP} has ${HELD_USERS} of ${OOB_USER_5C}; expected 1 and 1; issue #6770)" >&2
+  exit 1
+fi
+echo "    OK: deploy refused, naming ${OOB_PROFILE_5C} and ${OOB_USER_5C}, which still hold the role and group"
+aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" --role-name "${HELD_ROLE}"
+aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE_5C}"
+aws iam remove-user-from-group --group-name "${HELD_GROUP}" --user-name "${OOB_USER_5C}"
+aws iam delete-user --user-name "${OOB_USER_5C}"
+# The holders gone, the same removal goes through.
+CDKD_TEST_DROP_HELD=true CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone "role ${HELD_ROLE} still exists after its removal deploy" aws iam get-role --role-name "${HELD_ROLE}"
+assert_gone "group ${HELD_GROUP} still exists after its removal deploy" aws iam get-group --group-name "${HELD_GROUP}"
+echo "    OK: with the holders gone, the removal deploy deleted ${HELD_ROLE} and ${HELD_GROUP}"
 
 # --- Phase 5b: an out-of-stack instance profile refuses the destroy (#6750)
 # CloudFormation's delete handler holds no iam:RemoveRoleFromInstanceProfile,
