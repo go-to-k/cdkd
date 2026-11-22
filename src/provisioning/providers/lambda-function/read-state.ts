@@ -7,7 +7,6 @@ import {
   GetRuntimeManagementConfigCommand,
   GetFunctionScalingConfigCommand,
   ResourceNotFoundException,
-  InvalidParameterValueException,
   CodeSigningConfigNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
@@ -17,29 +16,24 @@ import { LATEST_PUBLISHED, SEPARATELY_APPLIED_KEYS } from './shared.js';
 
 /**
  * go-to-k/cdkd#6759: whether a secondary setting read's failure says the
- * setting is ABSENT for this function, so the readback omits it: not set
- * (`ResourceNotFoundException`), or not supported by this function's shape
- * (`InvalidParameterValueException` -- AWS's answer for a setting the
- * function cannot carry, e.g. runtime management on a container image; the
- * write side refuses the same values, so no baseline can hold them). Any
- * other failure -- AccessDenied, throttling, a service error -- throws, so
- * `cdkd drift` reports the function not compared instead of comparing a
- * snapshot that silently lacks the key (which read as a removal).
+ * setting is NOT SET (`ResourceNotFoundException`), so the readback omits it.
+ * Any other failure -- AccessDenied, throttling, a service error, an
+ * `InvalidParameterValueException` (a request AWS refused, which proves
+ * nothing about the setting) -- throws, so `cdkd drift` reports the function
+ * not compared instead of comparing a snapshot that silently lacks the key
+ * (which read as a removal). Container images, whose runtime-management and
+ * code-signing reads AWS rejects, never reach those two reads.
  */
 function settingAbsent(error: unknown): boolean {
-  return (
-    error instanceof ResourceNotFoundException || error instanceof InvalidParameterValueException
-  );
+  return error instanceof ResourceNotFoundException;
 }
 
 /**
  * go-to-k/cdkd#5487: `readCurrentState`, except that a setting read by its
  * own call (concurrency, recursion, runtime management, code signing) is
- * read STRICTLY when it is unsettled: `readCurrentState` omits it when AWS
- * answers it absent or unsupported (`InvalidParameterValueException`), which
- * the engine would take as "not set". Here only a `ResourceNotFoundException`
- * on such a call means "not set"; any other failure throws (as
- * `readCurrentState` itself now does, go-to-k/cdkd#6759).
+ * read STRICTLY when it is unsettled. A `ResourceNotFoundException` on such a
+ * call means "not set"; any other failure throws (as `readCurrentState` itself
+ * now does, go-to-k/cdkd#6759).
  */
 export async function readUnsettled(
   this: LambdaFunctionProvider,
@@ -421,8 +415,7 @@ export async function readCurrentState(
           result['CodeSigningConfigArn'] = csResp.CodeSigningConfigArn;
         }
       } catch (csErr) {
-        // An attached config deleted since is not-found too; the readback
-        // omits it as before.
+        // The call's other not-found answer (modelled in its @throws).
         if (!settingAbsent(csErr) && !(csErr instanceof CodeSigningConfigNotFoundException)) {
           throw csErr;
         }

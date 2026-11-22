@@ -2,10 +2,9 @@
  * go-to-k/cdkd#6759: `LambdaFunctionProvider.readCurrentState` reads five
  * settings by their own calls. Each caught ANY failure and omitted its key,
  * so an AccessDenied or a throttle left the setting uncompared (or read as a
- * removal). Now only the answers that say the setting is absent --
- * `ResourceNotFoundException` (not set), `InvalidParameterValueException`
- * (not supported by this function), and for code signing
- * `CodeSigningConfigNotFoundException` -- omit the key; every other failure
+ * removal). Now only the not-found answers -- `ResourceNotFoundException`,
+ * and for code signing `CodeSigningConfigNotFoundException` -- omit the key;
+ * every other failure
  * rejects, which `cdkd drift` reports as `notCompared: readFailed`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
@@ -41,7 +40,6 @@ interface Site {
 
 const absentCommon: Array<[string, () => Error]> = [
   ['ResourceNotFoundException', () => modeled(ResourceNotFoundException)],
-  ['InvalidParameterValueException', () => modeled(InvalidParameterValueException)],
 ];
 
 const sites: Site[] = [
@@ -130,6 +128,8 @@ describe('Lambda setting sub-reads reach readFailed (go-to-k/cdkd#6759)', () => 
     it.each([
       ['AccessDeniedException', denied],
       ['TooManyRequestsException', () => modeled(TooManyRequestsException)],
+      // A refused request proves nothing about the setting.
+      ['InvalidParameterValueException', () => modeled(InvalidParameterValueException)],
     ] as Array<[string, () => Error]>)('rejects when the read fails with %s', async (name, make) => {
       stub(site.command, make());
       await expect(read(provider)).rejects.toMatchObject({ name });
