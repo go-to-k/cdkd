@@ -179,8 +179,8 @@ wait_cluster_terminated() {
   return 1
 }
 
-# go-to-k/cdkd#6806: the scaled group Phase 2c adds, by the ids this run
-# recorded, and the alarm names its policy had. A policy that outlived its
+# go-to-k/cdkd#6806: the cluster (recorded once Phase 1 names it) and the
+# scaled group Phase 2c adds, and the alarm names its policy had. A policy that outlived its
 # group leaves an Application Auto Scaling target and CloudWatch alarm(s).
 SCALED_CID=""
 SCALED_GID=""
@@ -213,23 +213,35 @@ alarms_remaining() {
   done <<<"$1"
   return 0
 }
-sweep_scaled_group_leftovers() { (
+# Cluster-scoped, so a Phase 2c deploy that failed after creating the group
+# (no group id recorded) is swept too: every elasticmapreduce scalable target
+# of the cluster, and every alarm whose action names it. Only the scaled group
+# carries a policy in this fixture.
+sweep_cluster_scaling_leftovers() { ( # usage: sweep_cluster_scaling_leftovers <cluster id>
   set +eu
-  case "${SCALED_CID}/${SCALED_GID}" in
-    j-?*/ig-?*) ;;
-    /) exit 0 ;;
-    *) echo "    WARN: teardown sweep refused a scaling scope outside j-*/ig-*: '${SCALED_CID}/${SCALED_GID}'" >&2
+  case "$1" in
+    j-?*) ;;
+    '') exit 0 ;;
+    *) echo "    WARN: teardown sweep refused a scaling scope outside j-*: '$1'" >&2
        exit 0 ;;
   esac
-  aws application-autoscaling deregister-scalable-target --service-namespace elasticmapreduce \
-    --resource-id "instancegroup/${SCALED_CID}/${SCALED_GID}" \
-    --scalable-dimension elasticmapreduce:instancegroup:InstanceCount \
-    --region "${REGION}" >/dev/null 2>&1
-  names="$(group_alarm_names "${SCALED_CID}" "${SCALED_GID}")"
-  printf '%s\n%s\n' "${names}" "${SCALED_ALARMS}" | sed '/^$/d' | sort -u | while IFS= read -r name || [ -n "${name}" ]; do
-    echo "    deleting leftover alarm ${name}"
-    aws cloudwatch delete-alarms --alarm-names "${name}" --region "${REGION}" >/dev/null 2>&1
+  targets="$(aws application-autoscaling describe-scalable-targets --service-namespace elasticmapreduce \
+    --region "${REGION}" --query "ScalableTargets[?starts_with(ResourceId, 'instancegroup/$1/')].ResourceId" \
+    --output text </dev/null)"
+  for rid in ${targets}; do
+    echo "    deregistering leftover scalable target ${rid}"
+    aws application-autoscaling deregister-scalable-target --service-namespace elasticmapreduce \
+      --resource-id "${rid}" --scalable-dimension elasticmapreduce:instancegroup:InstanceCount \
+      --region "${REGION}" >/dev/null 2>&1
   done
+  names="$(aws cloudwatch describe-alarms --region "${REGION}" \
+    --query "MetricAlarms[?contains(join(',', AlarmActions || \`[]\`), '/$1/')].AlarmName" \
+    --output text </dev/null)"
+  printf '%s\n%s\n' "${names}" "${SCALED_ALARMS}" | tr '\t' '\n' | sed '/^$/d' | sort -u \
+    | while IFS= read -r name || [ -n "${name}" ]; do
+      echo "    deleting leftover alarm ${name}"
+      aws cloudwatch delete-alarms --alarm-names "${name}" --region "${REGION}" >/dev/null 2>&1
+    done
 ) }
 
 cleanup() {
@@ -248,8 +260,9 @@ cleanup() {
       --region "${REGION}" >/dev/null 2>&1
     aws emr terminate-clusters --cluster-ids "${cid}" --region "${REGION}" >/dev/null 2>&1
     wait_cluster_terminated "${cid}"
+    [ "${cid}" = "${SCALED_CID}" ] || sweep_cluster_scaling_leftovers "${cid}"
   done
-  sweep_scaled_group_leftovers
+  sweep_cluster_scaling_leftovers "${SCALED_CID}"
   # Best-effort teardown of the fixture VPC (found via the CDK Name tag).
   for vpcid in $(aws ec2 describe-vpcs --region "${REGION}" \
     --filters "Name=tag:Name,Values=${STACK}/Vpc" \
@@ -345,6 +358,7 @@ if [ -z "${CID_P1}" ] || [ -z "${GID_P1}" ]; then
   exit 1
 fi
 echo "    cluster id: ${CID_P1}, task group id: ${GID_P1}"
+SCALED_CID="${CID_P1}"
 
 # Ref and Fn::GetAtt Id must both equal the AWS instance group id.
 if [ "${GID_P1}" != "${GID_ATTR_P1}" ]; then
@@ -540,7 +554,7 @@ CDKD_TEST_UPDATE=true,scaled-group node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 SCALED_GID="$(state_json | jq -r '.state.resources.ScaledTaskGroup.physicalId // empty')"
 case "${SCALED_GID}" in
-  ig-?*) SCALED_CID="${CID_P1}" ;;
+  ig-?*) ;;
   *) echo "FAIL [phase 2c]: no ScaledTaskGroup instance group id in state after its deploy (got '${SCALED_GID}')" >&2
      exit 1 ;;
 esac
@@ -553,6 +567,11 @@ POLICY_STATE=""
 for _ in $(seq 1 30); do
   POLICY_STATE="$(scaled_policy_state)"
   [ "${POLICY_STATE}" = "ATTACHED" ] && break
+  case "${POLICY_STATE}" in
+    FAILED|DETACHED|DETACHING|"<no group>")
+      echo "FAIL [phase 2c]: the scaled group's AutoScalingPolicy is '${POLICY_STATE}', expected it to reach ATTACHED" >&2
+      exit 1 ;;
+  esac
   sleep 10
 done
 if [ "${POLICY_STATE}" != "ATTACHED" ]; then
@@ -578,10 +597,15 @@ echo "==> Phase 2c: redeploy without the scaled group (cdkd deletes it, the clus
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 # The delete ran: the group was scaled to 0 (EMR keeps the empty group).
-SCALED_REQUESTED="$(list_instance_groups_json "${CID_P1}" \
-  | jq -r --arg gid "${SCALED_GID}" '[.[] | select(.Id == $gid) | .RequestedInstanceCount] | first // "<no group>"')"
+SCALED_REQUESTED=""
+for _ in $(seq 1 12); do
+  SCALED_REQUESTED="$(list_instance_groups_json "${CID_P1}" \
+    | jq -r --arg gid "${SCALED_GID}" '[.[] | select(.Id == $gid) | .RequestedInstanceCount] | first // "<no group>"')"
+  [ "${SCALED_REQUESTED}" = "0" ] && break
+  sleep 10
+done
 if [ "${SCALED_REQUESTED}" != "0" ]; then
-  echo "FAIL [phase 2c]: the scaled group requests '${SCALED_REQUESTED}' instances after its delete, expected 0 (the delete did not run)" >&2
+  echo "FAIL [phase 2c]: the scaled group requests '${SCALED_REQUESTED}' instances 2 minutes after its delete, expected 0 (the delete did not run, or a policy that outlived it scaled the group back out)" >&2
   exit 1
 fi
 # Policy removal is asynchronous (DETACHING, then DETACHED): poll.
