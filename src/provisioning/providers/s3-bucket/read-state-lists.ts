@@ -327,7 +327,7 @@ export async function readAbacStatus(
 }
 
 /** S3's bucket-gone answer, as a typed exception or by name. */
-function isBucketGone(err: unknown): boolean {
+export function isBucketGone(err: unknown): boolean {
   return err instanceof NoSuchBucket || (err as { name?: string } | null)?.name === 'NoSuchBucket';
 }
 export async function readAccelerate(

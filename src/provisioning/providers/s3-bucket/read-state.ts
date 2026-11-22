@@ -147,8 +147,9 @@ export async function readCurrentState(
     this.readAnalyticsList(physicalId),
     this.readIntelligentTieringList(physicalId),
     this.readInventoryList(physicalId),
-    // Strict (go-to-k/cdkd#6759): a denied or throttled read fails the drift
-    // read instead of letting the declared value stand in for it.
+    // Strict (go-to-k/cdkd#6759): a denied or throttled read rejects this read
+    // for every caller (drift reports readFailed; a capture records no
+    // baseline) instead of letting the declared value stand in for it.
     this.readAbacStatus(physicalId, true),
     this.readMetadataForDrift(physicalId, true),
   ]);
@@ -175,7 +176,9 @@ export async function readCurrentState(
     IntelligentTieringConfigurations: intelligentTier,
     InventoryConfigurations: inventory,
     // Only while away from the default, so a baseline an older cdkd captured
-    // stays clean: `getDriftAbsentMeansDefaultKeys` still compares both.
+    // stays clean: `getDriftAbsentMeansDefaultKeys` still compares both. The
+    // declared value stands in below only when the bucket was gone under the
+    // read (`NoSuchBucket`, the strict reads' one tolerated failure).
     ...(abac === ABAC_ENABLED || _properties?.['AbacStatus'] !== undefined
       ? { AbacStatus: abac ?? _properties?.['AbacStatus'] }
       : {}),

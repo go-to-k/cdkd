@@ -7,7 +7,6 @@ import {
   GetBucketMetadataConfigurationCommand,
   type MetadataConfiguration,
   type MetadataConfigurationResult,
-  NoSuchBucket,
   PutBucketAbacCommand,
   PutBucketCorsCommand,
   PutBucketTaggingCommand,
@@ -41,6 +40,7 @@ import {
 } from '@aws-sdk/client-s3-control';
 import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { caughtErrorName } from './shared.js';
+import { isBucketGone } from './read-state-lists.js';
 import { clientDefaultsFor } from '../../../utils/ambient-client-defaults.js';
 import { describeAwsStatusReason } from '../../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../../../deployment/intrinsic-function-resolver.js';
@@ -602,8 +602,9 @@ export async function readMetadataConfigurationResult(
  * The live S3 Metadata configuration (`undefined` when none), or `'unread'`
  * when the read cannot answer. `strict` follows {@link readAbacStatus}: on the
  * drift read only a bucket gone under the read (`NoSuchBucket`) is
- * `'unread'`, and any other failure throws (go-to-k/cdkd#6759). It no longer
- * hands `readCurrentState` the DECLARED configuration to echo as the live one.
+ * `'unread'`, and any other failure throws (go-to-k/cdkd#6759), so
+ * `readCurrentState` echoes the DECLARED configuration only for a bucket gone
+ * under the read (where its sibling reads fail too).
  * The create re-adoption path (not strict) still reads every failure as
  * `'unread'` and converges through the create.
  */
@@ -615,13 +616,7 @@ export async function readMetadataForDrift(
   try {
     return await this.readMetadataConfigurationResult(bucket);
   } catch (err) {
-    if (
-      strict &&
-      !(err instanceof NoSuchBucket) &&
-      (err as { name?: string }).name !== 'NoSuchBucket'
-    ) {
-      throw err;
-    }
+    if (strict && !isBucketGone(err)) throw err;
     this.logger.debug(
       safeMsg`Could not read S3 Metadata of ${this.shown(bucket)} (${caughtErrorName(err)})`
     );
