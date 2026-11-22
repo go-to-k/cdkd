@@ -727,6 +727,35 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
       ).rejects.toBe(error);
     });
 
+    it('a DELIVERY group keeps both placeholders on the Standard-only ValidationException from both calls', async () => {
+      for (const [name, answer] of Object.entries(group('DELIVERY'))) answers.set(name, answer);
+      answers.set('GetDataProtectionPolicyCommand', standardOnly());
+      answers.set('DescribeIndexPoliciesCommand', standardOnly());
+      const read = bag(
+        await new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      );
+      expect(read['DataProtectionPolicy']).toBe('');
+      expect(read['FieldIndexPolicies']).toEqual([]);
+    });
+
+    it('a DELIVERY group rejects on another ValidationException', async () => {
+      for (const [name, answer] of Object.entries(group('DELIVERY'))) answers.set(name, answer);
+      const other = named('ValidationException', 'Invalid log group name');
+      answers.set('GetDataProtectionPolicyCommand', other);
+      await expect(
+        new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      ).rejects.toBe(other);
+    });
+
+    it('a STANDARD group rejects on the Standard-only ValidationException from GetDataProtectionPolicy', async () => {
+      for (const [name, answer] of Object.entries(group('STANDARD'))) answers.set(name, answer);
+      const error = standardOnly();
+      answers.set('GetDataProtectionPolicyCommand', error);
+      await expect(
+        new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      ).rejects.toBe(error);
+    });
+
     it('an INFREQUENT_ACCESS group still rejects on a failed GetDataProtectionPolicy', async () => {
       for (const [name, answer] of Object.entries(group('INFREQUENT_ACCESS'))) {
         answers.set(name, answer);

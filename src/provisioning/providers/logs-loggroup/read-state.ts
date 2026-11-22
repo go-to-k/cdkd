@@ -44,6 +44,19 @@ export async function getAttribute(
   return this.buildArn(physicalId);
 }
 
+/**
+ * CloudWatch Logs refusing a STANDARD-class-only call on a log group of
+ * another class, by name and message.
+ */
+function isStandardClassOnly(err: unknown): boolean {
+  const e = err as { name?: unknown; message?: unknown } | null;
+  return (
+    e?.name === 'ValidationException' &&
+    typeof e.message === 'string' &&
+    e.message.includes('only supported on the Standard log class')
+  );
+}
+
 /** CloudWatch Logs' not-found code ("The specified resource does not exist"), by class or name. */
 function isResourceNotFound(err: unknown): boolean {
   return (
@@ -191,15 +204,27 @@ export async function readCurrentState(
     // the `''` placeholder (issue #6759), which would read as "no policy". On
     // the post-write capture a transient failure is re-read first, and the
     // error throws only when no re-read answered.
+    //
+    // A log group that is not STANDARD class refuses both this read and
+    // DescribeIndexPolicies below with a `ValidationException` "This operation
+    // is only supported on the Standard log class." (measured: DELIVERY
+    // refuses both, INFREQUENT_ACCESS refuses DescribeIndexPolicies only).
+    // That answer keeps today's placeholder.
+    const notStandard = found.logGroupClass !== undefined && found.logGroupClass !== 'STANDARD';
+    const standardOnly = (err: unknown): boolean => notStandard && isStandardClassOnly(err);
     let dpp: MemberRead<unknown>;
     let dppError: unknown;
     let dppFailed = false;
     try {
       dpp = await readDataProtectionPolicy.call(this, physicalId);
     } catch (err) {
-      dpp = memberReadFailure(err);
-      dppError = err;
-      dppFailed = true;
+      if (standardOnly(err)) {
+        dpp = 'refused';
+      } else {
+        dpp = memberReadFailure(err);
+        dppError = err;
+        dppFailed = true;
+      }
     }
     const declared =
       context?.afterOwnWrite === true
@@ -227,11 +252,8 @@ export async function readCurrentState(
     // already-resolved object form. CFn shape is an array of policy
     // documents (strings or objects). Always-emit [] for console-
     // side ADD detection. `ResourceNotFoundException` keeps that placeholder,
-    // and so does the `ValidationException` a log group of another class
-    // answers (measured on INFREQUENT_ACCESS: "This operation is only
-    // supported on the Standard log class."); any other failure throws
-    // (issue #6759) rather than read as "none".
-    const notStandard = found.logGroupClass !== undefined && found.logGroupClass !== 'STANDARD';
+    // and so does the Standard-class-only refusal above; any other failure
+    // throws (issue #6759) rather than read as "none".
     let fieldIndexPolicies: unknown[] = [];
     try {
       const idxResp = await this.logsClient.send(
@@ -249,9 +271,7 @@ export async function readCurrentState(
         })
         .filter((p): p is unknown => p !== undefined);
     } catch (err) {
-      const unsupportedClass =
-        notStandard && (err as { name?: unknown } | null)?.name === 'ValidationException';
-      if (!isResourceNotFound(err) && !unsupportedClass) throw err;
+      if (!isResourceNotFound(err) && !standardOnly(err)) throw err;
     }
     result['FieldIndexPolicies'] = fieldIndexPolicies;
 
