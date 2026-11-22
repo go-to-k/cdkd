@@ -566,8 +566,8 @@ export function referenceProvenanceToPersist(
  * value went out in an earlier run, at a version nobody recorded), and not an
  * SDK write (a provider may leave an unchanged reference unsent).
  */
-function sentWriteOnlySecretTokens(
-  engine: DeployEngine,
+export function sentWriteOnlySecretTokens(
+  engine: Pick<DeployEngine, 'resumedCreates'>,
   logicalId: string,
   scrubbed: ResourceState
 ): ReadonlySet<string> | undefined {

@@ -550,10 +550,16 @@ export function getWriteOnlyKeysKeptWhenOmitted(
  * Every key {@link getWriteOnlyKeysKeptWhenOmitted} can return for
  * `resourceType`, whatever its siblings: the keys whose `{{resolve:...}}`
  * tokens carry a send attestation and are written ahead of a rotated send
- * (go-to-k/cdkd#6824).
+ * (go-to-k/cdkd#6824). Not a key refused on update
+ * ({@link isWriteOnlyKeyRefusedOnUpdate}): a rotated value there is never
+ * sent, so no write could attest the version AWS holds.
  */
 export function writeOnlyKeysKeptWhenOmittedCandidates(resourceType: string): ReadonlySet<string> {
-  return new Set(WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType)?.keys() ?? []);
+  return new Set(
+    [...(WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType)?.keys() ?? [])].filter(
+      (key) => !isWriteOnlyKeyRefusedOnUpdate(resourceType, key)
+    )
+  );
 }
 
 /**

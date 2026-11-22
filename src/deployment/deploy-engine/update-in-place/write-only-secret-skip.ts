@@ -22,11 +22,10 @@ import { CdkdError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../retryable-errors.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { asIsMessage, safeMsg } from '../../../utils/display-safe.js';
-import { createSecretMasker } from '../../secret-redaction.js';
 import { writeOnlyKeysKeptWhenOmittedCandidates } from '../../../provisioning/write-only-properties.js';
 import { onlySecretReferencesDiffer } from '../../../provisioning/secret-reference-immutable.js';
 import type { MaskerFn } from '../../../provisioning/masked-retry-logger.js';
-import { carriesSecretMask } from '../../secret-redaction.js';
+import { carriesSecretMask, createSecretMasker } from '../../secret-redaction.js';
 import type { RecordedSecretValues } from '../../secret-redaction/pairs.js';
 import { passProvenanceFor } from '../../secret-redaction/reference-provenance.js';
 import {

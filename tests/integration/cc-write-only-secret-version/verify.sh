@@ -20,10 +20,14 @@
 #      fails (an aws:-prefixed tag): the record written AHEAD names no version.
 #      The journal is removed (a killed deploy writes none), AWSCURRENT moved
 #      back to V3, Tags-only deploy: re-sent; login works.
-#   7  a record as an older cdkd wrote it (the attestation stripped from
-#      state.json): the first Tags-only deploy re-sends, the next leaves it out.
-#   8  CloudTrail anchor: phase 3's re-send is recorded, phases 2 and 7b's
-#      windows hold no password call.
+#   5  (also: AWSCURRENT moved to the recorded version logs in, so the
+#      rollback restored exactly that password.)
+#   7  a record as a v12-v17 cdkd wrote it (the attestation stripped) and as a
+#      v11 cdkd wrote it (no referenceProvenance): each first Tags-only deploy
+#      re-sends, the next leaves it out.
+#   9  a final rotation and re-send, the CloudTrail anchor.
+#   8  CloudTrail (checked last): phases 3, 7a, 7c and 9 re-sent, phases 2
+#      and 7b's windows hold no password call.
 #
 # Secret values are generated and compared inside node and never printed.
 
@@ -160,14 +164,28 @@ expect_sent() { # expect_sent <log name>
   fi
   echo "    OK: $1 re-sent the password"
 }
-recorded_versions() { # the state record's versions for the password token ("" when none)
-  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+state_body() { # the state.json body; returns 1 on a read failure
+  local body
+  body="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")" || return 1
+  printf '%s' "${body}"
+}
+recorded_versions() { # the state record's versions for the password token ("" when none); exits on a read failure
+  local body
+  body="$(state_body)" || { echo "FAIL: could not read ${STATE_KEY}" >&2; exit 1; }
+  printf '%s' "${body}" \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s).resources?.Ns?.referenceProvenance??{};const e=Object.entries(p).find(([t])=>t.includes("SecretString:password"));process.stdout.write(e&&Array.isArray(e[1].versions)?e[1].versions.join(","):"")})'
+}
+expect_recorded() { # expect_recorded <description> <expected versions ("" for none)>
+  local got
+  got="$(recorded_versions)" || exit 1
+  [ "${got}" = "$2" ] || { echo "FAIL: $1 (recorded: '${got}')" >&2; exit 1; }
+  echo "    OK: $1"
 }
 no_plaintext_in() { # no_plaintext_in <log name>: the secret's current value never reaches a log
   local raw
   raw="$(aws secretsmanager get-secret-value --secret-id "${SECRET_ARN}" --region "${REGION}" --query SecretString --output text)" || return 1
-  if node -e 'const p=JSON.parse(process.argv[1]).password;process.exit(require("fs").readFileSync(process.argv[2],"utf8").includes(p)?0:1)' "${raw}" "${LOG_DIR}/$1.log"; then
+  # The value reaches node on stdin, never as an argument (argv is visible to `ps`).
+  if printf '%s' "${raw}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s).password;process.exit(require("fs").readFileSync(process.argv[1],"utf8").includes(p)?0:1)})' "${LOG_DIR}/$1.log"; then
     echo "FAIL: $1's log carries the secret's plaintext" >&2
     exit 1
   fi
@@ -186,9 +204,17 @@ cleanup() {
   [ -f "${LOCAL_DIST}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   if aws redshift-serverless get-workgroup --workgroup-name "${WG_NAME}" --region "${REGION}" >/dev/null 2>&1; then
     aws redshift-serverless delete-workgroup --workgroup-name "${WG_NAME}" --region "${REGION}" >/dev/null 2>&1
+    # Not gone_probe: it exits on an undetermined probe, which would skip the
+    # rest of this teardown. Report it and carry on instead.
+    local wg_out
     for _ in $(seq 1 60); do
-      gone_probe aws redshift-serverless get-workgroup --workgroup-name "${WG_NAME}" --region "${REGION}" && break
-      sleep 10
+      if wg_out="$(aws redshift-serverless get-workgroup --workgroup-name "${WG_NAME}" --region "${REGION}" 2>&1)"; then
+        sleep 10
+        continue
+      fi
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${wg_out}" \
+        || echo "WARN: cleanup: workgroup ${WG_NAME} probe undetermined: ${wg_out}" >&2
+      break
     done
   fi
   if aws redshift-serverless get-namespace --namespace-name "${NS_NAME}" --region "${REGION}" >/dev/null 2>&1; then
@@ -225,8 +251,7 @@ SECRET_ARN="$(state_output SecretArn)"
 V1="$(current_version)"
 [ -n "${V1}" ] || { echo "FAIL: no single AWSCURRENT version" >&2; exit 1; }
 expect_login "login with the generated password"
-[ "$(recorded_versions)" = "${V1}" ] || { echo "FAIL: the record does not name the sent version" >&2; exit 1; }
-echo "    OK: the record names the version it sent"
+expect_recorded "the record names the version it sent" "${V1}"
 
 echo "==> Phase 2: Tags-only deploy -- the unchanged password is left out"
 P2_START="$(date -u +%s)"
@@ -242,7 +267,7 @@ expect_deploy p3 three
 P3_END="$(date -u +%s)"
 expect_sent p3
 expect_login "login with the rotated password"
-[ "$(recorded_versions)" = "${V2}" ] || { echo "FAIL: the record does not name the rotated version" >&2; exit 1; }
+expect_recorded "the record names the rotated version" "${V2}"
 
 echo "==> Phase 4: AWSCURRENT moved back to the old version -- re-sent"
 stage_back "${V1}"
@@ -258,6 +283,10 @@ if deploy p5 five after; then
 fi
 echo "    OK: the deploy failed"
 expect_login_refused "the rollback restored the recorded (pre-rotation) password, so the current one is refused"
+# ...and positively: the restored password IS the recorded version's.
+stage_back "${V1}"
+expect_login "login with the recorded version after the rollback"
+stage_back "${V3}"
 if ! gone_probe aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}"; then
   echo "FAIL: failing queue ${QUEUE_NAME} exists -- the invalid CreateQueue should have been rejected" >&2
   exit 1
@@ -277,10 +306,19 @@ echo "    OK: the deploy failed"
 # The premise: the failed update DID apply the rotated password. Without it
 # this phase proves nothing about a partial apply.
 expect_login "premise: the failed update applied the rotated password"
-[ -z "$(recorded_versions)" ] || { echo "FAIL: the record still names a version after a failed rotated send (no write-ahead)" >&2; exit 1; }
-echo "    OK: the record written ahead names no version"
+expect_recorded "the record written ahead names no version" ""
+BODY="$(state_body)" || { echo "FAIL: could not read ${STATE_KEY}" >&2; exit 1; }
+if printf '%s' "${BODY}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const u=JSON.parse(s).resources?.Ns?.unsettledProperties??[];process.exit(u.includes("AdminUserPassword")?0:1)})'; then
+  echo "FAIL: the failed update left AdminUserPassword unsettled, so the unsettled arm, not the write-ahead, would re-send it" >&2
+  exit 1
+fi
+echo "    OK: AdminUserPassword is not unsettled (the write-ahead alone guards the next deploy)"
 # A killed deploy writes no journal; the record written ahead is then the only guard.
+aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --region "${REGION}" >/dev/null \
+  || { echo "FAIL: the failed deploy wrote no rollback journal" >&2; exit 1; }
 aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" --region "${REGION}" >/dev/null
+assert_gone "rollback journal ${JOURNAL_KEY} still exists after its removal" \
+  aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --region "${REGION}"
 stage_back "${V3_NOW}"
 expect_deploy p6b eight
 expect_sent p6b
@@ -290,30 +328,63 @@ expect_login "login at the moved-back version after the partial apply"
 echo "==> Phase 7: a record an older cdkd wrote (no attestation) -- the first deploy re-sends"
 expect_deploy p7 nine
 expect_skipped p7
-aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const st=JSON.parse(s);let n=0;for(const e of Object.values(st.resources?.Ns?.referenceProvenance??{})){if(e&&e.versionsSent){delete e.versionsSent;n++}}if(n===0){console.error("FAIL: no attestation to strip");process.exit(1)}process.stdout.write(JSON.stringify(st))})' \
-  >"${LOG_DIR}/legacy-state.json"
-aws s3 cp "${LOG_DIR}/legacy-state.json" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+# rewrite_state <node expression over st>: edit state.json in place (an older binary's shape).
+rewrite_state() {
+  local body
+  body="$(state_body)" || { echo "FAIL: could not read ${STATE_KEY}" >&2; exit 1; }
+  printf '%s' "${body}" \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const st=JSON.parse(s);const n=new Function("st",process.argv[1])(st);if(!n){console.error("FAIL: nothing to rewrite");process.exit(1)}process.stdout.write(JSON.stringify(st))})' "$1" \
+    >"${LOG_DIR}/legacy-state.json"
+  aws s3 cp "${LOG_DIR}/legacy-state.json" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
+}
+# 7a: a plain singleton (a v12-v17 binary's write): the attestation stripped.
+rewrite_state 'let n=0;for(const e of Object.values(st.resources?.Ns?.referenceProvenance??{})){if(e&&e.versionsSent){delete e.versionsSent;n++}}st.version=17;return n'
+P7A_START="$(date -u +%s)"
 expect_deploy p7a ten
+P7A_END="$(date -u +%s)"
 expect_sent p7a
 P7B_START="$(date -u +%s)"
 expect_deploy p7b eleven
 P7B_END="$(date -u +%s)"
 expect_skipped p7b
+# 7c: a v11 record (no referenceProvenance at all). The version label stays
+# what it is: every reader keys on the FIELD (absent = the v11 path), never on
+# `version`, so the record body is exactly what a v11 binary left.
+rewrite_state 'const r=st.resources?.Ns;if(!r||r.referenceProvenance===undefined)return 0;delete r.referenceProvenance;st.version=17;return 1'
+P7C_START="$(date -u +%s)"
+expect_deploy p7c twelve
+P7C_END="$(date -u +%s)"
+expect_sent p7c
+expect_deploy p7d thirteen
+expect_skipped p7d
 expect_login "login after the legacy-record deploys"
 
-for log in p1 p2 p3 p4 p5 p5b p6 p6b p7 p7a p7b; do no_plaintext_in "${log}"; done
+echo "==> Phase 9: a final rotation -- its re-send is the CloudTrail anchor (it lands after every window below)"
+rotate >/dev/null
+P9_START="$(date -u +%s)"
+expect_deploy p9 fourteen
+P9_END="$(date -u +%s)"
+expect_sent p9
+expect_login "login after the final rotation"
+
+for log in p1 p2 p3 p4 p5 p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
 echo "    OK: no log carries the secret's current plaintext"
 
-echo "==> Phase 8: CloudTrail -- the re-send is recorded, the left-out windows hold none"
-P3_CALLS=0
+echo "==> Phase 8: CloudTrail -- re-sends recorded, the left-out windows hold none"
+# The LAST re-send is the anchor: once it is delivered, every earlier window is.
+P9_CALLS=0
 for _ in $(seq 1 40); do
-  P3_CALLS="$(password_calls "${P3_START}" "${P3_END}")"
-  [ "${P3_CALLS}" -ge 1 ] && break
+  P9_CALLS="$(password_calls "${P9_START}" "${P9_END}")"
+  [ "${P9_CALLS}" -ge 1 ] && break
   sleep 30
 done
-[ "${P3_CALLS}" -ge 1 ] || { echo "FAIL: CloudTrail never recorded phase 3's password re-send (anchor)" >&2; exit 1; }
-echo "    OK: phase 3's re-send is in CloudTrail (${P3_CALLS})"
+[ "${P9_CALLS}" -ge 1 ] || { echo "FAIL: CloudTrail never recorded phase 9's password re-send (anchor)" >&2; exit 1; }
+echo "    OK: phase 9's re-send is in CloudTrail (${P9_CALLS})"
+for w in "3 ${P3_START} ${P3_END}" "7a ${P7A_START} ${P7A_END}" "7c ${P7C_START} ${P7C_END}"; do
+  set -- ${w}
+  [ "$(password_calls "$2" "$3")" -ge 1 ] || { echo "FAIL: phase $1 re-sent no password in CloudTrail" >&2; exit 1; }
+  echo "    OK: phase $1's re-send is in CloudTrail"
+done
 [ "$(password_calls "${P2_START}" "${P2_END}")" = "0" ] || { echo "FAIL: phase 2 sent the password" >&2; exit 1; }
 [ "$(password_calls "${P7B_START}" "${P7B_END}")" = "0" ] || { echo "FAIL: phase 7b sent the password" >&2; exit 1; }
 echo "    OK: no password call in the left-out windows"

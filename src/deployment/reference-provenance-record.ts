@@ -398,7 +398,15 @@ export function provenanceForWrittenRecord(args: {
     const pass = passProvenanceFor(secrets, token);
     if (kept === undefined || !kept.has(token)) {
       const entry = persistable(token, pass);
-      if (attest?.has(token) === true && entry.versions?.length === 1) entry.versionsSent = true;
+      if (
+        attest?.has(token) === true &&
+        entry.versions?.length === 1 &&
+        entry.region !== undefined
+      ) {
+        // Region-less, the skip could never take it: stamped, every update
+        // would pay a write-ahead save for nothing.
+        entry.versionsSent = true;
+      }
       out[token] = entry;
       continue;
     }

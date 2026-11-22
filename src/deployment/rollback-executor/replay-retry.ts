@@ -30,6 +30,7 @@ import {
 import { type RollbackExecutorContext } from './types.js';
 import { keepRecordedIdentity } from '../recorded-identity-attributes.js';
 import { safe } from './messages.js';
+import { withoutVersionAttestation } from '../reference-provenance-record.js';
 
 /**
  * Retry schedule for a re-create that must wait out a name-release delay:
@@ -325,8 +326,13 @@ export function recordAfterRollbackUpdate(
   /** go-to-k/cdkd#6655: told when the update answered another identity id than the recorded one (kept). */
   onDiffering?: (attribute: string) => void
 ): ResourceState {
-  return withoutNoEchoValueMacs(
-    withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result, onDiffering))
+  // go-to-k/cdkd#6824: a restore whose pin is unreadable sends the current
+  // secret version, and a journal an older binary wrote may carry the send
+  // attestation: the restored record never vouches for a sent version.
+  return withoutVersionAttestation(
+    withoutNoEchoValueMacs(
+      withoutUnsettledProperties(recordAfterRollbackUpdateUnsettled(restored, result, onDiffering))
+    )
   );
 }
 

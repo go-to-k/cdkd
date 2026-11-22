@@ -3,6 +3,7 @@ import type { S3Client } from '@aws-sdk/client-s3';
 import { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import {
   STATE_SCHEMA_VERSION_CURRENT,
+  STATE_SCHEMA_VERSION_WITH_NOECHO_MACS,
   STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS,
   STATE_SCHEMA_VERSIONS_READABLE,
   stateSchemaVersionFor,
@@ -110,11 +111,11 @@ describe('State schema v17 — conditional on noEchoValueMacs (go-to-k/cdkd#6146
     return (JSON.parse(body!) as StackState).version;
   };
 
-  it('v17 is the current version, and every version 1..17 is readable', () => {
-    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(17);
+  it('v17 is the MAC version (v18, go-to-k/cdkd#6824, is current), and every version 1..17 is readable', () => {
+    expect(STATE_SCHEMA_VERSION_WITH_NOECHO_MACS).toBe(17);
+    expect(STATE_SCHEMA_VERSION_CURRENT).toBe(18);
     expect(STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS).toBe(16);
     for (let v = 1; v <= 17; v++) expect(STATE_SCHEMA_VERSIONS_READABLE).toContain(v);
-    expect(STATE_SCHEMA_VERSIONS_READABLE).not.toContain(18);
   });
 
   it('a state with no MAC is saved as 16, so an older binary still reads it', async () => {
@@ -155,11 +156,11 @@ describe('State schema v17 — conditional on noEchoValueMacs (go-to-k/cdkd#6146
     expect(read.resources['R']?.noEchoValueMacs).toEqual({ Value: { Token: MAC } });
   });
 
-  it('refuses version 18 with the "Upgrade cdkd" error, as a v16 binary refuses 17', async () => {
-    serve(JSON.stringify({ version: 18, stackName: 'S', resources: {}, outputs: {}, lastModified: 0 }));
+  it('refuses version 19 with the "Upgrade cdkd" error, as a v16 binary refuses 17', async () => {
+    serve(JSON.stringify({ version: 19, stackName: 'S', resources: {}, outputs: {}, lastModified: 0 }));
     const caught = await backend.getState('S', 'us-east-1').catch((e: unknown) => e);
     expect(caught).toBeInstanceOf(StateError);
-    expect((caught as Error).message).toMatch(/Unsupported state schema version 18/);
+    expect((caught as Error).message).toMatch(/Unsupported state schema version 19/);
     expect((caught as Error).message).toMatch(/Upgrade cdkd/);
   });
 });

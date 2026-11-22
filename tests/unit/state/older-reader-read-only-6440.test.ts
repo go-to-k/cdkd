@@ -87,20 +87,20 @@ describe('classifyStateRecordAccess (go-to-k/cdkd#6440)', () => {
   });
 
   it.each([
-    [18, 17],
-    [19, 16],
+    [19, 17],
+    [20, 16],
     [40, 1],
   ])('version %s naming readable minReaderVersion %s is read-only', (version, min) => {
     expect(classifyStateRecordAccess(version, min)).toEqual({ kind: 'read-only', version });
   });
 
   it.each([
-    ['no minReaderVersion', 18, undefined],
-    ['a minReaderVersion this binary does not read', 19, 18],
-    ['a string minReaderVersion', 18, '17'],
-    ['a zero minReaderVersion', 18, 0],
-    ['a non-integer version', 18.5, 17],
-    ['a string version', '18', 17],
+    ['no minReaderVersion', 19, undefined],
+    ['a minReaderVersion this binary does not read', 20, 19],
+    ['a string minReaderVersion', 19, '17'],
+    ['a zero minReaderVersion', 19, 0],
+    ['a non-integer version', 19.5, 17],
+    ['a string version', '19', 17],
     ['a null version', null, 17],
     ['a version past a safe integer', 2 ** 53, 17],
     ['a version below 1', 0, 1],
@@ -166,7 +166,7 @@ describe('S3StateBackend with a newer-but-readable record (go-to-k/cdkd#6440)', 
   it('a newer record naming no readable minReaderVersion is refused even read-only, as today', async () => {
     for (const body of [
       newerRecord({ minReaderVersion: undefined }),
-      newerRecord({ minReaderVersion: 18 }),
+      newerRecord({ minReaderVersion: 19 }),
     ]) {
       serve(JSON.stringify(body));
       const caught = await backend

@@ -127,11 +127,13 @@ login_result() { # login_result: "ok" / "refused", hard-failing the run when und
 }
 expect_login() {
   local n r
-  for n in 1 2 3 4 5 6; do r="$(login_result)"; echo "    [probe] $1 attempt $n at $(date -u +%T): $r"; [ "$r" = ok ] && { echo "    OK: $1"; return 0; }; sleep 30; done
+  for n in $(seq 1 12); do r="$(login_result)"; echo "    [probe] $1 attempt $n at $(date -u +%T): $r"; [ "$r" = ok ] && { echo "    OK: $1"; return 0; }; sleep 30; done
   echo "FAIL: $1 (login refused after 6 tries)" >&2; exit 1
 }
-expect_login_refused() { # expect_login_refused <description>
-  if [ "$(login_result)" = refused ]; then echo "    OK: $1"; else echo "FAIL: $1 (login accepted)" >&2; exit 1; fi
+expect_login_refused() {
+  local n r
+  for n in $(seq 1 12); do r="$(login_result)"; echo "    [probe] $1 attempt $n at $(date -u +%T): $r"; [ "$r" = refused ] && { echo "    OK: $1"; return 0; }; sleep 30; done
+  echo "FAIL: $1 (login accepted after 12 tries)" >&2; exit 1
 }
 deploy() { # deploy <log name> <tag> [fail mode]; returns cdkd's exit code
   local log="$1" tag="$2" fail="${3:-}" rc

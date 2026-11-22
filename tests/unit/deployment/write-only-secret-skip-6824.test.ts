@@ -24,6 +24,8 @@ import {
   withoutVersionAttestation,
 } from '../../../src/deployment/reference-provenance-record.js';
 import type { ReferenceProvenance, ResourceState } from '../../../src/types/state.js';
+import { recordAfterRollbackUpdate } from '../../../src/deployment/rollback-executor/replay-retry.js';
+import { sentWriteOnlySecretTokens } from '../../../src/deployment/deploy-engine/state-persist.js';
 
 const TOKEN = '{{resolve:secretsmanager:db-secret:SecretString:password::}}';
 const OTHER = '{{resolve:secretsmanager:other-secret:SecretString:password::}}';
@@ -275,6 +277,18 @@ describe('the versionsSent attestation (go-to-k/cdkd#6824)', () => {
       ).toEqual({ [TOKEN]: attested() });
     });
 
+    it('does not stamp a region-less entry (the skip could never take it)', () => {
+      expect(
+        provenanceForWrittenRecord({
+          record: written,
+          secrets: pass([V1], null),
+          previous: undefined,
+          inPlace: undefined,
+          attest: new Set([TOKEN]),
+        })
+      ).toEqual({ [TOKEN]: { versions: [V1] } });
+    });
+
     it('does not stamp an unnamed token, nor two versions', () => {
       expect(
         provenanceForWrittenRecord({
@@ -318,5 +332,40 @@ describe('the versionsSent attestation (go-to-k/cdkd#6824)', () => {
         })
       ).toEqual({ [TOKEN]: { region: REGION, versions: [V1] } });
     });
+  });
+});
+
+describe('sentWriteOnlySecretTokens: which written records attest (go-to-k/cdkd#6824)', () => {
+  const engine = (resumed: string[] = []) =>
+    ({ resumedCreates: new Map(resumed.map((id) => [id, {}])) }) as never;
+
+  it('a Cloud Control write names the tokens under its measured keys only', () => {
+    const r = record('none', { properties: { Password: TOKEN, Description: OTHER } });
+    expect(sentWriteOnlySecretTokens(engine(), 'P', r)).toEqual(new Set([TOKEN]));
+  });
+
+  it('a resumed create names none: its value went out in an earlier run', () => {
+    expect(sentWriteOnlySecretTokens(engine(['P']), 'P', record('none'))).toBeUndefined();
+  });
+
+  it('an SDK write names none', () => {
+    expect(
+      sentWriteOnlySecretTokens(engine(), 'P', record('none', { provisionedBy: 'sdk' }))
+    ).toBeUndefined();
+  });
+
+  it('a key refused on update is no candidate: a rotated value there is never sent', () => {
+    const user = record('none', {
+      resourceType: 'AWS::Connect::User',
+      properties: { Password: TOKEN },
+    });
+    expect(sentWriteOnlySecretTokens(engine(), 'P', user)).toBeUndefined();
+  });
+});
+
+describe('a rollback restore never vouches for a sent version (go-to-k/cdkd#6824)', () => {
+  it('recordAfterRollbackUpdate strips the attestation and keeps the version', () => {
+    const restored = recordAfterRollbackUpdate(record(), { physicalId: 'endpoint-1', wasReplaced: false });
+    expect(recordedProvenanceOf(restored, TOKEN)).toEqual({ region: REGION, versions: [V1] });
   });
 });

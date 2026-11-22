@@ -254,13 +254,9 @@ export async function updateInIdLogScope(
         if (
           unchangedSecret?.has(propertyName) === true &&
           keptWhenOmitted.has(propertyName) &&
-          onlySecretReferencesDiffer(
-            cleanProperties[propertyName],
-            cleanPreviousProperties[propertyName],
-            context?.maskSecrets
-          )
+          onlySecretReferencesDiffer(desired, previous, context?.maskSecrets)
         ) {
-          previousWithoutWriteOnly[propertyName] = cleanProperties[propertyName];
+          previousWithoutWriteOnly[propertyName] = desired;
           idLog.debug(
             `${logicalId}: ${propertyName} is left out of the patch: its secret version is the one last sent`
           );

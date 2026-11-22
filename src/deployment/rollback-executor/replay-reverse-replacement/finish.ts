@@ -27,6 +27,7 @@ import {
   retainedSurvivorId,
 } from '../messages.js';
 import { recordedPropertiesAfterReplayCreate } from '../replay-retry.js';
+import { withoutVersionAttestation } from '../../reference-provenance-record.js';
 import type { ReplayOpScope } from '../replay-scope.js';
 import type { SupersededResourceRecord } from '../../../types/state.js';
 import {
@@ -260,6 +261,9 @@ export async function finishReverseReplacement(
       // attribute identical to a plaintext old one stays plaintext (#4801).
       prevRecord.attributes
     );
+  // go-to-k/cdkd#6824: a journal an older binary wrote may carry the send
+  // attestation; the re-create resolved its own versions, so none is kept.
+  stateResources[op.logicalId] = withoutVersionAttestation(stateResources[op.logicalId]!);
   // go-to-k/cdkd#4225: the re-create put the old resource's inline
   // policies, as the deploy's replacement create does. A re-create that
   // returned the live NEW resource is not counted: its record may not

@@ -9,7 +9,7 @@ import {
   pasteableCommand,
   proseQuoted,
 } from '../../../utils/pasteable-command.js';
-import { PartialFailureError } from '../../../utils/error-handler.js';
+import { CdkdError, PartialFailureError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
 import { writeAheadRevertAttestations } from './revert-attestation.js';
 import { LockManager } from '../../../state/lock-manager.js';
@@ -260,11 +260,25 @@ export async function runRevert(
       try {
         // go-to-k/cdkd#6824: before any send, so a revert killed after AWS
         // took the current secret version leaves no record attesting another.
-        await writeAheadRevertAttestations(
-          report,
-          driftedOutcomes.map((o) => o.logicalId),
-          stateBackend
-        );
+        // A failed write reverts nothing on this stack and counts its drifted
+        // resources failed; under `--all` the other stacks still revert.
+        try {
+          await writeAheadRevertAttestations(
+            report,
+            driftedOutcomes.map((o) => o.logicalId),
+            stateBackend
+          );
+        } catch (err) {
+          const refused = new CdkdError(
+            `${report.stackName} (${report.region}): nothing reverted -- cdkd could not save state ` +
+              `before sending secret values (${describeAwsFailure(err).detail}). Re-run once state writes succeed.`,
+            'DRIFT_REVERT_WRITE_AHEAD_FAILED',
+            err instanceof Error ? err : undefined
+          );
+          logger.error(refused.message);
+          tally.totalFailed += driftedOutcomes.length;
+          return;
+        }
         const revertSecretResolvers = new DriftSecretResolvers(report.region);
         // The foreign-region evidence for this stack, as the detection site read
         // it — a nested child's ancestors included (go-to-k/cdkd#4213).
