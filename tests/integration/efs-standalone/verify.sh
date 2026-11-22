@@ -95,6 +95,7 @@ replication_pairs() { (
   for dest in $(aws efs describe-file-systems --region "${REGION}" \
     --query "FileSystems[?Tags[?Key=='Name' && Value=='${REPL_DEST_TAG}']].FileSystemId" \
     --output text 2>/dev/null); do
+    [ "${dest}" = "${REPL_DEST_ID}" ] && continue # the recorded pair, listed above
     src=$(aws efs describe-replication-configurations --file-system-id "${dest}" --region "${REGION}" \
       --query 'Replications[0].SourceFileSystemId' --output text 2>/dev/null)
     case "${src}" in fs-?*) ;; *) src=- ;; esac
