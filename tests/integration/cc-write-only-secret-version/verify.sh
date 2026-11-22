@@ -156,10 +156,12 @@ ns_status() { # the namespace's status, "GONE" when it does not exist; returns 1
 }
 ns_available() { # wait until the namespace settles: a password change keeps it MODIFYING for minutes
   local i st
-  for i in $(seq 1 90); do
+  # 15 s apart: Redshift Serverless throttles the namespace APIs, and a
+  # throttled handler call fails the update it belongs to (measured).
+  for i in $(seq 1 60); do
     st="$(ns_status)" || { echo "FAIL: namespace status undetermined" >&2; exit 1; }
     case "${st}" in AVAILABLE | GONE) return 0 ;; esac
-    sleep 10
+    sleep 15
   done
   echo "FAIL: namespace ${NS_NAME} did not settle (status ${st})" >&2
   exit 1
@@ -203,10 +205,10 @@ ns_settled_after_change() { # a re-sent password flips the namespace to MODIFYIN
   # handler gives up ("Exceeded attempts to wait", measured). Wait for the flip
   # (up to 2 min), then for AVAILABLE.
   local i st
-  for i in $(seq 1 24); do
+  for i in $(seq 1 8); do
     st="$(ns_status)" || { echo "FAIL: namespace status undetermined" >&2; exit 1; }
     [ "${st}" != AVAILABLE ] && break
-    sleep 5
+    sleep 15
   done
   ns_available
 }
@@ -334,6 +336,10 @@ if deploy p5 five after --no-rollback; then
   exit 1
 fi
 echo "    OK: the deploy failed"
+# The premise: the namespace update COMPLETED and the queue is what failed;
+# otherwise there is no completed update for the rollback to revert.
+grep -qE 'Ns.*AWS::RedshiftServerless::Namespace.*updated' "${LOG_DIR}/p5.log" \
+  || { echo "FAIL: premise: the namespace update itself did not complete (an AWS-side failure; see the log above)" >&2; exit 1; }
 # Its update re-set the password: the revert must wait for that to settle, or
 # AWS refuses it ("There is an operation running on the namespace", measured).
 ns_settled_after_change
