@@ -43,8 +43,8 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
 
 The PARENT checks all six before granting each further lane's integ. For ANY
 wait the user can see (CI, integ, a lane), tell the user its ETA and queue
-unasked, at its start and every ~30 min, not only an HOURS-long turn (asked
-twice on #6762's CI + integ). A subagent running a turn's
+unasked, at its start and every ~30 min, not only an HOURS-long turn (#6762).
+A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
@@ -153,7 +153,7 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   and the post-rebase push leaves `git status --porcelain` empty, arm
   `gh pr merge <n> --squash --delete-branch --auto --match-head-commit <sha>`
   (`<sha>` = the pushed `HEAD`) AT ONCE to land before the next peer merge
-  (#4966; again in the #6610 run). A later push sinks that pin, so before any
+  (#4966). A later push sinks that pin, so before any
   push or body edit run `--disable-auto` in its OWN call, only when `gh pr view <n> --json
   autoMergeRequest` is non-null: `integ-destroy-gate` refuses it on a
   deletion-touching PR's stale marker, sinking a chained push (#5744). Re-run that suite before re-arming;
@@ -162,6 +162,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 ### Merge
 
 ```bash
+# Must print EXACTLY the issues this PR closes; fix the body first (#6766: a rewrite dropped it)
+gh pr view <n> -R <owner>/<repo> --json closingIssuesReferences -q '[.closingIssuesReferences[].number]'
 gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 # -R on every gh call below too: "Could not resolve to a PullRequest" is no permissions error
 ```

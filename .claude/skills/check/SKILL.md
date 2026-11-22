@@ -57,15 +57,16 @@ Run these sequentially and report results.
    method stales `update-wrap-coverage.json`, and a `verify.sh` edit with no
    src change stales `cli-flag-coverage`.
 
-4. `vp test run` — the whole unit suite. Prefer this over `vp run test`: nothing
-   sits between the caller and the verdict.
+4. `vp test run --maxWorkers=4` — the whole unit suite, only once
+   `pgrep -fl vitest` shows no other run: an uncapped run beside a peer's
+   has hung the host. Prefer this over `vp run test`: nothing sits between the
+   caller and the verdict.
 
    Read the summary's NUMBERS, not its colour, and read the `Errors` line, which
    is NOT `Type Errors`. `Test Files N passed (N)` is self-consistent over a
    suite that LOST files before they ran, so it cannot report its own shortfall:
    a loaded host produces `[vitest-pool]: Failed to start forks worker` beside an
-   otherwise green summary. `vp test run --maxWorkers=4` is the remedy for the
-   whole `[vitest-pool]` / `[vitest-pool-runner]` family.
+   otherwise green summary.
 
    Also check WHICH PROJECT the summary belongs to — the summary line cannot
    tell you, and a run launched from this worktree has been observed printing a
@@ -77,7 +78,7 @@ Run these sequentially and report results.
    (
      log=$(mktemp)                     # NOT a fixed path: concurrent lanes share /tmp.
      echo "log: $log"                  # print BEFORE the exits, or a failing run is unrecoverable.
-     vp test run > "$log" 2>&1; rc=$?
+     vp test run --maxWorkers=4 > "$log" 2>&1; rc=$?
      runs=$(grep -c 'RUN  v' "$log")
      [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
      run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')
@@ -89,7 +90,7 @@ Run these sequentially and report results.
      if [ "$rc" != 0 ]; then
        echo "SUITE FAILED rc=$rc; log: $log"
        grep -qE '\[vitest-pool(-runner)?\]: ' "$log" \
-         && echo "  the pool lost workers before their files ran, so the passing counts above cover only what survived -- re-run with --maxWorkers=4"
+         && echo "  the pool lost workers before their files ran, so the passing counts above cover only what survived -- re-run once pgrep -fl vitest shows no peer"
        exit 1
      fi
      # A run that exited 0 can still have COLLECTED fewer files than the tree
