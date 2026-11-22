@@ -365,8 +365,9 @@ export class AppConfigEnvironmentProvider implements ResourceProvider {
    * and `ApplicationId` is not recoverable from a name, so only an explicit
    * `--resource <logicalId>=<ApplicationId>|<EnvironmentId>` is supported (a
    * bare EnvironmentId, as CloudFormation reports it, is completed from the
-   * resolved `ApplicationId` property); the environment's existence is
-   * verified with `GetEnvironment`.
+   * resolved `ApplicationId` property, and so is a bare id typed with
+   * `--resource`); the environment's existence is verified with
+   * `GetEnvironment`, so a mismatched pair is skipped as not found.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.resourceType !== TYPE || !input.knownPhysicalId) return null;

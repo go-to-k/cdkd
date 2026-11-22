@@ -458,14 +458,19 @@ assert_appconfig_environment_migrated() {
   echo "  ok: recorded ${recorded}"
   env_lid="$(AWS_REGION="${REGION}" ${CDKD} state show "${stack}" --json \
     | jq -r '[.state.resources | to_entries[] | select(.value.resourceType == "AWS::AppConfig::Environment") | .key] | .[0]')"
+  local drift_err
+  drift_err="$(mktemp)"
   set +e
-  report="$(AWS_REGION="${REGION}" ${CDKD} drift "${stack}" --json 2>/dev/null)"
+  report="$(AWS_REGION="${REGION}" ${CDKD} drift "${stack}" --json 2>"${drift_err}")"
   rc=$?
   set -e
   if [[ "${rc}" -ge 2 ]]; then
-    echo "ASSERTION FAILED: [${stack}] cdkd drift exited ${rc} (command error, not a drift verdict)" >&2
+    echo "ASSERTION FAILED: [${stack}] cdkd drift exited ${rc} (command error, not a drift verdict):" >&2
+    tail -n 20 "${drift_err}" >&2
+    rm -f "${drift_err}"
     exit 1
   fi
+  rm -f "${drift_err}"
   if ! jq -e --arg id "${env_lid}" --arg stack "${stack}" \
     '[.[] | select(.stack == $stack)] | length == 1 and ([.[0].clean[].logicalId] | index($id) != null)' \
     <<<"${report}" >/dev/null; then
