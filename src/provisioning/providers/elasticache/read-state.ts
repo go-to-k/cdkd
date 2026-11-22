@@ -239,7 +239,7 @@ export async function readSubnetGroup(
 /** The not-found faults of the resources {@link attachTags} reads tags for. */
 const TAGGED_RESOURCE_NOT_FOUND_FAULTS: ReadonlySet<string> = new Set([
   'CacheClusterNotFoundFault',
-  'ReplicationGroupNotFoundFault',
+  'CacheSubnetGroupNotFoundFault',
 ]);
 
 /**

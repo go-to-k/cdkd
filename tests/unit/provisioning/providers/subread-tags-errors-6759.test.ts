@@ -178,6 +178,23 @@ const rows: Row[] = [
     },
   },
   {
+    name: 'RDS DBProxyTargetGroup (parent proxy gone)',
+    make: () => new RDSDBProxyTargetGroupProvider(),
+    resourceType: 'AWS::RDS::DBProxyTargetGroup',
+    physicalId: ARN('rds', 'target-group:prx-tg-1'),
+    properties: { DBProxyName: 'my-proxy', TargetGroupName: 'default' },
+    tagCommand: 'ListTagsForResourceCommand',
+    notFoundName: 'DBProxyNotFoundFault',
+    notFoundClass: DBProxyNotFoundFault,
+    onNotFound: 'omitTags',
+    handlers: {
+      DescribeDBProxyTargetGroupsCommand: () => ({
+        TargetGroups: [{ TargetGroupName: 'default', ConnectionPoolConfig: {} }],
+      }),
+      DescribeDBProxyTargetsCommand: () => ({ Targets: [] }),
+    },
+  },
+  {
     name: 'RDS DBSubnetGroup (rds/calls attachTags)',
     make: () => new RDSProvider(),
     resourceType: 'AWS::RDS::DBSubnetGroup',
@@ -284,6 +301,93 @@ const rows: Row[] = [
     },
   },
   {
+    name: 'ElastiCache CacheSubnetGroup',
+    make: () => new ElastiCacheProvider(),
+    resourceType: 'AWS::ElastiCache::SubnetGroup',
+    physicalId: 'my-csg',
+    tagCommand: 'ListTagsForResourceCommand',
+    notFoundName: 'CacheSubnetGroupNotFoundFault',
+    onNotFound: 'omitTags',
+    handlers: {
+      DescribeCacheSubnetGroupsCommand: () => ({
+        CacheSubnetGroups: [
+          {
+            CacheSubnetGroupName: 'my-csg',
+            CacheSubnetGroupDescription: 'd',
+            ARN: ARN('elasticache', 'subnetgroup:my-csg'),
+            Subnets: [],
+          },
+        ],
+      }),
+    },
+  },
+  {
+    name: 'RDS DBInstance (rds/calls attachTags)',
+    make: () => new RDSProvider(),
+    resourceType: 'AWS::RDS::DBInstance',
+    physicalId: 'my-db',
+    tagCommand: 'ListTagsForResourceCommand',
+    notFoundName: 'DBInstanceNotFoundFault',
+    onNotFound: 'omitTags',
+    handlers: {
+      DescribeDBInstancesCommand: () => ({
+        DBInstances: [
+          {
+            DBInstanceIdentifier: 'my-db',
+            DBInstanceArn: ARN('rds', 'db:my-db'),
+            Engine: 'mysql',
+            DBInstanceClass: 'db.t3.micro',
+            DBInstanceStatus: 'available',
+          },
+        ],
+      }),
+    },
+  },
+  {
+    name: 'Neptune DBCluster',
+    make: () => new NeptuneProvider(),
+    resourceType: 'AWS::Neptune::DBCluster',
+    physicalId: 'my-nc',
+    tagCommand: 'ListTagsForResourceCommand',
+    notFoundName: 'DBClusterNotFoundFault',
+    onNotFound: 'omitTags',
+    handlers: {
+      DescribeDBClustersCommand: () => ({
+        DBClusters: [
+          {
+            DBClusterIdentifier: 'my-nc',
+            DBClusterArn: ARN('rds', 'cluster:my-nc'),
+            Engine: 'neptune',
+            Status: 'available',
+          },
+        ],
+      }),
+    },
+  },
+  {
+    name: 'DocDB DBInstance (docdb-shared attachDocDBTags)',
+    make: () => new DocDBProvider(),
+    resourceType: 'AWS::DocDB::DBInstance',
+    physicalId: 'my-di',
+    tagCommand: 'ListTagsForResourceCommand',
+    notFoundName: 'DBInstanceNotFoundFault',
+    onNotFound: 'omitTags',
+    handlers: {
+      DescribeDBInstancesCommand: () => ({
+        DBInstances: [
+          {
+            DBInstanceIdentifier: 'my-di',
+            DBInstanceArn: ARN('rds', 'db:my-di'),
+            DBInstanceClass: 'db.t3.medium',
+            DBClusterIdentifier: 'my-dc',
+            Engine: 'docdb',
+            DBInstanceStatus: 'available',
+          },
+        ],
+      }),
+    },
+  },
+  {
     name: 'Kinesis Stream',
     make: () => new KinesisStreamProvider(),
     resourceType: 'AWS::Kinesis::Stream',
@@ -376,6 +480,30 @@ const rows: Row[] = [
     tagCommand: 'ListTagsForResourceCommand',
     notFoundName: 'DBProxyEndpointNotFoundFault',
     notFoundClass: DBProxyEndpointNotFoundFault,
+    onNotFound: 'emptyTags',
+    handlers: {
+      DescribeDBProxyEndpointsCommand: () => ({
+        DBProxyEndpoints: [
+          {
+            DBProxyEndpointName: 'my-ep',
+            DBProxyName: 'my-proxy',
+            DBProxyEndpointArn: ARN('rds', 'db-proxy-endpoint:prx-ep-1'),
+            VpcSubnetIds: [],
+            VpcSecurityGroupIds: [],
+            TargetRole: 'READ_WRITE',
+          },
+        ],
+      }),
+    },
+  },
+  {
+    name: 'RDS DBProxyEndpoint (parent proxy gone)',
+    make: () => new RDSDBProxyEndpointProvider(),
+    resourceType: 'AWS::RDS::DBProxyEndpoint',
+    physicalId: 'my-ep',
+    tagCommand: 'ListTagsForResourceCommand',
+    notFoundName: 'DBProxyNotFoundFault',
+    notFoundClass: DBProxyNotFoundFault,
     onNotFound: 'emptyTags',
     handlers: {
       DescribeDBProxyEndpointsCommand: () => ({
