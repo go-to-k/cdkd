@@ -55,15 +55,17 @@ const RESULTS: readonly CcUpdateMeasurement['result'][] = [
 
 /**
  * The types a helper module registers, read from its text: the quoted keys of
- * `CC_READ_BACK_EMPTY_KEYS` / `CC_READ_BACK_DEFAULT_PATHS`, or the `const X_TYPE = 'AWS::...'` constants.
+ * `CC_READ_BACK_EMPTY_KEYS` / `CC_READ_BACK_DEFAULT_PATHS` / `CC_READ_BACK_EXCLUSIVE_KEYS`, or the
+ * `const X_TYPE = 'AWS::...'` constants.
  */
 export function parseHelperTypes(fix: CcUpdateFix, text: string): string[] {
-  const table =
-    fix === 'cc-read-back-empty-keys'
-      ? 'CC_READ_BACK_EMPTY_KEYS'
-      : fix === 'cc-read-back-default-paths'
-        ? 'CC_READ_BACK_DEFAULT_PATHS'
-        : undefined;
+  const table = (
+    {
+      'cc-read-back-empty-keys': 'CC_READ_BACK_EMPTY_KEYS',
+      'cc-read-back-default-paths': 'CC_READ_BACK_DEFAULT_PATHS',
+      'cc-read-back-exclusive-keys': 'CC_READ_BACK_EXCLUSIVE_KEYS',
+    } as Partial<Record<CcUpdateFix, string>>
+  )[fix];
   if (table) {
     const start = text.indexOf(`export const ${table}`);
     const open = start < 0 ? -1 : text.indexOf('= {', start);

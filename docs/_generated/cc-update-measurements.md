@@ -12,9 +12,9 @@ Cloud Control-routed types measured against real AWS: one property served by the
 
 ## Summary
 
-- Types: **83**
+- Types: **86**
 - clean: **60**
-- refuses: **5**
+- refuses: **8**
 - no-mutable-property: **18**
 - not-measured: **0**
 
@@ -40,6 +40,7 @@ Cloud Control-routed types measured against real AWS: one property served by the
 | AWS::Backup::BackupPlan | clean | Rule Lifecycle.DeleteAfterDays (UpdateBackupPlan) |  | #6676 | 2026-11-20 |  |
 | AWS::Backup::BackupSelection | no-mutable-property | none: BackupSelection and BackupPlanId createOnly |  | #6676 | 2026-11-20 |  |
 | AWS::Backup::BackupVault | clean | AccessPolicy statement Action (PutBackupVaultAccessPolicy) |  | #6676 | 2026-11-20 |  |
+| AWS::Bedrock::Flow | refuses | DefinitionString / DefinitionSubstitutions / DefinitionS3Location (UpdateFlow) | `cc-read-back-exclusive-keys` | #6819 | 2026-11-22 | read-back Definition sent beside the declared DefinitionString or DefinitionS3Location |
 | AWS::CloudFront::Function | clean | FunctionConfig.Comment (UpdateFunction + PublishFunction) |  | #6676 | 2026-11-20 |  |
 | AWS::CloudFront::KeyGroup | clean | KeyGroupConfig.Comment (UpdateKeyGroup) |  | #6676 | 2026-11-20 |  |
 | AWS::CloudFront::PublicKey | clean | PublicKeyConfig.Comment (UpdatePublicKey) |  | #6676 | 2026-11-20 |  |
@@ -55,6 +56,7 @@ Cloud Control-routed types measured against real AWS: one property served by the
 | AWS::Cognito::UserPoolGroup | clean | Description (UpdateGroup) |  | #6676 | 2026-11-20 |  |
 | AWS::Cognito::UserPoolUser | no-mutable-property | none: every property createOnly |  | #6676 | 2026-11-20 |  |
 | AWS::Cognito::UserPoolUserToGroupAttachment | no-mutable-property | none: all properties createOnly |  | #6676 | 2026-11-20 |  |
+| AWS::Connect::User | refuses | IdentityInfo.FirstName (UpdateUserIdentityInfo) | `cc-read-back-default-paths` | #6820 | 2026-11-22 | read-back VoiceEnhancementConfigs [{ Channel: VOICE }] lacks the required VoiceEnhancementMode; Cloud Control model validation refuses it |
 | AWS::DSQL::Cluster | clean | DeletionProtectionEnabled (UpdateCluster); PolicyDocument (PutClusterPolicy) |  | #6676 | 2026-11-20 |  |
 | AWS::DataSync::LocationS3 | clean | S3StorageClass (UpdateLocationS3) |  | #6676 | 2026-11-20 |  |
 | AWS::DataSync::Task | refuses | Options.VerifyMode (UpdateTask) | `cc-read-back-empty-keys` | #6676 | 2026-11-20 | Read-back `Schedule: {}` is sent as a null schedule.scheduleExpression and refused; an unnamed task reads back `Name: ""`, refused by Cloud Control model validation (minLength 1) |
@@ -102,6 +104,7 @@ Cloud Control-routed types measured against real AWS: one property served by the
 | AWS::SSM::MaintenanceWindowTask | clean | MaxConcurrency (UpdateMaintenanceWindowTask) |  | #6676 | 2026-11-20 |  |
 | AWS::Scheduler::ScheduleGroup | no-mutable-property | none: Name createOnly, only Tags mutable |  | #6676 | 2026-11-20 |  |
 | AWS::Signer::SigningProfile | no-mutable-property | none: PlatformId/ProfileName/SignatureValidityPeriod createOnly, only Tags mutable |  | #6676 | 2026-11-20 |  |
+| AWS::StepFunctions::StateMachineAlias | refuses | DeploymentPreference ALL_AT_ONCE and CANARY (UpdateStateMachineAlias) | `cc-read-back-exclusive-keys` | #6818 | 2026-11-22 | read-back RoutingConfiguration sent beside the declared DeploymentPreference |
 | AWS::VerifiedPermissions::PolicyStore | clean | Description (UpdatePolicyStore) |  | #6676 | 2026-11-20 |  |
 | AWS::WAFv2::IPSet | clean | Addresses (UpdateIPSet) |  | #6676 | 2026-11-20 |  |
 | AWS::WAFv2::WebACLAssociation | no-mutable-property | none: both properties createOnly |  | #6676 | 2026-11-20 |  |

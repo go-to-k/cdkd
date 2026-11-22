@@ -437,6 +437,27 @@ function isFargateComputeEnvironment(properties: Record<string, unknown>): boole
 }
 
 /**
+ * Keys of {@link WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED} whose handler refuses ANY
+ * value on update, changed or not (go-to-k/cdkd#6820): a Connect user's
+ * `Password` fails with "Password cannot be updated." whether re-sent or
+ * changed (measured, us-east-1). State keeps a secret-derived one as its
+ * `{{resolve:...}}` expression while the desired bag holds the resolved value,
+ * so the two never compare equal; for these keys a difference in secret
+ * references alone is read as unchanged too. Parity gave way here: a changed
+ * reference is left out as well, where CloudFormation would send it and fail,
+ * since cdkd cannot tell it from the same reference, and no update can apply
+ * it either way.
+ */
+const WRITE_ONLY_KEYS_REFUSED_ON_UPDATE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['AWS::Connect::User', new Set(['Password'])],
+]);
+
+/** Whether the handler of `resourceType` refuses `key` on every update. */
+export function isWriteOnlyKeyRefusedOnUpdate(resourceType: string, key: string): boolean {
+  return WRITE_ONLY_KEYS_REFUSED_ON_UPDATE.get(resourceType)?.has(key) === true;
+}
+
+/**
  * The write-only top-level keys of `resourceType` that
  * `CloudControlProvider.update` must not re-add while UNCHANGED
  * (go-to-k/cdkd#6709, go-to-k/cdkd#6788). A changed one is still re-added:
