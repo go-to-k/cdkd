@@ -91,6 +91,7 @@ describe('write-only keys refused on update (go-to-k/cdkd#6820)', () => {
       movedReferencesRefusedOnUpdate(type, { Password: d }, { Password: r });
     expect(moved(other, REFERENCE)).toEqual(['Password']);
     expect(moved('Literal1', REFERENCE)).toEqual(['Password']);
+    expect(moved(REFERENCE, 'Literal1')).toEqual(['Password']);
     expect(moved(REFERENCE, REFERENCE)).toEqual([]);
     expect(moved('Passw0rdNew', 'Passw0rdOld')).toEqual([]);
     expect(moved(undefined, REFERENCE)).toEqual([]);

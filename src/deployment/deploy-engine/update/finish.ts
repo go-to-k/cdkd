@@ -26,11 +26,11 @@ import {
 } from '../../custom-resource-service-token.js';
 import { movedReferencesRefusedOnUpdate } from '../../../provisioning/write-only-properties.js';
 import { setAtCoordinate } from './helpers.js';
+import type { ResolvedUpdateInputs } from './resolve-inputs.js';
+import type { ComparedUpdate } from './compare-record.js';
 
 /** The error code of the refused re-pointed write-only reference (go-to-k/cdkd#6820). */
 export const WRITE_ONLY_KEY_CHANGE_REFUSED = 'WRITE_ONLY_KEY_CHANGE_REFUSED';
-import type { ResolvedUpdateInputs } from './resolve-inputs.js';
-import type { ComparedUpdate } from './compare-record.js';
 
 /** What `provisionUpdate` hands {@link finishUpdate}: its parameters and the values its phases bound. */
 export interface FinishUpdateInput
@@ -304,7 +304,7 @@ export async function finishUpdate(
     throw markRefusedBeforeApplying(
       markNonRetryable(
         new CdkdError(
-          safeMsg`${logicalId} (${resourceType}): ${movedRefused.join(', ')} cannot be changed after creation, and the template now reads a different secret reference than the one recorded. Restore the recorded reference, or replace the resource under a new logical id.`,
+          safeMsg`${logicalId} (${resourceType}): ${movedRefused.join(', ')} cannot be changed after creation, and its secret reference changed (or was added or removed) since the recorded value. Restore the recorded reference, or replace the resource under a new logical id.`,
           WRITE_ONLY_KEY_CHANGE_REFUSED
         )
       )

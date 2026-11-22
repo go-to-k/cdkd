@@ -141,7 +141,7 @@ async function deploy(recorded: Record<string, unknown>, desired: Record<string,
   await engine.deploy('s', template).catch((e: unknown) => {
     thrown = e;
   });
-  return { thrown, provider };
+  return { thrown, provider, saveState };
 }
 
 /** Every error in the cause chain, so a wrapped refusal is still found. */
@@ -160,7 +160,7 @@ const base = { Username: 'u', IdentityInfo: { FirstName: 'Alpha' } };
 
 describe('DeployEngine - a Connect user Password (go-to-k/cdkd#6820)', () => {
   it('refuses a re-pointed secret reference before any provider call, naming the key and the remedy', async () => {
-    const { thrown, provider } = await deploy(
+    const { thrown, provider, saveState } = await deploy(
       { ...base, Password: REF_A },
       { ...base, Password: REF_B }
     );
@@ -168,10 +168,27 @@ describe('DeployEngine - a Connect user Password (go-to-k/cdkd#6820)', () => {
     expect(error).toBeDefined();
     expect(isMarkedNonRetryable(error!)).toBe(true);
     expect(isRefusedBeforeApplying(error!, 'User')).toBe(true);
-    expect(error!.message).toContain('User (AWS::Connect::User): Password cannot be changed');
+    expect(error!.message).toContain(
+      'User (AWS::Connect::User): Password cannot be changed after creation, and its secret reference changed (or was added or removed)'
+    );
     expect(error!.message).toContain('replace the resource under a new logical id');
     expect(error!.message).not.toContain(secret.password);
     expect(provider.update).not.toHaveBeenCalled();
+    // State still records A: no save carries the new reference.
+    expect(JSON.stringify(saveState.mock.calls)).not.toContain('pw-b');
+  });
+
+  it('refuses a reference replaced by a literal, and a re-pointed reference built by Fn::Join', async () => {
+    const toLiteral = await deploy({ ...base, Password: REF_A }, { ...base, Password: 'Literal1x' });
+    expect(refusal(toLiteral.thrown)).toBeDefined();
+    expect(toLiteral.provider.update).not.toHaveBeenCalled();
+
+    const joined = {
+      'Fn::Join': ['', ['{{resolve:secretsmanager:', 'pw-b', ':SecretString:password::}}']],
+    };
+    const viaJoin = await deploy({ ...base, Password: REF_A }, { ...base, Password: joined });
+    expect(refusal(viaJoin.thrown)).toBeDefined();
+    expect(viaJoin.provider.update).not.toHaveBeenCalled();
   });
 
   it('updates when the same reference reads a rotated value beside another change', async () => {
