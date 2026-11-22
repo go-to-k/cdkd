@@ -286,8 +286,16 @@ export async function readLiveForRecord(
     try {
       await read();
     } catch (error) {
+      // The class at warn, the AWS text at debug (#2319): an AccessDenied
+      // detail names the caller's role.
+      const name = (error as { name?: unknown } | null)?.name;
+      const errorClass =
+        typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : 'Error';
       this.logger.warn(
-        safeMsg`CloudTrail read-back of ${keys} for the record failed, so the record leaves them out: ${describeAwsFailure(error).detail}`
+        safeMsg`CloudTrail read-back of ${keys} for the record failed (${errorClass}); a skipped block among them is left out of the record.`
+      );
+      this.logger.debug(
+        safeMsg`CloudTrail read-back of ${keys} failed: ${describeAwsFailure(error).detail}`
       );
     }
   }

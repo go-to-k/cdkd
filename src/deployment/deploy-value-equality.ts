@@ -1,6 +1,5 @@
 import type { FreshNoEchoLeaf } from './secret-redaction.js';
 import type { PropertyChange } from '../types/state.js';
-import { isAccessDeniedError } from '../provisioning/name-lookup.js';
 
 /**
  * Whether a property change's `requiresReplacement` is only a CEILING the diff
@@ -69,15 +68,26 @@ export interface ReadDenial {
 
 const IAM_ACTION = /^[a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128}$/;
 const ACTION_IN_MESSAGE = [
-  /\bperform:\s*([a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128})\b/,
+  /\bperform:\s*([a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128})(?=\s|$|[.,;])/,
   /\ballows the ([a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128}) action\b/,
 ];
+/**
+ * The access-denial classes, by name only: a bare HTTP 403 also covers an
+ * expired or invalid credential (`ExpiredToken`, `InvalidClientTokenId`,
+ * `SignatureDoesNotMatch`), which fresh credentials and a re-run fix.
+ */
+const DENIAL_CLASSES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'AccessDeniedException',
+  'AuthorizationError',
+  'UnauthorizedOperation',
+]);
 
 /** The {@link ReadDenial} of a readback error, or `undefined` when it is not an access denial. */
 export function readDenialOf(error: unknown): ReadDenial | undefined {
   try {
-    if (!isAccessDeniedError(error)) return undefined;
-    const name = (error as { name?: unknown }).name;
+    const name = (error as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !DENIAL_CLASSES.has(name)) return undefined;
     const message = (error as { message?: unknown }).message;
     let action: string | undefined;
     if (typeof message === 'string') {
@@ -91,7 +101,7 @@ export function readDenialOf(error: unknown): ReadDenial | undefined {
     }
     return {
       ...(action !== undefined && { action }),
-      ...(typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(name) && { errorClass: name }),
+      errorClass: name,
     };
   } catch {
     return undefined;

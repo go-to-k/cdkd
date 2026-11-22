@@ -635,6 +635,32 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
       ).toBeUndefined();
     });
 
+    it('an instance gone before its UserData read still reads as gone', async () => {
+      for (const [name, answer] of Object.entries(INSTANCE)) answers.set(name, answer);
+      send.mockImplementation(async (command: { constructor: { name: string }; input?: unknown }) => {
+        const input = command.input as { Attribute?: string } | undefined;
+        if (command.constructor.name === 'DescribeInstanceAttributeCommand' && input?.Attribute === 'userData') {
+          throw named('InvalidInstanceID.NotFound');
+        }
+        const answer = answers.get(command.constructor.name);
+        if (answer instanceof Error) throw answer;
+        return answer ?? {};
+      });
+      try {
+        expect(
+          await new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', {
+            UserData: 'IyEvYmluL2Jhc2g=',
+          })
+        ).toBe(RESOURCE_NOT_FOUND);
+      } finally {
+        send.mockImplementation(async (command: { constructor: { name: string } }) => {
+          const answer = answers.get(command.constructor.name);
+          if (answer instanceof Error) throw answer;
+          return answer ?? {};
+        });
+      }
+    });
+
     it('a DescribeInstances *.NotFound still reads as gone', async () => {
       answers.set('DescribeInstancesCommand', named('InvalidInstanceID.NotFound'));
       expect(

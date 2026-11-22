@@ -51,7 +51,9 @@ export async function readInstanceCurrentState(
   try {
     return await readInstanceDetails.call(this, physicalId, instance, properties);
   } catch (err) {
-    markInstanceSubReadFailure(err);
+    // The instance's own not-found (gone between the calls) keeps mapping to
+    // RESOURCE_NOT_FOUND there.
+    if (!isNamedError(err, INVALID_INSTANCE_NOT_FOUND)) markInstanceSubReadFailure(err);
     throw err;
   }
 }

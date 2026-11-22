@@ -912,5 +912,18 @@ describe('readDenialOf (#6759)', () => {
     expect(readDenialOf(denied('Access denied'))).toEqual({ errorClass: 'AccessDeniedException' });
     expect(readDenialOf(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }))).toBeUndefined();
     expect(readDenialOf(new Error('not authorized to perform: s3:GetObject'))).toBeUndefined();
+    // A 403 for an expired credential is not a missing permission: a re-run fixes it.
+    expect(
+      readDenialOf(
+        Object.assign(new Error('The security token included in the request is expired'), {
+          name: 'ExpiredToken',
+          $metadata: { httpStatusCode: 403 },
+        })
+      )
+    ).toBeUndefined();
+    expect(readDenialOf(denied('User: u is not authorized to perform: s3:* on resource: b'))).toEqual({
+      action: 's3:*',
+      errorClass: 'AccessDeniedException',
+    });
   });
 });
