@@ -54,6 +54,16 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // only the bounded IAM-propagation retries before surfacing, the same
   // trade-off the Glue `is unable to assume the role` entry accepts.
   'DataSync location access test failed',
+  // Budgets' wording of the same race (issue #6845): an
+  // `AWS::Budgets::BudgetsAction` created through Cloud Control seconds after
+  // its `ExecutionRoleArn` role is refused with "Budgets permission required to
+  // assume [ExecutionRole: <arn>]. Please follow the instruction to grant
+  // assumeRole access to [Service Principal: budgets.amazonaws.com] ...".
+  // Without a retry the rollback deleted the new role, so every re-run met the
+  // race again. Anchored on the service name, like Firehose's and IoT's; a role
+  // whose trust policy genuinely lacks the principal burns only the bounded
+  // IAM-propagation retries before surfacing.
+  'Budgets permission required to assume [ExecutionRole',
   // Glue Crawler / Job / Trigger create validates that the Glue service can
   // assume the same-stack IAM role at create time. cdkd's fast SDK path issues
   // the Crawler create only ~1s after the role's CREATE, before IAM finishes

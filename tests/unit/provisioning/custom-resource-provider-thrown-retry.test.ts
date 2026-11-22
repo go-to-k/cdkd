@@ -1074,6 +1074,8 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // Issue #6573 — see its EXAMINED_NON_FRONT_DOOR entry below.
       "DataSync service was unable to perform sts:AssumeRole",
       "DataSync location access test failed",
+      // Issue #6845 — see its EXAMINED_NON_FRONT_DOOR entry below.
+      "Budgets permission required to assume [ExecutionRole",
       "is unable to assume provided role",
       "is unable to assume the role",
       "security token included in the request is invalid. (Service:",
@@ -1203,6 +1205,12 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // `Publish`: opens with DataSync's own sentence, which no CR `Invoke` or
       // SNS `Publish` failure carries.
       'DataSync location access test failed',
+      // Issue #6845, argument (a) for both `Invoke` and `Publish`. The Budgets
+      // action handler rejecting a same-stack execution role under Cloud
+      // Control, after its own request was accepted. Unreachable here: the
+      // substring opens with Budgets' own service name and `[ExecutionRole`
+      // bracket, which no CR `Invoke` or SNS `Publish` failure carries.
+      'Budgets permission required to assume [ExecutionRole',
       // Issue #6775, argument (a) for both `Invoke` and `Publish`. The Lambda
       // NetworkConnector's SDK create (`CreateNetworkConnector`) rejecting a
       // seconds-old same-stack operator role. Unreachable here:
@@ -1214,7 +1222,7 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(11);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(12);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);

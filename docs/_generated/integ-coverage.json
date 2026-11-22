@@ -6787,6 +6787,7 @@
         "apigw-stage-props",
         "appsync",
         "batch",
+        "budgets-action",
         "cc-api-fallback",
         "cc-getatt-readback",
         "cc-protection-flip-eks",
@@ -6941,6 +6942,9 @@
           "l2"
         ],
         "batch": [
+          "l2"
+        ],
+        "budgets-action": [
           "l2"
         ],
         "cc-api-fallback": [
@@ -11692,6 +11696,7 @@
     "AWS::Backup::BackupPlan",
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
+    "AWS::Budgets::BudgetsAction",
     "AWS::CloudFormation::CustomResource",
     "AWS::CloudFormation::Init",
     "AWS::CloudWatch::CompositeAlarm",
