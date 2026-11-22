@@ -442,11 +442,14 @@ function isFargateComputeEnvironment(properties: Record<string, unknown>): boole
  * `Password` fails with "Password cannot be updated." whether re-sent or
  * changed (measured, us-east-1). State keeps a secret-derived one as its
  * `{{resolve:...}}` expression while the desired bag holds the resolved value,
- * so the two never compare equal; for these keys a difference in secret
- * references alone is read as unchanged too. Parity gave way here: a changed
- * reference is left out as well, where CloudFormation would send it and fail,
- * since cdkd cannot tell it from the same reference, and no update can apply
- * it either way.
+ * so the two never compare equal; `CloudControlProvider.update` reads a
+ * difference in secret references alone as unchanged for these keys, so a
+ * rotated secret (same reference) is not re-sent, as CloudFormation sends
+ * nothing for an unchanged template. A RE-POINTED reference is told apart one
+ * layer up: the deploy engine compares the as-written values and refuses it
+ * before any call ({@link movedReferencesRefusedOnUpdate}). A path without that
+ * comparison (a rollback replay, `drift --revert`) keeps the omission.
+ * Listing a key not also in `WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED` is inert.
  */
 const WRITE_ONLY_KEYS_REFUSED_ON_UPDATE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['AWS::Connect::User', new Set(['Password'])],
@@ -455,6 +458,43 @@ const WRITE_ONLY_KEYS_REFUSED_ON_UPDATE: ReadonlyMap<string, ReadonlySet<string>
 /** Whether the handler of `resourceType` refuses `key` on every update. */
 export function isWriteOnlyKeyRefusedOnUpdate(resourceType: string, key: string): boolean {
   return WRITE_ONLY_KEYS_REFUSED_ON_UPDATE.get(resourceType)?.has(key) === true;
+}
+
+/** `<type>:<key>` pairs refused on update but not kept when omitted (inert rows). */
+export function refusedOnUpdateKeysNotKeptWhenOmitted(): string[] {
+  return [...WRITE_ONLY_KEYS_REFUSED_ON_UPDATE].flatMap(([type, keys]) =>
+    [...keys]
+      .filter((key) => WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(type)?.has(key) !== true)
+      .map((key) => `${type}:${key}`)
+  );
+}
+
+/**
+ * The keys of {@link WRITE_ONLY_KEYS_REFUSED_ON_UPDATE} whose AS-WRITTEN value
+ * (the `{{resolve:...}}` spelling state records) differs between the template
+ * and the record while either side holds a dynamic reference: the template
+ * points at another secret, which no update can apply and which
+ * `CloudControlProvider.update` would otherwise leave out silently (the record
+ * would name the new secret while AWS keeps the old password). A changed
+ * literal is not returned: it is sent, and AWS refuses it visibly. Nor is a key
+ * absent from either side.
+ */
+export function movedReferencesRefusedOnUpdate(
+  resourceType: string,
+  desiredAsWritten: Record<string, unknown>,
+  recordedAsWritten: Record<string, unknown>
+): string[] {
+  const keys = WRITE_ONLY_KEYS_REFUSED_ON_UPDATE.get(resourceType);
+  if (keys === undefined) return [];
+  const holdsReference = (value: unknown): boolean =>
+    JSON.stringify(value)?.includes('{{resolve:') === true;
+  return [...keys].filter((key) => {
+    const desired = desiredAsWritten[key];
+    const recorded = recordedAsWritten[key];
+    if (desired === undefined || recorded === undefined) return false;
+    if (isDeepStrictEqual(desired, recorded)) return false;
+    return holdsReference(desired) || holdsReference(recorded);
+  });
 }
 
 /**

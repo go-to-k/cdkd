@@ -93,14 +93,18 @@ describe('withCcReadBackExclusiveKeyRemovals (go-to-k/cdkd#6818, go-to-k/cdkd#68
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('adds no remove when the live model lacks the key or cannot be read', async () => {
+  it('adds no remove when the live model lacks the key (a missing-path remove fails the patch)', async () => {
     const patch: JsonPatchOp[] = [{ op: 'add', path: '/DefinitionString', value: 'x' }];
     expect(await withCcReadBackExclusiveKeyRemovals(FLOW, patch, {}, reader({ Id: 'f' }))).toBe(
       patch
     );
-    expect(await withCcReadBackExclusiveKeyRemovals(FLOW, patch, {}, reader(undefined))).toBe(
-      patch
-    );
+  });
+
+  it('adds no remove when the live model cannot be read', async () => {
+    const patch: JsonPatchOp[] = [{ op: 'add', path: '/DefinitionString', value: 'x' }];
+    const read = reader(undefined);
+    expect(await withCcReadBackExclusiveKeyRemovals(FLOW, patch, {}, read)).toBe(patch);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it('returns the same array for an unlisted type', async () => {

@@ -32,7 +32,11 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async (importOrig
 
 import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 import { withCcReadBackDefaultRemovals } from '../../../src/provisioning/cc-read-back-default-paths.js';
-import { clearWriteOnlyPropertiesCache } from '../../../src/provisioning/write-only-properties.js';
+import {
+  clearWriteOnlyPropertiesCache,
+  movedReferencesRefusedOnUpdate,
+  refusedOnUpdateKeysNotKeptWhenOmitted,
+} from '../../../src/provisioning/write-only-properties.js';
 import { createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import type { JsonPatchOp } from '../../../src/provisioning/json-patch-generator.js';
 
@@ -76,6 +80,24 @@ describe('Connect user read-back VoiceEnhancementConfigs (go-to-k/cdkd#6820)', (
   });
 });
 
+describe('write-only keys refused on update (go-to-k/cdkd#6820)', () => {
+  it('lists only keys the kept-when-omitted table also holds (else the row is inert)', () => {
+    expect(refusedOnUpdateKeysNotKeptWhenOmitted()).toEqual([]);
+  });
+
+  it('names a re-pointed reference, and nothing for the same reference, a literal or an absent side', () => {
+    const other = REFERENCE.replace('pw:', 'pw-b:');
+    const moved = (d: unknown, r: unknown, type = TYPE) =>
+      movedReferencesRefusedOnUpdate(type, { Password: d }, { Password: r });
+    expect(moved(other, REFERENCE)).toEqual(['Password']);
+    expect(moved('Literal1', REFERENCE)).toEqual(['Password']);
+    expect(moved(REFERENCE, REFERENCE)).toEqual([]);
+    expect(moved('Passw0rdNew', 'Passw0rdOld')).toEqual([]);
+    expect(moved(undefined, REFERENCE)).toEqual([]);
+    expect(moved(other, REFERENCE, 'AWS::DMS::Endpoint')).toEqual([]);
+  });
+});
+
 describe('CloudControlProvider.update for a Connect user (go-to-k/cdkd#6820)', () => {
   let sentPatch: JsonPatchOp[] | undefined;
 
@@ -112,6 +134,21 @@ describe('CloudControlProvider.update for a Connect user (go-to-k/cdkd#6820)', (
       .catch(() => undefined);
 
     expect(sentPatch).toEqual([...RENAME, REMOVE_VOICE]);
+  });
+
+  it('still sends a changed literal Password (AWS refuses it visibly)', async () => {
+    await new CloudControlProvider()
+      .update(
+        'User',
+        USER,
+        TYPE,
+        { Username: 'u', Password: 'Passw0rdNew', IdentityInfo: { FirstName: 'Beta' } },
+        { Username: 'u', Password: 'Passw0rdOld', IdentityInfo: { FirstName: 'Alpha' } },
+        { maskSecrets: createSecretMasker(new Map([[RESOLVED, REFERENCE]])) }
+      )
+      .catch(() => undefined);
+
+    expect(sentPatch).toContainEqual({ op: 'add', path: '/Password', value: 'Passw0rdNew' });
   });
 
   it('still sends a secret-derived Password the masker does not recognise', async () => {
