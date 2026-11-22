@@ -28,6 +28,9 @@ import { shouldRetainResource, type ResourceState } from '../types/state.js';
  *   `AWS::IAM::ManagedPolicy` provider asks the same of the principals it
  *   attaches to or detaches from (go-to-k/cdkd#6722). These are the only
  *   readers a `cdkd drift --revert` reaches (go-to-k/cdkd#6734).
+ * - `AWS::IAM::Role` / `AWS::IAM::Group` deletes that may strip their holders
+ *   (`stack-own-holders.ts`, go-to-k/cdkd#6808): the stack's own instance
+ *   profiles and member users, the only holders they remove.
  *
  * WHY AN ASYNC-LOCAL STORE rather than a `CreateContext` / `DeleteContext`
  * field: few providers read it, and the delete is reached from
