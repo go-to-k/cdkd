@@ -363,9 +363,10 @@ echo "==> Phase 6: rotate, kill cdkd once AWS applied the password -- the partia
 # validates every field (an aws:-prefixed tag included) before it writes
 # (measured). A killed deploy is the case the write-ahead exists for anyway: it
 # writes no journal and no failure save, so the record on disk is the one saved
-# ahead. The kill lands once the namespace leaves AVAILABLE, which only
-# UpdateNamespace does, and before cdkd records the update (Cloud Control
-# answers a few seconds later).
+# ahead. The kill lands at cdkd's first Cloud Control status poll: the update
+# request was accepted (its handler then runs to completion in AWS, so the
+# rotated password goes live), and cdkd has not recorded it. Killing on the
+# namespace leaving AVAILABLE instead raced the update's completion (measured).
 V3_NOW="$(current_version)"
 V4="$(rotate)"
 ns_available
@@ -373,17 +374,18 @@ env -u WOS_FAIL WOS_TAG=seven perl -e 'setpgrp(0,0); exec @ARGV or die' \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --yes --verbose >"${LOG_DIR}/p6.log" 2>&1 &
 P6_PID=$!
-P6_STATUS=AVAILABLE
-for _ in $(seq 1 1200); do
+P6_SENT=no
+for _ in $(seq 1 3000); do
+  if grep -qF 'UPDATE Ns: IN_PROGRESS' "${LOG_DIR}/p6.log"; then P6_SENT=yes; break; fi
   kill -0 "${P6_PID}" 2>/dev/null || break
-  P6_STATUS="$(ns_status)" || { echo "FAIL: namespace status undetermined" >&2; exit 1; }
-  [ "${P6_STATUS}" != AVAILABLE ] && break
-  sleep 0.5
+  sleep 0.2
 done
 kill -9 -- "-${P6_PID}" 2>/dev/null || true
 wait "${P6_PID}" 2>/dev/null || true
-[ "${P6_STATUS}" != AVAILABLE ] || { echo "FAIL: premise: the namespace never left AVAILABLE before the deploy ended" >&2; exit 1; }
-echo "    OK: killed the deploy after UpdateNamespace (namespace ${P6_STATUS})"
+[ "${P6_SENT}" = yes ] || { echo "FAIL: premise: the deploy ended before Cloud Control accepted the update" >&2; exit 1; }
+grep -qF 'UPDATE Ns: SUCCESS' "${LOG_DIR}/p6.log" \
+  && { echo "FAIL: premise: the update completed before the kill" >&2; exit 1; }
+echo "    OK: killed the deploy with the update in flight in Cloud Control"
 # The premise, from the record: the kill landed before cdkd recorded the update.
 expect_recorded "premise and guard: the record on disk is the one written ahead (no version)" ""
 # The update kept running in AWS after the kill: the rotated password is live.
