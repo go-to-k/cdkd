@@ -173,7 +173,7 @@ describe('stackOwnHolders reads the records bound around the delete', () => {
   });
 
   it("a deploy's removal of a Retain holder: not the stack's to strip; a removal that deletes it still is", () => {
-    const profile = (deletionPolicy?: 'Retain' | 'Delete') => ({
+    const profile = (deletionPolicy?: 'Retain' | 'RetainExceptOnCreate' | 'Delete') => ({
       ...record('AWS::IAM::InstanceProfile', 'p', { Roles: ['my-role'] }),
       ...(deletionPolicy && { deletionPolicy }),
     });
@@ -188,6 +188,7 @@ describe('stackOwnHolders reads the records bound around the delete', () => {
     const groupHolders = (u: ResourceState) =>
       withStackRecords(leaving({ U: u }), () => stackOwnHolders('AWS::IAM::Group', 'my-group'));
     expect(roleHolders(profile('Retain'))).toEqual([]);
+    expect(roleHolders(profile('RetainExceptOnCreate'))).toEqual([]);
     expect(groupHolders(user('Retain'))).toEqual([]);
     expect(roleHolders(profile('Delete'))).toEqual([{ name: 'p' }]);
     expect(roleHolders(profile())).toEqual([{ name: 'p' }]);
