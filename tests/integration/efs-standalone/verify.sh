@@ -16,7 +16,12 @@
 # ThroughputMode: provisioned without ProvisionedThroughputInMibps is refused
 # with nothing changed, as CloudFormation refuses it (Phase 1a, an EXPECTED
 # deploy failure, issue #5547). Also asserts the destroy path
-# cleans up the file system, mount target, access point, and state file.
+# cleans up the file system, mount target, access point, and state file, with
+# the file system made a replication SOURCE out of band first (Phase 1d, issue
+# #6806): DeleteFileSystem refuses a source, so cdkd deletes its replication
+# configuration, waits out the teardown (about 6 minutes) and deletes it. The
+# destination file system is left standing, as CloudFormation leaves it; the
+# run deletes it itself.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -69,9 +74,79 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Issue #6806: the replication Phase 1d creates out of band. A run stopped
+# before its own teardown leaves the configuration (which blocks the source's
+# delete) and the destination file system. cleanup sweeps the pair this run
+# recorded, plus any destination carrying REPL_DEST_TAG (an earlier run killed
+# before its trap ran).
+REPL_SOURCE_ID=""
+REPL_DEST_ID=""
+REPL_DEST_TAG="${STACK}-replication-destination"
+REPL_NOT_FOUND='not ?found|no ?such|does ?not ?exist|non ?existent|\(404'
+# Prints "<source> <destination>" per pair to sweep.
+replication_pairs() { (
+  set +eu
+  [ -n "${REPL_SOURCE_ID}${REPL_DEST_ID}" ] && echo "${REPL_SOURCE_ID:--} ${REPL_DEST_ID:--}"
+  case "${STACK}" in
+    Efs?*) ;;
+    *) echo "    WARN: teardown sweep refused a stack scope outside Efs*: '${STACK:-<empty>}'" >&2
+       exit 0 ;;
+  esac
+  for dest in $(aws efs describe-file-systems --region "${REGION}" \
+    --query "FileSystems[?Tags[?Key=='Name' && Value=='${REPL_DEST_TAG}']].FileSystemId" \
+    --output text 2>/dev/null); do
+    [ "${dest}" = "${REPL_DEST_ID}" ] && continue # the recorded pair, listed above
+    src=$(aws efs describe-replication-configurations --file-system-id "${dest}" --region "${REGION}" \
+      --query 'Replications[0].SourceFileSystemId' --output text 2>/dev/null)
+    case "${src}" in fs-?*) ;; *) src=- ;; esac
+    echo "${src} ${dest}"
+  done
+) }
+# Delete the configuration and wait out its teardown, so the state destroy
+# below can delete the source.
+sweep_replication_config() { ( # usage: sweep_replication_config <source|-> <destination|->
+  set +eu
+  case "$1" in
+    fs-?*) aws efs delete-replication-configuration --source-file-system-id "$1" \
+             --region "${REGION}" >/dev/null 2>&1 ;;
+    -) ;;
+    *) echo "    WARN: teardown sweep refused a replication source outside fs-*: '$1'" >&2
+       exit 0 ;;
+  esac
+  case "$2" in fs-?*) ;; *) exit 0 ;; esac
+  for _ in $(seq 1 60); do
+    out=$(aws efs describe-replication-configurations --file-system-id "$2" \
+      --region "${REGION}" 2>&1)
+    if [ $? -ne 0 ] && grep -qiE "${REPL_NOT_FOUND}" <<<"${out}"; then exit 0; fi
+    sleep 15
+  done
+  echo "    WARN: the replication configuration to $2 was still tearing down after 15 minutes" >&2
+) }
+# Delete the destination file system, retrying while its teardown finishes.
+sweep_replication_destination() { ( # usage: sweep_replication_destination <destination|->
+  set +eu
+  case "$1" in
+    fs-?*) ;;
+    -) exit 0 ;;
+    *) echo "    WARN: teardown sweep refused a replication destination outside fs-*: '$1'" >&2
+       exit 0 ;;
+  esac
+  for _ in $(seq 1 20); do
+    out=$(aws efs delete-file-system --file-system-id "$1" --region "${REGION}" 2>&1) && exit 0
+    grep -qiE "${REPL_NOT_FOUND}" <<<"${out}" && exit 0
+    sleep 15
+  done
+  echo "    WARN: replication destination $1 could not be deleted: ${out}" >&2
+) }
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  local pairs pair_src pair_dest
+  pairs=$(replication_pairs)
+  while read -r pair_src pair_dest; do
+    [ -n "${pair_src}" ] && sweep_replication_config "${pair_src}" "${pair_dest}"
+  done <<<"${pairs}"
   local destroy_rc=1
   if [ -x "${LOCAL_DIST}" ] || [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
@@ -84,6 +159,9 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  while read -r pair_src pair_dest; do
+    [ -n "${pair_dest}" ] && sweep_replication_destination "${pair_dest}"
+  done <<<"${pairs}"
   set -eu
 }
 
@@ -544,18 +622,108 @@ case ",${AP_PATHS_AFTER}," in
   *) echo "FAIL: no AccessPointTags drift after an out-of-band tag (paths: '${AP_PATHS_AFTER}') (#6696)" >&2; exit 1 ;;
 esac
 
+# --- Phase 1d: the file system becomes a replication SOURCE (#6806) ----
+# DeleteFileSystem refuses a replication source with FileSystemInUse ("... it
+# is in a replication"). cdkd's delete then deletes the configuration this
+# file system is the source of, waits out its teardown and deletes it
+# (go-to-k/cdkd#6802); before that the destroy failed on the refusal. Created
+# out of band: a declared ReplicationConfiguration routes the file system to
+# Cloud Control. Same region, so the arm's cleanup stays in one region.
+echo "==> Phase 1d: replicate the file system out of band (it becomes a replication source)"
+REPL_SOURCE_ID="${FS_ID}"
+REPL_DEST_ID=$(aws efs create-replication-configuration --source-file-system-id "${FS_ID}" \
+  --destinations "Region=${REGION}" --region "${REGION}" \
+  --query 'Destinations[0].FileSystemId' --output text)
+case "${REPL_DEST_ID}" in
+  fs-?*) echo "    replication destination: ${REPL_DEST_ID}" ;;
+  *) echo "FAIL: create-replication-configuration named no destination file system (got '${REPL_DEST_ID}') (#6806)" >&2
+     exit 1 ;;
+esac
+# The tag lets a later run's pre-run cleanup find a destination this run
+# could not sweep (a runner killed before its trap). Not this arm's subject,
+# and this run's own ids still drive its cleanup, so a refusal only warns.
+aws efs tag-resource --resource-id "${REPL_DEST_ID}" --region "${REGION}" \
+  --tags "Key=Name,Value=${REPL_DEST_TAG}" \
+  || echo "    WARN: could not tag replication destination ${REPL_DEST_ID}; a killed run would leave it unattributed" >&2
+# Delete from a settled configuration: wait for ENABLED (an empty source
+# copies in minutes).
+REPL_STATUS=""
+for _i in $(seq 1 120); do
+  REPL_STATUS=$(aws efs describe-replication-configurations --file-system-id "${FS_ID}" --region "${REGION}" \
+    --query "Replications[?SourceFileSystemId=='${FS_ID}'].Destinations[] | [?FileSystemId=='${REPL_DEST_ID}'].Status | [0]" \
+    --output text)
+  [ "${REPL_STATUS}" = "ENABLED" ] && break
+  case "${REPL_STATUS}" in
+    ERROR|PAUSED|PAUSING|DELETING)
+      echo "FAIL: the replication to ${REPL_DEST_ID} is ${REPL_STATUS}, expected it to reach ENABLED (#6806)" >&2
+      exit 1 ;;
+  esac
+  sleep 10
+done
+if [ "${REPL_STATUS}" != "ENABLED" ]; then
+  echo "FAIL: the replication to ${REPL_DEST_ID} is '${REPL_STATUS}' after 20 minutes, expected ENABLED (#6806)" >&2
+  exit 1
+fi
+echo "    OK: ${FS_ID} is the source of an ENABLED replication to ${REPL_DEST_ID}"
+
 # --- Phase 2: destroy -------------------------------------------------
-echo "==> Phase 2: destroy"
+echo "==> Phase 2: destroy (the replication teardown takes about 6 minutes)"
+set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --force
+DESTROY_RC=$?
+set -e
+if [ "${DESTROY_RC}" -ne 0 ]; then
+  echo "FAIL: destroy of the replication-source file system ${FS_ID} failed (rc=${DESTROY_RC}); cdkd must delete its replication configuration, wait out the teardown, then delete it (#6806)" >&2
+  exit 1
+fi
 
 assert_gone "EFS FileSystem ${FS_ID} still exists after destroy" aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}"
 echo "    OK: EFS FileSystem is gone"
+assert_gone "the replication configuration to ${REPL_DEST_ID} still exists after destroy (#6806)" \
+  aws efs describe-replication-configurations --file-system-id "${REPL_DEST_ID}" --region "${REGION}"
+echo "    OK: the source's replication configuration is gone (#6806)"
+
+# Destroy leaves the destination standing, as CloudFormation does: delete it.
+echo "==> Phase 2a: delete the replication destination ${REPL_DEST_ID}"
+# Retry a brief FileSystemInUse while the destination's side of the teardown
+# settles; any other refusal fails the run.
+DEST_DELETE_OUT=""
+for _i in $(seq 1 8); do
+  if DEST_DELETE_OUT=$(aws efs delete-file-system --file-system-id "${REPL_DEST_ID}" --region "${REGION}" 2>&1); then
+    DEST_DELETE_OUT=""
+    break
+  fi
+  if ! grep -q FileSystemInUse <<<"${DEST_DELETE_OUT}"; then
+    echo "FAIL: delete-file-system of replication destination ${REPL_DEST_ID}: ${DEST_DELETE_OUT} (#6806)" >&2
+    exit 1
+  fi
+  sleep 15
+done
+if [ -n "${DEST_DELETE_OUT}" ]; then
+  echo "FAIL: replication destination ${REPL_DEST_ID} still refused its delete after 2 minutes: ${DEST_DELETE_OUT} (#6806)" >&2
+  exit 1
+fi
+DEST_GONE=""
+for _i in $(seq 1 24); do
+  if gone_probe aws efs describe-file-systems --file-system-id "${REPL_DEST_ID}" --region "${REGION}"; then
+    DEST_GONE=1
+    break
+  fi
+  sleep 5
+done
+if [ -z "${DEST_GONE}" ]; then
+  echo "FAIL: replication destination ${REPL_DEST_ID} still exists 2 minutes after its delete (#6806)" >&2
+  exit 1
+fi
+echo "    OK: replication destination ${REPL_DEST_ID} is gone"
+REPL_SOURCE_ID=""
+REPL_DEST_ID=""
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #1160 removal resets + #2762 MountTarget addressing + #5464 retag in place + #6696 tag drift + clean destroy)"
+echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #1160 removal resets + #2762 MountTarget addressing + #5464 retag in place + #6696 tag drift + #6806 replication-source destroy + clean destroy)"

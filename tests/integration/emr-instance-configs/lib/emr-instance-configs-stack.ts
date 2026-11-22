@@ -46,12 +46,19 @@ import type { Construct } from 'constructs';
  * group to 0 first. On destroy the group depends on the cluster (via
  * `JobFlowId`), so it is deleted before the cluster — zero orphans once the
  * cluster terminates.
+ *
+ * `scaled-group` mode (go-to-k/cdkd#6806) adds a second TASK group carrying
+ * an `AutoScalingPolicy`; the next deploy drops it, so cdkd deletes it while
+ * the cluster stays up. The delete must remove the policy before the scale to
+ * 0, or its CloudWatch alarm and Application Auto Scaling target outlive the
+ * group.
  */
 export class EmrInstanceConfigsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const updateMode = (process.env.CDKD_TEST_UPDATE ?? '').split(',');
+    const isUpdate = updateMode.includes('true');
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -82,6 +89,21 @@ export class EmrInstanceConfigsStack extends cdk.Stack {
       roles: [ec2Role.roleName],
     });
 
+    // The role EMR automatic scaling acts through (go-to-k/cdkd#6806). A
+    // cluster's AutoScalingRole is create-only, so it is declared from the
+    // first deploy, though only the `scaled-group` mode's policy uses it.
+    const autoScalingRole = new iam.Role(this, 'EmrAutoScalingRole', {
+      assumedBy: new iam.CompositePrincipal(
+        new iam.ServicePrincipal('elasticmapreduce.amazonaws.com'),
+        new iam.ServicePrincipal('application-autoscaling.amazonaws.com')
+      ),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          'service-role/AmazonElasticMapReduceforAutoScalingRole'
+        ),
+      ],
+    });
+
     // Explicit EMR-managed security group shared by master + slave. Providing
     // one stops EMR from auto-creating its own `ElasticMapReduce-master` /
     // `-slave` groups (which are NOT in the CDK template, so cdkd's destroy
@@ -100,6 +122,7 @@ export class EmrInstanceConfigsStack extends cdk.Stack {
       releaseLabel: 'emr-7.9.0',
       serviceRole: serviceRole.roleArn,
       jobFlowRole: instanceProfile.ref,
+      autoScalingRole: autoScalingRole.roleName,
       // Cap orphan cost if a destroy is ever skipped.
       autoTerminationPolicy: { idleTimeout: 3600 },
       instances: {
@@ -131,7 +154,7 @@ export class EmrInstanceConfigsStack extends cdk.Stack {
         { key: 'cdkd-integ', value: 'emr-instance-configs' },
       ],
     });
-    cluster.node.addDependency(serviceRole, ec2Role, instanceProfile);
+    cluster.node.addDependency(serviceRole, ec2Role, instanceProfile, autoScalingRole);
 
     // The standalone TASK instance group — the resource under test. It is
     // added to the EXISTING cluster (referenced by JobFlowId) via
@@ -159,6 +182,50 @@ export class EmrInstanceConfigsStack extends cdk.Stack {
     // AddInstanceGroups requires the cluster to be WAITING/RUNNING first; the
     // JobFlowId Ref already induces this ordering, but make it explicit.
     taskGroup.node.addDependency(cluster);
+
+    // go-to-k/cdkd#6806: a TASK group with an automatic scaling policy. One
+    // scale-out rule that an idle cluster never trips (YARN memory available
+    // stays near 100%), so the group keeps its 1 instance. verify.sh reads its
+    // id from state (logical id ScaledTaskGroup).
+    // allow-mode-gated-drop: the deploy after the scaled-group one drops it ON PURPOSE; that delete, with the cluster still up, is the arm (go-to-k/cdkd#6806).
+    if (updateMode.includes('scaled-group')) {
+      new emr.CfnInstanceGroupConfig(this, 'ScaledTaskGroup', {
+        jobFlowId: cluster.ref,
+        instanceRole: 'TASK',
+        instanceType: 'm5.xlarge',
+        instanceCount: 1,
+        market: 'ON_DEMAND',
+        name: 'cdkd-integ-scaled-task-group',
+        autoScalingPolicy: {
+          constraints: { minCapacity: 1, maxCapacity: 2 },
+          rules: [
+            {
+              name: 'cdkd-integ-scale-out',
+              action: {
+                simpleScalingPolicyConfiguration: {
+                  adjustmentType: 'CHANGE_IN_CAPACITY',
+                  scalingAdjustment: 1,
+                  coolDown: 300,
+                },
+              },
+              trigger: {
+                cloudWatchAlarmDefinition: {
+                  comparisonOperator: 'LESS_THAN',
+                  metricName: 'YARNMemoryAvailablePercentage',
+                  namespace: 'AWS/ElasticMapReduce',
+                  period: 300,
+                  evaluationPeriods: 1,
+                  statistic: 'AVERAGE',
+                  threshold: 15,
+                  unit: 'PERCENT',
+                  dimensions: [{ key: 'JobFlowId', value: cluster.ref }],
+                },
+              },
+            },
+          ],
+        },
+      }).node.addDependency(cluster);
+    }
 
     new cdk.CfnOutput(this, 'ClusterId', { value: cluster.ref });
     // Ref / Fn::GetAtt Id of the standalone instance group — proves the
