@@ -26,6 +26,7 @@ import {
 import { safeMsg } from '../../../utils/display-safe.js';
 import {
   type FreshNoEchoCeilingVerdict,
+  grantSentence,
   isReplacementCeiling,
   keyOrderFreeJson,
   liveHoldsFreshLeaves,
@@ -531,9 +532,12 @@ export async function provisionUpdate(
       }
       const verdict = verdictAt(pc.path);
       if (verdict === 'read-failed') {
+        const denied = read !== undefined && 'failure' in read ? read.denied : undefined;
         throw markNonRetryable(
           new CdkdError(
-            safeMsg`${logicalId}.${pc.path} is a create-only property a NoEcho parameter feeds, and reading the resource back from AWS to compare it failed. cdkd does not replace a resource on a failed read: re-run the deploy.`,
+            denied !== undefined
+              ? safeMsg`${logicalId}.${pc.path} is a create-only property a NoEcho parameter feeds, and reading the resource back from AWS to compare it failed. cdkd does not replace a resource on a failed read. ${grantSentence(denied)} the deploy.`
+              : safeMsg`${logicalId}.${pc.path} is a create-only property a NoEcho parameter feeds, and reading the resource back from AWS to compare it failed. cdkd does not replace a resource on a failed read: re-run the deploy.`,
             'NOECHO_READBACK_FAILED'
           )
         );

@@ -55,6 +55,9 @@ describe('KMSProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop answers a case left queued; an unshaped call answers `{}`.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
     provider = new KMSProvider();
   });
 
@@ -150,7 +153,7 @@ describe('KMSProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('RotationPeriodInDays');
   });
 
-  it('omits KeyPolicy when GetKeyPolicy fails with permission error (defensive)', async () => {
+  it('rejects when GetKeyPolicy fails with a permission error (#6759)', async () => {
     mockSend.mockResolvedValueOnce({
       KeyMetadata: { KeyId: 'k', KeySpec: 'SYMMETRIC_DEFAULT', Enabled: true },
     });
@@ -159,12 +162,11 @@ describe('KMSProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ KeyRotationEnabled: false });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('k', 'KeyLogical', 'AWS::KMS::Key');
-
-    // KeyPolicy key is NOT emitted; the comparator's state-keys-only top-
-    // level walk treats absence as "drift unknown" rather than firing on
-    // a transient permission blip.
-    expect(result).not.toHaveProperty('KeyPolicy');
+    // An omitted KeyPolicy is never compared, so the run must report the key
+    // not compared instead of no drift.
+    await expect(provider.readCurrentState('k', 'KeyLogical', 'AWS::KMS::Key')).rejects.toThrow(
+      'AccessDenied'
+    );
   });
 
   it('returns CFn-shaped Alias fields from ListAliases', async () => {
@@ -236,7 +238,7 @@ describe('KMSProvider.readCurrentState', () => {
     expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('keeps reading the key when GetKeyPolicy is denied (not the sentinel)', async () => {
+  it('rejects with the error, not the sentinel, when GetKeyPolicy is denied', async () => {
     mockSend.mockResolvedValueOnce({
       KeyMetadata: { KeyId: 'abcd-1234', KeySpec: 'SYMMETRIC_DEFAULT', Enabled: true },
     });
@@ -246,11 +248,9 @@ describe('KMSProvider.readCurrentState', () => {
     mockSend.mockResolvedValueOnce({ KeyRotationEnabled: false });
     mockSend.mockResolvedValueOnce({ Tags: [] });
 
-    const result = await provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key');
-
-    expect(result).not.toBe(RESOURCE_NOT_FOUND);
-    expect(result).toMatchObject({ Enabled: true, EnableKeyRotation: false });
-    expect(result).not.toHaveProperty('KeyPolicy');
+    await expect(
+      provider.readCurrentState('abcd-1234', 'KeyLogical', 'AWS::KMS::Key')
+    ).rejects.toThrow('denied');
   });
 
   it('returns RESOURCE_NOT_FOUND when alias not in any page', async () => {

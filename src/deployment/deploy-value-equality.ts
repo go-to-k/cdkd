@@ -51,7 +51,77 @@ export type FreshNoEchoCeilingVerdict = 'held' | 'not-readable' | 'read-failed' 
 /** The result of reading a reader back once for its fresh-`NoEcho` ceilings. */
 export type FreshNoEchoReadback =
   | { live: Record<string, unknown> }
-  | { failure: 'not-readable' | 'read-failed' };
+  | { failure: 'not-readable' | 'read-failed'; denied?: ReadDenial };
+
+/**
+ * A readback AWS refused for a missing permission (go-to-k/cdkd#6759): a
+ * re-run reads it the same way, so the refusal names the permission to grant
+ * instead of suggesting a retry. `action` is the IAM action AWS named in the
+ * error ("not authorized to perform: kms:ListResourceTags"), kept only when it
+ * is identifier-shaped; `errorClass` likewise. Nothing else of the error is
+ * kept: its message could echo a value.
+ */
+export interface ReadDenial {
+  readonly action?: string;
+  readonly errorClass?: string;
+}
+
+const IAM_ACTION = /^[a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128}$/;
+const ACTION_IN_MESSAGE = [
+  /\bperform:\s*([a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128})(?=\s|$|[.,;])/,
+  /\ballows the ([a-z0-9-]{1,64}:[A-Za-z0-9*]{1,128}) action\b/,
+];
+/**
+ * The access-denial classes, by name only: a bare HTTP 403 also covers an
+ * expired or invalid credential (`ExpiredToken`, `InvalidClientTokenId`,
+ * `SignatureDoesNotMatch`), which fresh credentials and a re-run fix. The
+ * price: a bodiless 403 (S3's HEAD, named `Forbidden` / `403`) keeps the
+ * retry wording even when a permission is missing.
+ */
+const DENIAL_CLASSES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'AccessDeniedException',
+  'AuthorizationError',
+  'UnauthorizedOperation',
+]);
+
+/** The {@link ReadDenial} of a readback error, or `undefined` when it is not an access denial. */
+export function readDenialOf(error: unknown): ReadDenial | undefined {
+  try {
+    const name = (error as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !DENIAL_CLASSES.has(name)) return undefined;
+    const message = (error as { message?: unknown }).message;
+    let action: string | undefined;
+    if (typeof message === 'string') {
+      for (const pattern of ACTION_IN_MESSAGE) {
+        const found = pattern.exec(message)?.[1];
+        if (found !== undefined && IAM_ACTION.test(found)) {
+          action = found;
+          break;
+        }
+      }
+    }
+    return {
+      ...(action !== undefined && { action }),
+      errorClass: name,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The sentence a refusal ends with for a denied readback: what to grant. */
+export function grantSentence(denied: ReadDenial): string {
+  const what =
+    denied.action !== undefined
+      ? `the ${denied.action} permission`
+      : `the read permission the provider's readback of this resource type needs`;
+  return (
+    `AWS denied the read${denied.errorClass !== undefined ? ` (${denied.errorClass})` : ''}, ` +
+    `and re-running would be denied the same way: grant ${what} to the credentials cdkd runs ` +
+    `with, then re-run`
+  );
+}
 
 /**
  * Does `live` hold every fresh leaf's plaintext at that leaf's position, with

@@ -7,6 +7,8 @@ import {
   GetEventConfigurationCommand,
   ListTagsCommand,
   TrailNotFoundException,
+  InsightNotEnabledException,
+  ResourceNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -30,12 +32,13 @@ import { advancedSelectorsToCfn, trailAttributes } from './shared.js';
 /**
  * Read the AWS-current CloudTrail Trail configuration in CFn-property shape.
  *
- * Issues `GetTrail`, plus best-effort `GetTrailStatus` (for `IsLogging`)
- * and `GetEventSelectors` (for `EventSelectors`). Each enrichment call is
- * wrapped in its own try/catch so an "AccessDenied" or other transient
- * error on the secondary calls omits that key without failing the
- * whole snapshot — the comparator only descends into keys present in
- * state.
+ * Issues `GetTrail`, plus `GetTrailStatus` (for `IsLogging`) and
+ * `GetEventSelectors` (for `EventSelectors`). A secondary call that fails
+ * with its own not-found code (`TrailNotFoundException`: the trail went away
+ * between the calls) omits that key, as before; any OTHER failure (an
+ * `AccessDenied`, a throttle) throws, so `cdkd drift` reports the resource
+ * not compared (`readFailed`) instead of silently never comparing the key
+ * (issue #6759).
  *
  * Mapping: AWS `GetTrail` returns `KmsKeyId` (lowercase `s`) while CFn
  * uses `KMSKeyId`; we re-shape the key. SnsTopicARN is the Trail's
@@ -132,13 +135,13 @@ export async function readCurrentState(
   // delivery events).
   result['RecursiveLogging'] = trail.RecursiveLogging ?? true;
 
-  // IsLogging — separate call. Treat any error as "feature not configured"
-  // and omit the key.
+  // IsLogging — separate call. Only the trail's own not-found omits the key
+  // (issue #6759): any other failure throws.
   try {
     const status = await this.getClient().send(new GetTrailStatusCommand({ Name: physicalId }));
     result['IsLogging'] = status.IsLogging ?? false;
-  } catch {
-    // Best-effort.
+  } catch (err) {
+    if (!(err instanceof TrailNotFoundException)) throw err;
   }
 
   // EventSelectors — separate call. AWS returns either `EventSelectors`
@@ -151,6 +154,68 @@ export async function readCurrentState(
   // discriminator-false state cannot legally have EventSelectors, so
   // a console-side switch back to basic EventSelectors shows up on
   // the next read.
+  await readSelectorBlocks.call(this, physicalId, result);
+
+  // InsightSelectors — separate call. Same shape on both sides
+  // (CFn `[{InsightType}]` matches SDK), so we emit verbatim and
+  // always-emit `[]` on no result so a console-side ADD is visible
+  // to drift on the v3 observedProperties baseline.
+  let insightSelectors: Array<{ InsightType?: string }> = [];
+  try {
+    const insight = await this.getClient().send(
+      new GetInsightSelectorsCommand({ TrailName: physicalId })
+    );
+    insightSelectors = (insight.InsightSelectors ?? []).map((s) => ({
+      ...(s.InsightType !== undefined && { InsightType: s.InsightType }),
+    }));
+  } catch (err) {
+    // A trail with Insights never enabled reports none (`[]`); any failure
+    // other than that and the trail's own not-found throws (issue #6759).
+    if (!(err instanceof InsightNotEnabledException || err instanceof TrailNotFoundException)) {
+      throw err;
+    }
+  }
+  result['InsightSelectors'] = insightSelectors;
+
+  // Tags via ListTags. Always emit `Tags: []` so a console-side tag
+  // add on a previously-untagged trail is detectable as drift (per
+  // § 3b). When the trail ARN is missing or ListTags reports the trail not
+  // found, fall back to the empty placeholder rather than dropping the key;
+  // any other ListTags failure throws (issue #6759).
+  let tags: Array<{ Key: string; Value: string }> = [];
+  if (trail.TrailARN) {
+    try {
+      const tagsResp = await this.getClient().send(
+        new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
+      );
+      tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
+    } catch (err) {
+      if (!(err instanceof ResourceNotFoundException)) throw err;
+    }
+  }
+  result['Tags'] = tags;
+
+  // AggregationConfigurations — separate call (issue #2762), same member
+  // names on both sides, `[]` being what AWS reports for a trail with none.
+  // As for AdvancedEventSelectors, a console-side add is drift only where
+  // the template declares the key (`undeclaredEmptyObservedKeys`). The trail's
+  // not-found omits the key rather than claiming the trail has none; any other
+  // failure throws (issue #6759).
+  await readAggregationBlock.call(this, physicalId, result);
+
+  return result;
+}
+
+/**
+ * `EventSelectors` / `AdvancedEventSelectors` from `GetEventSelectors`, into
+ * `result` (see {@link readCurrentState}). The trail's not-found leaves both
+ * out; any other failure throws.
+ */
+async function readSelectorBlocks(
+  this: CloudTrailProvider,
+  physicalId: string,
+  result: Record<string, unknown>
+): Promise<void> {
   try {
     const sel = await this.getClient().send(
       new GetEventSelectorsCommand({ TrailName: physicalId })
@@ -169,51 +234,21 @@ export async function readCurrentState(
     result['AdvancedEventSelectors'] = hasAdvanced
       ? advancedSelectorsToCfn(sel.AdvancedEventSelectors ?? [])
       : [];
-  } catch {
-    // Best-effort.
+  } catch (err) {
+    if (!(err instanceof TrailNotFoundException)) throw err;
   }
+}
 
-  // InsightSelectors — separate call. Same shape on both sides
-  // (CFn `[{InsightType}]` matches SDK), so we emit verbatim and
-  // always-emit `[]` on no result so a console-side ADD is visible
-  // to drift on the v3 observedProperties baseline.
-  let insightSelectors: Array<{ InsightType?: string }> = [];
-  try {
-    const insight = await this.getClient().send(
-      new GetInsightSelectorsCommand({ TrailName: physicalId })
-    );
-    insightSelectors = (insight.InsightSelectors ?? []).map((s) => ({
-      ...(s.InsightType !== undefined && { InsightType: s.InsightType }),
-    }));
-  } catch {
-    // InsightNotEnabledException / permissions / etc — best-effort.
-  }
-  result['InsightSelectors'] = insightSelectors;
-
-  // Tags via ListTags. Always emit `Tags: []` so a console-side tag
-  // add on a previously-untagged trail is detectable as drift (per
-  // § 3b). When the trail ARN is missing or ListTags fails, fall back
-  // to the empty placeholder rather than dropping the key.
-  let tags: Array<{ Key: string; Value: string }> = [];
-  if (trail.TrailARN) {
-    try {
-      const tagsResp = await this.getClient().send(
-        new ListTagsCommand({ ResourceIdList: [trail.TrailARN] })
-      );
-      tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagList?.[0]?.TagsList);
-    } catch (err) {
-      this.logger.debug(
-        `CloudTrail ListTags(${trail.TrailARN}) failed: ${describeAwsFailure(err).detail}`
-      );
-    }
-  }
-  result['Tags'] = tags;
-
-  // AggregationConfigurations — separate call (issue #2762), same member
-  // names on both sides, `[]` being what AWS reports for a trail with none.
-  // As for AdvancedEventSelectors, a console-side add is drift only where
-  // the template declares the key (`undeclaredEmptyObservedKeys`). A failed
-  // read omits the key rather than claiming the trail has none.
+/**
+ * `AggregationConfigurations` from `GetEventConfiguration`, into `result`
+ * (see {@link readCurrentState}). The trail's not-found leaves it out; any
+ * other failure throws.
+ */
+async function readAggregationBlock(
+  this: CloudTrailProvider,
+  physicalId: string,
+  result: Record<string, unknown>
+): Promise<void> {
   try {
     const config = await this.getClient().send(
       new GetEventConfigurationCommand({ TrailName: physicalId })
@@ -223,12 +258,48 @@ export async function readCurrentState(
       ...(a.Templates !== undefined && { Templates: a.Templates }),
     }));
   } catch (err) {
-    this.logger.debug(
-      safeMsg`CloudTrail GetEventConfiguration(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-    );
+    if (!(err instanceof TrailNotFoundException)) throw err;
   }
+}
 
-  return result;
+/**
+ * The live read-back a skipped block is recorded from when its previous
+ * value is unusable: only the calls behind those blocks (go-to-k/cdkd#6759),
+ * so a failure of an unrelated read (tags, logging status) cannot drop them.
+ * Best-effort per call: a failed one leaves its blocks out, with a warning,
+ * rather than failing an update AWS already applied.
+ */
+export async function readLiveForRecord(
+  this: CloudTrailProvider,
+  physicalId: string,
+  _resourceType: string
+): Promise<Record<string, unknown> | undefined> {
+  const live: Record<string, unknown> = {};
+  const reads: Array<[string, () => Promise<void>]> = [
+    [
+      'EventSelectors / AdvancedEventSelectors',
+      () => readSelectorBlocks.call(this, physicalId, live),
+    ],
+    ['AggregationConfigurations', () => readAggregationBlock.call(this, physicalId, live)],
+  ];
+  for (const [keys, read] of reads) {
+    try {
+      await read();
+    } catch (error) {
+      // The class at warn, the AWS text at debug (#2319): an AccessDenied
+      // detail names the caller's role.
+      const name = (error as { name?: unknown } | null)?.name;
+      const errorClass =
+        typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : 'Error';
+      this.logger.warn(
+        safeMsg`CloudTrail read-back of ${keys} for the record failed (${errorClass}); a skipped block among them is left out of the record.`
+      );
+      this.logger.debug(
+        safeMsg`CloudTrail read-back of ${keys} failed: ${describeAwsFailure(error).detail}`
+      );
+    }
+  }
+  return live;
 }
 
 export async function importImpl(

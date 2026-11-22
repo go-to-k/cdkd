@@ -68,7 +68,8 @@ function liveInstanceWithAttachment(): void {
         ],
       });
     }
-    return Promise.reject(new Error('not modelled'));
+    // The per-property reads (#6759: a failed one rejects the read).
+    return Promise.resolve({});
   });
 }
 

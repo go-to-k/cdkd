@@ -56,6 +56,9 @@ describe('SSMParameterProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop answers a case left queued; an unshaped call answers `{}`.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
     provider = new SSMParameterProvider();
   });
 
@@ -139,7 +142,7 @@ describe('SSMParameterProvider.readCurrentState', () => {
     expect(result).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('emits Policies=[] placeholder when DescribeParameters fails (best-effort)', async () => {
+  it('rejects when DescribeParameters fails (#6759): no placeholder read as "no policies"', async () => {
     mockSend
       .mockResolvedValueOnce({
         Parameter: {
@@ -148,21 +151,11 @@ describe('SSMParameterProvider.readCurrentState', () => {
           Value: 'bar',
         },
       })
-      .mockRejectedValueOnce(new Error('access denied'))
-      .mockResolvedValueOnce({ TagList: [] });
+      .mockRejectedValueOnce(new Error('access denied'));
 
-    const result = await provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter');
-
-    expect(result).toEqual({
-      Name: '/foo',
-      Type: 'String',
-      Value: 'bar',
-      Tags: {},
-      // Always-emit fallback so console-side ADD on a previously-
-      // un-policy'd parameter surfaces as drift even when
-      // DescribeParameters errored.
-      Policies: [],
-    });
+    await expect(
+      provider.readCurrentState('/foo', 'ParamLogical', 'AWS::SSM::Parameter')
+    ).rejects.toThrow('access denied');
   });
 
   it('surfaces Tags from ListTagsForResource with aws:* filtered out', async () => {

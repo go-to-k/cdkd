@@ -21,6 +21,7 @@ import {
 import { canonicalJson } from '../secret-redaction/noecho-leaves.js';
 import { markNonRetryable } from '../retryable-errors.js';
 import { shownLogicalId } from './messages.js';
+import { type ReadDenial, grantSentence, readDenialOf } from '../deploy-value-equality.js';
 import type { RollbackExecutorContext } from './types.js';
 
 /**
@@ -80,6 +81,10 @@ export interface NoEchoReplaySubstitution {
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
 
 type ReadFailure = 'not-readable' | 'read-failed';
+interface FailedRead {
+  readonly failure: ReadFailure;
+  readonly denied?: ReadDenial;
+}
 
 /** One value the revert put at a marked coordinate. */
 export interface SubstitutedLeaf {
@@ -110,12 +115,15 @@ function shownPaths(coordinates: readonly NoEchoCoordinate[]): string {
 function unreadableNoEchoLeafRefusal(
   logicalId: string,
   coordinates: readonly NoEchoCoordinate[],
-  failure: ReadFailure
+  failure: ReadFailure,
+  denied?: ReadDenial
 ): CdkdError {
   const why =
     failure === 'read-failed'
       ? 'reading the resource back from AWS failed, so cdkd could not learn the value AWS holds ' +
-        'there (re-running the rollback retries the read)'
+        (denied !== undefined
+          ? `there (${grantSentence(denied)} the rollback)`
+          : 'there (re-running the rollback retries the read)')
       : 'cdkd cannot read the value AWS holds there (the property is write-only, AWS does not ' +
         'return it, or cdkd has no readback for this resource type)';
   return markNonRetryable(
@@ -217,7 +225,7 @@ async function readLive(
   marked: readonly NoEchoCoordinate[],
   logicalId: string,
   ctx: RollbackExecutorContext
-): Promise<{ live: Record<string, unknown> } | { failure: ReadFailure }> {
+): Promise<{ live: Record<string, unknown> } | FailedRead> {
   let readCurrentState;
   try {
     const { provider } = ctx.providerRegistry.getProviderFor({
@@ -257,9 +265,11 @@ async function readLive(
       return { failure: 'not-readable' };
     }
     return { live: result };
-  } catch {
+  } catch (error) {
     // The error is dropped, never printed: its message could echo the value.
-    return { failure: 'read-failed' };
+    // Only an access denial's identifier-shaped action and class are kept.
+    const denied = readDenialOf(error);
+    return { failure: 'read-failed', ...(denied !== undefined && { denied }) };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
@@ -313,7 +323,9 @@ export async function substituteMarkedNoEchoLeaves(input: {
     return { ...identity, inert: pending };
   }
   const read = await readLive(live, baseline, pending, logicalId, ctx);
-  if ('failure' in read) throw unreadableNoEchoLeafRefusal(logicalId, pending, read.failure);
+  if ('failure' in read) {
+    throw unreadableNoEchoLeafRefusal(logicalId, pending, read.failure, read.denied);
+  }
   const values: Array<{ coordinate: NoEchoCoordinate; value: unknown }> = [];
   const unreadable: NoEchoCoordinate[] = [];
   for (const coordinate of pending) {

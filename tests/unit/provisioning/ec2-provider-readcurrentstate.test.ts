@@ -613,6 +613,12 @@ describe('EC2Provider.readCurrentState', () => {
   });
 
   describe('AWS::EC2::Instance', () => {
+    // The per-property reads a case does not shape answer `{}` (#6759: a
+    // failed one now rejects the read).
+    beforeEach(() => {
+      mockSend.mockResolvedValue({});
+    });
+
     it('returns top-level fields with always-emit placeholders for running instance with no EBS volumes', async () => {
       mockSend.mockResolvedValueOnce({
         Reservations: [
@@ -815,7 +821,7 @@ describe('EC2Provider.readCurrentState', () => {
       ]);
     });
 
-    it('falls back to DeleteOnTermination-only on DescribeVolumes failure (best-effort)', async () => {
+    it('rejects on a DescribeVolumes failure other than its not-found (#6759)', async () => {
       mockSend
         .mockResolvedValueOnce({
           Reservations: [
@@ -837,11 +843,39 @@ describe('EC2Provider.readCurrentState', () => {
         })
         .mockRejectedValueOnce(new Error('UnauthorizedOperation: ec2:DescribeVolumes'));
 
+      await expect(
+        provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance')
+      ).rejects.toThrow('UnauthorizedOperation');
+    });
+
+    it('falls back to DeleteOnTermination-only when a volume is gone (InvalidVolume.NotFound)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          Reservations: [
+            {
+              Instances: [
+                {
+                  InstanceId: 'i-1',
+                  State: { Name: 'running' },
+                  BlockDeviceMappings: [
+                    {
+                      DeviceName: '/dev/sda1',
+                      Ebs: { VolumeId: 'vol-aaa', DeleteOnTermination: true },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        })
+        .mockRejectedValueOnce(
+          Object.assign(new Error('vol-aaa does not exist'), { name: 'InvalidVolume.NotFound' })
+        );
+
       const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
 
       // Volume-side fields absent — the partial shape (DeleteOnTermination
-      // only) is still surfaced. Better than nothing for users without
-      // ec2:DescribeVolumes permission.
+      // only) is still surfaced.
       expect(result?.['BlockDeviceMappings']).toEqual([
         {
           DeviceName: '/dev/sda1',
@@ -894,7 +928,7 @@ describe('EC2Provider.readCurrentState', () => {
       expect(result?.['DisableApiTermination']).toBe(true);
     });
 
-    it('omits DisableApiTermination when DescribeInstanceAttribute fails (best-effort)', async () => {
+    it('rejects when DescribeInstanceAttribute fails with anything but the instance not-found (#6759)', async () => {
       mockSend
         .mockResolvedValueOnce({
           Reservations: [
@@ -910,8 +944,9 @@ describe('EC2Provider.readCurrentState', () => {
         })
         .mockRejectedValueOnce(new Error('UnauthorizedOperation: ec2:DescribeInstanceAttribute'));
 
-      const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
-      expect(result?.['DisableApiTermination']).toBeUndefined();
+      await expect(
+        provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance')
+      ).rejects.toThrow('UnauthorizedOperation');
     });
 
     it('surfaces EbsOptimized when DescribeInstances reports it (#609)', async () => {
@@ -961,12 +996,12 @@ describe('EC2Provider.readCurrentState', () => {
 
     it('surfaces CreditSpecification as { CPUCredits } via DescribeInstanceCreditSpecifications (#609)', async () => {
       // 1: DescribeInstances. 2: DescribeInstanceAttribute (disableApiTermination,
-      // rejected -> omitted). 3: DescribeInstanceCreditSpecifications.
+      // no value -> omitted). 3: DescribeInstanceCreditSpecifications.
       mockSend
         .mockResolvedValueOnce({
           Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'running' } }] }],
         })
-        .mockRejectedValueOnce(new Error('skip disableApiTermination'))
+        .mockResolvedValueOnce({})
         .mockResolvedValueOnce({
           InstanceCreditSpecifications: [{ InstanceId: 'i-1', CpuCredits: 'unlimited' }],
         });
@@ -975,13 +1010,17 @@ describe('EC2Provider.readCurrentState', () => {
       expect(result?.['CreditSpecification']).toEqual({ CPUCredits: 'unlimited' });
     });
 
-    it('omits CreditSpecification when the API fails (non-burstable family, best-effort) (#609)', async () => {
+    it('omits CreditSpecification when EC2 answers UnsupportedOperation (#609, #6759)', async () => {
       mockSend
         .mockResolvedValueOnce({
           Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'running' } }] }],
         })
-        .mockRejectedValueOnce(new Error('skip disableApiTermination'))
-        .mockRejectedValueOnce(new Error('not a burstable instance'));
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(
+          Object.assign(new Error('not available for this instance'), {
+            name: 'UnsupportedOperation',
+          })
+        );
 
       const result = bagOf(await provider.readCurrentState('i-1', 'Logical', 'AWS::EC2::Instance'));
       expect(result?.['CreditSpecification']).toBeUndefined();

@@ -70,51 +70,44 @@ export async function readCurrentState(
   if (param.Value !== undefined) result['Value'] = param.Value;
   if (param.DataType !== undefined) result['DataType'] = param.DataType;
 
-  // Fetch metadata via DescribeParameters filtered on the name. Best-effort:
-  // a missing-permission error here should not fail the snapshot — we just
-  // omit the metadata keys.
-  let policiesEmitted = false;
-  try {
-    const desc = await this.ssmClient.send(
-      new DescribeParametersCommand({
-        ParameterFilters: [{ Key: 'Name', Values: [physicalId] }],
-      })
-    );
-    const meta = desc.Parameters?.[0];
-    result['Description'] = meta?.Description ?? '';
-    result['AllowedPattern'] = meta?.AllowedPattern ?? '';
-    if (meta?.Tier !== undefined) {
-      result['Tier'] = meta.Tier;
-    }
-
-    // Policies — AWS returns [{PolicyText, PolicyType, PolicyStatus}];
-    // we parse PolicyText (JSON) and emit the parsed objects. PolicyStatus
-    // is AWS-managed (Pending / InSync / Expired) and intentionally
-    // dropped — it's not part of the user's templated input.
-    const parsedPolicies: unknown[] = [];
-    for (const p of meta?.Policies ?? []) {
-      if (!p.PolicyText) continue;
-      try {
-        parsedPolicies.push(JSON.parse(p.PolicyText));
-      } catch {
-        parsedPolicies.push(p.PolicyText);
-      }
-    }
-    result['Policies'] = parsedPolicies;
-    policiesEmitted = true;
-  } catch {
-    // Ignore — Type / Value / DataType already captured above.
+  // Fetch metadata via DescribeParameters filtered on the name. It has no
+  // not-found code (a gone parameter is an empty list), so ANY failure throws
+  // (issue #6759): omitting the metadata keys would leave them never compared,
+  // and a placeholder `Policies: []` would read as "no policies".
+  const desc = await this.ssmClient.send(
+    new DescribeParametersCommand({
+      ParameterFilters: [{ Key: 'Name', Values: [physicalId] }],
+    })
+  );
+  const meta = desc.Parameters?.[0];
+  result['Description'] = meta?.Description ?? '';
+  result['AllowedPattern'] = meta?.AllowedPattern ?? '';
+  if (meta?.Tier !== undefined) {
+    result['Tier'] = meta.Tier;
   }
-  // Always-emit guard: if DescribeParameters failed entirely, surface
-  // an empty Policies placeholder so a console-side ADD on a previously-
-  // un-policy'd parameter still surfaces as drift on the v3
-  // observedProperties baseline. The placeholder cannot be told from a read
-  // of no policies, so `update` clears live policies on a revert only when
-  // the template declares none too (go-to-k/cdkd#4884).
-  if (!policiesEmitted) result['Policies'] = [];
 
-  // Tags via ListTagsForResource (best-effort; missing tag permission is
-  // tolerated by simply omitting the key).
+  // Policies — AWS returns [{PolicyText, PolicyType, PolicyStatus}];
+  // we parse PolicyText (JSON) and emit the parsed objects. PolicyStatus
+  // is AWS-managed (Pending / InSync / Expired) and intentionally
+  // dropped — it's not part of the user's templated input.
+  const parsedPolicies: unknown[] = [];
+  for (const p of meta?.Policies ?? []) {
+    if (!p.PolicyText) continue;
+    try {
+      parsedPolicies.push(JSON.parse(p.PolicyText));
+    } catch {
+      parsedPolicies.push(p.PolicyText);
+    }
+  }
+  // Always emitted (`[]` for none) so a console-side ADD on a previously-
+  // un-policy'd parameter surfaces as drift on the v3 observedProperties
+  // baseline. `update` clears live policies on a revert only when the
+  // template declares none too (go-to-k/cdkd#4884).
+  result['Policies'] = parsedPolicies;
+
+  // Tags via ListTagsForResource. `InvalidResourceId` (the parameter went
+  // away between the calls) omits the key; any other failure throws
+  // (issue #6759) rather than leave the tags never compared.
   try {
     const tagsResp = await this.ssmClient.send(
       new ListTagsForResourceCommand({
@@ -128,8 +121,8 @@ export async function readCurrentState(
     // tagged parameter (state map vs observed list never compare equal).
     const tagArr = normalizeAwsTagsToCfn(tagsResp.TagList);
     result['Tags'] = Object.fromEntries(tagArr.map((t) => [t.Key, t.Value]));
-  } catch {
-    // Ignore — tag drift is best-effort.
+  } catch (err) {
+    if ((err as { name?: string }).name !== 'InvalidResourceId') throw err;
   }
 
   return result;

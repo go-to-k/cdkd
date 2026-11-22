@@ -1205,7 +1205,7 @@ describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
       expect(await provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE)).toBe(RESOURCE_NOT_FOUND);
     });
 
-    it('leaves MinimumLoadBalancerCapacity absent when DescribeCapacityReservation is denied', async () => {
+    it('rejects when DescribeCapacityReservation is denied (#6759)', async () => {
       mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
         switch (cmd.constructor.name) {
           case 'DescribeLoadBalancersCommand':
@@ -1226,15 +1226,11 @@ describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
         }
       });
 
-      const state = await provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE);
-      expect(state).toBeDefined();
-      expect(state).not.toHaveProperty('MinimumLoadBalancerCapacity');
-      // The read continues past the denied call — a permission gap on one
-      // attribute must not blank the whole snapshot.
-      expect(state).toMatchObject({
-        Name: 'my-nlb',
-        LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }],
-      });
+      // An omitted key is never compared, so the run reports the resource
+      // not compared rather than no drift.
+      await expect(provider.readCurrentState!(LB_ARN, 'MyNlb', LB_TYPE)).rejects.toThrow(
+        'not authorized'
+      );
     });
 
     it('returns RESOURCE_NOT_FOUND when DescribeTargetGroupAttributes reports the TG is gone', async () => {
@@ -1255,7 +1251,7 @@ describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
       expect(await provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE)).toBe(RESOURCE_NOT_FOUND);
     });
 
-    it('leaves TargetGroupAttributes absent when DescribeTargetGroupAttributes is denied', async () => {
+    it('rejects when DescribeTargetGroupAttributes is denied (#6759)', async () => {
       mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
         switch (cmd.constructor.name) {
           case 'DescribeTargetGroupsCommand':
@@ -1276,10 +1272,9 @@ describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
         }
       });
 
-      const state = await provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE);
-      expect(state).toBeDefined();
-      expect(state).not.toHaveProperty('TargetGroupAttributes');
-      expect(state).toMatchObject({ Name: 'my-tg', IpAddressType: 'ipv4' });
+      await expect(provider.readCurrentState!(TG_ARN, 'MyTg', TG_TYPE)).rejects.toThrow(
+        'not authorized'
+      );
     });
   });
 

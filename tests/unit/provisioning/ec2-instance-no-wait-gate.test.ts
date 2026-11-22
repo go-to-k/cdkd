@@ -708,9 +708,10 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
     expect(current && 'IamInstanceProfile' in current).toBe(false);
   });
 
-  it('degrades to omitting the field when the association read itself fails', async () => {
-    // A throttle on the backfill must cost only this field, never the whole
-    // observed snapshot.
+  it('rejects the read when the association read itself fails (#6759)', async () => {
+    // Omitting the field would be the permanent blind spot the backfill
+    // closes; the deploy's capture catches the rejection and records no
+    // baseline instead.
     process.env['CDKD_NO_WAIT'] = 'true';
     mockSend.mockImplementation((command: unknown) => {
       if (command instanceof DescribeIamInstanceProfileAssociationsCommand) {
@@ -727,15 +728,9 @@ describe('readInstanceCurrentState IamInstanceProfile backfill under --no-wait (
       });
     });
 
-    const current = bagOf(await new EC2Provider().readCurrentState!(
-      INSTANCE_ID,
-      'MyInstance',
-      'AWS::EC2::Instance'
-    ));
-
-    expect(current).toBeDefined();
-    expect(current?.['ImageId']).toBe('ami-12345678');
-    expect(current && 'IamInstanceProfile' in current).toBe(false);
+    await expect(
+      new EC2Provider().readCurrentState!(INSTANCE_ID, 'MyInstance', 'AWS::EC2::Instance')
+    ).rejects.toThrow('Rate exceeded');
   });
 
   it('makes NO extra call on ordinary drift reads (env unset)', async () => {

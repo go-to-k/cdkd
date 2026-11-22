@@ -200,9 +200,9 @@ describe('AWS::KMS::Key KeyPolicy', () => {
     expect(callsOf('GetKeyPolicyCommand')).toBe(4);
   });
 
-  it('a deterministic first failure (AccessDenied) is not re-read: the single-read outcome, 1 call', async () => {
+  it('a deterministic first failure (AccessDenied) is not re-read: the read rejects (#6759), 1 call', async () => {
     answer('GetKeyPolicyCommand', fail('AccessDeniedException'), policy(stored));
-    expect(bag(await read(AFTER))).not.toHaveProperty('KeyPolicy');
+    await expect(read(AFTER)).rejects.toHaveProperty('name', 'AccessDeniedException');
     expect(callsOf('GetKeyPolicyCommand')).toBe(1);
     expect(unsettledWarnings()).toEqual([]);
   });
@@ -213,9 +213,9 @@ describe('AWS::KMS::Key KeyPolicy', () => {
     expect(callsOf('GetKeyPolicyCommand')).toBe(2);
   });
 
-  it('omits the policy when every read fails transiently, as the single read did', async () => {
+  it('rejects when every read fails transiently, as the single read does (#6759)', async () => {
     answer('GetKeyPolicyCommand', fail('ThrottlingException'));
-    expect(bag(await read(AFTER))).not.toHaveProperty('KeyPolicy');
+    await expect(read(AFTER)).rejects.toHaveProperty('name', 'ThrottlingException');
     expect(callsOf('GetKeyPolicyCommand')).toBe(4);
     // Nothing answered, so nothing to re-capture: no refresh-observed warning.
     expect(unsettledWarnings()).toEqual([]);
@@ -469,15 +469,15 @@ describe('AWS::Logs::LogGroup DataProtectionPolicy', () => {
     expect(callsOf(GET)).toBe(4);
   });
 
-  it('a deterministic first failure is not re-read: the empty placeholder, 1 call', async () => {
+  it('a deterministic first failure is not re-read: the read rejects (#6759), 1 call', async () => {
     answer(GET, fail('AccessDeniedException'), policy(declared));
-    expect(bag(await read(AFTER))['DataProtectionPolicy']).toBe('');
+    await expect(read(AFTER)).rejects.toHaveProperty('name', 'AccessDeniedException');
     expect(callsOf(GET)).toBe(1);
   });
 
-  it('records the empty placeholder when every read fails transiently, as the single read did', async () => {
+  it('rejects when every read fails transiently, as the single read does (#6759)', async () => {
     answer(GET, fail('ThrottlingException'));
-    expect(bag(await read(AFTER))['DataProtectionPolicy']).toBe('');
+    await expect(read(AFTER)).rejects.toHaveProperty('name', 'ThrottlingException');
     expect(callsOf(GET)).toBe(4);
   });
 
@@ -708,15 +708,15 @@ describe('AWS::EFS::FileSystem FileSystemPolicy', () => {
     expect(callsOf(GET)).toBe(1);
   });
 
-  it('a deterministic first failure is not re-read: no FileSystemPolicy, 1 call', async () => {
+  it('a deterministic first failure is not re-read: the read rejects (#6759), 1 call', async () => {
     answer(GET, fail('AccessDeniedException'), policy(stored('A')));
-    expect(bag(await read(AFTER))).not.toHaveProperty('FileSystemPolicy');
+    await expect(read(AFTER)).rejects.toHaveProperty('name', 'AccessDeniedException');
     expect(callsOf(GET)).toBe(1);
   });
 
-  it('every transient failure: no FileSystemPolicy, 4 calls', async () => {
+  it('every transient failure: the read rejects (#6759), 4 calls', async () => {
     answer(GET, fail('ThrottlingException'));
-    expect(bag(await read(AFTER))).not.toHaveProperty('FileSystemPolicy');
+    await expect(read(AFTER)).rejects.toHaveProperty('name', 'ThrottlingException');
     expect(callsOf(GET)).toBe(4);
   });
 

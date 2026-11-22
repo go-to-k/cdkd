@@ -51,6 +51,9 @@ describe('CloudTrailProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop answers a case left queued; an unshaped call answers `{}`.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
     provider = new CloudTrailProvider();
   });
 
@@ -132,30 +135,34 @@ describe('CloudTrailProvider.readCurrentState', () => {
     expect(result?.InsightSelectors).toEqual([]);
   });
 
-  it('omits IsLogging / EventSelectors on transient secondary errors but always-emits InsightSelectors and Tags placeholders', async () => {
+  it('rejects when a secondary call fails with anything but its not-found code (#6759)', async () => {
+    const denied = Object.assign(new Error('AccessDenied'), { name: 'AccessDeniedException' });
     mockSend
       .mockResolvedValueOnce({
         Trail: { Name: 'mytrail', S3BucketName: 'mybucket' },
       })
-      // GetTrailStatus failure — IsLogging key drops out
-      .mockRejectedValueOnce(new Error('AccessDenied'))
-      // GetEventSelectors failure — EventSelectors key drops out
-      .mockRejectedValueOnce(new Error('AccessDenied'))
-      // GetInsightSelectors failure — InsightSelectors falls back to []
-      .mockRejectedValueOnce(new Error('AccessDenied'))
-      // GetEventConfiguration failure — AggregationConfigurations drops out
+      // GetTrailStatus failure: the read rejects rather than drop IsLogging.
+      .mockRejectedValueOnce(denied);
+
+    await expect(provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail')).rejects.toBe(
+      denied
+    );
+  });
+
+  it('omits IsLogging / EventSelectors / AggregationConfigurations on the trail not-found and keeps the InsightSelectors and Tags placeholders', async () => {
+    const gone = () => new TrailNotFoundException({ message: 'gone', $metadata: {} });
+    mockSend
+      .mockResolvedValueOnce({
+        Trail: { Name: 'mytrail', S3BucketName: 'mybucket' },
+      })
+      .mockRejectedValueOnce(gone())
+      .mockRejectedValueOnce(gone())
+      .mockRejectedValueOnce(gone())
       // (no ListTags call: this fixture has no TrailARN)
-      .mockRejectedValueOnce(new Error('AccessDenied'));
+      .mockRejectedValueOnce(gone());
 
     const result = await provider.readCurrentState('mytrail', 'L', 'AWS::CloudTrail::Trail');
 
-    // Always-emit placeholders survive even when secondary calls fail —
-    // `IsLogging` (GetTrailStatus) and `EventSelectors`
-    // (GetEventSelectors) drop out (no synthetic placeholders for those
-    // since the call may be AccessDenied rather than "feature absent").
-    // `InsightSelectors` falls back to `[]` (the AWS-default state when
-    // not configured). Tags falls back to `[]` because TrailARN is
-    // missing on this fixture.
     expect(result).toEqual({
       TrailName: 'mytrail',
       S3BucketName: 'mybucket',
@@ -168,8 +175,7 @@ describe('CloudTrailProvider.readCurrentState', () => {
       IsOrganizationTrail: false,
       // Issue #6166: absent from GetTrail reads as AWS's documented default.
       RecursiveLogging: true,
-      // Always-emitted since issue #1565, and unaffected by a secondary-call
-      // failure: the pair comes from GetTrail, which succeeded here.
+      // Always-emitted since issue #1565: the pair comes from GetTrail.
       CloudWatchLogsLogGroupArn: '',
       CloudWatchLogsRoleArn: '',
       InsightSelectors: [],
@@ -199,8 +205,8 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({
         Trail: { Name: 'mytrail', TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail' },
       })
-      .mockRejectedValueOnce(new Error('AccessDenied'))
-      .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({
         ResourceTagList: [
@@ -330,8 +336,8 @@ describe('CloudTrailProvider.readCurrentState', () => {
       .mockResolvedValueOnce({
         Trail: { Name: 'mytrail', TrailARN: 'arn:aws:cloudtrail:us-east-1:1:trail/mytrail' },
       })
-      .mockRejectedValueOnce(new Error('AccessDenied'))
-      .mockRejectedValueOnce(new Error('AccessDenied'))
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ InsightSelectors: [] })
       .mockResolvedValueOnce({
         ResourceTagList: [

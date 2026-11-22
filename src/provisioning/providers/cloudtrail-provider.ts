@@ -18,10 +18,10 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { UNORDERED_LIST_BLOCKS } from './cloudtrail/shared.js';
 import { wrapCaughtError, create } from './cloudtrail/core.js';
-import { update, readLiveForRecord } from './cloudtrail/update.js';
+import { update } from './cloudtrail/update.js';
 import { deleteImpl } from './cloudtrail/delete.js';
 import { applyTagDiff } from './cloudtrail/tags.js';
-import { readCurrentState, importImpl } from './cloudtrail/read-state.js';
+import { readCurrentState, importImpl, readLiveForRecord } from './cloudtrail/read-state.js';
 
 /**
  * SDK Provider for AWS CloudTrail resources

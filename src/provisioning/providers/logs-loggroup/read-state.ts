@@ -45,9 +45,31 @@ export async function getAttribute(
 }
 
 /**
+ * CloudWatch Logs refusing a STANDARD-class-only call on a log group of
+ * another class, by name and message.
+ */
+function isStandardClassOnly(err: unknown): boolean {
+  const e = err as { name?: unknown; message?: unknown } | null;
+  return (
+    e?.name === 'ValidationException' &&
+    typeof e.message === 'string' &&
+    e.message.includes('only supported on the Standard log class')
+  );
+}
+
+/** CloudWatch Logs' not-found code ("The specified resource does not exist"), by class or name. */
+function isResourceNotFound(err: unknown): boolean {
+  return (
+    err instanceof ResourceNotFoundException ||
+    (err as { name?: unknown } | null)?.name === 'ResourceNotFoundException'
+  );
+}
+
+/**
  * One `GetDataProtectionPolicy`: the document JSON-parsed, `'absent'` when
- * none is set (the answer carries no document), `'failed'` when the call
- * threw.
+ * none is set (the answer carries no document), `'refused'` on
+ * `ResourceNotFoundException` (recorded as the `''` placeholder, as before).
+ * Throws any other failure (issue #6759).
  */
 async function readDataProtectionPolicy(
   this: LogsLogGroupProvider,
@@ -61,7 +83,8 @@ async function readDataProtectionPolicy(
       )
     ).policyDocument;
   } catch (err) {
-    return memberReadFailure(err);
+    if (isResourceNotFound(err)) return 'refused';
+    throw err;
   }
   if (!document) return 'absent';
   try {
@@ -176,7 +199,33 @@ export async function readCurrentState(
     // no policy is configured so a console-side ADD is detectable on
     // the v3 observedProperties baseline. (The empty string round-trips
     // through update()'s truthy gate as DeleteDataProtectionPolicy.)
-    let dpp = await readDataProtectionPolicy.call(this, physicalId);
+    //
+    // A FAILED read (AccessDenied, a throttle) throws instead of recording
+    // the `''` placeholder (issue #6759), which would read as "no policy". On
+    // the post-write capture a transient failure is re-read first, and the
+    // error throws only when no re-read answered.
+    //
+    // A log group that is not STANDARD class refuses both this read and
+    // DescribeIndexPolicies below with a `ValidationException` "This operation
+    // is only supported on the Standard log class." (measured: DELIVERY
+    // refuses both, INFREQUENT_ACCESS refuses DescribeIndexPolicies only).
+    // That answer keeps today's placeholder.
+    const notStandard = found.logGroupClass !== undefined && found.logGroupClass !== 'STANDARD';
+    const standardOnly = (err: unknown): boolean => notStandard && isStandardClassOnly(err);
+    let dpp: MemberRead<unknown>;
+    let dppError: unknown;
+    let dppFailed = false;
+    try {
+      dpp = await readDataProtectionPolicy.call(this, physicalId);
+    } catch (err) {
+      if (standardOnly(err)) {
+        dpp = 'refused';
+      } else {
+        dpp = memberReadFailure(err);
+        dppError = err;
+        dppFailed = true;
+      }
+    }
     const declared =
       context?.afterOwnWrite === true
         ? declaredMemberDocument(properties?.['DataProtectionPolicy'])
@@ -184,7 +233,14 @@ export async function readCurrentState(
     if (declared !== undefined) {
       dpp = await settleDeclaredMember(
         dpp,
-        () => readDataProtectionPolicy.call(this, physicalId),
+        async () => {
+          try {
+            return await readDataProtectionPolicy.call(this, physicalId);
+          } catch (err) {
+            if (standardOnly(err)) return 'refused';
+            throw err;
+          }
+        },
         (document) => policyDocumentMatchesDeclared(document, declared),
         declared,
         this.ownWriteRereadDelaysMs,
@@ -192,7 +248,7 @@ export async function readCurrentState(
           warnUnsettledMember(this.logger, logicalId, 'AWS::Logs::LogGroup', 'DataProtectionPolicy')
       );
     }
-    // Best-effort: a failed read leaves the empty placeholder.
+    if (dppFailed && (dpp === 'failed' || dpp === 'refused')) throw dppError;
     result['DataProtectionPolicy'] = typeof dpp === 'object' ? dpp.value : '';
 
     // FieldIndexPolicies via DescribeIndexPolicies. AWS returns
@@ -202,7 +258,9 @@ export async function readCurrentState(
     // the JSON document so the comparator matches cdkd state's
     // already-resolved object form. CFn shape is an array of policy
     // documents (strings or objects). Always-emit [] for console-
-    // side ADD detection.
+    // side ADD detection. `ResourceNotFoundException` keeps that placeholder,
+    // and so does the Standard-class-only refusal above; any other failure
+    // throws (issue #6759) rather than read as "none".
     let fieldIndexPolicies: unknown[] = [];
     try {
       const idxResp = await this.logsClient.send(
@@ -219,8 +277,8 @@ export async function readCurrentState(
           }
         })
         .filter((p): p is unknown => p !== undefined);
-    } catch {
-      // Best-effort.
+    } catch (err) {
+      if (!isResourceNotFound(err) && !standardOnly(err)) throw err;
     }
     result['FieldIndexPolicies'] = fieldIndexPolicies;
 

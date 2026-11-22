@@ -62,6 +62,9 @@ describe('ELBv2Provider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drop answers a case left queued; an unshaped call answers `{}`.
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({});
     provider = new ELBv2Provider();
   });
 
@@ -368,7 +371,7 @@ describe('ELBv2Provider.readCurrentState', () => {
         expect(result?.['Targets']).toEqual([]);
       });
 
-      it('leaves Targets ABSENT when the health read fails (no permission), never empty', async () => {
+      it('rejects when the health read fails (no permission), never reading it empty (#6759)', async () => {
         // An empty list would read as "every target was removed" and
         // `--revert` would then re-register them all.
         mockSend
@@ -379,12 +382,23 @@ describe('ELBv2Provider.readCurrentState', () => {
           )
           .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
 
-        const result = bagOf(await provider.readCurrentState(
-          'arn:tg',
-          'L',
-          'AWS::ElasticLoadBalancingV2::TargetGroup'
-        ));
-        expect(result).toBeDefined();
+        await expect(
+          provider.readCurrentState('arn:tg', 'L', 'AWS::ElasticLoadBalancingV2::TargetGroup')
+        ).rejects.toThrow('denied');
+      });
+
+      it('leaves Targets ABSENT on the target group not-found from the health read', async () => {
+        mockSend
+          .mockResolvedValueOnce(targetGroupHead)
+          .mockResolvedValueOnce({ Attributes: [] })
+          .mockRejectedValueOnce(
+            Object.assign(new Error('gone'), { name: 'TargetGroupNotFoundException' })
+          )
+          .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:tg', Tags: [] }] });
+
+        const result = bagOf(
+          await provider.readCurrentState('arn:tg', 'L', 'AWS::ElasticLoadBalancingV2::TargetGroup')
+        );
         expect('Targets' in (result as Record<string, unknown>)).toBe(false);
       });
     });
@@ -516,7 +530,7 @@ describe('ELBv2Provider.readCurrentState', () => {
       });
     });
 
-    it('leaves ListenerAttributes absent when DescribeListenerAttributes errors (no false drift)', async () => {
+    it('rejects when DescribeListenerAttributes fails with anything but a not-found (#6759)', async () => {
       mockSend
         .mockResolvedValueOnce({
           Listeners: [
@@ -532,13 +546,9 @@ describe('ELBv2Provider.readCurrentState', () => {
         .mockRejectedValueOnce(new Error('AccessDenied'))
         .mockResolvedValueOnce({ TagDescriptions: [{ ResourceArn: 'arn:listener', Tags: [] }] });
 
-      const result = bagOf(await provider.readCurrentState(
-        'arn:listener',
-        'L',
-        'AWS::ElasticLoadBalancingV2::Listener'
-      ));
-      expect(result).toBeDefined();
-      expect(result).not.toHaveProperty('ListenerAttributes');
+      await expect(
+        provider.readCurrentState('arn:listener', 'L', 'AWS::ElasticLoadBalancingV2::Listener')
+      ).rejects.toThrow('AccessDenied');
     });
 
     it('returns RESOURCE_NOT_FOUND when listener is gone', async () => {

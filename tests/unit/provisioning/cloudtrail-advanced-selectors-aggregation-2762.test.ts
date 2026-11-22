@@ -398,9 +398,66 @@ describe('CloudTrailProvider AdvancedEventSelectors / AggregationConfigurations 
       });
     });
 
+    it('records the LIVE reading even when an unrelated read of the trail is denied (#6759)', async () => {
+      const denied = () => Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetTrailStatusCommand || command instanceof ListTagsCommand)
+          return Promise.reject(denied());
+        if (command instanceof GetEventSelectorsCommand)
+          return Promise.resolve({ AdvancedEventSelectors: ADVANCED });
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.resolve({});
+      });
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: 'bad', AggregationConfigurations: 'bad' },
+        { ...BASE, AdvancedEventSelectors: 'also-bad', AggregationConfigurations: 'also-bad' }
+      );
+      expect(result.effectiveProperties).toEqual({
+        ...BASE,
+        AdvancedEventSelectors: ADVANCED,
+        AggregationConfigurations: AGGREGATION,
+      });
+      // Only the calls behind the skipped blocks are made for the record.
+      expect(inputsOf(GetTrailStatusCommand)).toEqual([]);
+      expect(inputsOf(ListTagsCommand)).toEqual([]);
+    });
+
+    it('drops only the block whose own read fails, with a warning', async () => {
+      mockSend.mockImplementation((command: unknown) => {
+        if (command instanceof GetEventSelectorsCommand)
+          return Promise.reject(
+            Object.assign(new Error('arn:aws:sts::1:assumed-role/denied-role/x is not authorized'), {
+              name: 'AccessDeniedException',
+            })
+          );
+        if (command instanceof GetEventConfigurationCommand)
+          return Promise.resolve({ AggregationConfigurations: AGGREGATION });
+        return Promise.resolve({});
+      });
+      const result = await provider.update(
+        'T',
+        TRAIL_ARN,
+        TYPE,
+        { ...BASE, AdvancedEventSelectors: 'bad', AggregationConfigurations: 'bad' },
+        { ...BASE, AdvancedEventSelectors: 'also-bad', AggregationConfigurations: 'also-bad' }
+      );
+      expect(result.effectiveProperties).toEqual({ ...BASE, AggregationConfigurations: AGGREGATION });
+      expect(warnSpy.mock.calls.map((c) => String(c[0]))).toEqual(
+        expect.arrayContaining([expect.stringContaining('EventSelectors / AdvancedEventSelectors')])
+      );
+      // The class at warn, never the AWS text (#2319): it names the caller's role.
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('(AccessDeniedException)');
+      expect(warned).not.toContain('denied-role');
+    });
+
     it('drops the key when the live read fails too', async () => {
       mockSend.mockImplementation((command: unknown) =>
-        command instanceof GetTrailCommand
+        command instanceof GetEventConfigurationCommand
           ? Promise.reject(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }))
           : Promise.resolve({})
       );
