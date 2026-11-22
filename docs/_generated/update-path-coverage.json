@@ -1,8 +1,8 @@
 {
   "summary": {
     "types": 146,
-    "properties": 1549,
-    "update": 1131,
+    "properties": 1550,
+    "update": 1132,
     "replacement": 397,
     "allowListed": 21,
     "gap": 0,
@@ -5306,6 +5306,10 @@
       "file": "src/provisioning/providers/lambda-function-provider.ts",
       "className": "LambdaFunctionProvider",
       "properties": [
+        {
+          "property": "AcceleratorConfig",
+          "status": "update"
+        },
         {
           "property": "Architectures",
           "status": "update"

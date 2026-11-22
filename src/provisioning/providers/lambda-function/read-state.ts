@@ -287,6 +287,12 @@ export async function readCurrentState(
         rc['RuntimeAlias'] = cfg.RuntimeConfig.RuntimeAlias;
       if (Object.keys(rc).length > 0) result['RuntimeConfig'] = rc;
     }
+    // Same response, CFn spelling verbatim; present only on a GPU function.
+    if (cfg.AcceleratorConfig?.AcceleratorMemorySize !== undefined) {
+      result['AcceleratorConfig'] = {
+        AcceleratorMemorySize: cfg.AcceleratorConfig.AcceleratorMemorySize,
+      };
+    }
 
     // A Managed Instances function: the attachment rides on this response,
     // the scaling settings have their own read of the version they apply to.

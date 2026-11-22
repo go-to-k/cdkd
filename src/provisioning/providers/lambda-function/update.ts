@@ -31,6 +31,7 @@ import {
   type RecursiveLoop,
   type DurableConfig,
   type FunctionRuntimeConfig,
+  type AcceleratorConfig,
 } from '@aws-sdk/client-lambda';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
@@ -119,14 +120,47 @@ export async function update(
     properties['RuntimeConfig'] == null &&
     previousProperties['RuntimeConfig'] != null
   ) {
-    const message =
-      `Lambda function ${logicalId} keeps Runtime 'custom' without RuntimeConfig: AWS keeps ` +
-      `the live RuntimeConfig, and refuses a 'custom' function without one. Keep the ` +
-      `property, or change Runtime to remove it.`;
+    const head = `Lambda function ${logicalId} keeps Runtime 'custom' without RuntimeConfig`;
     if (context?.replayingState === true) {
-      log.warn(message);
+      // A replay restores a record, not a template the user can edit here.
+      log.warn(
+        `${head}: the live RuntimeConfig stays on AWS, so this replay leaves it in place; ` +
+          `the next deploy or drift check shows it.`
+      );
     } else {
-      throw markNonRetryable(new ProvisioningError(message, resourceType, logicalId, physicalId));
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${head}: AWS keeps the live RuntimeConfig, and refuses a 'custom' function without ` +
+            `one. Keep the property, or change Runtime to remove it.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+  }
+  // An absent UpdateFunctionConfiguration member means "no change", and
+  // AcceleratorConfig has no reset payload (`AcceleratorMemorySize` is
+  // required and takes GB sizes only), so this removal would report success
+  // and change nothing (go-to-k/cdkd#6352).
+  if (properties['AcceleratorConfig'] == null && previousProperties['AcceleratorConfig'] != null) {
+    const head = `Lambda function ${logicalId} cannot lose its AcceleratorConfig`;
+    if (context?.replayingState === true) {
+      // A replay restores a record, not a template the user can edit here.
+      log.warn(
+        `${head}: the live AcceleratorConfig stays on AWS, so this replay leaves it in place; ` +
+          `the next deploy or drift check shows it.`
+      );
+    } else {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${head}: UpdateFunctionConfiguration has no value that removes it. Keep the ` +
+            `property, or replace the function under a new logical id.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
     }
   }
   try {
@@ -232,6 +266,7 @@ export async function update(
       'DurableConfig',
       'CapacityProviderConfig',
       'RuntimeConfig',
+      'AcceleratorConfig',
     ];
 
     const changedConfigFields: string[] = [];
@@ -320,6 +355,10 @@ export async function update(
         // alias change applies in place. Its removal rides the `Runtime` change
         // above, which clears it (live-probed us-east-1, go-to-k/cdkd#6352).
         RuntimeConfig: properties['RuntimeConfig'] as FunctionRuntimeConfig | undefined,
+        // GPU memory: UpdateFunctionConfigurationRequest models it and the CFn
+        // schema does not list it create-only, so a size change applies in
+        // place. Its removal is refused above (go-to-k/cdkd#6352).
+        AcceleratorConfig: properties['AcceleratorConfig'] as AcceleratorConfig | undefined,
       };
 
       for (const field of changedConfigFields) markUnsettled(field);

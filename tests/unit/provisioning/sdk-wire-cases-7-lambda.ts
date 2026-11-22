@@ -67,6 +67,10 @@ const SCALING_NEEDS_CAPACITY: Throw = {
   why: 'FunctionScalingConfig without CapacityProviderConfig: refused before any call, as CloudFormation refuses it',
   says: /FunctionScalingConfig without CapacityProviderConfig/,
 };
+const ACCELERATOR_NOT_REMOVABLE: Throw = {
+  why: 'AcceleratorConfig has no reset payload, so update() refuses its removal before any call (go-to-k/cdkd#6352)',
+  says: /cannot lose its AcceleratorConfig/,
+};
 const ROLE_REQUIRED: Throw = {
   why: 'Role is required: create() refuses a function without it before any call',
   says: /Role is required/,
@@ -227,6 +231,8 @@ const FUNCTION_CASE: TypeCase = {
           },
         },
         FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 },
+        // AWS takes it on a GPU capacity provider only; this bag checks the wire.
+        AcceleratorConfig: { AcceleratorMemorySize: 12 },
       },
       expectedSilent: { 'update-remove:Code': CODE_REQUIRED_ON_UPDATE },
       expectedRemovalThrows: {
@@ -235,6 +241,7 @@ const FUNCTION_CASE: TypeCase = {
         'create:CapacityProviderConfig': SCALING_NEEDS_CAPACITY,
         'update-add:CapacityProviderConfig': SCALING_NEEDS_CAPACITY,
         'update-remove:CapacityProviderConfig': SCALING_NEEDS_CAPACITY,
+        'update-remove:AcceleratorConfig': ACCELERATOR_NOT_REMOVABLE,
       },
     },
     {

@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **146** (without a readback, reported as `drift unknown`: **5**)
-- Handled properties classified: **1526**
-- Named on the readback path: **1372**
+- Handled properties classified: **1527**
+- Named on the readback path: **1373**
 - Declared unreadable by `getDriftUnknownPaths`: **129**
 - In the committed baseline (does NOT block CI): **25**
 - Classified though the schema capture does not list them: **12**
@@ -159,7 +159,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::KMS::Key` | `KMSProvider` | Description, Enabled, EnableKeyRotation, KeyPolicy, KeySpec, KeyUsage, MultiRegion, Origin, RotationPeriodInDays, Tags | BypassPolicyLockoutSafetyCheck, PendingWindowInDays |
 | `AWS::Lambda::EventInvokeConfig` | `LambdaEventInvokeConfigProvider` | DestinationConfig, FunctionName, MaximumEventAgeInSeconds, MaximumRetryAttempts, Qualifier |  |
 | `AWS::Lambda::EventSourceMapping` | `LambdaEventSourceMappingProvider` | AmazonManagedKafkaEventSourceConfig, BatchSize, BisectBatchOnFunctionError, DestinationConfig, DocumentDBEventSourceConfig, Enabled, EventSourceArn, FilterCriteria, FunctionName, FunctionResponseTypes, KmsKeyArn, LoggingConfig, MaximumBatchingWindowInSeconds, MaximumRecordAgeInSeconds, MaximumRetryAttempts, MetricsConfig, ParallelizationFactor, ProvisionedPollerConfig, Queues, ScalingConfig, SelfManagedEventSource, SelfManagedKafkaEventSourceConfig, SourceAccessConfigurations, StartingPosition, StartingPositionTimestamp, Tags, Topics, TumblingWindowInSeconds |  |
-| `AWS::Lambda::Function` | `LambdaFunctionProvider` | Architectures, CapacityProviderConfig, Code, CodeSigningConfigArn, DeadLetterConfig, Description, DurableConfig, Environment, EphemeralStorage, FileSystemConfigs, FunctionName, FunctionScalingConfig, Handler, ImageConfig, KmsKeyArn, Layers, LoggingConfig, MemorySize, PackageType, RecursiveLoop, ReservedConcurrentExecutions, Role, Runtime, RuntimeConfig, RuntimeManagementConfig, SnapStart, Tags, TenancyConfig, Timeout, TracingConfig, VpcConfig | PublishToLatestPublished |
+| `AWS::Lambda::Function` | `LambdaFunctionProvider` | AcceleratorConfig, Architectures, CapacityProviderConfig, Code, CodeSigningConfigArn, DeadLetterConfig, Description, DurableConfig, Environment, EphemeralStorage, FileSystemConfigs, FunctionName, FunctionScalingConfig, Handler, ImageConfig, KmsKeyArn, Layers, LoggingConfig, MemorySize, PackageType, RecursiveLoop, ReservedConcurrentExecutions, Role, Runtime, RuntimeConfig, RuntimeManagementConfig, SnapStart, Tags, TenancyConfig, Timeout, TracingConfig, VpcConfig | PublishToLatestPublished |
 | `AWS::Lambda::LayerVersion` | `LambdaLayerVersionProvider` | CompatibleArchitectures, CompatibleRuntimes, Description, LayerName, LicenseInfo | Content |
 | `AWS::Lambda::MicrovmImage` | `LambdaMicrovmImageProvider` | Name, Tags | AdditionalOsCapabilities, BaseImageArn, BaseImageVersion, BuildRoleArn, CodeArtifact, CpuConfigurations, Description, EgressNetworkConnectors, EnvironmentVariables, Hooks, Logging, Resources |
 | `AWS::Lambda::NetworkConnector` | `LambdaNetworkConnectorProvider` | Configuration, Name, OperatorRole, Tags |  |

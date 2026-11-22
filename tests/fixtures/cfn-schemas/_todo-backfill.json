@@ -27,9 +27,6 @@
       "CertificateUsage",
       "RootHierarchyType"
     ],
-    "AWS::Lambda::Function": [
-      "AcceleratorConfig"
-    ],
     "AWS::Lambda::MicrovmImage": [
       "KmsKeyIdentifier"
     ]

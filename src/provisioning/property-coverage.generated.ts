@@ -2493,6 +2493,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Lambda::Function',
     {
       handled: new Set<string>([
+        'AcceleratorConfig',
         'Architectures',
         'CapacityProviderConfig',
         'Code',
@@ -2526,7 +2527,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TracingConfig',
         'VpcConfig',
       ]),
-      sdkUnwired: new Map<string, string>([['AcceleratorConfig', 'not yet implemented by cdkd']]),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnapStartResponse']),
       primaryIdentifier: new Set<string>(['FunctionName']),
