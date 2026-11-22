@@ -434,6 +434,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     const scanned = readFixtureScripts(INTEG_ROOT);
     const helper = scanned.find((f) => f.fixture === 's3-versions.sh');
     expect(helper, 'tests/integration/s3-versions.sh is not being scanned').toBeDefined();
+    // Per-shape floor for the `aws "$@"` forwarder path (55 calls when added).
+    const forwarder = scanned.find((f) => f.fixture === 'revert-identity.sh');
+    expect(extractAwsInvocations(forwarder?.content ?? '').length).toBeGreaterThan(40);
     expect(helper?.content).toContain('aws s3api list-object-versions');
     expect(helper?.content).toContain('aws s3api delete-objects');
     // Current: 3022 invocations (3002 before the `nlb-source-nat` fixture of

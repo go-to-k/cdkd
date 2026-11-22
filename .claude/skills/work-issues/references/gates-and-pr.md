@@ -76,11 +76,11 @@ git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded pat
 --frozen-lockfile` (a merged dependency bump leaves `node_modules` stale, #6813),
 a rebuild, `vp run gen:all-matrices` and `vp run integ-ledger-normalize`; commit
 what they changed until `git status --porcelain` is empty (a pushed
-un-normalized ledger fails CI, #6810); re-run the SUITE, then
-`git push --force-with-lease`. A pre-rebase green attests to a tree that no
-longer exists. If the harness denies the push,
+un-normalized ledger fails CI, #6810); re-run §6's checks (`/check`): a
+pre-rebase green attests to a tree that no longer exists. Then
+`git push --force-with-lease`. If the harness denies it,
 `git checkout -B <branch> origin/<branch>`, `git merge origin/main`, the same
-sequence (`ship.md` §9), push plainly: lossless under the squash merge (#3813).
+sequence (`ship.md` §9), then push plainly: lossless under the squash merge (#3813).
 
 **A clean merge is no evidence of no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains

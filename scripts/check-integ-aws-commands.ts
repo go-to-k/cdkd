@@ -312,7 +312,10 @@ export function blankQuotedSpans(line: string, state: ScanState = newScanState()
  *
  * A shell function whose body forwards `aws "$@"` counts as `aws` at its call
  * sites: `_revert_identity_aws emr list-instance-groups` reached real AWS
- * unseen (#6810). A body holding a `}` before the forward is not recognized.
+ * unseen (#6810). Not recognized: a `}` in the body before the forward, an
+ * option between `aws` and `"$@"`, `function f {` without `()`, a forwarder
+ * defined in another file, and a service-fixed `aws s3api "$@"`. A comment
+ * reading `aws "$@"` inside a body does count.
  */
 export function extractAwsInvocations(content: string): AwsInvocation[] {
   const joined = joinContinuedLines(content);
