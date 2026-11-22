@@ -725,6 +725,10 @@ export class S3VectorsProvider implements ResourceProvider {
         );
         result['Tags'] = normalizeAwsTagsToCfn(tagsResp.tags);
       } catch (err) {
+        // go-to-k/cdkd#6759: only a bucket gone between the calls keeps the
+        // `[]`; any other failure throws, so `cdkd drift` reports the bucket
+        // not compared rather than "has no tags".
+        if (!this.isNotFoundError(err)) throw err;
         this.logger.debug(
           `S3Vectors ListTagsForResource(${bucket.vectorBucketArn}) failed: ${describeAwsFailure(err).detail}`
         );

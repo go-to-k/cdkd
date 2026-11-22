@@ -348,9 +348,18 @@ export async function readCurrentStateDBSubnetGroup(
   return result;
 }
 
+/** The not-found faults of the resources {@link attachTags} reads tags for. */
+const TAGGED_RESOURCE_NOT_FOUND_FAULTS: ReadonlySet<string> = new Set([
+  'DBInstanceNotFoundFault',
+  'DBClusterNotFoundFault',
+  'DBSubnetGroupNotFoundFault',
+]);
+
 /**
  * Fetch tags via `ListTagsForResource` and merge them into the result
- * under `Tags` (CFn shape). Best-effort.
+ * under `Tags` (CFn shape). Only a resource gone between the calls (its
+ * not-found fault, by NAME) omits the key; any other failure throws, so
+ * `cdkd drift` reports the resource not compared (go-to-k/cdkd#6759).
  */
 export async function attachTags(
   this: NeptuneProvider,
@@ -364,6 +373,8 @@ export async function attachTags(
     const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
     result['Tags'] = tags;
   } catch (err) {
+    const name = (err as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !TAGGED_RESOURCE_NOT_FOUND_FAULTS.has(name)) throw err;
     this.logger.debug(
       `Neptune ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
     );

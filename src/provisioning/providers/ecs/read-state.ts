@@ -135,7 +135,9 @@ export async function readCurrentStateCluster(
     )) as unknown as typeof resp;
   } catch (err) {
     if (isEcsErrorNamed(err, ['ClusterNotFoundException'])) return RESOURCE_NOT_FOUND;
-    return undefined;
+    // go-to-k/cdkd#6759: any other failure throws, so `cdkd drift` reports
+    // the cluster not compared WITH its cause instead of a bare "unknown".
+    throw err;
   }
   const c = resp.clusters?.[0];
   if (!c || !c.clusterName) {
@@ -250,7 +252,10 @@ export async function readCurrentStateService(
     ) {
       return RESOURCE_NOT_FOUND;
     }
-    return undefined;
+    // go-to-k/cdkd#6759: any other failure (and a not-found answer from the
+    // DEFAULT cluster, which proves nothing) throws, so `cdkd drift` reports
+    // the service not compared with its cause.
+    throw err;
   }
   const s = resp.services?.[0];
   if (!s || !s.serviceName) {
@@ -405,7 +410,9 @@ export async function readCurrentStateTaskDefinition(
     )) as unknown as typeof resp;
   } catch (err) {
     if (isTaskDefinitionMissingError(err)) return RESOURCE_NOT_FOUND;
-    return undefined;
+    // go-to-k/cdkd#6759: any other failure throws, so `cdkd drift` reports
+    // the task definition not compared with its cause.
+    throw err;
   }
   const td = resp.taskDefinition;
   if (!td) return undefined;

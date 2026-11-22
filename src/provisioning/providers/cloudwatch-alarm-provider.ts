@@ -810,6 +810,9 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
         result['Tags'] = tags;
       } catch (err) {
+        // go-to-k/cdkd#6759: only a gone alarm omits the key; any other
+        // failure throws, so `cdkd drift` reports the alarm not compared.
+        if (!this.isNotFound(err)) throw err;
         this.logger.debug(
           `CloudWatch ListTagsForResource(${alarm.AlarmArn}) failed: ${describeAwsFailure(err).detail}`
         );

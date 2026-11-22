@@ -556,7 +556,9 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
 
     // Tags via ListTagsForResource(ResourceARN=consumerArn). Always-emit
     // `[]` placeholder so a console-side tag add fires drift on the v3
-    // observed-properties baseline.
+    // observed-properties baseline. A failed read throws rather than emitting
+    // that `[]` (go-to-k/cdkd#6759): "could not read" must not read as "has
+    // no tags", so the run reports the consumer not compared.
     try {
       const tagsResp = await this.getClient().send(
         new ListTagsForResourceCommand({ ResourceARN: physicalId })
@@ -564,11 +566,7 @@ export class KinesisStreamConsumerProvider implements ResourceProvider {
       result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
-      // Best-effort: log and emit empty placeholder.
-      this.logger.debug(
-        `ListTagsForResource(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
-      result['Tags'] = [];
+      throw err;
     }
 
     return result;

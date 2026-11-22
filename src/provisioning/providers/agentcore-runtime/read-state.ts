@@ -137,8 +137,9 @@ export async function readCurrentState(
       : [];
 
   // Tags: the template's key -> value MAP shape, so drift never compares a
-  // list against a map (issue #5390). Best-effort: a tagging read failure
-  // (e.g. a missing `ListTagsForResource` grant) omits the key.
+  // list against a map (issue #5390). Only a gone runtime omits the key: any
+  // other failure (e.g. a missing `ListTagsForResource` grant) throws, so
+  // `cdkd drift` reports the resource not compared (go-to-k/cdkd#6759).
   if (resp.agentRuntimeArn) {
     try {
       const tagsResp = await this.client.send(
@@ -148,6 +149,7 @@ export async function readCurrentState(
         Object.entries(tagsResp.tags ?? {}).filter(([k]) => isUserTagKey(k))
       );
     } catch (err) {
+      if (!(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         safeMsg`Failed to read tags for runtime ${physicalId}: ${describeAwsFailure(err).detail}`
       );

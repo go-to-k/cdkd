@@ -150,12 +150,19 @@ export async function readCurrentState(
   if (connectionPoolConfig !== undefined) {
     result['ConnectionPoolConfigurationInfo'] = connectionPoolConfig;
   }
-  // Omitted, not `[]`, when the tag read fails: "could not read" must not
-  // read as "has no tags".
+  // Omitted, not `[]`, when the target group or its proxy is gone between the
+  // calls: "could not read" must not read as "has no tags". Any other failure
+  // throws, so `cdkd drift` reports it not compared (go-to-k/cdkd#6759).
   try {
     const tagResp = await client.send(new ListTagsForResourceCommand({ ResourceName: physicalId }));
     result['Tags'] = normalizeAwsTagsToCfn(tagResp.TagList ?? []);
   } catch (error) {
+    if (
+      !(error instanceof DBProxyTargetGroupNotFoundFault) &&
+      !(error instanceof DBProxyNotFoundFault)
+    ) {
+      throw error;
+    }
     this.logger.debug(
       safeMsg`ListTagsForResource failed for ${physicalId}: ${describeAwsFailure(error).detail}`
     );

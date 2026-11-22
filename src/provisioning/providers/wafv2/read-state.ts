@@ -109,6 +109,9 @@ export async function readCurrentState(
     const tags = normalizeAwsTagsToCfn(tagsResp.TagInfoForResource?.TagList);
     result['Tags'] = tags;
   } catch (err) {
+    // go-to-k/cdkd#6759: only a gone WebACL omits the key; any other failure
+    // throws, so `cdkd drift` reports the WebACL not compared.
+    if (!(err instanceof WAFNonexistentItemException)) throw err;
     this.logger.debug(
       `WAFv2 ListTagsForResource(${physicalId}) failed: ${describeAwsFailure(err).detail}`
     );

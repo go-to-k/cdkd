@@ -389,12 +389,20 @@ export async function sendHttpEndpointChange(
   }
 }
 
+/** The not-found faults of the resources {@link attachTags} reads tags for. */
+const TAGGED_RESOURCE_NOT_FOUND_FAULTS: ReadonlySet<string> = new Set([
+  'DBInstanceNotFoundFault',
+  'DBClusterNotFoundFault',
+  'DBSubnetGroupNotFoundFault',
+]);
+
 /**
  * Fetch tags via `ListTagsForResource(ResourceName=arn)` and merge them
  * into the result under `Tags` (CFn shape, `aws:*` filtered out, omitted
- * when empty). Best-effort: tag-fetch failures are logged at debug and
- * the key is simply left out — drift detection on configuration is more
- * important than fail-closing on a missing tag permission.
+ * when empty). Only a resource gone between the calls (its not-found fault,
+ * by NAME) leaves the key out; any other failure (AccessDenied, throttling)
+ * throws, so `cdkd drift` reports the resource not compared instead of never
+ * comparing its Tags (go-to-k/cdkd#6759).
  */
 export async function attachTags(
   this: RDSProvider,
@@ -408,6 +416,8 @@ export async function attachTags(
     const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
     result['Tags'] = tags;
   } catch (err) {
+    const name = (err as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !TAGGED_RESOURCE_NOT_FOUND_FAULTS.has(name)) throw err;
     this.logger.debug(`RDS ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`);
   }
 }

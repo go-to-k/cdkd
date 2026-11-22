@@ -668,6 +668,15 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         );
         result['Tags'] = normalizeAwsTagsToCfn(tagResp.TagList ?? []);
       } catch (error) {
+        // go-to-k/cdkd#6759: only an endpoint (or its proxy) gone between the
+        // calls keeps the `[]`; any other failure throws, so `cdkd drift`
+        // reports the endpoint not compared rather than "has no tags".
+        if (
+          !(error instanceof DBProxyEndpointNotFoundFault) &&
+          !(error instanceof DBProxyNotFoundFault)
+        ) {
+          throw error;
+        }
         this.logger.debug(
           `ListTagsForResource failed for ${physicalId}: ${describeAwsFailure(error).detail}`
         );

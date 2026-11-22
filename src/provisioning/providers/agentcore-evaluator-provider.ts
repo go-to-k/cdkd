@@ -608,8 +608,10 @@ export class AgentCoreEvaluatorProvider implements ResourceProvider {
       );
       result['Tags'] = tagMapToCfnList(tagsResp.tags ?? {});
     } catch (err) {
-      // Tags are best-effort for drift purposes; a tagging read failure
-      // should not fail the whole drift snapshot.
+      // go-to-k/cdkd#6759: only a gone evaluator omits the key; any other
+      // failure (AccessDenied, throttling) throws, so `cdkd drift` reports
+      // the resource not compared instead of never comparing its Tags.
+      if (!(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Failed to read tags for evaluator ${physicalId}: ${describeAwsFailure(err).detail}`
       );

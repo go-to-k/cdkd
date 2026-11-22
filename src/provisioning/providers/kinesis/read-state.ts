@@ -6,7 +6,6 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-kinesis';
 import { isUsableAttemptedName } from '../../../state/unsettled-properties.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
@@ -232,9 +231,10 @@ export async function readCurrentState(
     result['Tags'] = tags;
   } catch (err) {
     if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
-    this.logger.debug(
-      `Kinesis ListTagsForStream(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-    );
+    // go-to-k/cdkd#6759: any other failure (AccessDenied, LimitExceeded)
+    // throws, so `cdkd drift` reports the stream not compared instead of
+    // never comparing its Tags.
+    throw err;
   }
   return result;
 }
