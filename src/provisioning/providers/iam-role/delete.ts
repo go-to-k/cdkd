@@ -129,37 +129,30 @@ export async function deleteImpl(
       throw refusal;
     };
 
-    // Step 1: Detach all managed policies
-    await this.detachAllManagedPolicies(physicalId, log, progress);
-
-    // Step 2: Delete all inline policies
-    await this.deleteAllInlinePolicies(physicalId, log, progress);
-
-    // Step 3: Remove role from the stack's OWN instance profiles — only where
-    // they may still hold it and are pointed at its replacement afterwards
+    // go-to-k/cdkd#6808: a delete that may strip its holders
     // (`stackHoldersStillAttached`: a same-name re-create's delete-first,
-    // go-to-k/cdkd#4461), and only those the records bound around this delete
-    // name (go-to-k/cdkd#6808). Any other profile still holding it is refused
-    // FIRST, before the stack's own is touched, so a refused delete-first
-    // leaves that profile holding the role its record says; one that drains
-    // during the settle (a profile the run deleted, IAM still listing it) is
-    // no refusal. Every other delete — a destroy (go-to-k/cdkd#6750), a
-    // template removal, a nested child's teardown, a replaced copy's cleanup
-    // (go-to-k/cdkd#6770) — leaves the profiles alone: CloudFormation's
-    // delete handler holds no `iam:RemoveRoleFromInstanceProfile`, so
-    // `DeleteRole` fails with `DeleteConflict` while a profile still holds
-    // the role, and the run deletes or updates the stack's own profiles before
-    // this delete, so a profile left here is not this run's to change.
+    // go-to-k/cdkd#4461) strips only the stack's OWN instance profiles, those
+    // the records bound around this delete name. Any other profile still
+    // holding the role is refused HERE, before anything is changed: a refused
+    // delete-first leaves the role with its policies and the stack's own
+    // profile holding it, as their records say. A profile that drains during
+    // the settle (one the run deleted, IAM still listing it) is no refusal. A
+    // listing longer than one page strips nothing: the profiles past it are
+    // unread, and `DeleteRole`'s refusal below names them.
+    let ownProfiles: string[] = [];
     if (context?.stackHoldersStillAttached === true) {
       const own = stackOwnHolders(resourceType, physicalId);
       const isOwn = (entry: ProfileEntry) => isStackOwnHolder(own, entry.name, entry.id);
-      let listed: ProfileEntry[] = [];
+      let listed: { entries: ProfileEntry[]; truncated: boolean } = {
+        entries: [],
+        truncated: false,
+      };
       const foreign = await settledInstanceProfiles
         .call(
           this,
           physicalId,
           (entry) => !isOwn(entry),
-          (entries) => (listed = entries)
+          (page) => (listed = page)
         )
         .catch((listError: unknown) => {
           // The role gone since step 0: `DeleteRole` below says so.
@@ -167,10 +160,27 @@ export async function deleteImpl(
           throw listError;
         });
       if (foreign !== 'empty') refuseHeld(foreign);
-      const ownNames = listed.filter(isOwn).map((entry) => entry.name);
-      if (ownNames.length > 0) {
-        await this.removeFromStackOwnInstanceProfiles(physicalId, log, progress, ownNames);
+      if (!listed.truncated) {
+        ownProfiles = listed.entries.filter(isOwn).map((entry) => entry.name);
       }
+    }
+
+    // Step 1: Detach all managed policies
+    await this.detachAllManagedPolicies(physicalId, log, progress);
+
+    // Step 2: Delete all inline policies
+    await this.deleteAllInlinePolicies(physicalId, log, progress);
+
+    // Step 3: Remove role from the stack's own instance profiles listed above.
+    // Every other delete — a destroy (go-to-k/cdkd#6750), a template removal,
+    // a nested child's teardown, a replaced copy's cleanup
+    // (go-to-k/cdkd#6770) — leaves the profiles alone: CloudFormation's
+    // delete handler holds no `iam:RemoveRoleFromInstanceProfile`, so
+    // `DeleteRole` fails with `DeleteConflict` while a profile still holds
+    // the role, and the run deletes or updates the stack's own profiles before
+    // this delete, so a profile left here is not this run's to change.
+    if (ownProfiles.length > 0) {
+      await this.removeFromStackOwnInstanceProfiles(physicalId, log, progress, ownProfiles);
     }
 
     // Step 4: Delete the role. Two attempts at most: the second only after
@@ -323,13 +333,13 @@ async function settledInstanceProfiles(
   roleName: string,
   counts: (entry: ProfileEntry) => boolean = () => true,
   /** Told each listing, unnarrowed; the last one told is the settled one. */
-  onListing?: (entries: ProfileEntry[]) => void
+  onListing?: (page: { entries: ProfileEntry[]; truncated: boolean }) => void
 ): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
   const key = (held: { names: string[]; truncated: boolean }) =>
     JSON.stringify([held.names, held.truncated]);
   const listed = async () => {
     const { entries, truncated } = await listInstanceProfiles.call(this, roleName);
-    onListing?.(entries);
+    onListing?.({ entries, truncated });
     return { names: entries.filter(counts).map((entry) => entry.name), truncated };
   };
   let held = await listed();

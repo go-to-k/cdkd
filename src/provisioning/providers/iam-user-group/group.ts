@@ -376,12 +376,6 @@ export async function deleteGroup(
       context,
     });
 
-    // Step 1: Detach all managed policies
-    await this.detachAllGroupPolicies(physicalId, log, progress);
-
-    // Step 2: Delete all inline policies
-    await this.deleteAllGroupInlinePolicies(physicalId, log, progress);
-
     // A settle read answering another `GroupId` than step 0's: the name now
     // holds another group, which the by-name `DeleteGroup` must not reach.
     const sameGroup = (read: GetGroupCommandOutput): void => {
@@ -435,29 +429,22 @@ export async function deleteGroup(
       throw refusal;
     };
 
-    // Step 3: Remove the stack's OWN members from the group — only where the
-    // stack's own memberships may still hold it and are re-added afterwards
+    // go-to-k/cdkd#6808: a delete that may strip its holders
     // (`stackHoldersStillAttached`: a same-name re-create's delete-first,
-    // go-to-k/cdkd#4461), and only those the records bound around this
-    // delete name, matched by `UserId` where one is recorded
-    // (go-to-k/cdkd#6808). Any other member is refused FIRST, before the
-    // stack's own are touched, so a refused delete-first leaves the stack's
-    // memberships as their records say; one that drains during the settle
-    // (a user the run deleted, IAM still listing it) is no refusal. Every
-    // other delete — a destroy (go-to-k/cdkd#6750), a template removal, a
-    // nested child's teardown, a replaced group's cleanup, whose in-stack
-    // members already moved to the new group (go-to-k/cdkd#6770) — leaves
-    // the members alone: CloudFormation's delete handler holds no
-    // `iam:RemoveUserFromGroup`, so `DeleteGroup` fails with `DeleteConflict`
-    // while a user is still in the group, and the run removes or moves the
-    // stack's own memberships (a user's `Groups`, an
-    // `AWS::IAM::UserToGroupAddition`) before this delete, so a member left
-    // here is not this run's to change.
+    // go-to-k/cdkd#4461) removes only the stack's OWN members, those the
+    // records bound around this delete name, matched by `UserId` where one is
+    // recorded. Any other member is refused HERE, before anything is changed:
+    // a refused delete-first leaves the group with its policies and the
+    // stack's memberships as their records say. A member that drains during
+    // the settle (a user the run deleted, IAM still listing it) is no
+    // refusal. A member list longer than one page removes nothing: the users
+    // past it are unread, and `DeleteGroup`'s refusal below names them.
+    let ownMembers: User[] = [];
     if (context?.stackHoldersStillAttached === true) {
       const own = stackOwnHolders(resourceType, physicalId);
       const isOwn = (user: User) =>
         user.UserName !== undefined && isStackOwnHolder(own, user.UserName, user.UserId);
-      let read = members;
+      let read = { users: members, truncated: membersTruncated };
       const foreign = await settledMembers.call(
         this,
         physicalId,
@@ -465,10 +452,30 @@ export async function deleteGroup(
         membersTruncated,
         sameGroup,
         (user) => !isOwn(user),
-        (users) => (read = users)
+        (page) => (read = page)
       );
       if (foreign !== 'empty') refuseHeld(foreign);
-      await this.removeAllUsersFromGroup(physicalId, log, progress, read.filter(isOwn));
+      if (!read.truncated) ownMembers = read.users.filter(isOwn);
+    }
+
+    // Step 1: Detach all managed policies
+    await this.detachAllGroupPolicies(physicalId, log, progress);
+
+    // Step 2: Delete all inline policies
+    await this.deleteAllGroupInlinePolicies(physicalId, log, progress);
+
+    // Step 3: Remove the stack's own members listed above. Every other
+    // delete — a destroy (go-to-k/cdkd#6750), a template removal, a nested
+    // child's teardown, a replaced group's cleanup, whose in-stack members
+    // already moved to the new group (go-to-k/cdkd#6770) — leaves the members
+    // alone: CloudFormation's delete handler holds no
+    // `iam:RemoveUserFromGroup`, so `DeleteGroup` fails with `DeleteConflict`
+    // while a user is still in the group, and the run removes or moves the
+    // stack's own memberships (a user's `Groups`, an
+    // `AWS::IAM::UserToGroupAddition`) before this delete, so a member left
+    // here is not this run's to change.
+    if (ownMembers.length > 0) {
+      await this.removeAllUsersFromGroup(physicalId, log, progress, ownMembers);
     }
 
     // Step 4: Delete the group. Two attempts at most: the second only after
@@ -592,7 +599,7 @@ async function settledMembers(
    */
   counts: (user: User) => boolean = () => true,
   /** Told each later read's members, unnarrowed. */
-  onRead?: (users: User[]) => void
+  onRead?: (page: { users: User[]; truncated: boolean }) => void
 ): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
   let held = { names: memberNames(firstRead.filter(counts)), truncated: firstTruncated };
   if (held.names.length === 0) return 'empty';
@@ -603,7 +610,7 @@ async function settledMembers(
     await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
     const read = await this.iamClient.send(new GetGroupCommand({ GroupName: groupName }));
     sameGroup(read);
-    onRead?.(read.Users ?? []);
+    onRead?.({ users: read.Users ?? [], truncated: read.IsTruncated === true });
     const next = {
       names: memberNames((read.Users ?? []).filter(counts)),
       truncated: read.IsTruncated === true,

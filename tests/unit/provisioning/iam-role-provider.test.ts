@@ -95,6 +95,8 @@ describe('IAMRoleProvider', () => {
     it('should detach managed policies before deleting role', async () => {
       // GetRole - exists
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
@@ -107,8 +109,6 @@ describe('IAMRoleProvider', () => {
       mockSend.mockResolvedValueOnce({});
       // ListRolePolicies
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
@@ -126,6 +126,8 @@ describe('IAMRoleProvider', () => {
     it('should delete inline policies before deleting role', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies
@@ -135,8 +137,6 @@ describe('IAMRoleProvider', () => {
       // DeleteRolePolicy x2
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({});
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
@@ -153,10 +153,6 @@ describe('IAMRoleProvider', () => {
     it('should remove role from instance profiles before deleting role', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
-      // ListAttachedRolePolicies
-      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
-      // ListRolePolicies
-      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // ListInstanceProfilesForRole
       mockSend.mockResolvedValueOnce({
         InstanceProfiles: [
@@ -164,6 +160,10 @@ describe('IAMRoleProvider', () => {
           { InstanceProfileName: 'profile-2' },
         ],
       });
+      // ListAttachedRolePolicies
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      // ListRolePolicies
+      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // RemoveRoleFromInstanceProfile x2
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({});
@@ -184,6 +184,10 @@ describe('IAMRoleProvider', () => {
     it('should perform full cleanup: managed policies, inline policies, instance profiles, then delete', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({
+        InstanceProfiles: [{ InstanceProfileName: 'my-instance-profile' }],
+      });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
@@ -196,10 +200,6 @@ describe('IAMRoleProvider', () => {
       mockSend.mockResolvedValueOnce({ PolicyNames: ['InlinePolicy'] });
       // DeleteRolePolicy
       mockSend.mockResolvedValueOnce({});
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({
-        InstanceProfiles: [{ InstanceProfileName: 'my-instance-profile' }],
-      });
       // RemoveRoleFromInstanceProfile
       mockSend.mockResolvedValueOnce({});
       // DeleteRole
@@ -218,6 +218,8 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException gracefully when detaching already-detached policy', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
@@ -230,8 +232,6 @@ describe('IAMRoleProvider', () => {
       );
       // ListRolePolicies
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
@@ -244,6 +244,8 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException gracefully when deleting already-deleted inline policy', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies
@@ -252,8 +254,6 @@ describe('IAMRoleProvider', () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
       );
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
@@ -265,14 +265,14 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException gracefully when removing role from already-removed instance profile', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
-      // ListAttachedRolePolicies
-      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
-      // ListRolePolicies
-      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // ListInstanceProfilesForRole
       mockSend.mockResolvedValueOnce({
         InstanceProfiles: [{ InstanceProfileName: 'already-removed' }],
       });
+      // ListAttachedRolePolicies
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      // ListRolePolicies
+      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // RemoveRoleFromInstanceProfile - already removed
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
@@ -305,12 +305,12 @@ describe('IAMRoleProvider', () => {
     it('should throw ProvisioningError when DeleteRole fails', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole - fails
       mockSend.mockRejectedValueOnce(new Error('DeleteConflict'));
 
@@ -322,12 +322,12 @@ describe('IAMRoleProvider', () => {
     it('should handle role with no attached policies, no inline policies, and no instance profiles', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole - empty
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies - empty
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies - empty
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole - empty
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
@@ -340,14 +340,14 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException during ListInstanceProfilesForRole (role deleted between steps)', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
-      // ListAttachedRolePolicies
-      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
-      // ListRolePolicies
-      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // ListInstanceProfilesForRole - role was deleted between steps
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
       );
+      // ListAttachedRolePolicies
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      // ListRolePolicies
+      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 

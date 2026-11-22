@@ -179,6 +179,12 @@ describe('stackOwnHolders reads the records bound around the delete', () => {
     expect(isStackOwnHolder(holders, 'own', undefined)).toBe(false);
     expect(isStackOwnHolder(holders, 'legacy', 'AIPAANY')).toBe(true);
     expect(isStackOwnHolder(holders, 'stranger', 'AIPAOWN')).toBe(false);
+    // A second, id-less source of the same name (a UserToGroupAddition, a
+    // journaled write) never waives the id another source recorded.
+    const twice = [{ name: 'u', id: 'AIDAU' }, { name: 'U' }];
+    expect(isStackOwnHolder(twice, 'u', 'AIDASTRANGER')).toBe(false);
+    expect(isStackOwnHolder(twice, 'u', undefined)).toBe(false);
+    expect(isStackOwnHolder(twice, 'u', 'AIDAU')).toBe(true);
   });
 });
 
@@ -224,10 +230,17 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
         ['stack-profile', 'AIPASTACK'],
         ['outsider-profile', 'AIPAOUT']
       ),
+      ListAttachedRolePoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
+      }),
+      ListRolePoliciesCommand: () => ({ PolicyNames: ['inline'] }),
       DeleteRoleCommand: () => ({}),
     });
 
     const error = await deleteFirst();
+    // Refused before anything changed: the role keeps its policies too.
+    expect(names()).not.toContain('DetachRolePolicyCommand');
+    expect(names()).not.toContain('DeleteRolePolicyCommand');
 
     expect(error).toBeInstanceOf(ProvisioningError);
     expect(error!.message).toContain(
@@ -280,6 +293,76 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
     ]);
   });
 
+  it("a listing longer than one page strips nothing, even when its first page is all the stack's", async () => {
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: () => ({
+        InstanceProfiles: [{ InstanceProfileName: 'stack-profile', InstanceProfileId: 'AIPASTACK' }],
+        IsTruncated: true,
+      }),
+      DeleteRoleCommand: conflict,
+    });
+
+    const error = await deleteFirst();
+
+    expect(names()).not.toContain('RemoveRoleFromInstanceProfileCommand');
+    expect(error!.message).toContain('which this run did not delete');
+  });
+
+  it("the stack's profile gone by the settled listing is not stripped: the strip reads the LAST listing", async () => {
+    let listed = 0;
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: (input) =>
+        listed++ === 0
+          ? listing(['stack-profile', 'AIPASTACK'], ['deleted-profile', 'AIPAGONE'])(input)
+          : listing()(input),
+      DeleteRoleCommand: () => ({}),
+    });
+
+    expect(await deleteFirst()).toBeUndefined();
+    expect(names()).not.toContain('RemoveRoleFromInstanceProfileCommand');
+  });
+
+  it('a profile listing that fails (not NoSuchEntity) fails the delete before anything changes', async () => {
+    const denied = Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: () => {
+        throw denied;
+      },
+      ListAttachedRolePoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
+      }),
+      DeleteRoleCommand: () => ({}),
+    });
+
+    const error = await deleteFirst();
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(error!.message).not.toContain('which this run did not delete');
+    expect(names()).not.toContain('DetachRolePolicyCommand');
+    expect(names()).not.toContain('DeleteRoleCommand');
+  });
+
+  it("a refused removal from the stack's own profile is that failure, never a refusal naming it as outside the stack", async () => {
+    const denied = Object.assign(new Error('not authorized'), { name: 'AccessDenied' });
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: listing(['stack-profile', 'AIPASTACK']),
+      RemoveRoleFromInstanceProfileCommand: () => {
+        throw denied;
+      },
+      DeleteRoleCommand: conflict,
+    });
+
+    const error = await deleteFirst();
+
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect(error!.message).not.toContain('which this run did not delete');
+    expect(names()).not.toContain('DeleteRoleCommand');
+  });
+
   it('a profile under the recorded name with another InstanceProfileId is not the stack\'s: refused, never stripped', async () => {
     drive({
       ...base,
@@ -290,6 +373,7 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
     const error = await deleteFirst();
 
     expect(names()).not.toContain('RemoveRoleFromInstanceProfileCommand');
+    expect(names()).not.toContain('DeleteRoleCommand');
     expect(error!.message).toContain('instance profile(s) stack-profile, which this run did not');
   });
 
@@ -356,10 +440,17 @@ describe("IAM group delete-first: strips the stack's own members, refuses any ot
       ...base,
       GetGroupCommand: () =>
         group(['alice', 'AIDAALICE'], ['carol', 'AIDACAROL'], ['outsider', 'AIDAOUT']),
+      ListAttachedGroupPoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
+      }),
+      ListGroupPoliciesCommand: () => ({ PolicyNames: ['inline'] }),
       DeleteGroupCommand: () => ({}),
     });
 
     const error = await deleteFirst();
+    // Refused before anything changed: the group keeps its policies too.
+    expect(names()).not.toContain('DetachGroupPolicyCommand');
+    expect(names()).not.toContain('DeleteGroupPolicyCommand');
 
     expect(error).toBeInstanceOf(ProvisioningError);
     expect(error!.message).toContain(
@@ -401,6 +492,32 @@ describe("IAM group delete-first: strips the stack's own members, refuses any ot
     expect(inputsOf('RemoveUserFromGroupCommand', 'UserName')).toEqual(['alice']);
   });
 
+  it("a member list longer than one page removes nothing, even when its first page is all the stack's", async () => {
+    drive({
+      ...base,
+      GetGroupCommand: () => ({ ...group(['alice', 'AIDAALICE']), IsTruncated: true }),
+      DeleteGroupCommand: conflict,
+    });
+
+    const error = await deleteFirst();
+
+    expect(names()).not.toContain('RemoveUserFromGroupCommand');
+    expect(error!.message).toContain('whose membership this run did not remove');
+  });
+
+  it("the stack's member gone by the settled read is not removed: the removal reads the LAST read", async () => {
+    let reads = 0;
+    drive({
+      ...base,
+      GetGroupCommand: () =>
+        reads++ === 0 ? group(['alice', 'AIDAALICE'], ['gone-user', 'AIDAGONE']) : group(),
+      DeleteGroupCommand: () => ({}),
+    });
+
+    expect(await deleteFirst()).toBeUndefined();
+    expect(names()).not.toContain('RemoveUserFromGroupCommand');
+  });
+
   it("a user under the stack user's name with another UserId is not the stack's: refused, never removed", async () => {
     drive({
       ...base,
@@ -411,6 +528,7 @@ describe("IAM group delete-first: strips the stack's own members, refuses any ot
     const error = await deleteFirst();
 
     expect(names()).not.toContain('RemoveUserFromGroupCommand');
+    expect(names()).not.toContain('DeleteGroupCommand');
     expect(error!.message).toContain('still has user(s) alice, whose membership this run did not');
   });
 

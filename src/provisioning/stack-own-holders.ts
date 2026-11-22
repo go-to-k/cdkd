@@ -74,8 +74,10 @@ export function stackOwnHolders(resourceType: string, physicalId: string): Stack
 
 /**
  * Is the live holder `name` (with the AWS-minted `liveId` its listing
- * answered) one of `holders`? A holder with a recorded id matches only that
- * id: another holder under the name is not the stack's.
+ * answered) one of `holders`? Where any source of the name recorded an id,
+ * the live holder must carry one of those: another holder under the name is
+ * not the stack's, even where a second source (a `UserToGroupAddition`, a
+ * journaled write) names it without one.
  */
 export function isStackOwnHolder(
   holders: readonly StackOwnHolder[],
@@ -83,8 +85,8 @@ export function isStackOwnHolder(
   liveId: string | undefined
 ): boolean {
   const key = name.toLowerCase();
-  return holders.some(
-    (holder) =>
-      holder.name.toLowerCase() === key && (holder.id === undefined || holder.id === liveId)
-  );
+  const named = holders.filter((holder) => holder.name.toLowerCase() === key);
+  if (named.length === 0) return false;
+  const ids = named.flatMap((holder) => (holder.id === undefined ? [] : [holder.id]));
+  return ids.length === 0 || (liveId !== undefined && ids.includes(liveId));
 }
