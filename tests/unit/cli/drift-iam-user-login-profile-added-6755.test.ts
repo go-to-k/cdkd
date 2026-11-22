@@ -341,7 +341,7 @@ describe('cdkd drift on a login profile added to an IAM user declaring none (go-
       ),
     ].join('\n');
     expect(logged).toContain('no password to send');
-    expect(logged).toContain('cdkd drift --accept');
+    expect(logged).toContain('record its removal with drift --accept');
   });
 
   it('--accept records the profile in the baseline without a password', async () => {
