@@ -233,7 +233,7 @@ guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc0
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-access-key	2026-11-21T21:51:13Z	PASS	146	verify.sh	rc ok, orph clean (PR 6795 8ad8ddb90)
 iam-managed-policy	2026-11-22T05:59:15Z	PASS	227	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
-iam-oidc-provider	2026-11-22T17:44:40Z	PASS	105	verify.sh	fictitious per-run example.com issuer; rc ok, 0 errors, orph clean; real GitHub provider untouched
+iam-oidc-provider	2026-11-22T17:56:50Z	PASS	120	verify.sh	fictitious per-run example.com issuer; rc ok, 0 errors, orph clean; real GitHub provider untouched
 iam-profile-policy-fix-forward-orphan	2026-11-21T18:10:10Z	PASS	135	verify.sh	rc ok, orph clean
 iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean, 3x AFTER at 92e003a70 (#6703); destroy span med 15587ms vs BEFORE 15546ms
 iam-recreate-reattach	2026-11-22T06:53:39Z	PASS	290	verify.sh	rc ok, orph clean

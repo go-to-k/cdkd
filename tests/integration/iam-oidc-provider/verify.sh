@@ -148,11 +148,20 @@ echo "==> Pre-run cleanup"
 cleanup
 # A killed earlier run leaves its provider under ITS per-run host, which the
 # ARN above does not name: sweep this fixture's fictitious hosts only.
+# SCOPE GUARD: an empty prefix would widen the pattern below to every
+# *.example.com provider, so refuse anything but the literal.
+case "${OIDC_HOST_PREFIX}" in
+  cdkd-integ-oidc) ;;
+  *)
+    echo "FAIL: refusing the leftover-provider sweep for prefix '${OIDC_HOST_PREFIX:-<empty>}'" >&2
+    exit 1
+    ;;
+esac
 for arn in $(aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text); do
   case "${arn}" in
     "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_HOST_PREFIX}"*.example.com)
       echo "    deleting leftover provider ${arn}"
-      aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "${arn}"
+      aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "${arn}" >/dev/null 2>&1 || true
       ;;
   esac
 done

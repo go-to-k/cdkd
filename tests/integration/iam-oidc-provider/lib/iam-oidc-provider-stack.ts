@@ -24,8 +24,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * earlier version used GitHub's URL; an agent deleted the account's real
  * GitHub provider to make room, which broke an unrelated GitHub Actions role
  * for 18 days. The issuer is a fictitious per-run host on example.com
- * (`CDKD_OIDC_HOST`, set by verify.sh), so concurrent runs do not collide
- * either. A fixed dummy thumbprint keeps the CDK handler from fetching the
+ * (`CDKD_OIDC_HOST`, set by verify.sh), so a run never collides with a killed
+ * earlier run's leftover provider either. A fixed dummy thumbprint keeps the CDK handler from fetching the
  * (nonexistent) host's TLS certificate.
  *
  * covers: AWS::IAM::Role
