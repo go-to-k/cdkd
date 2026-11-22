@@ -131,6 +131,7 @@ export async function updateWithRollbackRetry(
   // the INNER one passes no knobs, keeping the default transient schedule (a
   // caller-supplied classifier replaces it, see `createWithRollbackRetry`).
   let unsettledFailures = 0;
+  const resendDeadline = Date.now() + UNSETTLED_REVERT_RESEND_WINDOW_MS;
   const result = await withRetry(
     () =>
       withRetry(
@@ -151,6 +152,9 @@ export async function updateWithRollbackRetry(
       isRetryable: (_text, error) => {
         const code = unsettledUpdateErrorCode(error);
         if (code === undefined) return false;
+        // A type whose own Cloud Control wait runs long (up to 60 min) cannot
+        // multiply it: no re-send starts past the window.
+        if (Date.now() >= resendDeadline) return false;
         // Said at the default level: each wait can run minutes. Counted so the
         // failure `withRetry` then gives up on announces no wait.
         if (++unsettledFailures <= UNSETTLED_REVERT_RETRY_SCHEDULE.maxRetries) {
@@ -199,6 +203,16 @@ const UNSETTLED_REVERT_RETRY_SCHEDULE = {
   initialDelayMs: 30_000,
   maxDelayMs: 60_000,
 } as const;
+
+/**
+ * No re-send starts once this long has passed since the revert's first
+ * attempt. `NotStabilized` also reports a revert that itself never settles,
+ * and a slow type's Cloud Control wait is up to 60 min
+ * (`slow-cc-operation-timeouts.ts`), so the count alone would let four
+ * re-sends stretch one revert to hours; the window caps the added time at
+ * itself plus one attempt.
+ */
+const UNSETTLED_REVERT_RESEND_WINDOW_MS = 15 * 60_000;
 
 /**
  * Whether a rollback revert failed only because the resource had not settled

@@ -144,6 +144,59 @@ describe('a revert Cloud Control abandoned on an unsettled resource is re-sent (
     ).toHaveLength(4);
   });
 
+  it('no re-send starts once 15 minutes have passed since the first attempt', async () => {
+    const now = vi.spyOn(Date, 'now');
+    try {
+      let t = 0;
+      now.mockImplementation(() => t);
+      const stuck = ccFailure('NotStabilized');
+      let calls = 0;
+      const update = vi.fn(async () => {
+        calls++;
+        // The first attempt alone outlasts the window (a slow type's long wait).
+        if (calls === 1) t = 15 * 60_000;
+        throw stuck;
+      });
+      await expect(revert({ update } as unknown as ResourceProvider)).rejects.toBe(stuck);
+      expect(update).toHaveBeenCalledTimes(1);
+      // Just inside the window, the re-send still happens.
+      t = 0;
+      calls = 0;
+      const lateButInside = vi.fn(async () => {
+        calls++;
+        if (calls === 1) {
+          t = 15 * 60_000 - 1;
+          throw stuck;
+        }
+        return { physicalId: 'ns', wasReplaced: false };
+      });
+      await expect(revert({ update: lateButInside } as unknown as ResourceProvider)).resolves.toBeDefined();
+      expect(lateButInside).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('an interrupt during the settle wait stops the revert', async () => {
+    const { provider, update } = providerFailing([ccFailure('NotStabilized'), ccFailure('NotStabilized')]);
+    let interrupted = false;
+    const run = updateWithRollbackRetry(
+      provider,
+      ['Ns', 'ns', TYPE, { AdminUserPassword: 'old' }, { AdminUserPassword: 'new' }, {}],
+      'Ns',
+      logger,
+      () => {
+        // Interrupted once the first attempt failed, i.e. during the outer wait.
+        if (update.mock.calls.length >= 1) interrupted = true;
+        return interrupted;
+      },
+      new Map(),
+      (s) => s
+    );
+    await expect(run).rejects.toThrow('Rollback interrupted while waiting for a resource to settle');
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
   it('the handler code on a wrapped cause is read too', async () => {
     const wrapped = new ProvisioningError('UPDATE failed for Ns', TYPE, 'Ns', 'ns', ccFailure('NotStabilized'));
     const { provider, update } = providerFailing([wrapped]);

@@ -66,8 +66,10 @@ A resource can still be busy with the update the rollback undoes: a Redshift
 Serverless namespace stays `MODIFYING` for minutes after a password change.
 When Cloud Control fails the revert because of that (`NotStabilized` or
 `ResourceConflict`), cdkd says so, waits, and sends the revert again, up to
-four more times; if it still fails, that error is reported as any other
-failed revert is.
+four more times, starting none after 15 minutes; if it still fails, that
+error is reported as any other failed revert is. CloudFormation's rollback
+stops at the first such failure (`UPDATE_ROLLBACK_FAILED`) and needs
+`continue-update-rollback`.
 
 cdkd also updates the stack's state, its record of what is deployed, so that
 state matches AWS after the rollback.
