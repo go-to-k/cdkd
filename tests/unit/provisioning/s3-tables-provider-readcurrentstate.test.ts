@@ -46,6 +46,9 @@ describe('S3TablesProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // go-to-k/cdkd#6759: a configuration read the test does not script answers
+    // NotFoundException, AWS's "not configured" (an `undefined` answer is now a TypeError).
+    mockSend.mockRejectedValue(new NotFoundException({ message: 'not configured', $metadata: {} }));
     provider = new S3TablesProvider();
   });
 
@@ -94,9 +97,11 @@ describe('S3TablesProvider.readCurrentState', () => {
       expect(result).toMatchObject({ Tags: [] });
     });
 
-    it('emits Tags: [] (best-effort) when ListTagsForResource itself fails', async () => {
+    it('emits Tags: [] when ListTagsForResource answers NotFoundException', async () => {
       mockSend.mockResolvedValueOnce({ name: 'my-bucket' });
-      mockSend.mockRejectedValueOnce(new Error('throttled'));
+      mockSend.mockRejectedValueOnce(
+        new NotFoundException({ message: 'not yet', $metadata: {} })
+      );
 
       const result = await provider.readCurrentState(
         'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
@@ -104,11 +109,21 @@ describe('S3TablesProvider.readCurrentState', () => {
         'AWS::S3Tables::TableBucket'
       );
 
-      // Best-effort fallback (matches the Table case and S3Vectors /
-      // CloudFront patterns) — drift comparator only descends into
-      // state-side keys, so an empty array doesn't surface noise on a
-      // pre-PR state file that had no Tags entry.
       expect(result).toMatchObject({ Tags: [] });
+    });
+
+    it('rejects the read when ListTagsForResource fails for another reason', async () => {
+      // go-to-k/cdkd#6759: a throttle no longer reads as "no tags".
+      mockSend.mockResolvedValueOnce({ name: 'my-bucket' });
+      mockSend.mockRejectedValueOnce(new Error('throttled'));
+
+      await expect(
+        provider.readCurrentState(
+          'arn:aws:s3tables:us-east-1:123:bucket/my-bucket',
+          'Logical',
+          'AWS::S3Tables::TableBucket'
+        )
+      ).rejects.toThrow('throttled');
     });
 
     it('returns RESOURCE_NOT_FOUND when bucket gone', async () => {
@@ -219,6 +234,10 @@ describe('S3TablesProvider.readCurrentState', () => {
           { Key: 'env', Value: 'cdkd-integ' },
           { Key: 'team', Value: 'platform' },
         ],
+        // The maintenance read answers NotFoundException (the beforeEach default,
+        // AWS's "not configured"): both keys at their AWS defaults (go-to-k/cdkd#2762).
+        Compaction: { Status: 'enabled' },
+        SnapshotManagement: { Status: 'enabled' },
       });
     });
 
@@ -239,7 +258,7 @@ describe('S3TablesProvider.readCurrentState', () => {
       expect(result).toMatchObject({ Tags: [] });
     });
 
-    it('emits Tags: [] (best-effort) when ListTagsForResource itself fails', async () => {
+    it('emits Tags: [] when ListTagsForResource answers NotFoundException', async () => {
       // tableARN MUST be present so the second AWS call (ListTagsForResource)
       // actually fires — without it readback short-circuits to Tags: [].
       mockSend.mockResolvedValueOnce({
@@ -247,7 +266,9 @@ describe('S3TablesProvider.readCurrentState', () => {
         format: 'ICEBERG',
         tableARN: 'arn:aws:s3tables:us-east-1:123:bucket/b/table/OPAQUE',
       });
-      mockSend.mockRejectedValueOnce(new Error('throttled'));
+      mockSend.mockRejectedValueOnce(
+        new NotFoundException({ message: 'not yet', $metadata: {} })
+      );
 
       const result = await provider.readCurrentState(
         'arn:aws:s3tables:us-east-1:123:bucket/b|n|t',
@@ -255,10 +276,25 @@ describe('S3TablesProvider.readCurrentState', () => {
         'AWS::S3Tables::Table'
       );
 
-      // Best-effort fallback: drift comparator only descends into
-      // state-side keys, so an empty array doesn't surface noise on a
-      // pre-PR state file that had no Tags entry.
       expect(result).toMatchObject({ Tags: [] });
+    });
+
+    it('rejects the read when ListTagsForResource fails for another reason', async () => {
+      // go-to-k/cdkd#6759: a throttle no longer reads as "no tags".
+      mockSend.mockResolvedValueOnce({
+        name: 't',
+        format: 'ICEBERG',
+        tableARN: 'arn:aws:s3tables:us-east-1:123:bucket/b/table/OPAQUE',
+      });
+      mockSend.mockRejectedValueOnce(new Error('throttled'));
+
+      await expect(
+        provider.readCurrentState(
+          'arn:aws:s3tables:us-east-1:123:bucket/b|n|t',
+          'Logical',
+          'AWS::S3Tables::Table'
+        )
+      ).rejects.toThrow('throttled');
     });
 
     it('returns RESOURCE_NOT_FOUND when table gone', async () => {

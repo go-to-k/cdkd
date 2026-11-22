@@ -71,6 +71,8 @@ export async function resolveHostedZoneId(
   // assignment carries AWS's own text.
   let lookupErrorShown: string | undefined;
   let lookupErrorRedacted = false;
+  // go-to-k/cdkd#6759: the listing itself failed, even with an empty error text.
+  let lookupFailed = false;
 
   // Declared outside the try for the same reason the two lookup-error
   // bindings above are: the ambiguity + sound-negative decisions below sit
@@ -153,6 +155,7 @@ export async function resolveHostedZoneId(
           ? sawLaterName || response.IsTruncated !== true
           : zones.length > 0 || response.IsTruncated !== true);
     } catch (error) {
+      lookupFailed = true;
       // `.detail` keeps this binding IDENTICAL to what the old expression
       // produced -- same text, so same truthiness at the condition below.
       // Stated as identity rather than as "non-empty", which an earlier
@@ -247,7 +250,27 @@ export async function resolveHostedZoneId(
     physicalId,
     lookupErrorCause
   );
+  if (lookupFailed) {
+    Object.defineProperty(unresolved, HOSTED_ZONE_LOOKUP_FAILED, { value: true });
+  }
   throw lookupErrorMessage && lookupErrorRedacted ? markRedactedCause(unresolved) : unresolved;
+}
+
+/**
+ * Brands the error `resolveHostedZoneId` throws when the `HostedZoneName`
+ * listing itself FAILED (AWS refused or throttled it), as opposed to every
+ * refusal raised from the template alone (go-to-k/cdkd#6759): a read treats
+ * only those as "cannot tell", and rethrows a branded one. A registry symbol,
+ * not an export: `record-set-group.ts` reads the same key.
+ */
+const HOSTED_ZONE_LOOKUP_FAILED = Symbol.for('cdkd.route53.hostedZoneLookupFailed');
+
+function isHostedZoneLookupFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[HOSTED_ZONE_LOOKUP_FAILED] === true
+  );
 }
 
 /**
@@ -258,9 +281,13 @@ export async function resolveHostedZoneId(
  * record name alone, so the zone has to be resolved from the recorded
  * properties — which is exactly what `createRecordSet` does, so the answer is
  * the same triple the composite would have held. Returns `undefined` (rather
- * than throwing) when the zone cannot be resolved, because both callers of
- * this helper treat "cannot determine" as "nothing to report" rather than as
- * a failure.
+ * than throwing) when the template cannot resolve the zone — no zone named,
+ * a name matching no zone, an ambiguous or an inconclusive listing — because
+ * both callers of this helper treat "cannot determine" as "nothing to report"
+ * rather than as a failure. A hosted-zone listing that FAILED (AWS refused or
+ * throttled it) throws instead (go-to-k/cdkd#6759): read as "nothing to
+ * report", it left `cdkd drift` reporting the record unknown with the cause
+ * lost, and an import declining the row.
  */
 export async function resolveRecordSetIdentity(
   this: Route53Provider,
@@ -300,10 +327,13 @@ export async function resolveRecordSetIdentity(
     );
     return { hostedZoneId, name, type };
   } catch (err) {
+    // A failed listing, or anything but a refusal from the template alone, is
+    // no "cannot determine".
+    if (!(err instanceof ProvisioningError) || isHostedZoneLookupFailure(err)) {
+      throw err;
+    }
     // Both callers treat "cannot determine" as "nothing to report" rather
-    // than as a failure, but say WHY at debug level — a swallowed throttle
-    // or credential error is otherwise indistinguishable from a template
-    // that simply does not name a zone.
+    // than as a failure, but say WHY at debug level.
     this.logger.debug(
       `Cannot resolve record-set identity for '${physicalId}': ${describeAwsFailure(err).detail}`
     );

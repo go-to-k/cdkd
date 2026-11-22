@@ -891,16 +891,16 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
       });
     });
 
-    it('leaves out a configuration whose read fails for another reason', async () => {
+    it('rejects the read when a configuration read fails for another reason', async () => {
+      // go-to-k/cdkd#6759: only NotFoundException leaves a key at its default; anything else throws.
       mockSend.mockResolvedValueOnce({ name: 'tb', arn: BUCKET_ARN });
       mockSend.mockResolvedValueOnce({ tags: {} });
       mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
       for (let i = 0; i < 5; i++) mockSend.mockRejectedValueOnce(notFound());
 
-      const result = await provider.readCurrentState(BUCKET_ARN, 'B', BUCKET);
-
-      expect(result).not.toHaveProperty('EncryptionConfiguration');
-      expect(result).toHaveProperty('MetricsConfiguration', { Status: 'Disabled' });
+      await expect(provider.readCurrentState(BUCKET_ARN, 'B', BUCKET)).rejects.toThrow(
+        'AccessDenied'
+      );
     });
 
     it('reads the Table maintenance configuration back in CFn shape', async () => {
@@ -934,15 +934,13 @@ describe('S3 Tables configuration properties (go-to-k/cdkd#2762)', () => {
       expect(result).not.toHaveProperty('StorageClassConfiguration');
     });
 
-    it('leaves the Table maintenance keys out when their read fails for another reason', async () => {
+    it('rejects the read when the Table maintenance read fails for another reason', async () => {
+      // go-to-k/cdkd#6759: the keys are no longer left out; the read throws.
       mockSend.mockResolvedValueOnce({ name: 'tbl', namespace: ['ns'], tableARN: TABLE_ARN });
       mockSend.mockResolvedValueOnce({ tags: {} });
       mockSend.mockRejectedValueOnce(new Error('AccessDenied'));
 
-      const result = await provider.readCurrentState(TABLE_ID, 'T', TABLE);
-
-      expect(result).not.toHaveProperty('Compaction');
-      expect(result).not.toHaveProperty('SnapshotManagement');
+      await expect(provider.readCurrentState(TABLE_ID, 'T', TABLE)).rejects.toThrow('AccessDenied');
     });
   });
   describe('readUnsettled', () => {

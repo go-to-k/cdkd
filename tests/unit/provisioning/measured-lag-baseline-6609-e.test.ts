@@ -723,7 +723,7 @@ describe('AWS::DynamoDB::GlobalTable replica Tags baseline after its own tag cal
     expect(remoteTagReads()).toBe(1);
   });
 
-  it('a transient first failure is re-read and warns once when it never settles; a deterministic one reads as before', async () => {
+  it('a transient first failure is re-read and warns once when it never settles; a deterministic one rejects the read', async () => {
     recordTagWrite(GT_TYPE, REMOTE_ARN, SET_NEW, []);
     primeGlobalTable([throttle(), OLD]);
     expect(await replicaTags('eu-west-1', AFTER)).toEqual(READ_NEW);
@@ -734,8 +734,9 @@ describe('AWS::DynamoDB::GlobalTable replica Tags baseline after its own tag cal
     regionalSend.mockClear();
     childLogger.warn.mockClear();
     primeGlobalTable([denied()]);
-    // The pre-#6609 handling of a failed replica tag read: warn, record none.
-    expect(await replicaTags('eu-west-1', AFTER)).toEqual([]);
+    // go-to-k/cdkd#6759: a deterministic failure on a served replica rejects the read
+    // (it used to warn and record `[]`, a false removal).
+    await expect(replicaTags('eu-west-1', AFTER)).rejects.toThrow();
     expect(remoteTagReads()).toBe(1);
   });
 

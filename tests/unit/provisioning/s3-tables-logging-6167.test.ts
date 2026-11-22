@@ -353,7 +353,8 @@ describe('AWS::S3Tables::TableBucket LoggingConfiguration (go-to-k/cdkd#6167)', 
       expect(result).not.toHaveProperty('LoggingConfiguration');
     });
 
-    it('leaves it out when the read fails for another reason', async () => {
+    it('rejects the read when the logging read fails for another reason', async () => {
+      // go-to-k/cdkd#6759: only NotFoundException leaves the key at its default; anything else throws.
       answerByCommand({
         ...base,
         GetTableBucketLoggingCommand: () => {
@@ -361,10 +362,9 @@ describe('AWS::S3Tables::TableBucket LoggingConfiguration (go-to-k/cdkd#6167)', 
         },
       });
 
-      const result = await provider.readCurrentState(BUCKET_ARN, 'B', BUCKET);
-
-      expect(result).not.toHaveProperty('LoggingConfiguration');
-      expect(result).toHaveProperty('MetricsConfiguration', { Status: 'Disabled' });
+      await expect(provider.readCurrentState(BUCKET_ARN, 'B', BUCKET)).rejects.toThrow(
+        'AccessDenied'
+      );
     });
 
     it('readUnsettled reads it after confirming the bucket exists, and throws a failed read', async () => {

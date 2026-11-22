@@ -188,7 +188,10 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
       mockSend
         .mockResolvedValueOnce({ tableARN: TABLE_ARN, namespace: ['ns'], name: 'tbl' })
         .mockResolvedValueOnce({ tableARN: TABLE_ARN, name: 'tbl', namespace: ['ns'] })
-        .mockResolvedValueOnce({ tags: {} });
+        .mockResolvedValueOnce({ tags: {} })
+        // GetTableMaintenanceConfiguration: nothing configured (go-to-k/cdkd#6759:
+        // an unscripted read would be a TypeError, no longer swallowed).
+        .mockResolvedValueOnce({});
 
       const result = await provider.readCurrentState(
         TABLE_ARN,

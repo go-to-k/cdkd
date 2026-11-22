@@ -93,7 +93,9 @@ describe('Route53Provider read-update round-trip', () => {
         },
         VPCs: [],
       })
-      .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } });
+      .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } })
+      // ListQueryLoggingConfigs: none (go-to-k/cdkd#6759: an unscripted read would be a TypeError)
+      .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
     const observed = bagOf(await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone'));
 
@@ -150,7 +152,9 @@ describe('Route53Provider read-update round-trip', () => {
           { VPCId: 'vpc-bbb', VPCRegion: 'us-west-2' },
         ],
       })
-      .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z2', Tags: [] } });
+      .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z2', Tags: [] } })
+      // ListQueryLoggingConfigs: none (go-to-k/cdkd#6759: an unscripted read would be a TypeError)
+      .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
     const observed = bagOf(await provider.readCurrentState('Z2', 'L', 'AWS::Route53::HostedZone'));
 
@@ -440,7 +444,9 @@ describe('Route53Provider read-update round-trip', () => {
         },
         VPCs: [],
       })
-      .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } });
+      .mockResolvedValueOnce({ ResourceTagSet: { ResourceId: 'Z1', Tags: [] } })
+      // ListQueryLoggingConfigs: none (go-to-k/cdkd#6759: an unscripted read would be a TypeError)
+      .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
     const observed = bagOf(await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone'));
 

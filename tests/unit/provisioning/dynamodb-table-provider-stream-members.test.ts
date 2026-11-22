@@ -836,7 +836,8 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
       expect(sent(ListTagsOfResourceCommand)).toHaveLength(1);
     });
 
-    it('degrades a failed member read to an omitted member, not a failed drift read', async () => {
+    it('rejects the whole read when a member read fails (not an omitted member)', async () => {
+      // go-to-k/cdkd#6759: a sub-read failing with anything but not-found rejects the read.
       const aws = primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
       aws.policies.set(streamArnOf(1), JSON.stringify(DOC));
       const denied = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
@@ -846,11 +847,7 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
         if (arn === streamArnOf(1)) return Promise.reject(denied);
         return inner(cmd);
       });
-      const live = await read(streamBlock('NEW_IMAGE', MEMBERS));
-      expect(live!['StreamSpecification']).toEqual({
-        StreamEnabled: true,
-        StreamViewType: 'NEW_IMAGE',
-      });
+      await expect(read(streamBlock('NEW_IMAGE', MEMBERS))).rejects.toThrow('not authorized');
     });
 
     it('re-asks an ABSENT answer for a declared member before believing it (eventually consistent reads)', async () => {
@@ -1059,19 +1056,14 @@ describe('DynamoDBTableProvider StreamSpecification.ResourcePolicy / Tags (issue
             $metadata: { httpStatusCode: 400 },
           }),
         ],
-      ])('omits BOTH members on a DETERMINISTIC failure (%s), as a drift read would', async (_n, error) => {
+      ])('rejects the capture on a DETERMINISTIC failure (%s), as a drift read does', async (_n, error) => {
+        // go-to-k/cdkd#6759: no member is omitted and no baseline is recorded; the read fails.
         primeAws({ generation: 1, streamEnabled: true, viewType: 'NEW_IMAGE' });
         failStreamReads(error);
         const desired = streamBlock('NEW_IMAGE', MEMBERS);
-        const baseline = await capture(desired);
-        expect(streamOf(baseline)).toEqual({ StreamEnabled: true, StreamViewType: 'NEW_IMAGE' });
-        // The drift read fails the same way, so baseline and drift agree.
-        const live = await read(desired);
-        expect(
-          calculateResourceDrift({ StreamSpecification: streamOf(baseline) }, live!, {
-            unionWalkObjects: true,
-          })
-        ).toEqual([]);
+        await expect(capture(desired)).rejects.toThrow(error.message);
+        // The drift read fails the same way.
+        await expect(read(desired)).rejects.toThrow(error.message);
       });
 
       it('keeps the declared policy, and records the differing tags, when a later re-ask throws', async () => {

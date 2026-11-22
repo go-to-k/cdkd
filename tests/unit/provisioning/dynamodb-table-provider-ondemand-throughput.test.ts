@@ -82,6 +82,9 @@ describe('DynamoDBTableProvider OnDemandThroughput wiring', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // go-to-k/cdkd#6759: a follow-up read the test does not script answers "nothing configured"
+    // (a failed sub-read now rejects the whole read, so `undefined` would be a TypeError).
+    mockSend.mockResolvedValue({});
     provider = new DynamoDBTableProvider();
   });
 

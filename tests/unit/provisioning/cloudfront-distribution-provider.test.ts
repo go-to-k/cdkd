@@ -2773,12 +2773,12 @@ describe('CloudFrontDistributionProvider', () => {
       );
     });
 
-    it('still returns DistributionConfig when the tag read fails', async () => {
+    it('still returns DistributionConfig when the tag read finds the distribution gone', async () => {
       mockSend.mockResolvedValueOnce({
         DistributionConfig: { CallerReference: 'ref', Enabled: true },
       });
-      // GetDistributionCommand fails — tag read is best-effort.
-      mockSend.mockRejectedValueOnce(new Error('throttled'));
+      // GetDistributionCommand answers NoSuchDistribution: the tags are omitted.
+      mockSend.mockRejectedValueOnce(new NoSuchDistribution({ $metadata: {}, message: 'gone' }));
 
       const result = bagOf(await provider.readCurrentState(
         'EDFDVBD6EXAMPLE',
@@ -2788,6 +2788,18 @@ describe('CloudFrontDistributionProvider', () => {
       expect(result).toBeDefined();
       expect(result!['DistributionConfig']).toEqual({ Enabled: true });
       expect(result!['Tags']).toBeUndefined();
+    });
+
+    it('rejects the read when the tag read fails for another reason', async () => {
+      // go-to-k/cdkd#6759: only NoSuchDistribution / NoSuchResource omit the tags.
+      mockSend.mockResolvedValueOnce({
+        DistributionConfig: { CallerReference: 'ref', Enabled: true },
+      });
+      mockSend.mockRejectedValueOnce(new Error('throttled'));
+
+      await expect(
+        provider.readCurrentState('EDFDVBD6EXAMPLE', 'MyDistribution', 'AWS::CloudFront::Distribution')
+      ).rejects.toThrow('throttled');
     });
 
     it('readCurrentState output is byte-stable across two reads (no phantom drift)', async () => {

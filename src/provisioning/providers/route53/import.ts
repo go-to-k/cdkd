@@ -209,8 +209,10 @@ export async function importRecordSet(
   // the wrong split-horizon zone FREEZES it into state, after which delete
   // parses the composite and never re-resolves — so the delete-time guard
   // can never fire. Verification cannot catch it either, because both zones
-  // hold a record of that name. `resolveRecordSetIdentity` swallows the
-  // refusal into `undefined`, which lands on the safe verbatim fallback.
+  // hold a record of that name. `resolveRecordSetIdentity` turns the
+  // refusal into `undefined`, which lands on the safe verbatim fallback; a
+  // zone listing that FAILED throws instead (go-to-k/cdkd#6759), failing the
+  // import rather than adopting an id it could not check.
   const identity = await this.resolveRecordSetIdentity(known, input.properties, {
     requireUnambiguousZoneName: true,
   });
@@ -271,8 +273,9 @@ export async function importRecordSet(
  * `Type` and, for a routing-policy record, `SetIdentifier` — so it is found
  * by that identity and adopted only when the record is live. Anything the
  * template leaves unresolved, a split-horizon zone name, or a record that is
- * not there declines (`null`), never guesses, a failed zone lookup included.
- * A failed record read propagates, as for the hosted zone's name lookup.
+ * not there declines (`null`), never guesses. A failed zone lookup (the
+ * listing itself refused or throttled, go-to-k/cdkd#6759) or a failed record
+ * read propagates, as for the hosted zone's name lookup.
  */
 async function importRecordSetFromTemplate(
   this: Route53Provider,

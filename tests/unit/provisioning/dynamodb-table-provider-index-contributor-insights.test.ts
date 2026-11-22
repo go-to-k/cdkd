@@ -534,13 +534,19 @@ describe('DynamoDBTableProvider per-index ContributorInsightsSpecification (issu
       expect(result?.['GlobalSecondaryIndexes']).toEqual([gsi('on', { Enabled: enabled })]);
     });
 
-    it('omits the block on FAILED and on a failed read, without failing the whole read', async () => {
+    it('omits the block on FAILED', async () => {
+      primeAws(['failed'], { failed: { status: 'FAILED' } });
+      const result = await readBack(tableProps([gsi('failed', { Enabled: true })]));
+      expect(result?.['GlobalSecondaryIndexes']).toEqual([gsi('failed')]);
+    });
+
+    it('rejects the whole read when an index read fails', async () => {
+      // go-to-k/cdkd#6759: a failed read throws instead of omitting the block.
       const denied = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
       primeAws(['failed', 'denied'], { failed: { status: 'FAILED' }, denied });
-      const result = await readBack(
-        tableProps([gsi('failed', { Enabled: true }), gsi('denied', { Enabled: true })])
-      );
-      expect(result?.['GlobalSecondaryIndexes']).toEqual([gsi('failed'), gsi('denied')]);
+      await expect(
+        readBack(tableProps([gsi('failed', { Enabled: true }), gsi('denied', { Enabled: true })]))
+      ).rejects.toThrow('not authorized');
     });
 
     describe('index-list ORDER (measured: DescribeTable returned [giB, giA] for a [giA, giB] template)', () => {

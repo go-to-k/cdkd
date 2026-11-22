@@ -764,12 +764,26 @@ export async function deleteRecordSetGroup(
   }
 }
 
+/** The brand `resolveHostedZoneId` puts on a failed listing (route53/resolve.ts). */
+const HOSTED_ZONE_LOOKUP_FAILED = Symbol.for('cdkd.route53.hostedZoneLookupFailed');
+
+function isHostedZoneLookupFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[HOSTED_ZONE_LOOKUP_FAILED] === true
+  );
+}
+
 /**
  * The live state of every recorded record, in recorded order, as
  * `{ RecordSets: [...] }`. A record the lookup cannot place makes the whole
  * answer "cannot tell" (`undefined`), as for `AWS::Route53::RecordSet`
  * (go-to-k/cdkd#4283); one proven gone is left out (go-to-k/cdkd#6660), and
- * a group with none left, or a missing zone, is `RESOURCE_NOT_FOUND`.
+ * a group with none left, or a missing zone, is `RESOURCE_NOT_FOUND`. A zone
+ * the template cannot resolve is "cannot tell" too, but a hosted-zone listing
+ * that FAILED throws (go-to-k/cdkd#6759), so `cdkd drift` reports
+ * `readFailed` with its cause rather than an unknown.
  */
 export async function readRecordSetGroup(
   this: Route53Provider,
@@ -790,7 +804,11 @@ export async function readRecordSetGroup(
       logicalId,
       RECORD_SET_GROUP_TYPE
     );
-  } catch {
+  } catch (err) {
+    // A failed listing rethrows; a refusal from the template alone is "cannot tell".
+    if (!(err instanceof ProvisioningError) || isHostedZoneLookupFailure(err)) {
+      throw err;
+    }
     return undefined;
   }
 

@@ -700,20 +700,12 @@ describe('GlobalTable Replicas[].DisassociationProtectionEnabled (go-to-k/cdkd#5
       expect(byRegion['us-east-1']).not.toHaveProperty(KEY);
     });
 
-    it('omits a declared value whose regional read failed', async () => {
+    it('rejects the read when a served replica\'s regional read fails', async () => {
+      // go-to-k/cdkd#6759: a failed regional read throws instead of omitting the value.
       failRead['eu-west-1'] = true;
-      const state = (await provider.readCurrentState(
-        TABLE,
-        'Gt',
-        TYPE,
-        bag(true, false)
-      )) as Record<string, unknown>;
-      const byRegion = Object.fromEntries(
-        (state['Replicas'] as Array<Record<string, unknown>>).map((r) => [r['Region'], r])
-      );
-
-      expect(byRegion['us-east-1']![KEY]).toBe(true);
-      expect(byRegion['eu-west-1']).not.toHaveProperty(KEY);
+      await expect(
+        provider.readCurrentState(TABLE, 'Gt', TYPE, bag(true, false))
+      ).rejects.toThrow('denied');
     });
   });
 });
