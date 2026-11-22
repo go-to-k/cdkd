@@ -447,6 +447,25 @@ export function overlayDeployedProperties(
   return { template: { ...synthTemplate, Resources: resources }, overlaid: new Set(pending) };
 }
 
+/**
+ * The `Properties` `deployedTemplate` holds for `logicalId`, or `undefined`
+ * when it holds no such row (or no object there).
+ */
+export function deployedPropertiesOf(
+  deployedTemplate: CloudFormationTemplate | undefined,
+  logicalId: string
+): Record<string, unknown> | undefined {
+  if (deployedTemplate === undefined) return undefined;
+  const rows = section(deployedTemplate, 'Resources');
+  if (!hasOwn(rows, logicalId)) return undefined;
+  const row = rows[logicalId] as { Properties?: unknown } | null;
+  if (row === null || typeof row !== 'object') return undefined;
+  const props = row.Properties;
+  return props !== null && typeof props === 'object' && !Array.isArray(props)
+    ? (props as Record<string, unknown>)
+    : {};
+}
+
 /** {@link overlayDeployedProperties}' answer. */
 export interface DeployedPropertiesOverlay {
   /** The template whose `Properties` the import records. */

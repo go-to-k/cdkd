@@ -153,6 +153,8 @@ export interface ImportTask {
    * `--resource` / `--resource-mapping` (go-to-k/cdkd#6841).
    */
   overrideFromCloudFormation?: boolean;
+  /** CloudFormation's deployed `Properties` for this logical id, when read (go-to-k/cdkd#6841). */
+  cloudFormationDeployedProperties?: Record<string, unknown> | undefined;
 }
 
 /** Per-filter counts from {@link mergeCfnDerivedOverrides}. */

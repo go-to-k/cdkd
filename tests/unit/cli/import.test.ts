@@ -1122,6 +1122,9 @@ describe('cdkd import', () => {
       expect(childCall![0].properties['Description']).toBe('deployed');
       // Every child id is CloudFormation's: `--resource` is root-scoped (#6841).
       expect(childCall![0].knownPhysicalIdFromCloudFormation).toBe(true);
+      expect(
+        (childCall![0] as { cloudFormationDeployedProperties?: unknown }).cloudFormationDeployedProperties
+      ).toEqual({ PolicyName: 'p', Description: 'deployed' });
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }
@@ -5466,6 +5469,42 @@ describe('cdkd import', () => {
         expect(infoSpy.mock.calls.flat().join(' ')).not.toContain('Selective mode');
       });
 
+      it("hands the provider what the same-named stack DEPLOYED as evidence, recording the synthesized properties (#6841)", async () => {
+        const { importSpy } = setupHappyPath();
+        mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'cfn-derived-bucket']]));
+        mockReadDeployedTemplate.mockResolvedValue({
+          Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'deployed' } } },
+        });
+
+        await runImport(['import', '--app', 'x', '--yes']);
+
+        expect(mockReadDeployedTemplate.mock.calls.map((c) => c[1])).toEqual(['S']);
+        expect(
+          (importSpy.mock.calls[0]![0] as { cloudFormationDeployedProperties?: unknown })
+            .cloudFormationDeployedProperties
+        ).toEqual({ BucketName: 'deployed' });
+        const [, , state] = mockSaveState.mock.calls[0] as unknown as [
+          string,
+          string,
+          { resources: Record<string, { properties: Record<string, unknown> }> },
+        ];
+        expect(state.resources['MyBucket']!.properties).toEqual({});
+      });
+
+      it('continues without the evidence when that read fails', async () => {
+        const { importSpy } = setupHappyPath();
+        mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'cfn-derived-bucket']]));
+        mockReadDeployedTemplate.mockRejectedValue(new Error('denied'));
+
+        await runImport(['import', '--app', 'x', '--yes']);
+
+        expect(
+          (importSpy.mock.calls[0]![0] as { cloudFormationDeployedProperties?: unknown })
+            .cloudFormationDeployedProperties
+        ).toBeUndefined();
+        expect(mockSaveState).toHaveBeenCalledTimes(1);
+      });
+
       it('lets a user --resource override win over the CFn-derived id', async () => {
         const { importSpy } = setupHappyPath();
         mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'cfn-derived-bucket']]));
@@ -5688,6 +5727,10 @@ describe('cdkd import', () => {
         await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
         expect(importSpy.mock.calls[0]![0].properties['PolicyName']).toBe('DeployedName');
         expect(importSpy.mock.calls[0]![0].knownPhysicalIdFromCloudFormation).toBe(true);
+        expect(
+          (importSpy.mock.calls[0]![0] as { cloudFormationDeployedProperties?: Record<string, unknown> })
+            .cloudFormationDeployedProperties?.['PolicyName']
+        ).toBe('DeployedName');
 
         importSpy.mockClear();
         mockSaveState.mockClear();

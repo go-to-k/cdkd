@@ -43,6 +43,7 @@ import { captureObservedForImportedResources } from './observed-capture.js';
 import { collectImportableResources, mergeCfnDerivedOverrides } from './overrides.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
+  deployedPropertiesOf,
   overlayDeployedProperties,
   readDeployedTemplate,
   withDeployedDefinitions,
@@ -388,6 +389,7 @@ export async function importNestedStackChildrenRecursive(args: {
           overrides: childOverrides,
           // `--resource` overrides are root-scoped: every child id is CloudFormation's.
           overrideFromCloudFormation: true,
+          cloudFormationDeployedProperties: deployedPropertiesOf(childDeployedTemplate, logicalId),
         });
         rows.push(outcome);
       }

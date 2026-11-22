@@ -31,6 +31,7 @@ import { writeRecordedMapping } from './overrides.js';
 import { dispatchInRefOrder } from './sibling-refs.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
+  deployedPropertiesOf,
   overlayDeployedProperties,
   readDeployedTemplate,
   withDeployedDefinitions,
@@ -76,6 +77,8 @@ export interface LockedImportContext {
   overrides: Map<string, string>;
   /** The logical ids the operator named with `--resource` / `--resource-mapping`. */
   userOverrideIds: ReadonlySet<string>;
+  /** The same-named CloudFormation stack auto mode took ids from, if any. */
+  autoModeCfnStackName: string | undefined;
   migrationCfnStackName: string | undefined;
   template: CloudFormationTemplate;
   templateParser: TemplateParser;
@@ -115,6 +118,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
     stateTemplate,
     overrides,
     userOverrideIds,
+    autoModeCfnStackName,
     migrationCfnStackName,
     template,
     templateParser,
@@ -140,8 +144,26 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // `AWS::IAM::Policy` records the `PolicyName` it reads there (#6841).
   let recordTemplate = stateTemplate;
   let dispatchResources = resources;
+  // What CloudFormation deployed, handed to each provider's `import()` as
+  // evidence (an `AWS::IAM::Policy` adopts its name only when the deployed
+  // template agrees, #6841). Auto mode reads it best-effort and records the
+  // synthesized properties as before.
+  let deployedTemplate: CloudFormationTemplate | undefined;
+  if (migrationCfnStackName === undefined && autoModeCfnStackName !== undefined) {
+    try {
+      deployedTemplate = await readDeployedTemplate(
+        regionClients.cloudFormation,
+        autoModeCfnStackName,
+        'Continuing without it.'
+      );
+    } catch (err) {
+      logger.debug(
+        `Reading the deployed template of the same-named CloudFormation stack failed (${err instanceof Error ? err.name : typeof err}); continuing without it.`
+      );
+    }
+  }
   if (migrationCfnStackName !== undefined) {
-    const deployedTemplate = await readDeployedTemplate(
+    deployedTemplate = await readDeployedTemplate(
       regionClients.cloudFormation,
       migrationCfnStackName,
       'cdkd state was not written and the CloudFormation stack was not changed.'
@@ -214,6 +236,9 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
         override: overrides.get(logicalId),
         overrides: refValues,
         overrideFromCloudFormation: !userOverrideIds.has(logicalId),
+        ...(deployedTemplate !== undefined && {
+          cloudFormationDeployedProperties: deployedPropertiesOf(deployedTemplate, logicalId),
+        }),
       });
     });
   let rows = await collectRows();

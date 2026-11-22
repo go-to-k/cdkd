@@ -358,9 +358,11 @@ export function decodePolicyDocument(this: IAMPolicyProvider, raw: string | unde
  * and a migrated resource the deployed template could not vouch for hand over
  * the SYNTHESIZED one, which may name no policy yet (renamed in the code) or,
  * worse, ANOTHER inline policy of that name on the same role, which a later
- * `delete()` would then remove. So the name is adopted only when one of the
- * recorded roles / groups / users holds an inline policy of that name
- * (`Get*Policy`); otherwise, including any read failure or an unreadable
+ * `delete()` would then remove. So the name is adopted only when BOTH
+ * CloudFormation's deployed template names it for this logical id
+ * (`cloudFormationDeployedProperties`) AND one of the recorded roles / groups /
+ * users holds an inline policy of that name (`Get*Policy`); otherwise,
+ * including an unread deployed template, any read failure or an unreadable
  * principal list, the handed id is kept and a value-free warning names the
  * logical id. An id the operator passed with `--resource` is kept as given,
  * and so is any id when `PolicyName` is not a plain IAM policy name (an
@@ -380,7 +382,10 @@ export async function importImpl(
       IAM_POLICY_NAME.test(policyName) &&
       policyName !== input.knownPhysicalId
     ) {
-      if (await inlinePolicyIsAttached.call(this, policyName, input.properties)) {
+      if (
+        input.cloudFormationDeployedProperties?.['PolicyName'] === policyName &&
+        (await inlinePolicyIsAttached.call(this, policyName, input.properties))
+      ) {
         this.logger.debug(
           safeMsg`Import of ${input.logicalId}: recording the template's PolicyName as the physical id ` +
             `(an inline policy is addressed by its name; the id handed to the import is not it)`
@@ -388,9 +393,11 @@ export async function importImpl(
         return { physicalId: policyName, attributes: {} };
       }
       this.logger.warn(
-        safeMsg`Import of ${logicalIdShown(input.logicalId)}: none of its roles, groups or users holds an ` +
-          `inline policy under the template's PolicyName, so the id CloudFormation supplied is recorded ` +
-          `as it is; 'cdkd drift' may report it missing until the next 'cdkd deploy' writes the policy.`
+        safeMsg`Import of ${logicalIdShown(input.logicalId)}: the template's PolicyName could not be ` +
+          `confirmed as the inline policy CloudFormation deployed (its deployed template names another ` +
+          `or none, or none of the policy's roles, groups or users holds it), so the id CloudFormation ` +
+          `supplied is recorded as it is; 'cdkd drift' may report it missing until the next ` +
+          `'cdkd deploy' writes the policy.`
       );
     }
     return { physicalId: input.knownPhysicalId, attributes: {} };

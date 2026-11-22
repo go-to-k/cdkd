@@ -43,6 +43,7 @@ export async function importOne(task: ImportTask): Promise<ImportRow> {
     override,
     overrides,
     overrideFromCloudFormation,
+    cloudFormationDeployedProperties,
   } = task;
 
   if (!providerRegistry.hasProvider(resource.Type)) {
@@ -118,6 +119,7 @@ export async function importOne(task: ImportTask): Promise<ImportRow> {
       ...(override !== undefined && { knownPhysicalId: override }),
       ...(override !== undefined &&
         overrideFromCloudFormation === true && { knownPhysicalIdFromCloudFormation: true }),
+      ...(cloudFormationDeployedProperties !== undefined && { cloudFormationDeployedProperties }),
     };
     const result: ResourceImportResult | null = await withPrintingSecrets(readBag, () =>
       provider.import!(input)

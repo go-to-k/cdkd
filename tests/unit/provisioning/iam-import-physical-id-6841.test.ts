@@ -34,6 +34,8 @@ function policyInput(
     ...(knownPhysicalId !== undefined && { knownPhysicalId }),
     ...(knownPhysicalId !== undefined &&
       fromCloudFormation && { knownPhysicalIdFromCloudFormation: true }),
+    // What CloudFormation deployed: by default it agrees with the handed name.
+    cloudFormationDeployedProperties: { PolicyName: properties['PolicyName'] },
   };
 }
 
@@ -92,6 +94,37 @@ describe('AWS::IAM::Policy import records the PolicyName (#6841)', () => {
     expect(warned).toContain('CoverageAuditRoleDefaultPolicy8A0E635C');
     expect(warned).not.toContain('RenamedInCode');
     expect(warned).not.toContain('role-a');
+  });
+
+  it("keeps CloudFormation's id, asking IAM nothing, when the deployed template names another policy or none", async () => {
+    for (const deployed of [{ PolicyName: 'DeployedName' }, undefined]) {
+      const provider = new IAMPolicyProvider();
+      const warn = vi.spyOn(provider.logger, 'warn').mockImplementation(() => undefined);
+      const result = await provider.import({
+        ...policyInput({ PolicyName: 'RenamedInCode', PolicyDocument: document, Roles: ['r'] }, CFN_ID),
+        cloudFormationDeployedProperties: deployed,
+      } as never);
+      expect(result?.physicalId).toBe(CFN_ID);
+      expect(warn).toHaveBeenCalledTimes(1);
+    }
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Groups', 'GetGroupPolicyCommand', 'GroupName'],
+    ['Users', 'GetUserPolicyCommand', 'UserName'],
+  ])('adopts the name held by a principal listed only under %s', async (list, command, key) => {
+    mockSend.mockImplementation(async (c: { constructor: { name: string } }) => {
+      if (c.constructor.name === command) return { PolicyDocument: '%7B%7D' };
+      throw new NoSuchEntityException({ message: 'not found', $metadata: {} });
+    });
+    const result = await new IAMPolicyProvider().import(
+      policyInput({ PolicyName: 'P1', PolicyDocument: document, [list]: ['principal-x'] }, CFN_ID)
+    );
+    expect(result?.physicalId).toBe('P1');
+    const asked = mockSend.mock.calls.map((c) => c[0] as { constructor: { name: string }; input: Record<string, unknown> });
+    expect(asked.map((c) => c.constructor.name)).toEqual([command]);
+    expect(asked[0]!.input).toEqual({ [key]: 'principal-x', PolicyName: 'P1' });
   });
 
   it("keeps CloudFormation's id when the principal list cannot be read", async () => {

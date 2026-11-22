@@ -510,12 +510,14 @@ export async function importCommand(
     //     resources that may no longer exist; providers re-read the resource
     //     during import, so those surface as `skipped-not-found` rather than
     //     bad state.
+    let autoModeCfnStackName: string | undefined;
     if (!selectiveMode && !migrationCfnStackName) {
       const cfnResources = await tryGetCloudFormationResourceMap(
         stackInfo.stackName,
         regionClients.cloudFormation
       );
       if (cfnResources) {
+        autoModeCfnStackName = stackInfo.stackName;
         // Same three filters as the migration path — shared so a change to
         // any of them lands once (issue #1131). Note the second-order effect
         // documented on the helper: seeding `overrides` ALSO pre-resolves
@@ -738,6 +740,7 @@ export async function importCommand(
         stateTemplate,
         overrides,
         userOverrideIds,
+        autoModeCfnStackName,
         migrationCfnStackName,
         template,
         templateParser,
