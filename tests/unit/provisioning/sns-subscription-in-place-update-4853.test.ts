@@ -189,12 +189,43 @@ describe('SNSSubscriptionProvider.update applies a mutable attribute edit in pla
     });
     // A scope with no policy filters nothing, and SNS may refuse to set one on
     // a subscription without a policy: it is left for the next policy.
+    // SNS refuses `RedrivePolicy: ''` and clears it only with the value
+    // omitted (go-to-k/cdkd#6835).
     expect(setCalls()).toEqual([
       ['RawMessageDelivery', 'false'],
       ['FilterPolicy', ''],
-      ['RedrivePolicy', ''],
+      ['RedrivePolicy', undefined],
     ]);
     expect(replaced()).toBe(false);
+  });
+
+  it('clears a dropped RedrivePolicy with the value omitted, and still sends a changed one (go-to-k/cdkd#6835)', async () => {
+    const held = `{"deadLetterTargetArn":"${DLQ_ARN}"}`;
+    route({ get: () => ({ Attributes: live({ RedrivePolicy: held }) }) });
+    await provider.update('Sub', SUB_ARN, TYPE, { ...BASE, RawMessageDelivery: false }, {
+      ...BASE,
+      RawMessageDelivery: false,
+      RedrivePolicy: { deadLetterTargetArn: DLQ_ARN },
+    });
+    const clear = sent().filter(
+      (c): c is SetSubscriptionAttributesCommand => c instanceof SetSubscriptionAttributesCommand
+    );
+    expect(clear).toHaveLength(1);
+    expect(clear[0]!.input.AttributeName).toBe('RedrivePolicy');
+    expect(clear[0]!.input.AttributeValue).toBeUndefined();
+    expect(replaced()).toBe(false);
+
+    mockSend.mockReset();
+    const otherDlq = DLQ_ARN.replace('orders-dlq', 'other-dlq');
+    route({ get: () => ({ Attributes: live({ RedrivePolicy: held }) }) });
+    await provider.update(
+      'Sub',
+      SUB_ARN,
+      TYPE,
+      { ...BASE, RawMessageDelivery: false, RedrivePolicy: { deadLetterTargetArn: otherDlq } },
+      { ...BASE, RawMessageDelivery: false, RedrivePolicy: { deadLetterTargetArn: DLQ_ARN } }
+    );
+    expect(setCalls()).toEqual([['RedrivePolicy', `{"deadLetterTargetArn":"${otherDlq}"}`]]);
   });
 
   it('replaces when a new policy meets a dropped FilterPolicyScope (the plan holds both)', async () => {

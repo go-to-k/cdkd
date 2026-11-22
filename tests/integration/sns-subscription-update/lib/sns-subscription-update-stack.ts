@@ -60,6 +60,12 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
       queueName: 'cdkd-sub-update-queue',
     });
 
+    // Always present: `dlq` (phase 2d) only points the subscription's
+    // RedrivePolicy at it, and the next step drops that property again.
+    const deadLetterQueue = new sqs.Queue(this, 'DeadLetterQueue', {
+      queueName: 'cdkd-sub-update-dlq',
+    });
+
     // A scalar PROPERTY of an always-present resource, never the presence of a
     // resource: a mode-gated RESOURCE is deleted by every later step whose mode
     // list omits the token, and here that would delete the subscription this
@@ -91,6 +97,11 @@ export class SnsSubscriptionUpdateStack extends cdk.Stack {
       rawMessageDelivery: rawDelivery,
       filterPolicy,
       filterPolicyScope,
+      // go-to-k/cdkd#6835: SNS clears a RedrivePolicy only with the value
+      // omitted, so dropping it (phase 2b) failed the deploy.
+      redrivePolicy: modes.includes('dlq')
+        ? { deadLetterTargetArn: deadLetterQueue.queueArn }
+        : undefined,
     });
 
     // `fail-after` (go-to-k/cdkd#6731): a parameter AWS refuses (its value

@@ -501,7 +501,7 @@ sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic s
 sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-sqs-event	2026-11-19T18:50:43Z	PASS	339	verify.sh	#6640 regression 84223153c: rc ok, orph clean
 sns-subscription-filter	2026-11-20T11:22:10Z	PASS	305	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean; probe with pre-helper src (f410830a4~1) RED at identity assertion
-sns-subscription-update	2026-11-21T06:00:49Z	PASS	215	verify.sh	rc ok, orph clean (#6713 plan)
+sns-subscription-update	2026-11-22T17:41:24Z	PASS	206	verify.sh	rc ok, orph clean; #6835 RedrivePolicy reset arm
 sns-topic-attr-removal	2026-11-20T11:22:10Z	PASS	105	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-11-06T20:37:33Z	PASS	114	verify.sh	#5913 lambda-eventsource split head; rc ok, orph clean

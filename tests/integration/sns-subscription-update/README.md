@@ -23,15 +23,22 @@ reached main.
   checked: the ATTRIBUTE is the discriminator (it was absent before that
   change), while the OUTPUT would resolve either way through the physical-id
   fallback, which is what `--strict-getatt` closes off.
-- **Phase 2 — the regression arm.** `CDKD_TEST_UPDATE=raw-delivery` flips
-  `RawMessageDelivery` to `true`, which routes to `update()`. Asserts the topic
-  ends with **exactly one** subscription, that its `SubscriptionArn` **changed**
-  (a fresh `Subscribe` after `Unsubscribe` mints a new GUID — measured — so the
-  ARN is what proves the internal replacement actually ran), that the endpoint
-  is unchanged, that the attribute converged, and that cdkd **recorded the new
-  ARN** in state — including that `attributes.Arn` and the Output both FOLLOW
-  the replacement, since `update()`'s attribute map REPLACES rather than merges
-  and a stale cached ARN would be served without ever reaching the fallback.
+- **Phase 2 — the regression arm.** `CDKD_TEST_UPDATE=raw-delivery,filter-b`
+  flips `RawMessageDelivery` to `true` and edits the `FilterPolicy`, which
+  routes to `update()`. Since issue
+  [#4853](https://github.com/go-to-k/cdkd/issues/4853) both apply **in place**:
+  the topic ends with exactly one subscription whose `SubscriptionArn`,
+  recorded `attributes.Arn` and Output are **unchanged**.
+- **Phases 2a, 2d, 2b, 2r, 2c — further in-place edits and their limits.** A
+  scope-only edit (2a); a `RedrivePolicy` to a dead-letter queue (2d); the
+  filter, its scope and the `RedrivePolicy` dropped from the template, cleared
+  on the same subscription (2b — SNS clears a `RedrivePolicy` only with the
+  value omitted, issue [#6835](https://github.com/go-to-k/cdkd/issues/6835));
+  a re-create inside a deploy that then fails (2r, issue
+  [#6731](https://github.com/go-to-k/cdkd/issues/6731)); and a policy plus
+  scope change the provider makes by re-creating, which `cdkd diff` must report
+  (2c, issue [#6509](https://github.com/go-to-k/cdkd/issues/6509)). The
+  `verify.sh` header holds the detail.
 - **Phase 3 — the thrown-delete arm.** The recorded `physicalId` is rewritten to
   a malformed subscription ARN, so `Unsubscribe` throws. Asserts cdkd aborts
   **before** creating, and that the live subscription is untouched.
@@ -90,7 +97,7 @@ not drivable from a fixture without changing the deploy principal's IAM.
 Phase 3 deliberately leaves a malformed `physicalId` in state, and
 `cdkd state destroy` cannot clear it (a malformed subscription ARN answers
 `InvalidParameter`, not `NotFound`, so the delete throws every time). `cleanup`
-therefore deletes the topic and queue **directly** by their deterministic names
+therefore deletes the topic and both queues **directly** by their deterministic names
 and drops the record with `state orphan --force`. It is armed on `EXIT`, `INT`
 and `TERM` in the exiting form with the rc seeded before arming, and is
 idempotent — the happy path calls it once up front and once via the trap.
