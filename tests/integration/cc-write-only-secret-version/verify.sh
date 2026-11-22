@@ -16,10 +16,9 @@
 #   5  rotate (V3), deploy with a queue failing AFTER the namespace update
 #      (--no-rollback), then `cdkd rollback`: it restores the recorded version
 #      (login at V3 fails), then a Tags-only deploy re-sends; login works.
-#   6  rotate (V4), deploy whose namespace update applies the password and then
-#      fails (an aws:-prefixed tag): the record written AHEAD names no version.
-#      The journal is removed (a killed deploy writes none), AWSCURRENT moved
-#      back to V3, Tags-only deploy: re-sent; login works.
+#   6  rotate (V4), kill -9 cdkd once UpdateNamespace applied it: the record on
+#      disk is the one written AHEAD (no version) and no journal exists.
+#      AWSCURRENT moved back to V3, Tags-only deploy: re-sent; login works.
 #   5  (also: AWSCURRENT moved to the recorded version logs in, so the
 #      rollback restored exactly that password.)
 #   7  a record as a v12-v17 cdkd wrote it (the attestation stripped) and as a
@@ -344,30 +343,48 @@ expect_deploy p5b six
 expect_sent p5b
 expect_login "login after the deploy following the rollback"
 
-echo "==> Phase 6: rotate, the namespace update applies the password then fails -- the partial apply"
+echo "==> Phase 6: rotate, kill cdkd once AWS applied the password -- the partial apply"
+# No AWS-side refusal makes this update fail AFTER UpdateNamespace: the handler
+# validates every field (an aws:-prefixed tag included) before it writes
+# (measured). A killed deploy is the case the write-ahead exists for anyway: it
+# writes no journal and no failure save, so the record on disk is the one saved
+# ahead. The kill lands once the namespace leaves AVAILABLE, which only
+# UpdateNamespace does, and before cdkd records the update (Cloud Control
+# answers a few seconds later).
 V3_NOW="$(current_version)"
 V4="$(rotate)"
-if deploy p6 seven tag; then
-  echo "FAIL: the deploy unexpectedly SUCCEEDED (the aws: tag was accepted)" >&2
-  exit 1
-fi
-echo "    OK: the deploy failed"
-# The premise: the failed update DID apply the rotated password. Without it
-# this phase proves nothing about a partial apply.
-expect_login "premise: the failed update applied the rotated password"
-expect_recorded "the record written ahead names no version" ""
+ns_available
+env -u WOS_FAIL WOS_TAG=seven perl -e 'setpgrp(0,0); exec @ARGV or die' \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --yes --verbose >"${LOG_DIR}/p6.log" 2>&1 &
+P6_PID=$!
+P6_STATUS=AVAILABLE
+for _ in $(seq 1 1200); do
+  kill -0 "${P6_PID}" 2>/dev/null || break
+  P6_STATUS="$(ns_status)" || { echo "FAIL: namespace status undetermined" >&2; exit 1; }
+  [ "${P6_STATUS}" != AVAILABLE ] && break
+  sleep 0.5
+done
+kill -9 -- "-${P6_PID}" 2>/dev/null || true
+wait "${P6_PID}" 2>/dev/null || true
+[ "${P6_STATUS}" != AVAILABLE ] || { echo "FAIL: premise: the namespace never left AVAILABLE before the deploy ended" >&2; exit 1; }
+echo "    OK: killed the deploy after UpdateNamespace (namespace ${P6_STATUS})"
+# The premise, from the record: the kill landed before cdkd recorded the update.
+expect_recorded "premise and guard: the record on disk is the one written ahead (no version)" ""
+# The update kept running in AWS after the kill: the rotated password is live.
+ns_available
+expect_login "premise: AWS applied the rotated password before the kill"
 BODY="$(state_body)" || { echo "FAIL: could not read ${STATE_KEY}" >&2; exit 1; }
 if printf '%s' "${BODY}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const u=JSON.parse(s).resources?.Ns?.unsettledProperties??[];process.exit(u.includes("AdminUserPassword")?0:1)})'; then
-  echo "FAIL: the failed update left AdminUserPassword unsettled, so the unsettled arm, not the write-ahead, would re-send it" >&2
+  echo "FAIL: AdminUserPassword is unsettled, so the unsettled arm, not the write-ahead, would re-send it" >&2
   exit 1
 fi
 echo "    OK: AdminUserPassword is not unsettled (the write-ahead alone guards the next deploy)"
-# A killed deploy writes no journal; the record written ahead is then the only guard.
-aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --region "${REGION}" >/dev/null \
-  || { echo "FAIL: the failed deploy wrote no rollback journal" >&2; exit 1; }
-aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY}" --region "${REGION}" >/dev/null
-assert_gone "rollback journal ${JOURNAL_KEY} still exists after its removal" \
+assert_gone "a rollback journal exists, so the journal arm, not the write-ahead, would re-send" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" --region "${REGION}"
+echo "    OK: the kill wrote no journal"
+# The killed run's own lock (expiresAt in the future) would refuse the next deploy.
+node "${LOCAL_DIST}" force-unlock "${STACK}" --state-bucket "${STATE_BUCKET}" --stack-region "${REGION}" --yes >/dev/null
 stage_back "${V3_NOW}"
 expect_deploy p6b eight
 expect_sent p6b

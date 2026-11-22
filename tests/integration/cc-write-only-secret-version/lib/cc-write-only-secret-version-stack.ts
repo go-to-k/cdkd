@@ -21,9 +21,6 @@ import type { Construct } from 'constructs';
  *   WOS_TAG   the namespace's `phase` tag value: a Tags-only change per phase.
  *   WOS_FAIL  'after': a queue AWS refuses, created after the namespace update
  *             (the rollback then reverts the namespace).
- *             'tag': the namespace's own update also carries an `aws:`-prefixed
- *             tag, which AWS refuses after `UpdateNamespace` (the password) was
- *             applied: the partial apply.
  *
  * covers: AWS::RedshiftServerless::Namespace
  * covers: AWS::RedshiftServerless::Workgroup
@@ -48,8 +45,6 @@ export class CcWriteOnlySecretVersionStack extends cdk.Stack {
     });
 
     const tags: cdk.CfnTag[] = [{ key: 'phase', value: tag }];
-    // AWS refuses a tag key in the `aws:` namespace; CDK passes an L1 tag through.
-    if (fail === 'tag') tags.push({ key: 'aws:cdkd-forced-failure', value: 'x' });
 
     const namespace = new redshiftserverless.CfnNamespace(this, 'Ns', {
       namespaceName: 'cdkd-wo-secret-ns',
