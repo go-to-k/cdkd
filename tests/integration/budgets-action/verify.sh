@@ -13,7 +13,8 @@
 #      on a fresh stack. Assert the deploy exits 0 and the action exists on the
 #      budget with the deployed execution role. Report whether the race was
 #      hit (the retry line) -- informational: IAM sometimes propagates first.
-#   2. Destroy; assert the budget, both roles and the state file are gone.
+#   2. Destroy; assert the budget, both roles, the managed policy and the
+#      state file are gone.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -77,6 +78,31 @@ cleanup() {
   rm -f "${DEPLOY_LOG:-}"
   # Deleting the budget deletes its actions.
   aws budgets delete-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" >/dev/null 2>&1 || true
+  # The two roles and the managed policy, should `cdkd destroy` have failed.
+  # Scoped to this stack's name prefix; the guard refuses an empty scope.
+  case "${STACK}" in
+    CdkdBudgetsAction?*)
+      local role pol p
+      for role in $(aws iam list-roles \
+        --query "Roles[?starts_with(RoleName, '${STACK}-')].RoleName" --output text 2>/dev/null); do
+        for p in $(aws iam list-role-policies --role-name "${role}" --query 'PolicyNames' --output text 2>/dev/null); do
+          aws iam delete-role-policy --role-name "${role}" --policy-name "${p}" >/dev/null 2>&1
+        done
+        for p in $(aws iam list-attached-role-policies --role-name "${role}" \
+          --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+          aws iam detach-role-policy --role-name "${role}" --policy-arn "${p}" >/dev/null 2>&1
+        done
+        aws iam delete-role --role-name "${role}" >/dev/null 2>&1
+      done
+      for pol in $(aws iam list-policies --scope Local \
+        --query "Policies[?starts_with(PolicyName, '${STACK}-')].Arn" --output text 2>/dev/null); do
+        aws iam delete-policy --policy-arn "${pol}" >/dev/null 2>&1
+      done
+      ;;
+    *)
+      echo "WARN: teardown sweep refused: unexpected stack name '${STACK}'" >&2
+      ;;
+  esac
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -129,6 +155,8 @@ echo "    deploy exited 0"
 # own per-attempt line (src/deployment/retry.ts).
 if grep -qF 'Retrying BudgetStopAction' "${DEPLOY_LOG}"; then
   echo "    race hit: BudgetStopAction was retried while IAM propagated, then created"
+  grep -F 'Retrying BudgetStopAction' "${DEPLOY_LOG}" | sed 's/^/      /'
+  echo "      retries: $(grep -cF 'Retrying BudgetStopAction' "${DEPLOY_LOG}")"
 else
   echo "    race not hit this run: IAM propagated before the action's first create"
 fi
@@ -152,6 +180,20 @@ echo "    budget action exists with the deployed execution role"
 
 EXECUTION_ROLE_NAME="${EXECUTION_ROLE_ARN##*/}"
 
+# The other two IAM resources, read before destroy for the gone-probes below.
+state_physical_id() { # usage: state_physical_id <logical-id prefix> <type>
+  node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --json \
+    | node -e 'const [p,t]=process.argv.slice(1);let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state.resources;const k=Object.keys(r).filter(x=>x.startsWith(p)&&r[x].resourceType===t);process.stdout.write(k.length===1?String(r[k[0]].physicalId||""):"")})' "$1" "$2" \
+    || return 1
+}
+TARGET_ROLE_NAME="$(state_physical_id TargetRole AWS::IAM::Role)"
+GUARD_POLICY_ARN="$(state_physical_id GuardPolicy AWS::IAM::ManagedPolicy)"
+if [ -z "${TARGET_ROLE_NAME}" ] || [ -z "${GUARD_POLICY_ARN}" ]; then
+  echo "FAIL: could not read TargetRole ('${TARGET_ROLE_NAME}') / GuardPolicy ('${GUARD_POLICY_ARN}') from state" >&2
+  exit 1
+fi
+
 # --- Phase 2: destroy -----------------------------------------------------
 echo "==> Phase 2: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -162,6 +204,10 @@ echo "    budget (and its action) deleted from AWS"
 
 assert_gone "execution role ${EXECUTION_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${EXECUTION_ROLE_NAME}"
 echo "    execution role deleted from AWS"
+
+assert_gone "target role ${TARGET_ROLE_NAME} still exists after destroy" aws iam get-role --role-name "${TARGET_ROLE_NAME}"
+assert_gone "managed policy ${GUARD_POLICY_ARN} still exists after destroy" aws iam get-policy --policy-arn "${GUARD_POLICY_ARN}"
+echo "    target role and managed policy deleted from AWS"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    state file removed"
