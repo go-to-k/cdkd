@@ -32,6 +32,7 @@ import {
 import type { DeployRun } from './run.js';
 import type { CloudFormationTemplate } from '../../../types/resource.js';
 import { journaledUpdatePolicy } from '../update-policy.js';
+import { withoutVersionAttestation } from '../../reference-provenance-record.js';
 
 /** go-to-k/cdkd#4604: types whose replacement's new resource is never journaled (see execute). */
 const NO_REPLACEMENT_ORPHAN_TYPES: ReadonlySet<string> = new Set([
@@ -72,8 +73,11 @@ export async function provisionCreateUpdateNode(
   const logicalId = node.id;
   const change = node.data;
 
+  // go-to-k/cdkd#6824: without the send attestation. This is the record a
+  // rollback restores, and a restore whose pinned version cannot be read sends
+  // the current one instead, so it never vouches for the version it names.
   const previousState = currentState.resources[logicalId]
-    ? { ...currentState.resources[logicalId] }
+    ? withoutVersionAttestation({ ...currentState.resources[logicalId] })
     : undefined;
 
   if (change.changeType === 'UPDATE') startedUpdates.add(logicalId);

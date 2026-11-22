@@ -512,6 +512,24 @@ export class DeployEngine {
   /** @internal */
   deployStateResources: Record<string, ResourceState> = {};
   /**
+   * go-to-k/cdkd#6824: the deploy-start rollback journal was read and holds
+   * no segment of this stack's own, so no earlier failed or interrupted run
+   * may have applied a value its record does not name. Set by
+   * `settleJournalAtStart`; false until then and on every read failure.
+   * Per-deploy, like `healBaseline`.
+   */
+  /** @internal */
+  writeOnlySecretSkipAllowed = false;
+  /**
+   * go-to-k/cdkd#6824: persist `record` as `logicalId`'s live record through
+   * the per-resource save chain, AWAITED, rejecting when the save fails: the
+   * write-ahead of a rotated secret send. Set by `executeDeployment`;
+   * `undefined` outside it, which refuses the send.
+   */
+  /** @internal */
+  writeAheadRecord: ((logicalId: string, record: ResourceState) => Promise<void>) | undefined =
+    undefined;
+  /**
    * go-to-k/cdkd#4492: this deploy's view of the stack's records, bound around
    * each resource's provider call (`stack-records-scope.ts`); set by
    * `executeDeployment` before its first provider call.

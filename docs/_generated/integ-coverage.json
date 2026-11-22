@@ -10224,6 +10224,7 @@
         "cc-to-sdk-reroute-cloudfront-distribution",
         "cc-to-sdk-reroute-common-types",
         "cc-write-only-create-only",
+        "cc-write-only-secret-version",
         "cloudwatch-anomaly-detector",
         "codedeploy-lambda-deployment-group",
         "cognito-schema-rollback",
@@ -10348,6 +10349,9 @@
         ],
         "cc-write-only-create-only": [
           "l2"
+        ],
+        "cc-write-only-secret-version": [
+          "l1"
         ],
         "cloudwatch-anomaly-detector": [
           "l2"
@@ -11344,6 +11348,7 @@
         "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-11",
+        "cc-write-only-secret-version",
         "composite-stack",
         "cross-stack-secret-import",
         "drift-revert-nested-write-only",
@@ -11380,6 +11385,10 @@
         ],
         "cc-to-sdk-reroute-common-types-11": [
           "l2"
+        ],
+        "cc-write-only-secret-version": [
+          "l2",
+          "literal"
         ],
         "composite-stack": [
           "l2",
@@ -11749,6 +11758,8 @@
     "AWS::RDS::DBParameterGroup",
     "AWS::RDS::GlobalCluster",
     "AWS::Redshift::Cluster",
+    "AWS::RedshiftServerless::Namespace",
+    "AWS::RedshiftServerless::Workgroup",
     "AWS::ResourceGroups::Group",
     "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",

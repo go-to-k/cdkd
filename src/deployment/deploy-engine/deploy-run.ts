@@ -53,6 +53,9 @@ export function deploy(
   this.unsettledMarks = new Map();
   this.unsettledItemMarks = new Map();
   this.resumedCreates = new Map();
+  // go-to-k/cdkd#6824: earned again from this deploy's journal read.
+  this.writeOnlySecretSkipAllowed = false;
+  this.writeAheadRecord = undefined;
   this.generatedNameGuard = undefined;
   this.signalReceiver = undefined;
   this.signalReceiverStackId = undefined;

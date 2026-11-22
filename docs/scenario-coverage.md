@@ -182,6 +182,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`cc-to-sdk-reroute-mount-target`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-mount-target/)
 - [`cc-to-sdk-reroute-rest-api`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-rest-api/)
 - [`cc-write-only-create-only`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-write-only-create-only/)
+- [`cc-write-only-secret-version`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-write-only-secret-version/)
 - [`cdk-cross-account-lookup-role`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cdk-cross-account-lookup-role/)
 - [`cloudtrail-trail`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cloudtrail-trail/)
 - [`cloudwatch-metric-stream-default-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cloudwatch-metric-stream-default-name/)

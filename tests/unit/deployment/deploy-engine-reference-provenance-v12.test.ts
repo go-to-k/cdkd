@@ -643,6 +643,19 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     expect(provenance(run, 'Reader')).toEqual({ [REF]: { region: 'us-east-1', versions: [V1] } });
   });
 
+  it('never emits versions it cannot prove, and never the send attestation (go-to-k/cdkd#6824)', async () => {
+    // The rotation case: the record was written at an older version, and the
+    // capture resolves the CURRENT one. Captured as "sent", a write-only
+    // password would be left unsent at a version AWS never received.
+    const run = await deploy({ state: v11State() });
+    expect(provenance(run, 'Reader')).toEqual({ [REF]: { region: 'us-east-1' } });
+    for (const id of ['SecretQueue', 'Reader']) {
+      for (const entry of Object.values((provenance(run, id) ?? {}) as Record<string, unknown>)) {
+        expect(entry).not.toHaveProperty('versionsSent');
+      }
+    }
+  });
+
   it('a state read off the token-free fast path is never captured', async () => {
     const { markTokenFreeState } = await import('../../../src/state/token-free-state.js');
     const state = v11State({ outputs: false });

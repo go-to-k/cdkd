@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-cc-write-only-secret-version",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Cloud Control update leaves an unchanged secret-referenced password unsent only at its recorded version (go-to-k/cdkd#6824)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

@@ -747,6 +747,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-write-only-secret-version",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cdk-cross-account-lookup-role",
       "annotated": false,
       "scenarios": []
@@ -4224,6 +4229,7 @@
     "cc-to-sdk-reroute-mount-target",
     "cc-to-sdk-reroute-rest-api",
     "cc-write-only-create-only",
+    "cc-write-only-secret-version",
     "cdk-cross-account-lookup-role",
     "cloudtrail-trail",
     "cloudwatch-metric-stream-default-name",

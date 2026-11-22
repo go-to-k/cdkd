@@ -531,6 +531,14 @@ export interface ReferenceProvenance {
    * what the upstream holds; a literal spelling's version never enters it.
    */
   readVersions?: string[];
+  /**
+   * go-to-k/cdkd#6824, no bump: the writer SENT `versions` (a single id) for
+   * every measured write-only key holding the token, and any later send of
+   * another version first persists the entry without its version arm. Only
+   * then may an update leave such a key out as unchanged. Kept only beside a
+   * valid `versions`; an older binary drops it on its next write of the entry.
+   */
+  versionsSent?: true;
 }
 
 /** One entry of {@link StackState.pendingMovesOut} (go-to-k/cdkd#5212). */

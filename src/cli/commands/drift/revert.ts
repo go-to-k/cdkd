@@ -11,6 +11,7 @@ import {
 } from '../../../utils/pasteable-command.js';
 import { PartialFailureError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
+import { writeAheadRevertAttestations } from './revert-attestation.js';
 import { LockManager } from '../../../state/lock-manager.js';
 import {
   type LockRecoveryContext,
@@ -257,6 +258,13 @@ export async function runRevert(
       // reference is routed by `classifyReplaySecretRegion`, and a reference
       // whose origin cannot be established is REFUSED before any update.
       try {
+        // go-to-k/cdkd#6824: before any send, so a revert killed after AWS
+        // took the current secret version leaves no record attesting another.
+        await writeAheadRevertAttestations(
+          report,
+          driftedOutcomes.map((o) => o.logicalId),
+          stateBackend
+        );
         const revertSecretResolvers = new DriftSecretResolvers(report.region);
         // The foreign-region evidence for this stack, as the detection site read
         // it — a nested child's ancestors included (go-to-k/cdkd#4213).

@@ -547,6 +547,16 @@ export function getWriteOnlyKeysKeptWhenOmitted(
 }
 
 /**
+ * Every key {@link getWriteOnlyKeysKeptWhenOmitted} can return for
+ * `resourceType`, whatever its siblings: the keys whose `{{resolve:...}}`
+ * tokens carry a send attestation and are written ahead of a rotated send
+ * (go-to-k/cdkd#6824).
+ */
+export function writeOnlyKeysKeptWhenOmittedCandidates(resourceType: string): ReadonlySet<string> {
+  return new Set(WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType)?.keys() ?? []);
+}
+
+/**
  * Every write-only path of `resourceType` as segments under `properties` (`*`
  * for an array element), from the schema {@link getTopLevelWriteOnlyProperties}
  * or {@link tryGetTopLevelWriteOnlyProperties} fetched: call it after that
