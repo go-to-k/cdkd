@@ -380,6 +380,27 @@ describe('CloudControlProvider update: unchanged measured write-only keys are no
       expect(patch).toHaveLength(2);
     });
 
+    it.each([
+      ['RuntimeEnvironment', 'FLINK-1_18', 'FLINK-1_20'],
+      ['ServiceExecutionRole', 'arn:aws:iam::123456789012:role/a', 'arn:aws:iam::123456789012:role/b'],
+    ])('re-adds both unchanged keys beside a %s change', async (sibling, before, after) => {
+      mockCloudFormationSend.mockResolvedValue({ Schema: KDA_SCHEMA });
+
+      await provider.update(
+        'App',
+        'app',
+        'AWS::KinesisAnalyticsV2::Application',
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: { ...run }, [sibling]: after },
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: run, [sibling]: before }
+      );
+
+      expect(sentPatch().map((op) => op.path).sort()).toEqual([
+        '/ApplicationConfiguration',
+        '/RunConfiguration',
+        `/${sibling}`,
+      ]);
+    });
+
     it('re-adds the unchanged ApplicationConfiguration beside a RunConfiguration change', async () => {
       // RunConfiguration sent alone failed on the read model's checkpoint values.
       mockCloudFormationSend.mockResolvedValue({ Schema: KDA_SCHEMA });
