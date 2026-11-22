@@ -42,6 +42,7 @@ import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
 import { verifyOwnIdentityBeforeUpdate } from './iam-policy/principal-identity.js';
 import { compareProfileRoleWrites } from './iam-instance-profile-roles.js';
 import {
+  diffPrincipalNames,
   onlySecretDerived,
   readPrincipalLists,
   recordedPrincipalsRepair,
@@ -481,8 +482,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         physicalId
       );
     }
-    const newRoles = newPrincipals.lists.Roles ?? [];
-    const oldRoles = oldPrincipals.lists.Roles ?? [];
+    // go-to-k/cdkd#6774: a role respelled only in case is neither removed nor added.
+    const roles = diffPrincipalNames(newPrincipals.lists.Roles, oldPrincipals.lists.Roles);
 
     try {
       // go-to-k/cdkd#6722: the role writes below name the profile, so its
@@ -509,55 +510,52 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
         client: this.iamClient,
         logicalId,
         physicalId,
-        added: newRoles.filter((r) => !oldRoles.includes(r)),
-        removed: oldRoles.filter((r) => !newRoles.includes(r)),
+        added: roles.added,
+        removed: roles.removed,
         warn: (message) => log.warn(message),
       });
       // Remove old roles that are no longer in the list
-      for (const roleName of oldRoles) {
-        if (!newRoles.includes(roleName) && !skipRemoval(roleName)) {
-          try {
-            await this.iamClient.send(
-              new RemoveRoleFromInstanceProfileCommand({
-                InstanceProfileName: physicalId,
-                RoleName: roleName,
-              })
-            );
-            log.debug(`Removed role ${v(roleName)} from instance profile ${v(physicalId)}`);
-          } catch (error) {
-            if (!(error instanceof NoSuchEntityException)) {
-              throw error;
-            }
-            log.debug(`Role ${v(roleName)} already removed from instance profile ${v(physicalId)}`);
+      for (const roleName of roles.removed) {
+        if (skipRemoval(roleName)) continue;
+        try {
+          await this.iamClient.send(
+            new RemoveRoleFromInstanceProfileCommand({
+              InstanceProfileName: physicalId,
+              RoleName: roleName,
+            })
+          );
+          log.debug(`Removed role ${v(roleName)} from instance profile ${v(physicalId)}`);
+        } catch (error) {
+          if (!(error instanceof NoSuchEntityException)) {
+            throw error;
           }
-          // go-to-k/cdkd#6609: noted so the capture right after waits for it
-          // to be gone (`own-write-removals.ts`).
-          recordOwnWriteRemoval(INSTANCE_PROFILE_TYPE, physicalId, 'Roles', roleName);
+          log.debug(`Role ${v(roleName)} already removed from instance profile ${v(physicalId)}`);
         }
+        // go-to-k/cdkd#6609: noted so the capture right after waits for it
+        // to be gone (`own-write-removals.ts`).
+        recordOwnWriteRemoval(INSTANCE_PROFILE_TYPE, physicalId, 'Roles', roleName);
       }
 
       // Add new roles that were not previously attached
-      for (const roleName of newRoles) {
-        if (!oldRoles.includes(roleName)) {
-          try {
-            await this.iamClient.send(
-              new AddRoleToInstanceProfileCommand({
-                InstanceProfileName: physicalId,
-                RoleName: roleName,
-              })
-            );
-          } catch (error) {
-            // Idempotent (go-to-k/cdkd#4461): a profile already holding THIS
-            // role is the outcome asked for. A failed deploy keeps a re-attach
-            // record without the role even when its add landed, and IAM
-            // refuses a second role with `LimitExceeded`, so every later
-            // deploy would fail. Any other holder still fails loudly.
-            if (!(await this.holdsRole(physicalId, roleName, error))) throw error;
-            log.debug(`Instance profile ${v(physicalId)} already holds role ${v(roleName)}`);
-            continue;
-          }
-          log.debug(`Added role ${v(roleName)} to instance profile ${v(physicalId)}`);
+      for (const roleName of roles.added) {
+        try {
+          await this.iamClient.send(
+            new AddRoleToInstanceProfileCommand({
+              InstanceProfileName: physicalId,
+              RoleName: roleName,
+            })
+          );
+        } catch (error) {
+          // Idempotent (go-to-k/cdkd#4461): a profile already holding THIS
+          // role is the outcome asked for. A failed deploy keeps a re-attach
+          // record without the role even when its add landed, and IAM
+          // refuses a second role with `LimitExceeded`, so every later
+          // deploy would fail. Any other holder still fails loudly.
+          if (!(await this.holdsRole(physicalId, roleName, error))) throw error;
+          log.debug(`Instance profile ${v(physicalId)} already holds role ${v(roleName)}`);
+          continue;
         }
+        log.debug(`Added role ${v(roleName)} to instance profile ${v(physicalId)}`);
       }
 
       log.debug(`Successfully updated IAM instance profile ${logicalId}`);
@@ -613,7 +611,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       const response = await this.iamClient.send(
         new GetInstanceProfileCommand({ InstanceProfileName: profileName })
       );
-      return (response.InstanceProfile?.Roles ?? []).some((r) => r.RoleName === roleName);
+      return (response.InstanceProfile?.Roles ?? []).some(
+        (r) => r.RoleName?.toLowerCase() === roleName.toLowerCase()
+      );
     } catch {
       return false;
     }
@@ -939,7 +939,8 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
                 ? { value: profileRoleNames(resp.InstanceProfile) }
                 : 'failed';
             },
-            removed
+            removed,
+            (entry) => entry.toLowerCase() // IAM names ignore case (go-to-k/cdkd#6774)
           ),
         ],
         this.ownWriteRereadDelaysMs,

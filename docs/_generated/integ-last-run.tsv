@@ -232,17 +232,17 @@ glue-update-hardening	2026-11-21T15:34:28Z	PASS	291	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc056, rc ok, no pre-existing detector, revert-identity kept x2, orph clean (eu-west-1)
 healthimaging-stateful-update-fallback	2026-11-04T17:48:59Z	PASS	311	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
 iam-access-key	2026-11-21T21:51:13Z	PASS	146	verify.sh	rc ok, orph clean (PR 6795 8ad8ddb90)
-iam-managed-policy	2026-11-21T12:11:14Z	PASS	230	verify.sh	PR6768 590d40673; rc ok, orph clean
+iam-managed-policy	2026-11-21T18:10:10Z	PASS	187	verify.sh	rc ok, orph clean
 iam-oidc-provider	2026-11-04T06:21:47Z	PASS	80	verify.sh	batch 7; rc ok, 0 errors, orph clean
-iam-profile-policy-fix-forward-orphan	2026-11-21T12:11:14Z	PASS	205	verify.sh	PR6768 590d40673; rc ok, orph clean; own bucket
+iam-profile-policy-fix-forward-orphan	2026-11-21T18:10:10Z	PASS	135	verify.sh	rc ok, orph clean
 iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean, 3x AFTER at 92e003a70 (#6703); destroy span med 15587ms vs BEFORE 15546ms
 iam-recreate-reattach	2026-11-22T00:06:45Z	PASS	278	verify.sh	rc ok, orph clean
 iam-role-fix-forward-orphan	2026-11-21T08:50:03Z	PASS	107	verify.sh	PR6748 447e12b3b; rc ok, orph clean; own bucket
 iam-role-policies-drift-clean	2026-11-21T11:39:56Z	PASS	556	verify.sh	rc 0, own bucket, 0 orphans (PR #6763)
 iam-role-prefixed-name-update	2026-11-22T00:42:22Z	PASS	195	verify.sh	rc ok, orph clean; 5c refusal before 5b
-iam-secret-derived-principals	2026-11-21T12:11:14Z	PASS	175	verify.sh	PR6768 590d40673; rc ok, orph clean
-iam-sibling-managed-policy-drift	2026-11-21T11:40:23Z	PASS	583	verify.sh	rc 0, own bucket, 0 orphans (PR #6763)
-iam-user-group-fix-forward-orphan	2026-11-21T08:50:03Z	PASS	137	verify.sh	PR6748 447e12b3b; rc ok, orph clean; own bucket
+iam-secret-derived-principals	2026-11-21T18:10:10Z	PASS	160	verify.sh	rc ok, orph clean
+iam-sibling-managed-policy-drift	2026-11-21T18:10:10Z	PASS	611	verify.sh	rc ok, orph clean
+iam-user-group-fix-forward-orphan	2026-11-21T18:10:10Z	PASS	135	verify.sh	rc ok, orph clean
 imagebuilder-infra-update	2026-11-20T10:54:34Z	PASS	155	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1)
 import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
 import-attribute-readback-final	2026-11-04T19:01:45Z	PASS	240	verify.sh	rc ok, orph clean (temp state bucket)

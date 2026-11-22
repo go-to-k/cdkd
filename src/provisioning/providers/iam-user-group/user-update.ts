@@ -21,7 +21,7 @@ import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { MaskedLogSinks } from '../../masked-retry-logger.js';
-import { SECRET_DERIVED_READ_LIVE } from '../../iam-policy-targets.js';
+import { diffPrincipalNames, SECRET_DERIVED_READ_LIVE } from '../../iam-policy-targets.js';
 import type { InlinePolicyClaimed, ResourceUpdateResult } from '../../../types/resource.js';
 import { readPrincipalSides, iamPathOf, userOrGroupIdentityToken } from './shared.js';
 import { definedAttributes } from '../../attribute-map.js';
@@ -116,17 +116,16 @@ export async function updateUser(
     // go-to-k/cdkd#6722: each in-stack group the user joins or leaves is
     // compared before any write. A group it leaves held by another id is
     // warned about and sent no removal; one it joins refuses the update.
-    const nextGroups = new Set(groups.next.Groups ?? []);
-    const prevGroups = new Set(groups.prev.Groups ?? []);
+    // go-to-k/cdkd#6774: a group respelled only in case is neither joined nor
+    // left, here and in `updateUserGroups`.
+    const groupDiff = diffPrincipalNames(groups.next.Groups, groups.prev.Groups);
     const skipRemoval = await compareMembershipWrites({
       client: this.iamClient,
       owner: { label: 'IAM user', resourceType, membership: true },
       logicalId,
       physicalId,
-      adds: [...nextGroups].filter((g) => !prevGroups.has(g)).map((g) => [['group', g] as const]),
-      removes: [...prevGroups]
-        .filter((g) => !nextGroups.has(g))
-        .map((g) => [['group', g] as const]),
+      adds: groupDiff.added.map((g) => [['group', g] as const]),
+      removes: groupDiff.removed.map((g) => [['group', g] as const]),
       operation: 'update',
       warn: (message) => log.warn(message),
     });
@@ -232,10 +231,15 @@ export async function updateUser(
     );
 
     // Update groups
+    const skippedGroups = new Set(
+      groupDiff.removed.filter((g) => skipRemoval([['group', g]])).map((g) => g.toLowerCase())
+    );
     await this.updateUserGroups(
       physicalId,
       groups.next.Groups,
-      groups.prev.Groups?.filter((g) => !skipRemoval([['group', g]])),
+      // A skipped removal drops every spelling of that name, so the diff
+      // `updateUserGroups` takes again cannot pick another (go-to-k/cdkd#6774).
+      groups.prev.Groups?.filter((g) => !skippedGroups.has(g.toLowerCase())),
       log
     );
 
@@ -370,40 +374,37 @@ export async function updateUserGroups(
   log: MaskedLogSinks
 ): Promise<void> {
   const { value: v } = log;
-  const newSet = new Set(newGroups || []);
-  const oldSet = new Set(oldGroups || []);
+  // go-to-k/cdkd#6774: IAM group names ignore case, so a group respelled only
+  // in case is the one the user is in: neither joined nor left.
+  const { added, removed } = diffPrincipalNames(newGroups, oldGroups);
 
   // Add to new groups
-  for (const groupName of newSet) {
-    if (!oldSet.has(groupName)) {
+  for (const groupName of added) {
+    await this.iamClient.send(
+      new AddUserToGroupCommand({
+        UserName: userName,
+        GroupName: groupName,
+      })
+    );
+    log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
+  }
+
+  // Remove from old groups
+  for (const groupName of removed) {
+    try {
       await this.iamClient.send(
-        new AddUserToGroupCommand({
+        new RemoveUserFromGroupCommand({
           UserName: userName,
           GroupName: groupName,
         })
       );
-      log.debug(`Added user ${v(userName)} to group ${v(groupName)}`);
-    }
-  }
-
-  // Remove from old groups
-  for (const groupName of oldSet) {
-    if (!newSet.has(groupName)) {
-      try {
-        await this.iamClient.send(
-          new RemoveUserFromGroupCommand({
-            UserName: userName,
-            GroupName: groupName,
-          })
-        );
-        log.debug(`Removed user ${v(userName)} from group ${v(groupName)}`);
-      } catch (error) {
-        if (!(error instanceof NoSuchEntityException)) {
-          throw error;
-        }
+      log.debug(`Removed user ${v(userName)} from group ${v(groupName)}`);
+    } catch (error) {
+      if (!(error instanceof NoSuchEntityException)) {
+        throw error;
       }
-      recordOwnWriteRemoval(USER_TYPE, userName, 'Groups', groupName);
     }
+    recordOwnWriteRemoval(USER_TYPE, userName, 'Groups', groupName);
   }
 }
 

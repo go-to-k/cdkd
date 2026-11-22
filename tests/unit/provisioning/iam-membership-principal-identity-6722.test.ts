@@ -245,6 +245,14 @@ describe('AWS::IAM::InstanceProfile Roles (go-to-k/cdkd#6722)', () => {
     ]);
   });
 
+  it('update: a role respelled only in case reads and writes nothing (go-to-k/cdkd#6774)', async () => {
+    drive(profileHandlers({ 'my-role': SUCCESSOR, 'My-Role': SUCCESSOR }));
+    const { error } = await settled(update(settledDeploy({ R: role }), ['my-role'], ['My-Role']));
+    expect(error).toBeUndefined();
+    expect(principalReads()).toEqual([]);
+    expect(membershipWrites()).toEqual([]);
+  });
+
   it('a template spelling the recorded name in another case is compared (IAM names ignore case)', async () => {
     drive(profileHandlers({ 'My-Role': SUCCESSOR }));
     const error = await thrownBy(create(settledDeploy({ R: role }), ['My-Role']));
@@ -410,6 +418,20 @@ describe('AWS::IAM::UserToGroupAddition (go-to-k/cdkd#6722)', () => {
     expect((await settled(create(view, 'my-group', ['my-user']))).error).toBeUndefined();
     expect((await settled(create(view, 'my-group', ['my-user']))).error).toBeUndefined();
     expect(principalReads().sort()).toEqual(['GetGroupCommand', 'GetUserCommand']);
+  });
+
+  it('update: a GroupName and user respelled only in case read and write nothing (go-to-k/cdkd#6774)', async () => {
+    drive(liveIds({ 'my-group': SUCCESSOR, 'my-user': SUCCESSOR }));
+    const { error } = await settled(
+      update(
+        settledDeploy(records()),
+        { GroupName: 'my-group', Users: ['my-user'] },
+        { GroupName: 'My-Group', Users: ['My-User'] }
+      )
+    );
+    expect(error).toBeUndefined();
+    expect(principalReads()).toEqual([]);
+    expect(membershipWrites()).toEqual([]);
   });
 
   it('update: an added user held by another id refuses before any write', async () => {
@@ -581,6 +603,22 @@ describe('AWS::IAM::User Groups (go-to-k/cdkd#6722)', () => {
     expect(error).toBeInstanceOf(InlinePolicyAttachMismatchError);
   });
 
+  it('update: a group respelled only in case reads and writes nothing (go-to-k/cdkd#6774)', async () => {
+    drive(userHandlers({ 'my-group': SUCCESSOR, 'my-user': 'AIDA' }));
+    const { error } = await settled(update(['my-group'], ['My-Group']));
+    expect(error).toBeUndefined();
+    expect(principalReads().filter((n) => n !== 'GetUserCommand')).toEqual([]);
+    expect(membershipWrites()).toEqual([]);
+  });
+
+  it('update: a left group listed in two spellings, held by another GroupId, loses neither (go-to-k/cdkd#6774)', async () => {
+    drive(userHandlers({ 'my-group': SUCCESSOR, 'my-user': 'AIDA' }));
+    const { error } = await settled(update(['my-group', 'MY-GROUP'], []));
+    expect(error).toBeUndefined();
+    expect(membershipWrites()).toEqual([]);
+    expect(warned()).toContain('IAM user NU: the IAM group G leaving it is not the one cdkd created');
+  });
+
   it('update: a left group held by another GroupId is warned about and sent no removal', async () => {
     drive(userHandlers({ 'my-group': SUCCESSOR, 'my-user': 'AIDA' }));
     const { error } = await settled(update(['my-group', 'other'], []));
@@ -608,26 +646,53 @@ describe('principal names compare ignoring case (go-to-k/cdkd#6722)', () => {
     expect(error).toBeInstanceOf(InlinePolicyAttachMismatchError);
   });
 
-  it('a managed policy whose Roles change only in case compares the attach it sends', async () => {
-    // `updatePrincipals` diffs case-sensitively, so `My-Role` is attached: the
-    // compare's diff matches it, and the record matches ignoring case.
+  it('a managed policy whose Roles change only in case compares nothing, as it sends nothing', async () => {
+    // go-to-k/cdkd#6774: `My-Role` is the attached `my-role`, so
+    // `updatePrincipals` sends it no attach and no detach, and the compare
+    // reads nothing: no write is left for another holder to receive.
     drive(liveIds({ 'My-Role': SUCCESSOR, 'my-role': SUCCESSOR }));
-    const strangers = withStackRecords(settledDeploy({ R: role }), () =>
-      new IAMManagedPolicyProvider().comparePrincipalChanges(
-        'MP',
-        'arn:aws:iam::1:policy/mp',
-        { Roles: ['My-Role'] },
-        { Roles: ['my-role'] },
-        {
-          debug: vi.fn(),
-          warn: vi.fn(),
-          mask: (t: string) => t,
-          value: (t: unknown) => String(t),
-        } as never
+    const { value, error } = await settled(
+      withStackRecords(settledDeploy({ R: role }), () =>
+        new IAMManagedPolicyProvider().comparePrincipalChanges(
+          'MP',
+          'arn:aws:iam::1:policy/mp',
+          { Roles: ['My-Role'] },
+          { Roles: ['my-role'] },
+          {
+            debug: vi.fn(),
+            warn: vi.fn(),
+            mask: (t: string) => t,
+            value: (t: unknown) => String(t),
+          } as never
+        )
       )
     );
-    const error = await thrownBy(strangers);
+    expect(error).toBeUndefined();
+    expect([...(value as ReadonlySet<string>)]).toEqual([]);
+    expect(principalReads()).toEqual([]);
+  });
+
+  it('a managed policy whose Roles name another role still compares the attach', async () => {
+    drive(liveIds({ 'other-role': SUCCESSOR }));
+    const error = await thrownBy(
+      withStackRecords(
+        settledDeploy({ R: role, O: record('AWS::IAM::Role', 'other-role', { RoleId: RECORDED }) }),
+        () =>
+          new IAMManagedPolicyProvider().comparePrincipalChanges(
+            'MP',
+            'arn:aws:iam::1:policy/mp',
+            { Roles: ['other-role'] },
+            { Roles: ['my-role'] },
+            {
+              debug: vi.fn(),
+              warn: vi.fn(),
+              mask: (t: string) => t,
+              value: (t: unknown) => String(t),
+            } as never
+          )
+      )
+    );
     expect(error).toBeInstanceOf(InlinePolicyAttachMismatchError);
-    expect(error.message).toContain('Cannot attach IAM managed policy MP to IAM role R');
+    expect(error.message).toContain('Cannot attach IAM managed policy MP to IAM role O');
   });
 });
