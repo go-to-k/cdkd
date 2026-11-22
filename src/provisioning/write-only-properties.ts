@@ -306,6 +306,7 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
 > = new Map<string, ReadonlyMap<string, readonly string[]>>([
   ['AWS::Lambda::Function', new Map([['Code', ['Architectures']]])],
   // Re-send called UpdateBroker + UpdateUser + RebootBroker (196 s vs 1 s).
+  // Beside the other write-only keys re-added: 6 s, broker unchanged, vs 209 s.
   [
     'AWS::AmazonMQ::Broker',
     new Map([
@@ -343,7 +344,8 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   ['AWS::CloudFront::KeyValueStore', new Map([['ImportSource', []]])],
   // Re-send FAILED ("Password cannot be updated.").
   ['AWS::Connect::User', new Map([['Password', []]])],
-  // Re-send called ModifyEndpoint.
+  // Re-send called ModifyEndpoint. Beside the other write-only keys re-added,
+  // mysql and sqlserver endpoints updated and stayed active without it.
   ['AWS::DMS::Endpoint', new Map([['Password', []]])],
   // Re-send rewrote the location's managed secret (Secrets Manager UpdateSecret).
   [
@@ -360,6 +362,8 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   // Re-send called ModifyVpnTunnelOptions per tunnel (427 s vs 2 s).
   ['AWS::EC2::VPNConnection', new Map([['VpnTunnelOptionsSpecifications', []]])],
   // Re-send called ModifyReplicationGroup with the token (67 s vs 35 s).
+  // Beside the other write-only keys re-added (their own ModifyReplicationGroup),
+  // it only adds `authToken`; omitted, AuthTokenLastModifiedDate stayed.
   ['AWS::ElastiCache::ReplicationGroup', new Map([['AuthToken', []]])],
   // Re-send called ModifyUser.
   [
@@ -389,7 +393,8 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   // Re-send FAILED: the read model holds `RoutingConfiguration` ("Specify
   // exactly one of 'RoutingConfiguration' or 'DeploymentPreference'").
   ['AWS::StepFunctions::StateMachineAlias', new Map([['DeploymentPreference', []]])],
-  // Re-send called the canary Lambda's UpdateFunctionCode.
+  // Re-send called the canary Lambda's UpdateFunctionCode. Beside the other
+  // write-only keys re-added: 25 s, code layer and CodeSha256 unchanged.
   ['AWS::Synthetics::Canary', new Map([['Code', ['RuntimeVersion']]])],
 ]);
 
