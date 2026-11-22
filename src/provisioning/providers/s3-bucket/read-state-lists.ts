@@ -10,6 +10,7 @@ import {
   ListBucketIntelligentTieringConfigurationsCommand,
   ListBucketInventoryConfigurationsCommand,
   ListBucketMetricsConfigurationsCommand,
+  NoSuchBucket,
 } from '@aws-sdk/client-s3';
 import type { S3BucketProvider } from '../s3-bucket-provider.js';
 import { caughtErrorName } from './shared.js';
@@ -289,23 +290,45 @@ export async function readObjectLock(
 }
 
 /**
- * `undefined` on a failed read: a narrow drift role must not lose every
- * other readback of the bucket to a permission only ABAC users need. A
- * declared value then answers for the read, so it reports no phantom drift.
+ * The live `AbacStatus`; `undefined` when the read cannot answer.
+ *
+ * `strict` (the drift read, `readCurrentState`; go-to-k/cdkd#6759): only a
+ * bucket gone under the read (`NoSuchBucket`) answers `undefined`; any other
+ * failure (an `AccessDenied` on `s3:GetBucketAbac`, a throttle) THROWS, so
+ * `cdkd drift` reports the bucket `readFailed` (exit 2) naming the denied
+ * call. This used to answer `undefined` on every failure so that a narrow
+ * drift role would not lose the bucket's other readbacks to a permission
+ * only ABAC users need. The declared value then stood in for the read, and
+ * the run reported the bucket clean over a property it never compared. #6696's
+ * rule is never to report clean over what was not compared. Losing the other
+ * properties' comparison for that run is the accepted cost: the error names
+ * the permission to grant.
+ *
+ * Not strict (the create re-adoption path, `s3-bucket/create.ts`): any
+ * failure answers `undefined`, as before. There it only decides how tags are
+ * written to a bucket that already existed, and a failure must not stop the
+ * deploy.
  */
 export async function readAbacStatus(
   this: S3BucketProvider,
-  bucket: string
+  bucket: string,
+  strict = false
 ): Promise<string | undefined> {
   try {
     const resp = await this.s3Client.send(new GetBucketAbacCommand({ Bucket: bucket }));
     return resp.AbacStatus?.Status ?? ABAC_DISABLED;
   } catch (err) {
+    if (strict && !isBucketGone(err)) throw err;
     this.logger.debug(
       safeMsg`Could not read AbacStatus of ${this.shown(bucket)} (${caughtErrorName(err)})`
     );
     return undefined;
   }
+}
+
+/** S3's bucket-gone answer, as a typed exception or by name. */
+export function isBucketGone(err: unknown): boolean {
+  return err instanceof NoSuchBucket || (err as { name?: string } | null)?.name === 'NoSuchBucket';
 }
 export async function readAccelerate(
   this: S3BucketProvider,

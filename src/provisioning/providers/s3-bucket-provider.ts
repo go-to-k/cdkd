@@ -399,9 +399,10 @@ export class S3BucketProvider implements ResourceProvider {
     return readMetadataConfigurationResult.call(this, bucket);
   }
   readMetadataForDrift(
-    bucket: string
+    bucket: string,
+    strict = false
   ): Promise<MetadataConfigurationResult | undefined | 'unread'> {
-    return readMetadataForDrift.call(this, bucket);
+    return readMetadataForDrift.call(this, bucket, strict);
   }
   readMetadataAttributesAfterWrites(
     bucket: string,
@@ -922,8 +923,8 @@ export class S3BucketProvider implements ResourceProvider {
   readObjectLock(bucket: string): Promise<Record<string, unknown>> {
     return readObjectLock.call(this, bucket);
   }
-  readAbacStatus(bucket: string): Promise<string | undefined> {
-    return readAbacStatus.call(this, bucket);
+  readAbacStatus(bucket: string, strict = false): Promise<string | undefined> {
+    return readAbacStatus.call(this, bucket, strict);
   }
   readAccelerate(bucket: string): Promise<Record<string, unknown>> {
     return readAccelerate.call(this, bucket);
