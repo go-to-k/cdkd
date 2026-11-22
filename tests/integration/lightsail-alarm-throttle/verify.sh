@@ -86,7 +86,8 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "$
 # Sentinel: the engine's retry line also carries "(attempt N/M"; one with that
 # marker but not the parsed wording means the wording drifted under the grep.
 RETRIES=$(grep -c 'Retrying Alarm' "${DEPLOY_LOG}" || true)
-ATTEMPTS=$(grep -c '(attempt [0-9]' "${DEPLOY_LOG}" || true)
+# Alarm lines only: the instance's own create may be retried by the engine.
+ATTEMPTS=$(grep '(attempt [0-9]' "${DEPLOY_LOG}" | grep -c 'Alarm[0-9]x[12]' || true)
 if [ "${ATTEMPTS}" != "0" ] && [ "${RETRIES}" = "0" ]; then
   echo "FAIL: ${ATTEMPTS} engine retry line(s) not in the 'Retrying Alarm' wording this check parses" >&2
   exit 1

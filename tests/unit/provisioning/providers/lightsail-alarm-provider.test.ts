@@ -70,6 +70,10 @@ function setup() {
 describe('LightsailAlarmProvider', () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it('builds its client with no SDK retries, so every resend takes a bucket token', async () => {
+    await expect(new LightsailAlarmProvider().getClient().config.maxAttempts()).resolves.toBe(1);
+  });
+
   it('creates with PutAlarm and records the alarm ARN and state', async () => {
     const { provider, send, takeToken } = setup();
     send.mockResolvedValueOnce({}).mockResolvedValueOnce({ alarms: [ALARM] });
