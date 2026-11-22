@@ -133,10 +133,11 @@ Each is the shape a fixture must take; the named test blocks a wrong change.
   and never reset; read N from the live alias and assert `$((N + 1))`.
   (`integ-verify-version-literals.test.ts`.)
 - **No `aws` verb the CLI lacks** — it REMOVES operations the API still has, per
-  (service, verb) pair, with a misleading `[Errno 22]` / hang as the symptom.
-  `AWS_CLI_AUTO_PROMPT=off aws <svc> <verb> --help` settles existence; call a
-  missing verb through the SDK instead, with `|| return 1` and the provider's own
-  pagination. (`integ-aws-commands.test.ts`.)
+  (service, verb) pair (symptom: `[Errno 22]` / a hang); call one through the SDK,
+  with `|| return 1` and the provider's own pagination. Before a new arm's first
+  real-AWS run, run each NEW `aws` call once against a nonexistent id: only a
+  NotFound proves it parses (`--cli-input-json file:///dev/stdin` reads empty,
+  #6829). (`integ-aws-commands.test.ts`.)
 - **An upstream-`cdk` caller pins AND resolves a fixture-local CLI** — a pin
   without resolution takes the global `cdk` and synth dies on a schema-version
   mismatch. (`integ-cdk-cli-pins.test.ts`.)

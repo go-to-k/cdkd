@@ -72,18 +72,15 @@ git diff --stat $(git merge-base origin/main <branch>)..<branch>       # the rea
 git -C "<LANE_TREE>" rebase origin/main   # the launch-mode probe's recorded path
 ```
 
-Re-run the checks, `git push --force-with-lease`. If the harness denies it,
-`git checkout -B <branch> origin/<branch>`, `git merge origin/main`,
-the generators and `vp run integ-ledger-normalize`, commit what changed
-(`ship.md` §9), push plainly:
-lossless under the squash merge (#3813).
-
-**Re-run the SUITE after the rebase OR that merge, after `vp install
---frozen-lockfile` and a rebuild**: a pre-rebase green attests to a tree that no
-longer exists. Stale `dist/` is the usual cause; a dependency bump the other,
-which `[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
-(`vp run gen:all-matrices`): `docs/_generated/**` and pages like
-`docs/cli-flag-coverage.md` derive from the TREE.
+**After the rebase OR the merge below, BEFORE the push**: `vp install
+--frozen-lockfile` (a merged dependency bump leaves `node_modules` stale, #6813),
+a rebuild, `vp run gen:all-matrices` and `vp run integ-ledger-normalize`; commit
+what they changed until `git status --porcelain` is empty (a pushed
+un-normalized ledger fails CI, #6810); re-run §6's checks (`/check`): a
+pre-rebase green attests to a tree that no longer exists. Then
+`git push --force-with-lease`. If the harness denies it,
+`git checkout -B <branch> origin/<branch>`, `git merge origin/main`, the same
+sequence (`ship.md` §9), then push plainly: lossless under the squash merge (#3813).
 
 **A clean merge is no evidence of no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains

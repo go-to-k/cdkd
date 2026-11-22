@@ -143,6 +143,22 @@ describe('extractAwsInvocations', () => {
     expect([inv[0]!.service, inv[0]!.verb]).toEqual(['s3api', 'head-object']);
   });
 
+  // #6810: `_revert_identity_aws emr list-instance-groups` reached real AWS
+  // because the call site has no literal `aws` token.
+  it('finds a call through a function that forwards aws "$@"', () => {
+    const inv = extractAwsInvocations(
+      [
+        '_probe_aws() {',
+        '  AWS_CLI_AUTO_PROMPT=off AWS_PAGER= aws "$@" --output text',
+        '}',
+        'v="$(_probe_aws emr list-instance-groups --cluster-id j-1)"',
+        'other_aws emr list-clusters',
+      ].join('\n')
+    );
+    expect(inv.map((i) => `${i.service} ${i.verb}`)).toEqual(['emr list-instance-groups']);
+    expect(lintScriptAwsCommands('x', 'f() { aws "$@"; }\nf emr list-instance-groups\n', TABLE)).toHaveLength(1);
+  });
+
   it('joins a backslash continuation and reports the first line', () => {
     const inv = extractAwsInvocations('x=1\naws emr \\\n  list-clusters --active\n');
     expect(inv).toHaveLength(1);
@@ -418,6 +434,9 @@ describe('integ fixture aws invocations (#1402)', () => {
     const scanned = readFixtureScripts(INTEG_ROOT);
     const helper = scanned.find((f) => f.fixture === 's3-versions.sh');
     expect(helper, 'tests/integration/s3-versions.sh is not being scanned').toBeDefined();
+    // Per-shape floor for the `aws "$@"` forwarder path (55 calls when added).
+    const forwarder = scanned.find((f) => f.fixture === 'revert-identity.sh');
+    expect(extractAwsInvocations(forwarder?.content ?? '').length).toBeGreaterThan(40);
     expect(helper?.content).toContain('aws s3api list-object-versions');
     expect(helper?.content).toContain('aws s3api delete-objects');
     // Current: 3022 invocations (3002 before the `nlb-source-nat` fixture of
