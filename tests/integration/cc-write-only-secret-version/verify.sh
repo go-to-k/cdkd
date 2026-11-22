@@ -13,8 +13,9 @@
 #      CloudTrail records no UpdateNamespace carrying adminUserPassword.
 #   3  put-secret-value (V2), Tags-only deploy: re-sent; login with V2 works.
 #   4  AWSCURRENT moved back to V1, Tags-only deploy: re-sent; login works.
-#   5  rotate (V3), deploy with a queue failing AFTER the namespace update
-#      (--no-rollback), then `cdkd rollback`: it restores the recorded version
+#   5  rotate (V3), deploy with a queue failing AFTER the namespace update:
+#      the AUTOMATIC rollback waits out the namespace still MODIFYING from the
+#      password change (go-to-k/cdkd#6843) and restores the recorded version
 #      (login at V3 fails), then a Tags-only deploy re-sends; login works.
 #   6  rotate (V4), kill -9 cdkd once UpdateNamespace applied it: the record on
 #      disk is the one written AHEAD (no version) and no journal exists.
@@ -323,33 +324,35 @@ expect_deploy p4 four
 expect_sent p4
 expect_login "login after the stage moved back"
 
-echo "==> Phase 5: rotate, deploy failing AFTER the namespace update (--no-rollback), then cdkd rollback"
-# Not the automatic rollback: a password change keeps the namespace MODIFYING
-# for minutes, and the Cloud Control handler's revert, sent seconds after the
-# forward update, waits on it and gives up ("Exceeded attempts to wait"; it never
-# calls UpdateNamespace). Measured twice. `--no-rollback` then `cdkd rollback`
-# once the namespace settles reaches the same restore (the journaled pre-op
-# record, pinned to its recorded version).
+echo "==> Phase 5: rotate, deploy failing AFTER the namespace update -- the automatic rollback restores it"
+# The automatic rollback's revert is sent seconds after the forward update,
+# while the password change keeps the namespace MODIFYING for minutes: the
+# Cloud Control handler waits on it and fails NotStabilized ("Exceeded attempts
+# to wait", no UpdateNamespace in CloudTrail) or ResourceConflict. cdkd
+# re-sends the revert until the namespace settles (go-to-k/cdkd#6843).
 V3="$(rotate)"
-if deploy p5 five after --no-rollback; then
+P5_START="$(date -u +%s)"
+if deploy p5 five after; then
   echo "FAIL: the deploy unexpectedly SUCCEEDED (the failing queue did not fail)" >&2
   exit 1
 fi
-echo "    OK: the deploy failed"
+echo "    OK: the deploy failed ($(( $(date -u +%s) - P5_START )) s, the rollback included)"
 # The premise: the namespace update COMPLETED and the queue is what failed;
 # otherwise there is no completed update for the rollback to revert.
 grep -qE 'Ns.*AWS::RedshiftServerless::Namespace.*updated' "${LOG_DIR}/p5.log" \
   || { echo "FAIL: premise: the namespace update itself did not complete (an AWS-side failure; see the log above)" >&2; exit 1; }
-# Its update re-set the password: the revert must wait for that to settle, or
-# AWS refuses it ("There is an operation running on the namespace", measured).
-ns_settled_after_change
-set +e
-node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose \
-  >"${LOG_DIR}/p5r.log" 2>&1
-RB_RC=$?
-set -e
-grep -E 'Rollback|rollback|FAIL|Error|error' "${LOG_DIR}/p5r.log" | tail -10 | sed 's/^/  /' || true
-[ "${RB_RC}" -eq 0 ] || { echo "FAIL: cdkd rollback exited ${RB_RC}" >&2; exit 1; }
+grep -qE 'Rollback: .?Ns.? restored successfully' "${LOG_DIR}/p5.log" \
+  || { echo "FAIL: the automatic rollback did not restore the namespace (see the log above)" >&2; exit 1; }
+echo "    OK: the automatic rollback restored the namespace"
+# Whether the re-send was exercised depends on AWS's timing (the namespace
+# could settle before the first revert), so it is reported, not asserted.
+grep -E 'has not settled|Retrying .?Ns|operation running' "${LOG_DIR}/p5.log" | tail -8 | sed 's/^/  /' || true
+if grep -qF 'has not settled from the update being reverted' "${LOG_DIR}/p5.log"; then
+  echo "    OK: the revert was re-sent after the namespace settled"
+else
+  echo "    NOTE: the first revert landed; the settle re-send was not exercised this run"
+fi
+no_plaintext_in p5
 ns_settled_after_change
 expect_login_refused "the rollback restored the recorded (pre-rotation) password, so the current one is refused"
 # ...and positively: the restored password IS the recorded version's.
@@ -456,7 +459,7 @@ P9_END="$(date -u +%s)"
 expect_sent p9
 expect_login "login after the final rotation"
 
-for log in p1 p2 p3 p4 p5 p5r p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
+for log in p1 p2 p3 p4 p5 p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
 echo "    OK: no log carries the secret's current plaintext"
 
 echo "==> Phase 8: CloudTrail -- re-sends recorded, the left-out windows hold none"

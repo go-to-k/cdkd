@@ -1265,8 +1265,10 @@ describe('replayRollback', () => {
     expect(result.failures).toBe(0);
     expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() });
     // The update went THROUGH withRetry, not around it.
-    expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
+    // Two loops since go-to-k/cdkd#6843: the outer unsettled-revert wait and
+    // the inner default transient schedule, both labelled with the id.
+    expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(withRetry).mock.calls.map((c) => c[1])).toEqual(['B', 'B']);
   });
 
   it("the 'revert' arm records the provider's effectiveProperties (issue #1644)", async () => {
@@ -1939,8 +1941,10 @@ describe('replayFailedOperations (#1198)', () => {
 
     expect(result.failures).toBe(0);
     expect(update).toHaveBeenCalledWith('B', 'phys-B', 'T', { a: 1 }, { a: 2 }, { maskSecrets: expect.any(Function), expectedRegion: 'us-east-1', replayingState: true, recordedAttributes: {}, removedProperties: new Set() });
-    expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(withRetry).mock.calls[0]![1]).toBe('B');
+    // Two loops since go-to-k/cdkd#6843: the outer unsettled-revert wait and
+    // the inner default transient schedule, both labelled with the id.
+    expect(vi.mocked(withRetry)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(withRetry).mock.calls.map((c) => c[1])).toEqual(['B', 'B']);
   });
 
   it("the 'revert-failed-update' arm records the provider's effectiveProperties (issue #1644)", async () => {

@@ -21,6 +21,8 @@ import {
   markSameGenerationBag,
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
+import { MAX_CAUSE_CHAIN_DEPTH } from '../retryable-errors/marks.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';
 import {
   addedByFailedUpdateWarning,
@@ -115,26 +117,141 @@ export async function updateWithRollbackRetry(
       await withCurrentResourceSecrets(secrets, () => provider.update(...revertArgs))
     );
   }
+  const maskedLogger = createMaskedRetryLogger(logger, mask);
+  // A LABEL to `withRetry` -- it names the operation in the retry / give-up
+  // lines and is used for nothing else -- so it takes the replay's rendering (`safe`)
+  // (issue #3092): `retry.ts` sanitizes its label too, but a label is not
+  // always an identifier there, so the boundary quoting and the cap are
+  // decided here, where the value is known to be a journal field.
+  // `createWithRollbackRetry` does the same for its two loops.
+  const shownId = safe(logicalId);
+  const interrupt = (message: string) =>
+    isInterrupted && { isInterrupted, onInterrupted: () => new Error(message) };
+  // go-to-k/cdkd#6843: the OUTER loop waits out a resource still settling from
+  // the forward update this revert undoes ({@link isUnsettledUpdateFailure});
+  // the INNER one passes no knobs, keeping the default transient schedule (a
+  // caller-supplied classifier replaces it, see `createWithRollbackRetry`).
+  let unsettledFailures = 0;
+  const resendDeadline = Date.now() + UNSETTLED_REVERT_RESEND_WINDOW_MS;
   const result = await withRetry(
-    // INSIDE the retry arrow, so the store is bound per ATTEMPT, exactly as the
-    // deploy engine binds its own provider calls.
-    () => withCurrentResourceSecrets(secrets, () => provider.update(...revertArgs)),
-    // A LABEL to `withRetry` -- it names the operation in the retry / give-up
-    // lines and is used for nothing else -- so it takes the replay's rendering (`safe`)
-    // (issue #3092): `retry.ts` sanitizes its label too, but a label is not
-    // always an identifier there, so the boundary quoting and the cap are
-    // decided here, where the value is known to be a journal field.
-    // `createWithRollbackRetry` does the same for its two loops.
-    safe(logicalId),
+    () =>
+      withRetry(
+        // INSIDE the retry arrow, so the store is bound per ATTEMPT, exactly as the
+        // deploy engine binds its own provider calls.
+        () => withCurrentResourceSecrets(secrets, () => provider.update(...revertArgs)),
+        shownId,
+        {
+          logger: maskedLogger,
+          ...interrupt('Rollback interrupted while retrying a resource update'),
+        }
+      ),
+    shownId,
     {
-      logger: createMaskedRetryLogger(logger, mask),
-      ...(isInterrupted && {
-        isInterrupted,
-        onInterrupted: () => new Error('Rollback interrupted while retrying a resource update'),
-      }),
+      ...UNSETTLED_REVERT_RETRY_SCHEDULE,
+      logger: maskedLogger,
+      ...interrupt('Rollback interrupted while waiting for a resource to settle'),
+      isRetryable: (_text, error) => {
+        const code = unsettledUpdateErrorCode(error);
+        if (code === undefined) return false;
+        // A type whose own Cloud Control wait runs long (up to 60 min) cannot
+        // multiply it: no re-send is scheduled past the window.
+        if (Date.now() >= resendDeadline) return false;
+        // Said at the default level: each wait can run minutes. Counted so the
+        // failure `withRetry` then gives up on announces no wait.
+        if (++unsettledFailures <= UNSETTLED_REVERT_RETRY_SCHEDULE.maxRetries) {
+          logger.info(
+            safeMsg`  Rollback: ${shownId} has not settled from the update being reverted ` +
+              safeMsg`(Cloud Control ${code}); re-sending the revert after a wait`
+          );
+        }
+        return true;
+      },
     }
   );
   return recorded(result);
+}
+
+/**
+ * The Cloud Control handler `ErrorCode`s an UPDATE fails with when the
+ * resource is still busy with an earlier operation (go-to-k/cdkd#6843): the
+ * handler waited for it to settle and gave up (`NotStabilized`, "Exceeded
+ * attempts to wait") or the service refused a concurrent change
+ * (`ResourceConflict`, "There is an operation running on the namespace").
+ * Measured on `AWS::RedshiftServerless::Namespace`, whose password change
+ * keeps it `MODIFYING` for minutes: the revert sent right after the forward
+ * update sent no `UpdateNamespace` (CloudTrail).
+ *
+ * CloudFormation parity gives way here, on the rollback path only: CFn's own
+ * rollback of the same update fails the same way (`UPDATE_ROLLBACK_FAILED`,
+ * `NotStabilized`, measured) and needs a manual `continue-update-rollback`,
+ * which then succeeds. Re-sending costs a deploy nothing and turns that manual
+ * step into the automatic rollback the user asked for.
+ */
+const UNSETTLED_UPDATE_CC_ERROR_CODES: ReadonlySet<string> = new Set([
+  'NotStabilized',
+  'ResourceConflict',
+]);
+
+/**
+ * The outer revert loop's schedule: 30 s, then 60 s, between up to
+ * {@link UNSETTLED_REVERT_RETRY_SCHEDULE.maxRetries} re-sends. A
+ * `NotStabilized` attempt itself spends the handler's own wait (about 5 min,
+ * measured), so the budget covers a resource that stays busy for well over
+ * the measured settle time and then surfaces the last error unchanged.
+ */
+const UNSETTLED_REVERT_RETRY_SCHEDULE = {
+  maxRetries: 4,
+  initialDelayMs: 30_000,
+  maxDelayMs: 60_000,
+} as const;
+
+/**
+ * No re-send is scheduled once this long has passed since the revert's first
+ * attempt. `NotStabilized` also reports a revert that itself never settles,
+ * and a slow type's Cloud Control wait is up to 60 min
+ * (`slow-cc-operation-timeouts.ts`), so the count alone would let four
+ * re-sends stretch one revert to hours; the window caps the added time at
+ * itself plus one wait (at most 60 s) and one attempt.
+ */
+const UNSETTLED_REVERT_RESEND_WINDOW_MS = 15 * 60_000;
+
+/**
+ * Whether a rollback revert failed only because the resource had not settled
+ * from an earlier operation: a Cloud Control UPDATE whose handler reported one
+ * of {@link UNSETTLED_UPDATE_CC_ERROR_CODES}. Re-sending is safe — an UPDATE
+ * replay applies the same patch (`.claude/rules/cloud-control-wait.md`) — and
+ * only this loop retries it, so the deploy path's classification is unchanged.
+ * A cdkd refusal (`markNonRetryable`) is never retried (`withRetry` reads the
+ * mark before any classifier); an abandoned wait
+ * (`CloudControlWaitAbandonedError`) carries no handler code and is not either.
+ */
+export function isUnsettledUpdateFailure(error: unknown): boolean {
+  return unsettledUpdateErrorCode(error) !== undefined;
+}
+
+/** The matched handler code of {@link isUnsettledUpdateFailure}, or `undefined`. */
+function unsettledUpdateErrorCode(error: unknown): string | undefined {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_CAUSE_CHAIN_DEPTH && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      const link = current as { ccErrorCode?: unknown; ccOperation?: unknown; cause?: unknown };
+      if (
+        link.ccOperation === 'UPDATE' &&
+        typeof link.ccErrorCode === 'string' &&
+        UNSETTLED_UPDATE_CC_ERROR_CODES.has(link.ccErrorCode)
+      ) {
+        return link.ccErrorCode;
+      }
+      current = link.cause;
+    }
+  } catch {
+    // Unreadable chain: not a known unsettled failure.
+  }
+  return undefined;
 }
 
 /**
