@@ -354,7 +354,7 @@ logs-loggroup-fix-forward-orphan	2026-11-21T01:28:31Z	PASS	97	verify.sh	PR6710 2
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-10T12:50:06Z	PASS	80	verify.sh	rc ok, orph clean (#6080 marker re-set on branch tree)
 microservices	2026-11-19T14:40:15Z	PASS	63	standard	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
-migrate-from-cfn	2026-11-20T06:38:06Z	PASS	402	run.sh	#6670 route53 drift/import fixes: rc ok, orph clean
+migrate-from-cfn	2026-11-22T22:07:36Z	PASS	341	run.sh	small only; #6848 AppConfig env composite id: rc ok, orph clean
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
 multi-region-same-stack	2026-11-04T08:31:11Z	PASS	37	standard	standard flow, us-west-2 + us-east-1 arms, both state keys coexisted, destroy 0 errors each, orph clean both regions

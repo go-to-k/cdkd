@@ -750,13 +750,17 @@
       "resourceType": "AWS::AppConfig::Environment",
       "integs": [
         "appconfig",
-        "appconfig-environment-delete-protection"
+        "appconfig-environment-delete-protection",
+        "migrate-from-cfn"
       ],
       "signals": {
         "appconfig": [
           "literal"
         ],
         "appconfig-environment-delete-protection": [
+          "literal"
+        ],
+        "migrate-from-cfn": [
           "literal"
         ]
       }

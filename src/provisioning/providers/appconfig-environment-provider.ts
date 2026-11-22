@@ -363,13 +363,26 @@ export class AppConfigEnvironmentProvider implements ResourceProvider {
   /**
    * Adopt an existing environment. AppConfig names are not unique identifiers
    * and `ApplicationId` is not recoverable from a name, so only an explicit
-   * `--resource <logicalId>=<ApplicationId>|<EnvironmentId>` is supported; the
-   * environment's existence is verified with `GetEnvironment`.
+   * `--resource <logicalId>=<ApplicationId>|<EnvironmentId>` is supported (a
+   * bare EnvironmentId, as CloudFormation reports it, is completed from the
+   * resolved `ApplicationId` property, and so is a bare id typed with
+   * `--resource`); the environment's existence is verified with
+   * `GetEnvironment`, so a mismatched pair is skipped as not found.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (input.resourceType !== TYPE || !input.knownPhysicalId) return null;
+    // CloudFormation's PhysicalResourceId for this type is the bare
+    // EnvironmentId; cdkd records `<ApplicationId>|<EnvironmentId>`. Compose it
+    // from the resolved ApplicationId so a CloudFormation migration adopts it.
+    const applicationIdProp = input.properties['ApplicationId'];
+    const physicalId =
+      !input.knownPhysicalId.includes('|') &&
+      typeof applicationIdProp === 'string' &&
+      applicationIdProp !== ''
+        ? `${applicationIdProp}|${input.knownPhysicalId}`
+        : input.knownPhysicalId;
     const { applicationId, environmentId } = this.splitId(
-      input.knownPhysicalId,
+      physicalId,
       input.resourceType,
       input.logicalId
     );
@@ -382,7 +395,7 @@ export class AppConfigEnvironmentProvider implements ResourceProvider {
       throw err;
     }
     return {
-      physicalId: input.knownPhysicalId,
+      physicalId,
       attributes: { EnvironmentId: environmentId },
     };
   }

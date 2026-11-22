@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as appconfig from 'aws-cdk-lib/aws-appconfig';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2Integ from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
@@ -74,6 +75,20 @@ import { Construct } from 'constructs';
 export class MigrateSmallStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // AppConfig Application + Environment (issue #6848). CloudFormation's
+    // PhysicalResourceId for `AWS::AppConfig::Environment` is the bare
+    // EnvironmentId, while cdkd records `<ApplicationId>|<EnvironmentId>`;
+    // `run.sh` asserts the migrate adopts it and records the composite id.
+    // AppConfig names need not be unique; the Environment refs the
+    // Application, so cdkd's destroy deletes the Environment first.
+    const appConfigApp = new appconfig.CfnApplication(this, 'AppConfigApp', {
+      name: `cdkd-migrate-${cdk.Names.uniqueId(this).slice(-12)}`,
+    });
+    new appconfig.CfnEnvironment(this, 'AppConfigEnv', {
+      applicationId: appConfigApp.ref,
+      name: 'cdkd-migrate-env',
+    });
 
     // S3 Bucket with `autoDeleteObjects: true` — auto-emits a
     // `Custom::S3AutoDeleteObjects` resource whose ServiceToken is a raw

@@ -438,6 +438,49 @@ assert_no_test_document_left() {
   echo "  ok: the replacement Document was managed and destroyed; $(printf '%s\n' "${survivors}" | grep -c . || true) retained copy(ies) swept"
 }
 
+# assert_appconfig_environment_migrated <stack> <cfn-physical-id>
+#
+# Issue #6848: (b) the Environment's recorded physical id is
+# `<ApplicationId>|<cfn EnvironmentId>`, and (c) `cdkd drift` does not report
+# it drifted (a wrong id read it as DELETED).
+assert_appconfig_environment_migrated() {
+  local stack="$1" cfn_id="$2" recorded env_lid app_id report rc
+  log "[${stack}] AppConfig Environment id (issue #6848)"
+  recorded="$(AWS_REGION="${REGION}" ${CDKD} state show "${stack}" --json \
+    | jq -r '[.state.resources | to_entries[] | select(.value.resourceType == "AWS::AppConfig::Environment")] | map(.value.physicalId) | join(",")')"
+  app_id="$(AWS_REGION="${REGION}" ${CDKD} state show "${stack}" --json \
+    | jq -r '[.state.resources | to_entries[] | select(.value.resourceType == "AWS::AppConfig::Application")] | map(.value.physicalId) | join(",")')"
+  if [[ -z "${app_id}" || "${app_id}" == *","* || "${recorded}" != "${app_id}|${cfn_id}" ]]; then
+    echo "ASSERTION FAILED: [${stack}] recorded AppConfig Environment id is '${recorded}'," >&2
+    echo "  expected '${app_id}|${cfn_id}' (<ApplicationId>|<CloudFormation EnvironmentId>)" >&2
+    exit 1
+  fi
+  echo "  ok: recorded ${recorded}"
+  env_lid="$(AWS_REGION="${REGION}" ${CDKD} state show "${stack}" --json \
+    | jq -r '[.state.resources | to_entries[] | select(.value.resourceType == "AWS::AppConfig::Environment") | .key] | .[0]')"
+  local drift_err
+  drift_err="$(mktemp)"
+  set +e
+  report="$(AWS_REGION="${REGION}" ${CDKD} drift "${stack}" --json 2>"${drift_err}")"
+  rc=$?
+  set -e
+  if [[ "${rc}" -ge 2 ]]; then
+    echo "ASSERTION FAILED: [${stack}] cdkd drift exited ${rc} (command error, not a drift verdict):" >&2
+    tail -n 20 "${drift_err}" >&2
+    rm -f "${drift_err}"
+    exit 1
+  fi
+  rm -f "${drift_err}"
+  if ! jq -e --arg id "${env_lid}" --arg stack "${stack}" \
+    '[.[] | select(.stack == $stack)] | length == 1 and ([.[0].clean[].logicalId] | index($id) != null)' \
+    <<<"${report}" >/dev/null; then
+    echo "ASSERTION FAILED: [${stack}] cdkd drift does not list the AppConfig Environment ${env_lid} as clean (drifted, deleted, not compared, or no report):" >&2
+    echo "${report}" >&2
+    exit 1
+  fi
+  echo "  ok: cdkd drift lists ${env_lid} as clean"
+}
+
 run_one() {
   local stack="$1"
   preflight_clean "${stack}"
@@ -496,7 +539,24 @@ run_one() {
     exit 1
   fi
 
+  # Issue #6848: capture CloudFormation's own PhysicalResourceId for the
+  # AppConfig Environment BEFORE the migrate retires the stack.
+  local appconfig_env_cfn_id=""
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    appconfig_env_cfn_id="$(aws cloudformation describe-stack-resources --stack-name "${stack}" \
+      --region "${REGION}" \
+      --query "StackResources[?ResourceType=='AWS::AppConfig::Environment'].PhysicalResourceId | [0]" \
+      --output text)"
+    if [[ -z "${appconfig_env_cfn_id}" || "${appconfig_env_cfn_id}" == "None" || "${appconfig_env_cfn_id}" == *"|"* ]]; then
+      echo "ASSERTION FAILED: [${stack}] expected a bare EnvironmentId from CloudFormation, got '${appconfig_env_cfn_id}'" >&2
+      exit 1
+    fi
+    echo "  CloudFormation PhysicalResourceId of the AppConfig Environment: ${appconfig_env_cfn_id}"
+  fi
+
   log "[${stack}] cdkd import --migrate-from-cloudformation"
+  # A non-zero exit here (set -e) is assertion (a): before #6848 the import of
+  # the AppConfig Environment refused CloudFormation's bare id.
   AWS_REGION="${REGION}" ${CDKD} import "${stack}" --migrate-from-cloudformation --yes
   if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
     if ! docs_after_import="$(list_test_documents_settled has-new "${docs_after_deploy}")"; then
@@ -539,6 +599,10 @@ run_one() {
       exit 1
     fi
     echo "  ok: no ECR Arn fallback / Fn::Select OOB warnings in cdkd diff"
+  fi
+
+  if [[ "${stack}" == "CdkdMigrateSmall" ]]; then
+    assert_appconfig_environment_migrated "${stack}" "${appconfig_env_cfn_id}"
   fi
 
   log "[${stack}] cdkd destroy"
