@@ -173,7 +173,9 @@ _revert_identity_probe() {
     AWS::EMR::InstanceGroupConfig)
       # physicalId is the AWS-generated group id (ig-...); ctx is the recorded
       # JobFlowId, since EMR lists a group only through its cluster.
-      cls=gen-id; val="$(_revert_identity_aws emr list-instance-groups --region "${region}" --cluster-id "${ctx:?no JobFlowId}" --query "InstanceGroups[?Id=='${pid}'].Id | [0]" | grep -vx None)" || rc=$? ;;
+      # This AWS CLI has no `list-instance-groups`; DescribeCluster lists the
+      # cluster's groups too.
+      cls=gen-id; val="$(_revert_identity_aws emr describe-cluster --region "${region}" --cluster-id "${ctx:?no JobFlowId}" --query "Cluster.InstanceGroups[?Id=='${pid}'].Id | [0]" | grep -vx None)" || rc=$? ;;
     AWS::EMR::InstanceFleetConfig)
       # physicalId is the AWS-generated fleet id (if-...); ctx is the recorded
       # ClusterId, since EMR lists a fleet only through its cluster.
