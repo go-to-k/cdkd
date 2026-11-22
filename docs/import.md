@@ -163,6 +163,30 @@ it yourself once you no longer need it.
 cdkd holds the stack lock from before the update through the retirement, so a
 concurrent `cdkd deploy` cannot run in between.
 
+### Code you changed after the last `cdk deploy`
+
+The update in step 3 keeps the template CloudFormation last deployed, so AWS
+keeps that configuration. State records each resource's properties from that
+deployed template, not from your current code. A change you made after the last
+`cdk deploy` then shows in the next `cdkd diff`, and `cdkd deploy` applies it,
+as the next `cdk deploy` would have.
+
+cdkd keeps the properties from your current code instead, and warns naming the
+resource, when the deployed ones cannot be resolved against your current
+template:
+
+| Case | Example |
+| --- | --- |
+| They reference something your template no longer declares | A renamed sibling resource, or a changed legacy asset parameter |
+| They use a condition or mapping your template defines differently | A `Conditions` entry you edited |
+| The resource's type changed | A logical ID now used by another type |
+
+For such a resource, `cdkd diff` does not show your change. Compare the
+resource in AWS with your template before you rely on the record.
+
+A resource your code added after the last deploy has nothing in the deployed
+template, so it records your current properties, as before.
+
 ### If the migration stops partway
 
 If the run stops before step 5, cdkd has written no state.
