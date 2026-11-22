@@ -4,6 +4,7 @@ import {
   DescribeInstanceCreditSpecificationsCommand,
   DescribeVolumesCommand,
   DescribeInstanceAttributeCommand,
+  type Instance,
   type Volume,
 } from '@aws-sdk/client-ec2';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
@@ -47,7 +48,40 @@ export async function readInstanceCurrentState(
   ) {
     return RESOURCE_NOT_FOUND;
   }
+  try {
+    return await readInstanceDetails.call(this, physicalId, instance, properties);
+  } catch (err) {
+    markInstanceSubReadFailure(err);
+    throw err;
+  }
+}
 
+/**
+ * Errors of an instance's per-property reads (go-to-k/cdkd#6759), which
+ * `readCurrentStateOnce`'s catch rethrows as they are: its not-found tests
+ * (EC2's `*.NotFound` code, and the message text "not found" / "does not
+ * exist") are about the INSTANCE, and a per-property read that failed (an SSM
+ * error saying a document does not exist, a volume's not-found the read did
+ * not tolerate) must fail the read, not report the instance gone or unknown.
+ */
+const instanceSubReadFailures = new WeakSet<object>();
+
+function markInstanceSubReadFailure(err: unknown): void {
+  if (typeof err === 'object' && err !== null) instanceSubReadFailures.add(err);
+}
+
+/** Whether `err` came from an instance's per-property read (see above). */
+export function isInstanceSubReadFailure(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && instanceSubReadFailures.has(err);
+}
+
+/** The bag of a live instance, `DescribeInstances` already answered. */
+async function readInstanceDetails(
+  this: EC2Provider,
+  physicalId: string,
+  instance: Instance,
+  properties: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
   if (instance.ImageId !== undefined) result['ImageId'] = instance.ImageId;
   if (instance.InstanceType !== undefined) result['InstanceType'] = instance.InstanceType;
@@ -331,24 +365,10 @@ export async function readInstanceCurrentState(
     instanceSsmAssociationsRefusal(properties['SsmAssociations'], 'AWS::EC2::Instance') ===
       undefined
   ) {
-    // Rethrown under a message the outer catch's text match (`isNotFoundError`:
-    // "not found" / "does not exist") cannot take for the INSTANCE being gone:
-    // an SSM error saying a document does not exist must still fail the read.
-    // Only the error's class is named; the original is the `cause`.
-    try {
-      result['SsmAssociations'] = await this.readInstanceSsmAssociations(
-        physicalId,
-        instanceSsmAssociationEntries(properties['SsmAssociations'])
-      );
-    } catch (err) {
-      const name = (err as { name?: unknown } | null)?.name;
-      throw new Error(
-        `The SsmAssociations of ${physicalId} could not be read (${
-          typeof name === 'string' && /^[A-Za-z0-9_.]{1,64}$/.test(name) ? name : 'Error'
-        })`,
-        { cause: err }
-      );
-    }
+    result['SsmAssociations'] = await this.readInstanceSsmAssociations(
+      physicalId,
+      instanceSsmAssociationEntries(properties['SsmAssociations'])
+    );
   }
 
   // Tags: filter aws:* (CDK-internal metadata) and always emit (even as

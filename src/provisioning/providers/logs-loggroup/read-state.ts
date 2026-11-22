@@ -191,26 +191,15 @@ export async function readCurrentState(
     // the `''` placeholder (issue #6759), which would read as "no policy". On
     // the post-write capture a transient failure is re-read first, and the
     // error throws only when no re-read answered.
-    //
-    // A log group of a class other than STANDARD (INFREQUENT_ACCESS,
-    // DELIVERY) may not support data protection or field indexes; there an
-    // `InvalidParameterException` keeps the placeholder, as before.
-    const notStandard = found.logGroupClass !== undefined && found.logGroupClass !== 'STANDARD';
-    const unsupportedHere = (err: unknown): boolean =>
-      notStandard && (err as { name?: unknown } | null)?.name === 'InvalidParameterException';
     let dpp: MemberRead<unknown>;
     let dppError: unknown;
     let dppFailed = false;
     try {
       dpp = await readDataProtectionPolicy.call(this, physicalId);
     } catch (err) {
-      if (unsupportedHere(err)) {
-        dpp = 'refused';
-      } else {
-        dpp = memberReadFailure(err);
-        dppError = err;
-        dppFailed = true;
-      }
+      dpp = memberReadFailure(err);
+      dppError = err;
+      dppFailed = true;
     }
     const declared =
       context?.afterOwnWrite === true
@@ -237,8 +226,12 @@ export async function readCurrentState(
     // the JSON document so the comparator matches cdkd state's
     // already-resolved object form. CFn shape is an array of policy
     // documents (strings or objects). Always-emit [] for console-
-    // side ADD detection. `ResourceNotFoundException` keeps that placeholder;
-    // any other failure throws (issue #6759) rather than read as "none".
+    // side ADD detection. `ResourceNotFoundException` keeps that placeholder,
+    // and so does the `ValidationException` a log group of another class
+    // answers (measured on INFREQUENT_ACCESS: "This operation is only
+    // supported on the Standard log class."); any other failure throws
+    // (issue #6759) rather than read as "none".
+    const notStandard = found.logGroupClass !== undefined && found.logGroupClass !== 'STANDARD';
     let fieldIndexPolicies: unknown[] = [];
     try {
       const idxResp = await this.logsClient.send(
@@ -256,7 +249,9 @@ export async function readCurrentState(
         })
         .filter((p): p is unknown => p !== undefined);
     } catch (err) {
-      if (!isResourceNotFound(err) && !unsupportedHere(err)) throw err;
+      const unsupportedClass =
+        notStandard && (err as { name?: unknown } | null)?.name === 'ValidationException';
+      if (!isResourceNotFound(err) && !unsupportedClass) throw err;
     }
     result['FieldIndexPolicies'] = fieldIndexPolicies;
 

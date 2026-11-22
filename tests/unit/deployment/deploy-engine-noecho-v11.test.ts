@@ -605,6 +605,43 @@ describe('DeployEngine - NoEcho parameter persistence under schema v11', () => {
       expect(callsFor(provider.update, 'Topic')).toHaveLength(0);
     });
 
+    it.each([
+      [
+        'a denied readback names the permission to grant, not a retry (#6759)',
+        Object.assign(
+          new Error('User: u is not authorized to perform: sns:GetTopicAttributes on resource: t'),
+          { name: 'AuthorizationError' }
+        ),
+        'grant the sns:GetTopicAttributes permission',
+        ': re-run the deploy.',
+      ],
+      [
+        'a throttled readback keeps the retry wording',
+        Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }),
+        'cdkd does not replace a resource on a failed read: re-run the deploy.',
+        'grant the',
+      ],
+    ])('%s', async (_name, failure, expected, absent) => {
+      provider.readCurrentState.mockImplementation((physicalId: string) =>
+        physicalId === TOPIC_ARN
+          ? Promise.reject(failure)
+          : Promise.resolve({ Name: '/app/p', Value: TOKEN })
+      );
+      const error = await makeEngine()
+        .deploy(STACK, template())
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      const text =
+        String(error) +
+        JSON.stringify(stateBackend.saveState.mock.calls) +
+        lines(logger.error).join('\n');
+      expect(text).toContain(expected);
+      expect(text).not.toContain(absent);
+      expect(callsFor(provider.create, 'Topic')).toHaveLength(0);
+    });
+
     it('UPDATES a Number value that rotated, which no needle can key', async () => {
       const state = v11State();
       state.resources['Queue'] = {

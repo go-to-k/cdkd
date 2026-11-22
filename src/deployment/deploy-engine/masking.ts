@@ -12,7 +12,11 @@ import {
   credentialFingerprint,
 } from '../../utils/ambient-client-defaults.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import type { FreshNoEchoReadback } from '../deploy-value-equality.js';
+import {
+  type FreshNoEchoReadback,
+  type ReadDenial,
+  readDenialOf,
+} from '../deploy-value-equality.js';
 import {
   type RecordedSecretValues,
   type SecretMasker,
@@ -643,7 +647,13 @@ export async function readReaderForFreshNoEchoCeiling(
     deps.logger.debug(
       safeMsg`Readback of ${logicalId} for a NoEcho value's replacement check failed (${errorClass}).`
     );
-    return { failure: 'read-failed' };
+    let denied: ReadDenial | undefined;
+    try {
+      denied = readDenialOf(maskSecretsInError(error, secrets));
+    } catch {
+      // keep undefined
+    }
+    return { failure: 'read-failed', ...(denied !== undefined && { denied }) };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

@@ -83,7 +83,7 @@ const CASES: ReadonlyArray<readonly [string, string, string, number]> = [
   ['read-state', 'import', 'importImpl', 1],
   ['read-state', 'readCurrentState', 'readCurrentState', 3],
   ['tags', 'applyTagDiff', 'applyTagDiff', 5],
-  ['update', 'readLiveForRecord', 'readLiveForRecord', 2],
+  ['read-state', 'readLiveForRecord', 'readLiveForRecord', 2],
   ['update', 'update', 'update', 6],
 ];
 

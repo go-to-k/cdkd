@@ -10,6 +10,8 @@ import {
   InsightNotEnabledException,
   ResourceNotFoundException,
 } from '@aws-sdk/client-cloudtrail';
+import { safeMsg } from '../../../utils/display-safe.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../../import-helpers.js';
 import {
   type ResourceImportInput,
@@ -152,27 +154,7 @@ export async function readCurrentState(
   // discriminator-false state cannot legally have EventSelectors, so
   // a console-side switch back to basic EventSelectors shows up on
   // the next read.
-  try {
-    const sel = await this.getClient().send(
-      new GetEventSelectorsCommand({ TrailName: physicalId })
-    );
-    const hasAdvanced =
-      Array.isArray(sel.AdvancedEventSelectors) && sel.AdvancedEventSelectors.length > 0;
-    if (!hasAdvanced) {
-      result['EventSelectors'] = (sel.EventSelectors ?? []).map(
-        (es) => es as unknown as Record<string, unknown>
-      );
-    }
-    // Issue #2762: always emitted (`[]` on a basic-selector trail). A
-    // console-side change is drift only where the template DECLARES the key:
-    // an undeclared key captured as `[]` is skipped by the comparator
-    // (`undeclaredEmptyObservedKeys`).
-    result['AdvancedEventSelectors'] = hasAdvanced
-      ? advancedSelectorsToCfn(sel.AdvancedEventSelectors ?? [])
-      : [];
-  } catch (err) {
-    if (!(err instanceof TrailNotFoundException)) throw err;
-  }
+  await readSelectorBlocks.call(this, physicalId, result);
 
   // InsightSelectors — separate call. Same shape on both sides
   // (CFn `[{InsightType}]` matches SDK), so we emit verbatim and
@@ -219,6 +201,54 @@ export async function readCurrentState(
   // the template declares the key (`undeclaredEmptyObservedKeys`). The trail's
   // not-found omits the key rather than claiming the trail has none; any other
   // failure throws (issue #6759).
+  await readAggregationBlock.call(this, physicalId, result);
+
+  return result;
+}
+
+/**
+ * `EventSelectors` / `AdvancedEventSelectors` from `GetEventSelectors`, into
+ * `result` (see {@link readCurrentState}). The trail's not-found leaves both
+ * out; any other failure throws.
+ */
+async function readSelectorBlocks(
+  this: CloudTrailProvider,
+  physicalId: string,
+  result: Record<string, unknown>
+): Promise<void> {
+  try {
+    const sel = await this.getClient().send(
+      new GetEventSelectorsCommand({ TrailName: physicalId })
+    );
+    const hasAdvanced =
+      Array.isArray(sel.AdvancedEventSelectors) && sel.AdvancedEventSelectors.length > 0;
+    if (!hasAdvanced) {
+      result['EventSelectors'] = (sel.EventSelectors ?? []).map(
+        (es) => es as unknown as Record<string, unknown>
+      );
+    }
+    // Issue #2762: always emitted (`[]` on a basic-selector trail). A
+    // console-side change is drift only where the template DECLARES the key:
+    // an undeclared key captured as `[]` is skipped by the comparator
+    // (`undeclaredEmptyObservedKeys`).
+    result['AdvancedEventSelectors'] = hasAdvanced
+      ? advancedSelectorsToCfn(sel.AdvancedEventSelectors ?? [])
+      : [];
+  } catch (err) {
+    if (!(err instanceof TrailNotFoundException)) throw err;
+  }
+}
+
+/**
+ * `AggregationConfigurations` from `GetEventConfiguration`, into `result`
+ * (see {@link readCurrentState}). The trail's not-found leaves it out; any
+ * other failure throws.
+ */
+async function readAggregationBlock(
+  this: CloudTrailProvider,
+  physicalId: string,
+  result: Record<string, unknown>
+): Promise<void> {
   try {
     const config = await this.getClient().send(
       new GetEventConfigurationCommand({ TrailName: physicalId })
@@ -230,8 +260,38 @@ export async function readCurrentState(
   } catch (err) {
     if (!(err instanceof TrailNotFoundException)) throw err;
   }
+}
 
-  return result;
+/**
+ * The live read-back a skipped block is recorded from when its previous
+ * value is unusable: only the calls behind those blocks (go-to-k/cdkd#6759),
+ * so a failure of an unrelated read (tags, logging status) cannot drop them.
+ * Best-effort per call: a failed one leaves its blocks out, with a warning,
+ * rather than failing an update AWS already applied.
+ */
+export async function readLiveForRecord(
+  this: CloudTrailProvider,
+  physicalId: string,
+  _resourceType: string
+): Promise<Record<string, unknown> | undefined> {
+  const live: Record<string, unknown> = {};
+  const reads: Array<[string, () => Promise<void>]> = [
+    [
+      'EventSelectors / AdvancedEventSelectors',
+      () => readSelectorBlocks.call(this, physicalId, live),
+    ],
+    ['AggregationConfigurations', () => readAggregationBlock.call(this, physicalId, live)],
+  ];
+  for (const [keys, read] of reads) {
+    try {
+      await read();
+    } catch (error) {
+      this.logger.warn(
+        safeMsg`CloudTrail read-back of ${keys} for the record failed, so the record leaves them out: ${describeAwsFailure(error).detail}`
+      );
+    }
+  }
+  return live;
 }
 
 export async function importImpl(

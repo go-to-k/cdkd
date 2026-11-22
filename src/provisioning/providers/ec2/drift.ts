@@ -23,7 +23,7 @@ import {
 } from './subnet-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 import { carriesSecretMask } from '../../../deployment/secret-redaction.js';
-import { declaredBlockDeviceNames } from './read-instance-state.js';
+import { declaredBlockDeviceNames, isInstanceSubReadFailure } from './read-instance-state.js';
 
 /** Recovery must not mistake an in-flight IPv6 association for absence. */
 export function subnetIpv6InTransition(this: EC2Provider, subnet: Subnet): boolean {
@@ -303,6 +303,9 @@ export async function readCurrentStateOnce(
         return undefined;
     }
   } catch (err) {
+    // go-to-k/cdkd#6759: a failed per-property read of an instance fails the
+    // read with its own error; the tests below are about the resource itself.
+    if (isInstanceSubReadFailure(err)) throw err;
     // go-to-k/cdkd#4283: only EC2's own `*.NotFound` code proves the
     // resource is gone. The looser message match (`InvalidParameterValue`,
     // "does not exist" text) keeps its old "cannot tell" answer.

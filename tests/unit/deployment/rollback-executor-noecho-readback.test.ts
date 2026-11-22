@@ -267,6 +267,42 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
     expect(lines.join('\n')).not.toContain(LIVE);
   });
 
+  it('a denied readback names the permission to grant, not a retry, and prints nothing else of the error (#6759)', async () => {
+    const update = vi.fn();
+    const readCurrentState = vi.fn().mockRejectedValue(
+      Object.assign(
+        new Error(
+          `User: arn:aws:iam::111111111111:user/x is not authorized to perform: ssm:DescribeParameters on resource: ${LIVE}`
+        ),
+        { name: 'AccessDeniedException' }
+      )
+    );
+    const { state, ops } = marked();
+
+    const result = await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toBe(1);
+    const text = lines.join('\n');
+    expect(text).toContain('grant the ssm:DescribeParameters permission');
+    expect(text).toContain('(AccessDeniedException)');
+    expect(text).not.toContain('retries the read');
+    expect(text).not.toContain(LIVE);
+    expect(text).not.toContain('111111111111');
+  });
+
+  it('a throttled readback keeps the retry wording', async () => {
+    const update = vi.fn();
+    const readCurrentState = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+    const { state, ops } = marked();
+
+    await replayRollback(ops, state, 'S', makeCtx({ update, readCurrentState }));
+
+    expect(lines.join('\n')).toContain('re-running the rollback retries the read');
+  });
+
   it('an UNMARKED mask still takes the general refusal (the custom-resource class)', async () => {
     const update = vi.fn();
     const readCurrentState = vi.fn().mockResolvedValue({ Name: '/app/token', Value: LIVE });
@@ -859,5 +895,22 @@ describe('rollback revert of a marked NoEcho leaf (go-to-k/cdkd#4043 Phase C)', 
       await replayRollback(second.ops, second.state, 'S', makeCtx({ create: vi.fn(), delete: vi.fn() }));
       expect(lines.join('\n')).toContain("('***') at Value,");
     });
+  });
+});
+
+describe('readDenialOf (#6759)', () => {
+  it('keeps only an identifier-shaped IAM action and error class', async () => {
+    const { readDenialOf } = await import('../../../src/deployment/deploy-value-equality.js');
+    const denied = (message: string, name = 'AccessDeniedException') =>
+      Object.assign(new Error(message), { name });
+    expect(
+      readDenialOf(denied('User: u is not authorized to perform: kms:ListResourceTags on resource: k'))
+    ).toEqual({ action: 'kms:ListResourceTags', errorClass: 'AccessDeniedException' });
+    expect(
+      readDenialOf(denied('... because no identity-based policy allows the logs:DescribeIndexPolicies action'))
+    ).toEqual({ action: 'logs:DescribeIndexPolicies', errorClass: 'AccessDeniedException' });
+    expect(readDenialOf(denied('Access denied'))).toEqual({ errorClass: 'AccessDeniedException' });
+    expect(readDenialOf(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }))).toBeUndefined();
+    expect(readDenialOf(new Error('not authorized to perform: s3:GetObject'))).toBeUndefined();
   });
 });

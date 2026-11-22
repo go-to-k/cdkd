@@ -110,8 +110,6 @@ interface Site {
   notFound: () => Error;
   /** What the read answers on `notFound`, as before #6759. */
   onNotFound: (read: unknown) => void;
-  /** The read rethrows the sub-read's error as the `cause` of its own. */
-  wrapped?: true;
 }
 
 const bag = (read: unknown): Record<string, unknown> => {
@@ -460,7 +458,6 @@ const SITES: Site[] = [
     // No not-found code: an instance without associations is an empty list.
     notFound: () => accessDenied(),
     onNotFound: () => undefined,
-    wrapped: true,
   },
   {
     name: 'EC2 Instance DescribeInstanceCreditSpecificationsCommand (instance gone)',
@@ -509,11 +506,9 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
     async (_name, site) => {
       const denied = accessDenied();
       arm(site, denied);
-      const read = site
-        .make()
-        .readCurrentState(site.physicalId, 'Logical', site.type, site.properties);
-      if (site.wrapped) await expect(read).rejects.toHaveProperty('cause', denied);
-      else await expect(read).rejects.toBe(denied);
+      await expect(
+        site.make().readCurrentState(site.physicalId, 'Logical', site.type, site.properties)
+      ).rejects.toBe(denied);
       // The sub-read was actually made (the error came from it).
       expect(send.mock.calls.some(([c]) => c.constructor.name === site.sub)).toBe(true);
     }
@@ -617,17 +612,34 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
       answers.set('DescribeAssociationCommand', denied);
       await expect(
         new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', SSM_PROPS)
-      ).rejects.toHaveProperty('cause', denied);
+      ).rejects.toBe(denied);
     });
 
-    it('an SSM error saying "does not exist" still rejects, not read as the instance gone', async () => {
+    it('an SSM error saying "does not exist" rejects with its own text, not read as the instance gone', async () => {
       for (const [name, answer] of Object.entries(INSTANCE)) answers.set(name, answer);
       answers.set('ListAssociationsCommand', LISTED);
       const invalid = named('InvalidDocument', 'The document AWS-RunShellScript does not exist');
       answers.set('DescribeAssociationCommand', invalid);
       await expect(
         new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', SSM_PROPS)
-      ).rejects.toHaveProperty('cause', invalid);
+      ).rejects.toBe(invalid);
+    });
+
+    it('a DescribeInstances failure with "does not exist" text still reads as cannot-tell', async () => {
+      answers.set(
+        'DescribeInstancesCommand',
+        named('InvalidParameterValue', 'The instance ID i-1 does not exist')
+      );
+      expect(
+        await new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', SSM_PROPS)
+      ).toBeUndefined();
+    });
+
+    it('a DescribeInstances *.NotFound still reads as gone', async () => {
+      answers.set('DescribeInstancesCommand', named('InvalidInstanceID.NotFound'));
+      expect(
+        await new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', SSM_PROPS)
+      ).toBe(RESOURCE_NOT_FOUND);
     });
   });
 
@@ -664,31 +676,40 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
         logGroups: [{ ...LOG_GROUP.DescribeLogGroupsCommand.logGroups[0], logGroupClass }],
       },
     });
-    const invalid = () => named('InvalidParameterException', 'A parameter is specified incorrectly');
+    // The answer measured on an INFREQUENT_ACCESS log group.
+    const standardOnly = () =>
+      named('ValidationException', 'This operation is only supported on the Standard log class.');
 
-    it('an INFREQUENT_ACCESS group keeps the placeholders on InvalidParameterException', async () => {
+    it('an INFREQUENT_ACCESS group keeps FieldIndexPolicies: [] on the Standard-only ValidationException', async () => {
       for (const [name, answer] of Object.entries(group('INFREQUENT_ACCESS'))) {
         answers.set(name, answer);
       }
-      answers.set('GetDataProtectionPolicyCommand', invalid());
-      answers.set('DescribeIndexPoliciesCommand', invalid());
+      answers.set('DescribeIndexPoliciesCommand', standardOnly());
       const read = bag(
         await new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
       );
-      expect(read['DataProtectionPolicy']).toBe('');
       expect(read['FieldIndexPolicies']).toEqual([]);
+      expect(read['DataProtectionPolicy']).toBe('');
     });
 
-    it.each(['GetDataProtectionPolicyCommand', 'DescribeIndexPoliciesCommand'])(
-      'a STANDARD group rejects on InvalidParameterException from %s',
-      async (sub) => {
-        for (const [name, answer] of Object.entries(group('STANDARD'))) answers.set(name, answer);
-        const error = invalid();
-        answers.set(sub, error);
-        await expect(
-          new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
-        ).rejects.toBe(error);
+    it('a STANDARD group rejects on that ValidationException', async () => {
+      for (const [name, answer] of Object.entries(group('STANDARD'))) answers.set(name, answer);
+      const error = standardOnly();
+      answers.set('DescribeIndexPoliciesCommand', error);
+      await expect(
+        new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      ).rejects.toBe(error);
+    });
+
+    it('an INFREQUENT_ACCESS group still rejects on a failed GetDataProtectionPolicy', async () => {
+      for (const [name, answer] of Object.entries(group('INFREQUENT_ACCESS'))) {
+        answers.set(name, answer);
       }
-    );
+      const denied = accessDenied();
+      answers.set('GetDataProtectionPolicyCommand', denied);
+      await expect(
+        new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      ).rejects.toBe(denied);
+    });
   });
 });

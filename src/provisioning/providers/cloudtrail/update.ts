@@ -15,11 +15,7 @@ import { maskerOrIdentity } from '../../masked-retry-logger.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../../update-removal.js';
-import {
-  type ResourceUpdateResult,
-  type UpdateContext,
-  RESOURCE_NOT_FOUND,
-} from '../../../types/resource.js';
+import { type ResourceUpdateResult, type UpdateContext } from '../../../types/resource.js';
 import {
   emptyToUndefined,
   trailBoolean,
@@ -553,26 +549,5 @@ export async function update(
           cause
         )
     );
-  }
-}
-
-/**
- * The live read-back a skipped block is recorded from when its previous
- * value is unusable. Best-effort: a failed read answers `undefined`, which
- * drops the key rather than failing an update AWS already applied.
- */
-export async function readLiveForRecord(
-  this: CloudTrailProvider,
-  physicalId: string,
-  resourceType: string
-): Promise<Record<string, unknown> | undefined> {
-  try {
-    const live = await this.readCurrentState(physicalId, '', resourceType);
-    return live !== undefined && live !== RESOURCE_NOT_FOUND ? live : undefined;
-  } catch (error) {
-    this.logger.debug(
-      safeMsg`CloudTrail read-back for the record failed: ${describeAwsFailure(error).detail}`
-    );
-    return undefined;
   }
 }
