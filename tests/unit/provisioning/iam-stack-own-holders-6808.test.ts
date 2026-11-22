@@ -172,6 +172,65 @@ describe('stackOwnHolders reads the records bound around the delete', () => {
     );
   });
 
+  it("a deploy's removal of a Retain holder: not the stack's to strip; a removal that deletes it still is", () => {
+    const profile = (deletionPolicy?: 'Retain' | 'Delete') => ({
+      ...record('AWS::IAM::InstanceProfile', 'p', { Roles: ['my-role'] }),
+      ...(deletionPolicy && { deletionPolicy }),
+    });
+    const user = (deletionPolicy?: 'Retain') => ({
+      ...record('AWS::IAM::User', 'u', { Groups: ['my-group'] }),
+      ...(deletionPolicy && { deletionPolicy }),
+    });
+    const leaving = (records: Record<string, ResourceState>) =>
+      deployStackRecordsView(records, records, new Set(Object.keys(records)));
+    const roleHolders = (p: ResourceState) =>
+      withStackRecords(leaving({ P: p }), () => stackOwnHolders('AWS::IAM::Role', 'my-role'));
+    const groupHolders = (u: ResourceState) =>
+      withStackRecords(leaving({ U: u }), () => stackOwnHolders('AWS::IAM::Group', 'my-group'));
+    expect(roleHolders(profile('Retain'))).toEqual([]);
+    expect(groupHolders(user('Retain'))).toEqual([]);
+    expect(roleHolders(profile('Delete'))).toEqual([{ name: 'p' }]);
+    expect(roleHolders(profile())).toEqual([{ name: 'p' }]);
+    expect(groupHolders(user())).toEqual([{ name: 'u' }]);
+    // Retain on a holder the deploy keeps: still the stack's.
+    const kept = { P: profile('Retain') };
+    expect(
+      withStackRecords(deployStackRecordsView(kept, kept, new Set()), () =>
+        stackOwnHolders('AWS::IAM::Role', 'my-role')
+      )
+    ).toEqual([{ name: 'p' }]);
+  });
+
+  it('a journaled failed create carries the identity it read back; one judged superseded names nothing', () => {
+    const replay = replayStackRecordsView({}, new Set(), [
+      {
+        resourceType: 'AWS::IAM::User',
+        physicalId: 'bob',
+        attemptedProperties: { Groups: ['my-group'] },
+        physicalIdRecoveredFromError: true,
+        createdResourceIdentity: 'AIDABOB',
+      },
+      {
+        resourceType: 'AWS::IAM::InstanceProfile',
+        physicalId: 'half-made-profile',
+        attemptedProperties: { Roles: ['my-role'] },
+        createdResourceIdentity: 'AIPAHALF',
+      },
+      {
+        resourceType: 'AWS::IAM::User',
+        physicalId: 'superseded',
+        attemptedProperties: { Groups: ['my-group'] },
+        physicalIdRecoveredFromError: false,
+      },
+    ]);
+    expect(withStackRecords(replay, () => stackOwnHolders('AWS::IAM::Group', 'my-group'))).toEqual(
+      [{ name: 'bob', id: 'AIDABOB' }]
+    );
+    expect(withStackRecords(replay, () => stackOwnHolders('AWS::IAM::Role', 'my-role'))).toEqual([
+      { name: 'half-made-profile', id: 'AIPAHALF' },
+    ]);
+  });
+
   it('isStackOwnHolder: by name ignoring case, and by the recorded id where one is', () => {
     const holders = [{ name: 'own', id: 'AIPAOWN' }, { name: 'legacy' }];
     expect(isStackOwnHolder(holders, 'OWN', 'AIPAOWN')).toBe(true);
@@ -370,6 +429,35 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
     expect(names()).not.toContain('DeleteRoleCommand');
   });
 
+  it("a Retain profile the same deploy removes is no profile of the stack's: refused, never stripped", async () => {
+    const leavingProfile = {
+      Profile: {
+        ...record(
+          'AWS::IAM::InstanceProfile',
+          'stack-profile',
+          { Roles: ['my-role'] },
+          { InstanceProfileId: 'AIPASTACK' }
+        ),
+        deletionPolicy: 'Retain' as const,
+      },
+    };
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: listing(['stack-profile', 'AIPASTACK']),
+      DeleteRoleCommand: conflict,
+    });
+
+    const error = await deleteFirst(
+      deployStackRecordsView(leavingProfile, leavingProfile, new Set(['Profile']))
+    );
+
+    expect(names()).not.toContain('RemoveRoleFromInstanceProfileCommand');
+    expect(names()).not.toContain('DeleteRoleCommand');
+    expect(error!.message).toContain(
+      'instance profile(s) stack-profile, which this run did not delete (a profile created outside the stack, or retained by a DeletionPolicy)'
+    );
+  });
+
   it('a profile under the recorded name with another InstanceProfileId is not the stack\'s: refused, never stripped', async () => {
     drive({
       ...base,
@@ -530,6 +618,42 @@ describe("IAM group delete-first: strips the stack's own members, refuses any ot
 
     expect(await deleteFirst()).toBeUndefined();
     expect(names()).not.toContain('RemoveUserFromGroupCommand');
+  });
+
+  it("a Retain user the same deploy removes is no member of the stack's: refused, never removed", async () => {
+    const leavingUser = {
+      Alice: {
+        ...record('AWS::IAM::User', 'alice', { Groups: ['my-group'] }, { UserId: 'AIDAALICE' }),
+        deletionPolicy: 'Retain' as const,
+      },
+    };
+    drive({ ...base, GetGroupCommand: () => group(['alice', 'AIDAALICE']), DeleteGroupCommand: conflict });
+
+    const error = await deleteFirst(
+      deployStackRecordsView(leavingUser, leavingUser, new Set(['Alice']))
+    );
+
+    expect(names()).not.toContain('RemoveUserFromGroupCommand');
+    expect(names()).not.toContain('DeleteGroupCommand');
+    expect(error!.message).toContain('still has user(s) alice, whose membership this run did not');
+  });
+
+  it("a journaled failed user beside a live same-named stranger: the stranger's UserId is not the journaled one, so refused", async () => {
+    const replay = replayStackRecordsView({}, new Set(), [
+      {
+        resourceType: 'AWS::IAM::User',
+        physicalId: 'bob',
+        attemptedProperties: { Groups: ['my-group'] },
+        physicalIdRecoveredFromError: true,
+        createdResourceIdentity: 'AIDABOB',
+      },
+    ]);
+    drive({ ...base, GetGroupCommand: () => group(['bob', 'AIDASTRANGER']), DeleteGroupCommand: conflict });
+
+    const error = await deleteFirst(replay);
+
+    expect(names()).not.toContain('RemoveUserFromGroupCommand');
+    expect(error!.message).toContain('still has user(s) bob, whose membership this run did not');
   });
 
   it("a user under the stack user's name with another UserId is not the stack's: refused, never removed", async () => {

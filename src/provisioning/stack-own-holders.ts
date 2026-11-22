@@ -28,6 +28,11 @@ export interface StackOwnHolder {
  * it; a group's, the users whose `Groups` name it and those a
  * `UserToGroupAddition` naming it adds.
  *
+ * A record a deploy removes while retaining its resource
+ * (`StackRecordsView.retainedLeaving`) is none: nothing points it back at the
+ * re-created role or group. A journaled write carries the identity its failed
+ * create read back, and one judged superseded is skipped.
+ *
  * Only these are removed by a delete that may strip
  * (`DeleteContext.stackHoldersStillAttached`); every other holder is refused
  * as on any delete (go-to-k/cdkd#6750), as CloudFormation's `DeleteConflict`
@@ -39,7 +44,11 @@ export function stackOwnHolders(resourceType: string, physicalId: string): Stack
   const view = getStackRecords();
   if (view === undefined) return [];
   const sources: JournaledWrite[] = [];
-  for (const [, record] of view.live()) sources.push(record);
+  // A record leaving this deploy while its resource stays (Retain) is no
+  // holder the re-create points back at: refused, as CloudFormation would.
+  for (const [lid, record] of view.live()) {
+    if (view.retainedLeaving?.(lid) !== true) sources.push(record);
+  }
   for (const write of view.journaledWrites?.() ?? []) sources.push(write);
   const target = physicalId.toLowerCase();
   const names = (value: unknown): string[] =>
