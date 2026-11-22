@@ -109,6 +109,14 @@ const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = 
  * `UpdateAgentRuntime` is full-replace, so the provider omitting an empty one
  * clears it (measured us-east-1, PR #6630 and #6651).
  * `CapacityProviderConfiguration` is not listed: it is unmeasured.
+ *
+ * `AWS::IAM::User` `LoginProfile` (go-to-k/cdkd#6755): the user readback
+ * records `null` for a user without a login profile whose template declares
+ * none. Only `CreateLoginProfile` makes one: no other resource type writes it
+ * and IAM never adds one itself. A console login added out of band is drift,
+ * and `--revert` sends `null`, which the provider's `update()` turns into one
+ * `DeleteLoginProfile` (the `iam-access-key` integ's login-profile arm
+ * measures it).
  */
 const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::BedrockAgentCore::Runtime': [
@@ -117,6 +125,7 @@ const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>
     'RequestHeaderConfiguration',
     'ResourceConfigurations',
   ],
+  'AWS::IAM::User': ['LoginProfile'],
 };
 
 /**

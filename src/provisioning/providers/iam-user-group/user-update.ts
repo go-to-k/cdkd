@@ -220,6 +220,9 @@ export async function updateUser(
           throw error;
         }
       }
+      // go-to-k/cdkd#6755: the capture right after records no profile rather
+      // than a read that still shows this one.
+      recordOwnWriteRemoval(USER_TYPE, physicalId, 'LoginProfile', 'LoginProfile');
     }
 
     // Update managed policies
