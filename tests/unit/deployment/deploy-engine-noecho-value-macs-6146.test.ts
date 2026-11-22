@@ -125,6 +125,7 @@ import {
 import { previewNoEchoMacChanges } from '../../../src/cli/commands/diff-recursive/noecho-macs.js';
 import type { CloudFormationTemplate, UpdateContext } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
+import { stateSchemaVersionFor } from '../../../src/types/state.js';
 
 const OLD = 'old-noecho-value-6146';
 const NEW = 'new-noecho-value-6146';
@@ -911,7 +912,8 @@ describe('a key that also reads resolved inputs settles only on a bound, equal, 
     expect(binding.fingerprint).toBe(saved.resources['R']!.maskedPropertyInputFingerprints?.['Body']);
     // An older cdkd reads only the string members: exactly the MACs.
     expect(Object.values(entry).filter((v) => typeof v === 'string')).toEqual([macOf(OLD)]);
-    expect(saved.version).toBe(17);
+    // The version the backend stamps for it (the engine hands its own).
+    expect(stateSchemaVersionFor(saved)).toBe(17);
     expectNoValueOrMacLogged(macOf(OLD));
   });
 

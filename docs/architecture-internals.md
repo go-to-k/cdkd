@@ -460,6 +460,12 @@ Lambda takes on `UpdateFunctionCode`. Issue #6788 measured more: passwords
 and tokens the handler re-sets (a Redshift cluster's `MasterUserPassword`),
 a Synthetics canary's `Code`, and re-sends the handler refuses (a CloudFront
 KeyValueStore's `ImportSource`).
+A password passed as a `{{resolve:...}}` reference is left out too, but only
+when the secret version this deploy resolved is the one the state record
+attests was last sent (issue #6824). Before any update sends another version,
+cdkd saves the record without that version, so a failed or interrupted update
+leaves nothing to trust and the next deploy sends the password again; so does
+any deploy after a failed one, until a deploy succeeds.
 These are listed per type in `getWriteOnlyKeysKeptWhenOmitted`, each from a
 measurement of that handler. If `DescribeType` is
 unavailable (missing permission, throttling), cdkd warns and falls back to

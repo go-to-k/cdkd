@@ -1,5 +1,5 @@
 ---
-description: cdkd S3 state schema - StackState v1-v17 and per-field semantics
+description: cdkd S3 state schema - StackState v1-v18 and per-field semantics
 paths:
   - 'src/state/**'
   - 'src/types/state.ts'
@@ -12,7 +12,7 @@ The S3 state record is the user contract: **migration must be transparent** — 
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | ... | 17; // each bump is its fields' `vN+`; 17 only with `noEchoValueMacs`
+  version: 1 | 2 | ... | 18; // each bump is its fields' `vN+`; 17 only with `noEchoValueMacs`, 18 only with `versionsSent`
   minReaderVersion?: StateSchemaVersion; // no bump (#6440): absent = version; bump rule: state-schema-internals
   stackName: string;
   region?: string; // required on v2+ (the S3 key); on READ the KEY wins and a disagreeing body warns
@@ -139,7 +139,7 @@ Written each deploy save by `applyNoEchoPersist` (`src/deployment/deploy-engine/
 
 ## `referenceProvenance` / `outputReferenceProvenance` (v12+)
 
-Per `{{resolve:` token: region, version ids (never a value), READ-route `readVersions` (the upstream record's `versions`). Absent = not known (v11 path), `{}` = known; read via `reference-provenance-record.ts` only (malformed = absent) by `recorded-reference-routes.ts` (#4847; a pinned plaintext is never `recordResolvedPair`ed) and #4852's `read-provenance-promotion.ts` / `read-provenance-moved.ts` (`readVersions` ⊄ upstream `versions`; none = no verdict). A WRITTEN record takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives skips). v11 records gain it once (`provenance-capture.ts`). Token-free: O(1), `token-free-state.ts`.
+Per `{{resolve:` token: region, version ids (never a value), READ-route `readVersions` (the upstream record's `versions`). Absent = not known (v11 path), `{}` = known; read via `reference-provenance-record.ts` only (malformed = absent) by `recorded-reference-routes.ts` (#4847; a pinned plaintext is never `recordResolvedPair`ed) and #4852's `read-provenance-promotion.ts` / `read-provenance-moved.ts` (`readVersions` ⊄ upstream `versions`; none = no verdict). A WRITTEN record takes this pass's entries (in place, a create-only token unions previous `versions`, cap 8); an unwritten one keeps its field unwalked (`perResourceSecrets` outlives skips). v11 records gain it once (`provenance-capture.ts`), whose `versions` arm needs the physical-id proof. Token-free: O(1), `token-free-state.ts`. `versionsSent` (v18, conditional like 17, #6824: an older binary's kill or failure save would keep a stale one) is the ONLY evidence an update may leave a measured write-only key's unchanged reference unsent (`write-only-secret-skip.ts`): stamped only for a Cloud Control create/update's own single version, never by the union rule, a resumed create, the capture or an SDK write; every sender of another version persists the entry without its version arm FIRST (the update arm's write-ahead, `drift --revert`), and a journaled `previousState` or a rollback restore never carries it.
 
 ## `unsettledProperties` (v14+, #5380)
 

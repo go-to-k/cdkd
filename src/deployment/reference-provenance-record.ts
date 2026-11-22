@@ -122,8 +122,62 @@ export function validateReferenceProvenance(
     if (readRaw !== undefined && readRaw.length > 0) {
       out.readVersions = [...new Set(readRaw as string[])].sort();
     }
+    // go-to-k/cdkd#6824: the writer's attestation, only beside its versions.
+    if (Object.hasOwn(raw, 'versionsSent') && raw['versionsSent'] === true) {
+      out.versionsSent = true;
+    }
   }
   return out;
+}
+
+/**
+ * `record` with the version arm (`versions`, `readVersions`,
+ * `versionsSent`) of each token in `tokens` dropped, `region` kept: what is
+ * persisted AHEAD of a send of another version (go-to-k/cdkd#6824), so a send
+ * that fails or is killed leaves a record naming no version. The `properties`
+ * bag is the record's own, never re-marked.
+ */
+export function withTokenVersionsDropped(
+  record: ResourceState,
+  tokens: ReadonlySet<string>
+): ResourceState {
+  const field = referenceProvenanceOf(record);
+  if (field === undefined || tokens.size === 0) return record;
+  const out: Record<string, ReferenceProvenance> = { ...field };
+  for (const token of tokens) {
+    if (!Object.hasOwn(field, token)) continue;
+    const region = field[token]!.region;
+    out[token] = region === undefined ? {} : { region };
+  }
+  return withReferenceProvenance(record, out);
+}
+
+/**
+ * `record` with no `versionsSent` attestation (go-to-k/cdkd#6824): what a
+ * journaled `previousState` carries, so a record a rollback restores (pinned
+ * or, when the pin is unreadable, at the current version) never claims the
+ * version it names is the one AWS holds.
+ */
+export function withoutVersionAttestation<T extends ResourceState>(record: T): T {
+  const field = record.referenceProvenance as unknown;
+  if (!isPlainObject(field)) return record;
+  if (
+    !Object.values(field).some(
+      (entry) => isPlainObject(entry) && Object.hasOwn(entry, 'versionsSent')
+    )
+  ) {
+    return record;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [token, entry] of Object.entries(field)) {
+    if (isPlainObject(entry) && Object.hasOwn(entry, 'versionsSent')) {
+      const { versionsSent: _dropped, ...rest } = entry;
+      out[token] = rest;
+    } else {
+      out[token] = entry;
+    }
+  }
+  return { ...record, referenceProvenance: out as Record<string, ReferenceProvenance> };
 }
 
 /**
@@ -312,8 +366,15 @@ export function provenanceForWrittenRecord(args: {
    * token-free fast path, which keeps the writer O(1) there.
    */
   walkWithoutPassProvenance?: boolean;
+  /**
+   * go-to-k/cdkd#6824: the tokens whose entry, when it is this pass's own
+   * (never the union rule's) with a single version, is stamped `versionsSent`:
+   * the caller proved the write sent that version for every measured
+   * write-only key holding them.
+   */
+  attest?: ReadonlySet<string> | undefined;
 }): Record<string, ReferenceProvenance> | undefined {
-  const { record, secrets, previous, inPlace } = args;
+  const { record, secrets, previous, inPlace, attest } = args;
   const previousField = inPlace === undefined ? undefined : referenceProvenanceOf(previous);
   if (
     !hasPassProvenance(secrets) &&
@@ -336,7 +397,17 @@ export function provenanceForWrittenRecord(args: {
   for (const token of [...tokens].sort()) {
     const pass = passProvenanceFor(secrets, token);
     if (kept === undefined || !kept.has(token)) {
-      out[token] = persistable(token, pass);
+      const entry = persistable(token, pass);
+      if (
+        attest?.has(token) === true &&
+        entry.versions?.length === 1 &&
+        entry.region !== undefined
+      ) {
+        // Region-less, the skip could never take it: stamped, every update
+        // would pay a write-ahead save for nothing.
+        entry.versionsSent = true;
+      }
+      out[token] = entry;
       continue;
     }
     const before =
@@ -344,7 +415,9 @@ export function provenanceForWrittenRecord(args: {
         ? previousField[token]
         : undefined;
     if (pass === undefined) {
-      out[token] = before === undefined ? {} : { ...before };
+      // Carried, not sent by this write: never attested.
+      const { versionsSent: _carried, ...carried } = before ?? {};
+      out[token] = carried;
       continue;
     }
     out[token] = persistable(token, unionWithPrevious(pass, before));

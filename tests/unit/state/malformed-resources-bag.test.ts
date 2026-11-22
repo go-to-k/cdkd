@@ -8699,9 +8699,14 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
       body.includes('saveState('),
       'runDriftForStack now writes state, so its REPAIR arm can launder a malformed record.'
     ).toBe(false);
-    // ...and the two saves that do exist are still the ones this reasoning is
-    // about, so the count above keeps its subject.
-    expect(src.match(/saveState\(/g) ?? []).toHaveLength(2);
+    // ...and the saves that do exist are still the ones this reasoning is
+    // about, so the count above keeps its subject: the two writers', plus
+    // `--revert`'s write-ahead of its secret attestations (go-to-k/cdkd#6824),
+    // which spreads the same refused bag and is called from `runRevert` alone.
+    expect(src.match(/saveState\(/g) ?? []).toHaveLength(3);
+    expect(flow(src, 'async function writeAheadRevertAttestations(')).toContain('saveState(');
+    expect(src.match(/writeAheadRevertAttestations\(/g) ?? []).toHaveLength(2);
+    expect(flow(src, 'async function runRevert(')).toContain('writeAheadRevertAttestations(');
     // ...and each one is INSIDE its own writer. A count alone permits moving a
     // save up into `driftCommand` ahead of the detection-only gate, where a
     // read-only run reaches it after the repair arm has already emptied the bag.

@@ -10224,6 +10224,7 @@
         "cc-to-sdk-reroute-cloudfront-distribution",
         "cc-to-sdk-reroute-common-types",
         "cc-write-only-create-only",
+        "cc-write-only-secret-version",
         "cloudwatch-anomaly-detector",
         "codedeploy-lambda-deployment-group",
         "cognito-schema-rollback",
@@ -10348,6 +10349,9 @@
         ],
         "cc-write-only-create-only": [
           "l2"
+        ],
+        "cc-write-only-secret-version": [
+          "l1"
         ],
         "cloudwatch-anomaly-detector": [
           "l2"
@@ -10813,6 +10817,7 @@
         "schema-v12-to-v13-migration",
         "schema-v15-to-v16-migration",
         "schema-v16-to-v17-migration",
+        "schema-v17-to-v18-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -11220,6 +11225,10 @@
           "l2",
           "literal"
         ],
+        "schema-v17-to-v18-migration": [
+          "l2",
+          "literal"
+        ],
         "schema-v5-to-v6-migration": [
           "l2"
         ],
@@ -11344,6 +11353,7 @@
         "cc-final-snapshot-handlers",
         "cc-to-sdk-reroute-common-types",
         "cc-to-sdk-reroute-common-types-11",
+        "cc-write-only-secret-version",
         "composite-stack",
         "cross-stack-secret-import",
         "drift-revert-nested-write-only",
@@ -11362,6 +11372,7 @@
         "remote-nested-stack-refusal",
         "replacement-immutable-name",
         "rollback-regenerated-secret",
+        "schema-v17-to-v18-migration",
         "secret-substring-literal",
         "secrets-array-nested",
         "secrets-dynamic-ref",
@@ -11380,6 +11391,10 @@
         ],
         "cc-to-sdk-reroute-common-types-11": [
           "l2"
+        ],
+        "cc-write-only-secret-version": [
+          "l2",
+          "literal"
         ],
         "composite-stack": [
           "l2",
@@ -11440,6 +11455,10 @@
         ],
         "rollback-regenerated-secret": [
           "l2"
+        ],
+        "schema-v17-to-v18-migration": [
+          "l2",
+          "literal"
         ],
         "secret-substring-literal": [
           "l2",
@@ -11690,6 +11709,7 @@
     "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::Connect::Instance",
     "AWS::Connect::InstanceStorageConfig",
+    "AWS::DMS::Endpoint",
     "AWS::DSQL::Cluster",
     "AWS::DataSync::LocationS3",
     "AWS::DataSync::Task",
@@ -11749,6 +11769,8 @@
     "AWS::RDS::DBParameterGroup",
     "AWS::RDS::GlobalCluster",
     "AWS::Redshift::Cluster",
+    "AWS::RedshiftServerless::Namespace",
+    "AWS::RedshiftServerless::Workgroup",
     "AWS::ResourceGroups::Group",
     "AWS::Route53::CidrCollection",
     "AWS::Route53::HealthCheck",

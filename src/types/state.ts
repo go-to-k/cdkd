@@ -247,10 +247,23 @@
  *       with no `NoEcho`-fed property (or no MAC key) stays readable by an
  *       older binary. A v16 document is read unchanged (no MACs).
  *
+ * - 18 — written only when some record carries a
+ *       `ReferenceProvenance.versionsSent` attestation (issue
+ *       [#6824](https://github.com/go-to-k/cdkd/issues/6824)): the secret
+ *       version a measured write-only key was last SENT at, which lets an
+ *       update leave an unchanged secret-referenced password unsent. A bump for
+ *       v17's reason: an older binary sends a rotated password without
+ *       writing the record ahead, and a kill (or its failure save, which keeps
+ *       the record verbatim) leaves the attestation naming a version AWS no
+ *       longer holds. CONDITIONAL like 17: `stateSchemaVersionFor` stamps 18
+ *       only for a state holding an attestation, else 17 or 16 as before. A
+ *       v17 document is read unchanged (nothing attested).
+ *
  * cdkd readers handle every prior version. Writers emit
- * `stateSchemaVersionFor(state)`: `STATE_SCHEMA_VERSION_CURRENT` (17) for a
- * state carrying NoEcho value MACs, `STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS`
- * (16) otherwise. An older cdkd binary that only knows an
+ * `stateSchemaVersionFor(state)`: `STATE_SCHEMA_VERSION_CURRENT` (18) for a
+ * state carrying a secret version attestation,
+ * `STATE_SCHEMA_VERSION_WITH_NOECHO_MACS` (17) for one carrying NoEcho value
+ * MACs, `STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS` (16) otherwise. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format — unless the
  * record names a `minReaderVersion` it knows, which it then reads read-only
@@ -273,9 +286,12 @@ export type StateSchemaVersion =
   | 14
   | 15
   | 16
-  | 17;
+  | 17
+  | 18;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 17;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 18;
+/** The version written for a state carrying NoEcho value MACs and no version attestation (go-to-k/cdkd#6824). */
+export const STATE_SCHEMA_VERSION_WITH_NOECHO_MACS: StateSchemaVersion = 17;
 /** The version written for a state no record of which carries `noEchoValueMacs` (go-to-k/cdkd#6146). */
 export const STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS: StateSchemaVersion = 16;
 
@@ -288,8 +304,23 @@ function carriesNoEchoValueMacs(record: unknown): boolean {
   );
 }
 
+/** Whether a stored record carries a `versionsSent` attestation in its `referenceProvenance` (go-to-k/cdkd#6824). */
+function carriesVersionAttestation(record: unknown): boolean {
+  if (record === null || typeof record !== 'object') return false;
+  const field = (record as { referenceProvenance?: unknown }).referenceProvenance;
+  if (field === null || typeof field !== 'object') return false;
+  return Object.values(field as object).some(
+    (entry) =>
+      entry !== null &&
+      typeof entry === 'object' &&
+      (entry as { versionsSent?: unknown }).versionsSent !== undefined
+  );
+}
+
 /**
- * The schema version a save stamps on `state` (go-to-k/cdkd#6146): 17 when any
+ * The schema version a save stamps on `state` (go-to-k/cdkd#6146,
+ * go-to-k/cdkd#6824): 18 when any record carries a secret version
+ * attestation, else 17 when any
  * record it holds (`resources`, an `orphans` entry's `state`, a
  * `supersededResources` entry's `state`) carries `noEchoValueMacs`, so an older binary
  * refuses it with "Upgrade cdkd"; 16 otherwise, readable by older binaries.
@@ -314,8 +345,9 @@ export function stateSchemaVersionFor(state: {
       records.push((entry as { state?: unknown } | null)?.state);
     }
   }
+  if (records.some(carriesVersionAttestation)) return STATE_SCHEMA_VERSION_CURRENT;
   return records.some(carriesNoEchoValueMacs)
-    ? STATE_SCHEMA_VERSION_CURRENT
+    ? STATE_SCHEMA_VERSION_WITH_NOECHO_MACS
     : STATE_SCHEMA_VERSION_WITHOUT_NOECHO_MACS;
 }
 
@@ -326,7 +358,7 @@ export function stateSchemaVersionFor(state: {
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
 ];
 
 /**

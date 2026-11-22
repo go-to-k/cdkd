@@ -36,10 +36,8 @@ import {
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
-import {
-  STICKY_CC_MIGRATION_EXEMPT,
-  sdkAddressedRecord,
-} from '../../provisioning/provider-registry.js';
+import { sdkAddressedRecord } from '../../provisioning/provider-registry.js';
+import { sdkMigrationNotice } from './update-in-place/sdk-migration-notice.js';
 import { ccAutoRouteUpdateFailureRemedy } from '../../provisioning/cc-autoroute-update-remedy.js';
 import {
   prepareRemovalForUpdate,
@@ -79,6 +77,7 @@ import { carriedNoEchoMacs, noEchoUpdateContext, noEchoPositionSources } from '.
 import { deleteOldIdAfterDeploy } from './replacement/cleanup-old-id.js';
 import { keyOrderFreeJson } from '../deploy-value-equality.js';
 import { replaceFallbackFor } from './update-in-place/replace-fallback.js';
+import { writeOnlySecretsForUpdate } from './update-in-place/write-only-secret-skip.js';
 
 /** A branch of `provisionUpdate` (`update/provision-update.ts`), split out of it (#4350). */
 export async function updateInPlace(
@@ -176,43 +175,8 @@ export async function updateInPlace(
       ? await sdkAddressedRecord(recordedResource, logicalId, engine.stackRegion)
       : recordedResource;
   if (updateDecision.sdkMigration === true) {
-    // The ONLY reader of `sdkMigration`, and the reason the field
-    // exists: without it this deploy moves a live resource between
-    // provisioning layers and says so only at debug level. It fires
-    // once, because the record says 'sdk' from this write on.
-    //
-    // The wording is per MODE, because the two flips happen for opposite reasons and only one of
-    // them can be declined. A first revision printed the coverage sentence for both and told a
-    // 'cc-broken' user to pass `--pin-cc-api`, which that mode deliberately ignores -- recommending
-    // a flag that silently no-ops is the same class of defect as the typo this lane just closed.
-    // Exhaustive rather than a ternary: a THIRD mode added later would otherwise inherit the
-    // coverage wording AND a `--pin-cc-api` suggestion, which is precisely the wrong-remedy defect
-    // this per-mode split exists to fix. `exemptMode` cannot be undefined here — `sdkMigration` is
-    // set only after `wouldReturnToSdkProvider` found an entry in this same table — but the default
-    // arm keeps that from being load-bearing.
-    const exemptMode = STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode;
-    const preserved =
-      currentResource.physicalId === recordedResource.physicalId
-        ? 'The physical id is preserved'
-        : "The resource is kept in place, and its recorded physical id takes the SDK provider's form";
-    let message: string;
-    switch (exemptMode) {
-      case 'cc-broken':
-        message =
-          safeMsg`${logicalId} (${resourceType}): moving to the SDK provider — Cloud ` +
-          `Control cannot manage this type correctly. ${preserved}, and this ` +
-          `routing is not optional.`;
-        break;
-      case 'sdk-coverage':
-        message =
-          safeMsg`${logicalId} (${resourceType}): returning to the SDK provider — cdkd now ` +
-          `covers every property this resource uses. ${preserved}; pass ` +
-          safeMsg`--pin-cc-api ${logicalId} to decline this for a deploy.`;
-        break;
-      default:
-        message = safeMsg`${logicalId} (${resourceType}): moving to the SDK provider. ${preserved}.`;
-    }
-    engine.logger.info(message);
+    const idPreserved = currentResource.physicalId === recordedResource.physicalId;
+    engine.logger.info(sdkMigrationNotice(logicalId, resourceType, idPreserved));
   }
   const updateProvider = updateDecision.provider;
   const updateProps =
@@ -433,6 +397,19 @@ export async function updateInPlace(
     changedProperties,
     engine.resolvedUpdatePolicies.get(logicalId)
   );
+  // go-to-k/cdkd#6824: written ahead before another secret version is sent;
+  // then the unchanged write-only secret references the update may leave out.
+  const unchangedWriteOnlySecrets = await writeOnlySecretsForUpdate(engine, logicalId, {
+    resourceType,
+    record: recordedResource,
+    route: updateDecision.provisionedBy,
+    sdkMigration: updateDecision.sdkMigration === true,
+    unsettled,
+    changed: changedForProvider,
+    previous: previousSettled,
+    desired: removal.properties,
+    secrets: updateSecrets,
+  });
   try {
     result = await engine.withRetry(
       () =>
@@ -494,6 +471,9 @@ export async function updateInPlace(
               ...unsettledMarkSinks(engine, logicalId, resolvedProps, currentResource),
               ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
               ...(unsettledItems.size > 0 && { unsettledItems }),
+              ...(unchangedWriteOnlySecrets !== undefined && {
+                unchangedWriteOnlySecretProperties: unchangedWriteOnlySecrets,
+              }),
               ...updatePolicy,
               ...rollingSignalsFor(engine, logicalId),
             }

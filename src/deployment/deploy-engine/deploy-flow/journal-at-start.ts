@@ -129,6 +129,11 @@ export async function settleJournalAtStart(
       ...loaded,
       segments: loaded.segments.filter((s) => s.reason !== NESTED_PENDING_PARENT_REASON),
     };
+    // go-to-k/cdkd#6824: any segment at all (a failed op whose update may have
+    // applied a rotated value, an interrupted run, a rollback that died, and a
+    // nested child's pending-parent segment, which a killed parent rollback
+    // leaves behind) re-sends every write-only secret until a deploy succeeds.
+    engine.writeOnlySecretSkipAllowed = loaded === null || loaded.segments.length === 0;
     if (journal && journal.segments.length > 0) {
       // A journal whose every segment carries no completed ops is the
       // failed-only shape kept after a CLEAN automatic rollback (issue

@@ -22,7 +22,7 @@ up and secure the bucket. The authority for everything here is
 | [Which region a record belongs to](#which-region-a-record-belongs-to) | The key decides; when a destroy or rollback refuses |
 | [Sidecar objects in the state bucket](#sidecar-objects-in-the-state-bucket) | Response placeholders, the create-token ledger, the rollback journal, the bootstrap marker |
 | [Bucket name and region resolution](#bucket-name-and-region-resolution) | The legacy-name fallback and the `GetBucketLocation` probe |
-| [Schema version history](#schema-version-history) | `version: 1` through `version: 17` |
+| [Schema version history](#schema-version-history) | `version: 1` through `version: 18` |
 | [Fields added without a version bump](#fields-added-without-a-version-bump) | `skippedOutputs`, `conditionVerdicts`, the masked-property fingerprints |
 | [Schema reference](#schema-reference) | `StackState`, `ResourceState`, `LockInfo`, malformed-record handling, physical ids |
 | [Lock implementation](#lock-implementation) | Acquire, release, retry, renewal |
@@ -415,8 +415,9 @@ region the CDK app declares.
 ## Schema version history
 
 
-Writers emit `stateSchemaVersionFor(state)`: `version: 17` for a state that
-holds a `noEchoValueMacs` entry, `version: 16` otherwise. Readers accept every
+Writers emit `stateSchemaVersionFor(state)`: `version: 18` for a state that
+holds a `versionsSent` attestation, else `version: 17` for one that holds a
+`noEchoValueMacs` entry, `version: 16` otherwise. Readers accept every
 earlier version and upgrade it in memory; the next write persists the current
 shape. A binary that meets a version newer than it knows refuses the record
 with an "Upgrade cdkd" error, unless the record names a `minReaderVersion` it
@@ -441,6 +442,7 @@ reads ([below](#minreaderversion-reading-a-newer-record-read-only)).
 | 15 | `unsettledItems` on each resource |
 | 16 | `stackIdFromInstance` on the stack |
 | 17 | `noEchoValueMacs` on each resource; written only for a state that holds one, else 16 |
+| 18 | `referenceProvenance[token].versionsSent`; written only for a state that holds one, else 17 or 16 |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -499,8 +501,8 @@ RECORD, at that record's load:
 
 - A nested child is loaded by its own deploy, inside the parent's. `version` is
   computed from each record's content (`stateSchemaVersionFor`), so a child can
-  be newer than its parent (today a child holding a `NoEcho` value MAC is 17
-  under a 16 parent). An older binary deploying such a parent fails at the
+  be newer than its parent (today a child holding a `NoEcho` value MAC is 17, or
+  an attestation 18, under a 16 parent). An older binary deploying such a parent fails at the
   child's load, after the parent's earlier resources ran, and the parent's
   failure path handles it like any other failed nested row. Refusing at the
   parent's load would cost one S3 read per child on every deploy.
@@ -1715,6 +1717,27 @@ bump is conditional, a
 stack with no `NoEcho`-fed property, or in a region without the key, keeps
 writing `version: 16` and stays readable by older binaries. A v16 document is
 read unchanged (no MACs).
+
+### `version: 18` adds `versionsSent` (written only with an attestation)
+
+Schema `version: 18` adds `ReferenceProvenance.versionsSent` (issue
+[#6824](https://github.com/go-to-k/cdkd/issues/6824)): on a token under a
+measured write-only key (a password Cloud Control re-sets on every re-send),
+the writer's attestation that the single recorded version is the one it SENT.
+An update leaves such a key out of the patch only while the version this
+deploy resolved equals that attested version; every send of another version
+first persists the entry without its version arm (the write-ahead), so a
+failed or killed send leaves nothing to trust.
+
+A bump for v17's reason. An older binary sends a rotated password without the
+write-ahead, and a kill (which writes nothing) or its failure save (which keeps
+the record it loaded, unknown fields included) leaves the attestation naming a
+version AWS no longer holds; moving the secret back to that version would then
+leave the password unsent. Conditional like 17: a save writes `version: 18`
+only when some record carries an attestation, so a stack holding no
+secret-referenced measured write-only key stays at 17 or 16 and readable by
+older binaries. A v17 document is read unchanged (nothing attested: the first
+deploy re-sends and attests).
 ### `skippedOutputs` (informational, no version bump)
 
 An Output the deploy could NOT resolve is SKIPPED — warned about when the
@@ -2521,7 +2544,7 @@ interface ResourceState {
   noEchoLeaves?: (string | number)[][]         // v11+: positions in `properties` stored as `***` for a NoEcho value
   noEchoAttributeNames?: string[]              // v11+: `attributes` the provider declared NoEcho, each stored as `***`
   noEchoExactEchoLeaves?: string[][]           // optional, no bump: `noEchoLeaves` positions AWS reports exactly
-  referenceProvenance?: Record<string, ReferenceProvenance> // v12+: token → { region?, versions?, readVersions? }; absent = not known
+  referenceProvenance?: Record<string, ReferenceProvenance> // v12+: token → { region?, versions?, readVersions?, versionsSent? (v18+, written only with one) }; absent = not known
   acceptedCreateOnlyDrops?: string[] // optional, no bump: create-only properties the SDK route was told to drop, so never sent
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)

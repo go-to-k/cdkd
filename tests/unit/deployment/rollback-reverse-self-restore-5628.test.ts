@@ -219,3 +219,26 @@ describe('reversing a delete-first replacement whose old record restores from th
     expect(result.failures).toBe(0);
   });
 });
+
+// go-to-k/cdkd#6824: a journal an older binary wrote may carry the send
+// attestation on `previousState`; the re-created record never keeps it.
+describe('the re-created old record carries no secret send attestation', () => {
+  it('strips versionsSent and keeps the recorded version', async () => {
+    const m = harness();
+    const token = '{{resolve:secretsmanager:s:SecretString:password::}}';
+    const v1 = 'a1b2c3d4-0000-1111-2222-333333333333';
+    const operation = op({});
+    operation.previousState = {
+      ...operation.previousState!,
+      referenceProvenance: { [token]: { region: 'us-east-1', versions: [v1], versionsSent: true } },
+    };
+    const state: Record<string, ResourceState> = { Cluster: rec('cluster-new', {}) };
+    const result = await replayRollback([operation], state, 'S', m.ctx);
+    expect(result.failures).toBe(0);
+    expect(m.calls).toContain('create');
+    expect(state['Cluster']!.referenceProvenance?.[token]).toEqual({
+      region: 'us-east-1',
+      versions: [v1],
+    });
+  });
+});

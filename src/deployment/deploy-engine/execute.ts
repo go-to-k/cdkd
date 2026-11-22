@@ -138,6 +138,45 @@ async function executeDeploymentBody(
   // queued save would write the same records again: a completion that finds a
   // save queued joins it instead of queueing another S3 write.
   let queuedSave: string[] | undefined;
+  // One per-resource save of the live records; rejects when the save fails.
+  const savePartialState = async (savedFor: string): Promise<void> => {
+    const partialState: StackState = {
+      version: STATE_SCHEMA_VERSION_CURRENT,
+      region: engine.stackRegion,
+      stackName: currentState.stackName,
+      resources: newResources,
+      outputs: currentState.outputs,
+      ...exportNamesCarriedFrom(currentState),
+      ...skippedOutputsCarriedFrom(currentState),
+      ...orphansCarriedFrom(currentState),
+      ...stackInstanceIdCarriedFrom(currentState),
+      // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
+      // session resolved. See `crossStackReadsForPartialSave` — writing the
+      // snapshot alone left a failed deploy's persisted record denying a
+      // cross-stack read its own resources were built from.
+      ...crossStackReadsForPartialSave(
+        currentState,
+        engine.recordedImports,
+        engine.recordedOutputReads,
+        engine.crossStackReadKeyNormalizer()
+      ),
+      lastModified: Date.now(),
+    };
+    // Migration is a one-shot tail on the first save; subsequent saves
+    // overwrite the new key in-place under optimistic locking.
+    const migrate = pendingMigration;
+    const expectedEtag = migrate ? undefined : currentEtag;
+    currentEtag = await timePhase(phaseScope, 'per-resource save', () =>
+      engine.stateBackend.saveState(
+        stackName,
+        engine.stackRegion,
+        engine.withParentInfo(partialState),
+        { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
+      )
+    );
+    if (migrate) pendingMigration = false;
+    engine.logger.debug(safeMsg`State saved after ${savedFor}`);
+  };
   const saveStateAfterResource = (logicalId: string): void => {
     if (currentEtag === undefined) return;
     if (queuedSave !== undefined) {
@@ -152,48 +191,26 @@ async function executeDeploymentBody(
       queuedSave = undefined;
       const savedFor = savedIds.join(', ');
       try {
-        const partialState: StackState = {
-          version: STATE_SCHEMA_VERSION_CURRENT,
-          region: engine.stackRegion,
-          stackName: currentState.stackName,
-          resources: newResources,
-          outputs: currentState.outputs,
-          ...exportNamesCarriedFrom(currentState),
-          ...skippedOutputsCarriedFrom(currentState),
-          ...orphansCarriedFrom(currentState),
-          ...stackInstanceIdCarriedFrom(currentState),
-          // Issue #2057: the UNION of the pre-deploy snapshot and what THIS
-          // session resolved. See `crossStackReadsForPartialSave` — writing the
-          // snapshot alone left a failed deploy's persisted record denying a
-          // cross-stack read its own resources were built from.
-          ...crossStackReadsForPartialSave(
-            currentState,
-            engine.recordedImports,
-            engine.recordedOutputReads,
-            engine.crossStackReadKeyNormalizer()
-          ),
-          lastModified: Date.now(),
-        };
-        // Migration is a one-shot tail on the first save; subsequent saves
-        // overwrite the new key in-place under optimistic locking.
-        const migrate = pendingMigration;
-        const expectedEtag = migrate ? undefined : currentEtag;
-        currentEtag = await timePhase(phaseScope, 'per-resource save', () =>
-          engine.stateBackend.saveState(
-            stackName,
-            engine.stackRegion,
-            engine.withParentInfo(partialState),
-            { ...(expectedEtag !== undefined && { expectedEtag }), migrateLegacy: migrate }
-          )
-        );
-        if (migrate) pendingMigration = false;
-        engine.logger.debug(safeMsg`State saved after ${savedFor}`);
+        await savePartialState(savedFor);
       } catch (error) {
         engine.logger.warn(
           safeMsg`Failed to save state after ${savedFor}: ${asIsMessage(describeAwsFailure(error).detail)}`
         );
       }
     });
+  };
+  // go-to-k/cdkd#6824: the write-ahead of a rotated secret send. The record
+  // goes live in memory first, so any save from here on (a queued one
+  // included) carries it; this save is awaited and its failure is the
+  // caller's, which then sends nothing.
+  engine.writeAheadRecord = async (logicalId: string, record: ResourceState): Promise<void> => {
+    if (currentEtag === undefined) {
+      throw new Error('there is no state record to write ahead to');
+    }
+    newResources[logicalId] = record;
+    const ahead = saveChain.then(() => savePartialState(`${logicalId} (write-ahead)`));
+    saveChain = ahead.catch(() => undefined);
+    await ahead;
   };
 
   // Separate DELETE operations from CREATE/UPDATE

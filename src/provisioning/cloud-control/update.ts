@@ -242,9 +242,26 @@ export async function updateInIdLogScope(
         writeOnlyProperties
       );
       const previousWithoutWriteOnly = { ...cleanPreviousProperties };
+      // go-to-k/cdkd#6824: such a key held as a secret reference never
+      // compares equal (the record keeps the reference, this side the value),
+      // so the engine names the ones whose recorded secret version is the one
+      // this deploy resolved. Honoured only for a key the table names, and
+      // only while the two sides still differ by references alone.
+      const unchangedSecret = context?.unchangedWriteOnlySecretProperties;
       for (const propertyName of writeOnlyProperties) {
         const previous = cleanPreviousProperties[propertyName];
         const desired = cleanProperties[propertyName];
+        if (
+          unchangedSecret?.has(propertyName) === true &&
+          keptWhenOmitted.has(propertyName) &&
+          onlySecretReferencesDiffer(desired, previous, context?.maskSecrets)
+        ) {
+          previousWithoutWriteOnly[propertyName] = desired;
+          idLog.debug(
+            `${logicalId}: ${propertyName} is left out of the patch: its secret version is the one last sent`
+          );
+          continue;
+        }
         if (
           (keptOnPreviousSide.has(propertyName) || keptWhenOmitted.has(propertyName)) &&
           isDeepStrictEqual(previous, desired)

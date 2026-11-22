@@ -14,8 +14,10 @@ import {
   KEEP_REFERENCE_PROVENANCE,
   outputProvenanceForPersist,
   provenanceForWrittenRecord,
+  referenceTokensIn,
   withReferenceProvenance,
 } from '../reference-provenance-record.js';
+import { writeOnlyKeysKeptWhenOmittedCandidates } from '../../provisioning/write-only-properties.js';
 import {
   isWrittenFromDeployedTemplate,
   withMaskedPropertyFingerprints,
@@ -553,7 +555,31 @@ export function referenceProvenanceToPersist(
     // A stack loaded off the token-free fast path walks a record only when
     // this pass recorded provenance for it.
     walkWithoutPassProvenance: this.provenanceBaseline?.tokenFree !== true,
+    ...(sameGeneration && { attest: sentWriteOnlySecretTokens(this, logicalId, scrubbed) }),
   });
+}
+
+/**
+ * go-to-k/cdkd#6824: the tokens under the measured write-only keys of a record
+ * a Cloud Control create or update of THIS deploy wrote from the template, for
+ * which this pass's single version is the one sent. Not a resumed create (its
+ * value went out in an earlier run, at a version nobody recorded), and not an
+ * SDK write (a provider may leave an unchanged reference unsent).
+ */
+export function sentWriteOnlySecretTokens(
+  engine: Pick<DeployEngine, 'resumedCreates'>,
+  logicalId: string,
+  scrubbed: ResourceState
+): ReadonlySet<string> | undefined {
+  if (scrubbed.provisionedBy !== 'cc-api' || engine.resumedCreates.has(logicalId)) {
+    return undefined;
+  }
+  const properties = scrubbed.properties ?? {};
+  const tokens = new Set<string>();
+  for (const key of writeOnlyKeysKeptWhenOmittedCandidates(scrubbed.resourceType)) {
+    if (Object.hasOwn(properties, key)) referenceTokensIn(properties[key], tokens);
+  }
+  return tokens.size === 0 ? undefined : tokens;
 }
 
 /**

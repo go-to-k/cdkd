@@ -517,6 +517,17 @@ export interface UpdateContext extends SecretMaskingContext {
   unsettledProperties?: ReadonlySet<string> | undefined;
 
   /**
+   * go-to-k/cdkd#6824: top-level NAMES (never values) whose previous side is a
+   * `{{resolve:...}}` reference the template still spells the same way, at
+   * the very secret version the record attests AWS was last sent. Decided by
+   * the deploy's in-place UPDATE only (`write-only-secret-skip.ts`); a
+   * rollback replay and `drift --revert` never set it. `CloudControlProvider`
+   * leaves such a key out of the patch, and only when its own
+   * `getWriteOnlyKeysKeptWhenOmitted` also names it.
+   */
+  unchangedWriteOnlySecretProperties?: ReadonlySet<string> | undefined;
+
+  /**
    * go-to-k/cdkd#6309: on a custom resource, the coordinates of the update's
    * `properties` whose value its handler receives with its own JSON type (an
    * `Fn::GetAtt` value); every other number and boolean is sent as a string.

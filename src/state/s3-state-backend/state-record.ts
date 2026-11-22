@@ -358,7 +358,7 @@ export async function saveState(
   const body: StackState = {
     ...stateFields,
     ...stackInstanceIdCarriedFrom(state),
-    // go-to-k/cdkd#6146: 17 only for a state carrying NoEcho value MACs.
+    // go-to-k/cdkd#6146 / #6824: 17 only for NoEcho value MACs, 18 only for a version attestation.
     version: stateSchemaVersionFor(state),
     stackName,
     region,

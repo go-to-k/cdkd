@@ -9,8 +9,9 @@ import {
   pasteableCommand,
   proseQuoted,
 } from '../../../utils/pasteable-command.js';
-import { PartialFailureError } from '../../../utils/error-handler.js';
+import { CdkdError, PartialFailureError } from '../../../utils/error-handler.js';
 import { S3StateBackend } from '../../../state/s3-state-backend.js';
+import { writeAheadRevertAttestations } from './revert-attestation.js';
 import { LockManager } from '../../../state/lock-manager.js';
 import {
   type LockRecoveryContext,
@@ -178,6 +179,9 @@ export async function runRevert(
     // look at an update that did not happen sends them to the wrong place.
     totalUnresolvable: 0,
   };
+  // go-to-k/cdkd#6824: stacks whose write-ahead state save failed. Counted
+  // apart from `totalFailed` (an AWS update failure): no update ran on them.
+  const writeAheadFailedStacks: string[] = [];
 
   for (const report of reports) {
     // Issue #2135: exhaustive for the same reason `--accept` is — and the
@@ -257,6 +261,27 @@ export async function runRevert(
       // reference is routed by `classifyReplaySecretRegion`, and a reference
       // whose origin cannot be established is REFUSED before any update.
       try {
+        // go-to-k/cdkd#6824: before any send, so a revert killed after AWS
+        // took the current secret version leaves no record attesting another.
+        // A failed write reverts nothing on this stack and counts its drifted
+        // resources failed; under `--all` the other stacks still revert.
+        try {
+          await writeAheadRevertAttestations(
+            report,
+            driftedOutcomes.map((o) => o.logicalId),
+            stateBackend
+          );
+        } catch (err) {
+          const refused = new CdkdError(
+            `${report.stackName} (${report.region}): nothing reverted -- cdkd could not save state ` +
+              `before sending secret values (${describeAwsFailure(err).detail}). Re-run once state writes succeed.`,
+            'DRIFT_REVERT_WRITE_AHEAD_FAILED',
+            err instanceof Error ? err : undefined
+          );
+          logger.error(refused.message);
+          writeAheadFailedStacks.push(`${report.stackName} (${report.region})`);
+          return;
+        }
         const revertSecretResolvers = new DriftSecretResolvers(report.region);
         // The foreign-region evidence for this stack, as the detection site read
         // it — a nested child's ancestors included (go-to-k/cdkd#4213).
@@ -494,7 +519,22 @@ export async function runRevert(
   if (totalUnsupported > 0) summaryParts.push(`${totalUnsupported} update-not-supported`);
   if (totalUnresolvable > 0) summaryParts.push(`${totalUnresolvable} reference-unresolvable`);
   if (totalFailed > 0) summaryParts.push(`${totalFailed} failed`);
+  if (writeAheadFailedStacks.length > 0) {
+    summaryParts.push(`${writeAheadFailedStacks.length} stack(s) not reverted`);
+  }
   logger.info(`\nRevert summary: ${summaryParts.join(', ')}.`);
+
+  if (writeAheadFailedStacks.length > 0) {
+    throw new PartialFailureError(
+      `Nothing was reverted for ${writeAheadFailedStacks.join(', ')}: cdkd could not save state ` +
+        `before sending secret values, so no AWS update ran there (the cause is logged above). ` +
+        `Re-run ${pasteableCommand('cdkd drift', [{ hole: 'stacks...' }, { literal: '--revert' }]).command} ` +
+        `once state writes succeed.` +
+        (totalFailed + totalUnsupported + totalUnresolvable > 0
+          ? ` Other stacks also reported ${totalFailed + totalUnsupported + totalUnresolvable} resource error(s) above.`
+          : '')
+    );
+  }
 
   if (totalUnsupported > 0) {
     logger.warn(

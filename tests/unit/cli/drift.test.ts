@@ -8760,3 +8760,85 @@ describe('cdkd drift carries the account flags on its malformed-record pointers 
     });
   }
 });
+
+describe('cdkd drift --revert writes the secret send attestation away before it sends (go-to-k/cdkd#6824)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  const TOKEN = '{{resolve:secretsmanager:db:SecretString:password::}}';
+  const V1 = 'a1b2c3d4-0000-1111-2222-333333333333';
+
+  beforeEach(() => {
+    mockGetState.mockReset();
+    mockListStacks.mockReset();
+    mockVerifyBucketExists.mockReset().mockResolvedValue(undefined);
+    mockSaveState.mockReset().mockResolvedValue('"etag-2"');
+    mockAcquireLock.mockReset().mockResolvedValue(true);
+    mockReleaseLock.mockReset().mockResolvedValue(undefined);
+    mockRegistryGetProvider.mockReset();
+    mockRegistryShouldSkip.mockReset().mockReturnValue(false);
+    mockCcReadCurrentState.mockReset().mockResolvedValue(undefined);
+    mockReadOnlyPropertyPaths.mockReset().mockResolvedValue(undefined);
+    mockIamSend.mockReset();
+    errorSpy.mockReset();
+    warnSpy.mockReset();
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('__exit__');
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  const attested = (): ResourceState => ({
+    ...makeResource({
+      physicalId: 'phys-lb',
+      resourceType: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+      properties: { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '60' }] },
+    }),
+    referenceProvenance: {
+      [TOKEN]: { region: 'us-east-1', versions: [V1], versionsSent: true },
+    },
+  });
+  const AWS_NOW = { LoadBalancerAttributes: [{ Key: 'idle_timeout.timeout_seconds', Value: '90' }] };
+
+  const revert = async (): Promise<{ update: ReturnType<typeof vi.fn>; output: string }> => {
+    mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+    mockGetState.mockResolvedValueOnce(makeState({ Lb: attested() }));
+    const update = vi.fn(async () => ({ physicalId: 'phys-lb', wasReplaced: false }));
+    mockRegistryGetProvider.mockReturnValue({ readCurrentState: async () => AWS_NOW, update });
+    const { output } = await runDrift(['TestStack', '--revert', '--yes']).catch(
+      (e: unknown) => ({ output: String(e) })
+    );
+    return { update, output };
+  };
+
+  it('persists the record without the attestation BEFORE the update', async () => {
+    const order: string[] = [];
+    mockSaveState.mockImplementation(async () => {
+      order.push('save');
+      return '"etag-2"';
+    });
+    const { update } = await revert();
+    expect(update).toHaveBeenCalledTimes(1);
+    const persisted = mockSaveState.mock.calls[0]![2] as StackState;
+    expect(persisted.resources['Lb']!.referenceProvenance![TOKEN]).toEqual({
+      region: 'us-east-1',
+      versions: [V1],
+    });
+    expect(order[0]).toBe('save');
+    expect(mockSaveState.mock.invocationCallOrder[0]!).toBeLessThan(
+      update.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('a failed write-ahead reverts nothing and names the cause', async () => {
+    mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
+    const { update, output } = await revert();
+    expect(update).not.toHaveBeenCalled();
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n') + output;
+    expect(logged).toContain('nothing reverted');
+    // Counted as its own failure: no AWS update ran, so none is reported as one.
+    expect(logged).toContain('Nothing was reverted for TestStack (us-east-1)');
+    expect(logged).not.toContain('AWS update failure');
+  });
+});
