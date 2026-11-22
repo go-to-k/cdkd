@@ -32,7 +32,9 @@ export const MUTABLE_ATTRIBUTES = [
  * The value that clears an attribute dropped from the template, for the ones
  * where AWS documents one. An attribute missing here (`DeliveryPolicy`,
  * `ReplayPolicy`, `SubscriptionRoleArn`) is removed by re-creating the
- * subscription without it, as before go-to-k/cdkd#4853.
+ * subscription without it, as before go-to-k/cdkd#4853. `RedrivePolicy`'s `''`
+ * is the plan's sentinel only: {@link wireAttributeValue} sends it as an
+ * omitted value.
  */
 const RESET_VALUES = {
   RawMessageDelivery: 'false',
@@ -40,6 +42,17 @@ const RESET_VALUES = {
   FilterPolicyScope: 'MessageAttributes',
   RedrivePolicy: '',
 } as const satisfies Partial<Record<MutableAttribute, string>>;
+
+/**
+ * The `AttributeValue` that `SetSubscriptionAttributes` sends for a planned
+ * call. SNS clears a `RedrivePolicy` only when the value is OMITTED: it refuses
+ * `''` ("missing required value") and `'{}'` ("Missing deadLetterTargetArn
+ * attribute"), measured on real AWS (go-to-k/cdkd#6835). `FilterPolicy: ''`
+ * does clear, so it is sent as planned.
+ */
+export function wireAttributeValue(name: string, value: string): string | undefined {
+  return name === 'RedrivePolicy' && value === RESET_VALUES.RedrivePolicy ? undefined : value;
+}
 
 type MutableAttribute = (typeof MUTABLE_ATTRIBUTES)[number];
 /** The attributes with no reset: removing one re-creates the subscription. */

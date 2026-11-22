@@ -13,10 +13,13 @@
 #     without #4853 is RED here (the ARN changes: it unsubscribed and
 #     subscribed again).
 #   Phase 2a (+body-scope): FilterPolicyScope MessageBody alone, in place.
-#   Phase 2b (+drop-filter): FilterPolicy and its scope removed from the
-#     template: the policy is cleared on the live subscription (cdkd sends no
-#     scope reset for a subscription left with no policy; SNS drops the scope
-#     with the policy on its own), same ARN.
+#   Phase 2d (+dlq): a RedrivePolicy to the always-present DLQ, in place.
+#   Phase 2b (+drop-filter, dlq gone): FilterPolicy, its scope and the
+#     RedrivePolicy removed from the template: the policy is cleared on the
+#     live subscription (cdkd sends no scope reset for a subscription left
+#     with no policy; SNS drops the scope with the policy on its own), and so
+#     is the RedrivePolicy, which SNS clears only with the value omitted
+#     (#6835), same ARN.
 #   Phase 2c (filter-c, drop-filter gone): a FilterPolicy on the message
 #     body added to the subscription 2b left with no policy and no scope (SNS
 #     drops the scope with the policy). `cdkd diff` must report the
@@ -129,6 +132,7 @@ SUB_TYPE="AWS::SNS::Subscription"
 # every assertion below reads AWS by real name rather than by logical id.
 TOPIC_NAME="cdkd-sub-update-topic"
 QUEUE_NAME="cdkd-sub-update-queue"
+DLQ_NAME="cdkd-sub-update-dlq"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -163,12 +167,14 @@ cleanup() {
   if [ -n "${TOPIC_ARN}" ]; then
     aws sns delete-topic --region "${REGION}" --topic-arn "${TOPIC_ARN}" >/dev/null 2>&1
   fi
-  local qurl
-  qurl=$(aws sqs get-queue-url --region "${REGION}" --queue-name "${QUEUE_NAME}" \
-    --query 'QueueUrl' --output text 2>/dev/null)
-  if [ -n "${qurl}" ] && [ "${qurl}" != "None" ]; then
-    aws sqs delete-queue --region "${REGION}" --queue-url "${qurl}" >/dev/null 2>&1
-  fi
+  local qurl qname
+  for qname in "${QUEUE_NAME}" "${DLQ_NAME}"; do
+    qurl=$(aws sqs get-queue-url --region "${REGION}" --queue-name "${qname}" \
+      --query 'QueueUrl' --output text 2>/dev/null)
+    if [ -n "${qurl}" ] && [ "${qurl}" != "None" ]; then
+      aws sqs delete-queue --region "${REGION}" --queue-url "${qurl}" >/dev/null 2>&1
+    fi
+  done
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes
@@ -252,6 +258,16 @@ filter_policy_of() { # usage: filter_policy_of <subscriptionArn>; compact JSON, 
     printf 'None\n'
   else
     printf '%s' "${raw}" | jq -c . || return 1
+  fi
+}
+redrive_target_of() { # usage: redrive_target_of <subscriptionArn>; the DLQ ARN, or None
+  local raw
+  raw=$(aws sns get-subscription-attributes --region "${REGION}" --subscription-arn "$1" \
+    --query 'Attributes.RedrivePolicy' --output text) || return 1
+  if [ "${raw}" = "None" ] || [ -z "${raw}" ]; then
+    printf 'None\n'
+  else
+    printf '%s' "${raw}" | jq -r '.deadLetterTargetArn' || return 1
   fi
 }
 state_sub_physical_id() {
@@ -416,6 +432,28 @@ if [ "${SCOPE_2A}" != "MessageBody" ] || [ "$(filter_policy_of "${SUB_ARN_1}")" 
 fi
 echo "    OK: FilterPolicyScope MessageBody on ${SUB_ARN_1}, policy kept"
 
+# --- Phase 2d: a dead-letter queue added (#6835) -----------------------------
+# 2b then drops it with the filter; SNS clears a RedrivePolicy only with the
+# value omitted, and refused the empty string cdkd used to send there.
+echo "==> Phase 2d: RedrivePolicy -> ${DLQ_NAME} (in place)"
+CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,dlq node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+assert_exactly_one_subscription "phase 2d"
+if [ "$(sub_arn)" != "${SUB_ARN_1}" ]; then
+  echo "FAIL: phase 2d: SubscriptionArn changed, expected ${SUB_ARN_1} kept" >&2
+  exit 1
+fi
+DLQ_ARN="arn:aws:sqs:${REGION}:${ACCOUNT_ID}:${DLQ_NAME}"
+REDRIVE_2D=$(redrive_target_of "${SUB_ARN_1}")
+if [ "${REDRIVE_2D}" != "${DLQ_ARN}" ]; then
+  echo "FAIL: phase 2d: RedrivePolicy targets '${REDRIVE_2D}', expected ${DLQ_ARN}" >&2
+  exit 1
+fi
+echo "    OK: RedrivePolicy -> ${DLQ_ARN} on ${SUB_ARN_1}"
+
 # --- Phase 2b: attributes dropped from the template --------------------------
 echo "==> Phase 2b: remove FilterPolicy and its scope from the template (reset in place)"
 CDKD_TEST_UPDATE=raw-delivery,filter-b,body-scope,drop-filter node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -433,11 +471,16 @@ if [ "${FILTER_2B}" != "None" ] && [ -n "${FILTER_2B}" ]; then
   echo "FAIL: phase 2b: FilterPolicy is still '${FILTER_2B}' after it left the template" >&2
   exit 1
 fi
+REDRIVE_2B=$(redrive_target_of "${SUB_ARN_1}")
+if [ "${REDRIVE_2B}" != "None" ]; then
+  echo "FAIL: phase 2b: RedrivePolicy still targets '${REDRIVE_2B}' after it left the template (#6835)" >&2
+  exit 1
+fi
 if [ "$(raw_delivery_of "${SUB_ARN_1}")" != "true" ]; then
   echo "FAIL: phase 2b: RawMessageDelivery changed, expected the untouched 'true'" >&2
   exit 1
 fi
-echo "    OK: FilterPolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still true"
+echo "    OK: FilterPolicy and RedrivePolicy cleared on ${SUB_ARN_1}; RawMessageDelivery still true"
 SUB_ARN_2="${SUB_ARN_1}"
 
 # --- Phase 2r: the same re-create in a deploy that then fails (#6731) --------
@@ -719,7 +762,9 @@ echo "    OK: topic is gone (its subscriptions with it)"
 
 assert_gone "queue ${QUEUE_NAME} still exists after destroy (orphan)" \
   aws sqs get-queue-url --region "${REGION}" --queue-name "${QUEUE_NAME}"
-echo "    OK: queue is gone"
+assert_gone "queue ${DLQ_NAME} still exists after destroy (orphan)" \
+  aws sqs get-queue-url --region "${REGION}" --queue-name "${DLQ_NAME}"
+echo "    OK: queues are gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

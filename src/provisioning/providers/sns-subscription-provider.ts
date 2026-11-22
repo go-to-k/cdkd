@@ -22,7 +22,10 @@ import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { definedAttributes } from '../attribute-map.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
-import { planSubscriptionAttributes } from './sns-subscription/attribute-plan.js';
+import {
+  planSubscriptionAttributes,
+  wireAttributeValue,
+} from './sns-subscription/attribute-plan.js';
 import { confirmTopicMembership } from './sns-subscription/topic-membership.js';
 import { isDriftRevert, revertReplacementRefusal } from '../revert-no-replace.js';
 import type {
@@ -316,7 +319,7 @@ export class SNSSubscriptionProvider implements ResourceProvider {
           new SetSubscriptionAttributesCommand({
             SubscriptionArn: physicalId,
             AttributeName: name,
-            AttributeValue: value,
+            AttributeValue: wireAttributeValue(name, value),
           })
         );
       } catch (error) {
