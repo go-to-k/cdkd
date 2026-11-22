@@ -12,9 +12,11 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { safeMsg } from '../../../utils/display-safe.js';
+import { logicalIdShown } from '../../composite-id.js';
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
-import { readPolicyTargetLists } from './shared.js';
+import { IAM_POLICY_NAME, readPolicyTargetLists } from './shared.js';
 import { markCopiesAgreed } from './agreeing-copies.js';
 import { isStoredExpression } from '../../iam-sibling-managed-policies.js';
 import {
@@ -343,14 +345,94 @@ export function decodePolicyDocument(this: IAMPolicyProvider, raw: string | unde
  * For standalone managed policies (`AWS::IAM::ManagedPolicy`), the
  * Cloud Control API fallback handles import via the same explicit
  * override mode.
+ *
+ * **A CloudFormation-supplied id is recorded as the `PolicyName` it names**
+ * (go-to-k/cdkd#6841), once IAM confirms it. The name is what `create()`
+ * records and what every reader (`readCurrentState`, `delete()`) addresses the
+ * policy by, while `--migrate-from-cloudformation`, auto mode and a nested
+ * child hand this import CloudFormation's `PhysicalResourceId`, which for this
+ * type is a generated id (`main--Cover-LxKVLoikcQa9`) naming no IAM object, so
+ * the record read as DELETED on the first `cdkd drift`.
+ *
+ * The `PolicyName` in the properties is not proof of what AWS holds: auto mode
+ * and a migrated resource the deployed template could not vouch for hand over
+ * the SYNTHESIZED one, which may name no policy yet (renamed in the code) or,
+ * worse, ANOTHER inline policy of that name on the same role, which a later
+ * `delete()` would then remove. So the name is adopted only when BOTH
+ * CloudFormation's deployed template names it for this logical id
+ * (`cloudFormationDeployedProperties`) AND one of the recorded roles / groups /
+ * users holds an inline policy of that name (`Get*Policy`); otherwise,
+ * including an unread deployed template, any read failure or an unreadable
+ * principal list, the handed id is kept and a value-free warning names the
+ * logical id. An id the operator passed with `--resource` is kept as given,
+ * and so is any id when `PolicyName` is not a plain IAM policy name (an
+ * unresolved intrinsic, a `{{resolve:...}}` reference, whose value must never
+ * become a physical id, or a `:` that `delete()` would split as the legacy
+ * `policy:role` form).
  */
-// eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
 export async function importImpl(
   this: IAMPolicyProvider,
   input: ResourceImportInput
 ): Promise<ResourceImportResult | null> {
   if (input.knownPhysicalId) {
+    const policyName = input.properties['PolicyName'];
+    if (
+      input.knownPhysicalIdFromCloudFormation === true &&
+      typeof policyName === 'string' &&
+      IAM_POLICY_NAME.test(policyName) &&
+      policyName !== input.knownPhysicalId
+    ) {
+      if (
+        input.cloudFormationDeployedProperties?.['PolicyName'] === policyName &&
+        (await inlinePolicyIsAttached.call(this, policyName, input.properties))
+      ) {
+        this.logger.debug(
+          safeMsg`Import of ${input.logicalId}: recording the template's PolicyName as the physical id ` +
+            `(an inline policy is addressed by its name; the id handed to the import is not it)`
+        );
+        return { physicalId: policyName, attributes: {} };
+      }
+      this.logger.warn(
+        safeMsg`Import of ${logicalIdShown(input.logicalId)}: the template's PolicyName could not be ` +
+          `confirmed as the inline policy CloudFormation deployed (its deployed template names another ` +
+          `or none, or none of the policy's roles, groups or users holds it), so the id CloudFormation ` +
+          `supplied is recorded as it is; 'cdkd drift' may report it missing until the next ` +
+          `'cdkd deploy' writes the policy.`
+      );
+    }
     return { physicalId: input.knownPhysicalId, attributes: {} };
   }
   return null;
+}
+
+/**
+ * Whether one of the principals `properties` lists holds an inline policy
+ * named `policyName`. `false` for an unreadable list, no principal, or any read
+ * failure: the caller then keeps the id it was handed.
+ */
+async function inlinePolicyIsAttached(
+  this: IAMPolicyProvider,
+  policyName: string,
+  properties: Record<string, unknown>
+): Promise<boolean> {
+  const targets = readPolicyTargetLists(properties);
+  if ('malformed' in targets) return false;
+  const all: PolicyTarget[] = [
+    ...(targets.roles ?? []).map((name) => ({ kind: 'role' as const, name })),
+    ...(targets.groups ?? []).map((name) => ({ kind: 'group' as const, name })),
+    ...(targets.users ?? []).map((name) => ({ kind: 'user' as const, name })),
+  ];
+  for (const target of all) {
+    try {
+      await getTargetPolicyDocument.call(this, target, policyName);
+      return true;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) continue;
+      this.logger.debug(
+        safeMsg`Inline policy lookup on a ${target.kind} failed (${err instanceof Error ? err.name : typeof err}).`
+      );
+      return false;
+    }
+  }
+  return false;
 }

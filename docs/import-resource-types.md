@@ -120,7 +120,7 @@ with `--auto` and a CloudFormation stack of the same name.
 
 | Type | `--resource` value |
 | --- | --- |
-| `AWS::IAM::Policy` | The physical id of the inline policy. |
+| `AWS::IAM::Policy` | The inline policy's name. An id CloudFormation supplies is recorded as the template's `PolicyName`. |
 | `AWS::IAM::AccessKey` | The `AKIA...` access key id. |
 | `AWS::IAM::UserToGroupAddition` | The physical id. |
 | `AWS::CloudWatch::AnomalyDetector` | Any stable id. |

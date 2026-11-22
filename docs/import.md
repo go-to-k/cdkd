@@ -138,7 +138,10 @@ cdkd import MyStack --migrate-from-cloudformation LegacyCfnStackName --yes
 1. cdkd reads every logical ID and physical id from the CloudFormation stack
    with `DescribeStackResources`. A `--resource` value you pass takes
    precedence over CloudFormation's.
-2. cdkd adopts each resource by that physical id.
+2. cdkd reads the template CloudFormation last deployed with `GetTemplate`,
+   and takes each resource's properties from it (see
+   [Code you changed after the last `cdk deploy`](#code-you-changed-after-the-last-cdk-deploy)).
+   It adopts each resource by its physical id.
 3. cdkd updates the CloudFormation stack so that every resource has
    `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`.
 4. When that update completed, cdkd reads the ids again. If a root resource's
@@ -162,6 +165,33 @@ it yourself once you no longer need it.
 
 cdkd holds the stack lock from before the update through the retirement, so a
 concurrent `cdkd deploy` cannot run in between.
+
+### Code you changed after the last `cdk deploy`
+
+The update in step 3 keeps the template CloudFormation last deployed, so AWS
+keeps that configuration. State records each resource's properties from that
+deployed template, not from your current code. A change you made after the last
+`cdk deploy` then shows in the next `cdkd diff`, and `cdkd deploy` applies it,
+as the next `cdk deploy` would have.
+
+cdkd keeps the properties from your current code instead, and warns naming the
+resource, when the deployed ones cannot be resolved against your current
+template:
+
+| Case | Example |
+| --- | --- |
+| They reference something your template no longer declares | A renamed sibling resource, or a changed legacy asset parameter |
+| They reference a sibling whose type changed | A `Ref` to a logical ID you moved to another type |
+| They read another stack's value your code no longer reads | An `Fn::ImportValue` of an export the producer dropped |
+| They use a condition or mapping your template defines differently | A `Conditions` entry you edited |
+| The resource's type changed | A logical ID now used by another type |
+| Your code spells a dynamic reference where the deployed template held a value | A `{{resolve:secretsmanager:...}}` replacing a pasted-in literal |
+
+For such a resource, `cdkd diff` does not show your change. Compare the
+resource in AWS with your template before you rely on the record.
+
+A resource your code added after the last deploy has nothing in the deployed
+template, so it records your current properties, as before.
 
 ### If the migration stops partway
 

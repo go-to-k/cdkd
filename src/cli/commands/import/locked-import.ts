@@ -31,6 +31,12 @@ import { writeRecordedMapping } from './overrides.js';
 import { dispatchInRefOrder } from './sibling-refs.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
+  deployedPropertiesOf,
+  overlayDeployedProperties,
+  readDeployedTemplate,
+  withDeployedDefinitions,
+} from './deployed-properties.js';
+import {
   buildStackState,
   claimRegistryMarkerAfterImport,
   rebuiltLogicalIdsFrom,
@@ -69,6 +75,10 @@ export interface LockedImportContext {
   assetRedirect: AssetRedirectMap | undefined;
   stateTemplate: CloudFormationTemplate;
   overrides: Map<string, string>;
+  /** The logical ids the operator named with `--resource` / `--resource-mapping`. */
+  userOverrideIds: ReadonlySet<string>;
+  /** The same-named CloudFormation stack auto mode took ids from, if any. */
+  autoModeCfnStackName: string | undefined;
   migrationCfnStackName: string | undefined;
   template: CloudFormationTemplate;
   templateParser: TemplateParser;
@@ -107,6 +117,8 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
     assetRedirect,
     stateTemplate,
     overrides,
+    userOverrideIds,
+    autoModeCfnStackName,
     migrationCfnStackName,
     template,
     templateParser,
@@ -121,13 +133,58 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   } = ctx;
   let { migrationTree } = ctx;
 
+  // go-to-k/cdkd#6840: a migration records each resource's properties as
+  // CloudFormation last DEPLOYED them, which is what the Retain update below
+  // leaves in AWS; the synthesized template's change on top of that is then
+  // the next `cdkd diff` / `cdkd deploy`, as it would be the next `cdk deploy`.
+  // Read before the dispatch, so a failure leaves nothing written. Every
+  // other import records `stateTemplate` as before.
+  // The dispatch hands each overlaid resource's DEPLOYED definition to its
+  // provider's `import()` too: that is what AWS holds, and an
+  // `AWS::IAM::Policy` records the `PolicyName` it reads there (#6841).
+  let recordTemplate = stateTemplate;
+  let dispatchResources = resources;
+  // What CloudFormation deployed, handed to each provider's `import()` as
+  // evidence (an `AWS::IAM::Policy` adopts its name only when the deployed
+  // template agrees, #6841). Auto mode reads it best-effort and records the
+  // synthesized properties as before.
+  let deployedTemplate: CloudFormationTemplate | undefined;
+  if (migrationCfnStackName === undefined && autoModeCfnStackName !== undefined) {
+    try {
+      deployedTemplate = await readDeployedTemplate(
+        regionClients.cloudFormation,
+        autoModeCfnStackName,
+        'Continuing without it.'
+      );
+    } catch (err) {
+      logger.debug(
+        `Reading the deployed template of the same-named CloudFormation stack failed (${err instanceof Error ? err.name : typeof err}); continuing without it.`
+      );
+    }
+  }
+  if (migrationCfnStackName !== undefined) {
+    deployedTemplate = await readDeployedTemplate(
+      regionClients.cloudFormation,
+      migrationCfnStackName,
+      'cdkd state was not written and the CloudFormation stack was not changed.'
+    );
+    const overlay = overlayDeployedProperties(
+      stateTemplate,
+      deployedTemplate,
+      logger,
+      displaySafe(stackInfo.stackName)
+    );
+    recordTemplate = overlay.template;
+    dispatchResources = withDeployedDefinitions(resources, overlay);
+  }
+
   // The dispatch over every template resource. A closure so the Retain
   // update below can re-run it when CloudFormation REPLACED a resource and
   // the ids it read are stale (issue #4873).
   const collectRows = (): Promise<ImportRow[]> =>
     // go-to-k/cdkd#6662: `Ref` targets first, each adopted target's `Ref`
     // value substituted into the rows after it; see `dispatchInRefOrder`.
-    dispatchInRefOrder(resources, overrides, async ({ logicalId, resource }, refValues) => {
+    dispatchInRefOrder(dispatchResources, overrides, async ({ logicalId, resource }, refValues) => {
       // Selective mode: skip resources not in overrides up front. They
       // never hit the provider, so the summary correctly distinguishes
       // "out of scope" from "AWS not found".
@@ -178,6 +235,10 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
         providerRegistry,
         override: overrides.get(logicalId),
         overrides: refValues,
+        overrideFromCloudFormation: !userOverrideIds.has(logicalId),
+        ...(deployedTemplate !== undefined && {
+          cloudFormationDeployedProperties: deployedPropertiesOf(deployedTemplate, logicalId),
+        }),
       });
     });
   let rows = await collectRows();
@@ -218,13 +279,15 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // (issue #1652) and `template` itself otherwise — identical in every
   // respect except that its asset references still name CDK bootstrap
   // storage, which is what AWS holds for the resources being adopted.
+  // `recordTemplate` is that snapshot, carrying the deployed properties under
+  // a migration (go-to-k/cdkd#6840, above).
   const assembleStackState = (): StackState => {
     const assembled = buildStackState(
       stackInfo.stackName,
       targetRegion,
       rows,
       templateParser,
-      stateTemplate,
+      recordTemplate,
       existingState,
       selectiveMode
     );
@@ -456,7 +519,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // values exist" rather than a failure. Asked independently of auto
   // mode's resource-map lookup: that lookup degrades to `null` on a
   // permission error, and keying this on it would fail OPEN.
-  const deployedParameters = !namesAnyDeclaredParameter(stateTemplate)
+  const deployedParameters = !namesAnyDeclaredParameter(recordTemplate)
     ? undefined
     : migrationCfnStackName !== undefined
       ? await readDeployedParameters(
@@ -490,7 +553,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   const unsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
     resolveImportedProperties(
       stackState,
-      stateTemplate,
+      recordTemplate,
       targetRegion,
       stateBackend,
       logger,
@@ -514,7 +577,7 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
     // from the same `outcome === 'imported'` predicate `buildStackState`
     // uses to decide which records it overwrites, so the two cannot
     // disagree about which `properties` are this run's.
-    rebuiltLogicalIdsFrom(rows, stateTemplate)
+    rebuiltLogicalIdsFrom(rows, recordTemplate)
   );
 
   // Forward the etag for optimistic locking when state already exists,

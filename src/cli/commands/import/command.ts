@@ -334,6 +334,8 @@ export async function importCommand(
     if (overrides.size > 0) {
       logger.debug(`User-supplied physical IDs: ${[...overrides.keys()].join(', ')}`);
     }
+    // Taken before any CloudFormation-derived id is merged in (go-to-k/cdkd#6841).
+    const userOverrideIds: ReadonlySet<string> = new Set(overrides.keys());
 
     // Resolve the CloudFormation stack name we're migrating off, when the
     // user opted in. Done up front so we can populate overrides BEFORE the
@@ -508,12 +510,14 @@ export async function importCommand(
     //     resources that may no longer exist; providers re-read the resource
     //     during import, so those surface as `skipped-not-found` rather than
     //     bad state.
+    let autoModeCfnStackName: string | undefined;
     if (!selectiveMode && !migrationCfnStackName) {
       const cfnResources = await tryGetCloudFormationResourceMap(
         stackInfo.stackName,
         regionClients.cloudFormation
       );
       if (cfnResources) {
+        autoModeCfnStackName = stackInfo.stackName;
         // Same three filters as the migration path — shared so a change to
         // any of them lands once (issue #1131). Note the second-order effect
         // documented on the helper: seeding `overrides` ALSO pre-resolves
@@ -735,6 +739,8 @@ export async function importCommand(
         assetRedirect,
         stateTemplate,
         overrides,
+        userOverrideIds,
+        autoModeCfnStackName,
         migrationCfnStackName,
         template,
         templateParser,

@@ -423,6 +423,23 @@ export interface ResourceImportInput {
    * (tag-based, name-based, etc.).
    */
   knownPhysicalId?: string;
+
+  /**
+   * `knownPhysicalId` is CloudFormation's `PhysicalResourceId` for the
+   * resource, not a value the operator supplied. A provider whose own physical
+   * id differs from CloudFormation's (an `AWS::IAM::Policy` is recorded by its
+   * name) may translate such an id, and must leave an operator's as it is.
+   */
+  knownPhysicalIdFromCloudFormation?: boolean;
+
+  /**
+   * The `Properties` CloudFormation's DEPLOYED template holds for this logical
+   * id, when the import read that template (a migration, or auto mode over a
+   * same-named stack). Evidence of what AWS was configured with, which
+   * `properties` (possibly the synthesized template's) is not. Absent when
+   * unknown.
+   */
+  cloudFormationDeployedProperties?: Record<string, unknown>;
 }
 
 /**

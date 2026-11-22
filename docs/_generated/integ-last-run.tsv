@@ -256,6 +256,7 @@ import-deployed-parameter-secret	2026-11-04T21:09:01Z	PASS	344	verify.sh	rc 0, d
 import-heal-prefix-record	2026-11-04T20:04:01Z	PASS	170	verify.sh	rc ok, orph clean
 import-lambda-url-attributes	2026-11-04T06:43:31Z	PASS	115	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
+import-migrate-pending-change	2026-11-22T21:43:53Z	PASS	176	verify.sh	rc ok, orph clean; PR #6844 aa10e2386
 import-migrate-vpc	2026-11-04T22:03:16Z	PASS	356	verify.sh	rc ok, orph clean; VPC confirmed gone; us-east-1; own temp state bucket
 import-nested-stack	2026-11-20T06:38:06Z	PASS	156	verify.sh	#6670 route53 drift/import fixes: rc ok, orph clean
 import-noecho-parameter	2026-11-04T20:04:01Z	PASS	126	verify.sh	rc ok, orph clean

@@ -43,6 +43,12 @@ import { captureObservedForImportedResources } from './observed-capture.js';
 import { collectImportableResources, mergeCfnDerivedOverrides } from './overrides.js';
 import { resolveImportedProperties } from './resolve-properties.js';
 import {
+  deployedPropertiesOf,
+  overlayDeployedProperties,
+  readDeployedTemplate,
+  withDeployedDefinitions,
+} from './deployed-properties.js';
+import {
   buildStackState,
   rebuiltLogicalIdsFrom,
   recordImportOnRollbackJournal,
@@ -341,9 +347,29 @@ export async function importNestedStackChildrenRecursive(args: {
         overrides: childOverrides,
       });
 
+      // go-to-k/cdkd#6840: the child records its resources' properties as
+      // CloudFormation last deployed THIS child, as the root does, and its
+      // dispatch reads them too. Read by the child stack's ARN, before the
+      // child's dispatch and save, so a failure leaves this child (and the
+      // DeleteStack) undone.
+      const childDeployedTemplate = await readDeployedTemplate(
+        args.cfnClient,
+        childTreeNode.stackName,
+        safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
+          `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
+          `was not deleted; the re-run needs --force.`
+      );
+      const childOverlay = overlayDeployedProperties(
+        childStateTemplate,
+        childDeployedTemplate,
+        logger,
+        displaySafe(childStackName)
+      );
+      const childRecordTemplate = childOverlay.template;
+
       // Dispatch + collect rows (same shape as the root's dispatch loop).
       const rows: ImportRow[] = [];
-      for (const { logicalId, resource } of childResources) {
+      for (const { logicalId, resource } of withDeployedDefinitions(childResources, childOverlay)) {
         if (resource.Type === NESTED_STACK_RESOURCE_TYPE && childTreeNode.nested.has(logicalId)) {
           rows.push({
             logicalId,
@@ -361,6 +387,9 @@ export async function importNestedStackChildrenRecursive(args: {
           providerRegistry,
           override: childOverrides.get(logicalId),
           overrides: childOverrides,
+          // `--resource` overrides are root-scoped: every child id is CloudFormation's.
+          overrideFromCloudFormation: true,
+          cloudFormationDeployedProperties: deployedPropertiesOf(childDeployedTemplate, logicalId),
         });
         rows.push(outcome);
       }
@@ -399,7 +428,7 @@ export async function importNestedStackChildrenRecursive(args: {
         childRegion,
         rows,
         templateParser,
-        childStateTemplate,
+        childRecordTemplate,
         null,
         false
       );
@@ -438,7 +467,7 @@ export async function importNestedStackChildrenRecursive(args: {
       // One budget for this child's resolve loop too; see the root call.
       // Issue #2854: addressed by the child stack's ARN from the resource tree
       // (the API-accepted identifier), DISPLAYED by its cdkd name.
-      const childDeployedParameters = namesAnyDeclaredParameter(childStateTemplate)
+      const childDeployedParameters = namesAnyDeclaredParameter(childRecordTemplate)
         ? await readDeployedParameters(
             childTreeNode.stackName,
             args.cfnClient,
@@ -449,7 +478,7 @@ export async function importNestedStackChildrenRecursive(args: {
       const childUnsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
         resolveImportedProperties(
           childStackState,
-          childStateTemplate,
+          childRecordTemplate,
           childRegion,
           stateBackend,
           logger,
@@ -466,7 +495,7 @@ export async function importNestedStackChildrenRecursive(args: {
         // in practice every row is rebuilt — passing the set anyway keeps the
         // two call sites the same shape, so a future change to the child walk
         // cannot quietly acquire the preserved-record hazard.
-        rebuiltLogicalIdsFrom(rows, childTemplate)
+        rebuiltLogicalIdsFrom(rows, childRecordTemplate)
       );
 
       await recordImportOnRollbackJournal(
