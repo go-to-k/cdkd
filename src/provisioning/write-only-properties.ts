@@ -320,8 +320,8 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   // Re-send FAILED on a Fargate environment ("parameters can't be updated for
   // Fargate compute environment"). An infrastructure update, which these two
   // govern on EC2, comes only from a `ComputeResources` change. That key is
-  // itself write-only, so while declared it keeps both re-sent
-  // (go-to-k/cdkd#6822).
+  // itself write-only, so while declared it keeps both re-sent, except on a
+  // Fargate environment ({@link KEPT_WHATEVER_SIBLING_CHANGED}).
   [
     'AWS::Batch::ComputeEnvironment',
     new Map([
@@ -378,6 +378,25 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   ],
   // Re-send called UpdateStorageVirtualMachine.
   ['AWS::FSx::StorageVirtualMachine', new Map([['SvmAdminPassword', []]])],
+  // Re-send called UpdateApplication: a running Flink application restarted
+  // and took a snapshot (138-156 s vs 3 s); a Zeppelin one FAILED. Each
+  // travels with the other: `RunConfiguration` sent alone FAILED (the handler
+  // sent the read model's checkpoint values), and `ApplicationConfiguration`
+  // sent alone restarted without the declared restore settings
+  // (go-to-k/cdkd#6821).
+  [
+    'AWS::KinesisAnalyticsV2::Application',
+    new Map([
+      [
+        'ApplicationConfiguration',
+        ['RunConfiguration', 'RuntimeEnvironment', 'ServiceExecutionRole'],
+      ],
+      [
+        'RunConfiguration',
+        ['ApplicationConfiguration', 'RuntimeEnvironment', 'ServiceExecutionRole'],
+      ],
+    ]),
+  ],
   // Re-send called UpdateUser.
   ['AWS::MemoryDB::User', new Map([['AuthenticationMode', []]])],
   // Re-send called ModifyCluster with the password (407 s vs 8 s).
@@ -399,6 +418,25 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
 ]);
 
 /**
+ * Types whose row's keys stay out while UNCHANGED whatever sibling changed,
+ * when both sides pass the check. A Fargate (`FARGATE` / `FARGATE_SPOT`) Batch
+ * compute environment refused either key beside a `ComputeResources` change
+ * too, and it has no infrastructure update for them to govern
+ * (go-to-k/cdkd#6822).
+ */
+const KEPT_WHATEVER_SIBLING_CHANGED: ReadonlyMap<
+  string,
+  (properties: Record<string, unknown>) => boolean
+> = new Map([['AWS::Batch::ComputeEnvironment', isFargateComputeEnvironment]]);
+
+function isFargateComputeEnvironment(properties: Record<string, unknown>): boolean {
+  const resources = properties['ComputeResources'];
+  if (typeof resources !== 'object' || resources === null) return false;
+  const type = (resources as Record<string, unknown>)['Type'];
+  return type === 'FARGATE' || type === 'FARGATE_SPOT';
+}
+
+/**
  * The write-only top-level keys of `resourceType` that
  * `CloudControlProvider.update` must not re-add while UNCHANGED
  * (go-to-k/cdkd#6709, go-to-k/cdkd#6788). A changed one is still re-added:
@@ -406,9 +444,11 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
  * A key is left out of the result when a sibling it travels with differs
  * between the two sides, so the caller re-adds it for that update. So is a
  * key whose sibling is itself write-only and declared in `properties`
- * (`writeOnly`, the type's top-level write-only keys): the caller re-adds
- * that sibling on every update, and the sibling sent without the key is a
- * patch no one measured (go-to-k/cdkd#6788).
+ * (`writeOnly`, the type's top-level write-only keys) and not itself in the
+ * result: the caller re-adds that sibling, and the sibling sent without the
+ * key is a patch no one measured (go-to-k/cdkd#6788). A type in
+ * {@link KEPT_WHATEVER_SIBLING_CHANGED} whose two sides pass its check names
+ * its whole row (go-to-k/cdkd#6822).
  */
 export function getWriteOnlyKeysKeptWhenOmitted(
   resourceType: string,
@@ -416,16 +456,30 @@ export function getWriteOnlyKeysKeptWhenOmitted(
   previousProperties: Record<string, unknown>,
   writeOnly: ReadonlySet<string> = new Set()
 ): ReadonlySet<string> {
+  const row = WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType);
+  if (row === undefined) return new Set();
+  const keptWhateverChanged = KEPT_WHATEVER_SIBLING_CHANGED.get(resourceType);
+  if (keptWhateverChanged?.(properties) && keptWhateverChanged(previousProperties)) {
+    return new Set(row.keys());
+  }
   const result = new Set<string>();
-  for (const [key, travelsWith] of WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType) ?? []) {
-    if (
-      travelsWith.every(
-        (k) =>
-          isDeepStrictEqual(properties[k], previousProperties[k]) &&
-          !(writeOnly.has(k) && properties[k] !== undefined)
-      )
-    ) {
+  for (const [key, travelsWith] of row) {
+    if (travelsWith.every((k) => isDeepStrictEqual(properties[k], previousProperties[k]))) {
       result.add(key);
+    }
+  }
+  // Dropping a key re-adds it, which can re-add a key that travels with it.
+  let dropped = true;
+  while (dropped) {
+    dropped = false;
+    for (const key of result) {
+      const reAddedSibling = row
+        .get(key)!
+        .some((k) => writeOnly.has(k) && properties[k] !== undefined && !result.has(k));
+      if (reAddedSibling) {
+        result.delete(key);
+        dropped = true;
+      }
     }
   }
   return result;

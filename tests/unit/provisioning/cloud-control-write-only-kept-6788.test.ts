@@ -254,6 +254,154 @@ describe('CloudControlProvider update: unchanged measured write-only keys are no
     expect(patch).toHaveLength(2);
   });
 
+  describe('Batch compute environment (go-to-k/cdkd#6822)', () => {
+    const BATCH_SCHEMA = schema([
+      'ComputeResources/UpdateToLatestImageVersion',
+      'ReplaceComputeEnvironment',
+      'UpdatePolicy',
+    ]);
+    const policy = { JobExecutionTimeoutMinutes: 30, TerminateJobsOnUpdate: false };
+    const environment = (type: string, maxvCpus: number): Record<string, unknown> => ({
+      Type: 'MANAGED',
+      ComputeResources: { Type: type, MaxvCpus: maxvCpus, Subnets: ['subnet-1'] },
+      UpdatePolicy: { ...policy },
+      ReplaceComputeEnvironment: false,
+    });
+
+    it.each(['FARGATE', 'FARGATE_SPOT'])(
+      'leaves both keys out of a %s ComputeResources change, which Batch refuses with them',
+      async (type) => {
+        mockCloudFormationSend.mockResolvedValue({ Schema: BATCH_SCHEMA });
+
+        await provider.update(
+          'Ce',
+          'ce-arn',
+          'AWS::Batch::ComputeEnvironment',
+          environment(type, 2),
+          environment(type, 1)
+        );
+
+        expect(sentPatch()).toEqual([
+          {
+            op: 'add',
+            path: '/ComputeResources',
+            value: { Type: type, MaxvCpus: 2, Subnets: ['subnet-1'] },
+          },
+        ]);
+      }
+    );
+
+    it('still re-adds both beside an EC2 ComputeResources change, where they govern the update', async () => {
+      mockCloudFormationSend.mockResolvedValue({ Schema: BATCH_SCHEMA });
+
+      await provider.update(
+        'Ce',
+        'ce-arn',
+        'AWS::Batch::ComputeEnvironment',
+        environment('EC2', 2),
+        environment('EC2', 1)
+      );
+
+      expect(sentPatch().map((op) => op.path).sort()).toEqual([
+        '/ComputeResources',
+        '/ReplaceComputeEnvironment',
+        '/UpdatePolicy',
+      ]);
+    });
+
+    it("still sends a Fargate environment's changed UpdatePolicy", async () => {
+      mockCloudFormationSend.mockResolvedValue({ Schema: BATCH_SCHEMA });
+      const next = { ...environment('FARGATE', 1), UpdatePolicy: { JobExecutionTimeoutMinutes: 60 } };
+
+      await provider.update(
+        'Ce',
+        'ce-arn',
+        'AWS::Batch::ComputeEnvironment',
+        next,
+        environment('FARGATE', 1)
+      );
+
+      expect(sentPatch()).toContainEqual({
+        op: 'add',
+        path: '/UpdatePolicy',
+        value: { JobExecutionTimeoutMinutes: 60 },
+      });
+    });
+  });
+
+  describe('Kinesis Data Analytics application (go-to-k/cdkd#6821)', () => {
+    const KDA_SCHEMA = schema([
+      'RunConfiguration',
+      'ApplicationConfiguration/EnvironmentProperties',
+      'ApplicationConfiguration/ApplicationCodeConfiguration/CodeContent/ZipFileContent',
+    ]);
+    const run = { ApplicationRestoreConfiguration: { ApplicationRestoreType: 'SKIP_RESTORE_FROM_SNAPSHOT' } };
+    const configuration = (value: string): Record<string, unknown> => ({
+      ApplicationCodeConfiguration: {
+        CodeContent: { S3ContentLocation: { BucketARN: 'arn:aws:s3:::b', FileKey: 'app.jar' } },
+        CodeContentType: 'ZIPFILE',
+      },
+      EnvironmentProperties: { PropertyGroups: [{ PropertyGroupId: 'g', PropertyMap: { k: value } }] },
+    });
+
+    it('leaves both unchanged keys out of a Tags-only patch', async () => {
+      // Re-sent, a running Flink application restarted; a Zeppelin one failed.
+      mockCloudFormationSend.mockResolvedValue({ Schema: KDA_SCHEMA });
+
+      await provider.update(
+        'App',
+        'app',
+        'AWS::KinesisAnalyticsV2::Application',
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: { ...run }, Tags: TAGS_B },
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: run, Tags: TAGS_A }
+      );
+
+      expect(sentPatch()).toEqual([{ op: 'replace', path: '/Tags', value: TAGS_B }]);
+    });
+
+    it('re-adds the unchanged RunConfiguration beside an ApplicationConfiguration change', async () => {
+      mockCloudFormationSend.mockResolvedValue({ Schema: KDA_SCHEMA });
+
+      await provider.update(
+        'App',
+        'app',
+        'AWS::KinesisAnalyticsV2::Application',
+        { ApplicationConfiguration: configuration('w'), RunConfiguration: { ...run } },
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: run }
+      );
+
+      const patch = sentPatch();
+      expect(patch).toContainEqual({ op: 'add', path: '/RunConfiguration', value: run });
+      expect(patch).toContainEqual({
+        op: 'add',
+        path: '/ApplicationConfiguration',
+        value: configuration('w'),
+      });
+      expect(patch).toHaveLength(2);
+    });
+
+    it('re-adds the unchanged ApplicationConfiguration beside a RunConfiguration change', async () => {
+      // RunConfiguration sent alone failed on the read model's checkpoint values.
+      mockCloudFormationSend.mockResolvedValue({ Schema: KDA_SCHEMA });
+      const restore = {
+        ApplicationRestoreConfiguration: { ApplicationRestoreType: 'RESTORE_FROM_LATEST_SNAPSHOT' },
+      };
+
+      await provider.update(
+        'App',
+        'app',
+        'AWS::KinesisAnalyticsV2::Application',
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: restore },
+        { ApplicationConfiguration: configuration('v'), RunConfiguration: run }
+      );
+
+      expect(sentPatch().map((op) => op.path).sort()).toEqual([
+        '/ApplicationConfiguration',
+        '/RunConfiguration',
+      ]);
+    });
+  });
+
   it('still re-adds an unmeasured write-only key of a type with an entry', async () => {
     mockCloudFormationSend.mockResolvedValue({
       Schema: schema(['AuthToken', 'SecurityGroupIds']),
@@ -297,6 +445,7 @@ describe('getWriteOnlyKeysKeptWhenOmitted rows (go-to-k/cdkd#6788)', () => {
     ['AWS::ElastiCache::User', ['Passwords']],
     ['AWS::ElasticBeanstalk::Environment', ['OptionSettings']],
     ['AWS::FSx::StorageVirtualMachine', ['SvmAdminPassword']],
+    ['AWS::KinesisAnalyticsV2::Application', ['ApplicationConfiguration', 'RunConfiguration']],
     ['AWS::MemoryDB::User', ['AuthenticationMode']],
     ['AWS::Redshift::Cluster', ['MasterUserPassword']],
     ['AWS::RedshiftServerless::Namespace', ['AdminUserPassword']],
@@ -320,6 +469,12 @@ describe('getWriteOnlyKeysKeptWhenOmitted rows (go-to-k/cdkd#6788)', () => {
     ['AWS::ElastiCache::User', 'NoPasswordRequired', 'Passwords'],
     ['AWS::ElasticBeanstalk::Environment', 'TemplateName', 'OptionSettings'],
     ['AWS::ElasticBeanstalk::Environment', 'PlatformArn', 'OptionSettings'],
+    ['AWS::KinesisAnalyticsV2::Application', 'RunConfiguration', 'ApplicationConfiguration'],
+    ['AWS::KinesisAnalyticsV2::Application', 'RuntimeEnvironment', 'ApplicationConfiguration'],
+    ['AWS::KinesisAnalyticsV2::Application', 'ServiceExecutionRole', 'ApplicationConfiguration'],
+    ['AWS::KinesisAnalyticsV2::Application', 'ApplicationConfiguration', 'RunConfiguration'],
+    ['AWS::KinesisAnalyticsV2::Application', 'RuntimeEnvironment', 'RunConfiguration'],
+    ['AWS::KinesisAnalyticsV2::Application', 'ServiceExecutionRole', 'RunConfiguration'],
     ['AWS::Redshift::Cluster', 'ManageMasterPassword', 'MasterUserPassword'],
     ['AWS::RedshiftServerless::Namespace', 'AdminUsername', 'AdminUserPassword'],
     ['AWS::RedshiftServerless::Namespace', 'ManageAdminPassword', 'AdminUserPassword'],
@@ -342,11 +497,42 @@ describe('getWriteOnlyKeysKeptWhenOmitted rows (go-to-k/cdkd#6788)', () => {
     ]).toEqual(['MasterUserPassword']);
   });
 
+  it('keeps a key whose write-only declared sibling is itself kept', () => {
+    const writeOnly = new Set(['ApplicationConfiguration', 'RunConfiguration']);
+    const declared = { ApplicationConfiguration: { a: 1 }, RunConfiguration: { r: 1 } };
+    const type = 'AWS::KinesisAnalyticsV2::Application';
+    expect([...getWriteOnlyKeysKeptWhenOmitted(type, declared, declared, writeOnly)].sort()).toEqual(
+      ['ApplicationConfiguration', 'RunConfiguration']
+    );
+    // A RuntimeEnvironment change re-adds ApplicationConfiguration, and so RunConfiguration.
+    expect([
+      ...getWriteOnlyKeysKeptWhenOmitted(
+        type,
+        { ...declared, RuntimeEnvironment: 'FLINK-1_20' },
+        { ...declared, RuntimeEnvironment: 'FLINK-1_18' },
+        writeOnly
+      ),
+    ]).toEqual([]);
+  });
+
+  it('names a Fargate environment row whatever changed, only when both sides are Fargate', () => {
+    const type = 'AWS::Batch::ComputeEnvironment';
+    const writeOnly = new Set(['ComputeResources', 'ReplaceComputeEnvironment', 'UpdatePolicy']);
+    const fargate = { ComputeResources: { Type: 'FARGATE', MaxvCpus: 1 } };
+    const fargateNext = { ComputeResources: { Type: 'FARGATE', MaxvCpus: 2 } };
+    expect([...getWriteOnlyKeysKeptWhenOmitted(type, fargateNext, fargate, writeOnly)].sort()).toEqual([
+      'ReplaceComputeEnvironment',
+      'UpdatePolicy',
+    ]);
+    const ec2 = { ComputeResources: { Type: 'EC2', MaxvCpus: 1 } };
+    expect([...getWriteOnlyKeysKeptWhenOmitted(type, fargateNext, ec2, writeOnly)]).toEqual([]);
+    expect([...getWriteOnlyKeysKeptWhenOmitted(type, ec2, fargate, writeOnly)]).toEqual([]);
+  });
+
   it('names nothing for a measured row that is not in the table', () => {
     // Omitting is unsafe or unmeasured for these (go-to-k/cdkd#6788).
     expect(kept('AWS::Lex::Bot')).toEqual([]);
     expect(kept('AWS::Config::ConformancePack')).toEqual([]);
-    expect(kept('AWS::KinesisAnalyticsV2::Application')).toEqual([]);
     expect(kept('AWS::Lightsail::Database')).toEqual([]);
     expect(kept('AWS::CodeBuild::SourceCredential')).toEqual([]);
   });
