@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   GetUserCommand,
+  GetLoginProfileCommand,
   GetUserPolicyCommand,
   GetGroupCommand,
   GetGroupPolicyCommand,
@@ -67,6 +68,8 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
           Arn: 'arn:aws:iam::123:user/alice',
         },
       });
+      // GetLoginProfile: no console login (go-to-k/cdkd#6755).
+      mockSend.mockRejectedValueOnce(new NoSuchEntityException({ message: 'none', $metadata: {} }));
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
           { PolicyArn: 'arn:aws:iam::aws:policy/ReadOnlyAccess', PolicyName: 'ro' },
@@ -81,14 +84,16 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       const result = await provider.readCurrentState('alice', 'Logical', 'AWS::IAM::User');
 
       expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(GetUserCommand);
-      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(ListAttachedUserPoliciesCommand);
-      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListGroupsForUserCommand);
-      expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListUserPoliciesCommand);
+      expect(mockSend.mock.calls[1]?.[0]).toBeInstanceOf(GetLoginProfileCommand);
+      expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(ListAttachedUserPoliciesCommand);
+      expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(ListGroupsForUserCommand);
+      expect(mockSend.mock.calls[4]?.[0]).toBeInstanceOf(ListUserPoliciesCommand);
       expect(result).toEqual({
         UserName: 'alice',
         Path: '/team/',
         PermissionsBoundary: 'arn:aws:iam::aws:policy/Boundary',
         ManagedPolicyArns: ['arn:aws:iam::aws:policy/ReadOnlyAccess'],
+        LoginProfile: null,
         Groups: ['engineers', 'admins'],
         Policies: [],
       });
@@ -102,6 +107,8 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({
         User: { UserName: 'alice', Path: '/' },
       });
+      // GetLoginProfile: no console login (go-to-k/cdkd#6755).
+      mockSend.mockRejectedValueOnce(new NoSuchEntityException({ message: 'none', $metadata: {} }));
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       mockSend.mockResolvedValueOnce({ Groups: [] });
       mockSend.mockResolvedValueOnce({ PolicyNames: [], IsTruncated: false });
@@ -116,6 +123,8 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({
         User: { UserName: 'alice', Path: '/' },
       });
+      // GetLoginProfile: no console login (go-to-k/cdkd#6755).
+      mockSend.mockRejectedValueOnce(new NoSuchEntityException({ message: 'none', $metadata: {} }));
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       mockSend.mockResolvedValueOnce({ Groups: [] });
       // AWS returns lex order ['A', 'B']; state has order (B, A).
@@ -235,6 +244,8 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({
         User: { UserName: 'alice', Path: '/' },
       });
+      // GetLoginProfile: no console login (go-to-k/cdkd#6755).
+      mockSend.mockRejectedValueOnce(new NoSuchEntityException({ message: 'none', $metadata: {} }));
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       mockSend.mockResolvedValueOnce({ Groups: [] });
       mockSend.mockResolvedValueOnce({
@@ -312,6 +323,8 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       mockSend.mockResolvedValueOnce({
         User: { UserName: 'alice', Path: '/' },
       });
+      // GetLoginProfile: no console login (go-to-k/cdkd#6755).
+      mockSend.mockRejectedValueOnce(new NoSuchEntityException({ message: 'none', $metadata: {} }));
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       mockSend.mockResolvedValueOnce({ Groups: [] });
       mockSend.mockResolvedValueOnce({

@@ -1,9 +1,11 @@
 /**
- * go-to-k/cdkd#6755: the `AWS::IAM::User` drift readback returns `Tags` and,
- * for a record declaring one, `LoginProfile.PasswordResetRequired`.
+ * go-to-k/cdkd#6755: the `AWS::IAM::User` drift readback returns `Tags` and
+ * `LoginProfile.PasswordResetRequired` (`null` for a user without one whose
+ * record declares none).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
+  DeleteLoginProfileCommand,
   GetLoginProfileCommand,
   GetUserCommand,
   NoSuchEntityException,
@@ -29,6 +31,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
+import {
+  clearOwnWriteRemovals,
+  recordOwnWriteRemoval,
+} from '../../../src/provisioning/own-write-removals.js';
 
 const noSuchEntity = (): NoSuchEntityException =>
   new NoSuchEntityException({ message: 'none', $metadata: {} });
@@ -38,6 +44,7 @@ describe('IAM user readback: Tags and LoginProfile (go-to-k/cdkd#6755)', () => {
 
   beforeEach(() => {
     mockSend.mockReset();
+    clearOwnWriteRemovals('AWS::IAM::User', 'alice');
     provider = new IAMUserGroupProvider();
     // No re-read delays on the post-write capture.
     (provider as unknown as { ownWriteRereadDelaysMs: number[] }).ownWriteRereadDelaysMs = [];
@@ -206,10 +213,95 @@ describe('IAM user readback: Tags and LoginProfile (go-to-k/cdkd#6755)', () => {
       ).rejects.toThrow('denied');
     });
 
-    it('makes no GetLoginProfile call for a record without a login profile', async () => {
-      const result = await read({ profile: { PasswordResetRequired: true }, properties: {} });
-      expect(result).not.toHaveProperty('LoginProfile');
-      expect(loginProfileCalls()).toBe(0);
+    describe('a record declaring no login profile', () => {
+      it('reads null for a user without one, so the baseline records none', async () => {
+        const result = await read({ profile: 'none', properties: {} });
+        expect(result).toHaveProperty('LoginProfile', null);
+        expect(loginProfileCalls()).toBe(1);
+      });
+
+      it('reads a profile added out of band as present only: no password, no reset flag', async () => {
+        const result = await read({
+          profile: { PasswordResetRequired: true, Password: 'leak' } as never,
+          properties: {},
+        });
+        expect(result['LoginProfile']).toEqual({});
+        expect(JSON.stringify(result)).not.toContain('leak');
+        // IAM clears a required reset at sign-in: a recorded flag would drift.
+        expect(JSON.stringify(result)).not.toContain('PasswordResetRequired');
+      });
+
+      it('reads it when the record has no properties at all', async () => {
+        const result = await read({ profile: {} });
+        expect(result['LoginProfile']).toEqual({});
+      });
+
+      it('throws on a failed read rather than reading it as none', async () => {
+        await expect(
+          read({
+            profile: Object.assign(new Error('denied'), { name: 'AccessDenied' }),
+            properties: {},
+          })
+        ).rejects.toThrow('denied');
+      });
+
+      it('reads null without a call on the capture right after the update that deleted it', async () => {
+        recordOwnWriteRemoval('AWS::IAM::User', 'alice', 'LoginProfile', 'LoginProfile');
+        const result = await read({
+          profile: { PasswordResetRequired: false },
+          properties: {},
+          afterOwnWrite: true,
+        });
+        expect(result).toHaveProperty('LoginProfile', null);
+        expect(loginProfileCalls()).toBe(0);
+      });
+
+      it('reads null on the capture after a deploy that dropped LoginProfile, while a read still shows it', async () => {
+        // A stale read frozen into the baseline would report the profile as
+        // removed on every later run, and --revert could not re-create it.
+        mockSend.mockImplementation((command: unknown) => {
+          if (command instanceof GetUserCommand) {
+            return Promise.resolve({ User: { UserName: 'alice', Path: '/' } });
+          }
+          if (command instanceof GetLoginProfileCommand) {
+            return Promise.resolve({ LoginProfile: { UserName: 'alice' } });
+          }
+          return Promise.resolve({});
+        });
+        await provider.update(
+          'L',
+          'alice',
+          'AWS::IAM::User',
+          { UserName: 'alice' },
+          { UserName: 'alice', LoginProfile: { Password: 'pw', PasswordResetRequired: false } }
+        );
+        expect(
+          mockSend.mock.calls.filter(([command]) => command instanceof DeleteLoginProfileCommand)
+        ).toHaveLength(1);
+        const result = (await provider.readCurrentState(
+          'alice',
+          'L',
+          'AWS::IAM::User',
+          { UserName: 'alice' },
+          { afterOwnWrite: true }
+        )) as Record<string, unknown>;
+        expect(result).toHaveProperty('LoginProfile', null);
+      });
+
+      it('reads the live profile on a capture after an update that did not delete it', async () => {
+        const result = await read({
+          profile: { PasswordResetRequired: false },
+          properties: {},
+          afterOwnWrite: true,
+        });
+        expect(result['LoginProfile']).toEqual({});
+      });
+
+      it('reads the live profile outside that capture even with a removal noted', async () => {
+        recordOwnWriteRemoval('AWS::IAM::User', 'alice', 'LoginProfile', 'LoginProfile');
+        const result = await read({ profile: { PasswordResetRequired: false }, properties: {} });
+        expect(result['LoginProfile']).toEqual({});
+      });
     });
 
     it('declares the write-only password unknown for drift', () => {

@@ -168,8 +168,9 @@ export async function readIdIfExists(
  *    `GetUserPolicy` per name for inline `Policies` (URL-decoded +
  *    JSON-parsed, capped at IAM's documented 10-per-user limit, order
  *    reconciled against state's `Policies` array); `Tags` from `GetUser`;
- *    for a record declaring one, `LoginProfile.PasswordResetRequired` via
- *    `GetLoginProfile` (go-to-k/cdkd#6755; the password is write-only).
+ *    `LoginProfile.PasswordResetRequired` via `GetLoginProfile` (for a
+ *    record declaring none: `{}` when the user has one, `null` when not;
+ *    go-to-k/cdkd#6755; the password is write-only).
  *  - **AWS::IAM::Group**: `GetGroup` for `GroupName`, `Path`;
  *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`;
  *    `ListGroupPolicies` + `GetGroupPolicy` per name for inline
@@ -338,6 +339,12 @@ export async function readUserCurrentState(
   if (properties?.['LoginProfile'] != null) {
     const profile = await readLoginProfile.call(this, physicalId, properties, ownWrite);
     if (profile !== undefined) result['LoginProfile'] = profile;
+  } else {
+    result['LoginProfile'] = await readUndeclaredLoginProfile.call(
+      this,
+      physicalId,
+      ownWrite && removed?.has('LoginProfile') === true
+    );
   }
 
   const reads = userMemberReads.call(this, physicalId, properties, context);
@@ -425,9 +432,9 @@ function sameTagSet(a: readonly unknown[], b: readonly unknown[]): boolean {
 }
 
 /**
- * The user's `LoginProfile` (go-to-k/cdkd#6755), read only for a record that
- * declares one: `GetLoginProfile` is a call of its own, and the capture runs on
- * every deploy. `PasswordResetRequired` alone: `Password` is write-only and
+ * The user's `LoginProfile` (go-to-k/cdkd#6755) for a record that declares
+ * one (a record declaring none: {@link readUndeclaredLoginProfile}).
+ * `PasswordResetRequired` alone: `Password` is write-only and
  * `getDriftUnknownPaths` declares it. `undefined` when the user has no login
  * profile (`NoSuchEntityException`), so a profile deleted out of band reads
  * as the declared one gone; any other failure throws, since omitting the key
@@ -465,6 +472,53 @@ async function readLoginProfile(
   return read?.['PasswordResetRequired'] === declaredShape.PasswordResetRequired
     ? read
     : declaredShape;
+}
+
+/**
+ * The `LoginProfile` of a user whose record declares none (go-to-k/cdkd#6755):
+ * `null` when the user has no login profile (`NoSuchEntityException`), else
+ * `{}`: its presence only. Never the write-only password: `GetLoginProfile`
+ * returns none. Not `PasswordResetRequired` either: IAM clears a required
+ * reset itself at the user's first sign-in, so an `--accept`ed `true` would
+ * then read as drift on every run, and `--revert` would force the reset again
+ * (the declared reader handles that one-directionally; with no template value
+ * there is nothing to anchor it to). `{}` and `null` still differ, so an add
+ * or a removal is drift.
+ *
+ * Always emitted, so the observed baseline holds `null` for a user deployed
+ * without console access. `null` is an empty value the comparator skips for
+ * an undeclared key (go-to-k/cdkd#1498) unless the type lists the key as
+ * compared (`UNDECLARED_EMPTY_COMPARED_KEYS`, which lists `LoginProfile` for
+ * `AWS::IAM::User`: no other resource and no AWS process creates a login
+ * profile). A profile added out of band then reads as drift, and
+ * `drift --revert` sends `null`, which `update()` turns into one
+ * `DeleteLoginProfile`. A baseline written before this change has no
+ * `LoginProfile` key; the top-level walk visits only the baseline's keys, so
+ * it is not compared there until the next capture. Nor is it compared on the
+ * template-only baseline (no `observedProperties`). A profile added out of
+ * band and not reported before a deploy that updates the user is captured
+ * into that deploy's baseline, as any other undeclared key is.
+ *
+ * Any failure other than `NoSuchEntityException` throws (go-to-k/cdkd#6696):
+ * `null` would read as "no profile" and hide one.
+ *
+ * `removedByOwnWrite`: on the capture right after an update that deleted the
+ * profile (the template dropped `LoginProfile`), `null` without a read, so a
+ * read still showing the deleted profile is not frozen into the baseline.
+ */
+async function readUndeclaredLoginProfile(
+  this: IAMUserGroupProvider,
+  userName: string,
+  removedByOwnWrite: boolean
+): Promise<Record<string, unknown> | null> {
+  if (removedByOwnWrite) return null;
+  try {
+    await this.iamClient.send(new GetLoginProfileCommand({ UserName: userName }));
+    return {};
+  } catch (err) {
+    if (err instanceof NoSuchEntityException) return null;
+    throw err;
+  }
 }
 
 /**

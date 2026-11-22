@@ -13,6 +13,9 @@
 #      path; `drift --revert` removes it from AWS, replacing nothing (every
 #      resource's physical id and AWS-side identity unchanged); drift is
 #      clean again.
+# go-to-k/cdkd#6755, on the observed baseline after step 1: a console login
+# profile created out of band for BareUser (whose template declares none) is
+# drift; `drift --revert` deletes it, keeping the user; drift is clean again.
 # go-to-k/cdkd#6627, on the observed baseline (before step 2) and on the
 # template-only one (after step 3): a managed policy, an inline policy, a
 # permissions boundary and a group membership granted out of band to IAM
@@ -97,9 +100,11 @@ delete_principal() {
   if [ "${kind}" = "role" ]; then
     aws iam delete-role-permissions-boundary --role-name "${name}" >/dev/null 2>&1 || true
   fi
-  # go-to-k/cdkd#6627's phases add memberships and a user boundary out of band.
+  # go-to-k/cdkd#6627's phases add memberships and a user boundary out of band,
+  # go-to-k/cdkd#6755's a login profile (IAM refuses DeleteUser while one exists).
   if [ "${kind}" = "user" ]; then
     aws iam delete-user-permissions-boundary --user-name "${name}" >/dev/null 2>&1 || true
+    aws iam delete-login-profile --user-name "${name}" >/dev/null 2>&1 || true
     for p in $(aws iam list-groups-for-user --user-name "${name}" --query 'Groups[].GroupName' --output text 2>/dev/null); do
       aws iam remove-user-from-group --user-name "${name}" --group-name "${p}" >/dev/null 2>&1 || true
     done
@@ -115,6 +120,8 @@ delete_principal() {
 cleanup() {
   echo "==> Cleanup"
   set +eu
+  # go-to-k/cdkd#6755: the login-profile input file, on a run that died mid-call.
+  [ -n "${LP_DIR:-}" ] && rm -rf "${LP_DIR}"
   [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ] && node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   if [ -n "${ACCOUNT:-}" ]; then
     aws s3 rb "s3://${BUCKET_PREFIX}${ACCOUNT}-${REGION}" --force >/dev/null 2>&1 || true
@@ -502,6 +509,74 @@ run_drift "${ARTIFACT_DIR}/drift-observed.json"
 got=$(drift_paths "${ARTIFACT_DIR}/drift-observed.json")
 [ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-observed.json" || { echo "FAIL: observed-baseline drift on a clean stack:" >&2; echo "${got}" >&2; exit 1; }
 echo "    OK: observed baseline clean"
+
+# --- go-to-k/cdkd#6755: a console login added to a user declaring none -------
+# BareUser's template declares no LoginProfile. The deploy-time readback
+# records `LoginProfile: null` (no profile), which drift compares although
+# undeclared and empty, so a login profile created out of band is drift and
+# `--revert` deletes it (one DeleteLoginProfile), keeping the user. The
+# password is generated here, held in a variable, never printed, and must not
+# surface in any cdkd output or in state.
+echo "==> #6755: the deploy-time baseline records ${BARE_USER} without a login profile"
+node -e '
+  const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).state.resources;
+  const o = s.BareUser?.observedProperties;
+  if (!o || !Object.hasOwn(o, "LoginProfile") || o.LoginProfile !== null) {
+    console.error("FAIL: #6755: BareUser observed LoginProfile is " +
+      (o && Object.hasOwn(o, "LoginProfile") ? JSON.stringify(o.LoginProfile) : "absent") + ", expected null");
+    process.exit(1);
+  }
+' "${ARTIFACT_DIR}/state-show-deploy.json"
+echo "    OK: LoginProfile null"
+
+echo "==> #6755: create a login profile for ${BARE_USER} out of band"
+LP_PW=$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("base64url") + "Aa1!")')
+# Through a 0600 input file, not argv (an argument is visible to `ps` while
+# the call runs) and not `file:///dev/stdin`, which this CLI reads as empty
+# ("Invalid JSON received"). The file lives outside ARTIFACT_DIR and is removed
+# right after the call, and by cleanup on a failed run. `printf` is a shell
+# builtin, so the password is in no process's argv. The generated password is
+# base64url plus `Aa1!`, so it needs no JSON escape.
+LP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cdkd-dvr-lp.XXXXXX")
+(umask 077 && printf '{"UserName":"%s","Password":"%s","PasswordResetRequired":false}' \
+  "${BARE_USER}" "${LP_PW}" >"${LP_DIR}/in.json")
+aws iam create-login-profile --no-cli-auto-prompt --cli-input-json "file://${LP_DIR}/in.json" >/dev/null
+rm -rf "${LP_DIR}"
+LP_DIR=""
+sleep 10
+run_drift "${ARTIFACT_DIR}/drift-login-profile.json"
+got=$(drift_paths "${ARTIFACT_DIR}/drift-login-profile.json")
+[ "${DRIFT_RC}" = 1 ] && [ "${got}" = "BareUser LoginProfile" ] ||
+  { echo "FAIL: #6755: drift rc=${DRIFT_RC} after the out-of-band login profile, expected 1 naming only 'BareUser LoginProfile':" >&2; echo "${got}" >&2; exit 1; }
+echo "    OK: drift names BareUser LoginProfile"
+
+revert_ids_before login-profile
+echo "==> #6755: drift --revert deletes the login profile"
+rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --revert --yes \
+  2>&1 | tee "${ARTIFACT_DIR}/revert-login-profile.log" || rc=$?
+revert_ids_after login-profile "${ARTIFACT_DIR}/revert-login-profile.log"
+[ "${rc}" -eq 0 ] || { echo "FAIL: #6755: drift --revert exited ${rc}" >&2; exit 1; }
+sleep 10
+gone_probe aws iam get-login-profile --user-name "${BARE_USER}" ||
+  { echo "FAIL: #6755: ${BARE_USER} still has a login profile after --revert" >&2; exit 1; }
+echo "    OK: get-login-profile answers NoSuchEntity, the user kept"
+
+echo "==> #6755: drift after the revert is clean"
+run_drift "${ARTIFACT_DIR}/drift-login-profile-after.json"
+got=$(drift_paths "${ARTIFACT_DIR}/drift-login-profile-after.json")
+[ -z "${got}" ] && drift_clean_report "${ARTIFACT_DIR}/drift-login-profile-after.json" ||
+  { echo "FAIL: #6755: drift after --revert:" >&2; echo "${got}" >&2; exit 1; }
+show_state "${ARTIFACT_DIR}/state-show-login-profile.json"
+# -F: the password is a literal, read from a pattern file on stdin, not argv.
+# -l: a hit prints the file name, never the line. Exit 1 is "no hit"; any
+# other failure fails the run.
+hits_rc=0
+hits=$(printf '%s\n' "${LP_PW}" | grep -rlF -f - "${ARTIFACT_DIR}") || hits_rc=$?
+[ "${hits_rc}" -le 1 ] || { echo "FAIL: #6755: grep for the password exited ${hits_rc}" >&2; exit 1; }
+[ -z "${hits}" ] || { echo "FAIL: #6755: the out-of-band login password appears in:" >&2; echo "${hits}" >&2; exit 1; }
+unset LP_PW
+echo "    OK: clean, and the password appears in no output or state"
 
 grant_phase observed
 
