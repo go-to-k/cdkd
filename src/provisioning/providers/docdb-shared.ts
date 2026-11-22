@@ -155,12 +155,20 @@ export async function applyDocDBTagDiff(
   }
 }
 
+/** The not-found faults of the resources {@link attachDocDBTags} reads tags for. */
+const DOCDB_TAGGED_RESOURCE_NOT_FOUND_FAULTS: ReadonlySet<string> = new Set([
+  'DBInstanceNotFoundFault',
+  'DBClusterNotFoundFault',
+  'DBSubnetGroupNotFoundFault',
+]);
+
 /**
  * Fetch tags via `ListTagsForResource(ResourceName=arn)` and merge them
  * into the result under `Tags` (CFn shape, `aws:*` filtered out, omitted
- * when empty). Best-effort: tag-fetch failures are logged at debug and
- * the key is simply left out — drift detection on configuration is more
- * important than fail-closing on a missing tag permission.
+ * when empty). Only a resource gone between the calls (its not-found fault,
+ * by NAME) leaves the key out; any other failure (AccessDenied, throttling)
+ * throws, so `cdkd drift` reports the resource not compared instead of never
+ * comparing its Tags (go-to-k/cdkd#6759).
  */
 export async function attachDocDBTags(
   client: DocDBClient,
@@ -172,6 +180,8 @@ export async function attachDocDBTags(
     const tagsResp = await client.send(new ListTagsForResourceCommand({ ResourceName: arn }));
     result['Tags'] = normalizeAwsTagsToCfn(tagsResp.TagList);
   } catch (err) {
+    const name = (err as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !DOCDB_TAGGED_RESOURCE_NOT_FOUND_FAULTS.has(name)) throw err;
     logger.debug(
       safeMsg`DocDB ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
     );

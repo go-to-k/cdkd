@@ -563,11 +563,25 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       expect((result as Record<string, unknown> | undefined)?.['Tags']).toEqual([{ Key: 'team', Value: 'db' }]);
     });
 
-    it('readCurrentState OMITS Tags when the tag read fails, rather than reporting none', async () => {
+    it('readCurrentState rejects when the tag read is denied, rather than reporting none (go-to-k/cdkd#6759)', async () => {
       mockSend
         .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'default' }] })
         .mockResolvedValueOnce({ Targets: [] })
         .mockRejectedValueOnce(new Error('AccessDenied: rds:ListTagsForResource'));
+      await expect(
+        provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+        })
+      ).rejects.toThrow('AccessDenied: rds:ListTagsForResource');
+    });
+
+    it('readCurrentState OMITS Tags when the target group is gone between the calls', async () => {
+      mockSend
+        .mockResolvedValueOnce({ TargetGroups: [{ TargetGroupName: 'default' }] })
+        .mockResolvedValueOnce({ Targets: [] })
+        .mockRejectedValueOnce(
+          new DBProxyTargetGroupNotFoundFault({ message: 'gone', $metadata: {} })
+        );
       const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
         DBProxyName: 'AuroraProxy',
       });
@@ -1144,7 +1158,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           { Type: 'TRACKED_CLUSTER', RdsResourceId: 'mycluster' },
           { Type: 'TRACKED_CLUSTER', RdsResourceId: 'othercluster' },
         ],
-      });
+      }).mockResolvedValueOnce({ TagList: [] });
       const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
         DBProxyName: 'AuroraProxy',
         DBClusterIdentifiers: ['MyCluster'],
@@ -1156,7 +1170,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
     it('applies the recorded spelling to DBInstanceIdentifiers too', async () => {
       mockSend.mockResolvedValueOnce({ TargetGroups: [{}] }).mockResolvedValueOnce({
         Targets: [{ Type: 'RDS_INSTANCE', RdsResourceId: 'mydb' }],
-      });
+      }).mockResolvedValueOnce({ TagList: [] });
       const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
         DBProxyName: 'AuroraProxy',
         DBInstanceIdentifiers: ['MyDb'],
@@ -1167,7 +1181,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
     it('keeps the live spelling when the recorded list is malformed', async () => {
       mockSend.mockResolvedValueOnce({ TargetGroups: [{}] }).mockResolvedValueOnce({
         Targets: [{ Type: 'TRACKED_CLUSTER', RdsResourceId: 'mycluster' }],
-      });
+      }).mockResolvedValueOnce({ TagList: [] });
       // A string recorded list is malformed, so it offers no spelling to adopt:
       // walking it would compare against its characters.
       const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
@@ -1189,7 +1203,8 @@ describe('RDSDBProxyTargetGroupProvider', () => {
         })
         .mockResolvedValueOnce({
           Targets: [{ Type: 'RDS_INSTANCE', RdsResourceId: 'standalone-db' }],
-        });
+        })
+        .mockResolvedValueOnce({ TagList: [] });
       const result = await provider.readCurrentState(TARGET_GROUP_ARN, 'TG', RESOURCE_TYPE, {
         DBProxyName: 'AuroraProxy',
         TargetGroupName: { Ref: 'x' },

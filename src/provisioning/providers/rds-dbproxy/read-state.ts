@@ -149,7 +149,9 @@ export async function readCurrentState(
     }),
   };
 
-  // Tags via ListTagsForResource.
+  // Tags via ListTagsForResource. Only a proxy gone between the calls keeps
+  // the `[]`; any other failure throws, so `cdkd drift` reports the proxy not
+  // compared rather than "has no tags" (go-to-k/cdkd#6759).
   if (p.DBProxyArn) {
     try {
       const tagResp = await client.send(
@@ -157,6 +159,7 @@ export async function readCurrentState(
       );
       result['Tags'] = normalizeAwsTagsToCfn(tagResp.TagList ?? []);
     } catch (error) {
+      if (!(error instanceof DBProxyNotFoundFault)) throw error;
       this.logger.debug(
         `ListTagsForResource failed for ${physicalId}: ${describeAwsFailure(error).detail}`
       );

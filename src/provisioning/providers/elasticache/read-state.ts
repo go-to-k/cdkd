@@ -236,7 +236,18 @@ export async function readSubnetGroup(
   return result;
 }
 
-/** Best-effort tag fetch — failures omit the key without breaking the read. */
+/** The not-found faults of the resources {@link attachTags} reads tags for. */
+const TAGGED_RESOURCE_NOT_FOUND_FAULTS: ReadonlySet<string> = new Set([
+  'CacheClusterNotFoundFault',
+  'CacheSubnetGroupNotFoundFault',
+]);
+
+/**
+ * Tag fetch. Only a resource gone between the calls (its not-found fault, by
+ * NAME) omits the key; any other failure throws, so `cdkd drift` reports the
+ * resource not compared instead of never comparing its Tags
+ * (go-to-k/cdkd#6759).
+ */
 export async function attachTags(
   this: ElastiCacheProvider,
   result: Record<string, unknown>,
@@ -249,6 +260,8 @@ export async function attachTags(
     const tags = normalizeAwsTagsToCfn(tagsResp.TagList);
     result['Tags'] = tags;
   } catch (err) {
+    const name = (err as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string' || !TAGGED_RESOURCE_NOT_FOUND_FAULTS.has(name)) throw err;
     this.logger.debug(
       `ElastiCache ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
     );

@@ -200,7 +200,7 @@ describe('S3VectorsProvider.readCurrentState', () => {
     expect(result).not.toHaveProperty('Tags');
   });
 
-  it('emits Tags=[] when ListTagsForResource itself fails (best-effort, drift comparator stays happy)', async () => {
+  it('rejects when ListTagsForResource is denied, rather than reporting no tags (go-to-k/cdkd#6759)', async () => {
     mockSend.mockResolvedValueOnce({
       vectorBucket: {
         vectorBucketName: 'tags-error-bucket',
@@ -209,11 +209,8 @@ describe('S3VectorsProvider.readCurrentState', () => {
     });
     mockSend.mockRejectedValueOnce(new Error('AccessDenied on ListTagsForResource'));
 
-    const result = (await provider.readCurrentState(
-      'tags-error-bucket',
-      'Logical',
-      'AWS::S3Vectors::VectorBucket'
-    )) as Record<string, unknown> | undefined;
-    expect(result?.Tags).toEqual([]);
+    await expect(
+      provider.readCurrentState('tags-error-bucket', 'Logical', 'AWS::S3Vectors::VectorBucket')
+    ).rejects.toThrow('AccessDenied on ListTagsForResource');
   });
 });

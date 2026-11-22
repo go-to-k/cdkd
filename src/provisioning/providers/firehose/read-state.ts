@@ -4,7 +4,6 @@ import {
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
 } from '@aws-sdk/client-firehose';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../../import-helpers.js';
 import type {
   ResourceImportInput,
@@ -232,11 +231,11 @@ export async function readCurrentState(
     desc.DeliveryStreamEncryptionConfiguration
   );
 
-  // Tags via ListTagsForDeliveryStream.
-  // Always emit `Tags` (even as `[]`) per docs/provider-rules.md#readcurrentstate-for-drift-detection
-  //  "always emit user-controllable top-level keys": omitting the
-  // key on the failure path means the comparator's state-keys-only
-  // walk skips Tags forever, hiding console-side tag adds from drift.
+  // Tags via ListTagsForDeliveryStream. A failed read throws rather than
+  // emitting `[]` (go-to-k/cdkd#6759): "could not read" must not read as
+  // "has no tags", which would report every recorded tag removed, and
+  // omitting the key would leave Tags never compared. Either way the run
+  // must say the stream was not compared.
   try {
     const tagsResp = await this.getClient().send(
       new ListTagsForDeliveryStreamCommand({ DeliveryStreamName: physicalId })
@@ -244,10 +243,7 @@ export async function readCurrentState(
     result['Tags'] = normalizeAwsTagsToCfn(tagsResp.Tags);
   } catch (err) {
     if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
-    this.logger.debug(
-      `Firehose ListTagsForDeliveryStream(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-    );
-    result['Tags'] = [];
+    throw err;
   }
 
   return result;
