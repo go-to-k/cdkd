@@ -46,6 +46,10 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // The secondary setting reads (recursion, concurrency, ...) answer empty
+    // unless a test says otherwise: a failed one now fails the whole read
+    // (go-to-k/cdkd#6759).
+    mockSend.mockResolvedValue({});
     provider = new LambdaFunctionProvider();
   });
 

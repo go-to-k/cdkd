@@ -286,6 +286,11 @@ describe('LambdaFunctionProvider', () => {
   // (backfilled by go-to-k/cdkd#5637), which leaves Lambda with no SDK-unwired property:
   // those fixtures now use ApiGatewayV2 `Body`.
   describe('native config properties (issue #609)', () => {
+    // The secondary setting reads a test does not queue answer empty: a
+    // failed one now fails the whole read (go-to-k/cdkd#6759).
+    beforeEach(() => {
+      mockLambdaSend.mockResolvedValue({});
+    });
     it('passes all six native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {
       mockLambdaSend.mockResolvedValueOnce({
         FunctionName: 'fn-cfg',

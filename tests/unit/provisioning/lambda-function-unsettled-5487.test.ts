@@ -132,15 +132,17 @@ describe('Lambda function unsettled properties (go-to-k/cdkd#5487)', () => {
       }
       return {};
     });
-    // readCurrentState swallows the failure (the drift snapshot omits the key)...
-    const snapshot = (await provider.readCurrentState('f', 'F', TYPE)) as Record<string, unknown>;
-    expect(snapshot).not.toHaveProperty('ReservedConcurrentExecutions');
+    // readCurrentState fails on it too (go-to-k/cdkd#6759), and so...
+    await expect(provider.readCurrentState('f', 'F', TYPE)).rejects.toThrow('throttled');
     // ...readUnsettled refuses to report "not set" for an unsettled one.
     await expect(
       provider.readUnsettled('f', 'F', TYPE, new Set(['ReservedConcurrentExecutions']))
     ).rejects.toThrow('throttled');
-    // A setting that is not unsettled keeps readCurrentState's tolerance.
-    await expect(provider.readUnsettled('f', 'F', TYPE, new Set(['Timeout']))).resolves.toBeDefined();
+    // go-to-k/cdkd#6759: readCurrentState no longer tolerates it, so a read for
+    // any other unsettled name fails too (the deploy refuses to converge).
+    await expect(provider.readUnsettled('f', 'F', TYPE, new Set(['Timeout']))).rejects.toThrow(
+      'throttled'
+    );
   });
 
   it('readUnsettled reads an unsettled setting AWS reports as not set as absent', async () => {
