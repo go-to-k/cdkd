@@ -262,6 +262,24 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
     expect(names().at(-1)).toBe('DeleteRoleCommand');
   });
 
+  it("a listed outsider the confirm read shows no longer holding it: no refusal, and only the stack's profile is stripped", async () => {
+    drive({
+      ...base,
+      ListInstanceProfilesForRoleCommand: listing(
+        ['stack-profile', 'AIPASTACK'],
+        ['lagging-profile', 'AIPALAG']
+      ),
+      // IAM's listing lags: the profile itself no longer holds the role.
+      GetInstanceProfileCommand: () => ({ InstanceProfile: { Roles: [] } }),
+      DeleteRoleCommand: () => ({}),
+    });
+
+    expect(await deleteFirst()).toBeUndefined();
+    expect(inputsOf('RemoveRoleFromInstanceProfileCommand', 'InstanceProfileName')).toEqual([
+      'stack-profile',
+    ]);
+  });
+
   it('a profile under the recorded name with another InstanceProfileId is not the stack\'s: refused, never stripped', async () => {
     drive({
       ...base,
@@ -369,6 +387,18 @@ describe("IAM group delete-first: strips the stack's own members, refuses any ot
     expect(await deleteFirst()).toBeUndefined();
     expect(inputsOf('RemoveUserFromGroupCommand', 'UserName')).toEqual(['alice']);
     expect(names().at(-1)).toBe('DeleteGroupCommand');
+  });
+
+  it("a listed outsider ListGroupsForUser shows already out: no refusal, and only the stack's members are removed", async () => {
+    drive({
+      ...base,
+      GetGroupCommand: () => group(['alice', 'AIDAALICE'], ['lagging', 'AIDALAG']),
+      ListGroupsForUserCommand: () => ({ Groups: [] }),
+      DeleteGroupCommand: () => ({}),
+    });
+
+    expect(await deleteFirst()).toBeUndefined();
+    expect(inputsOf('RemoveUserFromGroupCommand', 'UserName')).toEqual(['alice']);
   });
 
   it("a user under the stack user's name with another UserId is not the stack's: refused, never removed", async () => {
