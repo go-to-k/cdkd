@@ -29,6 +29,7 @@ import {
   rollbackExecutorContext,
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import type { CompletedOperation } from '../../../src/deployment/rollback-executor.js';
+import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 
@@ -157,6 +158,17 @@ describe('DeployEngine rollback context threading (#1363)', () => {
       expect(deleteContextArg()['stackHoldersStillAttached']).toBe(true);
     }
   );
+
+  it("hands a rolled-back CREATE's delete the run's stack-wide printing masker (go-to-k/cdkd#6772)", async () => {
+    const engine = makeEngine({ skipFinalSnapshot: true });
+    const kept = new Map();
+    recordLogOnlyValue(kept, 'kept-secret-name');
+    engine.secretsRun.preDeploySecretNamedRecords = kept;
+    await rollbackSnapshotCreate(engine, 'AWS::IAM::Role');
+    const mask = deleteContextArg()['maskStackSecretNames'] as (text: string) => string;
+    expect(mask('profile kept-secret-name')).toBe('profile ***');
+    expect(mask('plain-profile-name')).toBe('plain-profile-name');
+  });
 
   it('threads finalSnapshotClients into the pre-delete snapshot call', async () => {
     const state = await rollbackSnapshotCreate(

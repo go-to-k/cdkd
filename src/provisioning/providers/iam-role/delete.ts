@@ -14,7 +14,12 @@ import {
 } from '@aws-sdk/client-iam';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
-import { assertRegionMatch, holderRefusalRun, type DeleteContext } from '../../region-check.js';
+import {
+  assertRegionMatch,
+  holderRefusalMask,
+  holderRefusalRun,
+  type DeleteContext,
+} from '../../region-check.js';
 import { markNotGone } from '../../not-gone.js';
 import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
 import { createMaskedLogSinks, type MaskedLogSinks } from '../../masked-retry-logger.js';
@@ -110,7 +115,11 @@ export async function deleteImpl(
       const run = holderRefusalRun(context);
       const refusal = markNonRetryable(
         new ProvisioningError(
-          log.mask(
+          // go-to-k/cdkd#6772: a profile the stack retained can be named from a secret.
+          holderRefusalMask(
+            context,
+            log.mask
+          )(
             `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
               `instance profile(s) ${heldText(held)}, ` +
               `which this ${run.noun} did not delete (a profile created outside the stack, or ` +

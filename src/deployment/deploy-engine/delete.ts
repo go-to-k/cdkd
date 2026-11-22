@@ -1,6 +1,6 @@
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { createUnionSecretMasker } from '../secret-redaction.js';
-import { secretNameBagFor } from './masking.js';
+import { secretNameBagFor, stackSecretNameMasker } from './masking.js';
 import { prepareFinalSnapshotForDelete, type ReplacementDeps } from './replacement.js';
 import type { DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
@@ -245,6 +245,8 @@ Drop the record with: ${dropCommand}`
             // so this deploy resolved nothing for it; the masker is its
             // derived-name registry, the printing bag this delete runs under.
             maskSecrets: createUnionSecretMasker([secretNameBagFor(deps.secretsRun(), logicalId)]),
+            // go-to-k/cdkd#6772: a refusal naming a sibling the stack retained.
+            maskStackSecretNames: stackSecretNameMasker(deps.secretsRun()),
           }
         ),
       logicalId,

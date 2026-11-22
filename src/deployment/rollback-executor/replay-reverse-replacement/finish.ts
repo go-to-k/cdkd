@@ -1,5 +1,5 @@
 import { newCopyDeleteAttributes } from '../../recorded-identity-attributes.js';
-import { withReplayDeletePrinting } from '../replay-scope.js';
+import { replayStackMask, withReplayDeletePrinting } from '../replay-scope.js';
 import { displayPhysicalId } from '../../../provisioning/secret-physical-id.js';
 import { withNameGenerationReached } from '../../../state/name-generation.js';
 import { cdkdRemedy, pasteableCommand, proseQuoted } from '../../../utils/pasteable-command.js';
@@ -361,6 +361,7 @@ export async function finishReverseReplacement(
             current.properties,
             {
               expectedRegion: ctx.region,
+              maskStackSecretNames: replayStackMask(s), // #6772: printing only
               // go-to-k/cdkd#6770 / #6808: the new copy is the rolled-back
               // run's, so the holders the records or journal name are its.
               stackHoldersStillAttached: true,

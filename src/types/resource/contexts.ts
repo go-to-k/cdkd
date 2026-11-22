@@ -155,6 +155,12 @@ export interface SecretMaskingContext {
  */
 export interface UpdateContext extends SecretMaskingContext {
   /**
+   * `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772), for an `update()`
+   * that deletes the old copy itself (an IAM role's `RoleName` change), whose
+   * refusal can name a sibling the deploy drops under `Retain`. Printing only.
+   */
+  maskStackSecretNames?: ((text: string) => string) | undefined;
+  /**
    * `true` when the desired properties are an AWS-current snapshot produced by
    * `readCurrentState` rather than by a template or a state record — today
    * that is `cdkd drift --revert` alone (`src/cli/commands/drift.ts`).

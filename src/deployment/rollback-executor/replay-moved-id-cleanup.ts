@@ -22,7 +22,7 @@ import {
   SUPERSEDED_KEPT_REMEDY,
 } from '../superseded-resources.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
-import { withReplayDeletePrinting } from './replay-scope.js';
+import { replayStackMask, withReplayDeletePrinting } from './replay-scope.js';
 import { safe, shownLogicalId, throwIfDeleteSkipped } from './messages.js';
 import type { MaskerFn } from '../../provisioning/masked-retry-logger.js';
 import type { RollbackExecutorContext, RollbackReplayResult } from './types.js';
@@ -298,6 +298,11 @@ export async function runMovedIdCleanups(
         () =>
           entry.provider.delete(logicalId, sent.physicalId, sent.resourceType, sent.properties, {
             expectedRegion: ctx.region,
+            maskStackSecretNames: replayStackMask({
+              ctx,
+              op: { logicalId },
+              secrets: entry.secrets,
+            }),
             deletionPolicy: replacementDeletePolicy(sent.updateReplacePolicy),
             recordedAttributes: sent.attributes,
             recordedCreateOnlyDrops: sent.acceptedCreateOnlyDrops,

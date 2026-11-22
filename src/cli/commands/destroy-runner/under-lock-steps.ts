@@ -34,10 +34,15 @@ import {
   sameJournaledOrphans,
 } from '../../../deployment/rollback-executor/journaled-orphans.js';
 import {
+  type StateNamingSecrets,
   namingSecretsWithRecordedNoEcho,
+  secretNamedRecordNeedles,
   secretNamePrintingBags,
 } from '../../../deployment/secret-name-needles.js';
-import type { RecordedSecretValues } from '../../../deployment/secret-redaction.js';
+import {
+  type RecordedSecretValues,
+  createUnionSecretMasker,
+} from '../../../deployment/secret-redaction.js';
 import type { DestroyRunnerContext, DestroyRunnerResult, DestroyLogger } from './types.js';
 import {
   SKIPPED_REMEDY,
@@ -413,52 +418,89 @@ export interface PrintingBagFrame {
   logger: DestroyLogger;
 }
 
-/** Each resource's delete-time printing bag. */
-export function makePrintingBagOf({
+/**
+ * What the destroy's printing bags are judged with (go-to-k/cdkd#3869): the
+ * stack's `NoEcho` values, each record once (see `noEchoValues` above), plus
+ * what each record stores where a `NoEcho` parameter of the template served
+ * it: a name taken from a value since CHANGED, which the bound values no
+ * longer spell.
+ */
+function destroyNamingSecrets({
   ctx,
   state,
   noEchoValues,
-  stackName,
   logger,
-}: PrintingBagFrame): (logicalId: string) => RecordedSecretValues {
-  // go-to-k/cdkd#3869: judged with the stack's `NoEcho` values too, each
-  // record once (see `noEchoValues` above), plus what each record stores
-  // where a `NoEcho` parameter of the template served it: a name taken from
-  // a value since CHANGED, which the bound values no longer spell.
+}: PrintingBagFrame): StateNamingSecrets {
   const reresolver = ctx.noEchoReresolver;
-  const judgedBagOf = secretNamePrintingBags(
-    state.resources,
-    reresolver === undefined
-      ? noEchoValues
-      : namingSecretsWithRecordedNoEcho(noEchoValues, (logicalId) => {
-          // A masking-only judgment never stops a delete.
-          try {
-            return reresolver.recordedNoEchoValuesFor(
-              logicalId,
-              Object.hasOwn(state.resources, logicalId) ? state.resources[logicalId] : undefined
-            );
-          } catch (error) {
-            // The class only: a message can quote a value.
-            logger.debug(
-              safeMsg`Could not read ${logicalId}'s stored NoEcho values for its printing bag (${error instanceof Error ? error.name : typeof error}).`
-            );
-            return undefined;
-          }
-        })
+  return reresolver === undefined
+    ? noEchoValues
+    : namingSecretsWithRecordedNoEcho(noEchoValues, (logicalId) => {
+        // A masking-only judgment never stops a delete.
+        try {
+          return reresolver.recordedNoEchoValuesFor(
+            logicalId,
+            Object.hasOwn(state.resources, logicalId) ? state.resources[logicalId] : undefined
+          );
+        } catch (error) {
+          // The class only: a message can quote a value.
+          logger.debug(
+            safeMsg`Could not read ${logicalId}'s stored NoEcho values for its printing bag (${error instanceof Error ? error.name : typeof error}).`
+          );
+          return undefined;
+        }
+      });
+}
+
+/**
+ * The scope a destroy judges names in: a name its provider DERIVED from a
+ * plaintext one (the stack-name prefix and the truncation
+ * `generateResourceNameWithFallback` applies) is spelled in this stack's
+ * naming scope, as the deploy that created it derived it (go-to-k/cdkd#5064:
+ * its lifetime too); a destroy binds none of its own.
+ */
+function destroyNamingScope({
+  state,
+  stackName,
+}: PrintingBagFrame): ReturnType<typeof nameScopeOf> {
+  return nameScopeOf(stackName, stackInstanceIdOf(state, displayStackName(stackName)), state);
+}
+
+/**
+ * Each resource's delete-time printing bag, and `stackMaskerFor`, the
+ * destroy's `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772): for a
+ * delete's `own` printing bags, a PRINTING masker over them and the needles of
+ * EVERY record named from a secret, judged as the bags are, retained records
+ * included (a destroy never drops a record from `state.resources`). A refusal
+ * naming a sibling (the profile holding a role, a bucket's table) masks it in
+ * one pass. The stack's needles are judged once, on the first refusal. Never a
+ * judge.
+ */
+export interface DestroyPrintingBags {
+  (logicalId: string): RecordedSecretValues;
+  stackMaskerFor: (
+    own: ReadonlyArray<RecordedSecretValues | undefined>
+  ) => (text: string) => string;
+}
+
+/** The {@link DestroyPrintingBags} of one destroy. */
+export function makePrintingBagOf(frame: PrintingBagFrame): DestroyPrintingBags {
+  const judgedBagOf = secretNamePrintingBags(frame.state.resources, destroyNamingSecrets(frame));
+  const namingScope = destroyNamingScope(frame);
+  let stackBag: RecordedSecretValues | undefined;
+  const stackNeedles = (): RecordedSecretValues =>
+    (stackBag ??= withStackScope(namingScope, () =>
+      secretNamedRecordNeedles(frame.state.resources, destroyNamingSecrets(frame))
+    ));
+  return Object.assign(
+    (logicalId: string): RecordedSecretValues =>
+      withStackScope(namingScope, () => judgedBagOf(logicalId)),
+    {
+      stackMaskerFor:
+        (own: ReadonlyArray<RecordedSecretValues | undefined>) =>
+        (text: string): string =>
+          createUnionSecretMasker([...own, stackNeedles()])(text),
+    }
   );
-  // A name its provider DERIVED from a plaintext one (the stack-name prefix
-  // and the truncation `generateResourceNameWithFallback` applies) is
-  // spelled in this stack's naming scope, as the deploy that created it
-  // derived it (go-to-k/cdkd#5064: its lifetime too); a destroy binds none
-  // of its own.
-  const namingScope = nameScopeOf(
-    stackName,
-    stackInstanceIdOf(state, displayStackName(stackName)),
-    state
-  );
-  const printingBagOf = (logicalId: string): RecordedSecretValues =>
-    withStackScope(namingScope, () => judgedBagOf(logicalId));
-  return printingBagOf;
 }
 
 /** What {@link printDestroySummary} reads from `destroyStackUnderLock`. */

@@ -410,6 +410,31 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
     expect((error as Error).message).toContain('user(s) ***-user');
     expect((error as Error).message).not.toContain('SECRET');
   });
+
+  // go-to-k/cdkd#6772: a user the stack retained, whose name is secret-derived,
+  // is in no bag of the group's own: the stack-wide printing masker masks it.
+  it("masks a retained in-stack user's secret-derived name with the stack-wide masker", async () => {
+    drive({ ...base, GetGroupCommand: members(['SECRET-user']) });
+    const run = (maskStackSecretNames?: (text: string) => string) =>
+      new IAMUserGroupProvider()
+        .delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
+          stackDestroy: true,
+          maskSecrets: (text) => text,
+          ...(maskStackSecretNames && { maskStackSecretNames }),
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+
+    const masked = ((await run((text) => text.split('SECRET').join('***'))) as Error).message;
+    expect(masked).toContain('user(s) ***-user, whose membership this destroy did not remove');
+    expect(masked).not.toContain('SECRET');
+    // Absent, the group's own masker alone: the wording is unchanged.
+    sent = [];
+    const plain = ((await run()) as Error).message;
+    expect(plain).toBe(masked.replace('***-user', 'SECRET-user'));
+  });
 });
 
 describe("a same-name re-create's delete-first keeps removing its members (#4461, #6770)", () => {

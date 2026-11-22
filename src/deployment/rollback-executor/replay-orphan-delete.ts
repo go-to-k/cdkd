@@ -1,4 +1,4 @@
-import { noteRolledBackCreate, withReplayDeletePrinting } from './replay-scope.js';
+import { noteRolledBackCreate, replayStackMask, withReplayDeletePrinting } from './replay-scope.js';
 import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import { prepareCreateRollbackFinalSnapshot } from './names.js';
 import {
@@ -280,6 +280,7 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     withReplayDeletePrinting(s, () =>
       provider.delete(op.logicalId, physicalId, op.resourceType, op.properties, {
         expectedRegion: ctx.region,
+        maskStackSecretNames: replayStackMask(s), // #6772: printing only
         // go-to-k/cdkd#6770 / #6808: the rolled-back run created it, so the
         // holders the records or journal name are that run's (a membership a
         // failed or unordered op added); any other is refused.

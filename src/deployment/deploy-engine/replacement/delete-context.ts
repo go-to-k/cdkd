@@ -16,6 +16,7 @@ import {
   unsupportedFinalSnapshotError,
 } from '../../../provisioning/final-snapshot.js';
 import { getAwsClients } from '../../../utils/aws-clients.js';
+import { stackSecretNameMasker } from '../masking.js';
 import type { ReplacementDeps } from './run-state.js';
 
 /**
@@ -23,7 +24,8 @@ import type { ReplacementDeps } from './run-state.js';
  * (issue #4029): the governing `UpdateReplacePolicy`, and the
  * `--skip-final-snapshot` opt-out. `CloudControlProvider.delete` reads both
  * to keep an RDS cluster or instance off the registry handler, which would
- * otherwise take an untagged snapshot of its own.
+ * otherwise take an untagged snapshot of its own. And the stack-wide
+ * printing masker of a refusal naming a sibling (go-to-k/cdkd#6772).
  */
 export function replacementDeleteContext(
   deps: ReplacementDeps,
@@ -31,10 +33,12 @@ export function replacementDeleteContext(
 ): {
   deletionPolicy: string;
   skipFinalSnapshot?: true;
+  maskStackSecretNames: (text: string) => string;
 } {
   return {
     deletionPolicy: replacementDeletePolicy(updateReplacePolicy),
     ...(deps.options.skipFinalSnapshot === true && { skipFinalSnapshot: true as const }),
+    maskStackSecretNames: stackSecretNameMasker(deps.secretsRun()),
   };
 }
 

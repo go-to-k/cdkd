@@ -15,7 +15,7 @@ import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { assertRegionMatch, holderRefusalMask, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -513,7 +513,11 @@ export class S3VectorsProvider implements ResourceProvider {
         if (held !== undefined) {
           throw markNonRetryable(
             new ProvisioningError(
-              maskerOrIdentity(context?.maskSecrets)(
+              // go-to-k/cdkd#6772: an index the stack retained can be named from a secret.
+              holderRefusalMask(
+                context,
+                maskerOrIdentity(context?.maskSecrets)
+              )(
                 `Failed to delete S3 VectorBucket ${logicalId}: vector bucket ${physicalId} is not ` +
                   `empty: it holds vector index(es) ${held.names.join(', ')}` +
                   `${held.truncated ? ', and more' : ''}. This operation did not delete them: ` +

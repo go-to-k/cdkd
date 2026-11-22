@@ -13,7 +13,7 @@ import {
   type ReplayFailedOperationsOptions,
 } from './replay-failed-checks.js';
 import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
-import { noteRolledBackCreate, withReplayDeletePrinting } from './replay-scope.js';
+import { noteRolledBackCreate, replayStackMask, withReplayDeletePrinting } from './replay-scope.js';
 import type { ResourceState } from '../../types/state.js';
 import {
   createSecretMasker,
@@ -475,34 +475,30 @@ export async function replayFailedOperationsUnbound(
             resourceType: op.resourceType,
             provisionedBy: deleteProvisionedBy,
           });
-          // Pass the ATTEMPTED properties so template-borne data-guard
-          // opt-ins (issue #1340: CDK auto-delete tags, EmptyOnDelete) stay
-          // visible to the provider's delete — with `undefined` a
-          // partially-created bucket/repo that already received data would
-          // guard-fail this rollback delete even though the template opted in.
-          // NOT re-resolved (unlike the update/create arms): a delete reads only
-          // physical id + these guard opt-ins, never a secret value, so a
-          // `{{resolve:...}}` expression left in a non-guard property is inert —
-          // resolving here would only fetch the secret needlessly. The one
-          // property a delete ADDRESSES through is a custom resource's
-          // `ServiceToken`; its provider skips an expression there with a named
-          // reason (go-to-k/cdkd#3960), which `throwIfDeleteSkipped` surfaces.
-          // go-to-k/cdkd#4225, as on the completed-CREATE arm.
+          // Pass the ATTEMPTED properties so template-borne data-guard opt-ins (issue #1340: CDK
+          // auto-delete tags, EmptyOnDelete) stay visible to the provider's delete — with
+          // `undefined` a partially-created bucket/repo that already received data would guard-fail
+          // this rollback delete even though the template opted in. NOT re-resolved (unlike the
+          // update/create arms): a delete reads only physical id + these guard opt-ins, never a
+          // secret value, so a `{{resolve:...}}` expression left in a non-guard property is inert —
+          // resolving here would only fetch the secret needlessly. The one property a delete
+          // ADDRESSES through is a custom resource's `ServiceToken`; its provider skips an
+          // expression there with a named reason (go-to-k/cdkd#3960), which `throwIfDeleteSkipped`
+          // surfaces. go-to-k/cdkd#4225, as on the completed-CREATE arm.
           const failedCreateClaimed = inlinePolicyWriters.claimedFor(
             op.resourceType,
             op.logicalId,
             stateResources
           );
-          // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` and `cdkd
-          // rollback --remove-protection` (incl. `--revert-failed`) reach a
-          // protected resource here; a deploy and its settle never set the
-          // flag: a nested child's revert under a deploy's automatic rollback
-          // never sets it; under `cdkd rollback --remove-protection` the child
-          // replay does (go-to-k/cdkd#4703). Only on a
-          // resource proven to be the one the failed CREATE made: AWS's refusal
-          // is the last guard on a name another resource reused. ONE attempt,
-          // no outer re-entry: the scope tells a protection flip's
-          // compensation that any failure is the last, so the guard is put back.
+          // go-to-k/cdkd#4678: `cdkd destroy --remove-protection` and `cdkd rollback
+          // --remove-protection` (incl. `--revert-failed`) reach a protected resource
+          // here; a deploy and its settle never set the flag: a nested child's revert
+          // under a deploy's automatic rollback never sets it; under `cdkd rollback
+          // --remove-protection` the child replay does (go-to-k/cdkd#4703). Only on a
+          // resource proven to be the one the failed CREATE made: AWS's refusal is the
+          // last guard on a name another resource reused. ONE attempt, no outer re-entry:
+          // the scope tells a protection flip's compensation that any failure is the
+          // last, so the guard is put back.
           const removeProtection =
             ctx.removeProtection === true &&
             protectionRemovalProven(
@@ -518,6 +514,7 @@ export async function replayFailedOperationsUnbound(
                 op.attemptedProperties,
                 {
                   expectedRegion: ctx.region,
+                  maskStackSecretNames: replayStackMask({ ctx, op, secrets }), // #6772
                   stackHoldersStillAttached: true, // #6770, #6808: the run's own holders
                   ...(removeProtection && { removeProtection: true }),
                   ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
@@ -798,6 +795,7 @@ export async function replayFailedOperationsUnbound(
                 // As on the `revert` arm (#2301, #3141, #4051, #6104, #6457): a state-record desired bag.
                 {
                   maskSecrets: createSecretMasker(secrets),
+                  maskStackSecretNames: replayStackMask({ ctx, op, secrets }), // #6772
                   expectedRegion: ctx.region,
                   replayingState: true,
                   recordedAttributes: current.attributes,

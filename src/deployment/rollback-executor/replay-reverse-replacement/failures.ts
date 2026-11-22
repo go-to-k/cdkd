@@ -1,4 +1,4 @@
-import { withReplayDeletePrinting } from '../replay-scope.js';
+import { replayStackMask, withReplayDeletePrinting } from '../replay-scope.js';
 import { samePhysicalId } from '../../replacement-name-holder/name-keys.js';
 import type { ResourceProvider } from '../../../types/resource.js';
 import { createdBeforeFailure } from '../../../provisioning/auxiliary-failure.js';
@@ -123,6 +123,7 @@ export async function deleteMarkedRecreate(
     const outcome = await withReplayDeletePrinting(s, () =>
       s.provider.delete(s.op.logicalId, madeId, s.oldType, s.properties, {
         expectedRegion: s.region,
+        maskStackSecretNames: replayStackMask(s), // #6772: printing only
         // go-to-k/cdkd#6770 / #6808: the failed re-create made it, so the
         // holders the records or journal name are this rollback's.
         stackHoldersStillAttached: true,

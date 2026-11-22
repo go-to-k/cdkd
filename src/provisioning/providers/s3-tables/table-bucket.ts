@@ -24,7 +24,7 @@ import { markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource } from '../../created-resource-sink.js';
 import { markNotGone } from '../../not-gone.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
-import { assertRegionMatch, type DeleteContext } from '../../region-check.js';
+import { assertRegionMatch, holderRefusalMask, type DeleteContext } from '../../region-check.js';
 import { compositeIdFormatMessage } from '../../composite-id.js';
 import { refuseMalformedDesiredTags } from '../../tag-list.js';
 import type { ResourceCreateResult, CreateContext } from '../../../types/resource.js';
@@ -458,7 +458,8 @@ export async function deleteTableBucket(
       });
       if (held === 'empty') continue;
       if (held !== undefined) {
-        const mask = context?.maskSecrets ?? ((text: string) => text);
+        // go-to-k/cdkd#6772: a table the stack retained can be named from a secret.
+        const mask = holderRefusalMask(context, context?.maskSecrets ?? ((text: string) => text));
         throw markNonRetryable(
           new ProvisioningError(
             mask(

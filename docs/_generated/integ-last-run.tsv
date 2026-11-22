@@ -239,7 +239,7 @@ iam-propagation-stress	2026-11-20T20:50:16Z	PASS	110	verify.sh	rc ok, orph clean
 iam-recreate-reattach	2026-11-22T06:53:39Z	PASS	290	verify.sh	rc ok, orph clean
 iam-role-fix-forward-orphan	2026-11-21T08:50:03Z	PASS	107	verify.sh	PR6748 447e12b3b; rc ok, orph clean; own bucket
 iam-role-policies-drift-clean	2026-11-21T11:39:56Z	PASS	556	verify.sh	rc 0, own bucket, 0 orphans (PR #6763)
-iam-role-prefixed-name-update	2026-11-22T06:53:39Z	PASS	371	verify.sh	rc ok, orph clean; 5d out-of-stack holders refused (#6808)
+iam-role-prefixed-name-update	2026-11-22T09:34:17Z	PASS	366	verify.sh	rc ok, orph clean; 5d out-of-stack holders refused (#6808); #6772 refusal mask path
 iam-secret-derived-principals	2026-11-21T18:10:10Z	PASS	160	verify.sh	rc ok, orph clean
 iam-sibling-managed-policy-drift	2026-11-22T05:59:15Z	PASS	632	verify.sh	#6810 run at b9718f87f; rc ok, orph clean (us-east-1)
 iam-user-group-fix-forward-orphan	2026-11-21T18:10:10Z	PASS	135	verify.sh	rc ok, orph clean
@@ -459,8 +459,8 @@ s3-object-lock	2026-11-22T06:03:31Z	PASS	90	verify.sh	us-east-1 rc ok, orph clea
 s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-11-10T16:44:10Z	PASS	80	verify.sh	rc ok, orph clean, us-west-2
 s3-subconfig-removal	2026-11-22T06:03:31Z	PASS	351	verify.sh	us-east-1 rc ok, orph clean, head ee69b4747 (#6817)
-s3-tables	2026-11-22T05:45:00Z	PASS	295	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
-s3-vectors	2026-11-21T21:47:36Z	PASS	80	verify.sh	rc ok, orph clean; Phase 1.9 in-stack index delete cleared listing
+s3-tables	2026-11-22T09:34:17Z	PASS	300	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean; #6772 refusal mask path
+s3-vectors	2026-11-22T09:34:17Z	PASS	90	verify.sh	rc ok, orph clean; Phase 1.9 in-stack index delete cleared listing; #6772 refusal mask path
 schedule-group-rename-rollback	2026-11-16T15:41:55Z	PASS	228	verify.sh	rc ok, orph clean; phase 2b red on pre-fix build (#6423)
 scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
 scheduler-custom-group	2026-11-06T23:58:18Z	PASS	119	verify.sh	#5935 scheduler-schedule split head; rc ok, orph clean

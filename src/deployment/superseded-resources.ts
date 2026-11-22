@@ -366,6 +366,8 @@ export async function deleteSupersededEntry(
     /** `cdkd destroy --remove-protection`. */
     removeProtection?: boolean;
     maskSecrets: (text: string) => string;
+    /** `DeleteContext.maskStackSecretNames` (go-to-k/cdkd#6772). */
+    maskStackSecretNames?: (text: string) => string;
     /** Set by `cdkd destroy` only (`DeleteContext.stackDestroy`). */
     stackDestroy?: boolean;
     /** An interrupt: stop waiting out an "in use" refusal. */
@@ -516,6 +518,9 @@ export async function deleteSupersededEntry(
           // go-to-k/cdkd#6309: a custom resource's Delete payload types.
           recordedTypedPayloadLeaves: record.typedPayloadLeaves,
           maskSecrets: input.maskSecrets,
+          ...(input.maskStackSecretNames !== undefined && {
+            maskStackSecretNames: input.maskStackSecretNames,
+          }),
         }
       );
     result = input.once === true ? await send() : await retryWhileInUse(send, input.stop);

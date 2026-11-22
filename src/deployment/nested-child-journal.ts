@@ -43,6 +43,7 @@ import {
   completedReplayEntries,
   journaledOrphanPrintingBag,
   maskEventTextWithBoundBags,
+  stackSecretNamesMasker,
 } from './secret-name-needles.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { S3StateBackend } from '../state/s3-state-backend.js';
@@ -850,15 +851,13 @@ export async function revertNestedChildFromJournal(args: {
       finalSnapshotClients: ctx.options?.finalSnapshotClients,
       skipFinalSnapshot:
         ctx.options?.skipFinalSnapshot === true || ctx.destroyOptions?.skipFinalSnapshot === true,
-      // go-to-k/cdkd#4703: `cdkd rollback --remove-protection` reaches a
-      // protected resource the failed deploy created inside this child. Read
-      // from `destroyOptions` alone, which `cdkd rollback` sets only on that
-      // flag; never from `ctx.options`: a deploy's automatic rollback, the
-      // other driver of this replay, carries the deploy's context, which has
-      // no such flag. The foreign-holder scan travels with it, scoped to the
-      // CHILD: its own record is not "another stack", every other one is. Only
-      // a journaled orphan's delete asks it, and this replay passes completed
-      // ops alone, so today it guards nothing but a future failed-ops arm.
+      // go-to-k/cdkd#4703: `cdkd rollback --remove-protection` reaches a protected resource the
+      // failed deploy created inside this child. Read from `destroyOptions` alone, which `cdkd
+      // rollback` sets only on that flag; never from `ctx.options`: a deploy's automatic rollback,
+      // the other driver of this replay, carries the deploy's context, which has no such flag. The
+      // foreign-holder scan travels with it, scoped to the CHILD: its own record is not "another
+      // stack", every other one is. Only a journaled orphan's delete asks it, and this replay
+      // passes completed ops alone, so today it guards nothing but a future failed-ops arm.
       ...(ctx.destroyOptions?.removeProtection === true && {
         removeProtection: true,
         foreignHolder: makeForeignHolderScan(ctx.stateBackend)({
@@ -871,6 +870,7 @@ export async function revertNestedChildFromJournal(args: {
       // No `--orphan` reaches this replay: the flag feeds only the replay of
       // the stack it is run on (go-to-k/cdkd#3845).
       nestedChildRevert: true,
+      maskStackSecretNames: stackSecretNamesMasker(stateResources, undefined), // #6772
     };
     // The child is the "parent" of its own rows: a grandchild row reverted by
     // this replay derives `<child>~<Grandchild>` from here. No templates — a
