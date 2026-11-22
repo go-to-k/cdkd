@@ -38,7 +38,7 @@ import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './sh
 import { definedAttributes } from '../../attribute-map.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
 import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
-import { isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
+import { heldText, isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 
@@ -410,7 +410,7 @@ export async function deleteGroup(
         new ProvisioningError(
           log.mask(
             `Failed to delete IAM group ${logicalId}: group ${physicalId} still has ` +
-              `user(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, whose ` +
+              `user(s) ${heldText(held)}, whose ` +
               `membership this ${run.noun} did not remove (a user added outside the stack, one ` +
               `retained by a DeletionPolicy, or a stack user whose own delete has not finished ` +
               `yet). Matching CloudFormation (DeleteConflict), cdkd ` +
@@ -437,8 +437,8 @@ export async function deleteGroup(
     // a refused delete-first leaves the group with its policies and the
     // stack's memberships as their records say. A member that drains during
     // the settle (a user the run deleted, IAM still listing it) is no
-    // refusal. A member list longer than one page removes nothing: the users
-    // past it are unread, and `DeleteGroup`'s refusal below names them.
+    // refusal. A member list longer than one page is refused too: the users
+    // past it are unread.
     let ownMembers: User[] = [];
     if (context?.stackHoldersStillAttached === true) {
       const own = stackOwnHolders(resourceType, physicalId);
@@ -455,7 +455,9 @@ export async function deleteGroup(
         (page) => (read = page)
       );
       if (foreign !== 'empty') refuseHeld(foreign);
-      if (!read.truncated) ownMembers = read.users.filter(isOwn);
+      // Past one page the members are unread: refused, nothing changed.
+      if (read.truncated) refuseHeld({ names: [], truncated: true });
+      ownMembers = read.users.filter(isOwn);
     }
 
     // Step 1: Detach all managed policies

@@ -90,3 +90,12 @@ export function isStackOwnHolder(
   const ids = named.flatMap((holder) => (holder.id === undefined ? [] : [holder.id]));
   return ids.length === 0 || (liveId !== undefined && ids.includes(liveId));
 }
+
+/**
+ * The holders a role or group refusal names (go-to-k/cdkd#6750): up to the cap, `, and more` past it, or, where
+ * only a page past the first could hold them, that.
+ */
+export function heldText(held: { names: string[]; truncated: boolean }): string {
+  if (held.names.length === 0) return 'past the first page of the listing';
+  return `${held.names.join(', ')}${held.truncated ? ', and more' : ''}`;
+}

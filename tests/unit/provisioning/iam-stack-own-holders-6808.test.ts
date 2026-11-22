@@ -293,12 +293,15 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
     ]);
   });
 
-  it("a listing longer than one page strips nothing, even when its first page is all the stack's", async () => {
+  it("a listing longer than one page is refused before anything changes, even when its first page is all the stack's", async () => {
     drive({
       ...base,
       ListInstanceProfilesForRoleCommand: () => ({
         InstanceProfiles: [{ InstanceProfileName: 'stack-profile', InstanceProfileId: 'AIPASTACK' }],
         IsTruncated: true,
+      }),
+      ListAttachedRolePoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
       }),
       DeleteRoleCommand: conflict,
     });
@@ -306,7 +309,11 @@ describe("IAM role delete-first: strips the stack's own profiles, refuses any ot
     const error = await deleteFirst();
 
     expect(names()).not.toContain('RemoveRoleFromInstanceProfileCommand');
-    expect(error!.message).toContain('which this run did not delete');
+    expect(names()).not.toContain('DetachRolePolicyCommand');
+    expect(names()).not.toContain('DeleteRoleCommand');
+    expect(error!.message).toContain(
+      'still in instance profile(s) past the first page of the listing, which this run did not delete'
+    );
   });
 
   it("the stack's profile gone by the settled listing is not stripped: the strip reads the LAST listing", async () => {
@@ -492,17 +499,24 @@ describe("IAM group delete-first: strips the stack's own members, refuses any ot
     expect(inputsOf('RemoveUserFromGroupCommand', 'UserName')).toEqual(['alice']);
   });
 
-  it("a member list longer than one page removes nothing, even when its first page is all the stack's", async () => {
+  it("a member list longer than one page is refused before anything changes, even when its first page is all the stack's", async () => {
     drive({
       ...base,
       GetGroupCommand: () => ({ ...group(['alice', 'AIDAALICE']), IsTruncated: true }),
+      ListAttachedGroupPoliciesCommand: () => ({
+        AttachedPolicies: [{ PolicyArn: 'arn:aws:iam::123456789012:policy/P' }],
+      }),
       DeleteGroupCommand: conflict,
     });
 
     const error = await deleteFirst();
 
     expect(names()).not.toContain('RemoveUserFromGroupCommand');
-    expect(error!.message).toContain('whose membership this run did not remove');
+    expect(names()).not.toContain('DetachGroupPolicyCommand');
+    expect(names()).not.toContain('DeleteGroupCommand');
+    expect(error!.message).toContain(
+      'still has user(s) past the first page of the listing, whose membership this run did not remove'
+    );
   });
 
   it("the stack's member gone by the settled read is not removed: the removal reads the LAST read", async () => {

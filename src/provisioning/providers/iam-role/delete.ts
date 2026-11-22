@@ -22,7 +22,7 @@ import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js'
 import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
-import { isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
+import { heldText, isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
 
 /**
  * Delete an IAM role
@@ -112,7 +112,7 @@ export async function deleteImpl(
         new ProvisioningError(
           log.mask(
             `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
-              `instance profile(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, ` +
+              `instance profile(s) ${heldText(held)}, ` +
               `which this ${run.noun} did not delete (a profile created outside the stack, or ` +
               `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
               `does not remove the role from them. If nothing still needs the role there, ` +
@@ -137,8 +137,8 @@ export async function deleteImpl(
     // delete-first leaves the role with its policies and the stack's own
     // profile holding it, as their records say. A profile that drains during
     // the settle (one the run deleted, IAM still listing it) is no refusal. A
-    // listing longer than one page strips nothing: the profiles past it are
-    // unread, and `DeleteRole`'s refusal below names them.
+    // listing longer than one page is refused too: the profiles past it are
+    // unread.
     let ownProfiles: string[] = [];
     if (context?.stackHoldersStillAttached === true) {
       const own = stackOwnHolders(resourceType, physicalId);
@@ -160,9 +160,9 @@ export async function deleteImpl(
           throw listError;
         });
       if (foreign !== 'empty') refuseHeld(foreign);
-      if (!listed.truncated) {
-        ownProfiles = listed.entries.filter(isOwn).map((entry) => entry.name);
-      }
+      // Past one page the profiles are unread: refused, nothing changed.
+      if (listed.truncated) refuseHeld({ names: [], truncated: true });
+      ownProfiles = listed.entries.filter(isOwn).map((entry) => entry.name);
     }
 
     // Step 1: Detach all managed policies
