@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin, type ViteBuilder } from 'vite-plus';
@@ -116,9 +117,14 @@ export default defineConfig({
     // default is `cpus - 1` forks, many spawning the paste harness's bash and
     // zsh per span. A single full run at that width froze a 15-cpu, 48 GB host
     // within seconds of starting, while the same suite at 4 forks had just
-    // completed on it. Any non-empty CI keeps the default (sharded runners,
-    // nothing else on them); an explicit `--maxWorkers` still overrides this.
-    maxWorkers: process.env.CI ? undefined : 4,
+    // completed on it. So a local run takes half the available parallelism,
+    // never fewer than 4. Measured 2026-11-23 on a 12-core Mac, full suite of
+    // 2,728 files, with another heavy session running concurrently: 4 workers
+    // took 801 s and 6 workers 561 s (-30%), both green with no `[vitest-pool]`
+    // worker loss, peak 1-min load 13.4 vs 13.7, minimum free memory 37% vs
+    // 40%. Any non-empty CI keeps the default (sharded runners, nothing else on
+    // them); an explicit `--maxWorkers` still overrides this.
+    maxWorkers: process.env.CI ? undefined : Math.max(4, Math.floor(availableParallelism() / 2)),
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

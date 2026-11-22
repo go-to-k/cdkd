@@ -57,10 +57,11 @@ Run these sequentially and report results.
    method stales `update-wrap-coverage.json`, and a `verify.sh` edit with no
    src change stales `cli-flag-coverage`.
 
-4. `vp test run --maxWorkers=4` — the whole unit suite, only once
-   `pgrep -fl vitest` shows no other run: an uncapped run beside a peer's
-   has hung the host. Prefer this over `vp run test`: nothing sits between the
-   caller and the verdict.
+4. `vp test run` — the whole unit suite, only once `pgrep -fl vitest`
+   shows no other run: an uncapped run beside a peer's has hung the host, so
+   `vite.config.ts` caps a local run at half the CPUs (never fewer than 4).
+   Prefer this over `vp run test`: nothing sits between the caller and the
+   verdict.
 
    Read the summary's NUMBERS, not its colour, and read the `Errors` line, which
    is NOT `Type Errors`. `Test Files N passed (N)` is self-consistent over a
@@ -78,7 +79,7 @@ Run these sequentially and report results.
    (
      log=$(mktemp)                     # NOT a fixed path: concurrent lanes share /tmp.
      echo "log: $log"                  # print BEFORE the exits, or a failing run is unrecoverable.
-     vp test run --maxWorkers=4 > "$log" 2>&1; rc=$?
+     vp test run > "$log" 2>&1; rc=$?
      runs=$(grep -c 'RUN  v' "$log")
      [ "$runs" = 1 ] || { echo "expected 1 RUN header, found $runs -- attests to nothing; log: $log"; exit 1; }
      run_root=$(grep -m1 -oE "RUN  v[0-9.]+ .*" "$log" | sed 's/^RUN  v[0-9.]* //')

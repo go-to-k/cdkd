@@ -8,8 +8,10 @@ import type { TestProject } from 'vite-plus/test/node';
  * Vitest `globalSetup`: lets only ONE large run proceed per machine at a
  * time; any other large run waits here until it ends.
  *
- * WHY. Every run starts up to `cpus - 1` forks, and many forks spawn child
- * processes of their own: script CLIs, and the paste harness's bash and zsh
+ * WHY. Every run starts many forks (vitest's default is `cpus - 1`; local
+ * runs are capped at half the CPUs, floor 4, in `vite.config.ts`), and many
+ * forks spawn child processes of their own: script CLIs, and the paste
+ * harness's bash and zsh
  * per span (`tests/unit/utils/paste-harness.ts`). Parallel agent lanes each
  * running the full suite from their own worktree froze a 48 GB host; the
  * written rule "lanes do not run the full suite" did not hold. A lock on full
