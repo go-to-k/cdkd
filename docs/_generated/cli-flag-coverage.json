@@ -3239,6 +3239,7 @@
     "--launch-template-name",
     "--launch-template-names",
     "--layer-name",
+    "--layers",
     "--lb-port",
     "--license-counting-type",
     "--lifecycle-configuration",

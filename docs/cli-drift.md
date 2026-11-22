@@ -242,6 +242,15 @@ such a resource, or replaces it with a different rule, its delete revokes the
 rule and the same deploy removes it from the group's recorded snapshot, so
 drift does not report it as lost and `--revert` does not re-authorize it.
 
+A group whose template declares no `SecurityGroupEgress` keeps the allow-all
+egress rule AWS creates with it, as CloudFormation's group does, and drift
+compares it: revoking it out of band is reported and `--revert` re-authorizes
+it. A snapshot recorded before cdkd read that rule back holds no egress rule
+for such a group and reports nothing until `cdkd state refresh-observed --yes`
+re-reads it. An egress rule a resource in another stack adds to such a
+group is reported too, and `--revert` revokes it; only rules a resource in the
+same stack adds are left out.
+
 The same rule covers the other resources that write into another resource's
 property:
 

@@ -262,9 +262,7 @@ export async function authorizeInlineIngress(
  *   - The whole revoke+authorize pair is SKIPPED when the templated egress
  *     is exactly the rule AWS already created by default. `isDefaultEgressRule`
  *     is the exact comparator (protocol `-1`, `CidrIp 0.0.0.0/0`, no IPv6
- *     range / peer group / prefix list / description, ports absent or `-1`)
- *     and is the SAME predicate the drift reverse-mapper uses to recognize
- *     the AWS default, so the two cannot disagree about what "default" means.
+ *     range / peer group / prefix list / description, ports absent or `-1`).
  *     AWS creates exactly ONE default egress rule and it is IPv4-only (there
  *     is no `::/0` default), which is why a single-element match is the right
  *     shape. NOTE this deliberately does NOT fire for the CDK L2

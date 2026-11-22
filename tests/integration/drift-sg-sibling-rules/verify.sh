@@ -30,6 +30,12 @@
 #      revoked rule. Re-authorize 8443 and the allow-all egress the create
 #      revoked (SgA is allowAllOutbound: false) OUT OF BAND: `cdkd drift`
 #      reports both, `--revert -y` revokes both in place, drift is clean.
+#   6d. (go-to-k/cdkd#6761) SgC declares no SecurityGroupEgress, so it keeps
+#      AWS's default allow-all egress rule and its baseline records it. Revoke
+#      it OUT OF BAND: `cdkd drift` reports SgC's SecurityGroupEgress and
+#      `--revert -y` re-authorizes it in place. Then add a 9443 egress OUT OF
+#      BAND on SgC and on SgB (CDK allowAllOutbound: true): each is reported
+#      on its own group, and drift is clean once it is revoked again.
 #   7. Destroy + gone-probes.
 #
 # Required env vars:
@@ -83,6 +89,7 @@ DRIFT_LOG=""
 PLANT_FILE=""
 GROUP_A=""
 GROUP_B=""
+GROUP_C=""
 VPC_ID=""
 
 # We are in the fixture dir, three levels below repo root.
@@ -181,9 +188,11 @@ node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 GROUP_A="$(jq -r '.outputs.GroupA // empty' <<<"${STATE_JSON}")"
 GROUP_B="$(jq -r '.outputs.GroupB // empty' <<<"${STATE_JSON}")"
+GROUP_C="$(jq -r '.outputs.GroupC // empty' <<<"${STATE_JSON}")"
 VPC_ID="$(jq -r '.outputs.VpcId // empty' <<<"${STATE_JSON}")"
 case "${GROUP_A}" in sg-?*) ;; *) echo "FAIL: GroupA output is not a group id: '${GROUP_A}'" >&2; exit 1 ;; esac
 case "${GROUP_B}" in sg-?*) ;; *) echo "FAIL: GroupB output is not a group id: '${GROUP_B}'" >&2; exit 1 ;; esac
+case "${GROUP_C}" in sg-?*) ;; *) echo "FAIL: GroupC output is not a group id: '${GROUP_C}'" >&2; exit 1 ;; esac
 case "${VPC_ID}" in vpc-?*) ;; *) echo "FAIL: VpcId output is not a VPC id: '${VPC_ID}'" >&2; exit 1 ;; esac
 read_ports
 expect_ports "SgA ingress" "${A_IN}" "443 5432"
@@ -204,6 +213,10 @@ expect_ports "SgA ingress baseline after the create (#6609)" "$(baseline_ports "
 expect_ports "SgA egress baseline after the create (#6609)" "$(baseline_ports "${GROUP_A}" SecurityGroupEgress)" "443"
 expect_ports "SgB ingress baseline after the create (#6609)" "$(baseline_ports "${GROUP_B}" SecurityGroupIngress)" "22"
 expect_ports "SgB egress baseline after the create (#6609)" "$(baseline_ports "${GROUP_B}" SecurityGroupEgress)" "-1"
+# go-to-k/cdkd#6761: SgC declares no egress and keeps AWS's default rule; the
+# baseline records it, so revoking it later is drift.
+expect_ports "SgC egress" "$(ports "${GROUP_C}" IpPermissionsEgress)" "-1"
+expect_ports "SgC egress baseline after the create (#6761)" "$(baseline_ports "${GROUP_C}" SecurityGroupEgress)" "-1"
 
 echo "==> Phase 2: cdkd drift on the fresh stack reports no drift"
 run_drift
@@ -411,10 +424,65 @@ expect_ports "SgA egress (after the 6c revert)" "${A_OUT}" "443 8080"
 expect_ports "SgB ingress (after the 6c revert)" "${B_IN}" "22 8080"
 assert_drift_clean "the phase 6c revert" CDKD_TEST_UPDATE=nofrom
 
+# go-to-k/cdkd#6761: the drifted members of ONE group, named by logical id.
+group_lid() { # usage: group_lid <group id>; reads the STATE_JSON Phase 6c fetched
+  jq -r --arg g "$1" \
+    '.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and .value.physicalId == $g) | .key' \
+    <<<"${STATE_JSON}"
+}
+group_drifted_paths() { # usage: group_drifted_paths <drift JSON> <logical id>
+  jq -r --arg l "$2" '[.[] | (.drifted // [])[] | select(.logicalId == $l) | .changes[].path] | unique | join(",")' <<<"$1"
+}
+expect_group_drift() { # usage: expect_group_drift <label> <drift JSON> <logical id> <want paths> <want other drifted ids>
+  local got others
+  got="$(group_drifted_paths "$2" "$3")"
+  others="$(jq -r --arg l "$3" '[.[] | (.drifted // [])[] | select(.logicalId != $l) | .logicalId] | unique | join(",")' <<<"$2")"
+  [ "${got}" = "$4" ] && [ "${others}" = "$5" ] || {
+    echo "FAIL: $1: $3 drifted on [${got}] (want [$4]), other drifted [${others}] (want [$5]) (#6761)" >&2
+    printf '%s\n' "$2" >&2
+    exit 1
+  }
+  echo "    OK: $1"
+}
+SG_B_LID="$(group_lid "${GROUP_B}")"
+SG_C_LID="$(group_lid "${GROUP_C}")"
+[ -n "${SG_B_LID}" ] && [ -n "${SG_C_LID}" ] \
+  || { echo "FAIL: no AWS::EC2::SecurityGroup record holds ${GROUP_B} / ${GROUP_C}" >&2; exit 1; }
+
+echo "==> Phase 6d: revoke SgC's default allow-all egress out of band (go-to-k/cdkd#6761)"
+aws ec2 revoke-security-group-egress --group-id "${GROUP_C}" --region "${REGION}" \
+  --ip-permissions 'IpProtocol=-1,IpRanges=[{CidrIp=0.0.0.0/0}]' >/dev/null
+expect_ports "SgC egress (default revoked out of band)" "$(ports "${GROUP_C}" IpPermissionsEgress)" ""
+DRIFT_6D="$(revert_drift_json CDKD_TEST_UPDATE=nofrom)" || exit 1
+expect_group_drift "drift reports SgC's revoked default egress" "${DRIFT_6D}" "${SG_C_LID}" SecurityGroupEgress ""
+revert_identity_snapshot "${REVERT_DIR}/revert-ids-6d-before" "${STACK}" "${SG_C_LID}" || exit 1
+REVERT_6D_RC=0
+run_revert CDKD_TEST_UPDATE=nofrom >"${REVERT_DIR}/revert-6d.log" 2>&1 || REVERT_6D_RC=$?
+sed 's/^/    | /' "${REVERT_DIR}/revert-6d.log"
+revert_identity_verify "${REVERT_DIR}/revert-ids-6d-before" "${REVERT_DIR}/revert-ids-6d-after" 1 "${REVERT_DIR}/revert-6d.log" || exit 1
+[ "${REVERT_6D_RC}" -eq 0 ] || { echo "FAIL: Phase 6d: cdkd drift --revert exited ${REVERT_6D_RC}, want 0" >&2; exit 1; }
+expect_ports "SgC egress (after the 6d revert)" "$(ports "${GROUP_C}" IpPermissionsEgress)" "-1"
+assert_drift_clean "the phase 6d revert" CDKD_TEST_UPDATE=nofrom
+
+for target in "SgC:${GROUP_C}:${SG_C_LID}" "SgB:${GROUP_B}:${SG_B_LID}"; do
+  IFS=: read -r name gid lid <<<"${target}"
+  echo "==> Phase 6d: an out-of-band 9443 egress on ${name} is drift (go-to-k/cdkd#6761)"
+  aws ec2 authorize-security-group-egress --group-id "${gid}" --region "${REGION}" \
+    --ip-permissions 'IpProtocol=tcp,FromPort=9443,ToPort=9443,IpRanges=[{CidrIp=10.9.0.0/16}]' >/dev/null
+  expect_ports "${name} egress (9443 added out of band)" "$(ports "${gid}" IpPermissionsEgress)" "-1 9443"
+  DRIFT_6D="$(revert_drift_json CDKD_TEST_UPDATE=nofrom)" || exit 1
+  expect_group_drift "drift reports ${name}'s added 9443 egress" "${DRIFT_6D}" "${lid}" SecurityGroupEgress ""
+  aws ec2 revoke-security-group-egress --group-id "${gid}" --region "${REGION}" \
+    --ip-permissions 'IpProtocol=tcp,FromPort=9443,ToPort=9443,IpRanges=[{CidrIp=10.9.0.0/16}]' >/dev/null
+  expect_ports "${name} egress (9443 revoked again)" "$(ports "${gid}" IpPermissionsEgress)" "-1"
+  assert_drift_clean "revoking ${name}'s 9443 egress" CDKD_TEST_UPDATE=nofrom
+done
+
 echo "==> Phase 7: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "security group ${GROUP_A} leaked" aws ec2 describe-security-groups --group-ids "${GROUP_A}"
 assert_gone "security group ${GROUP_B} leaked" aws ec2 describe-security-groups --group-ids "${GROUP_B}"
+assert_gone "security group ${GROUP_C} leaked" aws ec2 describe-security-groups --group-ids "${GROUP_C}"
 assert_gone "VPC ${VPC_ID} leaked" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}"
 assert_gone "state ${STATE_KEY} leaked" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 

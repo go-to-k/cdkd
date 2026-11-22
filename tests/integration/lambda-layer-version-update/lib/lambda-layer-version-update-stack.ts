@@ -36,6 +36,11 @@ import * as path from 'path';
  * resources at new objects, so the second deploy carries the mode over a
  * layer replacement and over UpdateFunctionCode too. Phase 2.5 (both env
  * flags set) drops RefFn's mode together with a code change.
+ *
+ * Issue #6761 arm: `OrderFn` carries TWO layers. Their order is configuration
+ * (a later layer overwrites a file an earlier one placed at the same path),
+ * so verify.sh reorders them out of band and asserts `cdkd drift` reports
+ * `Layers` — the id/ARN sort used to make the two orders compare equal.
  */
 export class LambdaLayerVersionUpdateStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -114,6 +119,14 @@ export class LambdaLayerVersionUpdateStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(fnDir),
+    });
+
+    new lambda.Function(this, 'OrderFn', {
+      functionName: 'cdkd-layer-version-update-test-order-fn',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      layers: [layer, refLayer],
+      code: lambda.Code.fromInline('exports.handler = async () => ({});'),
     });
 
     new cdk.CfnOutput(this, 'FnName', { value: fn.functionName });

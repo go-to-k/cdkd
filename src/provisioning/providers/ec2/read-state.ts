@@ -24,7 +24,6 @@ import {
   cfnIngressPortValue,
   descriptionKey,
   flattenIpPermissions,
-  isDefaultEgressRule,
   reconcileSgRules,
   recordedSgRuleId,
   securityGroupRuleMatchesCfnIngress,
@@ -355,11 +354,16 @@ export async function readSecurityGroupCurrentState(
  * recording its `sgr-` id owns exactly the live rule carrying that id, and a
  * rule at its recorded identity under another id stays the group's.
  *
- * Egress: AWS auto-attaches an `allow-all 0.0.0.0/0` rule on creation when
- * the user doesn't template `SecurityGroupEgress`. It is filtered out when
- * state didn't template egress so the auto-default doesn't fire false drift,
- * and surfaced as-is when state DID template egress (the user owns the egress
- * list, AWS-default is just one of the rules).
+ * Egress: AWS attaches an allow-all `-1` / `0.0.0.0/0` rule to every new
+ * group, and a group whose template declares no `SecurityGroupEgress` keeps it
+ * (CloudFormation's group carries it too). It is read back like any other
+ * rule (go-to-k/cdkd#6761): it used to be filtered out when the record
+ * declared no egress, so a group whose default rule was revoked out of band
+ * (all outbound traffic blocked) read the same as one that still had it. The
+ * deploy-time baseline now records the rule, so its removal is drift; a
+ * baseline an earlier cdkd captured without it holds `[]` for an undeclared
+ * key, which the comparator skips (`undeclaredEmptyObservedKeys`), so that
+ * record reads no phantom drift.
  */
 function sgRuleLists(
   sg: SecurityGroup,
@@ -389,14 +393,11 @@ function sgRuleLists(
   const stateEgress = Array.isArray(properties?.['SecurityGroupEgress'])
     ? (properties['SecurityGroupEgress'] as Array<Record<string, unknown>>)
     : undefined;
-  let egressRules = withoutSiblingOwnedSgRules(
+  const egressRules = withoutSiblingOwnedSgRules(
     flattenIpPermissions(sg.IpPermissionsEgress ?? [], 'egress'),
     owned('egress'),
     'egress'
   );
-  if (stateEgress === undefined) {
-    egressRules = egressRules.filter((r) => !isDefaultEgressRule(r));
-  }
   return {
     SecurityGroupIngress: reconcileSgRules(ingressRules, stateIngress, 'ingress'),
     SecurityGroupEgress: reconcileSgRules(egressRules, stateEgress, 'egress'),

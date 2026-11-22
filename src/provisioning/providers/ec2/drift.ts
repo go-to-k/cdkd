@@ -172,9 +172,9 @@ export function canonicalizeUnsettledProperties(
  *    rules, AWS's response is reordered to match state's positional
  *    order via `reconcileSgRules` so the comparator's array compare
  *    doesn't fire false drift on AWS's normalized ordering. The
- *    AWS-auto-attached "allow-all 0.0.0.0/0" egress rule is filtered
- *    out of `SecurityGroupEgress` when state did not template egress
- *    (the auto-default is invisible to drift). Both arrays are
+ *    AWS-auto-attached "allow-all 0.0.0.0/0" egress rule is read back
+ *    like any other rule, also when state did not template egress, so
+ *    revoking it out of band is drift (go-to-k/cdkd#6761). Both arrays are
  *    always emitted (even as `[]`) so the v3 `observedProperties`
  *    baseline catches console-side rule ADDs to a templated SG.
  *  - **AWS::EC2::Instance**: `DescribeInstances` for `ImageId`,

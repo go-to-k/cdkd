@@ -657,13 +657,12 @@ export function reconcileSgRules(
 }
 
 /**
- * Detect AWS's auto-attached "allow-all egress" rule that is created
- * with the SecurityGroup when the user does not template
- * `SecurityGroupEgress`. Filter signature is intentionally narrow — only
- * the exact AWS-default tuple (`-1` protocol, `0.0.0.0/0` CIDR, no
- * description, no per-rule ports). A user-defined rule that happens to
- * match the same tuple wouldn't be filtered if state templates egress
- * (the caller checks `stateEgress === undefined` before invoking).
+ * Detect AWS's auto-attached "allow-all egress" rule that is created with
+ * every SecurityGroup. Intentionally narrow — only the exact AWS-default
+ * tuple (`-1` protocol, `0.0.0.0/0` CIDR, no description, no per-rule
+ * ports). `applyInlineEgress` uses it to skip a revoke + re-authorize of a
+ * templated egress list that is exactly that rule. The drift readback no
+ * longer filters it out (go-to-k/cdkd#6761).
  */
 export function isDefaultEgressRule(rule: CfnSgRule): boolean {
   if (rule['IpProtocol'] !== '-1') return false;

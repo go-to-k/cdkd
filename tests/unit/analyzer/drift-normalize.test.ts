@@ -4,6 +4,7 @@ import {
   canonicalizeTagListsDeep,
   canonicalizeUnorderedArraysAtPaths,
   matchesPathPrefix,
+  orderSignificantIdArrayPaths,
 } from '../../../src/analyzer/drift-normalize.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 
@@ -111,6 +112,63 @@ describe('canonicalizeIdArraysDeep', () => {
     expect(canonicalizeIdArraysDeep('subnet-aaa111')).toBe('subnet-aaa111');
     expect(canonicalizeIdArraysDeep(7)).toBe(7);
     expect(canonicalizeIdArraysDeep(null)).toBe(null);
+  });
+});
+
+describe('order-significant id/ARN lists (go-to-k/cdkd#6761)', () => {
+  const layerA = 'arn:aws:lambda:us-east-1:123456789012:layer:zeta:3';
+  const layerB = 'arn:aws:lambda:us-east-1:123456789012:layer:alpha:1';
+  const subnets = ['subnet-bbb222', 'subnet-aaa111'];
+  const fn = (layers: string[], subnetIds: string[] = subnets) => ({
+    Layers: layers,
+    VpcConfig: { SubnetIds: subnetIds },
+  });
+
+  it('declares Lambda Layers and nothing for an unknown or absent type', () => {
+    expect(orderSignificantIdArrayPaths('AWS::Lambda::Function')).toEqual(['Layers']);
+    expect(orderSignificantIdArrayPaths('AWS::EC2::Instance')).toEqual([]);
+    expect(orderSignificantIdArrayPaths('__proto__')).toEqual([]);
+    expect(orderSignificantIdArrayPaths(undefined)).toEqual([]);
+  });
+
+  it('keeps a declared list in order and still sorts an undeclared one', () => {
+    const out = canonicalizeIdArraysDeep(fn([layerA, layerB]), ['Layers']) as ReturnType<typeof fn>;
+    expect(out.Layers).toEqual([layerA, layerB]);
+    expect(out.VpcConfig.SubnetIds).toEqual(['subnet-aaa111', 'subnet-bbb222']);
+  });
+
+  it('reports reordered Lambda layers as drift', () => {
+    const drift = calculateResourceDrift(fn([layerA, layerB]), fn([layerB, layerA]), {
+      resourceType: 'AWS::Lambda::Function',
+    });
+    expect(drift.map((d) => d.path)).toEqual(['Layers']);
+    // The recorded values are the live orders, so `--accept` writes AWS's order.
+    expect(drift[0]!.stateValue).toEqual([layerA, layerB]);
+    expect(drift[0]!.awsValue).toEqual([layerB, layerA]);
+  });
+
+  it('reads Lambda layers in the same order as clean', () => {
+    expect(
+      calculateResourceDrift(fn([layerA, layerB]), fn([layerA, layerB]), {
+        resourceType: 'AWS::Lambda::Function',
+      })
+    ).toEqual([]);
+  });
+
+  it('keeps another ARN list on the same function order-insensitive', () => {
+    expect(
+      calculateResourceDrift(fn([layerA, layerB]), fn([layerA, layerB], [...subnets].reverse()), {
+        resourceType: 'AWS::Lambda::Function',
+      })
+    ).toEqual([]);
+  });
+
+  it('keeps a Layers-named ARN list on another type order-insensitive', () => {
+    expect(
+      calculateResourceDrift(fn([layerA, layerB]), fn([layerB, layerA]), {
+        resourceType: 'AWS::Some::Other',
+      })
+    ).toEqual([]);
   });
 });
 
