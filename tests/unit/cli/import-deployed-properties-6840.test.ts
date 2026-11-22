@@ -104,6 +104,41 @@ describe('deployedPropertiesBlocker', () => {
     ).toBeUndefined();
   });
 
+  it.each([
+    ['Fn::GetAtt', { 'Fn::GetAtt': ['Sib', 'Arn'] }],
+    ['Fn::Join', { 'Fn::Join': ['', ['a', { Ref: 'Sib' }]] }],
+    ['Fn::Sub', { 'Fn::Sub': '${Sib}' }],
+    ['Fn::Select', { 'Fn::Select': [0, ['a', 'b']] }],
+    ['Fn::Split', { 'Fn::Split': [',', 'a,b'] }],
+    ['Fn::If', { 'Fn::If': ['IsProd', 'a', 'b'] }],
+    ['Fn::Equals', { 'Fn::Equals': ['a', 'b'] }],
+    ['Fn::And', { 'Fn::And': [{ Condition: 'IsProd' }, { Condition: 'Outer' }] }],
+    ['Fn::Or', { 'Fn::Or': [{ Condition: 'IsProd' }, { Condition: 'Outer' }] }],
+    ['Fn::Not', { 'Fn::Not': [{ Condition: 'IsProd' }] }],
+    ['Fn::FindInMap', { 'Fn::FindInMap': ['M', 'a', 'b'] }],
+    ['Fn::Base64', { 'Fn::Base64': 'x' }],
+    ['Fn::GetAZs', { 'Fn::GetAZs': '' }],
+    ['Fn::Cidr', { 'Fn::Cidr': ['10.0.0.0/16', 2, 8] }],
+  ])('admits %s, resolved from this stack alone, though the synthesized properties do not use it', (_label, node) => {
+    expect(deployedPropertiesBlocker({ P: node }, { P: 'literal' }, synth, synth)).toBeUndefined();
+  });
+
+  it('counts a property-level `{Condition: X}` naming a DECLARED condition as that condition', () => {
+    const deployed = tpl(synth.Resources, {
+      Conditions: { ...synth['Conditions' as never], IsProd: { 'Fn::Equals': ['x', 'y'] } },
+    });
+    expect(deployedPropertiesBlocker({ P: { Condition: 'IsProd' } }, {}, synth, deployed)).toBe(
+      'they use condition IsProd, which the synthesized template defines differently'
+    );
+  });
+
+  it('admits a sibling the code added after the last deploy (no deployed type to compare)', () => {
+    const grown = tpl({ ...synth.Resources, Added: { Type: 'AWS::SQS::Queue' } }, {
+      Parameters: synth['Parameters' as never],
+    });
+    expect(deployedPropertiesBlocker({ P: { Ref: 'Added' } }, {}, grown, synth)).toBeUndefined();
+  });
+
   it('refuses a sibling whose TYPE changed, which answers Ref / GetAtt as the new type', () => {
     const deployed = tpl({ ...synth.Resources, Sib: { Type: 'AWS::SQS::Queue' } });
     expect(

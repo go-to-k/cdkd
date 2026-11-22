@@ -1058,7 +1058,11 @@ describe('cdkd import', () => {
       });
       mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
       const childImport = vi.fn(
-        async (_input: { logicalId: string; properties: Record<string, unknown> }) => ({
+        async (_input: {
+          logicalId: string;
+          properties: Record<string, unknown>;
+          knownPhysicalIdFromCloudFormation?: boolean;
+        }) => ({
           physicalId: 'p',
           attributes: {},
         })
@@ -1116,6 +1120,8 @@ describe('cdkd import', () => {
       // The child's dispatch reads the deployed definition too.
       const childCall = childImport.mock.calls.find((c) => c[0].logicalId === 'ChildPolicy');
       expect(childCall![0].properties['Description']).toBe('deployed');
+      // Every child id is CloudFormation's: `--resource` is root-scoped (#6841).
+      expect(childCall![0].knownPhysicalIdFromCloudFormation).toBe(true);
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }
