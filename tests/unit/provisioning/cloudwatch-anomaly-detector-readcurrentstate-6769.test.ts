@@ -202,6 +202,55 @@ describe('CloudWatchAnomalyDetectorProvider.readCurrentState (go-to-k/cdkd#6769)
     });
   });
 
+  it('matches the recorded AccountId, and falls back to a detector AWS answers with none', async () => {
+    const single = { ...TUPLE, AccountId: '111111111111' };
+    const other = liveSingle();
+    other.SingleMetricAnomalyDetector = { ...other.SingleMetricAnomalyDetector!, AccountId: '222222222222' };
+    const mine = liveSingle({ Configuration: { MetricTimezone: 'UTC' } });
+    mine.SingleMetricAnomalyDetector = { ...mine.SingleMetricAnomalyDetector!, AccountId: '111111111111' };
+    answer([other, mine]);
+    expect(((await read({ SingleMetricAnomalyDetector: single })) as Record<string, unknown>)['Configuration']).toEqual({
+      MetricTimeZone: 'UTC',
+    });
+    // No live AccountId at all: the own-account detector.
+    answer([liveSingle({ Configuration: { MetricTimezone: 'Z' } })]);
+    expect(await read({ SingleMetricAnomalyDetector: single })).toEqual({
+      SingleMetricAnomalyDetector: TUPLE,
+      Configuration: { MetricTimeZone: 'Z' },
+    });
+  });
+
+  it('reads the deprecated top-level fields when AWS answers only those', async () => {
+    answer([{ ...liveSingle(), SingleMetricAnomalyDetector: undefined }]);
+    expect(await read(TUPLE)).toEqual({ ...TUPLE, Configuration: {} });
+  });
+
+  it('reads every declared exclusion removed out of band as ExcludedTimeRanges: []', async () => {
+    answer([liveSingle()]);
+    const configuration = {
+      ExcludedTimeRanges: [{ StartTime: '2026-01-01T00:00:00', EndTime: '2026-01-02T00:00:00' }],
+    };
+    expect(((await read({ ...TUPLE, Configuration: configuration })) as Record<string, unknown>)['Configuration']).toEqual({
+      ExcludedTimeRanges: [],
+    });
+  });
+
+  it('matches a metric-math query whose ReturnData AWS leaves out', async () => {
+    const query = { Id: 'e1', Expression: 'm1 * 2', ReturnData: true };
+    answer([{ MetricMathAnomalyDetector: { MetricDataQueries: [{ Id: 'e1', Expression: 'm1 * 2' }] } }]);
+    expect(((await read({ MetricMathAnomalyDetector: { MetricDataQueries: [query] } })) as Record<string, unknown>)['MetricMathAnomalyDetector']).toEqual({
+      MetricDataQueries: [{ Id: 'e1', Expression: 'm1 * 2' }],
+    });
+  });
+
+  it('warns, value-free, when the capture after its own write never shows the declared Configuration', async () => {
+    answer([liveSingle()]);
+    await read({ ...TUPLE, Configuration: { MetricTimeZone: 'UTC' } }, { afterOwnWrite: true });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('Configuration');
+    expect(String(warn.mock.calls[0]![0])).not.toContain('UTC');
+  });
+
   it('is RESOURCE_NOT_FOUND when no detector has the recorded descriptor', async () => {
     answer([liveSingle({ Stat: 'Average', SingleMetricAnomalyDetector: { ...liveSingle().SingleMetricAnomalyDetector, Stat: 'Average' } })]);
     expect(await read(TUPLE)).toBe(RESOURCE_NOT_FOUND);

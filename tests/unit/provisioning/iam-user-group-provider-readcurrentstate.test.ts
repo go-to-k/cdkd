@@ -541,6 +541,33 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
       expect(await read({ GroupName: 'devs', Users: ['alice'] })).toBe(RESOURCE_NOT_FOUND);
     });
 
+    it('throws a GetGroup failure other than not-found', async () => {
+      const denied = Object.assign(new Error('denied'), { name: 'AccessDenied' });
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof ListGroupsForUserCommand
+          ? Promise.resolve({ Groups: [], IsTruncated: false })
+          : Promise.reject(denied)
+      );
+      await expect(read({ GroupName: 'devs', Users: ['alice'] })).rejects.toBe(denied);
+    });
+
+    it('reads Users: [] when GetGroup answers the group in another case', async () => {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof ListGroupsForUserCommand
+          ? Promise.resolve({ Groups: [], IsTruncated: false })
+          : Promise.resolve({ Group: { GroupName: 'Devs', GroupId: 'AGPAEXAMPLE1234567890' }, Users: [] })
+      );
+      expect(await read({ GroupName: 'devs', Users: ['alice'] })).toEqual({ GroupName: 'devs', Users: [] });
+    });
+
+    it('reads a declared Users: [] with no call', async () => {
+      mockIam({});
+      expect(await read({ GroupName: 'devs', Users: [] })).toEqual({ GroupName: 'devs', Users: [] });
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
     it('throws a ListGroupsForUser failure other than not-found', async () => {
       const denied = Object.assign(new Error('denied'), { name: 'AccessDenied' });
       mockIam({}, { listError: denied });

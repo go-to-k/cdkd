@@ -84,6 +84,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 export AWS_PAGER=""
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdEmrInstanceFleetsExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -538,19 +540,20 @@ echo "    removal left in place (timeout ${TIMEOUT_P2B} min) beside an applied r
 # `ListInstanceFleets` on the recorded cluster: the TaskFleet row must be CLEAN
 # (not in notSupported, not in notCompared) on the stack as deployed; an
 # out-of-band `ResizeSpecifications` change (no capacity change, so no
-# instance churn) is drift on that property; put back with the AWS CLI, the row
-# is clean again. The exit code is not asserted: other rows in this stack are
-# not this phase's subject.
+# instance churn) is drift on that property; `drift --revert` puts it back in
+# place (same fleet id, go-to-k/cdkd#6638), and the row
+# is clean again. Only the drifted run's exit (1) is asserted: other rows in
+# this stack are not this phase's subject, and may keep a clean run off 0.
 echo "==> Phase 2c: drift compares the instance fleet (clean -> out-of-band change -> restored)"
 DRIFT_JSON="$(mktemp)"
-fleet_drift_verdict() { # prints OK:clean / OK:drifted:<paths> / the failure shape
+fleet_drift_verdict() { # sets VERDICT (OK:clean / OK:drifted:<paths> / the failure shape) and DRIFT_RC
   set +e
   node "${LOCAL_DIST}" drift "${STACK}" \
     --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
   DRIFT_RC=$?
   set -e
-  echo "    drift exited ${DRIFT_RC}" >&2
-  node -e '
+  echo "    drift exited ${DRIFT_RC}"
+  VERDICT="$(node -e '
 const t = process.argv[1];
 let r;
 try { r = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8")); }
@@ -568,7 +571,7 @@ try {
   const counts = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
   process.stdout.write(rows("clean").length === 1 && drifted.length === 0 ? "OK:clean" : counts);
 } catch (e) { process.stdout.write("UNEXPECTED_SHAPE"); }
-' "AWS::EMR::InstanceFleetConfig" "${DRIFT_JSON}"
+' "AWS::EMR::InstanceFleetConfig" "${DRIFT_JSON}")"
 }
 modify_resize_timeout() { # $1 = minutes; waits until ListInstanceFleets shows it
   local i got
@@ -583,7 +586,7 @@ modify_resize_timeout() { # $1 = minutes; waits until ListInstanceFleets shows i
   exit 1
 }
 
-VERDICT="$(fleet_drift_verdict)"
+fleet_drift_verdict
 if [ "${VERDICT}" != "OK:clean" ]; then
   rm -f "${DRIFT_JSON}"
   echo "FAIL [phase 2c]: expected the TaskFleet row clean (compared, no drift) as deployed, got '${VERDICT}' (drift rc ${DRIFT_RC}; before go-to-k/cdkd#6769 it was NOTSUPPORTED)" >&2
@@ -593,7 +596,7 @@ echo "    instance fleet compared and clean as deployed"
 
 OOB_TIMEOUT="$((RESIZE_TIMEOUT + 5))"
 modify_resize_timeout "${OOB_TIMEOUT}"
-VERDICT="$(fleet_drift_verdict)"
+fleet_drift_verdict
 case "${VERDICT}" in
   OK:drifted:*ResizeSpecifications*) ;;
   *)
@@ -609,14 +612,29 @@ if [ "${DRIFT_RC}" -ne 1 ]; then
 fi
 echo "    out-of-band ResizeSpecifications change reported (${VERDICT#OK:drifted:})"
 
-modify_resize_timeout "${RESIZE_TIMEOUT}"
-VERDICT="$(fleet_drift_verdict)"
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-before" "${STACK}" TaskFleet || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes > "${REVERT_WORK}/revert.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_WORK}/revert.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-before" "${REVERT_WORK}/revert-ids-after" 1 "${REVERT_WORK}/revert.log" || exit 1
+rm -rf "${REVERT_WORK}"
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL [phase 2c]: drift --revert exited ${REVERT_RC} (go-to-k/cdkd#6769)" >&2; exit 1; }
+for _ in $(seq 1 40); do
+  [ "$(fleet_ondemand_resize_timeout "$(list_instance_fleets_json "${CID_P1}")" "${FID_P2B}")" = "${RESIZE_TIMEOUT}" ] && break
+  sleep 15
+done
+GOT_TIMEOUT="$(fleet_ondemand_resize_timeout "$(list_instance_fleets_json "${CID_P1}")" "${FID_P2B}")"
+[ "${GOT_TIMEOUT}" = "${RESIZE_TIMEOUT}" ] || { echo "FAIL [phase 2c]: drift --revert did not restore the resize timeout ${RESIZE_TIMEOUT} (got '${GOT_TIMEOUT}')" >&2; exit 1; }
+echo "    drift --revert restored the resize timeout in place"
+fleet_drift_verdict
 rm -f "${DRIFT_JSON}"
 if [ "${VERDICT}" != "OK:clean" ]; then
   echo "FAIL [phase 2c]: expected the TaskFleet row clean after restoring the timeout, got '${VERDICT}' (go-to-k/cdkd#6769)" >&2
   exit 1
 fi
-echo "    instance fleet clean again after the restore"
+echo "    instance fleet clean again after the revert"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"

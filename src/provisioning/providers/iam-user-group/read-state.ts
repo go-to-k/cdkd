@@ -268,12 +268,19 @@ async function readUserToGroupAdditionState(
     return declared.filter((_, i) => members[i]);
   };
 
+  // `GetGroup` directly, not `readIdIfExists`: that one refuses an answer
+  // whose name differs in case, and IAM matches a group name in any case.
+  const groupGone = async (): Promise<boolean> => {
+    try {
+      await this.iamClient.send(new GetGroupCommand({ GroupName: groupName, MaxItems: 1 }));
+      return false;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return true;
+      throw err;
+    }
+  };
   const users = await readUsers();
-  if (
-    users.length === 0 &&
-    declared.length > 0 &&
-    (await this.readIdIfExists('AWS::IAM::Group', groupName)) === undefined
-  ) {
+  if (users.length === 0 && declared.length > 0 && (await groupGone())) {
     return RESOURCE_NOT_FOUND;
   }
   const result: Record<string, unknown> = { GroupName: groupName, Users: users };

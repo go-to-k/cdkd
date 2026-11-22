@@ -441,8 +441,9 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
   /**
    * The live detector whose descriptor is the record's, or `undefined`. A
    * single-metric detector matches on namespace, metric name, stat, the
-   * dimension SET, and the account when the record declares one (preferring
-   * one with no account otherwise); a metric-math one on its query list, each
+   * dimension SET, and the account when the record declares one (one AWS
+   * answers with no account is the fallback either way, as an own-account
+   * detector may read back with none); a metric-math one on its query list, each
    * recorded leaf equal to the live one (scalars compared as strings, a
    * `Dimensions` list as a set).
    */
@@ -489,13 +490,16 @@ export class CloudWatchAnomalyDetectorProvider implements ResourceProvider {
         scalarText(live.Namespace) === scalarText(ns) &&
         scalarText(live.MetricName) === scalarText(metric) &&
         scalarText(live.Stat) === scalarText(stat) &&
-        leavesMatch(dims ?? [], live.Dimensions ?? []) &&
-        (account === undefined || scalarText(live.AccountId) === scalarText(account))
+        leavesMatch(dims ?? [], live.Dimensions ?? [])
       );
     });
+    // An own-account detector may come back with no AccountId whatever the
+    // record spells, so one with no AccountId is the fallback either way.
+    const noAccount = matches.find((d) => liveSingle(d).AccountId === undefined);
     return account === undefined
-      ? (matches.find((d) => liveSingle(d).AccountId === undefined) ?? matches[0])
-      : matches[0];
+      ? (noAccount ?? matches[0])
+      : (matches.find((d) => scalarText(liveSingle(d).AccountId) === scalarText(account)) ??
+          noAccount);
   }
 
   /**
@@ -637,7 +641,8 @@ const byName = (list: Array<Record<string, unknown>>): Array<Record<string, unkn
  * Whether every leaf `recorded` holds equals the one at the same place in
  * `live`: scalars as strings (a record may spell `Period` `"300"`), a list
  * element by element at the same length, a `Dimensions` list as a set. A key
- * the record does not hold is not compared.
+ * the record does not hold is not compared, nor is one of
+ * {@link OPTIONAL_QUERY_MEMBERS} the answer leaves out.
  */
 function leavesMatch(recorded: unknown, live: unknown): boolean {
   if (recorded === undefined || recorded === null) return true;
@@ -651,12 +656,25 @@ function leavesMatch(recorded: unknown, live: unknown): boolean {
   }
   if (typeof recorded === 'object') {
     if (typeof live !== 'object' || live === null) return false;
-    return Object.entries(recorded as Record<string, unknown>).every(([k, v]) =>
-      leavesMatch(v, (live as Record<string, unknown>)[k])
-    );
+    return Object.entries(recorded as Record<string, unknown>).every(([k, v]) => {
+      const at = (live as Record<string, unknown>)[k];
+      // A member AWS may leave out of its answer (a default, or the own
+      // account) does not make the detector another one.
+      if (at === undefined && OPTIONAL_QUERY_MEMBERS.has(k)) return true;
+      return leavesMatch(v, at);
+    });
   }
   return live !== undefined && live !== null && scalarText(recorded) === scalarText(live);
 }
+
+/** Metric-math query members AWS may omit when they hold the default. */
+const OPTIONAL_QUERY_MEMBERS: ReadonlySet<string> = new Set([
+  'AccountId',
+  'Label',
+  'Period',
+  'ReturnData',
+  'Unit',
+]);
 
 /** A leaf as text (`"300"` and `300` alike); a non-scalar as its JSON, absent as `''`. */
 function scalarText(value: unknown): string {

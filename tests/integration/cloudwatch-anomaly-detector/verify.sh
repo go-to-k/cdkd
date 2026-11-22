@@ -15,7 +15,7 @@
 #     (go-to-k/cdkd#5311).
 #   Phase 2b (drift, go-to-k/cdkd#6769): drift clean with the detector
 #     compared (exit 0) -> an out-of-band Configuration change is drift (exit 1)
-#     -> restored with the AWS CLI, clean again.
+#     -> `drift --revert` restores it in place, clean again.
 #   Phase 3 (destroy): tear down; assert the detector, queue, and state file
 #     are gone.
 #
@@ -58,6 +58,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdCloudWatchAnomalyDetectorExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -88,6 +90,7 @@ cleanup() {
   # `trap ... EXIT`, because bash replaces a signal's handler instead of
   # chaining one: a second EXIT trap would disarm everything below it.
   rm -f "${DRIFT_OUT:-}"
+  [ -n "${REVERT_WORK:-}" ] && rm -rf "${REVERT_WORK}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -234,8 +237,8 @@ echo "    OK: physical id stable across the in-place update"
 # is a cdkd descriptor Cloud Control cannot address, #4668). The fresh deploy
 # drifts clean with both rows compared (exit 0); an out-of-band
 # Configuration change (PutAnomalyDetector with another MetricTimezone and no
-# exclusions) is drift (exit 1); putting the deployed Configuration back with
-# the AWS CLI makes it clean again.
+# exclusions) is drift (exit 1); `drift --revert` puts the deployed
+# Configuration back in place and drift is clean again.
 echo "==> Phase 2b: drift compares the detector (clean -> out-of-band change -> restored)"
 # NOT given its own `trap ... EXIT`: bash REPLACES a signal's handler rather
 # than chaining, so a second one would disarm the AWS teardown. The file is
@@ -289,13 +292,25 @@ if ! grep -qE '^ +[-+~] Configuration' "${DRIFT_OUT}"; then
 fi
 echo "    OK: drift reports the out-of-band Configuration change (exit 1)"
 
-# Restore what the deploy put (MetricTimeZone UTC + the two ranges, as UTC instants).
-aws cloudwatch put-anomaly-detector \
-  --single-metric-anomaly-detector "${DETECTOR_JSON}" \
-  --configuration '{"MetricTimezone":"UTC","ExcludedTimeRanges":[{"StartTime":"2026-01-01T00:00:00Z","EndTime":"2026-01-02T00:00:00Z"},{"StartTime":"2026-03-01T00:00:00Z","EndTime":"2026-03-02T00:00:00Z"}]}' \
-  --region "${REGION}"
+# `drift --revert` puts the deployed Configuration back IN PLACE
+# (PutAnomalyDetector on the same descriptor): same physical id, the detector
+# still there, the two ranges and the time zone restored (go-to-k/cdkd#6638).
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-before" "${STACK}" Detector || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes > "${REVERT_WORK}/revert.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_WORK}/revert.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-before" "${REVERT_WORK}/revert-ids-after" 1 "${REVERT_WORK}/revert.log" || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: drift --revert exited ${REVERT_RC} (go-to-k/cdkd#6769)" >&2; exit 1; }
+RESTORED=$(aws cloudwatch describe-anomaly-detectors \
+  --namespace "${NAMESPACE}" --metric-name "${METRIC}" --region "${REGION}" \
+  --query "AnomalyDetectors[?SingleMetricAnomalyDetector.Dimensions[?Name=='QueueName' && Value=='${QUEUE_NAME}']] | [0].Configuration.[MetricTimezone, length(ExcludedTimeRanges)]" \
+  --output text)
+[ "${RESTORED}" = "$(printf 'UTC\t2')" ] || { echo "FAIL: drift --revert did not restore MetricTimezone UTC and the two ranges (got '${RESTORED}') (go-to-k/cdkd#6769)" >&2; exit 1; }
+echo "    OK: drift --revert restored the Configuration in place"
 run_drift
-assert_clean "the restore"
+assert_clean "the revert"
 
 # --- Phase 3: destroy ------------------------------------------------------
 echo "==> Phase 3: destroy"

@@ -19,7 +19,7 @@
 # go-to-k/cdkd#6769 arm (Phase 1 / 1c): the UserToGroupAddition reads back, so
 # the stack drifts clean with exit 0 and no drift-unknown row; a user removed
 # from the group out of band is drift on its `Users` (exit 1); put back with
-# the AWS CLI, drift is clean again.
+# `drift --revert` (identities unchanged), drift is clean again.
 
 set -euo pipefail
 
@@ -305,9 +305,21 @@ if grep -qE '^ +\? ' <<<"${DRIFT_1C}"; then
   echo "FAIL: cdkd drift reported a drift-unknown row after the out-of-band removal (#6769)" >&2; exit 1
 fi
 echo "    OK: cdkd drift reports Membership's Users after the out-of-band removal"
-aws iam add-user-to-group --group-name "${GROUP}" --user-name "${ADDED}"
+# `drift --revert` puts the user back IN PLACE (AddUserToGroup), keeping the
+# group and the user (go-to-k/cdkd#6638, #6769). Membership itself is not
+# snapshot: its probe needs every recorded user in the group, which is the
+# drift being reverted; it is re-checked after.
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-1c-before" "${STACK}" "${GROUP_ID}" Added || exit 1
+REVERT_RC=0
+run_revert 2>&1 | tee "${REVERT_WORK}/revert-1c.log" || REVERT_RC=$?
 wait_added_in_group 1 || exit 1
-assert_drift_clean "the phase 1c restore"
+revert_identity_verify "${REVERT_WORK}/revert-ids-1c-before" "${REVERT_WORK}/revert-ids-1c-after" 2 "${REVERT_WORK}/revert-1c.log" ignore=CdkdIamRecreateReattachExample || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 1c)" >&2; exit 1; }
+[ "$(group_added)" = "1" ] || { echo "FAIL: ${ADDED} is not back in ${GROUP} after the revert (phase 1c)" >&2; exit 1; }
+[ "$(state_json | jq -r '.resources.Membership.physicalId')" = "Membership" ] \
+  || { echo "FAIL: Membership's state physical id changed across the revert (phase 1c)" >&2; exit 1; }
+echo "    OK: the revert put ${ADDED} back in ${GROUP}"
+assert_drift_clean "the phase 1c revert"
 
 echo "==> Phase 2: premise -- the template diffs to no changes"
 set +e

@@ -119,6 +119,45 @@ describe('EMRInstanceFleetConfigProvider.readCurrentState (go-to-k/cdkd#6769)', 
     expect(await read()).toMatchObject({ TargetOnDemandCapacity: 3 });
   });
 
+  it('appends an instance type added out of band after the recorded ones', async () => {
+    const live = liveFleet();
+    live.InstanceTypeSpecifications = [{ InstanceType: 'm6g.xlarge', WeightedCapacity: 1 }, ...live.InstanceTypeSpecifications!];
+    pages([live]);
+    const types = ((await read()) as Record<string, unknown>)['InstanceTypeConfigs'] as Array<Record<string, unknown>>;
+    expect(types.map((t) => t['InstanceType'])).toEqual(['m5.xlarge', 'm5.2xlarge', 'm6g.xlarge']);
+  });
+
+  it('folds only consecutive equal volumes, and maps nested Configurations', async () => {
+    const gp3 = { VolumeType: 'gp3', SizeInGB: 32 };
+    const io1 = { VolumeType: 'io1', SizeInGB: 64, Iops: 1000 };
+    pages([
+      liveFleet({
+        InstanceTypeSpecifications: [
+          {
+            InstanceType: 'm5.xlarge',
+            EbsBlockDevices: [gp3, gp3, io1, gp3].map((VolumeSpecification) => ({ VolumeSpecification })),
+            Configurations: [
+              { Classification: 'outer', Configurations: [{ Classification: 'inner', Properties: { k: 'v' } }] },
+              { Classification: 'empty', Configurations: [] },
+            ],
+          },
+        ],
+      }),
+    ]);
+    const [config] = ((await read()) as Record<string, unknown>)['InstanceTypeConfigs'] as Array<Record<string, unknown>>;
+    expect(config!['EbsConfiguration']).toEqual({
+      EbsBlockDeviceConfigs: [
+        { VolumeSpecification: gp3, VolumesPerInstance: 2 },
+        { VolumeSpecification: io1, VolumesPerInstance: 1 },
+        { VolumeSpecification: gp3, VolumesPerInstance: 1 },
+      ],
+    });
+    expect(config!['Configurations']).toEqual([
+      { Classification: 'outer', Configurations: [{ Classification: 'inner', ConfigurationProperties: { k: 'v' } }] },
+      { Classification: 'empty' },
+    ]);
+  });
+
   it('follows the Marker to the fleet on a later page', async () => {
     pages([liveFleet({ Id: 'if-OTHER' })], [liveFleet()]);
     expect(await read()).toEqual(RECORDED);
