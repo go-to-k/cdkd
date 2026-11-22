@@ -486,9 +486,9 @@ assert_gone "namespace ${NS_NAME} still exists after destroy" \
   aws redshift-serverless get-namespace --namespace-name "${NS_NAME}" --region "${REGION}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
-
 trap - EXIT INT TERM
 cleanup
+# AFTER cleanup: its `aws s3 rm` of each key writes a delete marker.
+s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "cc-write-only-secret-version state teardown"
 echo "[verify] PASS -- an unchanged secret-referenced password is left out only at its attested version (go-to-k/cdkd#6824)"
