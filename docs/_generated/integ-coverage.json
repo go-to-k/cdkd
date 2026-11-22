@@ -11722,6 +11722,8 @@
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::Version",
     "AWS::Lambda::WebFunction",
+    "AWS::Lightsail::Alarm",
+    "AWS::Lightsail::Instance",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",
     "AWS::Logs::ResourcePolicy",
