@@ -12,11 +12,11 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **146** (without a readback, reported as `drift unknown`: **5**)
-- Handled properties classified: **1527**
-- Named on the readback path: **1373**
+- SDK provider types: **146** (without a readback, reported as `drift unknown`: **2**)
+- Handled properties classified: **1554**
+- Named on the readback path: **1402**
 - Declared unreadable by `getDriftUnknownPaths`: **129**
-- In the committed baseline (does NOT block CI): **25**
+- In the committed baseline (does NOT block CI): **23**
 - Classified though the schema capture does not list them: **12**
 - **Gaps (blocks CI): 0**
 
@@ -34,8 +34,6 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::EFS::FileSystem` | `BypassPolicyLockoutSafetyCheck` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
 | `AWS::Events::EventBus` | `EventSourceName` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
 | `AWS::Glue::Trigger` | `StartOnCreation` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
-| `AWS::IAM::UserToGroupAddition` | `GroupName` | baseline |  | readCurrentState returns undefined for the type: drift reports it as drift unknown |
-| `AWS::IAM::UserToGroupAddition` | `Users` | baseline |  | readCurrentState returns undefined for the type: drift reports it as drift unknown |
 | `AWS::Lambda::Url` | `Qualifier` | baseline |  | create-only and part of the physical id: it cannot change out of band |
 | `AWS::RDS::DBCluster` | `ManageMasterUserPassword` | baseline |  | no Describe field; its effect is MasterUserSecret, which is read back |
 | `AWS::RDS::DBCluster` | `MasterUserPassword` | baseline |  | write-only in the CloudFormation registry schema: AWS never returns it |
@@ -56,9 +54,6 @@ For every SDK provider type and every top-level property its `handledProperties`
 | --- | --- |
 | `AWS::AppConfig::Environment` | `AppConfigEnvironmentProvider` |
 | `AWS::CloudFormation::Stack` | `NestedStackProvider` |
-| `AWS::CloudWatch::AnomalyDetector` | `CloudWatchAnomalyDetectorProvider` |
-| `AWS::EMR::InstanceFleetConfig` | `EMRInstanceFleetConfigProvider` |
-| `AWS::EMR::InstanceGroupConfig` | `EMRInstanceGroupConfigProvider` |
 
 ## Full classification
 
@@ -95,6 +90,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::CloudFront::OriginAccessControl` | `CloudFrontOACProvider` | OriginAccessControlConfig |  |
 | `AWS::CloudTrail::Trail` | `CloudTrailProvider` | AdvancedEventSelectors, AggregationConfigurations, CloudWatchLogsLogGroupArn, CloudWatchLogsRoleArn, EnableLogFileValidation, EventSelectors, IncludeGlobalServiceEvents, InsightSelectors, IsLogging, IsMultiRegionTrail, IsOrganizationTrail, KMSKeyId, RecursiveLogging, S3BucketName, S3KeyPrefix, SnsTopicName, Tags, TrailName |  |
 | `AWS::CloudWatch::Alarm` | `CloudWatchAlarmProvider` | ActionConfiguration, ActionsEnabled, AlarmActions, AlarmDescription, AlarmName, ComparisonOperator, DatapointsToAlarm, Dimensions, EvaluateLowSampleCountPercentile, EvaluationCriteria, EvaluationInterval, EvaluationPeriods, EvaluationWindow, ExtendedStatistic, InsufficientDataActions, MetricName, Metrics, Namespace, OKActions, Period, Statistic, Tags, Threshold, ThresholdMetricId, TreatMissingData, Unit, WarmUpConfiguration |  |
+| `AWS::CloudWatch::AnomalyDetector` | `CloudWatchAnomalyDetectorProvider` | Configuration, Dimensions, MetricCharacteristics, MetricMathAnomalyDetector, MetricName, Namespace, SingleMetricAnomalyDetector, Stat |  |
 | `AWS::CodeBuild::Project` | `CodeBuildProvider` | Artifacts, AutoRetryLimit, BadgeEnabled, BuildBatchConfig, Cache, ConcurrentBuildLimit, Description, EncryptionKey, Environment, FileSystemLocations, LogsConfig, Name, QueuedTimeoutInMinutes, ResourceAccessRole, SecondaryArtifacts, SecondarySources, SecondarySourceVersions, ServiceRole, Source, SourceVersion, Tags, TimeoutInMinutes, Visibility, VpcConfig | Triggers |
 | `AWS::CodeCommit::Repository` | `CodeCommitRepositoryProvider` | KmsKeyId, RepositoryDescription, RepositoryName, Tags | Code, Triggers |
 | `AWS::Cognito::UserPool` | `CognitoUserPoolProvider` | AccountRecoverySetting, AdminCreateUserConfig, AliasAttributes, AutoVerifiedAttributes, DcrConfiguration, DeletionProtection, DeviceConfiguration, EmailAuthenticationMessage, EmailAuthenticationSubject, EmailConfiguration, EmailVerificationMessage, EmailVerificationSubject, EnabledMfas, IssuerConfiguration, KeyConfiguration, LambdaConfig, MfaConfiguration, Policies, Schema, SmsAuthenticationMessage, SmsConfiguration, SmsVerificationMessage, UserAttributeUpdateSettings, UsernameAttributes, UsernameConfiguration, UserPoolAddOns, UserPoolName, UserPoolTags, UserPoolTier, VerificationMessageTemplate, WebAuthnFactorConfiguration, WebAuthnRelyingPartyID, WebAuthnUserVerification |  |
@@ -132,6 +128,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | `ELBv2Provider` | EnablePrefixForIpv6SourceNat, EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic, IpAddressType, Ipv4IpamPoolId, LoadBalancerAttributes, MinimumLoadBalancerCapacity, Name, Scheme, SecurityGroups, SubnetMappings, Subnets, Tags, Type | EnableCapacityReservationProvisionStabilize |
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `ELBv2Provider` | HealthCheckEnabled, HealthCheckIntervalSeconds, HealthCheckPath, HealthCheckPort, HealthCheckProtocol, HealthCheckTimeoutSeconds, HealthyThresholdCount, IpAddressType, Matcher, Name, Port, Protocol, ProtocolVersion, Tags, TargetControlPort, TargetGroupAttributes, Targets, TargetType, UnhealthyThresholdCount, VpcId |  |
 | `AWS::EMR::Cluster` | `EMRClusterProvider` | Applications, AutoScalingRole, CustomAmiId, EbsRootVolumeIops, EbsRootVolumeSize, EbsRootVolumeThroughput, Instances, JobFlowRole, LogEncryptionKmsKeyId, LogUri, MonitoringConfiguration, Name, OSReleaseLabel, ReleaseLabel, ScaleDownBehavior, SecurityConfiguration, ServiceRole, SessionEnabled, StepConcurrencyLevel, Tags, VisibleToAllUsers | AdditionalInfo, AutoTerminationPolicy, BootstrapActions, Configurations, KerberosAttributes, ManagedScalingPolicy, PlacementGroupConfigs, Steps |
+| `AWS::EMR::InstanceFleetConfig` | `EMRInstanceFleetConfigProvider` | ClusterId, InstanceFleetType, InstanceTypeConfigs, LaunchSpecifications, Name, ResizeSpecifications, TargetOnDemandCapacity, TargetSpotCapacity |  |
+| `AWS::EMR::InstanceGroupConfig` | `EMRInstanceGroupConfigProvider` | AutoScalingPolicy, BidPrice, Configurations, CustomAmiId, EbsConfiguration, InstanceCount, InstanceRole, InstanceType, JobFlowId, Market, Name |  |
 | `AWS::Events::Archive` | `EventBridgeArchiveProvider` | ArchiveName, Description, EventPattern, KmsKeyIdentifier, RetentionDays, SourceArn |  |
 | `AWS::Events::EventBus` | `EventBridgeBusProvider` | DeadLetterConfig, Description, KmsKeyIdentifier, LogConfig, Name, Policy, Tags |  |
 | `AWS::Events::Rule` | `EventBridgeRuleProvider` | Description, EventBusName, EventPattern, Name, RoleArn, ScheduleExpression, State, Tags, Targets |  |
@@ -151,7 +149,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::IAM::Policy` | `IAMPolicyProvider` | Groups, PolicyDocument, PolicyName, Roles, Users |  |
 | `AWS::IAM::Role` | `IAMRoleProvider` | AssumeRolePolicyDocument, Description, ManagedPolicyArns, MaxSessionDuration, Path, PermissionsBoundary, Policies, RoleName, Tags |  |
 | `AWS::IAM::User` | `IAMUserGroupProvider` | Groups, LoginProfile, ManagedPolicyArns, Path, PermissionsBoundary, Policies, Tags, UserName |  |
-| `AWS::IAM::UserToGroupAddition` | `IAMUserGroupProvider` |  |  |
+| `AWS::IAM::UserToGroupAddition` | `IAMUserGroupProvider` | GroupName, Users |  |
 | `AWS::Kinesis::Stream` | `KinesisStreamProvider` | DesiredShardLevelMetrics, MaxRecordSizeInKiB, Name, RecordDistributionStrategy, RetentionPeriodHours, ShardCount, StreamEncryption, StreamModeDetails, Tags |  |
 | `AWS::Kinesis::StreamConsumer` | `KinesisStreamConsumerProvider` | ConsumerName, StreamARN, Tags |  |
 | `AWS::KinesisFirehose::DeliveryStream` | `FirehoseProvider` | AmazonOpenSearchServerlessDestinationConfiguration, AmazonopensearchserviceDestinationConfiguration, DeliveryStreamEncryptionConfigurationInput, DeliveryStreamName, DeliveryStreamType, DirectPutSourceConfiguration, ElasticsearchDestinationConfiguration, ExtendedS3DestinationConfiguration, HttpEndpointDestinationConfiguration, IcebergDestinationConfiguration, KinesisStreamSourceConfiguration, MSKSourceConfiguration, RedshiftDestinationConfiguration, S3DestinationConfiguration, SplunkDestinationConfiguration, Tags |  |

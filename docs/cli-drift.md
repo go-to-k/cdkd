@@ -562,7 +562,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::CloudFormation` | `WaitCondition`, `WaitConditionHandle` |
 | `AWS::CloudFront` | `CloudFrontOriginAccessIdentity`, `Distribution`, `OriginAccessControl` |
 | `AWS::CloudTrail` | `Trail` |
-| `AWS::CloudWatch` | `Alarm` |
+| `AWS::CloudWatch` | `Alarm`, `AnomalyDetector` |
 | `AWS::CodeBuild` | `Project` |
 | `AWS::CodeCommit` | `Repository` |
 | `AWS::Cognito` | `UserPool` |
@@ -575,11 +575,11 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::EFS` | `AccessPoint`, `FileSystem`, `MountTarget` |
 | `AWS::ElastiCache` | `CacheCluster`, `SubnetGroup` |
 | `AWS::ElasticLoadBalancingV2` | `Listener`, `LoadBalancer`, `TargetGroup` |
-| `AWS::EMR` | `Cluster` |
+| `AWS::EMR` | `Cluster`, `InstanceFleetConfig`, `InstanceGroupConfig` |
 | `AWS::Events` | `Archive`, `EventBus`, `Rule` |
 | `AWS::FSx` | `FileSystem` |
 | `AWS::Glue` | `Connection`, `Crawler`, `Database`, `Job`, `SecurityConfiguration`, `Table`, `Trigger`, `Workflow` |
-| `AWS::IAM` | `AccessKey`, `Group`, `InstanceProfile`, `ManagedPolicy`, `Policy`, `Role`, `User` |
+| `AWS::IAM` | `AccessKey`, `Group`, `InstanceProfile`, `ManagedPolicy`, `Policy`, `Role`, `User`, `UserToGroupAddition` |
 | `AWS::Kinesis` | `Stream`, `StreamConsumer` |
 | `AWS::KinesisFirehose` | `DeliveryStream` |
 | `AWS::KMS` | `Alias`, `Key` |
@@ -604,30 +604,10 @@ A type that neither route can read is reported as drift unknown.
 
 ### Types cdkd deploys itself without a read-back
 
-cdkd deploys four types with its own code but has no read-back for them, so
-drift would read them through Cloud Control: `AWS::CloudFormation::Stack`,
-`AWS::CloudWatch::AnomalyDetector`, `AWS::EMR::InstanceFleetConfig` and
-`AWS::EMR::InstanceGroupConfig`. All but
-the nested stack are always drift unknown instead (see the table below), so
-drift does not call Cloud Control for them.
-
-An `AWS::CloudFormation::Stack` row is a nested stack, and drift handles it as
-described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md).
-
-### Types that are always drift unknown
-
-For the first four types below, what Cloud Control returns differs from what
-state holds even when nothing changed, or Cloud Control cannot address the
-resource by its physical id. Asking Cloud Control would report false drift or a
-read failure on every run, so cdkd reports them as drift unknown. The last one
-has no read-back of its own.
-
-| Type | Reason |
-| --- | --- |
-| `AWS::EC2::LaunchTemplate` | The response carries version-bumped `LaunchTemplateData` and a synthetic `LatestVersionNumber`. |
-| `AWS::CloudWatch::AnomalyDetector` | Its physical id is a cdkd-derived descriptor Cloud Control cannot address. |
-| `AWS::EMR::InstanceFleetConfig`, `AWS::EMR::InstanceGroupConfig` | The physical id is the bare fleet / group id; Cloud Control needs the cluster id with it. |
-| `AWS::IAM::UserToGroupAddition` | It only adds users to a group, and cdkd does not read the membership back for it. |
+cdkd deploys one type with its own code but has no read-back for it:
+`AWS::CloudFormation::Stack`. Such a row is a nested stack, and drift handles
+it as described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md);
+drift never asks Cloud Control about it.
 
 > [!NOTE]
 > Several types above (`AWS::ApiGateway::Method`, `AWS::Route53::RecordSet`,

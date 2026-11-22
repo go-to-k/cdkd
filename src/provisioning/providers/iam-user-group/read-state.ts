@@ -29,7 +29,12 @@ import {
   userOrGroupIdentityToken,
 } from './shared.js';
 import { warnUnsettledMember } from '../../settle-after-own-write.js';
-import { principalOwnWriteMembers, settleOwnWriteMembers } from '../../settle-own-write-members.js';
+import {
+  principalOwnWriteMembers,
+  settleOwnWriteMembers,
+  stringListMember,
+} from '../../settle-own-write-members.js';
+import { readPrincipalLists } from '../../iam-policy-targets.js';
 import { takeOwnWriteRemovals } from '../../own-write-removals.js';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import { coerceCfnBoolean } from '../../config-shape.js';
@@ -169,13 +174,9 @@ export async function readIdIfExists(
  *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`;
  *    `ListGroupPolicies` + `GetGroupPolicy` per name for inline
  *    `Policies`.
- *  - **AWS::IAM::UserToGroupAddition**: SKIPPED — returns `undefined`
- *    because the resource is metadata-only (group-membership attachments
- *    written via `AddUserToGroup`). A meaningful drift check would
- *    require both the `GroupName` and the source-of-truth `Users` list
- *    from state, neither of which `readCurrentState` receives. The
- *    drift comparator falls back to "drift unknown" and the user can
- *    inspect the membership manually.
+ *  - **AWS::IAM::UserToGroupAddition**: `ListGroupsForUser` for each
+ *    recorded user, for `GroupName` and the `Users` still in it
+ *    (go-to-k/cdkd#6769; {@link readUserToGroupAdditionState}).
  *
  * On the capture right after cdkd's own write (`context.afterOwnWrite`,
  * go-to-k/cdkd#6609) each declared member that disagrees is re-read alone
@@ -198,14 +199,108 @@ export async function readCurrentState(
     case 'AWS::IAM::Group':
       return this.readGroupCurrentState(physicalId, properties, context, logicalId);
     case 'AWS::IAM::UserToGroupAddition':
-      // Membership-only resource. See JSDoc above.
-      return undefined;
+      return readUserToGroupAdditionState.call(this, logicalId, properties, context);
     default:
       this.logger.debug(
         `readCurrentState: unsupported resource type ${resourceType} for ${logicalId}`
       );
       return undefined;
   }
+}
+
+/**
+ * An `AWS::IAM::UserToGroupAddition`'s membership (go-to-k/cdkd#6769). Its
+ * physical id is the logical id, so the address is the record's `GroupName`
+ * and `Users`: `ListGroupsForUser` (paginated) for each recorded user, and
+ * `Users` is the recorded users still in the group, in recorded order. IAM
+ * names are case-insensitive, so a user is a member when a group of the
+ * recorded name in any case lists it. A user IAM no longer has
+ * (`NoSuchEntityException`) is no member; any other failure throws.
+ *
+ * A record whose `GroupName` or `Users` is not a list of IAM names (a
+ * redacted or secret-derived entry, go-to-k/cdkd#4150) cannot be addressed:
+ * `undefined`, drift unknown, never a guess. `RESOURCE_NOT_FOUND` only when
+ * no recorded user is in the group and `GetGroup` says the group is gone; a
+ * group still there with every user removed reads as `Users: []`, which
+ * `drift --revert` can re-add.
+ *
+ * On the capture right after cdkd's own write (`context.afterOwnWrite`) a
+ * declared user not listed yet is re-read on the settle schedule, as a
+ * user's `Groups` is.
+ */
+async function readUserToGroupAdditionState(
+  this: IAMUserGroupProvider,
+  logicalId: string,
+  properties: Record<string, unknown> | undefined,
+  context: import('../../../types/resource.js').ReadCurrentStateContext | undefined
+): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  const groupName = properties?.['GroupName'];
+  if (typeof groupName !== 'string' || !isUserOrGroupName('AWS::IAM::Group', groupName)) {
+    return undefined;
+  }
+  const read = readPrincipalLists({ Users: properties?.['Users'] });
+  const declared = 'malformed' in read ? undefined : read.lists.Users;
+  if (declared === undefined || !declared.every((u) => isUserOrGroupName('AWS::IAM::User', u))) {
+    return undefined;
+  }
+  const fold = (name: string): string => name.toLowerCase();
+  const wanted = fold(groupName);
+  const isMember = async (userName: string): Promise<boolean> => {
+    let marker: string | undefined;
+    try {
+      do {
+        const resp = await this.iamClient.send(
+          new ListGroupsForUserCommand({ UserName: userName, ...(marker && { Marker: marker }) })
+        );
+        if ((resp.Groups ?? []).some((g) => g.GroupName && fold(g.GroupName) === wanted)) {
+          return true;
+        }
+        marker = resp.IsTruncated === true ? resp.Marker : undefined;
+      } while (marker);
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return false;
+      throw err;
+    }
+    return false;
+  };
+  const readUsers = async (): Promise<string[]> => {
+    const members = await Promise.all(declared.map(isMember));
+    return declared.filter((_, i) => members[i]);
+  };
+
+  // `GetGroup` directly, not `readIdIfExists`: that one refuses an answer
+  // whose name differs in case, and IAM matches a group name in any case.
+  const groupGone = async (): Promise<boolean> => {
+    try {
+      await this.iamClient.send(new GetGroupCommand({ GroupName: groupName, MaxItems: 1 }));
+      return false;
+    } catch (err) {
+      if (err instanceof NoSuchEntityException) return true;
+      throw err;
+    }
+  };
+  const users = await readUsers();
+  if (users.length === 0 && declared.length > 0 && (await groupGone())) {
+    return RESOURCE_NOT_FOUND;
+  }
+  const result: Record<string, unknown> = { GroupName: groupName, Users: users };
+  if (context?.afterOwnWrite === true) {
+    await settleOwnWriteMembers(
+      result,
+      [
+        stringListMember(
+          'Users',
+          declared,
+          async () => ({ value: await readUsers() }),
+          undefined,
+          fold
+        ),
+      ],
+      this.ownWriteRereadDelaysMs,
+      (key) => warnUnsettledMember(this.logger, logicalId, 'AWS::IAM::UserToGroupAddition', key)
+    );
+  }
+  return result;
 }
 
 export async function readUserCurrentState(

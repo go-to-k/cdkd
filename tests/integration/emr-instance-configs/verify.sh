@@ -29,6 +29,9 @@
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: resize the TASK group 1 -> 2
 #      (ModifyInstanceGroups, polled to RUNNING). Assert the group Id is
 #      UNCHANGED (in-place, no replace) and the group has 2 RUNNING instances.
+#   2b. Drift (go-to-k/cdkd#6769): the group row is compared and clean; an
+#      out-of-band resize to 1 is drift on InstanceCount (exit 1); `drift
+#      --revert` resizes it back to 2 with the group id unchanged; clean again.
 #   2c. Add a second TASK group with an AutoScalingPolicy (mode scaled-group),
 #      assert the policy is ATTACHED with its Application Auto Scaling target
 #      and CloudWatch alarm(s), then redeploy without it: cdkd deletes the
@@ -87,6 +90,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 export AWS_PAGER=""
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdEmrInstanceConfigsExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -246,6 +251,8 @@ sweep_cluster_scaling_leftovers() { ( # usage: sweep_cluster_scaling_leftovers <
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
+  [ -n "${REVERT_WORK:-}" ] && rm -rf "${REVERT_WORK}"
+  [ -n "${DRIFT_JSON:-}" ] && rm -f "${DRIFT_JSON}"
   set +eu
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" \
@@ -503,25 +510,26 @@ if [ "${GCOUNT_P2}" != "2" ]; then
 fi
 echo "    resize reached AWS (2 RUNNING instances)"
 
-# --- Phase 2b: drift over the deny-listed instance group (issue #5179) ----
-# AWS gave `AWS::EMR::InstanceGroupConfig` Cloud Control handlers keyed by a COMPOSITE
-# primaryIdentifier (`InstanceGroupId` + `JobFlowId`). The SDK provider has no `readCurrentState` and
-# records the bare instance group id as the physicalId, so drift's Cloud Control
-# fallback had `GetResource` refuse it with a ValidationException on every run:
-# the row landed in `notCompared` (readFailed) and drift exited 2. The type is
-# now on `CC_API_FALLBACK_DENY_LIST`, so the row must be in `notSupported`
-# (drift unknown) and in no `notCompared` entry. One drift call over the stack
-# as deployed; no extra deploy. The exit code is not asserted: other rows in
-# this stack are not this phase's subject.
-echo "==> Phase 2b: drift reports the instance group as drift unknown, not a read failure"
+# --- Phase 2b: drift reads the instance group back (issue #6769) -------
+# Cloud Control cannot address the bare group id (its primaryIdentifier is the
+# composite `InstanceGroupId` + `JobFlowId`, #5179), so the type was
+# deny-listed and drift unknown. The SDK provider now reads it back itself
+# through `ListInstanceGroups` on the recorded cluster: the TaskGroup row must
+# be CLEAN (not in notSupported, not in notCompared) as deployed (2 instances);
+# an out-of-band resize to 1 is drift on `InstanceCount` (exit 1); `drift
+# --revert` resizes it back in place (same group id, go-to-k/cdkd#6638), and
+# the row is clean again. Only the drifted run's exit is asserted: other rows
+# in this stack are not this phase's subject.
+echo "==> Phase 2b: drift compares the instance group (clean -> out-of-band resize -> --revert)"
 DRIFT_JSON="$(mktemp)"
-set +e
-node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
-DRIFT_RC=$?
-set -e
-echo "    drift exited ${DRIFT_RC}"
-DRIFT_VERDICT="$(node -e '
+group_drift_verdict() { # sets VERDICT (OK:clean / OK:drifted:<paths> / the failure shape) and DRIFT_RC
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
+  DRIFT_RC=$?
+  set -e
+  echo "    drift exited ${DRIFT_RC}"
+  VERDICT="$(node -e '
 const t = process.argv[1];
 let r;
 try { r = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8")); }
@@ -530,17 +538,67 @@ try {
   const rows = (k) => r.flatMap((s) => s[k] || []).filter((x) => x.type === t);
   const nc = rows("notCompared");
   if (nc.length) { process.stdout.write("NOTCOMPARED:" + nc.map((x) => x.cause).join(",")); process.exit(0); }
-  const ns = rows("notSupported").length;
-  const other = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
-  process.stdout.write(ns === 1 ? "OK" : "NOTSUPPORTED=" + ns + "," + other);
+  if (rows("notSupported").length) { process.stdout.write("NOTSUPPORTED"); process.exit(0); }
+  const drifted = rows("drifted");
+  if (drifted.length === 1) {
+    process.stdout.write("OK:drifted:" + drifted[0].changes.map((c) => c.path).sort().join(","));
+    process.exit(0);
+  }
+  const counts = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
+  process.stdout.write(rows("clean").length === 1 && drifted.length === 0 ? "OK:clean" : counts);
 } catch (e) { process.stdout.write("UNEXPECTED_SHAPE"); }
 ' "AWS::EMR::InstanceGroupConfig" "${DRIFT_JSON}")"
-rm -f "${DRIFT_JSON}"
-if [ "${DRIFT_VERDICT}" != "OK" ]; then
-  echo "FAIL [phase 2b]: expected exactly one AWS::EMR::InstanceGroupConfig row in notSupported and none in notCompared, got '${DRIFT_VERDICT}' (drift rc ${DRIFT_RC}; pre-fix this read NOTCOMPARED:readFailed, go-to-k/cdkd#5179)" >&2
+}
+requested_count() { # $1 = cluster id, $2 = group id
+  list_instance_groups_json "$1" | jq -r --arg gid "$2" '[.[] | select(.Id == $gid) | .RequestedInstanceCount] | first // empty'
+}
+
+group_drift_verdict
+if [ "${VERDICT}" != "OK:clean" ]; then
+  echo "FAIL [phase 2b]: expected the TaskGroup row clean (compared, no drift) as deployed, got '${VERDICT}' (drift rc ${DRIFT_RC}; before go-to-k/cdkd#6769 it was NOTSUPPORTED)" >&2
   exit 1
 fi
-echo "    instance group reported as drift unknown (notSupported), not as a read failure"
+echo "    instance group compared and clean as deployed"
+
+AWS_CLI_AUTO_PROMPT=off aws emr modify-instance-groups --region "${REGION}" --cluster-id "${CID_P1}" \
+  --instance-groups "InstanceGroupId=${GID_P2},InstanceCount=1"
+for _ in $(seq 1 20); do
+  [ "$(requested_count "${CID_P1}" "${GID_P2}")" = "1" ] && break
+  sleep 15
+done
+[ "$(requested_count "${CID_P1}" "${GID_P2}")" = "1" ] || { echo "FAIL [phase 2b]: premise: the out-of-band resize never read back as requested count 1" >&2; exit 1; }
+group_drift_verdict
+case "${VERDICT}" in
+  OK:drifted:*InstanceCount*) ;;
+  *)
+    echo "FAIL [phase 2b]: expected TaskGroup drifted on InstanceCount after the out-of-band resize, got '${VERDICT}' (go-to-k/cdkd#6769)" >&2
+    exit 1
+    ;;
+esac
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL [phase 2b]: drift exited ${DRIFT_RC} over a drifted group, expected 1 (go-to-k/cdkd#6769)" >&2
+  exit 1
+fi
+echo "    out-of-band resize reported (${VERDICT#OK:drifted:})"
+
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-before" "${STACK}" TaskGroup || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes > "${REVERT_WORK}/revert.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_WORK}/revert.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-before" "${REVERT_WORK}/revert-ids-after" 1 "${REVERT_WORK}/revert.log" || exit 1
+rm -rf "${REVERT_WORK}"
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL [phase 2b]: drift --revert exited ${REVERT_RC} (go-to-k/cdkd#6769)" >&2; exit 1; }
+wait_group_running_count "${CID_P1}" "${GID_P2}" 2
+echo "    drift --revert resized the group back to 2 in place"
+group_drift_verdict
+rm -f "${DRIFT_JSON}"
+if [ "${VERDICT}" != "OK:clean" ]; then
+  echo "FAIL [phase 2b]: expected the TaskGroup row clean after the revert, got '${VERDICT}' (go-to-k/cdkd#6769)" >&2
+  exit 1
+fi
+echo "    instance group clean again after the revert"
 
 # --- Phase 2c: delete a TASK group carrying a scaling policy (go-to-k/cdkd#6806) ----
 # Scaling a TASK group to 0 succeeds with its AutoScalingPolicy attached, and

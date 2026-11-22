@@ -458,16 +458,154 @@ describe('IAMUserGroupProvider.readCurrentState', () => {
     });
   });
 
+  // go-to-k/cdkd#6769: the membership is read back per recorded user.
   describe('AWS::IAM::UserToGroupAddition', () => {
-    it('returns undefined (membership-only resource, see JSDoc)', async () => {
-      const result = await provider.readCurrentState(
-        'someId',
-        'Logical',
-        'AWS::IAM::UserToGroupAddition'
+    const TYPE = 'AWS::IAM::UserToGroupAddition';
+    /** `membership[user]` = the groups IAM lists for it, or `'gone'`. */
+    function mockIam(
+      membership: Record<string, string[] | 'gone'>,
+      opts: { groupGone?: boolean; listError?: Error } = {}
+    ): void {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof ListGroupsForUserCommand) {
+          if (opts.listError) return Promise.reject(opts.listError);
+          const groups = membership[cmd.input.UserName!];
+          if (groups === 'gone' || groups === undefined) {
+            return Promise.reject(
+              new NoSuchEntityException({ message: 'no user', $metadata: {} })
+            );
+          }
+          return Promise.resolve({ Groups: groups.map((GroupName) => ({ GroupName })), IsTruncated: false });
+        }
+        if (cmd instanceof GetGroupCommand) {
+          if (opts.groupGone) {
+            return Promise.reject(new NoSuchEntityException({ message: 'no group', $metadata: {} }));
+          }
+          return Promise.resolve({ Group: { GroupName: cmd.input.GroupName, GroupId: 'AGPAEXAMPLE1234567890' }, Users: [] });
+        }
+        return Promise.reject(new Error(`unexpected ${String(cmd)}`));
+      });
+    }
+    const read = (properties: Record<string, unknown>, context?: unknown) =>
+      provider.readCurrentState('Addition', 'Addition', TYPE, properties, context as never);
+
+    it('reads a clean membership back as the recorded GroupName and Users', async () => {
+      mockIam({ alice: ['devs', 'other'], bob: ['devs'] });
+      expect(await read({ GroupName: 'devs', Users: ['alice', 'bob'] })).toEqual({
+        GroupName: 'devs',
+        Users: ['alice', 'bob'],
+      });
+    });
+
+    it('drops a user removed from the group out of band', async () => {
+      mockIam({ alice: ['devs'], bob: ['other'] });
+      expect(await read({ GroupName: 'devs', Users: ['alice', 'bob'] })).toEqual({
+        GroupName: 'devs',
+        Users: ['alice'],
+      });
+    });
+
+    it('matches the group name case-insensitively, as IAM does', async () => {
+      mockIam({ alice: ['Devs'] });
+      expect(bagOf(await read({ GroupName: 'devs', Users: ['alice'] }))?.['Users']).toEqual(['alice']);
+    });
+
+    it('follows ListGroupsForUser pagination', async () => {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof ListGroupsForUserCommand) {
+          return Promise.resolve(
+            cmd.input.Marker === 'm1'
+              ? { Groups: [{ GroupName: 'devs' }], IsTruncated: false }
+              : { Groups: [{ GroupName: 'x' }], IsTruncated: true, Marker: 'm1' }
+          );
+        }
+        return Promise.reject(new Error('unexpected'));
+      });
+      expect(bagOf(await read({ GroupName: 'devs', Users: ['alice'] }))?.['Users']).toEqual(['alice']);
+    });
+
+    it('reads a user IAM no longer has as no member', async () => {
+      mockIam({ alice: ['devs'], bob: 'gone' });
+      expect(bagOf(await read({ GroupName: 'devs', Users: ['alice', 'bob'] }))?.['Users']).toEqual(['alice']);
+    });
+
+    it('reads every user removed from a group still there as Users: []', async () => {
+      mockIam({ alice: [] });
+      expect(await read({ GroupName: 'devs', Users: ['alice'] })).toEqual({ GroupName: 'devs', Users: [] });
+    });
+
+    it('is RESOURCE_NOT_FOUND when no user is in the group and the group is gone', async () => {
+      mockIam({ alice: [] }, { groupGone: true });
+      expect(await read({ GroupName: 'devs', Users: ['alice'] })).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('throws a GetGroup failure other than not-found', async () => {
+      const denied = Object.assign(new Error('denied'), { name: 'AccessDenied' });
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof ListGroupsForUserCommand
+          ? Promise.resolve({ Groups: [], IsTruncated: false })
+          : Promise.reject(denied)
       );
-      expect(result).toBeUndefined();
-      // No SDK call should have happened.
+      await expect(read({ GroupName: 'devs', Users: ['alice'] })).rejects.toBe(denied);
+    });
+
+    it('reads Users: [] when GetGroup answers the group in another case', async () => {
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) =>
+        cmd instanceof ListGroupsForUserCommand
+          ? Promise.resolve({ Groups: [], IsTruncated: false })
+          : Promise.resolve({ Group: { GroupName: 'Devs', GroupId: 'AGPAEXAMPLE1234567890' }, Users: [] })
+      );
+      expect(await read({ GroupName: 'devs', Users: ['alice'] })).toEqual({ GroupName: 'devs', Users: [] });
+    });
+
+    it('reads a declared Users: [] with no call', async () => {
+      mockIam({});
+      expect(await read({ GroupName: 'devs', Users: [] })).toEqual({ GroupName: 'devs', Users: [] });
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('throws a ListGroupsForUser failure other than not-found', async () => {
+      const denied = Object.assign(new Error('denied'), { name: 'AccessDenied' });
+      mockIam({}, { listError: denied });
+      await expect(read({ GroupName: 'devs', Users: ['alice'] })).rejects.toBe(denied);
+    });
+
+    it.each([
+      ['a redacted user', { GroupName: 'devs', Users: ['***'] }],
+      ['a secret-derived user', { GroupName: 'devs', Users: ['{{resolve:secretsmanager:s}}'] }],
+      ['a redacted group', { GroupName: '***', Users: ['alice'] }],
+      ['no Users', { GroupName: 'devs' }],
+      ['no properties', undefined],
+    ])('is drift unknown, with no call, for %s', async (_label, properties) => {
+      mockIam({ alice: ['devs'] });
+      expect(
+        await provider.readCurrentState('Addition', 'Addition', TYPE, properties as never)
+      ).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('re-reads a declared user not listed yet on the capture after its own write', async () => {
+      provider.ownWriteRereadDelaysMs = [0, 0];
+      let calls = 0;
+      mockSend.mockReset();
+      mockSend.mockImplementation((cmd: unknown) => {
+        if (cmd instanceof ListGroupsForUserCommand) {
+          calls++;
+          return Promise.resolve({ Groups: calls > 1 ? [{ GroupName: 'devs' }] : [], IsTruncated: false });
+        }
+        if (cmd instanceof GetGroupCommand) {
+          return Promise.resolve({ Group: { GroupName: 'devs', GroupId: 'AGPAEXAMPLE1234567890' }, Users: [] });
+        }
+        return Promise.reject(new Error('unexpected'));
+      });
+      expect(
+        bagOf(await read({ GroupName: 'devs', Users: ['alice'] }, { afterOwnWrite: true }))?.['Users']
+      ).toEqual(['alice']);
+      expect(calls).toBe(2);
     });
   });
 });

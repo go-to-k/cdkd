@@ -84,6 +84,8 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 export AWS_PAGER=""
 
 cd "$(dirname "$0")"
+# shellcheck source=../revert-identity.sh
+. ../revert-identity.sh
 
 STACK="CdkdEmrInstanceFleetsExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -214,6 +216,8 @@ cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   [ -n "${PHASE2_LOG:-}" ] && rm -f "${PHASE2_LOG}"
+  [ -n "${REVERT_WORK:-}" ] && rm -rf "${REVERT_WORK}"
+  [ -n "${DRIFT_JSON:-}" ] && rm -f "${DRIFT_JSON}"
   [ -n "${PHASE2B_LOG:-}" ] && rm -f "${PHASE2B_LOG}"
   # Drop a stale lock BEFORE `state destroy`: an interrupted run leaves
   # lock.json behind, `state destroy` then refuses to acquire it and exits
@@ -531,25 +535,27 @@ if [ "${CAP_P2B}" != "1" ]; then
 fi
 echo "    removal left in place (timeout ${TIMEOUT_P2B} min) beside an applied resize (capacity 1)"
 
-# --- Phase 2c: drift over the deny-listed instance fleet (issue #5179) ----
-# AWS gave `AWS::EMR::InstanceFleetConfig` Cloud Control handlers keyed by a COMPOSITE
-# primaryIdentifier (`ClusterId` + `InstanceFleetId`). The SDK provider has no `readCurrentState` and
-# records the bare fleet id as the physicalId, so drift's Cloud Control
-# fallback had `GetResource` refuse it with a ValidationException on every run:
-# the row landed in `notCompared` (readFailed) and drift exited 2. The type is
-# now on `CC_API_FALLBACK_DENY_LIST`, so the row must be in `notSupported`
-# (drift unknown) and in no `notCompared` entry. One drift call over the stack
-# as deployed; no extra deploy. The exit code is not asserted: other rows in
-# this stack are not this phase's subject.
-echo "==> Phase 2c: drift reports the instance fleet as drift unknown, not a read failure"
+# --- Phase 2c: drift reads the instance fleet back (issue #6769) -------
+# Cloud Control cannot address the bare fleet id (its primaryIdentifier is the
+# composite `ClusterId` + `InstanceFleetId`, #5179), so the type was deny-listed
+# and drift unknown. The SDK provider now reads it back itself through
+# `ListInstanceFleets` on the recorded cluster: the TaskFleet row must be CLEAN
+# (not in notSupported, not in notCompared) on the stack as deployed; an
+# out-of-band `ResizeSpecifications` change (no capacity change, so no
+# instance churn) is drift on that property; `drift --revert` puts it back in
+# place (same fleet id, go-to-k/cdkd#6638), and the row
+# is clean again. Only the drifted run's exit (1) is asserted: other rows in
+# this stack are not this phase's subject, and may keep a clean run off 0.
+echo "==> Phase 2c: drift compares the instance fleet (clean -> out-of-band change -> restored)"
 DRIFT_JSON="$(mktemp)"
-set +e
-node "${LOCAL_DIST}" drift "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
-DRIFT_RC=$?
-set -e
-echo "    drift exited ${DRIFT_RC}"
-DRIFT_VERDICT="$(node -e '
+fleet_drift_verdict() { # sets VERDICT (OK:clean / OK:drifted:<paths> / the failure shape) and DRIFT_RC
+  set +e
+  node "${LOCAL_DIST}" drift "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
+  DRIFT_RC=$?
+  set -e
+  echo "    drift exited ${DRIFT_RC}"
+  VERDICT="$(node -e '
 const t = process.argv[1];
 let r;
 try { r = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8")); }
@@ -558,17 +564,79 @@ try {
   const rows = (k) => r.flatMap((s) => s[k] || []).filter((x) => x.type === t);
   const nc = rows("notCompared");
   if (nc.length) { process.stdout.write("NOTCOMPARED:" + nc.map((x) => x.cause).join(",")); process.exit(0); }
-  const ns = rows("notSupported").length;
-  const other = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
-  process.stdout.write(ns === 1 ? "OK" : "NOTSUPPORTED=" + ns + "," + other);
+  if (rows("notSupported").length) { process.stdout.write("NOTSUPPORTED"); process.exit(0); }
+  const drifted = rows("drifted");
+  if (drifted.length === 1) {
+    process.stdout.write("OK:drifted:" + drifted[0].changes.map((c) => c.path).sort().join(","));
+    process.exit(0);
+  }
+  const counts = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
+  process.stdout.write(rows("clean").length === 1 && drifted.length === 0 ? "OK:clean" : counts);
 } catch (e) { process.stdout.write("UNEXPECTED_SHAPE"); }
 ' "AWS::EMR::InstanceFleetConfig" "${DRIFT_JSON}")"
-rm -f "${DRIFT_JSON}"
-if [ "${DRIFT_VERDICT}" != "OK" ]; then
-  echo "FAIL [phase 2c]: expected exactly one AWS::EMR::InstanceFleetConfig row in notSupported and none in notCompared, got '${DRIFT_VERDICT}' (drift rc ${DRIFT_RC}; pre-fix this read NOTCOMPARED:readFailed, go-to-k/cdkd#5179)" >&2
+}
+modify_resize_timeout() { # $1 = minutes; waits until ListInstanceFleets shows it
+  local i got
+  aws emr modify-instance-fleet --cluster-id "${CID_P1}" --region "${REGION}" \
+    --instance-fleet "{\"InstanceFleetId\":\"${FID_P2B}\",\"ResizeSpecifications\":{\"OnDemandResizeSpecification\":{\"TimeoutDurationMinutes\":$1}}}"
+  for i in $(seq 1 40); do
+    got="$(fleet_ondemand_resize_timeout "$(list_instance_fleets_json "${CID_P1}")" "${FID_P2B}")"
+    [ "${got}" = "$1" ] && return 0
+    sleep 15
+  done
+  echo "FAIL [phase 2c]: the fleet's On-Demand resize timeout never read back as $1 (last '${got}')" >&2
+  exit 1
+}
+
+fleet_drift_verdict
+if [ "${VERDICT}" != "OK:clean" ]; then
+  rm -f "${DRIFT_JSON}"
+  echo "FAIL [phase 2c]: expected the TaskFleet row clean (compared, no drift) as deployed, got '${VERDICT}' (drift rc ${DRIFT_RC}; before go-to-k/cdkd#6769 it was NOTSUPPORTED)" >&2
   exit 1
 fi
-echo "    instance fleet reported as drift unknown (notSupported), not as a read failure"
+echo "    instance fleet compared and clean as deployed"
+
+OOB_TIMEOUT="$((RESIZE_TIMEOUT + 5))"
+modify_resize_timeout "${OOB_TIMEOUT}"
+fleet_drift_verdict
+case "${VERDICT}" in
+  OK:drifted:*ResizeSpecifications*) ;;
+  *)
+    rm -f "${DRIFT_JSON}"
+    echo "FAIL [phase 2c]: expected TaskFleet drifted on ResizeSpecifications after the out-of-band timeout ${OOB_TIMEOUT}, got '${VERDICT}' (go-to-k/cdkd#6769)" >&2
+    exit 1
+    ;;
+esac
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  rm -f "${DRIFT_JSON}"
+  echo "FAIL [phase 2c]: drift exited ${DRIFT_RC} over a drifted fleet, expected 1 (go-to-k/cdkd#6769)" >&2
+  exit 1
+fi
+echo "    out-of-band ResizeSpecifications change reported (${VERDICT#OK:drifted:})"
+
+REVERT_WORK="$(mktemp -d)"
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-before" "${STACK}" TaskFleet || exit 1
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+  --revert --yes > "${REVERT_WORK}/revert.log" 2>&1 || REVERT_RC=$?
+cat "${REVERT_WORK}/revert.log"
+revert_identity_verify "${REVERT_WORK}/revert-ids-before" "${REVERT_WORK}/revert-ids-after" 1 "${REVERT_WORK}/revert.log" || exit 1
+rm -rf "${REVERT_WORK}"
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL [phase 2c]: drift --revert exited ${REVERT_RC} (go-to-k/cdkd#6769)" >&2; exit 1; }
+for _ in $(seq 1 40); do
+  [ "$(fleet_ondemand_resize_timeout "$(list_instance_fleets_json "${CID_P1}")" "${FID_P2B}")" = "${RESIZE_TIMEOUT}" ] && break
+  sleep 15
+done
+GOT_TIMEOUT="$(fleet_ondemand_resize_timeout "$(list_instance_fleets_json "${CID_P1}")" "${FID_P2B}")"
+[ "${GOT_TIMEOUT}" = "${RESIZE_TIMEOUT}" ] || { echo "FAIL [phase 2c]: drift --revert did not restore the resize timeout ${RESIZE_TIMEOUT} (got '${GOT_TIMEOUT}')" >&2; exit 1; }
+echo "    drift --revert restored the resize timeout in place"
+fleet_drift_verdict
+rm -f "${DRIFT_JSON}"
+if [ "${VERDICT}" != "OK:clean" ]; then
+  echo "FAIL [phase 2c]: expected the TaskFleet row clean after restoring the timeout, got '${VERDICT}' (go-to-k/cdkd#6769)" >&2
+  exit 1
+fi
+echo "    instance fleet clean again after the revert"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"

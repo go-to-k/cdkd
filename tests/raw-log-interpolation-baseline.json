@@ -300,7 +300,7 @@
   "src/provisioning/providers/emr-instance-fleet-config/delete.ts": 3,
   "src/provisioning/providers/emr-instance-fleet-config/update.ts": 3,
   "src/provisioning/providers/emr-instance-fleet-config/wait.ts": 3,
-  "src/provisioning/providers/emr-instance-group-config-provider.ts": 11,
+  "src/provisioning/providers/emr-instance-group-config-provider.ts": 10,
   "src/provisioning/providers/eventbridge-bus-provider.ts": 9,
   "src/provisioning/providers/eventbridge-rule/create.ts": 4,
   "src/provisioning/providers/eventbridge-rule/delete.ts": 5,

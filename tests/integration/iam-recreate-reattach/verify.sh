@@ -15,6 +15,11 @@
 # NO_CHANGE (their references resolve to the same names), so the re-created
 # role ran without the Deny guardrail and outside its profile, and the group
 # without its policy and member, while state recorded all of them.
+#
+# go-to-k/cdkd#6769 arm (Phase 1 / 1c): the UserToGroupAddition reads back, so
+# the stack drifts clean with exit 0 and no drift-unknown row; a user removed
+# from the group out of band is drift on its `Users` (exit 1); put back with
+# `drift --revert` (identities unchanged), drift is clean again.
 
 set -euo pipefail
 
@@ -130,6 +135,9 @@ assert_iam_baselines() { # usage: assert_iam_baselines <phase>
     --query 'sort(InstanceProfile.Roles[].RoleName)' --output json)" "$1"
   assert_observed_member Member '.Groups | sort' "$(aws iam list-groups-for-user --user-name "${USER_NAME}" \
     --query 'sort(Groups[].GroupName)' --output json)" "$1"
+  # go-to-k/cdkd#6769: the membership's baseline is the users AWS lists in the group.
+  assert_observed_member Membership '.Users' "$(aws iam get-group --group-name "${GROUP}" \
+    --query "Users[?UserName=='${ADDED}'].UserName" --output json)" "$1"
   assert_observed_member FixedRole .AssumeRolePolicyDocument "$(aws iam get-role --role-name "${ROLE}" \
     --query Role.AssumeRolePolicyDocument --output json)" "$1"
 }
@@ -159,7 +167,8 @@ cleanup() {
   aws iam delete-group --group-name "${GROUP}" >/dev/null 2>&1
   aws iam delete-role --role-name "${ROLE}" >/dev/null 2>&1
   if [ -n "${REVERT_WORK:-}" ]; then
-    rm -f "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" "${REVERT_WORK}/revert-1b.log"
+    rm -f "${REVERT_WORK}/revert-ids-1b-before" "${REVERT_WORK}/revert-ids-1b-after" "${REVERT_WORK}/revert-1b.log" \
+      "${REVERT_WORK}/revert-ids-1c-before" "${REVERT_WORK}/revert-ids-1c-after" "${REVERT_WORK}/revert-1c.log"
     rmdir "${REVERT_WORK}" >/dev/null 2>&1
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -222,22 +231,20 @@ assert_member_drifted() { # usage: assert_member_drifted <drift JSON> <type> <me
   }
   echo "    OK: cdkd drift reports the out-of-band $2 $3 after $4 (#6609)"
 }
-# Clean here means "nothing drifted": the stack's `Membership`
-# (AWS::IAM::UserToGroupAddition) has no read path, so it is drift unknown and
-# the run exits 2, never 0 (go-to-k/cdkd#6696). The row and the absence of a
-# not-compared block keep a failed read (also exit 2) from passing.
+# Clean: exit 0 and every row compared. `Membership`
+# (AWS::IAM::UserToGroupAddition) reads back since go-to-k/cdkd#6769, so no
+# row is drift unknown; before, it was, and the run exited 2 (#6696).
 assert_drift_clean() { # usage: assert_drift_clean <label> [env args...]
   local rc=0 label="$1" out
   shift
   out="$(env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || rc=$?
-  [ "${rc}" -eq 2 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 2: nothing drifted, Membership is drift unknown (#6609, #6696)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
-  grep -qF '? Membership (AWS::IAM::UserToGroupAddition)' <<<"${out}" || { echo "FAIL: cdkd drift after ${label} exited 2 without Membership's drift-unknown row (#6696)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
-  # Exactly that one row: a reader regressing to undefined would add another.
-  [ "$(grep -cE '^ +\? ' <<<"${out}" || true)" = 1 ] || { echo "FAIL: cdkd drift after ${label} reported a drift-unknown row other than Membership (#6696)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
-  if grep -qE 'NOT fully compared|only PARTIALLY compared' <<<"${out}"; then
-    echo "FAIL: cdkd drift after ${label} reported a resource not compared (#6696)" >&2; printf '%s\n' "${out}" >&2; exit 1
+  [ "${rc}" -eq 0 ] || { echo "FAIL: cdkd drift exited ${rc} after ${label}, want 0: nothing drifted and every row compared (#6609, #6769)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
+  if grep -qE '^ +\? ' <<<"${out}"; then
+    echo "FAIL: cdkd drift after ${label} reported a drift-unknown row; Membership must be compared (#6769)" >&2; printf '%s\n' "${out}" >&2; exit 1
   fi
-  echo "    OK: cdkd drift is clean after ${label}, Membership drift unknown (#6609, #6696)"
+  grep -qE "✓ ${STACK} \(${REGION}\): no drift detected \([0-9]+ resources checked, 0 unsupported\)" <<<"${out}" \
+    || { echo "FAIL: cdkd drift after ${label} did not print the fully-compared clean line (#6769)" >&2; printf '%s\n' "${out}" >&2; exit 1; }
+  echo "    OK: cdkd drift is clean after ${label}, every row compared (#6609, #6769)"
 }
 run_revert() { # usage: run_revert [env args...]
   env "$@" node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
@@ -246,6 +253,9 @@ assert_same() { # usage: assert_same <label> <before> <after>
   [ -n "$2" ] && [ "$2" = "$3" ] || { echo "FAIL: $1 changed across the revert: '$2' -> '$3' (#6609: a delete / create)" >&2; exit 1; }
   echo "    OK: $1 unchanged across the revert ($2)"
 }
+
+# go-to-k/cdkd#6769: the fresh deploy drifts clean with Membership compared.
+assert_drift_clean "the phase 1 deploy"
 
 echo "==> Phase 1b: a role removed from the instance profile out of band is reverted in place (#6609)"
 PROFILE_ID_BEFORE="$(aws iam get-instance-profile --instance-profile-name "${PROFILE}" --query InstanceProfile.InstanceProfileId --output text)"
@@ -269,6 +279,48 @@ assert_drift_clean "the phase 1b revert"
 R0=$(role_id); G0=$(group_id); U0=$(user_id)
 [ -n "${R0}" ] && [ -n "${G0}" ] && [ -n "${U0}" ] || { echo "FAIL: no RoleId / GroupId / UserId after phase 1" >&2; exit 1; }
 echo "    OK: role ${ROLE}, group ${GROUP} and user ${RUSER} with every attachment"
+
+echo "==> Phase 1c: a user removed from the group out of band is drift on the UserToGroupAddition (#6769)"
+# IAM reads lag its writes: wait until the user's own group list (what the
+# reader asks) shows the change, then a few seconds more, before each drift.
+wait_added_in_group() { # usage: wait_added_in_group <0|1>
+  local i n
+  for i in $(seq 1 12); do
+    n=$(aws iam list-groups-for-user --user-name "${ADDED}" --query "length(Groups[?GroupName=='${GROUP}'])" --output text) || return 1
+    [ "${n}" = "$1" ] && { sleep 5; return 0; }
+    sleep 5
+  done
+  echo "FAIL: ${ADDED}'s membership of ${GROUP} never read back as $1" >&2; exit 1
+}
+aws iam remove-user-from-group --group-name "${GROUP}" --user-name "${ADDED}"
+wait_added_in_group 0 || exit 1
+DRIFT_1C_RC=0
+DRIFT_1C="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || DRIFT_1C_RC=$?
+printf '%s\n' "${DRIFT_1C}"
+[ "${DRIFT_1C_RC}" -eq 1 ] || { echo "FAIL: cdkd drift exited ${DRIFT_1C_RC} after the out-of-band removal, want 1 (#6769)" >&2; exit 1; }
+grep -qF '~ Membership (AWS::IAM::UserToGroupAddition)' <<<"${DRIFT_1C}" \
+  || { echo "FAIL: cdkd drift did not report Membership as drifted after the out-of-band removal (#6769)" >&2; exit 1; }
+grep -qE '^ +[-+~] Users' <<<"${DRIFT_1C}" \
+  || { echo "FAIL: cdkd drift did not name Users as Membership's drifted property (#6769)" >&2; exit 1; }
+if grep -qE '^ +\? ' <<<"${DRIFT_1C}"; then
+  echo "FAIL: cdkd drift reported a drift-unknown row after the out-of-band removal (#6769)" >&2; exit 1
+fi
+echo "    OK: cdkd drift reports Membership's Users after the out-of-band removal"
+# `drift --revert` puts the user back IN PLACE (AddUserToGroup), keeping the
+# group and the user (go-to-k/cdkd#6638, #6769). Membership itself is not
+# snapshot: its probe needs every recorded user in the group, which is the
+# drift being reverted; it is re-checked after.
+revert_identity_snapshot "${REVERT_WORK}/revert-ids-1c-before" "${STACK}" "${GROUP_ID}" Added || exit 1
+REVERT_RC=0
+run_revert 2>&1 | tee "${REVERT_WORK}/revert-1c.log" || REVERT_RC=$?
+revert_identity_verify "${REVERT_WORK}/revert-ids-1c-before" "${REVERT_WORK}/revert-ids-1c-after" 2 "${REVERT_WORK}/revert-1c.log" ignore=CdkdIamRecreateReattachExample || exit 1
+wait_added_in_group 1 || exit 1
+[ "${REVERT_RC}" -eq 0 ] || { echo "FAIL: cdkd drift --revert exited ${REVERT_RC} (phase 1c)" >&2; exit 1; }
+[ "$(group_added)" = "1" ] || { echo "FAIL: ${ADDED} is not back in ${GROUP} after the revert (phase 1c)" >&2; exit 1; }
+[ "$(state_json | jq -r '.resources.Membership.physicalId')" = "Membership" ] \
+  || { echo "FAIL: Membership's state physical id changed across the revert (phase 1c)" >&2; exit 1; }
+echo "    OK: the revert put ${ADDED} back in ${GROUP}"
+assert_drift_clean "the phase 1c revert"
 
 echo "==> Phase 2: premise -- the template diffs to no changes"
 set +e

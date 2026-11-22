@@ -170,6 +170,16 @@ _revert_identity_probe() {
     AWS::Logs::LogGroup)
       cls=unique; val="$(_revert_identity_aws logs describe-log-groups --region "${region}" --log-group-name-prefix "${pid}" --query "logGroups[?logGroupName=='${pid}'].creationTime | [0]" | grep -vx None | head -n 1)" || rc=$? ;;
     # --- gen-id -----------------------------------------------------------
+    AWS::EMR::InstanceGroupConfig)
+      # physicalId is the AWS-generated group id (ig-...); ctx is the recorded
+      # JobFlowId, since EMR lists a group only through its cluster.
+      # This AWS CLI has no `list-instance-groups`; DescribeCluster lists the
+      # cluster's groups too.
+      cls=gen-id; val="$(_revert_identity_aws emr describe-cluster --region "${region}" --cluster-id "${ctx:?no JobFlowId}" --query "Cluster.InstanceGroups[?Id=='${pid}'].Id | [0]" | grep -vx None)" || rc=$? ;;
+    AWS::EMR::InstanceFleetConfig)
+      # physicalId is the AWS-generated fleet id (if-...); ctx is the recorded
+      # ClusterId, since EMR lists a fleet only through its cluster.
+      cls=gen-id; val="$(_revert_identity_aws emr list-instance-fleets --region "${region}" --cluster-id "${ctx:?no ClusterId}" --query "InstanceFleets[?Id=='${pid}'].Id | [0]" | grep -vx None)" || rc=$? ;;
     AWS::SNS::Subscription)
       cls=gen-id; val="$(_revert_identity_aws sns get-subscription-attributes --region "${region}" --subscription-arn "${pid}" --query 'Attributes.SubscriptionArn')" || rc=$? ;;
     AWS::Lambda::EventSourceMapping)
@@ -198,6 +208,26 @@ _revert_identity_probe() {
     AWS::EFS::MountTarget)
       cls=gen-id; val="$(_revert_identity_aws efs describe-mount-targets --region "${region}" --mount-target-id "${pid}" --query 'MountTargets[0].MountTargetId')" || rc=$? ;;
     # --- no-id --------------------------------------------------------------
+    AWS::CloudWatch::AnomalyDetector)
+      # Addressed by its metric descriptor (the physicalId is cdkd's spelling
+      # of it), with no creation time or id DescribeAnomalyDetectors returns
+      # for it. ctx is `<Namespace>|<MetricName>|<Name>=<Value>,...` (a
+      # single-metric record only); the probe proves a detector on that metric
+      # with every recorded dimension still exists.
+      cls=no-id; val="$(
+        [ -n "${ctx}" ] && [ "${ctx#*|}" != "${ctx}" ] || exit 1
+        ns="${ctx%%|*}"; rest="${ctx#*|}"; metric="${rest%%|*}"; dims="${rest#*|}"
+        [ "${dims}" = "${rest}" ] && dims=""
+        # Every recorded Name=Value dimension must be on the detector, so a
+        # detector on the same metric for another resource does not count.
+        cond=""
+        for d in $(printf '%s' "${dims}" | tr ',' ' '); do
+          cond="${cond:+${cond} && }SingleMetricAnomalyDetector.Dimensions[?Name=='${d%%=*}' && Value=='${d#*=}']"
+        done
+        n="$(_revert_identity_aws cloudwatch describe-anomaly-detectors --region "${region}" --namespace "${ns}" --metric-name "${metric}" --query "length(AnomalyDetectors${cond:+[?${cond}]})")" || exit 1
+        [ "${n:-0}" -gt 0 ] || exit 1
+        printf '%s' "${pid}"
+      )" || rc=$? ;;
     AWS::S3::Bucket)
       # No unique id, and ListBuckets documents that CreationDate "can change
       # when making changes to your bucket, such as editing its bucket policy".
@@ -412,6 +442,16 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
     const ctxOf = {
       "AWS::ApiGateway::Resource": props.RestApiId,
       "AWS::ApiGatewayV2::Stage": props.ApiId,
+      "AWS::EMR::InstanceFleetConfig": props.ClusterId,
+      "AWS::EMR::InstanceGroupConfig": props.JobFlowId,
+      "AWS::CloudWatch::AnomalyDetector": (() => {
+        const s = props.SingleMetricAnomalyDetector || props;
+        if (!s.Namespace || !s.MetricName) return undefined;
+        const dims = (Array.isArray(s.Dimensions) ? s.Dimensions : [])
+          .filter((d) => d && typeof d.Name === "string" && typeof d.Value === "string" && !/[,|=\s]/.test(d.Name + d.Value) && !(d.Name + d.Value).includes(String.fromCharCode(39)))
+          .map((d) => d.Name + "=" + d.Value);
+        return s.Namespace + "|" + s.MetricName + (dims.length ? "|" + dims.join(",") : "");
+      })(),
       "AWS::Lambda::Permission": props.FunctionName,
       "AWS::DynamoDB::GlobalTable": Array.isArray(props.Replicas)
         ? props.Replicas.map((x) => x && x.Region).filter((x) => typeof x === "string").sort().join(",")

@@ -1,11 +1,11 @@
 {
   "summary": {
     "types": 146,
-    "noReadback": 5,
-    "properties": 1527,
-    "read": 1373,
+    "noReadback": 2,
+    "properties": 1554,
+    "read": 1402,
     "unknown": 129,
-    "baseline": 25,
+    "baseline": 23,
     "gap": 0,
     "outsideSchema": 12
   },
@@ -1518,8 +1518,41 @@
       "resourceType": "AWS::CloudWatch::AnomalyDetector",
       "file": "src/provisioning/providers/cloudwatch-anomaly-detector-provider.ts",
       "className": "CloudWatchAnomalyDetectorProvider",
-      "hasReadback": false,
-      "properties": [],
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "Configuration",
+          "status": "read"
+        },
+        {
+          "property": "Dimensions",
+          "status": "read"
+        },
+        {
+          "property": "MetricCharacteristics",
+          "status": "read"
+        },
+        {
+          "property": "MetricMathAnomalyDetector",
+          "status": "read"
+        },
+        {
+          "property": "MetricName",
+          "status": "read"
+        },
+        {
+          "property": "Namespace",
+          "status": "read"
+        },
+        {
+          "property": "SingleMetricAnomalyDetector",
+          "status": "read"
+        },
+        {
+          "property": "Stat",
+          "status": "read"
+        }
+      ],
       "unresolved": []
     },
     {
@@ -3768,16 +3801,94 @@
       "resourceType": "AWS::EMR::InstanceFleetConfig",
       "file": "src/provisioning/providers/emr-instance-fleet-config-provider.ts",
       "className": "EMRInstanceFleetConfigProvider",
-      "hasReadback": false,
-      "properties": [],
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "ClusterId",
+          "status": "read"
+        },
+        {
+          "property": "InstanceFleetType",
+          "status": "read"
+        },
+        {
+          "property": "InstanceTypeConfigs",
+          "status": "read"
+        },
+        {
+          "property": "LaunchSpecifications",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        },
+        {
+          "property": "ResizeSpecifications",
+          "status": "read"
+        },
+        {
+          "property": "TargetOnDemandCapacity",
+          "status": "read"
+        },
+        {
+          "property": "TargetSpotCapacity",
+          "status": "read"
+        }
+      ],
       "unresolved": []
     },
     {
       "resourceType": "AWS::EMR::InstanceGroupConfig",
       "file": "src/provisioning/providers/emr-instance-group-config-provider.ts",
       "className": "EMRInstanceGroupConfigProvider",
-      "hasReadback": false,
-      "properties": [],
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AutoScalingPolicy",
+          "status": "read"
+        },
+        {
+          "property": "BidPrice",
+          "status": "read"
+        },
+        {
+          "property": "Configurations",
+          "status": "read"
+        },
+        {
+          "property": "CustomAmiId",
+          "status": "read"
+        },
+        {
+          "property": "EbsConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "InstanceCount",
+          "status": "read"
+        },
+        {
+          "property": "InstanceRole",
+          "status": "read"
+        },
+        {
+          "property": "InstanceType",
+          "status": "read"
+        },
+        {
+          "property": "JobFlowId",
+          "status": "read"
+        },
+        {
+          "property": "Market",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        }
+      ],
       "unresolved": []
     },
     {
@@ -4540,13 +4651,11 @@
       "properties": [
         {
           "property": "GroupName",
-          "status": "baseline",
-          "reason": "readCurrentState returns undefined for the type: drift reports it as drift unknown"
+          "status": "read"
         },
         {
           "property": "Users",
-          "status": "baseline",
-          "reason": "readCurrentState returns undefined for the type: drift reports it as drift unknown"
+          "status": "read"
         }
       ],
       "unresolved": []

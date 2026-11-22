@@ -1,4 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+
+// go-to-k/cdkd#6769: every SDK-readable type left the deny-list, and its one
+// real entry (a nested stack) is decided before the deny-list is consulted, so
+// the deny-list arms run on a test-only entry.
+vi.mock('../../../src/analyzer/drift-cc-api-deny-list.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/analyzer/drift-cc-api-deny-list.js')>();
+  return {
+    ...actual,
+    CC_API_FALLBACK_DENY_LIST: {
+      ...actual.CC_API_FALLBACK_DENY_LIST,
+      'AWS::Test::DenyListed': 'a test-only entry',
+    },
+  };
+});
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
@@ -857,7 +871,7 @@ describe('cdkd drift', () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          Detector: makeResource({ resourceType: 'AWS::CloudWatch::AnomalyDetector' }),
+          Denied: makeResource({ resourceType: 'AWS::Test::DenyListed' }),
         })
       );
       mockRegistryGetProvider.mockReturnValue({});
@@ -4653,11 +4667,11 @@ describe('cdkd drift', () => {
       mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
       mockGetState.mockResolvedValueOnce(
         makeState({
-          // AWS::EC2::LaunchTemplate is in the deny list (version-bumped data).
-          LaunchTemplate1: makeResource({
-            physicalId: 'lt-0123',
-            resourceType: 'AWS::EC2::LaunchTemplate',
-            properties: { LaunchTemplateData: { InstanceType: 't3.micro' } },
+          // A deny-listed type (the test entry the mock above adds).
+          Denied1: makeResource({
+            physicalId: 'd-0123',
+            resourceType: 'AWS::Test::DenyListed',
+            properties: { Name: 'core' },
           }),
         })
       );
@@ -4668,7 +4682,7 @@ describe('cdkd drift', () => {
       // The non-zero exit reached the mocked `process.exit`, nothing else threw.
       expect((error as Error | undefined)?.message).toBe('__exit__');
       expect(mockCcReadCurrentState).not.toHaveBeenCalled();
-      expect(output).toContain('? LaunchTemplate1 (AWS::EC2::LaunchTemplate)');
+      expect(output).toContain('? Denied1 (AWS::Test::DenyListed)');
       expect(output).toContain('1 unsupported');
       // Drift unknown is an incomplete comparison (go-to-k/cdkd#6696).
       expect(exitSpy).toHaveBeenCalledWith(2);
