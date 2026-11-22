@@ -513,6 +513,18 @@ describe('isRetryableTransientError', () => {
       expect(isIamPropagationError(other)).toBe(false);
     });
 
+    it('retries the Budgets action execution-role assume rejection on the dense cadence (#6845)', () => {
+      const budgets =
+        'CREATE failed for BudgetStopAction: Budgets permission required to assume [ExecutionRole: arn:aws:iam::111122223333:role/Stack-BudgetActionRole1ABCC5F0-542ae8bc0a1b]. Please follow the instruction to grant assumeRole access to [Service Principal: budgets.amazonaws.com] or [Service Principal: actions.budgets.amazonaws.com]. (Service: Budgets, Status Code: 400)';
+      expect(isRetryableTransientError(new Error(budgets), budgets)).toBe(true);
+      expect(isIamPropagationError(budgets)).toBe(true);
+      // The service name is the anchor: another Budgets refusal stays permanent.
+      const other =
+        'Invalid request provided: ActionThreshold value is invalid. (Service: Budgets, Status Code: 400)';
+      expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+      expect(isIamPropagationError(other)).toBe(false);
+    });
+
     it('does not retry an SFN error that carries neither propagation phrase', () => {
       // The boundary the reversed case above no longer guards. Both SFN
       // patterns are anchored on their own full sentence, so an ordinary
