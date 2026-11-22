@@ -1057,9 +1057,13 @@ describe('cdkd import', () => {
         stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
       });
       mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
-      mockGetProvider.mockReturnValue({
-        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
-      });
+      const childImport = vi.fn(
+        async (_input: { logicalId: string; properties: Record<string, unknown> }) => ({
+          physicalId: 'p',
+          attributes: {},
+        })
+      );
+      mockGetProvider.mockReturnValue({ import: childImport });
       const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
       mockGetCfnResourceTree.mockResolvedValue({
         stackName: 'P',
@@ -1109,6 +1113,9 @@ describe('cdkd import', () => {
       const child = saves.find((c) => c[0] === 'P~Child')!;
       expect(parent[2].resources['Child']!.properties['TemplateURL']).toBe('synth-url');
       expect(child[2].resources['ChildPolicy']!.properties['Description']).toBe('deployed');
+      // The child's dispatch reads the deployed definition too.
+      const childCall = childImport.mock.calls.find((c) => c[0].logicalId === 'ChildPolicy');
+      expect(childCall![0].properties['Description']).toBe('deployed');
     } finally {
       rmSync(tmpdirPath, { recursive: true, force: true });
     }

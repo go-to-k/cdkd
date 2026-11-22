@@ -178,6 +178,8 @@ template:
 | Case | Example |
 | --- | --- |
 | They reference something your template no longer declares | A renamed sibling resource, or a changed legacy asset parameter |
+| They reference a sibling whose type changed | A `Ref` to a logical ID you moved to another type |
+| They read another stack's value your code no longer reads | An `Fn::ImportValue` of an export the producer dropped |
 | They use a condition or mapping your template defines differently | A `Conditions` entry you edited |
 | The resource's type changed | A logical ID now used by another type |
 
