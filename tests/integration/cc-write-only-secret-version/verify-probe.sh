@@ -89,8 +89,9 @@ current_version() { # the secret's AWSCURRENT version id (metadata, not a value)
 rotate() { # put a new generated password (never printed); prints the new version id
   local body
   body="$(node -e 'const c=require("crypto");process.stdout.write(JSON.stringify({username:"cdkdadmin",password:"Rt9"+c.randomBytes(12).toString("hex")+"Qz"}))')"
-  aws secretsmanager put-secret-value --secret-id "${SECRET_ARN}" --secret-string "${body}" \
-    --region "${REGION}" --query VersionId --output text
+  # On stdin, never in argv (visible to `ps`).
+  printf '%s' "${body}" | aws secretsmanager put-secret-value --secret-id "${SECRET_ARN}" \
+    --secret-string file:///dev/stdin --region "${REGION}" --query VersionId --output text
 }
 stage_back() { # stage_back <version id>: move AWSCURRENT to it
   local to="$1" from
@@ -171,7 +172,8 @@ recorded_versions() { # the state record's versions for the password token ("" w
 no_plaintext_in() { # no_plaintext_in <log name>: the secret's current value never reaches a log
   local raw
   raw="$(aws secretsmanager get-secret-value --secret-id "${SECRET_ARN}" --region "${REGION}" --query SecretString --output text)" || return 1
-  if node -e 'const p=JSON.parse(process.argv[1]).password;process.exit(require("fs").readFileSync(process.argv[2],"utf8").includes(p)?0:1)' "${raw}" "${LOG_DIR}/$1.log"; then
+  # The value reaches node on stdin, never as an argument (argv is visible to `ps`).
+  if printf '%s' "${raw}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s).password;process.exit(require("fs").readFileSync(process.argv[1],"utf8").includes(p)?0:1)})' "${LOG_DIR}/$1.log"; then
     echo "FAIL: $1's log carries the secret's plaintext" >&2
     exit 1
   fi

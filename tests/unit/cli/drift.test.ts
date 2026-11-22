@@ -8833,9 +8833,12 @@ describe('cdkd drift --revert writes the secret send attestation away before it 
 
   it('a failed write-ahead reverts nothing and names the cause', async () => {
     mockSaveState.mockRejectedValueOnce(new Error('PreconditionFailed'));
-    const { update } = await revert();
+    const { update, output } = await revert();
     expect(update).not.toHaveBeenCalled();
-    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n') + output;
     expect(logged).toContain('nothing reverted');
+    // Counted as its own failure: no AWS update ran, so none is reported as one.
+    expect(logged).toContain('Nothing was reverted for TestStack (us-east-1)');
+    expect(logged).not.toContain('AWS update failure');
   });
 });

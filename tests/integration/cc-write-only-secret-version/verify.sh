@@ -93,8 +93,9 @@ current_version() { # the secret's AWSCURRENT version id (metadata, not a value)
 rotate() { # put a new generated password (never printed); prints the new version id
   local body
   body="$(node -e 'const c=require("crypto");process.stdout.write(JSON.stringify({username:"cdkdadmin",password:"Rt9"+c.randomBytes(12).toString("hex")+"Qz"}))')"
-  aws secretsmanager put-secret-value --secret-id "${SECRET_ARN}" --secret-string "${body}" \
-    --region "${REGION}" --query VersionId --output text
+  # On stdin, never in argv (visible to `ps`).
+  printf '%s' "${body}" | aws secretsmanager put-secret-value --secret-id "${SECRET_ARN}" \
+    --secret-string file:///dev/stdin --region "${REGION}" --query VersionId --output text
 }
 stage_back() { # stage_back <version id>: move AWSCURRENT to it
   local to="$1" from
