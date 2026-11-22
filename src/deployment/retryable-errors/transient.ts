@@ -494,12 +494,12 @@ export function isCcHandlerThrottlingError(error: unknown): boolean {
  *      `name` or retryable HTTP status (most AWS throttles are HTTP 400, not
  *      429, so the name check carries most of the weight). See
  *      {@link isThrottlingError}.
+ *   1b. A Cloud Control handler that reported `ErrorCode: Throttling` — see
+ *      {@link isCcHandlerThrottlingError}.
  *   2. Transient SERVER-side HTTP status (500 / 502 / 503 / 504) on the error
  *      or any wrapped cause — see {@link isTransientServerError}. Ahead of the
  *      message patterns because it is the only check that still works when the
  *      response carried NO message (issue #2026).
- *   1b. A Cloud Control handler that reported `ErrorCode: Throttling` — see
- *      {@link isCcHandlerThrottlingError}.
  *   3. Substring match against {@link RETRYABLE_ERROR_MESSAGE_PATTERNS}
  */
 export function isRetryableTransientError(error: unknown, message: string): boolean {

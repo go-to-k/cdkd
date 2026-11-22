@@ -44,6 +44,7 @@ describe('the name-adopting create types (go-to-k/cdkd#4705)', () => {
       'AWS::ElasticLoadBalancingV2::LoadBalancer': { Name: 'mine' },
       'AWS::ElasticLoadBalancingV2::TargetGroup': { Name: 'mine' },
       'AWS::Events::Rule': { Name: 'mine' },
+      'AWS::Lightsail::Alarm': { AlarmName: 'mine' },
       'AWS::Logs::LogGroup': { LogGroupName: 'mine' },
       'AWS::S3::Bucket': { BucketName: 'mine' },
       'AWS::SNS::Topic': { TopicName: 'mine' },

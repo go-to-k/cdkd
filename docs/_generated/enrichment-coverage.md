@@ -16,11 +16,11 @@ Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback
 
 ## Summary
 
-- Classified types (cached schema): **146**
+- Classified types (cached schema): **147**
 - Fully enriched: **50**
 - No computed attribute (Ref == physicalId is correct): **18**
 - **Pure-CC latent gaps (unenriched-computed, blocks CI): 0**
-- SDK-fallback gaps (informational, #614 path only): **78**
+- SDK-fallback gaps (informational, #614 path only): **79**
 - Types with allow-listed (not-a-gap) attributes: **89**
 
 ## Pure-CC latent gaps
@@ -86,6 +86,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::NetworkConnector` | `LatestVersion`, `LatestVersionArn`, `State` |
 | `AWS::Lambda::WebFunctionEndpoint` | `CreatedAt`, `DomainName`, `FunctionArn`, `RegionalEndpoints`, `State`, `StateReason`, `UpdatedAt`, `UpdateStatus`, `UpdateStatusReason` |
 | `AWS::Lambda::WebFunctionRevision` | `CreatedAt`, `FunctionArn`, `RevisionId`, `State`, `StateReason` |
+| `AWS::Lightsail::Alarm` | `AlarmArn`, `State` |
 | `AWS::Logs::Delivery` | `Arn`, `DeliveryDestinationType` |
 | `AWS::Logs::DeliveryDestination` | `Arn` |
 | `AWS::Logs::DeliverySource` | `Arn`, `ResourceArns`, `Service`, `Status`, `StatusReason` |
@@ -224,6 +225,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::Lambda::Url` | yes | enriched | `FunctionArn` (OK), `FunctionUrl` (OK) |
 | `AWS::Lambda::WebFunctionEndpoint` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `DomainName` (GAP), `EndpointArn` (allow), `FunctionArn` (GAP), `RegionalEndpoints` (GAP), `State` (GAP), `StateReason` (GAP), `UpdatedAt` (GAP), `UpdateStatus` (GAP), `UpdateStatusReason` (GAP) |
 | `AWS::Lambda::WebFunctionRevision` | yes | sdk-fallback-gap | `CreatedAt` (GAP), `FunctionArn` (GAP), `RevisionArn` (allow), `RevisionId` (GAP), `State` (GAP), `StateReason` (GAP) |
+| `AWS::Lightsail::Alarm` | yes | sdk-fallback-gap | `AlarmArn` (GAP), `State` (GAP) |
 | `AWS::Logs::Delivery` | yes | sdk-fallback-gap | `Arn` (GAP), `DeliveryDestinationType` (GAP), `DeliveryId` (allow) |
 | `AWS::Logs::DeliveryDestination` | yes | sdk-fallback-gap | `Arn` (GAP) |
 | `AWS::Logs::DeliverySource` | yes | sdk-fallback-gap | `Arn` (GAP), `ResourceArns` (GAP), `Service` (GAP), `Status` (GAP), `StatusReason` (GAP) |

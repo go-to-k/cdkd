@@ -4,6 +4,10 @@ import {
   isCcHandlerThrottlingError,
   isRetryableTransientError,
 } from '../../../src/deployment/retryable-errors/transient.js';
+import {
+  hasReplayMayCollide,
+  isNameCollisionErrorFrom,
+} from '../../../src/deployment/retryable-errors/name-collision.js';
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control/shared.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
@@ -66,5 +70,18 @@ describe('Cloud Control handler Throttling is retried (#6830)', () => {
       'created'
     );
     expect(op).toHaveBeenCalledTimes(3);
+  });
+
+  it('a replay meeting AlreadyExists after a throttle is never credited as a name collision', async () => {
+    const op = vi
+      .fn()
+      .mockRejectedValueOnce(handlerFailure('Throttling'))
+      .mockRejectedValueOnce(handlerFailure('AlreadyExists'));
+    const thrown = await withRetry(op, 'AlarmB', { sleep: () => Promise.resolve() }).catch(
+      (error: unknown) => error
+    );
+    expect(op).toHaveBeenCalledTimes(2);
+    expect(hasReplayMayCollide(thrown)).toBe(true);
+    expect(isNameCollisionErrorFrom(thrown, 'AlarmB')).toBe(false);
   });
 });

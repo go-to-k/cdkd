@@ -510,6 +510,7 @@ with no `--resource`, or with `--auto`.
 | Kinesis, Firehose | `AWS::Kinesis::Stream`, `AWS::Kinesis::StreamConsumer`, `AWS::KinesisFirehose::DeliveryStream` |
 | KMS | `AWS::KMS::Key`, `AWS::KMS::Alias` |
 | Lambda | `AWS::Lambda::Function`, `AWS::Lambda::LayerVersion` |
+| Lightsail | `AWS::Lightsail::Alarm` (by `AlarmName`) |
 | Neptune | `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::Neptune::DBSubnetGroup` |
 | RDS | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::RDS::DBProxy`, `AWS::RDS::DBProxyEndpoint`, `AWS::RDS::DBSubnetGroup` |
 | Route 53 | `AWS::Route53::HostedZone`, `AWS::Route53::RecordSet` and `AWS::Route53::RecordSetGroup` (by zone, `Name`, `Type` and `SetIdentifier`, each record verified live; the zone may be imported in the same run) |

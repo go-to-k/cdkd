@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "generatedAt": "2026-11-18T22:29:06.860Z",
   "summary": {
-    "tier1Count": 146,
-    "tier2Count": 1660,
+    "tier1Count": 147,
+    "tier2Count": 1659,
     "tier3Count": 323,
     "totalCount": 2129
   },
@@ -116,6 +116,7 @@
     "AWS::Lambda::Url",
     "AWS::Lambda::WebFunctionEndpoint",
     "AWS::Lambda::WebFunctionRevision",
+    "AWS::Lightsail::Alarm",
     "AWS::Logs::Delivery",
     "AWS::Logs::DeliveryDestination",
     "AWS::Logs::DeliverySource",
@@ -1107,7 +1108,6 @@
     "AWS::LicenseManager::ReportGenerator",
     "AWS::LicenseManagerLinuxSubscriptions::SubscriptionProvider",
     "AWS::LicenseManagerUserSubscriptions::LicenseServerEndpoint",
-    "AWS::Lightsail::Alarm",
     "AWS::Lightsail::Bucket",
     "AWS::Lightsail::Certificate",
     "AWS::Lightsail::ContactMethod",

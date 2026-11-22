@@ -9,7 +9,7 @@ unlisted: true
 
 Run `vp run integ-coverage` to regenerate.
 
-**144 / 146 registered SDK Providers** have at least one integ fixture exercising them. 1 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 1 are orphans — registered with neither an integ nor an allow-list rationale.
+**145 / 147 registered SDK Providers** have at least one integ fixture exercising them. 1 are explicitly allow-listed (registered without an integ, with a rationale comment on the register line). 1 are orphans — registered with neither an integ nor an allow-list rationale.
 
 ## How this is computed
 
@@ -37,7 +37,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 |---|---|
 | `AWS::RDS::DBProxyTargetGroup` | see DBProxy above; rds-aurora's phase 2 also drives its UPDATE path (go-to-k/cdkd#3945). |
 
-## Covered providers (144)
+## Covered providers (145)
 
 | Resource Type | Integ Fixture(s) |
 |---|---|
@@ -148,6 +148,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::Lambda::Url` | [`cc-to-sdk-reroute-common-types-2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-2/) (l1,literal)<br>[`composite-stack`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/composite-stack/) (literal)<br>[`import-lambda-url-attributes`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-lambda-url-attributes/) (literal)<br>[`lambda-url-authtype-replay`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-url-authtype-replay/) (l1,literal) |
 | `AWS::Lambda::WebFunctionEndpoint` | [`lambda-web-function-revision-replace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-web-function-revision-replace/) (l1,literal)<br>[`local-start-web-function-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-web-function-from-state/) (l1,literal)<br>[`wide-web-functions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wide-web-functions/) (l1,literal) |
 | `AWS::Lambda::WebFunctionRevision` | [`lambda-web-function-revision-replace`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lambda-web-function-revision-replace/) (l1,literal)<br>[`local-start-web-function-from-state`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/local-start-web-function-from-state/) (l1,literal)<br>[`wide-web-functions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wide-web-functions/) (l1,literal) |
+| `AWS::Lightsail::Alarm` | [`lightsail-alarm-throttle`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/lightsail-alarm-throttle/) (literal) |
 | `AWS::Logs::Delivery` | [`cc-to-sdk-reroute-common-types-12`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-12/) (l1,literal)<br>[`logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/logs-delivery/) (l1,literal)<br>[`recreate-renamed-logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/recreate-renamed-logs-delivery/) (l1,literal) |
 | `AWS::Logs::DeliveryDestination` | [`cc-to-sdk-reroute-common-types-12`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-12/) (l1,literal)<br>[`logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/logs-delivery/) (l1,literal)<br>[`recreate-renamed-logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/recreate-renamed-logs-delivery/) (l1,literal) |
 | `AWS::Logs::DeliverySource` | [`cc-to-sdk-reroute-common-types-12`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-12/) (l1,literal)<br>[`logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/logs-delivery/) (l1,literal)<br>[`recreate-renamed-logs-delivery`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/recreate-renamed-logs-delivery/) (l1,literal) |
@@ -186,7 +187,7 @@ Registered without an integ fixture, with an explicit `// allow-no-integ: <ratio
 | `AWS::StepFunctions::StateMachine` | [`cc-to-sdk-reroute-common-types-2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-2/) (l1,literal)<br>[`iam-propagation-stress`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/iam-propagation-stress/) (l2)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`replacement-immutable-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/replacement-immutable-name/) (l2,literal)<br>[`stepfunctions`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions/) (l2)<br>[`stepfunctions-logging`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-logging/) (l2)<br>[`stepfunctions-s3-definition`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-s3-definition/) (l1)<br>[`stepfunctions-sync-managed-rule`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/stepfunctions-sync-managed-rule/) (l2) |
 | `AWS::WAFv2::WebACL` | [`cc-to-sdk-reroute-common-types-10`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-common-types-10/) (l1,literal)<br>[`getatt-iam-waf-s3vectors-evaluator`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/getatt-iam-waf-s3vectors-evaluator/) (l1,literal)<br>[`import-attribute-readback-final`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/import-attribute-readback-final/) (l1)<br>[`wafv2`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/wafv2/) (l1,literal) |
 
-## Resource types referenced in integs without an SDK Provider (118)
+## Resource types referenced in integs without an SDK Provider (117)
 
 These resource types appear in integ fixtures but no SDK Provider is registered for them — they fall through to the Cloud Control API fallback. Listed here for visibility; not actionable on its own.
 
@@ -271,7 +272,6 @@ These resource types appear in integ fixtures but no SDK Provider is registered 
 - `AWS::Lambda::CodeSigningConfig`
 - `AWS::Lambda::Version`
 - `AWS::Lambda::WebFunction`
-- `AWS::Lightsail::Alarm`
 - `AWS::Lightsail::Instance`
 - `AWS::Logs::LogStream`
 - `AWS::Logs::MetricFilter`

@@ -1,9 +1,9 @@
 {
   "summary": {
-    "types": 146,
-    "properties": 1550,
-    "update": 1132,
-    "replacement": 397,
+    "types": 147,
+    "properties": 1561,
+    "update": 1140,
+    "replacement": 400,
     "allowListed": 21,
     "gap": 0,
     "outsideSchema": 13
@@ -5739,6 +5739,62 @@
           "property": "ServiceConfig",
           "status": "replacement",
           "via": "create-only"
+        }
+      ],
+      "outsideSchema": [],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lightsail::Alarm",
+      "file": "src/provisioning/providers/lightsail-alarm-provider.ts",
+      "className": "LightsailAlarmProvider",
+      "properties": [
+        {
+          "property": "AlarmName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "ComparisonOperator",
+          "status": "update"
+        },
+        {
+          "property": "ContactProtocols",
+          "status": "update"
+        },
+        {
+          "property": "DatapointsToAlarm",
+          "status": "update"
+        },
+        {
+          "property": "EvaluationPeriods",
+          "status": "update"
+        },
+        {
+          "property": "MetricName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "MonitoredResourceName",
+          "status": "replacement",
+          "via": "create-only"
+        },
+        {
+          "property": "NotificationEnabled",
+          "status": "update"
+        },
+        {
+          "property": "NotificationTriggers",
+          "status": "update"
+        },
+        {
+          "property": "Threshold",
+          "status": "update"
+        },
+        {
+          "property": "TreatMissingData",
+          "status": "update"
         }
       ],
       "outsideSchema": [],

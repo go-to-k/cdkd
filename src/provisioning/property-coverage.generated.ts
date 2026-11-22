@@ -2691,6 +2691,29 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     },
   ],
   [
+    'AWS::Lightsail::Alarm',
+    {
+      handled: new Set<string>([
+        'AlarmName',
+        'ComparisonOperator',
+        'ContactProtocols',
+        'DatapointsToAlarm',
+        'EvaluationPeriods',
+        'MetricName',
+        'MonitoredResourceName',
+        'NotificationEnabled',
+        'NotificationTriggers',
+        'Threshold',
+        'TreatMissingData',
+      ]),
+      sdkUnwired: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
+      readOnly: new Set<string>(['AlarmArn', 'State']),
+      primaryIdentifier: new Set<string>(['AlarmName']),
+      ccRouteUnavailable: false,
+    },
+  ],
+  [
     'AWS::Logs::Delivery',
     {
       handled: new Set<string>([

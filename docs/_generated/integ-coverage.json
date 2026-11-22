@@ -108,6 +108,7 @@
     "AWS::Lambda::Url",
     "AWS::Lambda::WebFunctionEndpoint",
     "AWS::Lambda::WebFunctionRevision",
+    "AWS::Lightsail::Alarm",
     "AWS::Logs::Delivery",
     "AWS::Logs::DeliveryDestination",
     "AWS::Logs::DeliverySource",
@@ -8634,6 +8635,17 @@
       }
     },
     {
+      "resourceType": "AWS::Lightsail::Alarm",
+      "integs": [
+        "lightsail-alarm-throttle"
+      ],
+      "signals": {
+        "lightsail-alarm-throttle": [
+          "literal"
+        ]
+      }
+    },
+    {
       "resourceType": "AWS::Logs::Delivery",
       "integs": [
         "cc-to-sdk-reroute-common-types-12",
@@ -11722,7 +11734,6 @@
     "AWS::Lambda::CodeSigningConfig",
     "AWS::Lambda::Version",
     "AWS::Lambda::WebFunction",
-    "AWS::Lightsail::Alarm",
     "AWS::Lightsail::Instance",
     "AWS::Logs::LogStream",
     "AWS::Logs::MetricFilter",

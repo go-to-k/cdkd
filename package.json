@@ -84,6 +84,7 @@
     "@aws-sdk/client-lambda-core": "^3.1170.0",
     "@aws-sdk/client-lambda-microvms": "^3.1169.0",
     "@aws-sdk/client-lambda-web": "^3.1169.0",
+    "@aws-sdk/client-lightsail": "^3.1175.0",
     "@aws-sdk/client-neptune": "^3.1169.0",
     "@aws-sdk/client-opensearch": "^3.1169.0",
     "@aws-sdk/client-pipes": "^3.1169.0",

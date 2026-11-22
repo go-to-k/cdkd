@@ -98,7 +98,7 @@ export function replacementRequestsDifferentName(input: {
  * definition, ECS `CreateCluster` for an ACTIVE cluster — measured — and ELBv2
  * `CreateLoadBalancer` / `CreateTargetGroup` on identical settings, per the
  * API reference) or
- * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`), or the
+ * OVERWRITES it (EventBridge `PutRule`, CloudWatch `PutMetricAlarm`, Lightsail `PutAlarm`), or the
  * provider reads the refusal as success and configures the existing resource
  * (S3's `BucketAlreadyOwnedByYou` and the `us-east-1` legacy 200 for a
  * generated bucket name only -- an explicit one is refused by the provider
@@ -127,6 +127,7 @@ const NAME_ADOPTING_SDK_CREATE_TYPES: ReadonlySet<string> = new Set([
   'AWS::ElasticLoadBalancingV2::LoadBalancer',
   'AWS::ElasticLoadBalancingV2::TargetGroup',
   'AWS::Events::Rule',
+  'AWS::Lightsail::Alarm',
   'AWS::Logs::LogGroup',
   'AWS::S3::Bucket',
   'AWS::SNS::Topic',

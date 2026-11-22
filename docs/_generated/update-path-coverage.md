@@ -12,10 +12,10 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **146**
-- Handled properties classified: **1550**
-- Read on the update path: **1132**
-- Replacement: **397**
+- SDK provider types: **147**
+- Handled properties classified: **1561**
+- Read on the update path: **1140**
+- Replacement: **400**
 - Allow-listed (does NOT block CI): **21**
 - Handled names outside the schema's writable properties (not classified): **13**
 - **Gaps (blocks CI): 0**
@@ -158,6 +158,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::Lambda::Url` | `LambdaUrlProvider` | AuthType, Cors, InvokeMode | Qualifier, TargetFunctionArn |
 | `AWS::Lambda::WebFunctionEndpoint` | `LambdaWebFunctionEndpointProvider` | AuthType, Description, RevisionWeights, ScalingConfig, ThrottleConfig | EndpointName, EndpointType, FunctionName, Regions |
 | `AWS::Lambda::WebFunctionRevision` | `LambdaWebFunctionRevisionProvider` |  | BuildConfig, Description, FunctionName, KmsKeyArn, ServiceConfig |
+| `AWS::Lightsail::Alarm` | `LightsailAlarmProvider` | ComparisonOperator, ContactProtocols, DatapointsToAlarm, EvaluationPeriods, NotificationEnabled, NotificationTriggers, Threshold, TreatMissingData | AlarmName, MetricName, MonitoredResourceName |
 | `AWS::Logs::Delivery` | `LogsDeliveryProvider` | FieldDelimiter, RecordFields, S3EnableHiveCompatiblePath, S3SuffixPath, Tags | DeliveryDestinationArn, DeliverySourceName |
 | `AWS::Logs::DeliveryDestination` | `LogsDeliveryDestinationProvider` | DeliveryDestinationPolicy, Tags | DeliveryDestinationType, DestinationResourceArn, Name, OutputFormat |
 | `AWS::Logs::DeliverySource` | `LogsDeliverySourceProvider` | DeliverySourceConfiguration, LogType, ResourceArn, Tags | Name |

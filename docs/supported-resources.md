@@ -79,6 +79,7 @@ part of the type name.
 | KinesisFirehose | `AWS::KinesisFirehose::DeliveryStream` |
 | KMS | `AWS::KMS::Alias`, `AWS::KMS::Key` |
 | Lambda | `AWS::Lambda::EventInvokeConfig`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::Function`, `AWS::Lambda::LayerVersion`, `AWS::Lambda::MicrovmImage`, `AWS::Lambda::NetworkConnector`, `AWS::Lambda::Permission`, `AWS::Lambda::Url`, `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::WebFunctionRevision` |
+| Lightsail | `AWS::Lightsail::Alarm` |
 | Logs | `AWS::Logs::Delivery`, `AWS::Logs::DeliveryDestination`, `AWS::Logs::DeliverySource`, `AWS::Logs::LogGroup` |
 | Neptune | `AWS::Neptune::DBCluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBSubnetGroup` |
 | Pipes | `AWS::Pipes::Pipe` |

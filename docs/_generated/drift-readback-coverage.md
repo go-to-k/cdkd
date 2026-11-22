@@ -12,9 +12,9 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **146** (without a readback, reported as `drift unknown`: **2**)
-- Handled properties classified: **1554**
-- Named on the readback path: **1402**
+- SDK provider types: **147** (without a readback, reported as `drift unknown`: **2**)
+- Handled properties classified: **1565**
+- Named on the readback path: **1413**
 - Declared unreadable by `getDriftUnknownPaths`: **129**
 - In the committed baseline (does NOT block CI): **23**
 - Classified though the schema capture does not list them: **12**
@@ -165,6 +165,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::Lambda::Url` | `LambdaUrlProvider` | AuthType, Cors, InvokeMode, TargetFunctionArn |  |
 | `AWS::Lambda::WebFunctionEndpoint` | `LambdaWebFunctionEndpointProvider` | AuthType, Description, EndpointName, EndpointType, FunctionName, Regions, RevisionWeights, ScalingConfig, ThrottleConfig |  |
 | `AWS::Lambda::WebFunctionRevision` | `LambdaWebFunctionRevisionProvider` | BuildConfig, Description, FunctionName, KmsKeyArn, ServiceConfig |  |
+| `AWS::Lightsail::Alarm` | `LightsailAlarmProvider` | AlarmName, ComparisonOperator, ContactProtocols, DatapointsToAlarm, EvaluationPeriods, MetricName, MonitoredResourceName, NotificationEnabled, NotificationTriggers, Threshold, TreatMissingData |  |
 | `AWS::Logs::Delivery` | `LogsDeliveryProvider` | DeliveryDestinationArn, DeliverySourceName, FieldDelimiter, RecordFields, S3EnableHiveCompatiblePath, S3SuffixPath, Tags |  |
 | `AWS::Logs::DeliveryDestination` | `LogsDeliveryDestinationProvider` | DeliveryDestinationPolicy, DeliveryDestinationType, DestinationResourceArn, Name, OutputFormat, Tags |  |
 | `AWS::Logs::DeliverySource` | `LogsDeliverySourceProvider` | DeliverySourceConfiguration, LogType, Name, ResourceArn, Tags |  |

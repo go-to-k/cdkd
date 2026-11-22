@@ -1,0 +1,90 @@
+{
+  "resourceType": "AWS::Lightsail::Alarm",
+  "generatedAt": "2026-11-22",
+  "properties": [
+    "AlarmArn",
+    "AlarmName",
+    "ComparisonOperator",
+    "ContactProtocols",
+    "DatapointsToAlarm",
+    "EvaluationPeriods",
+    "MetricName",
+    "MonitoredResourceName",
+    "NotificationEnabled",
+    "NotificationTriggers",
+    "State",
+    "Threshold",
+    "TreatMissingData"
+  ],
+  "readOnlyProperties": [
+    "AlarmArn",
+    "State"
+  ],
+  "createOnlyProperties": [
+    "AlarmName",
+    "MetricName",
+    "MonitoredResourceName"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "AlarmName"
+    ],
+    [
+      "MetricName"
+    ],
+    [
+      "MonitoredResourceName"
+    ]
+  ],
+  "primaryIdentifier": [
+    "AlarmName"
+  ],
+  "definitionShapes": {
+    "#top": {
+      "AlarmName": "scalar",
+      "MonitoredResourceName": "scalar",
+      "MetricName": "scalar",
+      "ComparisonOperator": "scalar",
+      "ContactProtocols": "array",
+      "AlarmArn": "scalar",
+      "DatapointsToAlarm": "scalar",
+      "EvaluationPeriods": "scalar",
+      "NotificationEnabled": "scalar",
+      "NotificationTriggers": "array",
+      "Threshold": "scalar",
+      "TreatMissingData": "scalar",
+      "State": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "AlarmName",
+      "ComparisonOperator",
+      "EvaluationPeriods",
+      "MetricName",
+      "MonitoredResourceName",
+      "Threshold"
+    ]
+  },
+  "propertyShapes": {
+    "ContactProtocols": "array",
+    "NotificationTriggers": "array"
+  },
+  "propertyTypes": {
+    "AlarmArn": "string",
+    "AlarmName": "string",
+    "ComparisonOperator": "string",
+    "ContactProtocols": "array",
+    "ContactProtocols[]": "string",
+    "DatapointsToAlarm": "integer",
+    "EvaluationPeriods": "integer",
+    "MetricName": "string",
+    "MonitoredResourceName": "string",
+    "NotificationEnabled": "boolean",
+    "NotificationTriggers": "array",
+    "NotificationTriggers[]": "string",
+    "State": "string",
+    "Threshold": "number",
+    "TreatMissingData": "string"
+  }
+}

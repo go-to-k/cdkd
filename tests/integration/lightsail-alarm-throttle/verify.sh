@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # verify.sh -- cdkd Lightsail PutAlarm throttle integ (issue #6830).
 # Deploys one Lightsail instance and 16 alarms on it in one burst, asserts every
-# alarm reached Lightsail, then destroys clean. A Cloud Control handler that
-# runs out of its own retries on the 3 req/s PutAlarm limit fails with
-# `ErrorCode: Throttling`; before #6830 cdkd rolled the stack back on it.
+# alarm reached Lightsail through the SDK provider, then destroys clean.
+# PutAlarm / DeleteAlarm refill one token per second; through Cloud Control the
+# burst throttled the handler's create AND its clean-up delete, and the retry
+# met the leftover alarm as "already exists" (measured before #6830's fix).
 
 set -euo pipefail
 
@@ -79,10 +80,17 @@ echo "==> Deploy (${ALARM_COUNT} alarms in one burst)"
 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --concurrency "${ALARM_COUNT}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 
-# Informational: whether this run actually hit the limit. The throttle is
-# timing-dependent, so its absence is not a failure.
+# The provider paces its own calls, so no alarm should reach the engine's retry.
 RETRIES=$(grep -c 'Retrying Alarm' "${DEPLOY_LOG}" || true)
-echo "    INFO: ${RETRIES} alarm create retr(y/ies) in this run"
+echo "    INFO: ${RETRIES} engine-level alarm create retr(y/ies) in this run"
+
+STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+BY="$(jq -r '.resources.Alarm0x1.provisionedBy // "<absent>"' <<<"${STATE_JSON}")"
+if [ "${BY}" != "sdk" ]; then
+  echo "FAIL: Alarm0x1 provisionedBy is '${BY}', expected 'sdk'" >&2
+  exit 1
+fi
+echo "    OK: alarms provisioned through the SDK provider"
 
 ALARMS=$(aws lightsail get-alarms --monitored-resource-name "${INSTANCE}" --region "${REGION}" \
   --query 'length(alarms)' --output text)
@@ -91,6 +99,16 @@ if [ "${ALARMS}" != "${ALARM_COUNT}" ]; then
   exit 1
 fi
 echo "    OK: ${ALARM_COUNT} alarms on ${INSTANCE}"
+
+# One alarm's settings read back, so a PutAlarm member dropped on the wire fails.
+SETTINGS=$(aws lightsail get-alarms --alarm-name "${STACK}-alarm-0-2" --region "${REGION}" \
+  --query 'alarms[0].[metricName,comparisonOperator,threshold,evaluationPeriods]' --output json)
+if ! jq -e '.[0] == "CPUUtilization" and .[1] == "GreaterThanOrEqualToThreshold" and .[2] == 99 and .[3] == 1' \
+  >/dev/null <<<"${SETTINGS}"; then
+  echo "FAIL: alarm-0-2 settings are ${SETTINGS}" >&2
+  exit 1
+fi
+echo "    OK: alarm-0-2 settings reached Lightsail"
 
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -111,5 +129,7 @@ done
 echo "    OK: instance gone"
 assert_gone "state remains" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state gone"
+trap - EXIT INT TERM
+rm -f "${DEPLOY_LOG}"
 echo ""
 echo "[verify] PASS -- lightsail-alarm-throttle"

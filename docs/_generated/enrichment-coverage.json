@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 146,
+    "classifiedCount": 147,
     "enriched": 50,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
-    "sdkFallbackGap": 78,
+    "sdkFallbackGap": 79,
     "allowListedTypes": 89
   },
   "types": [
@@ -2579,6 +2579,30 @@
         "RevisionId",
         "State",
         "StateReason"
+      ]
+    },
+    {
+      "resourceType": "AWS::Lightsail::Alarm",
+      "bucket": "sdk-fallback-gap",
+      "sdkBacked": true,
+      "readOnlyProperties": [
+        "AlarmArn",
+        "State"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "AlarmArn",
+          "status": "gap"
+        },
+        {
+          "name": "State",
+          "status": "gap"
+        }
+      ],
+      "gaps": [
+        "AlarmArn",
+        "State"
       ]
     },
     {
