@@ -377,6 +377,15 @@ describe('Route 53 whole-resource reads on a failed zone lookup (go-to-k/cdkd#67
     await expect(readRecord()).rejects.toThrow('Could not resolve HostedZoneName');
   });
 
+  it('RecordSet: a listing that fails with an empty error text also rejects the read', async () => {
+    mockSend.mockImplementation((command: Command) =>
+      command.constructor.name === 'ListHostedZonesByNameCommand'
+        ? Promise.reject(new Error(''))
+        : Promise.resolve(RECORD_ANSWERS[command.constructor.name] ?? {})
+    );
+    await expect(readRecord()).rejects.toThrow();
+  });
+
   it('RecordSet: a zone name that matches no zone is still "cannot tell"', async () => {
     stub({ ...RECORD_ANSWERS, ListHostedZonesByNameCommand: { HostedZones: [] } }, undefined, denied);
     await expect(readRecord()).resolves.toBeUndefined();

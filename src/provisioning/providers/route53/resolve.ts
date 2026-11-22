@@ -71,6 +71,8 @@ export async function resolveHostedZoneId(
   // assignment carries AWS's own text.
   let lookupErrorShown: string | undefined;
   let lookupErrorRedacted = false;
+  // go-to-k/cdkd#6759: the listing itself failed, even with an empty error text.
+  let lookupFailed = false;
 
   // Declared outside the try for the same reason the two lookup-error
   // bindings above are: the ambiguity + sound-negative decisions below sit
@@ -153,6 +155,7 @@ export async function resolveHostedZoneId(
           ? sawLaterName || response.IsTruncated !== true
           : zones.length > 0 || response.IsTruncated !== true);
     } catch (error) {
+      lookupFailed = true;
       // `.detail` keeps this binding IDENTICAL to what the old expression
       // produced -- same text, so same truthiness at the condition below.
       // Stated as identity rather than as "non-empty", which an earlier
@@ -247,7 +250,7 @@ export async function resolveHostedZoneId(
     physicalId,
     lookupErrorCause
   );
-  if (lookupErrorMessage) {
+  if (lookupFailed) {
     Object.defineProperty(unresolved, HOSTED_ZONE_LOOKUP_FAILED, { value: true });
   }
   throw lookupErrorMessage && lookupErrorRedacted ? markRedactedCause(unresolved) : unresolved;
