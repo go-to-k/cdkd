@@ -14,9 +14,13 @@
 #      UPDATE in place, no recreate).
 #   3. Destroy + assert the provider is gone and the cdkd state is removed.
 #
-# NOTE: an AWS account holds at most ONE OIDC provider per issuer URL. This
-# fixture assumes a dedicated test account with no pre-existing provider for
-# token.actions.githubusercontent.com — the pre-run cleanup deletes it.
+# NOTE: an AWS account holds at most ONE OIDC provider per issuer URL, so the
+# issuer must NEVER be a real provider's URL (GitHub's
+# token.actions.githubusercontent.com included): the cleanup and the destroy
+# below delete the provider at that URL, and an earlier version of this
+# fixture, pointed at GitHub's URL, cost the account its real GitHub provider.
+# Each run uses a fictitious host, cdkd-integ-oidc-<run>.example.com, passed to
+# the CDK app as CDKD_OIDC_HOST.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -61,7 +65,12 @@ STACK="CdkdIamOidcProviderExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com"
+# Fictitious per-run issuer host (see the NOTE above). The app refuses any
+# host outside *.example.com.
+OIDC_HOST_PREFIX="cdkd-integ-oidc"
+CDKD_OIDC_HOST="${OIDC_HOST_PREFIX}-$(date +%s)-$$.example.com"
+export CDKD_OIDC_HOST
+PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${CDKD_OIDC_HOST}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -137,6 +146,25 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# A killed earlier run leaves its provider under ITS per-run host, which the
+# ARN above does not name: sweep this fixture's fictitious hosts only.
+# SCOPE GUARD: an empty prefix would widen the pattern below to every
+# *.example.com provider, so refuse anything but the literal.
+case "${OIDC_HOST_PREFIX}" in
+  cdkd-integ-oidc) ;;
+  *)
+    echo "FAIL: refusing the leftover-provider sweep for prefix '${OIDC_HOST_PREFIX:-<empty>}'" >&2
+    exit 1
+    ;;
+esac
+for arn in $(aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text); do
+  case "${arn}" in
+    "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_HOST_PREFIX}"*.example.com)
+      echo "    deleting leftover provider ${arn}"
+      aws iam delete-open-id-connect-provider --open-id-connect-provider-arn "${arn}" >/dev/null 2>&1 || true
+      ;;
+  esac
+done
 
 # --- Phase 1: deploy baseline (single clientId) ------------------------
 echo "==> Phase 1: deploy OIDC provider with single clientId"
