@@ -714,31 +714,33 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
       expect(state?.['FunctionName']).toBe('fn');
     });
 
-    it('still returns a usable snapshot when a secondary read fails outright', async () => {
+    // go-to-k/cdkd#6759: a secondary read that fails for any reason but
+    // "absent" fails the whole read, so `cdkd drift` reports the function not
+    // compared instead of a snapshot that silently lacks the key.
+    it('rejects when a secondary read fails outright', async () => {
       mockReadback({
         configuration: { FunctionName: 'fn' },
         runtimeManagement: new Error('AccessDenied'),
       });
 
-      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
-
-      expect(state?.['FunctionName']).toBe('fn');
-      expect(state).not.toHaveProperty('RuntimeManagementConfig');
+      await expect(
+        provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function')
+      ).rejects.toThrow('AccessDenied');
+      // The code-signing answer queued after it was never consumed.
+      mockSend.mockReset();
     });
 
-    it('tolerates a non-not-found failure of the code-signing read', async () => {
+    it('rejects on a non-not-found failure of the code-signing read', async () => {
       // The RNFE arm above is the common case (no config attached); this is the
-      // AccessDenied / throttle arm, which must also leave the snapshot usable
-      // rather than failing the whole drift read.
+      // AccessDenied / throttle arm.
       mockReadback({
         configuration: { FunctionName: 'fn' },
         codeSigning: new Error('AccessDeniedException: not authorized'),
       });
 
-      const state = bagOf(await provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function'));
-
-      expect(state?.['FunctionName']).toBe('fn');
-      expect(state).not.toHaveProperty('CodeSigningConfigArn');
+      await expect(
+        provider.readCurrentState('fn', 'Fn', 'AWS::Lambda::Function')
+      ).rejects.toThrow('AccessDeniedException: not authorized');
     });
 
     it('still issues the primary GetFunction read', async () => {

@@ -829,13 +829,13 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it('warns when the scaling read fails, since that reads as a removal', async () => {
+    // go-to-k/cdkd#6759: an omitted key read as a removal; the read now fails
+    // instead, so `cdkd drift` reports the function not compared.
+    it('rejects when the scaling read fails, rather than omitting it (a false removal)', async () => {
       armRead(() => {
         throw new Error('throttled');
       });
-      const live = (await provider.readCurrentState('fn', 'Fn', TYPE)) as Record<string, unknown>;
-      expect(live).not.toHaveProperty('FunctionScalingConfig');
-      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/GetFunctionScalingConfig failed/));
+      await expect(provider.readCurrentState('fn', 'Fn', TYPE)).rejects.toThrow('throttled');
     });
 
     it('makes no scaling read for a plain function', async () => {

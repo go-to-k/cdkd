@@ -1,5 +1,4 @@
 import type { LambdaFunctionProvider } from '../lambda-function-provider.js';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import {
   GetFunctionCommand,
   GetFunctionConcurrencyCommand,
@@ -8,19 +7,33 @@ import {
   GetRuntimeManagementConfigCommand,
   GetFunctionScalingConfigCommand,
   ResourceNotFoundException,
+  CodeSigningConfigNotFoundException,
 } from '@aws-sdk/client-lambda';
 import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
-import { safeMsg } from '../../../utils/display-safe.js';
 import { LATEST_PUBLISHED, SEPARATELY_APPLIED_KEYS } from './shared.js';
+
+/**
+ * go-to-k/cdkd#6759: whether a secondary setting read's failure says the
+ * setting is NOT SET (`ResourceNotFoundException`), so the readback omits it.
+ * Any other failure -- AccessDenied, throttling, a service error, an
+ * `InvalidParameterValueException` (a request AWS refused, which proves
+ * nothing about the setting) -- throws, so `cdkd drift` reports the function
+ * not compared instead of comparing a snapshot that silently lacks the key
+ * (which read as a removal). Container images, whose runtime-management and
+ * code-signing reads AWS rejects, never reach those two reads.
+ */
+function settingAbsent(error: unknown): boolean {
+  return error instanceof ResourceNotFoundException;
+}
 
 /**
  * go-to-k/cdkd#5487: `readCurrentState`, except that a setting read by its
  * own call (concurrency, recursion, runtime management, code signing) is
- * read STRICTLY when it is unsettled: `readCurrentState` omits it on a failed
- * read, which the engine would take as "not set" and converge to the wrong
- * side. A `ResourceNotFoundException` on such a call means "not set".
+ * read STRICTLY when it is unsettled. A `ResourceNotFoundException` on such a
+ * call means "not set"; any other failure throws (as `readCurrentState` itself
+ * now does, go-to-k/cdkd#6759).
  */
 export async function readUnsettled(
   this: LambdaFunctionProvider,
@@ -309,12 +322,7 @@ export async function readCurrentState(
         const live = scaling.RequestedFunctionScalingConfig ?? scaling.AppliedFunctionScalingConfig;
         if (live !== undefined) result['FunctionScalingConfig'] = live;
       } catch (scalingErr) {
-        if (!(scalingErr instanceof ResourceNotFoundException)) {
-          // WARN for the same reason as RuntimeManagementConfig below.
-          this.logger.warn(
-            safeMsg`GetFunctionScalingConfig failed for ${physicalId} — FunctionScalingConfig omitted from the drift snapshot (may surface as a false removal): ${describeAwsFailure(scalingErr).summary}`
-          );
-        }
+        if (!settingAbsent(scalingErr)) throw scalingErr;
       }
     }
 
@@ -342,15 +350,7 @@ export async function readCurrentState(
         result['RecursiveLoop'] = rlResp.RecursiveLoop;
       }
     } catch (rlErr) {
-      // Non-fatal: tolerate transient access failures on the
-      // secondary read so the primary read still produces a usable
-      // snapshot. The drift report just omits RecursiveLoop on the
-      // (rare) failure.
-      if (!(rlErr instanceof ResourceNotFoundException)) {
-        this.logger.debug(
-          `GetFunctionRecursionConfig failed for ${physicalId}: ${describeAwsFailure(rlErr).detail}`
-        );
-      }
+      if (!settingAbsent(rlErr)) throw rlErr;
     }
 
     // ReservedConcurrentExecutions: a SEPARATE control-plane read
@@ -367,11 +367,7 @@ export async function readCurrentState(
         result['ReservedConcurrentExecutions'] = pcResp.ReservedConcurrentExecutions;
       }
     } catch (pcErr) {
-      if (!(pcErr instanceof ResourceNotFoundException)) {
-        this.logger.debug(
-          `GetFunctionConcurrency failed for ${physicalId}: ${describeAwsFailure(pcErr).detail}`
-        );
-      }
+      if (!settingAbsent(pcErr)) throw pcErr;
     }
 
     // Runtime-management controls and code signing apply to managed-runtime
@@ -403,15 +399,7 @@ export async function readCurrentState(
           result['RuntimeManagementConfig'] = rm;
         }
       } catch (rmErr) {
-        if (!(rmErr instanceof ResourceNotFoundException)) {
-          // WARN, not debug: this read backs a drift-compared key, so a
-          // permission / throttle failure omits RuntimeManagementConfig from
-          // the snapshot and `cdkd drift` then reports it as a REMOVAL against
-          // state. The warning is what makes that false drift explainable.
-          this.logger.warn(
-            `GetRuntimeManagementConfig failed for ${physicalId} — RuntimeManagementConfig omitted from the drift snapshot (may surface as a false removal): ${describeAwsFailure(rmErr).detail}`
-          );
-        }
+        if (!settingAbsent(rmErr)) throw rmErr;
       }
 
       // CodeSigningConfigArn: a SEPARATE control-plane read
@@ -427,12 +415,9 @@ export async function readCurrentState(
           result['CodeSigningConfigArn'] = csResp.CodeSigningConfigArn;
         }
       } catch (csErr) {
-        if (!(csErr instanceof ResourceNotFoundException)) {
-          // WARN for the same reason as the read above — an omitted
-          // CodeSigningConfigArn reads as a removed security control.
-          this.logger.warn(
-            `GetFunctionCodeSigningConfig failed for ${physicalId} — CodeSigningConfigArn omitted from the drift snapshot (may surface as a false removal): ${describeAwsFailure(csErr).detail}`
-          );
+        // The call's other not-found answer (modelled in its @throws).
+        if (!settingAbsent(csErr) && !(csErr instanceof CodeSigningConfigNotFoundException)) {
+          throw csErr;
         }
       }
     }
