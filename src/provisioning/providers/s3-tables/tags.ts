@@ -1,6 +1,7 @@
 import type { S3TablesProvider } from '../s3-tables-provider.js';
 import {
   ListTagsForResourceCommand,
+  NotFoundException,
   TagResourceCommand,
   UntagResourceCommand,
 } from '@aws-sdk/client-s3tables';
@@ -31,10 +32,10 @@ export function tagListToSdkMap(
 }
 
 /**
- * Best-effort tag readback. ListTagsForResource against a freshly-
- * created table can briefly 404 due to eventual consistency; emit
- * `[]` on any failure rather than propagate (matches the S3Vectors /
- * CloudFront patterns and keeps the drift comparator happy).
+ * Tag readback. ListTagsForResource against a freshly-created table can
+ * briefly 404 due to eventual consistency, so `NotFoundException` emits
+ * `[]`. Any other failure throws (go-to-k/cdkd#6759): a `[]` there read as
+ * every tag removed, and `cdkd drift` must report `readFailed` instead.
  */
 export async function readTagsBestEffort(
   this: S3TablesProvider,
@@ -52,6 +53,7 @@ export async function readTagsBestEffort(
     }
     return out;
   } catch (err) {
+    if (!(err instanceof NotFoundException)) throw err;
     this.logger.debug(
       `readTagsBestEffort: ListTagsForResource failed for ${resourceArn}: ${describeAwsFailure(err).detail} — emitting Tags: []`
     );

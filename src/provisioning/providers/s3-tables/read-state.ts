@@ -13,11 +13,9 @@ import {
   NotFoundException,
   type GetTableMaintenanceConfigurationCommandOutput,
 } from '@aws-sdk/client-s3tables';
-import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { compositeIdFormatMessage } from '../../composite-id.js';
 import { type ResourceNotFound, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
-import { safeMsg } from '../../../utils/display-safe.js';
 import {
   S3_TABLES_TABLE_ID_FORMAT,
   type TablePartsResolution,
@@ -88,14 +86,11 @@ export async function readTableBucketCurrentState(
 
   const result: Record<string, unknown> = {};
   if (bucket.name !== undefined) result['TableBucketName'] = bucket.name;
-  // Tags: best-effort second call. physicalId IS the bucket ARN, so
+  // Tags: a second call. physicalId IS the bucket ARN, so
   // ListTagsForResource takes it directly (no GetTableBucket → ARN
   // recovery hop, unlike Table's compound physicalId case). Emit
-  // Tags: [] when AWS returns no tags or when the read itself fails
-  // (matches S3Vectors / CloudFront / S3Tables::Table patterns —
-  // drift comparator only descends into state-side keys, so an empty
-  // array does not surface noise on a pre-PR state file that had no
-  // Tags entry).
+  // Tags: [] when AWS returns no tags or answers NotFoundException; any
+  // other failure throws (`readTagsBestEffort`, go-to-k/cdkd#6759).
   result['Tags'] = await this.readTagsBestEffort(physicalId);
   Object.assign(result, await this.readTableBucketConfigs(physicalId));
   return result;
@@ -110,8 +105,8 @@ export async function readTableBucketCurrentState(
  * to emit, and a removal deletes (turns off) it. A console-side enable is
  * still compared: {@link getDriftAbsentMeansDefaultKeys} names the key while
  * the template leaves it off. A read that fails for any other
- * reason than `NotFoundException` leaves its key out, at `debug`, as the
- * tag read does.
+ * reason than `NotFoundException` throws (go-to-k/cdkd#6759), so `cdkd drift`
+ * reports `readFailed` instead of leaving the key uncompared.
  */
 export async function readTableBucketConfigs(
   this: S3TablesProvider,
@@ -218,9 +213,9 @@ export async function readTableBucketConfigs(
 
 /**
  * Run one configuration read into `out[key]`: `notFound` on
- * `NotFoundException` (the configuration is unset: its default, or no key),
- * and the key left out on any other failure — rethrown instead when
- * `strict` (readUnsettled, which must not read a failure as absent).
+ * `NotFoundException` (the configuration is unset: its default, or no key).
+ * Any other failure throws, `strict` (readUnsettled) or not
+ * (go-to-k/cdkd#6759): left out, the key went uncompared by `cdkd drift`.
  */
 export async function readConfig(
   this: S3TablesProvider,
@@ -228,7 +223,7 @@ export async function readConfig(
   key: string,
   read: () => Promise<CfnObject | undefined>,
   notFound: CfnObject | 'absent',
-  strict = false
+  _strict = false
 ): Promise<void> {
   try {
     const value = await read();
@@ -238,10 +233,7 @@ export async function readConfig(
       if (notFound !== 'absent') out[key] = notFound;
       return;
     }
-    if (strict) throw err;
-    this.logger.debug(
-      safeMsg`readCurrentState: reading ${key} failed: ${describeAwsFailure(err).detail} — leaving it out`
-    );
+    throw err;
   }
 }
 
@@ -332,20 +324,10 @@ export async function readTableCurrentState(
   this: S3TablesProvider,
   physicalId: string
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-  // `cdkd drift` has no per-resource try/catch, so a throttle or an
-  // AccessDenied on ONE bare-ARN row would abort the whole stack's drift
-  // run. Report drift-unknown for this resource instead — the same answer
-  // the two sentinel resolutions below already produce.
-  let resolved: TablePartsResolution;
-  try {
-    resolved = await this.resolveTableParts(physicalId);
-  } catch (err) {
-    this.logger.warn(
-      `S3 Tables Table ${physicalId}: could not resolve its identity for drift ` +
-        `(${describeAwsFailure(err).detail}); reporting drift as unknown.`
-    );
-    return undefined;
-  }
+  // A throttle or an AccessDenied on a bare-ARN row's `GetTable` throws
+  // (go-to-k/cdkd#6759): `cdkd drift` reports that one resource `readFailed`
+  // with its cause, where it used to report drift unknown and lose it.
+  const resolved: TablePartsResolution = await this.resolveTableParts(physicalId);
   if (resolved === 'not-found') return RESOURCE_NOT_FOUND;
   if (resolved === 'unparseable') return undefined;
   const { tableBucketARN, namespace, name } = resolved;
@@ -381,14 +363,11 @@ export async function readTableCurrentState(
     result['OpenTableFormat'] = resp.format;
     result['Format'] = resp.format;
   }
-  // Tags: best-effort second call. ListTagsForResource takes the REAL
-  // table ARN AWS returned at create time — surfaced by `GetTable`'s
-  // `tableARN` field (the SAME response we just used to verify the
-  // table exists). Emit Tags: [] when AWS returned no tableARN, no
-  // tags, or when the read itself fails (matches the S3Vectors /
-  // CloudFront patterns; the drift comparator only descends into
-  // state-side keys, so an empty array does not surface noise on a
-  // pre-PR state file that had no Tags entry).
+  // Tags: a second call. ListTagsForResource takes the REAL table ARN
+  // AWS returned at create time — surfaced by `GetTable`'s `tableARN`
+  // field (the SAME response we just used to verify the table exists).
+  // Emit Tags: [] when AWS returned no tableARN, no tags, or
+  // NotFoundException; any other failure throws (`readTagsBestEffort`).
   result['Tags'] = resp.tableARN ? await this.readTagsBestEffort(resp.tableARN) : [];
 
   // go-to-k/cdkd#2762: the maintenance properties, each at its AWS default
@@ -406,14 +385,14 @@ export async function readTableCurrentState(
 /**
  * The Table's `Compaction` / `SnapshotManagement` in CFn shape
  * (go-to-k/cdkd#2762). A read that fails for any other reason than
- * `NotFoundException` leaves both out, at `debug` — or is rethrown when
- * `strict` (readUnsettled).
+ * `NotFoundException` throws, `strict` (readUnsettled) or not
+ * (go-to-k/cdkd#6759).
  */
 export async function readTableMaintenance(
   this: S3TablesProvider,
-  physicalId: string,
+  _physicalId: string,
   table: { tableBucketARN: string; namespace: string; name: string },
-  strict = false
+  _strict = false
 ): Promise<CfnObject> {
   const result: CfnObject = {};
   let maintenance: GetTableMaintenanceConfigurationCommandOutput['configuration'];
@@ -423,13 +402,7 @@ export async function readTableMaintenance(
       .configuration;
   } catch (err) {
     maintenanceRead = err instanceof NotFoundException;
-    if (!maintenanceRead) {
-      if (strict) throw err;
-      this.logger.debug(
-        safeMsg`readCurrentState: reading the maintenance configuration of ${physicalId} failed: ` +
-          safeMsg`${describeAwsFailure(err).detail} — leaving Compaction / SnapshotManagement out`
-      );
-    }
+    if (!maintenanceRead) throw err;
   }
   if (maintenanceRead) {
     const compaction = maintenance?.icebergCompaction;

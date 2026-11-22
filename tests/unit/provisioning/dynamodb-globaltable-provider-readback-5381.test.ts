@@ -331,15 +331,12 @@ describe('readCurrentState replica members (go-to-k/cdkd#5381)', () => {
     expect(replicaOf(unset, 'us-east-1')['TableClass']).toBe('STANDARD');
   });
 
-  it('omits a cross-region protection whose regional read failed, keeping the rest', async () => {
+  it('rejects the read when a cross-region protection read fails', async () => {
+    // go-to-k/cdkd#6759: a failed regional read throws instead of omitting the member.
     setLive({ protection: true }, { describeFails: true, pitr: { status: 'ENABLED', period: 10 } });
-    const bag = await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, declared());
-    expect(replicaOf(bag, 'eu-west-1')).not.toHaveProperty('DeletionProtectionEnabled');
-    expect(replicaOf(bag, 'eu-west-1')['PointInTimeRecoverySpecification']).toEqual({
-      PointInTimeRecoveryEnabled: true,
-      RecoveryPeriodInDays: 10,
-    });
-    expect(replicaOf(bag, 'us-east-1')['DeletionProtectionEnabled']).toBe(true);
+    await expect(provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, declared())).rejects.toThrow(
+      'AccessDenied'
+    );
   });
 
   it('reads the period and a declared mode', async () => {
@@ -693,16 +690,22 @@ describe('read-back edges (go-to-k/cdkd#5381 review)', () => {
     expect(replicaOf(bag, 'eu-west-1')['ResourcePolicy']).toEqual({ PolicyDocument: doc });
   });
 
-  it('omits the policy after its own write when the read fails for good', async () => {
-    setLive({}, { tablePolicyReads: [denied()] });
-    const bag = await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl(), { afterOwnWrite: true });
-    expect(replicaOf(bag, 'eu-west-1')).not.toHaveProperty('ResourcePolicy');
+  it('rejects the read after its own write when the policy read fails for good', async () => {
+    // go-to-k/cdkd#6759: the member is no longer omitted; the read throws.
+    const err = denied();
+    setLive({}, { tablePolicyReads: [err] });
+    await expect(
+      provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl(), { afterOwnWrite: true })
+    ).rejects.toThrow(err.message);
   });
 
-  it('omits the policy on a drift read that fails transiently', async () => {
-    setLive({}, { tablePolicyReads: [throttle()] });
-    const bag = await provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl());
-    expect(replicaOf(bag, 'eu-west-1')).not.toHaveProperty('ResourcePolicy');
+  it('rejects a drift read whose policy read fails transiently', async () => {
+    // go-to-k/cdkd#6759: the member is no longer omitted; the read throws.
+    const err = throttle();
+    setLive({}, { tablePolicyReads: [err] });
+    await expect(provider.readCurrentState(TABLE, 'T', RESOURCE_TYPE, decl())).rejects.toThrow(
+      err.message
+    );
   });
 
   // go-to-k/cdkd#6604: after its own write a differing answer is the policy
@@ -731,16 +734,18 @@ describe('read-back edges (go-to-k/cdkd#5381 review)', () => {
     expect(replicaOf(bag, 'us-east-1')).not.toHaveProperty('SSESpecification');
   });
 
-  it('asks for no stream policy when the regional read that names the stream failed', async () => {
+  it('rejects the read, asking for no stream policy, when the regional read that names the stream failed', async () => {
+    // go-to-k/cdkd#6759: the failed regional read throws instead of omitting the member.
     const streamDoc = policy('dynamodb:GetRecords');
     setLive({}, { describeFails: true, streamPolicy: JSON.stringify(streamDoc) });
-    const bag = await provider.readCurrentState(
-      TABLE,
-      'T',
-      RESOURCE_TYPE,
-      declared({}, { ReplicaStreamSpecification: { ResourcePolicy: { PolicyDocument: streamDoc } } })
-    );
-    expect(replicaOf(bag, 'eu-west-1')).not.toHaveProperty('ReplicaStreamSpecification');
+    await expect(
+      provider.readCurrentState(
+        TABLE,
+        'T',
+        RESOURCE_TYPE,
+        declared({}, { ReplicaStreamSpecification: { ResourcePolicy: { PolicyDocument: streamDoc } } })
+      )
+    ).rejects.toThrow('AccessDenied');
     expect(calls(regionalSend, GetResourcePolicyCommand)).toEqual([]);
   });
 

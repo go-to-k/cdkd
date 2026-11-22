@@ -634,24 +634,16 @@ describe('AppSync GraphQLApi config properties (#609)', () => {
       ).rejects.toBeInstanceOf(ProvisioningError);
     });
 
-    it('warns rather than failing the drift read when the env-var read is denied', async () => {
+    it('fails the drift read when the env-var read is denied', async () => {
+      // go-to-k/cdkd#6759: a failed sub-read rejects instead of warning and dropping the key.
       mockSend
         .mockResolvedValueOnce({
           graphqlApi: { name: 'MyApi', authenticationType: 'API_KEY', xrayEnabled: false },
         })
         .mockRejectedValueOnce(new Error('AccessDeniedException'));
 
-      const state = (await provider.readCurrentState!('api-1', 'L', TYPE)) as Record<
-        string,
-        unknown
-      >;
-
-      expect(state['Name']).toBe('MyApi');
-      expect(state).not.toHaveProperty('EnvironmentVariables');
-      // WARN, not debug: a silenced failure makes this read asymmetric with the
-      // recorded baseline and manufactures a phantom removal.
-      expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-        'environment variables'
+      await expect(provider.readCurrentState!('api-1', 'L', TYPE)).rejects.toThrow(
+        'AccessDeniedException'
       );
     });
   });

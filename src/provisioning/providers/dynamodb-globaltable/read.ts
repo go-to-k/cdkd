@@ -314,6 +314,15 @@ export async function unsettledInTransition(
 }
 
 /**
+ * Whether AWS is serving a replica in `status` (go-to-k/cdkd#6759): the
+ * statuses {@link replicaStrictness} keeps strict. The deploy region's own
+ * entry carries no status.
+ */
+function replicaServed(status: string | undefined): boolean {
+  return status === undefined || status === 'ACTIVE' || status === 'UPDATING';
+}
+
+/**
  * Read the AWS-current DynamoDB GlobalTable configuration in CFn-property shape.
  *
  * Reverse-maps `DescribeTable` + `ListTagsOfResource` + `DescribeTimeToLive`
@@ -343,9 +352,11 @@ export async function unsettledInTransition(
  * are surfaced for BOTH the LOCAL replica AND cross-region replicas
  * via per-region SDK clients cached in `regionalClientCache` (Issue
  * #389 lifted the v1 LOCAL-only limitation; the per-replica reads
- * happen in `readReplicaSubSpecs` below). Each cross-region call is
- * best-effort — a permissions gap in one region omits the offending
- * key rather than aborting the whole drift read.
+ * happen in `readReplicaSubSpecs` below). A replica region's not-found
+ * omits the offending key; any other failed sub-read throws
+ * (go-to-k/cdkd#6759), so `cdkd drift` reports `readFailed` rather than
+ * leaving the key uncompared — except on a replica AWS is not serving
+ * (`replicaServed`), whose reads stay tolerant.
  *
  * go-to-k/cdkd#5381: each replica entry also carries its
  * `SSESpecification.KMSMasterKeyId`, `TableClass` and
@@ -464,6 +475,10 @@ export async function readCurrentState(
           if (!r.RegionName) return entry;
 
           const isLocal = r.RegionName === currentRegion;
+          // go-to-k/cdkd#6759: a replica AWS is serving fails its read on a
+          // sub-read error; one it is not (the statuses `replicaStrictness`
+          // relaxes) keeps the tolerant reads.
+          const served = replicaServed(r.ReplicaStatus);
           // go-to-k/cdkd#5381: the replica's key, class and protection in the
           // CFn spellings `create()` / `update()` read. The key used to be a
           // flat `KMSMasterKeyId` (cross-region only), and the local table's
@@ -495,21 +510,20 @@ export async function readCurrentState(
               : undefined;
 
           // Per-replica sub-specs (PITR / Kinesis / ContributorInsights).
-          // Best-effort: errors per region per sub-spec omit the offending
-          // key — a permissions gap in one region must NOT abort the
-          // whole drift read.
           const subs = await this.readReplicaSubSpecs(
             client,
             tableNameForSubs,
             regionLabel,
-            declaredReplica
+            declaredReplica,
+            served
           );
           Object.assign(entry, subs);
 
           // Protection, and the stream arn the stream policy lives on: the
           // local table's are in hand; a cross-region replica's come from its
-          // own region (best-effort — a failed read omits the members, and
-          // `update()` never reads that absence as "unprotect").
+          // own region (a not-found omits the members, and `update()` never
+          // reads that absence as "unprotect"; any other failure on a served
+          // replica throws, go-to-k/cdkd#6759).
           let protection: boolean | undefined;
           let disassociationProtection: boolean | undefined;
           let streamArn: string | undefined;
@@ -530,7 +544,8 @@ export async function readCurrentState(
               streamArn = regional.Table?.LatestStreamArn;
             } catch (err) {
               // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-              if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
+              if ((served || strictFor('Replicas')) && !(err instanceof ResourceNotFoundException))
+                throw err;
               if (err instanceof ResourceNotFoundException) {
                 this.logger.debug(
                   safeMsg`Cross-region replica ${regionLabel} returned RNF on DescribeTable; omitting its protection and stream policy`
@@ -560,7 +575,8 @@ export async function readCurrentState(
             streamArn,
             declaredReplica,
             afterOwnWrite,
-            entry
+            entry,
+            served
           );
 
           // Per-replica Tags. CFn `GlobalTable` schema places Tags
@@ -581,7 +597,12 @@ export async function readCurrentState(
                   : await this.settleReplicaTags(listTags, tagsDeclared, logicalId);
             } catch (tagErr) {
               // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-              if (strictFor('Replicas') && !(tagErr instanceof ResourceNotFoundException))
+              // go-to-k/cdkd#6759: and so is any other failure on a served
+              // replica, which used to record `Tags: []` (a false removal).
+              if (
+                (served || strictFor('Replicas')) &&
+                !(tagErr instanceof ResourceNotFoundException)
+              )
                 throw tagErr;
               if (tagErr instanceof ResourceNotFoundException) {
                 // Only the LOCAL replica's RNF can be a real "table gone"
@@ -624,7 +645,9 @@ export async function readCurrentState(
             const readAutoScaling = await this.readAutoScalingSettings(
               tableNameForSubs,
               'dynamodb:table:ReadCapacityUnits',
-              replicaAutoScalingClient
+              replicaAutoScalingClient,
+              undefined,
+              served
             );
             if (readAutoScaling) {
               entry['ReadProvisionedThroughputSettings'] = {
@@ -919,7 +942,9 @@ export async function readCurrentState(
       // on a momentary state.
     } catch (ttlErr) {
       // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-      if (strictFor('TimeToLiveSpecification')) throw ttlErr;
+      // go-to-k/cdkd#6759: otherwise only a table gone under the read omits it.
+      if (strictFor('TimeToLiveSpecification') || !(ttlErr instanceof ResourceNotFoundException))
+        throw ttlErr;
       this.logger.debug(
         `Could not read TimeToLive for ${tableNameForSubs}: ${describeAwsFailure(ttlErr).detail}`
       );

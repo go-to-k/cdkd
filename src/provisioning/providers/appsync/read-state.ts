@@ -308,8 +308,11 @@ export async function readGraphQLApi(
     result['MergedApiExecutionRoleArn'] = api.mergedApiExecutionRoleArn;
   }
 
-  // Environment variables live on their own read API. Best-effort: a
-  // failure here must not fail the whole drift read.
+  // Environment variables live on their own read API. An API gone under the
+  // read (`NotFoundException`) leaves the key out; any other failure throws
+  // (go-to-k/cdkd#6759): dropping the key made this read asymmetric with the
+  // recorded baseline, a phantom "EnvironmentVariables removed" drift that
+  // `--revert` would then act on, so `cdkd drift` reports `readFailed` instead.
   try {
     const envResp = await this.getClient().send(
       new GetGraphqlApiEnvironmentVariablesCommand({ apiId: physicalId })
@@ -318,12 +321,9 @@ export async function readGraphQLApi(
       result['EnvironmentVariables'] = envResp.environmentVariables;
     }
   } catch (err) {
-    // WARN, not debug: dropping the key here makes this read asymmetric with
-    // the recorded baseline, which surfaces as a phantom "EnvironmentVariables
-    // removed" drift that `--revert` would then act on.
-    this.logger.warn(
-      `Could not read AppSync GraphqlApi ${physicalId} environment variables ` +
-        `(drift on that property will not be reported): ${describeAwsFailure(err).detail}`
+    if (!(err instanceof AppSyncNotFoundException)) throw err;
+    this.logger.debug(
+      `AppSync GraphqlApi ${physicalId} environment variables read answered NotFoundException: ${describeAwsFailure(err).detail}`
     );
   }
 

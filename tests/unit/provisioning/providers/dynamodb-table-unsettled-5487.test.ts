@@ -286,8 +286,10 @@ describe('DynamoDB table unsettled properties (go-to-k/cdkd#5487)', () => {
     await expect(
       provider.readUnsettled('t', 'T', TYPE, new Set(['PointInTimeRecoverySpecification']), KEYS)
     ).rejects.toThrow('throttled');
-    // Not unsettled: readCurrentState's tolerance stands.
-    await expect(provider.readUnsettled('t', 'T', TYPE, new Set(['BillingMode']), KEYS)).resolves.toBeDefined();
+    // go-to-k/cdkd#6759: not unsettled, readCurrentState throws on the failed read too.
+    await expect(
+      provider.readUnsettled('t', 'T', TYPE, new Set(['BillingMode']), KEYS)
+    ).rejects.toThrow('throttled');
   });
 
   it('unsettledInTransition: each moving part names its key, a settled table none, a failed read all', async () => {

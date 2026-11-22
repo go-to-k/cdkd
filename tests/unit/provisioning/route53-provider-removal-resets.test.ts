@@ -450,7 +450,7 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       expect(deletesAtMark).toEqual([0]);
     });
 
-    it('readUnsettled throws on a failed query logging read, which readCurrentState swallows', async () => {
+    it('readUnsettled and readCurrentState both throw on a failed query logging read', async () => {
       mockSend.mockImplementation((command: { constructor: { name: string } }) =>
         command.constructor.name === 'ListQueryLoggingConfigsCommand'
           ? Promise.reject(new Error('throttled'))
@@ -460,6 +460,14 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       await expect(
         provider.readUnsettled(ZONE_ID, 'MyZone', TYPE, new Set(['QueryLoggingConfig']))
       ).rejects.toThrow('throttled');
+      // go-to-k/cdkd#6759: readCurrentState no longer swallows it into `{}` either.
+      await expect(provider.readCurrentState(ZONE_ID, 'MyZone', TYPE)).rejects.toThrow('throttled');
+      // A zone gone under the read still takes the `{}` placeholder.
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'ListQueryLoggingConfigsCommand'
+          ? Promise.reject(Object.assign(new Error('gone'), { name: 'NoSuchHostedZone' }))
+          : Promise.resolve({ HostedZone: { Name: 'example.com.', Config: {} }, DelegationSet: {} })
+      );
       await expect(
         provider.readCurrentState(ZONE_ID, 'MyZone', TYPE)
       ).resolves.toMatchObject({ QueryLoggingConfig: {} });
@@ -467,7 +475,7 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       mockSend.mockClear();
       await expect(
         provider.readUnsettled(ZONE_ID, 'MyZone', TYPE, new Set(['QueryLoggingConfig']))
-      ).rejects.toThrow('throttled');
+      ).rejects.toThrow('gone');
       expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(1);
     });
 

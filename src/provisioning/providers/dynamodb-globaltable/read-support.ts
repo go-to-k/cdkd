@@ -7,6 +7,7 @@ import {
   GetResourcePolicyCommand,
   PolicyNotFoundException,
   ResourceNotFoundException,
+  TableNotFoundException,
 } from '@aws-sdk/client-dynamodb';
 import {
   ApplicationAutoScalingClient,
@@ -59,8 +60,14 @@ import { warnUnsettledMember } from '../../settle-after-own-write.js';
  *    `DescribeKinesisStreamingDestination` (filtered to the local
  *    region's destination when AWS reports more than one).
  *
- * Each call is best-effort: errors omit the offending key rather than
- * fail the whole drift read.
+ * A replica region's not-found (`ResourceNotFoundException`, or
+ * `TableNotFoundException` from `DescribeContinuousBackups`) omits the key:
+ * the replica is being created or removed. Any other failure throws
+ * (go-to-k/cdkd#6759), so `cdkd drift` reports `readFailed` instead of leaving
+ * the key uncompared — except on a replica AWS is not serving (`served`
+ * false: CREATION_FAILED, REGION_DISABLED, an inaccessible key, ...), whose
+ * reads stay tolerant, as `replicaStrictness` keeps them for the deploy that
+ * recovers it.
  *
  * Issue #389 lifted the LOCAL-only limitation by parameterizing the
  * client — the same reverse-mapping logic runs against any region's
@@ -71,7 +78,8 @@ export async function readReplicaSubSpecs(
   client: DynamoDBClient,
   tableName: string,
   regionLabel: string,
-  declaredReplica: Record<string, unknown> | undefined
+  declaredReplica: Record<string, unknown> | undefined,
+  served = true
 ): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
 
@@ -88,10 +96,10 @@ export async function readReplicaSubSpecs(
     );
     if (block !== undefined) out['ContributorInsightsSpecification'] = block;
   } catch (err) {
-    // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
     // A replica region's not-found omits the member, strict or not: the replica
-    // is being created or removed, which `unsettledInTransition` reports.
-    if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
+    // is being created or removed, which `unsettledInTransition` reports. Any
+    // other failure throws (go-to-k/cdkd#6759; #5487 for `readUnsettled`).
+    if ((served || strictFor('Replicas')) && !(err instanceof ResourceNotFoundException)) throw err;
     this.logger.debug(
       `Could not read ContributorInsights for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
     );
@@ -112,10 +120,15 @@ export async function readReplicaSubSpecs(
     );
     if (block !== undefined) out['PointInTimeRecoverySpecification'] = block;
   } catch (err) {
-    // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-    // A replica region's not-found omits the member, strict or not: the replica
-    // is being created or removed, which `unsettledInTransition` reports.
-    if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
+    // The same not-found tolerance; `DescribeContinuousBackups` spells its
+    // not-found `TableNotFoundException`.
+    if (
+      (served || strictFor('Replicas')) &&
+      !(err instanceof ResourceNotFoundException) &&
+      !(err instanceof TableNotFoundException)
+    ) {
+      throw err;
+    }
     this.logger.debug(
       `Could not read PointInTimeRecovery for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
     );
@@ -139,10 +152,8 @@ export async function readReplicaSubSpecs(
       out['KinesisStreamSpecification'] = ksOut;
     }
   } catch (err) {
-    // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
-    // A replica region's not-found omits the member, strict or not: the replica
-    // is being created or removed, which `unsettledInTransition` reports.
-    if (strictFor('Replicas') && !(err instanceof ResourceNotFoundException)) throw err;
+    // The same not-found tolerance.
+    if ((served || strictFor('Replicas')) && !(err instanceof ResourceNotFoundException)) throw err;
     this.logger.debug(
       `Could not read KinesisStreamingDestination for ${tableName} in ${regionLabel}: ${describeAwsFailure(err).detail}`
     );
@@ -171,7 +182,9 @@ export async function readReplicaSubSpecs(
  * than freeze a value the settled replica never shows (a replaced document
  * recorded there would let `--revert` re-grant it, go-to-k/cdkd#6604).
  * Every other read believes its answer, so a policy removed out of band is
- * drift. Policy text is never logged.
+ * drift. Any other failed read throws (go-to-k/cdkd#6759) unless the replica
+ * is not served (`served` false, see {@link readReplicaSubSpecs}). Policy text
+ * is never logged.
  */
 export async function readReplicaPolicies(
   this: DynamoDBGlobalTableProvider,
@@ -182,7 +195,8 @@ export async function readReplicaPolicies(
   streamArn: string | undefined,
   declaredReplica: Record<string, unknown> | undefined,
   afterOwnWrite: boolean,
-  entry: Record<string, unknown>
+  entry: Record<string, unknown>,
+  served = true
 ): Promise<void> {
   if (declaredReplica === undefined) return;
   const readOne = async (
@@ -242,6 +256,9 @@ export async function readReplicaPolicies(
       ) {
         return declaredMember();
       }
+      // go-to-k/cdkd#6759: a not-found omits the member; any other failure on
+      // a served replica rejects the read rather than leave it uncompared.
+      if (served && !(err instanceof ResourceNotFoundException)) throw err;
       return undefined;
     }
   };
@@ -301,10 +318,11 @@ export async function readReplicaPolicies(
  *     target without a target-tracking policy is not cdkd-managed
  *     drift territory; surface the flat capacity instead).
  *
- * Best-effort: any error (permissions gap, throttle, network) returns
- * `null` and the caller falls back to the flat-capacity branch. Logged
- * at debug so a real permissions misconfiguration is still visible
- * under `--verbose`.
+ * Application Auto Scaling answers an unregistered dimension with an EMPTY
+ * list, never an error, so it has no not-found code: any failure (permissions
+ * gap, throttle, network) throws (go-to-k/cdkd#6759) — it used to return
+ * `null`, which read as "not autoscaled" and swapped in the flat capacity.
+ * Only a replica AWS is not serving (`served` false) keeps that fallback.
  *
  * @param tableName DynamoDB table name (the `physicalId`).
  * @param scalableDimension Any of the four dimensions a GlobalTable can
@@ -323,7 +341,8 @@ export async function readAutoScalingSettings(
   tableName: string,
   scalableDimension: DynamoDBScalableDimension,
   client?: ApplicationAutoScalingClient,
-  indexName?: string
+  indexName?: string,
+  served = true
 ): Promise<Record<string, unknown> | null> {
   const resourceId = autoScalingResourceId(tableName, indexName);
   try {
@@ -382,6 +401,7 @@ export async function readAutoScalingSettings(
   } catch (err) {
     // go-to-k/cdkd#5487: an unsettled name is read strictly (`readUnsettled`).
     if (
+      served ||
       strictFor(
         indexName !== undefined
           ? 'GlobalSecondaryIndexes'

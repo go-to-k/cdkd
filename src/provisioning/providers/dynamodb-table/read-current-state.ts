@@ -8,6 +8,7 @@ import {
   ListTagsOfResourceCommand,
   PolicyNotFoundException,
   ResourceNotFoundException,
+  TableNotFoundException,
   type Tag,
 } from '@aws-sdk/client-dynamodb';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -308,8 +309,8 @@ export async function readCurrentState(
       this.readIndexContributorInsights(physicalId, result, properties, bagInformative),
       streamMembersRead,
     ]);
-    // Tag fetch failures shouldn't tank the whole drift read; a table gone
-    // under ListTagsOfResource is gone.
+    // A table gone under ListTagsOfResource is gone; any other sub-read
+    // failure above rejects the whole read (go-to-k/cdkd#6759).
     if (tags === RESOURCE_NOT_FOUND) return RESOURCE_NOT_FOUND;
     if (tags !== undefined) result['Tags'] = tags;
     if (pitr !== undefined) result['PointInTimeRecoverySpecification'] = pitr;
@@ -353,8 +354,10 @@ export async function readTableTags(
  * when AWS reports a PITR status so a table that never configured PITR
  * doesn't grow a placeholder (keeps the comparator's state-keys-only
  * top-level walk + the "AWS minimum response" key-set test green).
- * Best-effort: a failed read omits the key rather than failing the whole
- * drift read.
+ * A table gone under the read (`TableNotFoundException`, this API's
+ * not-found code) omits the key; any other failure throws (go-to-k/cdkd#6759),
+ * so `cdkd drift` reports the resource `readFailed` instead of leaving the key
+ * uncompared.
  */
 export async function readPointInTimeRecovery(
   this: DynamoDBTableProvider,
@@ -378,7 +381,7 @@ export async function readPointInTimeRecovery(
     }
     return pitr;
   } catch (err) {
-    if (strict) throw err;
+    if (strict || !(err instanceof TableNotFoundException)) throw err;
     this.logger.debug(
       `Could not read PointInTimeRecovery for ${physicalId}: ${describeAwsFailure(err).detail}`
     );
@@ -408,7 +411,8 @@ export async function readTimeToLive(
     }
     return undefined;
   } catch (err) {
-    if (strict) throw err;
+    // go-to-k/cdkd#6759: only a table gone under the read omits the key.
+    if (strict || !(err instanceof ResourceNotFoundException)) throw err;
     this.logger.debug(
       `Could not read TimeToLive for ${physicalId}: ${describeAwsFailure(err).detail}`
     );
@@ -422,7 +426,9 @@ export async function readTimeToLive(
  * returned JSON string back into CFn's `{ PolicyDocument: <object> }` form so
  * it is drift-comparable against the templated value. A table with no policy
  * returns ResourceNotFoundException / PolicyNotFound — omit the key rather
- * than fail the whole drift read.
+ * than fail the whole drift read. Any other failure throws
+ * (go-to-k/cdkd#6759), unless the `afterOwnWrite` capture keeps the declared
+ * member as described below.
  *
  * `settle` (go-to-k/cdkd#6604): `GetResourcePolicy` is eventually consistent
  * — measured us-east-1, it answered with a just-DELETED policy for ~2 s, and
@@ -445,7 +451,9 @@ export async function readTableResourcePolicy(
   this: DynamoDBTableProvider,
   physicalId: string,
   tableArn: string,
-  strict = false,
+  // The rollback's strict read; every read now throws on a failure other
+  // than "no policy" / "no table" (go-to-k/cdkd#6759), so it reads the same.
+  _strict = false,
   settle?: { desired: Record<string, unknown>; afterOwnWrite: boolean }
 ): Promise<Record<string, unknown> | undefined> {
   const declared = settle !== undefined && streamDeclaresPolicy(settle.desired);
@@ -503,11 +511,9 @@ export async function readTableResourcePolicy(
     if (declared && answered) return reverseMapStreamPolicy(lastPolicy, settle?.desired);
     // A table with no policy answers PolicyNotFoundException: "not set",
     // strict or not, or an unsettled ResourcePolicy would refuse forever.
-    if (
-      strict &&
-      !(err instanceof ResourceNotFoundException) &&
-      !(err instanceof PolicyNotFoundException)
-    ) {
+    // go-to-k/cdkd#6759: any other failure throws, strict or not, so drift
+    // reports `readFailed` rather than leaving the policy uncompared.
+    if (!(err instanceof ResourceNotFoundException) && !(err instanceof PolicyNotFoundException)) {
       throw err;
     }
     if (!(err instanceof ResourceNotFoundException)) {
@@ -550,7 +556,8 @@ export async function readKinesisStreamSpecification(
     }
     return kspec;
   } catch (err) {
-    if (strict) throw err;
+    // go-to-k/cdkd#6759: only a table gone under the read omits the key.
+    if (strict || !(err instanceof ResourceNotFoundException)) throw err;
     this.logger.debug(
       `Could not read KinesisStreamingDestination for ${physicalId}: ${describeAwsFailure(err).detail}`
     );
@@ -581,7 +588,8 @@ export async function readTableContributorInsights(
       ciResp.ContributorInsightsMode
     );
   } catch (err) {
-    if (strict) throw err;
+    // go-to-k/cdkd#6759: only a table gone under the read omits the key.
+    if (strict || !(err instanceof ResourceNotFoundException)) throw err;
     this.logger.debug(
       `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
     );
@@ -597,8 +605,9 @@ export async function readTableContributorInsights(
  * keeps the block out of every other entry — it sits inside an array entry
  * whose key set is compared exactly, so an ungated `{Enabled: false}` would
  * be one-sided drift on every index. An uninformative bag reads NOTHING (the
- * pre-#1782 answer). A failed read omits the block, like the table-level
- * read; a TRANSIENT status reads as its target instead
+ * pre-#1782 answer). A table or index gone under the read
+ * (`ResourceNotFoundException`) omits the block; any other failure throws
+ * (go-to-k/cdkd#6759), like the table-level read; a TRANSIENT status reads as its target instead
  * (`reverseMapIndexContributorInsights` says why). Writes into the entries
  * of `result.GlobalSecondaryIndexes` in place.
  */
@@ -633,6 +642,7 @@ export async function readIndexContributorInsights(
       );
       if (block !== undefined) emitted[CONTRIBUTOR_INSIGHTS_KEY] = block;
     } catch (err) {
+      if (!(err instanceof ResourceNotFoundException)) throw err;
       this.logger.debug(
         `Could not read ContributorInsights for index ${indexName} of ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -669,9 +679,10 @@ export async function reAskUntilSettled<T>(
  * declared member then reports as drift (a declared EMPTY list is the one
  * exception, and reads back as the empty list it is). `aws:`-prefixed system tags are
  * dropped like the table-level ones, and the list needs no unordered path —
- * the comparator sorts every `{Key, ...}` list on both sides. Any other
- * failed read omits the member and says why at debug level, like the sibling
- * reads of this method.
+ * the comparator sorts every `{Key, ...}` list on both sides. A stream gone
+ * under the read (`ResourceNotFoundException`) omits the member; any other
+ * failed read throws (go-to-k/cdkd#6759), unless the `afterOwnWrite` capture
+ * below keeps a member, so `cdkd drift` reports `readFailed`.
  *
  * Both reads are EVENTUALLY consistent — right after a write they can answer
  * "absent" or with the PREVIOUS value (their command docs say so) — and the
@@ -757,6 +768,8 @@ export async function readStreamMembers(
         keepDeclared(STREAM_POLICY_KEY, 'the read failed transiently');
       } else if (afterOwnWrite && lastPolicy !== undefined && lastPolicy !== '') {
         keepDeclared(STREAM_POLICY_KEY, 'the read failed after an unsettled answer');
+      } else if (!(err instanceof ResourceNotFoundException)) {
+        throw err;
       }
     }
   }
@@ -794,6 +807,8 @@ export async function readStreamMembers(
         streamBlock[STREAM_TAGS_KEY] = lastTags;
       } else if (afterOwnWrite && isTransientStreamReadFailure(err)) {
         keepDeclared(STREAM_TAGS_KEY, 'the read failed transiently');
+      } else if (!(err instanceof ResourceNotFoundException)) {
+        throw err;
       }
     }
   }

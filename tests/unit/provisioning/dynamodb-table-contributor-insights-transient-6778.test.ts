@@ -166,10 +166,11 @@ describe('DynamoDB table Contributor Insights captured while ENABLING (go-to-k/c
       expect(await drift(await legacyObserved(), await read(ENABLED))).toEqual([]);
     });
 
-    it('completes nothing when the live read fails', async () => {
-      const aws = await read(new Error('AccessDeniedException'));
-      expect(aws).not.toHaveProperty(KEY);
-      expect(await drift(await legacyObserved(), aws)).toEqual([]);
+    it('rejects the read, rather than completing nothing, when the live read fails', async () => {
+      // go-to-k/cdkd#6759: a failed sub-read rejects the whole read, so there is no live bag to complete.
+      await expect(read(new Error('AccessDeniedException'))).rejects.toThrow(
+        'AccessDeniedException'
+      );
     });
 
     it('drift --revert re-enables Contributor Insights', async () => {

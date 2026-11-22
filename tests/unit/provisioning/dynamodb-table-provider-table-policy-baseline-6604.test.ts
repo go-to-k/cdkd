@@ -177,9 +177,10 @@ describe('DynamoDB Table ResourcePolicy baseline after its own write (go-to-k/cd
     expect((await capture(tableProps(DOC)))['ResourcePolicy']).toEqual({ PolicyDocument: DOC });
   });
 
-  it('records NO policy when a removal capture throws after the deleted policy was still served', async () => {
+  it('rejects a removal capture that throws after the deleted policy was still served', async () => {
+    // go-to-k/cdkd#6759: an undeclared policy's failed read rejects instead of recording none.
     primeAws([DOC, throttle()]);
-    expect((await capture(tableProps()))['ResourcePolicy']).toBeUndefined();
+    await expect(capture(tableProps())).rejects.toThrow();
   });
 
   it('a plain drift read that throws after a present answer records that answer', async () => {
@@ -208,7 +209,8 @@ describe('DynamoDB Table ResourcePolicy baseline after its own write (go-to-k/cd
       $metadata: { httpStatusCode: 400 },
     });
     primeAws([denied]);
-    expect((await capture(tableProps(DOC)))['ResourcePolicy']).toBeUndefined();
+    // go-to-k/cdkd#6759: a deterministic failure rejects the read instead of omitting the policy.
+    await expect(capture(tableProps(DOC))).rejects.toThrow('not authorized to perform');
   });
 
   it('a plain drift read takes an undeclared policy at its first answer, and keeps no declaration', async () => {

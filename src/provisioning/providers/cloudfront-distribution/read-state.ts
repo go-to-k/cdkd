@@ -4,6 +4,7 @@ import {
   GetDistributionConfigCommand,
   ListTagsForResourceCommand,
   NoSuchDistribution,
+  NoSuchResource,
   type DistributionConfig,
 } from '@aws-sdk/client-cloudfront';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -61,8 +62,10 @@ export async function readCurrentState(
 
   // Surface AWS-current tags so a console-side tag edit is detectable.
   // CloudFront tags live on the distribution's ARN, fetched separately
-  // via ListTagsForResource. A tag read failure is non-fatal — the
-  // DistributionConfig drift is still meaningful on its own.
+  // via ListTagsForResource. A distribution gone under the tag read
+  // (`NoSuchDistribution` / `NoSuchResource`) omits `Tags`; any other failure
+  // throws (go-to-k/cdkd#6759), so `cdkd drift` reports `readFailed` rather
+  // than leaving the tags uncompared.
   try {
     const getResponse = await this.cloudFrontClient.send(
       new GetDistributionCommand({ Id: physicalId })
@@ -81,6 +84,7 @@ export async function readCurrentState(
       }
     }
   } catch (error) {
+    if (!(error instanceof NoSuchDistribution) && !(error instanceof NoSuchResource)) throw error;
     this.logger.debug(
       `Tag read for CloudFront Distribution ${physicalId} failed during drift read: ${describeAwsFailure(error).detail}`
     );

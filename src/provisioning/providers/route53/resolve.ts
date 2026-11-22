@@ -258,9 +258,13 @@ export async function resolveHostedZoneId(
  * record name alone, so the zone has to be resolved from the recorded
  * properties — which is exactly what `createRecordSet` does, so the answer is
  * the same triple the composite would have held. Returns `undefined` (rather
- * than throwing) when the zone cannot be resolved, because both callers of
- * this helper treat "cannot determine" as "nothing to report" rather than as
- * a failure.
+ * than throwing) when the template cannot resolve the zone — no zone named,
+ * a name matching no zone, an ambiguous or an inconclusive listing — because
+ * both callers of this helper treat "cannot determine" as "nothing to report"
+ * rather than as a failure. A hosted-zone listing that FAILED (AWS refused or
+ * throttled it) throws instead (go-to-k/cdkd#6759): read as "nothing to
+ * report", it left `cdkd drift` reporting the record unknown with the cause
+ * lost, and an import declining the row.
  */
 export async function resolveRecordSetIdentity(
   this: Route53Provider,
@@ -300,10 +304,12 @@ export async function resolveRecordSetIdentity(
     );
     return { hostedZoneId, name, type };
   } catch (err) {
+    // `resolveHostedZoneId` carries a failed listing's AWS error as the
+    // `cause` of its ProvisioningError; every refusal it raises from the
+    // template alone has none. Only those refusals are "cannot determine".
+    if (!(err instanceof ProvisioningError) || err.cause !== undefined) throw err;
     // Both callers treat "cannot determine" as "nothing to report" rather
-    // than as a failure, but say WHY at debug level — a swallowed throttle
-    // or credential error is otherwise indistinguishable from a template
-    // that simply does not name a zone.
+    // than as a failure, but say WHY at debug level.
     this.logger.debug(
       `Cannot resolve record-set identity for '${physicalId}': ${describeAwsFailure(err).detail}`
     );

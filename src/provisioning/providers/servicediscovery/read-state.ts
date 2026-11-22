@@ -4,6 +4,7 @@ import {
   GetServiceCommand,
   ListTagsForResourceCommand,
   NamespaceNotFound,
+  ResourceNotFoundException,
   ServiceNotFound,
 } from '@aws-sdk/client-servicediscovery';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -314,16 +315,17 @@ export async function readService(
 
   // ServiceAttributes via GetServiceAttributes (a separate call from
   // GetService). Emit the full key→value map so a console-side attribute
-  // change surfaces as drift against the deploy-time baseline. On a
-  // permission / transient error leave the key absent rather than firing
-  // false drift on every run (matching attachTags' best-effort posture);
-  // the drift comparator is state-keys-only so an absent key is safe.
+  // change surfaces as drift against the deploy-time baseline. A service
+  // gone under the read (`ServiceNotFound`) leaves the key absent; any other
+  // failure throws (go-to-k/cdkd#6759), so `cdkd drift` reports `readFailed`
+  // rather than leaving the attributes uncompared.
   try {
     const attrsResp = await this.getClient().send(
       new GetServiceAttributesCommand({ ServiceId: physicalId })
     );
     result['ServiceAttributes'] = attrsResp.ServiceAttributes?.Attributes ?? {};
   } catch (err) {
+    if (!(err instanceof ServiceNotFound)) throw err;
     this.logger.debug(
       `ServiceDiscovery GetServiceAttributes(${physicalId}) failed: ${describeAwsFailure(err).detail}`
     );
@@ -356,7 +358,11 @@ export function normalizeServiceAttributes(
   return out;
 }
 
-/** Best-effort tag fetch via `ListTagsForResource(ResourceARN)`. */
+/**
+ * Tag fetch via `ListTagsForResource(ResourceARN)`. A resource gone under the
+ * read (`ResourceNotFoundException`) leaves `Tags` absent; any other failure
+ * throws (go-to-k/cdkd#6759).
+ */
 export async function attachTags(
   this: ServiceDiscoveryProvider,
   result: Record<string, unknown>,
@@ -369,6 +375,7 @@ export async function attachTags(
     const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
     result['Tags'] = tags;
   } catch (err) {
+    if (!(err instanceof ResourceNotFoundException)) throw err;
     this.logger.debug(
       `ServiceDiscovery ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
     );

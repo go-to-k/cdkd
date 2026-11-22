@@ -286,7 +286,8 @@ describe('GlobalTable unsettled properties (go-to-k/cdkd#5487)', () => {
   it('readUnsettled reads strictly: a failed sub-read throws instead of omitting the key', async () => {
     serve({ failInsights: true });
     const recorded = props({}, { ContributorInsightsSpecification: { Enabled: true } });
-    await expect(provider.readCurrentState(TABLE, 'T', TYPE, recorded)).resolves.toBeDefined();
+    // go-to-k/cdkd#6759: readCurrentState throws on the failed sub-read too.
+    await expect(provider.readCurrentState(TABLE, 'T', TYPE, recorded)).rejects.toThrow('throttled');
     await expect(provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded)).rejects.toThrow(
       'throttled'
     );
@@ -384,13 +385,13 @@ describe('GlobalTable unsettled properties (go-to-k/cdkd#5487)', () => {
       }
     );
 
-    it('strictness is per unsettled key: a TTL read failure throws only when TTL is unsettled', async () => {
+    it('a TTL read failure throws whether or not TTL is unsettled', async () => {
       serve({ failTtl: true });
       const recorded = props();
-      const read = await provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded);
-      // A read (not the gone sentinel), with both replicas on it.
-      expect(typeof read).toBe('object');
-      expect((read as Record<string, any>)['Replicas'].map((r: any) => r.Region)).toEqual(['us-east-1']);
+      // go-to-k/cdkd#6759: a failed TTL read throws even when TTL is not the unsettled key.
+      await expect(
+        provider.readUnsettled(TABLE, 'T', TYPE, new Set(['Replicas']), recorded, recorded)
+      ).rejects.toThrow('ttl throttled');
       await expect(
         provider.readUnsettled(TABLE, 'T', TYPE, new Set(['TimeToLiveSpecification']), recorded, recorded)
       ).rejects.toThrow('ttl throttled');

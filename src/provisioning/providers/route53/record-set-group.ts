@@ -769,7 +769,10 @@ export async function deleteRecordSetGroup(
  * `{ RecordSets: [...] }`. A record the lookup cannot place makes the whole
  * answer "cannot tell" (`undefined`), as for `AWS::Route53::RecordSet`
  * (go-to-k/cdkd#4283); one proven gone is left out (go-to-k/cdkd#6660), and
- * a group with none left, or a missing zone, is `RESOURCE_NOT_FOUND`.
+ * a group with none left, or a missing zone, is `RESOURCE_NOT_FOUND`. A zone
+ * the template cannot resolve is "cannot tell" too, but a hosted-zone listing
+ * that FAILED throws (go-to-k/cdkd#6759), so `cdkd drift` reports
+ * `readFailed` with its cause rather than an unknown.
  */
 export async function readRecordSetGroup(
   this: Route53Provider,
@@ -790,7 +793,10 @@ export async function readRecordSetGroup(
       logicalId,
       RECORD_SET_GROUP_TYPE
     );
-  } catch {
+  } catch (err) {
+    // `resolveHostedZoneId` carries a failed listing's AWS error as the
+    // `cause`; a refusal from the template alone has none.
+    if (!(err instanceof ProvisioningError) || err.cause !== undefined) throw err;
     return undefined;
   }
 

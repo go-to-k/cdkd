@@ -2341,44 +2341,52 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
   });
 
   describe('readCurrentState', () => {
+    beforeEach(() => {
+      // go-to-k/cdkd#6759: a follow-up read the test does not script answers "nothing
+      // configured" (a failed sub-read now rejects the read, so `undefined` would be a TypeError).
+      mockSend.mockResolvedValue({});
+    });
+
     /**
      * Helper to queue the per-replica sub-spec calls + DescribeTimeToLive
      * + ListTagsOfResource that readCurrentState now issues after the
      * initial DescribeTable. Local-region replicas trigger 3 sub-spec
      * calls (DescribeContributorInsights / DescribeContinuousBackups /
      * DescribeKinesisStreamingDestination); cross-region replicas don't.
+     * The local replica is always read, synthesized when `DescribeTable`
+     * reports none, so these three are always queued: since
+     * go-to-k/cdkd#6759 a sub-read that answers `undefined` throws.
      */
     function queueReadCurrentStateTail(
       opts: {
-        localReplica?: boolean;
         contributorInsightsStatus?: 'ENABLED' | 'DISABLED';
         pitrStatus?: 'ENABLED' | 'DISABLED';
         kinesisStreamArn?: string;
-        ttl?: { Status: 'ENABLED' | 'DISABLED'; AttributeName?: string };
+        ttl?: { Status: 'ENABLED' | 'DISABLED' | 'UPDATING'; AttributeName?: string };
         tags?: Array<{ Key: string; Value: string }>;
       } = {}
     ): void {
-      if (opts.localReplica !== false) {
-        // DescribeContributorInsights
-        mockSend.mockResolvedValueOnce({
-          ContributorInsightsStatus: opts.contributorInsightsStatus ?? 'DISABLED',
-        });
-        // DescribeContinuousBackups
-        mockSend.mockResolvedValueOnce({
-          ContinuousBackupsDescription: {
-            ContinuousBackupsStatus: 'ENABLED',
-            PointInTimeRecoveryDescription: {
-              PointInTimeRecoveryStatus: opts.pitrStatus ?? 'DISABLED',
-            },
+      // DescribeContributorInsights
+      mockSend.mockResolvedValueOnce({
+        ContributorInsightsStatus: opts.contributorInsightsStatus ?? 'DISABLED',
+      });
+      // DescribeContinuousBackups
+      mockSend.mockResolvedValueOnce({
+        ContinuousBackupsDescription: {
+          ContinuousBackupsStatus: 'ENABLED',
+          PointInTimeRecoveryDescription: {
+            PointInTimeRecoveryStatus: opts.pitrStatus ?? 'DISABLED',
           },
-        });
-        // DescribeKinesisStreamingDestination
-        mockSend.mockResolvedValueOnce({
-          KinesisDataStreamDestinations: opts.kinesisStreamArn
-            ? [{ StreamArn: opts.kinesisStreamArn, DestinationStatus: 'ACTIVE' }]
-            : [],
-        });
-      }
+        },
+      });
+      // DescribeKinesisStreamingDestination
+      mockSend.mockResolvedValueOnce({
+        KinesisDataStreamDestinations: opts.kinesisStreamArn
+          ? [{ StreamArn: opts.kinesisStreamArn, DestinationStatus: 'ACTIVE' }]
+          : [],
+      });
+      // ListTagsOfResource (the replica's tags are read before the table's TTL)
+      mockSend.mockResolvedValueOnce({ Tags: opts.tags ?? [] });
       // DescribeTimeToLive
       mockSend.mockResolvedValueOnce({
         TimeToLiveDescription: opts.ttl
@@ -2388,8 +2396,6 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             }
           : { TimeToLiveStatus: 'DISABLED' },
       });
-      // ListTagsOfResource
-      mockSend.mockResolvedValueOnce({ Tags: opts.tags ?? [] });
     }
 
     it('reverse-maps DescribeTable for a single-region PAY_PER_REQUEST table', async () => {
@@ -2462,7 +2468,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN }, // no Replicas in response
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
       expect(replicas).toHaveLength(1);
@@ -2476,7 +2482,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_AND_OLD_IMAGES' },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['StreamSpecification']).toEqual({
         StreamEnabled: true,
@@ -2500,7 +2506,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           Replicas: [],
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['SSESpecification']).toEqual({ SSEEnabled: true, SSEType: 'KMS' });
     });
@@ -2509,7 +2515,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true, Replicas: [] },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       // go-to-k/cdkd#5381: the CFn schema keeps it per replica, not top-level.
       expect(observed).not.toHaveProperty('DeletionProtectionEnabled');
@@ -2546,12 +2552,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN, Replicas: [] },
       });
-      // Manually queue tail with a transient TTL status — helper only
-      // supports ENABLED/DISABLED, so inline-queue the TTL response.
-      mockSend.mockResolvedValueOnce({
-        TimeToLiveDescription: { TimeToLiveStatus: 'UPDATING', AttributeName: 'expiresAt' },
-      });
-      mockSend.mockResolvedValueOnce({ Tags: [] });
+      queueReadCurrentStateTail({ ttl: { Status: 'UPDATING', AttributeName: 'expiresAt' } });
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed).not.toHaveProperty('TimeToLiveSpecification');
     });
@@ -2678,7 +2679,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           OnDemandThroughput: { MaxWriteRequestUnits: 1500 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteOnDemandThroughputSettings']).toEqual({
         MaxWriteRequestUnits: 1500,
@@ -2689,7 +2690,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN, Replicas: [] },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteOnDemandThroughputSettings']).toEqual({});
     });
@@ -2703,7 +2704,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 7, ReadCapacityUnits: 4 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       // mockAutoScalingSend defaults to ScalingPolicies: [] in beforeEach.
 
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
@@ -2721,7 +2722,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 7 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       // Autoscaling-active: 1st call is DescribeScalableTargets
       // (recovers Min/Max), 2nd is DescribeScalingPolicies (recovers
       // the TargetTrackingScaling policy).
@@ -2769,7 +2770,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 5 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       // Dimension-dispatching mock: the synthesized local replica probes the
       // READ dimension first, so an ordered queue would hand it the write
       // responses. Only the write dimension answers here.
@@ -2805,7 +2806,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 7 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       // ScalableTarget exists but the only policy is StepScaling —
       // CFn's shape only carries TargetTrackingScaling, so fall back
       // to the flat surface.
@@ -2840,7 +2841,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 7 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       // Dimension-dispatching mock: the synthesized local replica probes the
       // READ dimension first, so an ordered queue would hand it the write
       // responses. Only the write dimension answers here.
@@ -2876,7 +2877,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 7 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       // Dimension-dispatching mock: the synthesized local replica probes the
       // READ dimension first, so an ordered queue would hand it the write
       // responses. Only the write dimension answers here.
@@ -3083,12 +3084,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       expect(observed!['WriteProvisionedThroughputSettings']).toEqual({});
     });
 
-    it('falls back to flat WriteCapacityUnits when DescribeScalableTargets fails (best-effort, regression PR #393)', async () => {
+    it('rejects the read when DescribeScalableTargets fails (formerly a flat-capacity fallback, regression PR #393)', async () => {
       mockSend.mockResolvedValueOnce({
         Table: {
           TableArn: TABLE_ARN,
@@ -3097,20 +3098,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 4 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       mockAutoScalingSend.mockReset();
       mockAutoScalingSend.mockRejectedValueOnce(new Error('permission denied on DescribeScalableTargets'));
 
-      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
-      // Lookup failure is treated as "no policy" — the flat-value
-      // surface IS emitted (false-positive risk on scale is the
-      // tradeoff vs hiding the actual capacity).
-      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
-        WriteCapacityUnits: 4,
-      });
+      // go-to-k/cdkd#6759: Application Auto Scaling has no not-found code, so a
+      // failed lookup rejects the read instead of reading as "no scaling policy".
+      await expect(provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE)).rejects.toThrow(
+        'permission denied on DescribeScalableTargets'
+      );
     });
 
-    it('falls back to flat WriteCapacityUnits when DescribeScalingPolicies fails after DescribeScalableTargets succeeded (PR #397 review minor)', async () => {
+    it('rejects the read when DescribeScalingPolicies fails after DescribeScalableTargets succeeded (PR #397 review minor; formerly a flat-capacity fallback)', async () => {
       // Covers the second-call failure path: DescribeScalableTargets
       // succeeds (returns Min/Max) → DescribeScalingPolicies throws.
       // Same outer try/catch wraps both; symmetric behavior.
@@ -3122,17 +3121,17 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ProvisionedThroughput: { WriteCapacityUnits: 7 },
         },
       });
-      queueReadCurrentStateTail({ localReplica: false });
+      queueReadCurrentStateTail();
       mockAutoScalingSend.mockReset();
       mockAutoScalingSend.mockResolvedValueOnce({
         ScalableTargets: [{ MinCapacity: 5, MaxCapacity: 100 }],
       });
       mockAutoScalingSend.mockRejectedValueOnce(new Error('throttle on DescribeScalingPolicies'));
 
-      const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
-      expect(observed!['WriteProvisionedThroughputSettings']).toEqual({
-        WriteCapacityUnits: 7,
-      });
+      // go-to-k/cdkd#6759: the second call's failure rejects the read too.
+      await expect(provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE)).rejects.toThrow(
+        'throttle on DescribeScalingPolicies'
+      );
     });
 
     it('caches getRegionalAutoScalingClient per region (no duplicate construction on repeated cross-region reads)', async () => {
@@ -3158,7 +3157,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         // Skip the local replica's sub-spec queue tail (4 calls) — we
         // only care that the regional client is reused; the regional
         // sub-spec calls just need send-able mocks.
-        queueReadCurrentStateTail({ localReplica: false });
+        queueReadCurrentStateTail();
         // Cross-region sub-spec calls (4): CI / PITR / Kinesis / Tags
         mockSend.mockResolvedValueOnce({ ContributorInsightsStatus: 'DISABLED' });
         mockSend.mockResolvedValueOnce({
@@ -3190,10 +3189,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(newCalls).toBeGreaterThan(0);
     });
 
-    it('omits the offending sub-spec key when the per-region call fails (best-effort)', async () => {
-      // Per-CLIENT dispatch (see the #389 case): the eu-west-1 client fails
-      // PITR and ListTagsOfResource, the local client answers everything. The
-      // whole drift read must continue and surface only the keys that worked.
+    const primeFailingRegion = async (replicaStatus?: string) => {
       const remoteSend = vi.fn((command: unknown) => {
         if (command instanceof DescribeContributorInsightsCommand) {
           return Promise.resolve({ ContributorInsightsStatus: 'DISABLED' });
@@ -3214,7 +3210,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockImplementation((command: unknown) => {
         if (command instanceof DescribeTableCommand) {
           return Promise.resolve({
-            Table: { TableArn: TABLE_ARN, Replicas: [{ RegionName: 'eu-west-1' }] },
+            Table: {
+              TableArn: TABLE_ARN,
+              Replicas: [
+                { RegionName: 'eu-west-1', ...(replicaStatus === undefined ? {} : { ReplicaStatus: replicaStatus }) },
+              ],
+            },
           });
         }
         if (command instanceof DescribeContributorInsightsCommand) {
@@ -3236,6 +3237,23 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         return Promise.resolve({ Tags: [] });
       });
 
+    };
+
+    it('rejects the read when a served replica\'s per-region call fails', async () => {
+      // Per-CLIENT dispatch (see the #389 case): the eu-west-1 client fails PITR and
+      // ListTagsOfResource, the local client answers everything. go-to-k/cdkd#6759: the
+      // failure rejects the whole read instead of omitting the keys.
+      await primeFailingRegion();
+      await expect(provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE)).rejects.toThrow(
+        'access denied in eu-west-1'
+      );
+    });
+
+    it('omits the offending sub-spec key when the per-region call fails on a replica AWS is not serving', async () => {
+      // The same eu-west-1 failures, on a replica in CREATION_FAILED: AWS is not serving
+      // it, so the reads stay tolerant (go-to-k/cdkd#6759) and the whole drift read
+      // continues, surfacing only the keys that worked.
+      await primeFailingRegion('CREATION_FAILED');
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
       const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
       const replica = replicas.find((entry) => entry['Region'] === 'eu-west-1');

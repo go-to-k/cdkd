@@ -81,6 +81,9 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // go-to-k/cdkd#6759: a follow-up read the test does not script answers "nothing
+    // configured" (a failed sub-read now rejects the read, so `undefined` would be a TypeError).
+    mockSend.mockResolvedValue({});
     provider = new CognitoUserPoolProvider();
   });
 
@@ -236,11 +239,13 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     expect(result['EnabledMfas']).toEqual([]);
   });
 
-  it('skips MFA-derived keys (still returns Describe fields) when GetUserPoolMfaConfig fails', async () => {
+  it('skips MFA-derived keys (still returns Describe fields) when GetUserPoolMfaConfig answers not-found', async () => {
     mockSend.mockResolvedValueOnce({
       UserPool: { Id: 'us-east-1_abcd', Name: 'my-pool', UserPoolTier: 'LITE' },
     });
-    mockSend.mockRejectedValueOnce(new Error('AccessDenied on MFA API'));
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    );
 
     const result = (await provider.readCurrentState(
       'us-east-1_abcd',
@@ -252,6 +257,18 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     expect(result['UserPoolName']).toBe('my-pool');
     expect('EnabledMfas' in result).toBe(false);
     expect('WebAuthnRelyingPartyID' in result).toBe(false);
+  });
+
+  it('rejects the read when GetUserPoolMfaConfig fails for another reason', async () => {
+    // go-to-k/cdkd#6759: only the not-found code skips the MFA-derived keys.
+    mockSend.mockResolvedValueOnce({
+      UserPool: { Id: 'us-east-1_abcd', Name: 'my-pool', UserPoolTier: 'LITE' },
+    });
+    mockSend.mockRejectedValueOnce(new Error('AccessDenied on MFA API'));
+
+    await expect(
+      provider.readCurrentState('us-east-1_abcd', 'PoolLogical', 'AWS::Cognito::UserPool')
+    ).rejects.toThrow('AccessDenied on MFA API');
   });
 
   it('returns RESOURCE_NOT_FOUND when pool is gone', async () => {

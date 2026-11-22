@@ -141,9 +141,10 @@ export async function readCurrentState(
   // reconstruct the CFn-shape properties. A pool with no MFA factors and no
   // WebAuthn config returns empty/absent sub-blocks; emit the keys so a
   // console-side ADD surfaces as drift, mirroring the always-emit policy
-  // above. Tolerate a failure on this secondary call (e.g. a permission gap
-  // on the MFA API) by skipping the MFA-derived keys rather than failing the
-  // whole drift read.
+  // above. A pool gone under this secondary call (`ResourceNotFoundException`)
+  // skips the MFA-derived keys; any other failure (a permission gap on the MFA
+  // API, a throttle) throws (go-to-k/cdkd#6759), so `cdkd drift` reports
+  // `readFailed` rather than leaving MFA uncompared.
   try {
     const mfa = await this.getClient().send(
       new GetUserPoolMfaConfigCommand({ UserPoolId: physicalId })
@@ -173,6 +174,7 @@ export async function readCurrentState(
     // default is on both sides of the comparison.
     result['WebAuthnFactorConfiguration'] = mfa.WebAuthnConfiguration?.FactorConfiguration ?? '';
   } catch (mfaErr) {
+    if (!(mfaErr instanceof ResourceNotFoundException)) throw mfaErr;
     this.logger.debug(
       `GetUserPoolMfaConfig failed for ${physicalId}, skipping MFA-derived drift keys: ${describeAwsFailure(mfaErr).detail}`
     );

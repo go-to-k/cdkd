@@ -71,9 +71,10 @@ export async function readCurrentState(
 
 /**
  * go-to-k/cdkd#5487: `readCurrentState` for the engine's convergence step,
- * with two differences. A failed `QueryLoggingConfig` read throws, where
- * `readCurrentState` reports no config, which would make an unsettled removal
- * skip the delete. And `VPCs` keeps only what the record, the template or an
+ * with two differences. A `QueryLoggingConfig` read that finds the zone gone
+ * throws, where `readCurrentState` reports no config, which would make an
+ * unsettled removal skip the delete (any other failed read throws in both,
+ * go-to-k/cdkd#6759). And `VPCs` keeps only what the record, the template or an
  * earlier attempt (#5498) names: the convergence puts this on the previous
  * side, so a VPC associated out of band would read as dropped by the
  * template. A desired side declaring no VPCs leaves them out, since nothing
@@ -188,7 +189,10 @@ export async function readHostedZone(
   }
 
   // HostedZoneTags via ListTagsForResource. Route 53 ResourceId is the
-  // zone id WITHOUT the "/hostedzone/" prefix.
+  // zone id WITHOUT the "/hostedzone/" prefix. A zone gone under the read
+  // (`NoSuchHostedZone`) omits the key; any other failure throws
+  // (go-to-k/cdkd#6759), so `cdkd drift` reports `readFailed` rather than
+  // leaving the tags uncompared.
   const idTail = physicalId.replace(/^\/hostedzone\//, '');
   try {
     const tagsResp = await this.getClient().send(
@@ -197,6 +201,7 @@ export async function readHostedZone(
     const tags = normalizeAwsTagsToCfn(tagsResp.ResourceTagSet?.Tags);
     result['HostedZoneTags'] = tags;
   } catch (err) {
+    if (!(err instanceof Error && err.name === 'NoSuchHostedZone')) throw err;
     this.logger.debug(
       `Route53 ListTagsForResource(${idTail}) failed: ${describeAwsFailure(err).detail}`
     );
@@ -206,7 +211,9 @@ export async function readHostedZone(
   // zone. CFn enforces 0 or 1 config per zone. Always-emit `{}`
   // placeholder when AWS has none — the union-walk on the v3
   // observedProperties baseline catches a console-side ADD of a
-  // CloudWatchLogsLogGroupArn against the empty placeholder.
+  // CloudWatchLogsLogGroupArn against the empty placeholder. Only a zone gone
+  // under the read (`NoSuchHostedZone`) takes the placeholder; any other
+  // failure throws (go-to-k/cdkd#6759) — a `{}` there read as "no config".
   try {
     const qlcResp = await this.getClient().send(
       new ListQueryLoggingConfigsCommand({ HostedZoneId: idTail })
@@ -223,7 +230,12 @@ export async function readHostedZone(
     this.logger.debug(
       `Route53 ListQueryLoggingConfigs(${idTail}) failed: ${describeAwsFailure(err).detail}`
     );
-    if (throwOnFailedQueryLoggingRead) throw err;
+    if (
+      throwOnFailedQueryLoggingRead ||
+      !(err instanceof Error && err.name === 'NoSuchHostedZone')
+    ) {
+      throw err;
+    }
     result['QueryLoggingConfig'] = {};
   }
 
