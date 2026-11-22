@@ -988,14 +988,18 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     };
     const update = helper('updateWithRollbackRetry');
     const create = helper('createWithRollbackRetry');
-    // update: the single `withRetry(` takes `safe(logicalId)` as its label.
-    expect(update).toMatch(/withRetry\(\s*(\/\/[^\n]*\n\s*)*\(\) =>[^]*?\),\s*(\/\/[^\n]*\n\s*)*safe\(logicalId\),/);
-    expect(update).not.toMatch(/\n\s*logicalId,\n/);
-    // create: rendered once into `shownId`, and BOTH loops take it.
-    expect(create).toContain('const shownId = safe(logicalId);');
-    expect((create.match(/\bshownId\b/g) ?? []).length).toBe(3);
+    // Each helper renders the label once into `shownId`, and BOTH of its loops
+    // take it (go-to-k/cdkd#6843 gave the update helper its outer loop, and its
+    // settle-wait line a fourth use).
+    for (const [body, uses] of [
+      [update, 4],
+      [create, 3],
+    ] as const) {
+      expect(body).toContain('const shownId = safe(logicalId);');
+      expect((body.match(/\bshownId\b/g) ?? []).length).toBe(uses);
+      expect(body).not.toMatch(/\n\s*logicalId,\n/);
+    }
     expect(create).not.toMatch(/withRetry\(create, logicalId/);
-    expect(create).not.toMatch(/\n\s*logicalId,\n/);
     // callers: the raw id (the third argument), never a pre-rendered one.
     const lineStart = (at: number): string => src.slice(src.lastIndexOf('\n', at - 1) + 1, at);
     const calls = [...src.matchAll(/\b(create|update)WithRollbackRetry\(/g)].filter(
