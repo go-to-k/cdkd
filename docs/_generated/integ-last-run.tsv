@@ -299,6 +299,7 @@ launchtemplate-asg-inplace	2026-11-20T10:54:34Z	PASS	276	verify.sh	PR6652 be63cc
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
 legacy-synthesizer-assets	2026-11-16T14:29:32Z	PASS	99	verify.sh	rc ok, orph clean; us-east-2 legacy-mode (CDKToolkit assets/) 105s PASS too
+lightsail-alarm-throttle	2026-11-22T11:43:26Z	PASS	241	verify.sh	16 alarms SDK route, 0 engine retries, UPDATE in place, orph clean
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
 local-aws-emulator	2026-11-19T17:31:00Z	PASS	79	verify.sh	rc ok, all phases incl 1b/5b, docker clean, local-only (no marker)
 local-ecs-service-connect	2026-11-12T13:54:58Z	PASS	25	verify.sh	cdk-local 0.163.0 PR6157; rc ok, orph clean
