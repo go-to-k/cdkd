@@ -196,6 +196,19 @@ expect_sent() { # expect_sent <log name>
     exit 1
   fi
   echo "    OK: $1 re-sent the password"
+  ns_settled_after_change
+}
+ns_settled_after_change() { # a re-sent password flips the namespace to MODIFYING a little AFTER
+  # the update returns; an update sent before it settles waits on it until the
+  # handler gives up ("Exceeded attempts to wait", measured). Wait for the flip
+  # (up to 2 min), then for AVAILABLE.
+  local i st
+  for i in $(seq 1 24); do
+    st="$(ns_status)" || { echo "FAIL: namespace status undetermined" >&2; exit 1; }
+    [ "${st}" != AVAILABLE ] && break
+    sleep 5
+  done
+  ns_available
 }
 state_body() { # the state.json body; returns 1 on a read failure
   local body
