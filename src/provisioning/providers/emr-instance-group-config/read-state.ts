@@ -19,7 +19,8 @@ const CLUSTER_ID = /^j-[A-Z0-9]+$/;
  * and the group whose `Id` is the physical id.
  *
  * `RESOURCE_NOT_FOUND` when the cluster lists no such group, or lists it
- * `TERMINATED` (a group ends only with its cluster). An
+ * `TERMINATED` or `ENDED` (a group ends only with its cluster, and EMR keeps
+ * listing it in that state). An
  * `InvalidRequestException` is `undefined` (drift unknown), as for
  * `AWS::EMR::Cluster`'s own read: EMR answers it for more than an unknown
  * cluster id, so it is no evidence the group is gone. Any other failure
@@ -59,7 +60,8 @@ export async function readCurrentState(
     if (error instanceof InvalidRequestException) return undefined;
     throw error;
   }
-  if (group === undefined || group.Status?.State === 'TERMINATED') return RESOURCE_NOT_FOUND;
+  const state = group?.Status?.State;
+  if (group === undefined || state === 'TERMINATED' || state === 'ENDED') return RESOURCE_NOT_FOUND;
 
   const out: Record<string, unknown> = { JobFlowId: clusterId };
   if (group.InstanceGroupType !== undefined) out['InstanceRole'] = group.InstanceGroupType;

@@ -148,8 +148,8 @@ describe('EMRInstanceGroupConfigProvider.readCurrentState (go-to-k/cdkd#6769)', 
     expect(await read()).toBe(RESOURCE_NOT_FOUND);
   });
 
-  it('is RESOURCE_NOT_FOUND for a TERMINATED group', async () => {
-    pages([liveGroup({ Status: { State: 'TERMINATED' } })]);
+  it.each(['TERMINATED', 'ENDED'] as const)('is RESOURCE_NOT_FOUND for an %s group', async (State) => {
+    pages([liveGroup({ Status: { State } })]);
     expect(await read()).toBe(RESOURCE_NOT_FOUND);
   });
 
