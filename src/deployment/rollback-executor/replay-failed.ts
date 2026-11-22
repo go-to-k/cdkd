@@ -518,7 +518,7 @@ export async function replayFailedOperationsUnbound(
                 op.attemptedProperties,
                 {
                   expectedRegion: ctx.region,
-                  stackHoldersStillAttached: true, // #6770: its holders are the failed run's
+                  stackHoldersStillAttached: true, // #6770, #6808: the run's own holders
                   ...(removeProtection && { removeProtection: true }),
                   ...(failedCreateClaimed && { inlinePolicyClaimed: failedCreateClaimed }),
                   ...(finalSnapshotIdentifier !== undefined && { finalSnapshotIdentifier }),

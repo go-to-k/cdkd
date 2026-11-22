@@ -37,6 +37,10 @@ import {
 import type { DeleteContext } from '../../../src/provisioning/region-check.js';
 import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import {
+  destroyStackRecordsView,
+  withStackRecords,
+} from '../../../src/deployment/stack-records-scope.js';
 
 type Handler = (input: Record<string, unknown>) => unknown;
 
@@ -214,11 +218,29 @@ afterEach(() => {
 describe.each(CASES)('$type delete compares the recorded $key (go-to-k/cdkd#6655)', (t) => {
   // A same-name re-create's delete-first, so a group's members are removed
   // as these sequences expect (go-to-k/cdkd#6770; the user and profile
-  // deletes do not read the field).
+  // deletes do not read the field), each one a stack user's
+  // (go-to-k/cdkd#6808): the stranger too, so only the re-read decides.
   const del = (context?: DeleteContext) =>
-    t
-      .provider()
-      .delete('E', NAME, t.type, undefined, { stackHoldersStillAttached: true, ...context });
+    withStackRecords(
+      destroyStackRecordsView(
+        Object.fromEntries(
+          ['member', 'own-member', 'stranger-member'].map((user) => [
+            user,
+            {
+              resourceType: 'AWS::IAM::User',
+              physicalId: user,
+              properties: { Groups: [NAME] },
+              attributes: {},
+              dependencies: [],
+            },
+          ])
+        )
+      ),
+      () =>
+        t
+          .provider()
+          .delete('E', NAME, t.type, undefined, { stackHoldersStillAttached: true, ...context })
+    );
   const recorded = (value: unknown): DeleteContext => ({ recordedAttributes: { [t.key]: value } });
 
   it('the live holder carries the recorded id: deleted as before, the same calls', async () => {

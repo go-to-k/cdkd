@@ -6531,6 +6531,7 @@
           "literal"
         ],
         "iam-role-prefixed-name-update": [
+          "l1",
           "l2",
           "literal"
         ],
@@ -6565,6 +6566,7 @@
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
+        "iam-role-prefixed-name-update",
         "imagebuilder-infra-update",
         "import-attribute-readback-misc",
         "propagation-races-2",
@@ -6603,6 +6605,9 @@
         "iam-recreate-reattach": [
           "l1",
           "literal"
+        ],
+        "iam-role-prefixed-name-update": [
+          "l1"
         ],
         "imagebuilder-infra-update": [
           "l1",
@@ -7116,6 +7121,7 @@
           "literal"
         ],
         "iam-role-prefixed-name-update": [
+          "l1",
           "l2",
           "literal"
         ],
@@ -7381,6 +7387,7 @@
         "iam-access-key",
         "iam-managed-policy",
         "iam-recreate-reattach",
+        "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
         "iam-sibling-managed-policy-drift",
         "iam-user-group-fix-forward-orphan",
@@ -7409,6 +7416,9 @@
         "iam-recreate-reattach": [
           "l1",
           "literal"
+        ],
+        "iam-role-prefixed-name-update": [
+          "l1"
         ],
         "iam-secret-derived-principals": [
           "l1",

@@ -5,7 +5,7 @@
  * `DeleteConflict`) instead of being removed from that profile.
  * go-to-k/cdkd#6770: so is every other delete but a same-name re-create's
  * delete-first (`stackHoldersStillAttached`), which keeps the removal
- * (go-to-k/cdkd#4461).
+ * (go-to-k/cdkd#4461) from the stack's own profiles (go-to-k/cdkd#6808).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeleteConflictException, NoSuchEntityException } from '@aws-sdk/client-iam';
@@ -34,6 +34,10 @@ import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-pr
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import {
+  destroyStackRecordsView,
+  withStackRecords,
+} from '../../../src/deployment/stack-records-scope.js';
 
 type Handler = (input: Record<string, unknown>) => unknown;
 let sent: string[];
@@ -275,34 +279,50 @@ describe('IAM role delete on a stack destroy (#6750)', () => {
 });
 
 describe("a same-name re-create's delete-first keeps removing it from its profiles (#4461, #6770)", () => {
-  it('removes the role from each profile, then deletes it', async () => {
+  // go-to-k/cdkd#6808: the stack's own profiles only, named by its records;
+  // `iam-stack-own-holders-6808.test.ts` holds the out-of-stack arms.
+  const ownProfile = () =>
+    destroyStackRecordsView({
+      Profile: {
+        resourceType: 'AWS::IAM::InstanceProfile',
+        physicalId: 'stack-profile',
+        properties: { Roles: ['my-role'] },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+  const deleteFirst = () =>
+    withStackRecords(ownProfile(), () =>
+      new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role', undefined, {
+        stackHoldersStillAttached: true,
+      })
+    );
+
+  it("removes the role from the stack's profile, then deletes it", async () => {
     drive({
       ...base,
       DeleteRoleCommand: () => ({}),
       ListInstanceProfilesForRoleCommand: profiles(['stack-profile']),
     });
 
-    await new IAMRoleProvider().delete('Role', 'my-role', 'AWS::IAM::Role', undefined, {
-      stackHoldersStillAttached: true,
-    });
+    await deleteFirst();
 
     expect(sent).toContain('RemoveRoleFromInstanceProfileCommand');
     expect(sent.at(-1)).toBe('DeleteRoleCommand');
   });
 
-  it("a DeleteConflict after the removal is AWS's error, with no settle and no second DeleteRole", async () => {
-    drive({ ...base, ListInstanceProfilesForRoleCommand: profiles(['stack-profile']) });
+  it('a DeleteConflict after the removal settles, and the retry deletes once no profile holds it', async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      DeleteRoleCommand: () => (deletes++ === 0 ? conflict() : {}),
+      ListInstanceProfilesForRoleCommand: profiles(['stack-profile'], []),
+    });
 
-    const error = await new IAMRoleProvider()
-      .delete('Role', 'my-role', 'AWS::IAM::Role', undefined, { stackHoldersStillAttached: true })
-      .then(
-        () => undefined,
-        (e: unknown) => e
-      );
+    await deleteFirst();
 
-    expect((error as Error).message).not.toContain('which this');
-    expect(sent.filter((n) => n === 'DeleteRoleCommand')).toHaveLength(1);
-    expect(sent).not.toContain('GetInstanceProfileCommand');
+    expect(sent.filter((n) => n === 'RemoveRoleFromInstanceProfileCommand')).toHaveLength(1);
+    expect(sent.filter((n) => n === 'DeleteRoleCommand')).toHaveLength(2);
   });
 });
 

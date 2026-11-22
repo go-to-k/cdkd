@@ -32,7 +32,7 @@ import {
   deleteImpl,
   detachAllManagedPolicies,
   deleteAllInlinePolicies,
-  removeFromAllInstanceProfiles,
+  removeFromStackOwnInstanceProfiles,
 } from './iam-role/delete.js';
 import {
   getAttribute,
@@ -184,12 +184,13 @@ export class IAMRoleProvider implements ResourceProvider {
     return deleteAllInlinePolicies.call(this, roleName, log, progress);
   }
 
-  removeFromAllInstanceProfiles(
+  removeFromStackOwnInstanceProfiles(
     roleName: string,
     log: MaskedLogSinks,
-    progress?: DeleteProgress
+    progress: DeleteProgress | undefined,
+    profileNames: readonly string[]
   ): Promise<void> {
-    return removeFromAllInstanceProfiles.call(this, roleName, log, progress);
+    return removeFromStackOwnInstanceProfiles.call(this, roleName, log, progress, profileNames);
   }
 
   updateManagedPolicies(

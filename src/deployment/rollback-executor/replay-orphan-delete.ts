@@ -280,8 +280,9 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
     withReplayDeletePrinting(s, () =>
       provider.delete(op.logicalId, physicalId, op.resourceType, op.properties, {
         expectedRegion: ctx.region,
-        // go-to-k/cdkd#6770: the rolled-back run created it, so whatever holds
-        // it is that run's (a membership a failed or unordered op added).
+        // go-to-k/cdkd#6770 / #6808: the rolled-back run created it, so the
+        // holders the records or journal name are that run's (a membership a
+        // failed or unordered op added); any other is refused.
         stackHoldersStillAttached: true,
         ...(removeProtection && { removeProtection: true }),
         ...(createRollbackClaimed && { inlinePolicyClaimed: createRollbackClaimed }),

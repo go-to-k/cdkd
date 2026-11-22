@@ -147,15 +147,16 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       ),
       // The handler cannot remove it either: CloudFormation fails with DeleteConflict.
       refused(
-        // go-to-k/cdkd#6770: every delete but a same-name re-create's
-        // delete-first or a rollback's; the wording names the run.
-        'an instance profile outside the stack still holding the role (destroy, removal, replacement)',
+        // go-to-k/cdkd#6770 / #6808: on every delete, a same-name
+        // re-create's delete-first and a rollback's included; the wording
+        // names the run.
+        'an instance profile outside the stack still holding the role (destroy, removal, replacement, re-create)',
         `${P}iam-role/delete.ts`,
         'did not delete (a profile created outside the stack, or'
       ),
     ],
     beyondCfn: [
-      'on a deploy-time delete only, removes the role from every instance profile listing it, where DeleteRole would refuse with DeleteConflict (#6770)',
+      "on a same-name re-create's or a rollback's delete only, removes the role from the stack's own instance profiles, those its records name, where DeleteRole would refuse with DeleteConflict (#6770, #6808)",
     ],
   },
   {
@@ -264,14 +265,14 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
       ),
       // The handler cannot remove it either: CloudFormation fails with DeleteConflict.
       refused(
-        // go-to-k/cdkd#6770: as the role's.
-        'a user outside the stack still in the group (destroy, removal, replacement)',
+        // go-to-k/cdkd#6770 / #6808: as the role's.
+        'a user outside the stack still in the group (destroy, removal, replacement, re-create)',
         `${P}iam-user-group/group.ts`,
         'did not remove (a user added outside the stack, one '
       ),
     ],
     beyondCfn: [
-      'on a deploy-time delete only, removes every member user, where DeleteGroup would refuse a group with users (#6750)',
+      "on a same-name re-create's or a rollback's delete only, removes the stack's own member users, those its records name, where DeleteGroup would refuse a group with users (#6750, #6808)",
     ],
   },
   none(

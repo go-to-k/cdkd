@@ -38,6 +38,7 @@ import { userOrGroupIdentityToken, GROUP_NAME_MAX_LENGTH, iamPathOf } from './sh
 import { definedAttributes } from '../../attribute-map.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
 import { stateOrphanRecordRemedy } from '../../state-orphan-remedy.js';
+import { isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 
@@ -381,21 +382,6 @@ export async function deleteGroup(
     // Step 2: Delete all inline policies
     await this.deleteAllGroupInlinePolicies(physicalId, log, progress);
 
-    // Step 3: Remove all users from group (those step 0 read) — only where
-    // the stack's own memberships may still hold it and are re-added
-    // afterwards (`stackHoldersStillAttached`: a same-name re-create's
-    // delete-first, go-to-k/cdkd#4461). Every other delete — a destroy
-    // (go-to-k/cdkd#6750), a template removal, a nested child's teardown, a
-    // replaced group's cleanup, whose in-stack members already moved to the
-    // new group (go-to-k/cdkd#6770) — leaves the members alone:
-    // CloudFormation's delete handler holds no `iam:RemoveUserFromGroup`, so
-    // `DeleteGroup` fails with `DeleteConflict` while a user is still in the
-    // group, and the run removes or moves the stack's own memberships (a
-    // user's `Groups`, an `AWS::IAM::UserToGroupAddition`) before this
-    // delete, so a member left here is not this run's to change.
-    const stripHolders = context?.stackHoldersStillAttached === true;
-    if (stripHolders) await this.removeAllUsersFromGroup(physicalId, log, progress, members);
-
     // A settle read answering another `GroupId` than step 0's: the name now
     // holds another group, which the by-name `DeleteGroup` must not reach.
     const sameGroup = (read: GetGroupCommandOutput): void => {
@@ -422,16 +408,79 @@ export async function deleteGroup(
       }
     };
 
-    // Step 4: Delete the group. Two attempts at most where step 3 left the
-    // members alone: the second only after the settle below saw no user still
-    // in the group, i.e. what refused the first was the stack's own
-    // membership being removed.
+    // The refusal of a group `held` names members of, whose membership this
+    // run did not remove (go-to-k/cdkd#6750): worded, masked, non-retryable.
+    const refuseHeld = (held: { names: string[]; truncated: boolean }, cause?: Error): never => {
+      const run = holderRefusalRun(context);
+      const refusal = markNonRetryable(
+        new ProvisioningError(
+          log.mask(
+            `Failed to delete IAM group ${logicalId}: group ${physicalId} still has ` +
+              `user(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, whose ` +
+              `membership this ${run.noun} did not remove (a user added outside the stack, one ` +
+              `retained by a DeletionPolicy, or a stack user whose own delete has not finished ` +
+              `yet). Matching CloudFormation (DeleteConflict), cdkd ` +
+              `does not remove them from the group. If a named user is one of this stack's ` +
+              `users, ${run.rerun} once its delete finishes. Otherwise, if they no ` +
+              `longer need the group, remove them (aws iam remove-user-from-group ` +
+              `--group-name <group> --user-name <user>), then ${run.again}.`
+          ),
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
+      );
+      MEMBER_REFUSALS.add(refusal);
+      throw refusal;
+    };
+
+    // Step 3: Remove the stack's OWN members from the group — only where the
+    // stack's own memberships may still hold it and are re-added afterwards
+    // (`stackHoldersStillAttached`: a same-name re-create's delete-first,
+    // go-to-k/cdkd#4461), and only those the records bound around this
+    // delete name, matched by `UserId` where one is recorded
+    // (go-to-k/cdkd#6808). Any other member is refused FIRST, before the
+    // stack's own are touched, so a refused delete-first leaves the stack's
+    // memberships as their records say; one that drains during the settle
+    // (a user the run deleted, IAM still listing it) is no refusal. Every
+    // other delete — a destroy (go-to-k/cdkd#6750), a template removal, a
+    // nested child's teardown, a replaced group's cleanup, whose in-stack
+    // members already moved to the new group (go-to-k/cdkd#6770) — leaves
+    // the members alone: CloudFormation's delete handler holds no
+    // `iam:RemoveUserFromGroup`, so `DeleteGroup` fails with `DeleteConflict`
+    // while a user is still in the group, and the run removes or moves the
+    // stack's own memberships (a user's `Groups`, an
+    // `AWS::IAM::UserToGroupAddition`) before this delete, so a member left
+    // here is not this run's to change.
+    if (context?.stackHoldersStillAttached === true) {
+      const own = stackOwnHolders(resourceType, physicalId);
+      const isOwn = (user: User) =>
+        user.UserName !== undefined && isStackOwnHolder(own, user.UserName, user.UserId);
+      let read = members;
+      const foreign = await settledMembers.call(
+        this,
+        physicalId,
+        members,
+        membersTruncated,
+        sameGroup,
+        (user) => !isOwn(user),
+        (users) => (read = users)
+      );
+      if (foreign !== 'empty') refuseHeld(foreign);
+      await this.removeAllUsersFromGroup(physicalId, log, progress, read.filter(isOwn));
+    }
+
+    // Step 4: Delete the group. Two attempts at most: the second only after
+    // the settle below saw no user still in the group, i.e. what refused the
+    // first was the stack's own membership being removed, or one step 3
+    // removed that IAM still listed.
     for (let attempt = 1; ; attempt++) {
       try {
         await this.iamClient.send(new DeleteGroupCommand({ GroupName: physicalId }));
         break;
       } catch (error) {
-        if (stripHolders || !(error instanceof DeleteConflictException)) throw error;
+        if (!(error instanceof DeleteConflictException)) throw error;
         // Step 0's read is the first listing; the rest runs only after the
         // refusal, so a delete that succeeds costs no extra call. The second
         // attempt's refusal reads the members once more (no settle) to name
@@ -456,28 +505,7 @@ export async function deleteGroup(
         });
         if (held === 'empty' && attempt === 1) continue;
         if (held === undefined || held === 'empty') throw error;
-        const run = holderRefusalRun(context);
-        const refusal = markNonRetryable(
-          new ProvisioningError(
-            log.mask(
-              `Failed to delete IAM group ${logicalId}: group ${physicalId} still has ` +
-                `user(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, whose ` +
-                `membership this ${run.noun} did not remove (a user added outside the stack, one ` +
-                `retained by a DeletionPolicy, or a stack user whose own delete has not finished ` +
-                `yet). Matching CloudFormation (DeleteConflict), cdkd ` +
-                `does not remove them from the group. If a named user is one of this stack's ` +
-                `users, ${run.rerun} once its delete finishes. Otherwise, if they no ` +
-                `longer need the group, remove them (aws iam remove-user-from-group ` +
-                `--group-name <group> --user-name <user>), then ${run.again}.`
-            ),
-            resourceType,
-            logicalId,
-            physicalId,
-            error
-          )
-        );
-        MEMBER_REFUSALS.add(refusal);
-        throw refusal;
+        refuseHeld(held, error);
       }
     }
 
@@ -557,9 +585,16 @@ async function settledMembers(
   groupName: string,
   firstRead: User[],
   firstTruncated: boolean,
-  sameGroup: (read: GetGroupCommandOutput) => void
+  sameGroup: (read: GetGroupCommandOutput) => void,
+  /**
+   * Narrows every read to the members that matter (go-to-k/cdkd#6808: those
+   * not the stack's own); a read with none of them returns `'empty'` at once.
+   */
+  counts: (user: User) => boolean = () => true,
+  /** Told each later read's members, unnarrowed. */
+  onRead?: (users: User[]) => void
 ): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
-  let held = { names: memberNames(firstRead), truncated: firstTruncated };
+  let held = { names: memberNames(firstRead.filter(counts)), truncated: firstTruncated };
   if (held.names.length === 0) return 'empty';
   const key = (h: { names: string[]; truncated: boolean }) =>
     JSON.stringify([h.names, h.truncated]);
@@ -568,7 +603,11 @@ async function settledMembers(
     await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
     const read = await this.iamClient.send(new GetGroupCommand({ GroupName: groupName }));
     sameGroup(read);
-    const next = { names: memberNames(read.Users), truncated: read.IsTruncated === true };
+    onRead?.(read.Users ?? []);
+    const next = {
+      names: memberNames((read.Users ?? []).filter(counts)),
+      truncated: read.IsTruncated === true,
+    };
     if (next.names.length === 0) return 'empty';
     unchanged = key(next) === key(held) ? unchanged + 1 : 0;
     held = next;

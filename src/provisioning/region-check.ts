@@ -317,8 +317,13 @@ export interface DeleteContext extends SecretMaskingContext {
    * `replay-revert.ts`, `replay-reverse-replacement/finish.ts` /
    * `failures.ts`), whose holders are that run's: a membership a failed
    * create already added, or one no dependency edge orders first. The role
-   * and group deletes then remove the resource from every holder before
-   * deleting it.
+   * and group deletes then remove the resource from the stack's OWN holders
+   * before deleting it, and from no other (go-to-k/cdkd#6808): those the
+   * records bound around the delete name (`stack-own-holders.ts`: the
+   * stack's instance profiles naming the role, its users and
+   * `UserToGroupAddition`s naming the group, plus a replayed journal's failed
+   * writes), each matched by name and by its recorded `InstanceProfileId` /
+   * `UserId` where one is. Any other holder is refused as below.
    *
    * ABSENT on every other delete — a destroy, a template removal, a nested
    * child's teardown, a replaced copy's cleanup-phase or superseded delete —

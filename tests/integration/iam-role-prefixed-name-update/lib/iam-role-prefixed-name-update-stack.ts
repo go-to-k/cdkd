@@ -121,5 +121,33 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
         groupName: `${cdk.Stack.of(this).stackName}-held-group`,
       });
     }
+
+    // CDKD_TEST_6808=true adds a fixed-name role and group, each held by the
+    // stack's own instance profile / user (go-to-k/cdkd#6808). Their
+    // same-name re-create (`--recreate-via-cc-api ReRole --recreate-via-cc-api
+    // ReGroup`) must strip only those holders: while a profile or user created
+    // outside the stack holds them too, it refuses and strips nothing.
+    if (process.env.CDKD_TEST_6808 === 'true') {
+      const prefix = cdk.Stack.of(this).stackName;
+      const reRole = new iam.CfnRole(this, 'ReRole', {
+        roleName: `${prefix}-re-role`,
+        assumeRolePolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { Service: 'ec2.amazonaws.com' },
+              Action: 'sts:AssumeRole',
+            },
+          ],
+        },
+      });
+      const reGroup = new iam.CfnGroup(this, 'ReGroup', { groupName: `${prefix}-re-group` });
+      new iam.CfnInstanceProfile(this, 'ReProfile', {
+        instanceProfileName: `${prefix}-re-profile`,
+        roles: [reRole.ref],
+      });
+      new iam.CfnUser(this, 'ReMember', { userName: `${prefix}-re-member`, groups: [reGroup.ref] });
+    }
   }
 }

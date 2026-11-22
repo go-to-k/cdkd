@@ -85,7 +85,7 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['delete', 'delete', 'deleteImpl', 5],
   ['detachAllManagedPolicies', 'delete', 'detachAllManagedPolicies', 3],
   ['deleteAllInlinePolicies', 'delete', 'deleteAllInlinePolicies', 3],
-  ['removeFromAllInstanceProfiles', 'delete', 'removeFromAllInstanceProfiles', 3],
+  ['removeFromStackOwnInstanceProfiles', 'delete', 'removeFromStackOwnInstanceProfiles', 4],
   ['getAttribute', 'read-state', 'getAttribute', 3],
   ['isSameResource', 'read-state', 'isSameResource', 4],
   ['resourceIdentity', 'read-state', 'resourceIdentity', 3],

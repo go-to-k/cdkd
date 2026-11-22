@@ -77,6 +77,22 @@ export interface StackRecordsView {
    * view without one caches nothing.
    */
   readonly runKey?: object;
+  /**
+   * The writes of the journal a rollback replays that no record may hold
+   * (go-to-k/cdkd#6808): its failed ops, each with the properties it
+   * attempted. What they name is the rolled-back run's, so a rollback delete
+   * of a role or group strips the holders they add, as it does those a record
+   * names (`stack-own-holders.ts`). Only a replay has any.
+   */
+  readonly journaledWrites?: () => Iterable<JournaledWrite>;
+}
+
+/** A write a replayed journal names ({@link StackRecordsView.journaledWrites}). */
+export interface JournaledWrite {
+  readonly resourceType: string;
+  readonly physicalId?: string | undefined;
+  readonly properties?: Readonly<Record<string, unknown>> | undefined;
+  readonly attributes?: Readonly<Record<string, unknown>> | undefined;
 }
 
 const verifiedIdentityCaches = new WeakMap<object, Map<string, Promise<void>>>();
@@ -217,7 +233,13 @@ export function destroyStackRecordsView(records: Record<string, ResourceState>):
  */
 export function replayStackRecordsView(
   records: Record<string, ResourceState>,
-  orphanLogicalIds: ReadonlySet<string> = new Set()
+  orphanLogicalIds: ReadonlySet<string> = new Set(),
+  /** The replayed journal's failed ops ({@link StackRecordsView.journaledWrites}). */
+  failedOps: ReadonlyArray<{
+    resourceType: string;
+    physicalId?: string | undefined;
+    attemptedProperties?: Record<string, unknown> | undefined;
+  }> = []
 ): StackRecordsView {
   // `=== 'Retain'`, not `shouldRetainResource`: the replay keeps a rolled-back
   // CREATE only under `Retain` (`rollback-executor/plan.ts`), deleting it under
@@ -232,6 +254,12 @@ export function replayStackRecordsView(
       ...Object.entries(records),
       ...kept.filter(([lid]) => !Object.hasOwn(records, lid)),
     ],
+    journaledWrites: () =>
+      failedOps.map((op) => ({
+        resourceType: op.resourceType,
+        physicalId: op.physicalId,
+        properties: op.attemptedProperties,
+      })),
   };
 }
 

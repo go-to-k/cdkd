@@ -4,7 +4,8 @@
  * `iam:RemoveUserFromGroup`, and `DeleteGroup` answers `DeleteConflict`)
  * instead of the user being removed from it. go-to-k/cdkd#6770: so is every
  * other delete but a same-name re-create's delete-first
- * (`stackHoldersStillAttached`), which keeps the removal (go-to-k/cdkd#4461).
+ * (`stackHoldersStillAttached`), which keeps the removal (go-to-k/cdkd#4461)
+ * of the stack's own members (go-to-k/cdkd#6808).
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeleteConflictException, NoSuchEntityException } from '@aws-sdk/client-iam';
@@ -34,6 +35,10 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RecordedIdentityError } from '../../../src/provisioning/recorded-identity.js';
+import {
+  destroyStackRecordsView,
+  withStackRecords,
+} from '../../../src/deployment/stack-records-scope.js';
 
 type Handler = (input: Record<string, unknown>) => unknown;
 let sent: string[];
@@ -408,32 +413,46 @@ describe('IAM group delete on a stack destroy (#6750)', () => {
 });
 
 describe("a same-name re-create's delete-first keeps removing its members (#4461, #6770)", () => {
-  it('removes each member, then deletes the group', async () => {
+  // go-to-k/cdkd#6808: the stack's own members only, named by its records;
+  // `iam-stack-own-holders-6808.test.ts` holds the out-of-stack arms.
+  const deleteFirst = () =>
+    withStackRecords(
+      destroyStackRecordsView({
+        Member: {
+          resourceType: 'AWS::IAM::User',
+          physicalId: 'member',
+          properties: { Groups: ['my-group'] },
+          attributes: {},
+          dependencies: [],
+        },
+      }),
+      () =>
+        new IAMUserGroupProvider().delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
+          stackHoldersStillAttached: true,
+        })
+    );
+
+  it("removes the stack's member, then deletes the group", async () => {
     drive({ ...base, GetGroupCommand: members(['member']), DeleteGroupCommand: () => ({}) });
 
-    await new IAMUserGroupProvider().delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
-      stackHoldersStillAttached: true,
-    });
+    await deleteFirst();
 
     expect(sent).toContain('RemoveUserFromGroupCommand');
     expect(sent.at(-1)).toBe('DeleteGroupCommand');
   });
 
-  it("a DeleteConflict after the removal is AWS's error, with no settle and no second DeleteGroup", async () => {
-    drive({ ...base, GetGroupCommand: members(['member']) });
+  it('a DeleteConflict after the removal settles, and the retry deletes once no user is in it', async () => {
+    let deletes = 0;
+    drive({
+      ...base,
+      GetGroupCommand: members(['member'], []),
+      DeleteGroupCommand: () => (deletes++ === 0 ? conflict() : {}),
+    });
 
-    const error = await new IAMUserGroupProvider()
-      .delete('Group', 'my-group', 'AWS::IAM::Group', undefined, {
-        stackHoldersStillAttached: true,
-      })
-      .then(
-        () => undefined,
-        (e: unknown) => e
-      );
+    await deleteFirst();
 
-    expect((error as Error).message).not.toContain('whose membership this');
-    expect(count('DeleteGroupCommand')).toBe(1);
-    expect(count('GetGroupCommand')).toBe(1);
+    expect(count('RemoveUserFromGroupCommand')).toBe(1);
+    expect(count('DeleteGroupCommand')).toBe(2);
   });
 });
 
