@@ -79,7 +79,7 @@ export async function readReplicaSubSpecs(
   tableName: string,
   regionLabel: string,
   declaredReplica: Record<string, unknown> | undefined,
-  served = true
+  served: boolean
 ): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
 
@@ -196,7 +196,7 @@ export async function readReplicaPolicies(
   declaredReplica: Record<string, unknown> | undefined,
   afterOwnWrite: boolean,
   entry: Record<string, unknown>,
-  served = true
+  served: boolean
 ): Promise<void> {
   if (declaredReplica === undefined) return;
   const readOne = async (

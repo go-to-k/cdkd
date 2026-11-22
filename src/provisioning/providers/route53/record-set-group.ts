@@ -764,6 +764,17 @@ export async function deleteRecordSetGroup(
   }
 }
 
+/** The brand `resolveHostedZoneId` puts on a failed listing (route53/resolve.ts). */
+const HOSTED_ZONE_LOOKUP_FAILED = Symbol.for('cdkd.route53.hostedZoneLookupFailed');
+
+function isHostedZoneLookupFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[HOSTED_ZONE_LOOKUP_FAILED] === true
+  );
+}
+
 /**
  * The live state of every recorded record, in recorded order, as
  * `{ RecordSets: [...] }`. A record the lookup cannot place makes the whole
@@ -794,9 +805,10 @@ export async function readRecordSetGroup(
       RECORD_SET_GROUP_TYPE
     );
   } catch (err) {
-    // `resolveHostedZoneId` carries a failed listing's AWS error as the
-    // `cause`; a refusal from the template alone has none.
-    if (!(err instanceof ProvisioningError) || err.cause !== undefined) throw err;
+    // A failed listing rethrows; a refusal from the template alone is "cannot tell".
+    if (!(err instanceof ProvisioningError) || isHostedZoneLookupFailure(err)) {
+      throw err;
+    }
     return undefined;
   }
 

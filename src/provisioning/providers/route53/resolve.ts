@@ -247,7 +247,27 @@ export async function resolveHostedZoneId(
     physicalId,
     lookupErrorCause
   );
+  if (lookupErrorMessage) {
+    Object.defineProperty(unresolved, HOSTED_ZONE_LOOKUP_FAILED, { value: true });
+  }
   throw lookupErrorMessage && lookupErrorRedacted ? markRedactedCause(unresolved) : unresolved;
+}
+
+/**
+ * Brands the error `resolveHostedZoneId` throws when the `HostedZoneName`
+ * listing itself FAILED (AWS refused or throttled it), as opposed to every
+ * refusal raised from the template alone (go-to-k/cdkd#6759): a read treats
+ * only those as "cannot tell", and rethrows a branded one. A registry symbol,
+ * not an export: `record-set-group.ts` reads the same key.
+ */
+const HOSTED_ZONE_LOOKUP_FAILED = Symbol.for('cdkd.route53.hostedZoneLookupFailed');
+
+function isHostedZoneLookupFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[HOSTED_ZONE_LOOKUP_FAILED] === true
+  );
 }
 
 /**
@@ -304,10 +324,11 @@ export async function resolveRecordSetIdentity(
     );
     return { hostedZoneId, name, type };
   } catch (err) {
-    // `resolveHostedZoneId` carries a failed listing's AWS error as the
-    // `cause` of its ProvisioningError; every refusal it raises from the
-    // template alone has none. Only those refusals are "cannot determine".
-    if (!(err instanceof ProvisioningError) || err.cause !== undefined) throw err;
+    // A failed listing, or anything but a refusal from the template alone, is
+    // no "cannot determine".
+    if (!(err instanceof ProvisioningError) || isHostedZoneLookupFailure(err)) {
+      throw err;
+    }
     // Both callers treat "cannot determine" as "nothing to report" rather
     // than as a failure, but say WHY at debug level.
     this.logger.debug(

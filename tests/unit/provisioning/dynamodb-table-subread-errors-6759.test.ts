@@ -6,7 +6,11 @@
  * not-found code still omits the property, as before.
  */
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
-import { ResourceNotFoundException, TableNotFoundException } from '@aws-sdk/client-dynamodb';
+import {
+  PolicyNotFoundException,
+  ResourceNotFoundException,
+  TableNotFoundException,
+} from '@aws-sdk/client-dynamodb';
 
 const mockSend = vi.hoisted(() => vi.fn());
 
@@ -144,6 +148,12 @@ describe('DynamoDB Table readCurrentState sub-read failures (go-to-k/cdkd#6759)'
       absent: (r) => r['ResourcePolicy'],
     },
     {
+      what: 'ResourcePolicy (no policy attached)',
+      command: 'GetResourcePolicyCommand',
+      notFound: () => new PolicyNotFoundException({ message: 'none', $metadata: {} }),
+      absent: (r) => r['ResourcePolicy'],
+    },
+    {
       what: 'KinesisStreamSpecification',
       command: 'DescribeKinesisStreamingDestinationCommand',
       notFound: rnf,
@@ -195,6 +205,23 @@ describe('DynamoDB Table readCurrentState sub-read failures (go-to-k/cdkd#6759)'
       expect(result['TableName']).toBe('t1');
     });
   }
+
+  it('with no desired bag (no settle schedule), no attached policy still omits ResourcePolicy', async () => {
+    stub('GetResourcePolicyCommand', () => new PolicyNotFoundException({ message: 'none', $metadata: {} }));
+    const result = (await new DynamoDBTableProvider().readCurrentState('t1', 'T', TYPE)) as Record<
+      string,
+      unknown
+    >;
+    expect(result['ResourcePolicy']).toBeUndefined();
+    expect(result['TableName']).toBe('t1');
+  });
+
+  it('with no desired bag, a denied GetResourcePolicy rejects the read', async () => {
+    stub('GetResourcePolicyCommand', denied);
+    await expect(new DynamoDBTableProvider().readCurrentState('t1', 'T', TYPE)).rejects.toThrow(
+      'not authorized'
+    );
+  });
 
   it('reads every member when no sub-read fails (the fixture reaches each one)', async () => {
     stub('none', denied);

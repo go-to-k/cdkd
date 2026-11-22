@@ -8,7 +8,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import { ResourceNotFoundException as CognitoNotFound } from '@aws-sdk/client-cognito-identity-provider';
-import { NoSuchDistribution } from '@aws-sdk/client-cloudfront';
+import { NoSuchDistribution, NoSuchResource } from '@aws-sdk/client-cloudfront';
 import { NotFoundException as S3TablesNotFound } from '@aws-sdk/client-s3tables';
 import {
   ResourceNotFoundException as CloudMapResourceNotFound,
@@ -154,6 +154,25 @@ const cases: Case[] = [
     site: 'CloudFront Distribution Tags',
     command: 'ListTagsForResourceCommand',
     notFound: () => new NoSuchDistribution({ message: 'gone', ...meta }),
+    answers: {
+      GetDistributionConfigCommand: { DistributionConfig: { Comment: 'c', Enabled: true } },
+      GetDistributionCommand: { Distribution: { ARN: 'arn:aws:cloudfront::1:distribution/D1' } },
+      ListTagsForResourceCommand: { Tags: { Items: [{ Key: 'team', Value: 'a' }] } },
+    },
+    read: () =>
+      new CloudFrontDistributionProvider().readCurrentState(
+        'D1',
+        'D',
+        'AWS::CloudFront::Distribution'
+      ),
+    key: (bag) => bag['Tags'],
+    notFoundValue: undefined,
+    readValue: [{ Key: 'team', Value: 'a' }],
+  },
+  {
+    site: 'CloudFront Distribution Tags (tag read answers NoSuchResource)',
+    command: 'ListTagsForResourceCommand',
+    notFound: () => new NoSuchResource({ message: 'gone', ...meta }),
     answers: {
       GetDistributionConfigCommand: { DistributionConfig: { Comment: 'c', Enabled: true } },
       GetDistributionCommand: { Distribution: { ARN: 'arn:aws:cloudfront::1:distribution/D1' } },
@@ -346,7 +365,16 @@ describe('Route 53 whole-resource reads on a failed zone lookup (go-to-k/cdkd#67
 
   it('RecordSet: a denied ListHostedZonesByName rejects the read (it used to be undefined)', async () => {
     stub(RECORD_ANSWERS, 'ListHostedZonesByNameCommand', denied);
-    await expect(readRecord()).rejects.toThrow();
+    await expect(readRecord()).rejects.toThrow('Could not resolve HostedZoneName');
+  });
+
+  it('RecordSet: a listing that throws a non-Error value also rejects the read', async () => {
+    mockSend.mockImplementation((command: Command) =>
+      command.constructor.name === 'ListHostedZonesByNameCommand'
+        ? Promise.reject('socket hang up')
+        : Promise.resolve(RECORD_ANSWERS[command.constructor.name] ?? {})
+    );
+    await expect(readRecord()).rejects.toThrow('Could not resolve HostedZoneName');
   });
 
   it('RecordSet: a zone name that matches no zone is still "cannot tell"', async () => {
@@ -362,7 +390,7 @@ describe('Route 53 whole-resource reads on a failed zone lookup (go-to-k/cdkd#67
 
   it('RecordSetGroup: a denied ListHostedZonesByName rejects the read (it used to be undefined)', async () => {
     stub(RECORD_ANSWERS, 'ListHostedZonesByNameCommand', denied);
-    await expect(readGroup()).rejects.toThrow();
+    await expect(readGroup()).rejects.toThrow('Could not resolve HostedZoneName');
   });
 
   it('RecordSetGroup: a zone name that matches no zone is still "cannot tell"', async () => {

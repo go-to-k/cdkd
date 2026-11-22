@@ -25,7 +25,9 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
   return {
     ...actual,
-    ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({ send: autoScalingSend })),
+    ApplicationAutoScalingClient: vi.fn().mockImplementation((config?: { region?: string }) => ({
+      send: (command: unknown) => autoScalingSend(command, config?.region),
+    })),
   };
 });
 
@@ -183,6 +185,11 @@ describe('DynamoDB GlobalTable readCurrentState sub-read failures (go-to-k/cdkd#
       key: 'KinesisStreamSpecification',
       notFound: rnf,
     },
+    {
+      command: 'DescribeContinuousBackupsCommand',
+      key: 'PointInTimeRecoverySpecification',
+      notFound: rnf,
+    },
     { command: 'GetResourcePolicyCommand', key: 'ResourcePolicy', notFound: rnf },
     { command: 'DescribeTableCommand', key: 'DeletionProtectionEnabled', notFound: rnf },
   ];
@@ -215,10 +222,21 @@ describe('DynamoDB GlobalTable readCurrentState sub-read failures (go-to-k/cdkd#
   it('a replica AWS is not serving keeps the tolerant reads', async () => {
     localSend.mockImplementation(regionStub(undefined, denied, 'REGION_DISABLED'));
     remoteSend.mockImplementation(() => Promise.reject(denied()));
+    // The replica's own region's Application Auto Scaling fails too.
+    autoScalingSend.mockImplementation((command: Command, region?: string) =>
+      region === 'eu-west-1' ? Promise.reject(denied()) : autoScalingStub(false)(command)
+    );
     const result = await read();
     const remote = replica(result, 'eu-west-1');
     expect(remote['ContributorInsightsSpecification']).toBeUndefined();
+    expect(remote['ReadProvisionedThroughputSettings']).toBeUndefined();
     expect(remote['Tags']).toEqual([]);
+  });
+
+  it('a replica that is UPDATING is served: its failed sub-read rejects the read', async () => {
+    localSend.mockImplementation(regionStub(undefined, denied, 'UPDATING'));
+    remoteSend.mockImplementation(regionStub('ListTagsOfResourceCommand', denied, 'UPDATING'));
+    await expect(read()).rejects.toThrow('not authorized');
   });
 
   it('TimeToLiveSpecification: AccessDenied rejects the read', async () => {
