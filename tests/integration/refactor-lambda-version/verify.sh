@@ -8,7 +8,9 @@
 # Phases:
 #   1. Deploy generation "a"; record alias version N and the stage deployment.
 #   2. Under generation "b" (CDKD_TEST_UPDATE=true):
-#      a. `cdkd diff` shows both removals, neither with a `moved to` hint.
+#      a. `cdkd diff` shows both removals, neither with a `moved to` hint; nor
+#         the subscription and queue policy moved to the other existing queue
+#         (go-to-k/cdkd#6797).
 #      b. `cdkd refactor --dry-run` reports both as not refactored, naming the
 #         changed reference; `cdkd refactor --yes` leaves the state ETag as is.
 #      c. `cdkd deploy`: alias on N+1 returning code 'b'; stage on a new
@@ -60,6 +62,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 FN_NAME="cdkd-refactor-lambda-version-fn"
 API_NAME="cdkd-refactor-lambda-version-api"
+TOPIC_ARN="arn:aws:sns:${REGION}:$(aws sts get-caller-identity --query Account --output text):cdkd-refactor-lambda-version-t"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 cdkd() { node "${LOCAL_DIST}" "$@"; }
@@ -108,6 +111,11 @@ cleanup() {
       --region "${REGION}" --yes >/dev/null 2>&1
   fi
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1
+  for q in cdkd-refactor-lambda-version-q1 cdkd-refactor-lambda-version-q2; do
+    url=$(aws sqs get-queue-url --queue-name "${q}" --region "${REGION}" --query QueueUrl --output text 2>/dev/null)
+    [ -n "${url}" ] && aws sqs delete-queue --queue-url "${url}" --region "${REGION}" >/dev/null 2>&1
+  done
+  aws sns delete-topic --topic-arn "${TOPIC_ARN:-}" --region "${REGION}" >/dev/null 2>&1
   aws logs delete-log-group --log-group-name "/aws/lambda/${FN_NAME}" --region "${REGION}" >/dev/null 2>&1
   for id in $(aws apigateway get-rest-apis --region "${REGION}" \
       --query "items[?name=='${API_NAME}'].id" --output text 2>/dev/null); do
@@ -167,6 +175,8 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 RES_A="$(cdkd state resources "${STACK}" "${STATE_FLAGS[@]}")"
 OLD_VERSION_ID="$(logical_id_of_type AWS::Lambda::Version "${RES_A}")"
 OLD_DEPLOYMENT_ID="$(logical_id_of_type AWS::ApiGateway::Deployment "${RES_A}")"
+OLD_SUB_ID="$(logical_id_of_type AWS::SNS::Subscription "${RES_A}")"
+OLD_QPOLICY_ID="$(logical_id_of_type AWS::SQS::QueuePolicy "${RES_A}")"
 API_ID="$(printf '%s\n' "${RES_A}" | awk '$2 == "AWS::ApiGateway::RestApi" { print $3 }')"
 [ -n "${API_ID}" ] || { echo "FAIL: no AWS::ApiGateway::RestApi in state" >&2; exit 1; }
 
@@ -191,7 +201,7 @@ export CDKD_TEST_UPDATE=true
 echo "==> Phase 2a: diff shows both removals, with no refactor hint"
 OUT_2A="$(cdkd diff "${STACK}" "${STATE_FLAGS[@]}" 2>&1)"
 printf '%s\n' "${OUT_2A}"
-for id in "${OLD_VERSION_ID}" "${OLD_DEPLOYMENT_ID}"; do
+for id in "${OLD_VERSION_ID}" "${OLD_DEPLOYMENT_ID}" "${OLD_SUB_ID}" "${OLD_QPOLICY_ID}"; do
   ROW="$(printf '%s\n' "${OUT_2A}" | grep -F "[-] ${id} " || true)"
   # Sentinel: the removal row itself must be there, or "no hint" proves nothing.
   [ -n "${ROW}" ] || { echo "FAIL: diff shows no removal row for ${id}" >&2; exit 1; }
@@ -199,7 +209,7 @@ for id in "${OLD_VERSION_ID}" "${OLD_DEPLOYMENT_ID}"; do
     *"moved to"*) echo "FAIL: diff advises a refactor for ${id}, a new resource: ${ROW}" >&2; exit 1 ;;
   esac
 done
-echo "    no 'moved to' hint on ${OLD_VERSION_ID} or ${OLD_DEPLOYMENT_ID}"
+echo "    no 'moved to' hint on ${OLD_VERSION_ID}, ${OLD_DEPLOYMENT_ID}, ${OLD_SUB_ID} or ${OLD_QPOLICY_ID}"
 
 echo "==> Phase 2b: cdkd refactor leaves both, and writes nothing"
 ETAG_BEFORE="$(state_etag)"
@@ -251,6 +261,12 @@ assert_gone "function ${FN_NAME} still exists after destroy" \
   aws lambda get-function --function-name "${FN_NAME}" --region "${REGION}"
 assert_gone "rest api ${API_ID} still exists after destroy" \
   aws apigateway get-rest-api --rest-api-id "${API_ID}" --region "${REGION}"
+for q in cdkd-refactor-lambda-version-q1 cdkd-refactor-lambda-version-q2; do
+  assert_gone "queue ${q} still exists after destroy" \
+    aws sqs get-queue-url --queue-name "${q}" --region "${REGION}"
+done
+assert_gone "topic still exists after destroy" aws sns get-topic-attributes --region "${REGION}" \
+  --topic-arn "${TOPIC_ARN}"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    function, API and cdkd state removed"

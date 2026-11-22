@@ -14,6 +14,7 @@ Stack: `CdkdRefactorLambdaVersionExample`.
 | `fn.currentVersion` + alias `live` | version N | a new logical id, version N+1 |
 | REST API with a mock `GET /` | responds `{"code": "a"}` | responds `{"code": "b"}` |
 | The API's deployment (stage `live`) | deployment D1 | a new logical id, deployment D2 |
+| SNS subscription + queue policy ([#6797](https://github.com/go-to-k/cdkd/issues/6797)) | to queue `-q1` | to queue `-q2`: new logical ids referencing another existing queue |
 
 Before the fix, `cdkd diff` marked the old version and the old deployment
 `(moved to ..., run 'cdkd refactor' to keep it)`. Following that advice left the
