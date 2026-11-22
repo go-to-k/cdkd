@@ -42,6 +42,7 @@ import { importOne, refuseLostReplacedRows, warnMigrationOrphans } from './impor
 import { captureObservedForImportedResources } from './observed-capture.js';
 import { collectImportableResources, mergeCfnDerivedOverrides } from './overrides.js';
 import { resolveImportedProperties } from './resolve-properties.js';
+import { overlayDeployedProperties, readDeployedTemplate } from './deployed-properties.js';
 import {
   buildStackState,
   rebuiltLogicalIdsFrom,
@@ -389,6 +390,28 @@ export async function importNestedStackChildrenRecursive(args: {
       );
       warnMigrationOrphans(logger, childResources.length, childImported.size, childStackName);
 
+      // go-to-k/cdkd#6840: the child records its resources' properties as
+      // CloudFormation last deployed THIS child, as the root does. Read by the
+      // child stack's ARN, before the child's save, so a failure leaves this
+      // child (and the DeleteStack) undone.
+      let childDeployedTemplate: CloudFormationTemplate;
+      try {
+        childDeployedTemplate = await readDeployedTemplate(args.cfnClient, childTreeNode.stackName);
+      } catch (err) {
+        throw new Error(
+          `${err instanceof Error ? err.message : String(err)} ` +
+            safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
+            `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
+            `was not deleted; the re-run needs --force.`
+        );
+      }
+      const childRecordTemplate = overlayDeployedProperties(
+        childStateTemplate,
+        childDeployedTemplate,
+        logger,
+        displaySafe(childStackName)
+      );
+
       // Build child state (auto / whole-stack mode — no pre-existing
       // selective merge for a fresh nested child). Populate the v6
       // parent-link fields so `NestedStackProvider.delete`'s child-state
@@ -399,7 +422,7 @@ export async function importNestedStackChildrenRecursive(args: {
         childRegion,
         rows,
         templateParser,
-        childStateTemplate,
+        childRecordTemplate,
         null,
         false
       );
@@ -438,7 +461,7 @@ export async function importNestedStackChildrenRecursive(args: {
       // One budget for this child's resolve loop too; see the root call.
       // Issue #2854: addressed by the child stack's ARN from the resource tree
       // (the API-accepted identifier), DISPLAYED by its cdkd name.
-      const childDeployedParameters = namesAnyDeclaredParameter(childStateTemplate)
+      const childDeployedParameters = namesAnyDeclaredParameter(childRecordTemplate)
         ? await readDeployedParameters(
             childTreeNode.stackName,
             args.cfnClient,
@@ -449,7 +472,7 @@ export async function importNestedStackChildrenRecursive(args: {
       const childUnsafeObservedBaselineLogicalIds = await withSharedDrainBudget(() =>
         resolveImportedProperties(
           childStackState,
-          childStateTemplate,
+          childRecordTemplate,
           childRegion,
           stateBackend,
           logger,
@@ -466,7 +489,7 @@ export async function importNestedStackChildrenRecursive(args: {
         // in practice every row is rebuilt — passing the set anyway keeps the
         // two call sites the same shape, so a future change to the child walk
         // cannot quietly acquire the preserved-record hazard.
-        rebuiltLogicalIdsFrom(rows, childTemplate)
+        rebuiltLogicalIdsFrom(rows, childRecordTemplate)
       );
 
       await recordImportOnRollbackJournal(

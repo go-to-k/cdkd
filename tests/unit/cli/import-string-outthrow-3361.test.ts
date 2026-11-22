@@ -62,6 +62,19 @@ const cfnSend = vi.hoisted(() =>
     throw err;
   })
 );
+// go-to-k/cdkd#6840: the template CloudFormation last deployed, which a
+// migration records properties from. Defaults to a template holding NONE of
+// the synthesized resources, so every resource keeps its synthesized
+// properties -- the shape every pre-#6840 test here was written against -- and
+// the overlay itself stays REAL.
+const mockReadDeployedTemplate = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ Resources: {} }))
+);
+vi.mock('../../../src/cli/commands/import/deployed-properties.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/cli/commands/import/deployed-properties.js')>()),
+  readDeployedTemplate: mockReadDeployedTemplate,
+}));
+
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {

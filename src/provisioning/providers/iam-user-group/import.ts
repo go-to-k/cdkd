@@ -93,13 +93,23 @@ export async function importGroup(
   return null;
 }
 
+/**
+ * Adopt an `AWS::IAM::UserToGroupAddition`. Explicit override only: the
+ * membership has no identity of its own to search for.
+ *
+ * The recorded id is the LOGICAL id, which is what `create()` records
+ * (go-to-k/cdkd#6841's class sweep): every reader addresses the membership by
+ * the record's `GroupName` / `Users`, so the id is a label, and the one a
+ * `--migrate-from-cloudformation` or auto-mode import is handed is
+ * CloudFormation's generated `PhysicalResourceId` rather than cdkd's shape.
+ */
 // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
 export async function importUserToGroupAddition(
   this: IAMUserGroupProvider,
   input: ResourceImportInput
 ): Promise<ResourceImportResult | null> {
   if (input.knownPhysicalId) {
-    return { physicalId: input.knownPhysicalId, attributes: {} };
+    return { physicalId: input.logicalId, attributes: {} };
   }
   return null;
 }

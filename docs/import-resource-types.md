@@ -120,9 +120,9 @@ with `--auto` and a CloudFormation stack of the same name.
 
 | Type | `--resource` value |
 | --- | --- |
-| `AWS::IAM::Policy` | The physical id of the inline policy. |
+| `AWS::IAM::Policy` | The inline policy's name. With a plain-string `PolicyName` in the template, cdkd records that name whatever id it is handed. |
 | `AWS::IAM::AccessKey` | The `AKIA...` access key id. |
-| `AWS::IAM::UserToGroupAddition` | The physical id. |
+| `AWS::IAM::UserToGroupAddition` | Any id. cdkd records the logical id, as a deploy does. |
 | `AWS::CloudWatch::AnomalyDetector` | Any stable id. |
 | `AWS::Scheduler::Schedule` | The physical id. |
 | `AWS::CloudFormation::WaitCondition` | Any id. |

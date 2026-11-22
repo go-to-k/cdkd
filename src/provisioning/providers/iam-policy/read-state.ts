@@ -343,6 +343,17 @@ export function decodePolicyDocument(this: IAMPolicyProvider, raw: string | unde
  * For standalone managed policies (`AWS::IAM::ManagedPolicy`), the
  * Cloud Control API fallback handles import via the same explicit
  * override mode.
+ *
+ * **The recorded id is the template's `PolicyName`** whenever that is a plain
+ * string (go-to-k/cdkd#6841). It is what `create()` records and what every
+ * reader (`readCurrentState`, `delete()`) addresses the policy by, while the id
+ * an import is handed may not be a name at all: `--migrate-from-cloudformation`
+ * and auto mode seed it from CloudFormation's `PhysicalResourceId`, which for
+ * this type is a generated id (`main--Cover-LxKVLoikcQa9`) naming no IAM
+ * object, so the record read as DELETED on the first `cdkd drift`. A
+ * `PolicyName` that is not a plain string (an intrinsic the import could not
+ * resolve, or a `{{resolve:...}}` reference, whose value must never become a
+ * physical id) keeps the handed id, as before.
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
 export async function importImpl(
@@ -350,6 +361,19 @@ export async function importImpl(
   input: ResourceImportInput
 ): Promise<ResourceImportResult | null> {
   if (input.knownPhysicalId) {
+    const policyName = input.properties['PolicyName'];
+    if (
+      typeof policyName === 'string' &&
+      policyName.length > 0 &&
+      !policyName.includes('{{resolve:') &&
+      policyName !== input.knownPhysicalId
+    ) {
+      this.logger.debug(
+        `Import of ${input.logicalId}: recording the template's PolicyName as the physical id ` +
+          `(an inline policy is addressed by its name; the id handed to the import is not it)`
+      );
+      return { physicalId: policyName, attributes: {} };
+    }
     return { physicalId: input.knownPhysicalId, attributes: {} };
   }
   return null;
