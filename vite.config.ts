@@ -122,8 +122,10 @@ export default defineConfig({
     // 2,728 files, with another heavy session running concurrently: 4 workers
     // took 801 s and 6 workers 561 s (-30%), both green with no `[vitest-pool]`
     // worker loss, peak 1-min load 13.4 vs 13.7, minimum free memory 37% vs
-    // 40%. Any non-empty CI keeps the default (sharded runners, nothing else on
-    // them); an explicit `--maxWorkers` still overrides this.
+    // 40%. Hosts with more cores are extrapolated from that one measurement;
+    // the full-suite lock still allows one large run per machine. Any
+    // non-empty CI keeps the default (sharded runners, nothing else on them);
+    // an explicit `--maxWorkers` still overrides this.
     maxWorkers: process.env.CI ? undefined : Math.max(4, Math.floor(availableParallelism() / 2)),
     coverage: {
       provider: 'v8',

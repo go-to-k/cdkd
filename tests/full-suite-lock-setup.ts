@@ -11,14 +11,13 @@ import type { TestProject } from 'vite-plus/test/node';
  * WHY. Every run starts many forks (vitest's default is `cpus - 1`; local
  * runs are capped at half the CPUs, floor 4, in `vite.config.ts`), and many
  * forks spawn child processes of their own: script CLIs, and the paste
- * harness's bash and zsh
- * per span (`tests/unit/utils/paste-harness.ts`). Parallel agent lanes each
- * running the full suite from their own worktree froze a 48 GB host; the
- * written rule "lanes do not run the full suite" did not hold. A lock on full
- * runs alone (more than 25% of the files) did not hold either: one lane's
- * `tests/unit` ran beside two lanes' `tests/unit/deployment` runs (~20% of the
- * files each, so never waiting), spawning ~5,000 processes a second, and the
- * host crashed again. So a run counts as large when its filters select more
+ * harness's bash and zsh per span (`tests/unit/utils/paste-harness.ts`).
+ * Parallel agent lanes each running the full suite from their own worktree
+ * froze a 48 GB host; the written rule "lanes do not run the full suite" did
+ * not hold. A lock on full runs alone (more than 25% of the files) did not
+ * hold either: one lane's `tests/unit` ran beside two lanes'
+ * `tests/unit/deployment` runs (~20% of the files each, so never waiting),
+ * spawning ~5,000 processes a second, and the host crashed again. So a run counts as large when its filters select more
  * than `LARGE_RUN_FILES` test files — any directory-sized run (a filter such
  * as `tests/unit` is a substring match over nearly everything). Targeted runs,
  * watch mode, `--changed` / `related`, and a run spawned by a suite that
