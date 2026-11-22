@@ -331,10 +331,24 @@ export async function readInstanceCurrentState(
     instanceSsmAssociationsRefusal(properties['SsmAssociations'], 'AWS::EC2::Instance') ===
       undefined
   ) {
-    result['SsmAssociations'] = await this.readInstanceSsmAssociations(
-      physicalId,
-      instanceSsmAssociationEntries(properties['SsmAssociations'])
-    );
+    // Rethrown under a message the outer catch's text match (`isNotFoundError`:
+    // "not found" / "does not exist") cannot take for the INSTANCE being gone:
+    // an SSM error saying a document does not exist must still fail the read.
+    // Only the error's class is named; the original is the `cause`.
+    try {
+      result['SsmAssociations'] = await this.readInstanceSsmAssociations(
+        physicalId,
+        instanceSsmAssociationEntries(properties['SsmAssociations'])
+      );
+    } catch (err) {
+      const name = (err as { name?: unknown } | null)?.name;
+      throw new Error(
+        `The SsmAssociations of ${physicalId} could not be read (${
+          typeof name === 'string' && /^[A-Za-z0-9_.]{1,64}$/.test(name) ? name : 'Error'
+        })`,
+        { cause: err }
+      );
+    }
   }
 
   // Tags: filter aws:* (CDK-internal metadata) and always emit (even as

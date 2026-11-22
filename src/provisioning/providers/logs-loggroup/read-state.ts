@@ -191,15 +191,26 @@ export async function readCurrentState(
     // the `''` placeholder (issue #6759), which would read as "no policy". On
     // the post-write capture a transient failure is re-read first, and the
     // error throws only when no re-read answered.
+    //
+    // A log group of a class other than STANDARD (INFREQUENT_ACCESS,
+    // DELIVERY) may not support data protection or field indexes; there an
+    // `InvalidParameterException` keeps the placeholder, as before.
+    const notStandard = found.logGroupClass !== undefined && found.logGroupClass !== 'STANDARD';
+    const unsupportedHere = (err: unknown): boolean =>
+      notStandard && (err as { name?: unknown } | null)?.name === 'InvalidParameterException';
     let dpp: MemberRead<unknown>;
     let dppError: unknown;
     let dppFailed = false;
     try {
       dpp = await readDataProtectionPolicy.call(this, physicalId);
     } catch (err) {
-      dpp = memberReadFailure(err);
-      dppError = err;
-      dppFailed = true;
+      if (unsupportedHere(err)) {
+        dpp = 'refused';
+      } else {
+        dpp = memberReadFailure(err);
+        dppError = err;
+        dppFailed = true;
+      }
     }
     const declared =
       context?.afterOwnWrite === true
@@ -245,7 +256,7 @@ export async function readCurrentState(
         })
         .filter((p): p is unknown => p !== undefined);
     } catch (err) {
-      if (!isResourceNotFound(err)) throw err;
+      if (!isResourceNotFound(err) && !unsupportedHere(err)) throw err;
     }
     result['FieldIndexPolicies'] = fieldIndexPolicies;
 

@@ -232,15 +232,23 @@ export async function readCurrentState(
       throw err;
     });
 
-  const [group, lifecycleHooks, trafficSources, notifications] = await Promise.all([
+  // Settled together, so the primary read decides first: a gone group is
+  // RESOURCE_NOT_FOUND even when a sub-read failed beside it.
+  const [groupRead, ...subReads] = await Promise.allSettled([
     groupPromise,
     lifecycleHooksPromise,
     trafficSourcesPromise,
     notificationsPromise,
   ]);
-
+  if (groupRead.status === 'rejected') throw groupRead.reason;
+  const group = groupRead.value;
   if (group === null) return undefined;
   if (!group) return RESOURCE_NOT_FOUND;
+  const failed = subReads.find((r) => r.status === 'rejected');
+  if (failed !== undefined) throw failed.reason;
+  const lifecycleHooks = await lifecycleHooksPromise;
+  const trafficSources = await trafficSourcesPromise;
+  const notifications = await notificationsPromise;
 
   const result: Record<string, unknown> = {};
   if (group.AutoScalingGroupName !== undefined) {

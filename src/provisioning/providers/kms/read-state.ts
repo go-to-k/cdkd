@@ -179,7 +179,8 @@ export async function readCurrentStateKey(
         // UnsupportedOperationException is KMS saying rotation does not apply
         // to this key (imported key material, a custom key store, asymmetric
         // edge cases AWS changes over time): leave the key absent. Any other
-        // failure (AccessDenied, a throttle) throws (issue #6759).
+        // failure (AccessDenied, a throttle, a `KMSInvalidStateException` for
+        // a key whose custom key store is disconnected) throws (issue #6759).
         if (!(err instanceof UnsupportedOperationException)) throw err;
       }
     }

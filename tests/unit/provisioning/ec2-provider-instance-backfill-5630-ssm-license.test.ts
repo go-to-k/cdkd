@@ -1118,7 +1118,7 @@ describe('AWS::EC2::Instance SsmAssociations drift readback (#5630)', () => {
         ...BASE,
         SsmAssociations: [SHELL],
       })
-    ).rejects.toThrow('AccessDenied');
+    ).rejects.toHaveProperty('cause', failList);
     failList = undefined;
     ssmSend.mockClear();
     await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, { ...BASE });

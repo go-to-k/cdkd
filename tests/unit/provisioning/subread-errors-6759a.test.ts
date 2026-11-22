@@ -69,8 +69,13 @@ import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 function named(name: string, message = `${name} raised`): Error {
   return Object.assign(new Error(message), { name });
 }
-const sdk = <T>(Ctor: new (opts: { message: string; $metadata: object }) => T): T =>
-  new Ctor({ message: 'not found', $metadata: {} });
+/** A modeled SDK exception (`instanceof` its class), whatever members its options require. */
+const sdk = <T>(Ctor: new (opts: never) => T): T =>
+  new (Ctor as unknown as new (opts: object) => T)({
+    message: 'not found',
+    $metadata: {},
+    ErrorCode: 'NotFound',
+  });
 const accessDenied = (): Error =>
   named('AccessDeniedException', 'User is not authorized to perform this operation');
 
@@ -105,6 +110,8 @@ interface Site {
   notFound: () => Error;
   /** What the read answers on `notFound`, as before #6759. */
   onNotFound: (read: unknown) => void;
+  /** The read rethrows the sub-read's error as the `cause` of its own. */
+  wrapped?: true;
 }
 
 const bag = (read: unknown): Record<string, unknown> => {
@@ -453,6 +460,17 @@ const SITES: Site[] = [
     // No not-found code: an instance without associations is an empty list.
     notFound: () => accessDenied(),
     onNotFound: () => undefined,
+    wrapped: true,
+  },
+  {
+    name: 'EC2 Instance DescribeInstanceCreditSpecificationsCommand (instance gone)',
+    make: () => new EC2Provider(),
+    type: 'AWS::EC2::Instance',
+    physicalId: 'i-1',
+    primary: INSTANCE,
+    sub: 'DescribeInstanceCreditSpecificationsCommand',
+    notFound: () => named('InvalidInstanceID.NotFound'),
+    onNotFound: (read) => expect(bag(read)).not.toHaveProperty('CreditSpecification'),
   },
   // Auto Scaling group
   ...(
@@ -491,9 +509,11 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
     async (_name, site) => {
       const denied = accessDenied();
       arm(site, denied);
-      await expect(
-        site.make().readCurrentState(site.physicalId, 'Logical', site.type, site.properties)
-      ).rejects.toBe(denied);
+      const read = site
+        .make()
+        .readCurrentState(site.physicalId, 'Logical', site.type, site.properties);
+      if (site.wrapped) await expect(read).rejects.toHaveProperty('cause', denied);
+      else await expect(read).rejects.toBe(denied);
       // The sub-read was actually made (the error came from it).
       expect(send.mock.calls.some(([c]) => c.constructor.name === site.sub)).toBe(true);
     }
@@ -583,5 +603,92 @@ describe('issue #6759: a failed sub-read rejects readCurrentState', () => {
         return answer ?? {};
       });
     }
+  });
+  describe('EC2 SsmAssociations', () => {
+    const SSM_PROPS = { SsmAssociations: [{ DocumentName: 'AWS-RunShellScript' }] };
+    const LISTED = {
+      Associations: [{ InstanceId: 'i-1', AssociationId: 'assoc-1', Name: 'AWS-RunShellScript' }],
+    };
+
+    it('a DescribeAssociation failure other than the association gone rejects', async () => {
+      for (const [name, answer] of Object.entries(INSTANCE)) answers.set(name, answer);
+      answers.set('ListAssociationsCommand', LISTED);
+      const denied = accessDenied();
+      answers.set('DescribeAssociationCommand', denied);
+      await expect(
+        new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', SSM_PROPS)
+      ).rejects.toHaveProperty('cause', denied);
+    });
+
+    it('an SSM error saying "does not exist" still rejects, not read as the instance gone', async () => {
+      for (const [name, answer] of Object.entries(INSTANCE)) answers.set(name, answer);
+      answers.set('ListAssociationsCommand', LISTED);
+      const invalid = named('InvalidDocument', 'The document AWS-RunShellScript does not exist');
+      answers.set('DescribeAssociationCommand', invalid);
+      await expect(
+        new EC2Provider().readCurrentState('i-1', 'L', 'AWS::EC2::Instance', SSM_PROPS)
+      ).rejects.toHaveProperty('cause', invalid);
+    });
+  });
+
+  describe('Auto Scaling group', () => {
+    it('a ValidationError that is not the not-found rejects', async () => {
+      for (const [name, answer] of Object.entries(GROUP)) answers.set(name, answer);
+      const invalid = named('ValidationError', 'Invalid parameter');
+      answers.set('DescribeTrafficSourcesCommand', invalid);
+      await expect(
+        withClient(new ASGProvider()).readCurrentState(
+          'asg',
+          'L',
+          'AWS::AutoScaling::AutoScalingGroup'
+        )
+      ).rejects.toBe(invalid);
+    });
+
+    it('a gone group is RESOURCE_NOT_FOUND even when a sub-read failed beside it', async () => {
+      answers.set('DescribeAutoScalingGroupsCommand', { AutoScalingGroups: [] });
+      answers.set('DescribeLifecycleHooksCommand', accessDenied());
+      expect(
+        await withClient(new ASGProvider()).readCurrentState(
+          'asg',
+          'L',
+          'AWS::AutoScaling::AutoScalingGroup'
+        )
+      ).toBe(RESOURCE_NOT_FOUND);
+    });
+  });
+
+  describe('Logs log group class', () => {
+    const group = (logGroupClass: string) => ({
+      DescribeLogGroupsCommand: {
+        logGroups: [{ ...LOG_GROUP.DescribeLogGroupsCommand.logGroups[0], logGroupClass }],
+      },
+    });
+    const invalid = () => named('InvalidParameterException', 'A parameter is specified incorrectly');
+
+    it('an INFREQUENT_ACCESS group keeps the placeholders on InvalidParameterException', async () => {
+      for (const [name, answer] of Object.entries(group('INFREQUENT_ACCESS'))) {
+        answers.set(name, answer);
+      }
+      answers.set('GetDataProtectionPolicyCommand', invalid());
+      answers.set('DescribeIndexPoliciesCommand', invalid());
+      const read = bag(
+        await new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+      );
+      expect(read['DataProtectionPolicy']).toBe('');
+      expect(read['FieldIndexPolicies']).toEqual([]);
+    });
+
+    it.each(['GetDataProtectionPolicyCommand', 'DescribeIndexPoliciesCommand'])(
+      'a STANDARD group rejects on InvalidParameterException from %s',
+      async (sub) => {
+        for (const [name, answer] of Object.entries(group('STANDARD'))) answers.set(name, answer);
+        const error = invalid();
+        answers.set(sub, error);
+        await expect(
+          new LogsLogGroupProvider().readCurrentState('lg', 'L', 'AWS::Logs::LogGroup')
+        ).rejects.toBe(error);
+      }
+    );
   });
 });
