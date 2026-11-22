@@ -3217,6 +3217,7 @@
     "--input-type",
     "--instance-fleet",
     "--instance-group-id",
+    "--instance-groups",
     "--instance-id",
     "--instance-ids",
     "--instance-profile-name",

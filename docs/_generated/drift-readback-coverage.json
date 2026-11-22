@@ -1,9 +1,9 @@
 {
   "summary": {
     "types": 146,
-    "noReadback": 3,
-    "properties": 1543,
-    "read": 1391,
+    "noReadback": 2,
+    "properties": 1554,
+    "read": 1402,
     "unknown": 129,
     "baseline": 23,
     "gap": 0,
@@ -3842,8 +3842,53 @@
       "resourceType": "AWS::EMR::InstanceGroupConfig",
       "file": "src/provisioning/providers/emr-instance-group-config-provider.ts",
       "className": "EMRInstanceGroupConfigProvider",
-      "hasReadback": false,
-      "properties": [],
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AutoScalingPolicy",
+          "status": "read"
+        },
+        {
+          "property": "BidPrice",
+          "status": "read"
+        },
+        {
+          "property": "Configurations",
+          "status": "read"
+        },
+        {
+          "property": "CustomAmiId",
+          "status": "read"
+        },
+        {
+          "property": "EbsConfiguration",
+          "status": "read"
+        },
+        {
+          "property": "InstanceCount",
+          "status": "read"
+        },
+        {
+          "property": "InstanceRole",
+          "status": "read"
+        },
+        {
+          "property": "InstanceType",
+          "status": "read"
+        },
+        {
+          "property": "JobFlowId",
+          "status": "read"
+        },
+        {
+          "property": "Market",
+          "status": "read"
+        },
+        {
+          "property": "Name",
+          "status": "read"
+        }
+      ],
       "unresolved": []
     },
     {

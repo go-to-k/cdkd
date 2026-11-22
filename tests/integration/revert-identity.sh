@@ -170,6 +170,10 @@ _revert_identity_probe() {
     AWS::Logs::LogGroup)
       cls=unique; val="$(_revert_identity_aws logs describe-log-groups --region "${region}" --log-group-name-prefix "${pid}" --query "logGroups[?logGroupName=='${pid}'].creationTime | [0]" | grep -vx None | head -n 1)" || rc=$? ;;
     # --- gen-id -----------------------------------------------------------
+    AWS::EMR::InstanceGroupConfig)
+      # physicalId is the AWS-generated group id (ig-...); ctx is the recorded
+      # JobFlowId, since EMR lists a group only through its cluster.
+      cls=gen-id; val="$(_revert_identity_aws emr list-instance-groups --region "${region}" --cluster-id "${ctx:?no JobFlowId}" --query "InstanceGroups[?Id=='${pid}'].Id | [0]" | grep -vx None)" || rc=$? ;;
     AWS::EMR::InstanceFleetConfig)
       # physicalId is the AWS-generated fleet id (if-...); ctx is the recorded
       # ClusterId, since EMR lists a fleet only through its cluster.
@@ -437,6 +441,7 @@ process.stdin.on("data", (d) => { s += d; }).on("end", () => {
       "AWS::ApiGateway::Resource": props.RestApiId,
       "AWS::ApiGatewayV2::Stage": props.ApiId,
       "AWS::EMR::InstanceFleetConfig": props.ClusterId,
+      "AWS::EMR::InstanceGroupConfig": props.JobFlowId,
       "AWS::CloudWatch::AnomalyDetector": (() => {
         const s = props.SingleMetricAnomalyDetector || props;
         if (!s.Namespace || !s.MetricName) return undefined;

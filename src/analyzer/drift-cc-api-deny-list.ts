@@ -38,19 +38,12 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   'AWS::CloudFormation::Stack':
     'cdkd deploys nested stacks itself: no CloudFormation stack exists, and the physicalId is a cdkd-local placeholder ARN',
 
-  // AWS::EMR::InstanceGroupConfig: the SDK provider has no `readCurrentState`
-  // and records the bare instance group id as the physicalId. The registry
-  // version created 2025-10-23 gave the type a Cloud Control handler keyed by a
-  // COMPOSITE primaryIdentifier (`InstanceGroupId` + `JobFlowId`), so
-  // `GetResource` refuses the bare id with a ValidationException on every
-  // run (measured on the fleet type: "Identifier if-... is not valid for
-  // identifier [...]"): a permanent read failure (exit 2) where it used to be drift unknown (#5179, the #4668
-  // class). `AWS::CloudWatch::AnomalyDetector` and
-  // `AWS::EMR::InstanceFleetConfig` left this list once their SDK providers
-  // gained a `readCurrentState` (#6769). `AWS::EC2::LaunchTemplate` left it too:
-  // it has no SDK provider, so it is routed to Cloud Control, whose provider
-  // reads it, and this list only gates the fallback for an SDK provider with no
-  // `readCurrentState` (#6769).
-  'AWS::EMR::InstanceGroupConfig':
-    "the physicalId is the bare instance group id, not the composite primaryIdentifier Cloud Control's GetResource requires",
+  // Left the list once their SDK providers gained a `readCurrentState`
+  // (#6769): `AWS::CloudWatch::AnomalyDetector` (a cdkd-derived descriptor as
+  // the physicalId, #4668) and `AWS::EMR::InstanceFleetConfig` /
+  // `InstanceGroupConfig` (the bare fleet / group id, while Cloud Control
+  // needs the composite primaryIdentifier, #5179). `AWS::EC2::LaunchTemplate`
+  // left it too: it has no SDK provider, so it is routed to Cloud Control,
+  // whose provider reads it, and this list only gates the fallback for an SDK
+  // provider with no `readCurrentState` (#6769).
 };

@@ -12,9 +12,9 @@ For every SDK provider type and every top-level property its `handledProperties`
 
 ## Summary
 
-- SDK provider types: **146** (without a readback, reported as `drift unknown`: **3**)
-- Handled properties classified: **1543**
-- Named on the readback path: **1391**
+- SDK provider types: **146** (without a readback, reported as `drift unknown`: **2**)
+- Handled properties classified: **1554**
+- Named on the readback path: **1402**
 - Declared unreadable by `getDriftUnknownPaths`: **129**
 - In the committed baseline (does NOT block CI): **23**
 - Classified though the schema capture does not list them: **12**
@@ -54,7 +54,6 @@ For every SDK provider type and every top-level property its `handledProperties`
 | --- | --- |
 | `AWS::AppConfig::Environment` | `AppConfigEnvironmentProvider` |
 | `AWS::CloudFormation::Stack` | `NestedStackProvider` |
-| `AWS::EMR::InstanceGroupConfig` | `EMRInstanceGroupConfigProvider` |
 
 ## Full classification
 
@@ -130,6 +129,7 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::ElasticLoadBalancingV2::TargetGroup` | `ELBv2Provider` | HealthCheckEnabled, HealthCheckIntervalSeconds, HealthCheckPath, HealthCheckPort, HealthCheckProtocol, HealthCheckTimeoutSeconds, HealthyThresholdCount, IpAddressType, Matcher, Name, Port, Protocol, ProtocolVersion, Tags, TargetControlPort, TargetGroupAttributes, Targets, TargetType, UnhealthyThresholdCount, VpcId |  |
 | `AWS::EMR::Cluster` | `EMRClusterProvider` | Applications, AutoScalingRole, CustomAmiId, EbsRootVolumeIops, EbsRootVolumeSize, EbsRootVolumeThroughput, Instances, JobFlowRole, LogEncryptionKmsKeyId, LogUri, MonitoringConfiguration, Name, OSReleaseLabel, ReleaseLabel, ScaleDownBehavior, SecurityConfiguration, ServiceRole, SessionEnabled, StepConcurrencyLevel, Tags, VisibleToAllUsers | AdditionalInfo, AutoTerminationPolicy, BootstrapActions, Configurations, KerberosAttributes, ManagedScalingPolicy, PlacementGroupConfigs, Steps |
 | `AWS::EMR::InstanceFleetConfig` | `EMRInstanceFleetConfigProvider` | ClusterId, InstanceFleetType, InstanceTypeConfigs, LaunchSpecifications, Name, ResizeSpecifications, TargetOnDemandCapacity, TargetSpotCapacity |  |
+| `AWS::EMR::InstanceGroupConfig` | `EMRInstanceGroupConfigProvider` | AutoScalingPolicy, BidPrice, Configurations, CustomAmiId, EbsConfiguration, InstanceCount, InstanceRole, InstanceType, JobFlowId, Market, Name |  |
 | `AWS::Events::Archive` | `EventBridgeArchiveProvider` | ArchiveName, Description, EventPattern, KmsKeyIdentifier, RetentionDays, SourceArn |  |
 | `AWS::Events::EventBus` | `EventBridgeBusProvider` | DeadLetterConfig, Description, KmsKeyIdentifier, LogConfig, Name, Policy, Tags |  |
 | `AWS::Events::Rule` | `EventBridgeRuleProvider` | Description, EventBusName, EventPattern, Name, RoleArn, ScheduleExpression, State, Tags, Targets |  |

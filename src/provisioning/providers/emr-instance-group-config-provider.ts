@@ -12,7 +12,7 @@ import {
   type InstanceRoleType,
   type AddInstanceGroupsCommandOutput,
 } from '@aws-sdk/client-emr';
-import { getLogger } from '../../utils/logger.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { deployReplaceCommand } from '../../utils/pasteable-command.js';
 import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
@@ -39,6 +39,7 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
+  ResourceNotFound,
 } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
@@ -46,6 +47,8 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { removeScalingPolicyForDelete } from './emr-instance-group-config/remove-scaling-policy.js';
+import { readCurrentState as readGroupState } from './emr-instance-group-config/read-state.js';
+import { findGroupForPoll } from './emr-instance-group-config/find-group.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
@@ -173,7 +176,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
   private client: EMRClient | undefined;
   private createClient: EMRClient | undefined;
   private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('EMRInstanceGroupConfigProvider');
+  logger: ConsoleLogger = getLogger().child('EMRInstanceGroupConfigProvider');
 
   private readonly pollIntervalMs: number;
   private readonly maxWaitMs: number;
@@ -273,7 +276,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): EMRClient {
+  getClient(): EMRClient {
     if (!this.client) {
       this.client = new EMRClient({
         ...ambientClientDefaults(),
@@ -873,12 +876,16 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     );
   }
 
-  /**
-   * `ListInstanceGroups` (paginated) for the cluster, returning the single
-   * group whose `Id` matches. Absorbs up to `maxConsecutiveTransient`
-   * consecutive transient errors (throttle / 5xx / reset) so a single blip
-   * during a 10-minute poll does not spuriously fail the create.
-   */
+  /** Drift read-back (go-to-k/cdkd#6769): `emr-instance-group-config/read-state.ts`. */
+  readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    return readGroupState.call(this, physicalId, resourceType, properties);
+  }
+
   /**
    * go-to-k/cdkd#5487: the group's mutable properties as AWS holds them, for
    * the engine's convergence step. `InstanceCount` is the RUNNING count — what
@@ -943,52 +950,13 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     }
   }
 
-  private async findGroupForPoll(
+  /** `emr-instance-group-config/find-group.ts`. */
+  findGroupForPoll(
     clusterId: string,
     groupId: string,
     transientState: { count: number },
-    maxConsecutiveTransient = 5
+    maxConsecutiveTransient?: number
   ): Promise<InstanceGroup | undefined> {
-    try {
-      let marker: string | undefined;
-      do {
-        const resp = await this.getClient().send(
-          new ListInstanceGroupsCommand({
-            ClusterId: clusterId,
-            ...(marker && { Marker: marker }),
-          })
-        );
-        const found = (resp.InstanceGroups ?? []).find((g) => g.Id === groupId);
-        if (found) {
-          transientState.count = 0;
-          return found;
-        }
-        marker = resp.Marker;
-      } while (marker);
-      transientState.count = 0;
-      return undefined;
-    } catch (error) {
-      const name = error instanceof Error ? error.name : '';
-      // `.detail`, never `.summary`: the substring test below is what keeps this
-      // degradation alive, and it matches AWS's OWN wording. Byte-identical to
-      // the ternary it replaced, minus that ternary's throw.
-      const msg = describeAwsFailure(error).detail;
-      const transient =
-        name === 'ThrottlingException' ||
-        name === 'InternalServerException' ||
-        name === 'InternalServerError' ||
-        name === 'TimeoutError' ||
-        /rate exceeded|too many requests|throttl|timed? ?out|ECONNRESET|EPIPE|socket hang up/i.test(
-          msg
-        );
-      if (transient && transientState.count < maxConsecutiveTransient) {
-        transientState.count += 1;
-        this.logger.debug(
-          `Transient ListInstanceGroups error while polling ${groupId} (${transientState.count}/${maxConsecutiveTransient}): ${msg} — retrying`
-        );
-        return undefined;
-      }
-      throw error;
-    }
+    return findGroupForPoll.call(this, clusterId, groupId, transientState, maxConsecutiveTransient);
   }
 }

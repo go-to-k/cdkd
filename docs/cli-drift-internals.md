@@ -574,13 +574,11 @@ the fallback:
 
 1. **Deny-list.** Types with verified structural divergence, or a physical id
    Cloud Control cannot address, short-circuit to `drift unknown` before the
-   Cloud Control call fires. Current entries are
+   Cloud Control call fires. The current entry is
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under
-   [Nested stacks](cli-drift-nested-stacks.md)),
-   and `AWS::EMR::InstanceGroupConfig` (the physical id is the bare group id,
-   and Cloud Control needs the cluster id with it). The list gates only the
+   [Nested stacks](cli-drift-nested-stacks.md)), the only entry. The list gates only the
    fallback for an SDK provider with no read-back: a type routed to Cloud
    Control (no SDK provider at all) is read there whatever the list says.
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields

@@ -1,4 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+
+// go-to-k/cdkd#6769: every SDK-readable type left the deny-list, and its one
+// real entry (a nested stack) is decided before the deny-list is consulted, so
+// the deny-list arms run on a test-only entry.
+vi.mock('../../../src/analyzer/drift-cc-api-deny-list.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/analyzer/drift-cc-api-deny-list.js')>();
+  return {
+    ...actual,
+    CC_API_FALLBACK_DENY_LIST: {
+      ...actual.CC_API_FALLBACK_DENY_LIST,
+      'AWS::Test::DenyListed': 'a test-only entry',
+    },
+  };
+});
 import type { ResourceState, StackState } from '../../../src/types/state.js';
 import { DriftReadRefusedError } from '../../../src/types/resource.js';
 import { renderLikeLogger } from '../../render-like-logger.js';
@@ -452,41 +466,6 @@ describe('a per-resource failure does not sink the whole drift run (#2151 / #194
     expect(output).toContain('✓ TestStack (us-east-1): no drift detected (2 resources checked, 0 unsupported)');
     expect(error).toBeUndefined();
     expect(exitSpy).not.toHaveBeenCalled();
-  });
-
-  /**
-   * go-to-k/cdkd#5179's sweep: both EMR config types gained Cloud Control
-   * handlers keyed by a composite primaryIdentifier, and the SDK providers
-   * record the bare fleet / group id, so GetResource refuses it on every run
-   * (the #4668 class). Deny-listed, the row is `unsupported` (drift unknown),
-   * not a permanent `readFailed`; both exit 2 since go-to-k/cdkd#6696. The
-   * fleet type left the list with its own read-back (go-to-k/cdkd#6769).
-   */
-  it.each([
-    ['AWS::EMR::InstanceGroupConfig', 'ig-ABCDEFGHIJKLM', '[/properties/InstanceGroupId, /properties/JobFlowId]'],
-  ])('a %s row is deny-listed off the Cloud Control fallback and reports unsupported', async (type, id, ident) => {
-    mockGetState.mockResolvedValue(
-      makeState({
-        Group: { ...resource(type, { Name: 'core' }), physicalId: id },
-        Queue: resource(QUEUE, { QueueName: 'ok' }),
-      })
-    );
-    mockRegistryGetProvider.mockImplementation((t: string) => (t === QUEUE ? SIBLING_PROVIDER : {}));
-    // What GetResource answers for the bare id today (measured live).
-    mockCcReadCurrentState.mockRejectedValue(
-      awsError('ValidationException', `Identifier ${id} is not valid for identifier ${ident}`)
-    );
-
-    const { output, error } = await runDrift(ARGS);
-
-    expect(mockCcReadCurrentState).not.toHaveBeenCalled();
-    expect(output).toContain(`? Group (${type})`);
-    expect(output).toContain('no drift detected in 1 resource checked, but 1 resource could not be compared (1 unsupported, drift unknown)');
-    expect(output).not.toContain('NOT fully compared');
-    expect(exitSpy).toHaveBeenCalledWith(2);
-    expect(exitSpy).not.toHaveBeenCalledWith(1);
-    // The non-zero exit reached the mocked `process.exit`, nothing else threw.
-    expect((error as Error | undefined)?.message).toBe('__exit__');
   });
 
   /**
@@ -2061,7 +2040,7 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
     base.state.resources['Z1Custom'] = resource('Custom::Thing', { ServiceToken: 'arn' });
     // Deny-listed for the Cloud Control fallback: reported `unsupported`
     // without a read, with or without the breaker.
-    base.state.resources['Z2Api'] = resource('AWS::EMR::InstanceGroupConfig', { Name: 'api' });
+    base.state.resources['Z2Api'] = resource('AWS::Test::DenyListed', { Name: 'api' });
     mockGetState.mockResolvedValue(base);
     installProviders();
 
@@ -2123,12 +2102,12 @@ describe('consecutive read failures stop reading the stack (#2207)', () => {
 
   it('a deny-listed type whose provider DOES read is aborted like any provider read', async () => {
     const base = stackOf('BBBBB');
-    base.state.resources['Z2Api'] = resource('AWS::EMR::InstanceGroupConfig', { Name: 'api' });
+    base.state.resources['Z2Api'] = resource('AWS::Test::DenyListed', { Name: 'api' });
     mockGetState.mockResolvedValue(base);
     installProviders();
     const lambdaProvider = mockRegistryGetProvider.getMockImplementation()!;
     mockRegistryGetProvider.mockImplementation((type: string) =>
-      type === 'AWS::EMR::InstanceGroupConfig'
+      type === 'AWS::Test::DenyListed'
         ? {
             readCurrentState: async (_p: string, logicalId: string) => {
               reads.push(logicalId);

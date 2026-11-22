@@ -575,7 +575,7 @@ A type that neither route can read is reported as drift unknown.
 | `AWS::EFS` | `AccessPoint`, `FileSystem`, `MountTarget` |
 | `AWS::ElastiCache` | `CacheCluster`, `SubnetGroup` |
 | `AWS::ElasticLoadBalancingV2` | `Listener`, `LoadBalancer`, `TargetGroup` |
-| `AWS::EMR` | `Cluster`, `InstanceFleetConfig` |
+| `AWS::EMR` | `Cluster`, `InstanceFleetConfig`, `InstanceGroupConfig` |
 | `AWS::Events` | `Archive`, `EventBus`, `Rule` |
 | `AWS::FSx` | `FileSystem` |
 | `AWS::Glue` | `Connection`, `Crawler`, `Database`, `Job`, `SecurityConfiguration`, `Table`, `Trigger`, `Workflow` |
@@ -604,23 +604,10 @@ A type that neither route can read is reported as drift unknown.
 
 ### Types cdkd deploys itself without a read-back
 
-cdkd deploys two types with its own code but has no read-back for them, so
-drift would read them through Cloud Control: `AWS::CloudFormation::Stack` and
-`AWS::EMR::InstanceGroupConfig`. The instance group is always drift unknown
-instead (see the table below), so drift does not call Cloud Control for it.
-
-An `AWS::CloudFormation::Stack` row is a nested stack, and drift handles it as
-described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md).
-
-### Types that are always drift unknown
-
-Cloud Control cannot address the type below by its physical id. Asking it
-would report a read failure on every run, so cdkd reports the type as drift
-unknown.
-
-| Type | Reason |
-| --- | --- |
-| `AWS::EMR::InstanceGroupConfig` | The physical id is the bare group id; Cloud Control needs the cluster id with it. |
+cdkd deploys one type with its own code but has no read-back for it:
+`AWS::CloudFormation::Stack`. Such a row is a nested stack, and drift handles
+it as described under [cdkd drift: nested stacks](cli-drift-nested-stacks.md);
+drift never asks Cloud Control about it.
 
 > [!NOTE]
 > Several types above (`AWS::ApiGateway::Method`, `AWS::Route53::RecordSet`,
