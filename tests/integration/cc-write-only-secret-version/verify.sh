@@ -13,9 +13,9 @@
 #      CloudTrail records no UpdateNamespace carrying adminUserPassword.
 #   3  put-secret-value (V2), Tags-only deploy: re-sent; login with V2 works.
 #   4  AWSCURRENT moved back to V1, Tags-only deploy: re-sent; login works.
-#   5  rotate (V3), deploy with a queue failing AFTER the namespace update: the
-#      rollback restores the recorded version (login at V3 fails), then a
-#      Tags-only deploy re-sends; login works.
+#   5  rotate (V3), deploy with a queue failing AFTER the namespace update
+#      (--no-rollback), then `cdkd rollback`: it restores the recorded version
+#      (login at V3 fails), then a Tags-only deploy re-sends; login works.
 #   6  rotate (V4), deploy whose namespace update applies the password and then
 #      fails (an aws:-prefixed tag): the record written AHEAD names no version.
 #      The journal is removed (a killed deploy writes none), AWSCURRENT moved
@@ -130,16 +130,49 @@ login_result() { # login_result: "ok" / "refused", hard-failing the run when und
   r="$(login)" || { echo "FAIL: the login check could not be determined" >&2; exit 1; }
   printf '%s' "${r}"
 }
-expect_login() { # expect_login <description>
-  if [ "$(login_result)" = ok ]; then echo "    OK: $1"; else echo "FAIL: $1 (login refused)" >&2; exit 1; fi
+# A Redshift Serverless password change takes minutes to reach logins after
+# UpdateNamespace returns (measured ~2 min), so each expectation is retried
+# for up to 10 minutes before it fails.
+await_login() { # await_login <ok|refused> <description>
+  local i got
+  for i in $(seq 1 20); do
+    got="$(login_result)"
+    [ "${got}" = "$1" ] && { echo "    OK: $2 (attempt ${i})"; return 0; }
+    sleep 30
+  done
+  echo "FAIL: $2 (login ${got} after 20 tries)" >&2
+  exit 1
 }
-expect_login_refused() { # expect_login_refused <description>
-  if [ "$(login_result)" = refused ]; then echo "    OK: $1"; else echo "FAIL: $1 (login accepted)" >&2; exit 1; fi
+expect_login() { await_login ok "$1"; }
+expect_login_refused() { await_login refused "$1"; }
+ns_status() { # the namespace's status, "GONE" when it does not exist; returns 1 on another failure
+  local out
+  if out="$(aws redshift-serverless get-namespace --namespace-name "${NS_NAME}" --region "${REGION}" \
+    --query namespace.status --output text 2>&1)"; then
+    printf '%s' "${out}"
+    return 0
+  fi
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" || return 1
+  printf 'GONE'
 }
-deploy() { # deploy <log name> <tag> [fail mode]; returns cdkd's exit code
-  local log="$1" tag="$2" fail="${3:-}" rc
+ns_available() { # wait until the namespace settles: a password change keeps it MODIFYING for minutes
+  local i st
+  for i in $(seq 1 90); do
+    st="$(ns_status)" || { echo "FAIL: namespace status undetermined" >&2; exit 1; }
+    case "${st}" in AVAILABLE | GONE) return 0 ;; esac
+    sleep 10
+  done
+  echo "FAIL: namespace ${NS_NAME} did not settle (status ${st})" >&2
+  exit 1
+}
+deploy() { # deploy <log name> <tag> [fail mode] [extra flag]; returns cdkd's exit code
+  local log="$1" tag="$2" fail="${3:-}" extra="${4:-}" rc
+  ns_available
   set +e
-  if [ -n "${fail}" ]; then
+  if [ -n "${fail}" ] && [ -n "${extra}" ]; then
+    WOS_TAG="${tag}" WOS_FAIL="${fail}" node "${LOCAL_DIST}" deploy "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose "${extra}" >"${LOG_DIR}/${log}.log" 2>&1
+  elif [ -n "${fail}" ]; then
     WOS_TAG="${tag}" WOS_FAIL="${fail}" node "${LOCAL_DIST}" deploy "${STACK}" \
       --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${LOG_DIR}/${log}.log" 2>&1
   else
@@ -276,13 +309,28 @@ expect_deploy p4 four
 expect_sent p4
 expect_login "login after the stage moved back"
 
-echo "==> Phase 5: rotate, deploy failing AFTER the namespace update -- expect FAILURE and a rollback"
+echo "==> Phase 5: rotate, deploy failing AFTER the namespace update (--no-rollback), then cdkd rollback"
+# Not the automatic rollback: a password change keeps the namespace MODIFYING
+# for minutes, and the Cloud Control handler's revert, sent seconds after the
+# forward update, waits on it and gives up ("Exceeded attempts to wait"; it never
+# calls UpdateNamespace). Measured twice. `--no-rollback` then `cdkd rollback`
+# once the namespace settles reaches the same restore (the journaled pre-op
+# record, pinned to its recorded version).
 V3="$(rotate)"
-if deploy p5 five after; then
+if deploy p5 five after --no-rollback; then
   echo "FAIL: the deploy unexpectedly SUCCEEDED (the failing queue did not fail)" >&2
   exit 1
 fi
 echo "    OK: the deploy failed"
+ns_available
+set +e
+node "${LOCAL_DIST}" rollback "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force --verbose \
+  >"${LOG_DIR}/p5r.log" 2>&1
+RB_RC=$?
+set -e
+grep -E 'Rollback|rollback|FAIL|Error|error' "${LOG_DIR}/p5r.log" | tail -10 | sed 's/^/  /' || true
+[ "${RB_RC}" -eq 0 ] || { echo "FAIL: cdkd rollback exited ${RB_RC}" >&2; exit 1; }
+ns_available
 expect_login_refused "the rollback restored the recorded (pre-rotation) password, so the current one is refused"
 # ...and positively: the restored password IS the recorded version's.
 stage_back "${V1}"
@@ -368,7 +416,7 @@ P9_END="$(date -u +%s)"
 expect_sent p9
 expect_login "login after the final rotation"
 
-for log in p1 p2 p3 p4 p5 p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
+for log in p1 p2 p3 p4 p5 p5r p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
 echo "    OK: no log carries the secret's current plaintext"
 
 echo "==> Phase 8: CloudTrail -- re-sends recorded, the left-out windows hold none"
