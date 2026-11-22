@@ -130,18 +130,11 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
   // other import records `stateTemplate` as before.
   let recordTemplate = stateTemplate;
   if (migrationCfnStackName !== undefined) {
-    let deployedTemplate: CloudFormationTemplate;
-    try {
-      deployedTemplate = await readDeployedTemplate(
-        regionClients.cloudFormation,
-        migrationCfnStackName
-      );
-    } catch (err) {
-      throw new Error(
-        `${err instanceof Error ? err.message : String(err)} ` +
-          'cdkd state was not written and the CloudFormation stack was not changed.'
-      );
-    }
+    const deployedTemplate = await readDeployedTemplate(
+      regionClients.cloudFormation,
+      migrationCfnStackName,
+      'cdkd state was not written and the CloudFormation stack was not changed.'
+    );
     recordTemplate = overlayDeployedProperties(
       stateTemplate,
       deployedTemplate,

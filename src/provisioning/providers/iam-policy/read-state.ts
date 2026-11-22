@@ -12,6 +12,7 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
 import { readPolicyTargetLists } from './shared.js';
@@ -369,7 +370,7 @@ export async function importImpl(
       policyName !== input.knownPhysicalId
     ) {
       this.logger.debug(
-        `Import of ${input.logicalId}: recording the template's PolicyName as the physical id ` +
+        safeMsg`Import of ${input.logicalId}: recording the template's PolicyName as the physical id ` +
           `(an inline policy is addressed by its name; the id handed to the import is not it)`
       );
       return { physicalId: policyName, attributes: {} };

@@ -3,6 +3,7 @@ import { GetTemplateCommand, type CloudFormationClient } from '@aws-sdk/client-c
 import { parseCfnTemplate } from '../../yaml-cfn.js';
 import { NESTED_STACK_RESOURCE_TYPE, cfnFailureText } from '../retire-cfn-stack.js';
 import { safeMsg } from '../../../utils/display-safe.js';
+import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
 import { defineOwnKey } from '../../../utils/own-keys.js';
 import { logicalIdShown, resourceTypeShown } from '../../../provisioning/composite-id.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../types/resource.js';
@@ -37,13 +38,16 @@ import type { ConsoleLogger } from '../../../utils/logger.js';
  * expanded (`TemplateStage: 'Processed'`, which is the submitted template for a
  * stack that declares none). `stackName` may be a stack ARN (a nested child).
  *
- * Throws on any failure: nothing about the import has been written when the
- * root calls it, and a nested child's caller refuses that child's write.
+ * Throws on any failure, each message ending in `consequence`: what the caller
+ * has and has not written at that point.
  */
 export async function readDeployedTemplate(
   cfnClient: CloudFormationClient,
-  stackName: string
+  stackName: string,
+  consequence: string
 ): Promise<CloudFormationTemplate> {
+  const refuse = (reason: string): Error =>
+    new Error(`--migrate-from-cloudformation: ${reason} ${consequence}`);
   let body: string | undefined;
   try {
     const response = await cfnClient.send(
@@ -51,22 +55,26 @@ export async function readDeployedTemplate(
     );
     body = response.TemplateBody;
   } catch (err) {
-    throw new Error(
-      safeMsg`--migrate-from-cloudformation: reading the template CloudFormation last deployed failed: ` +
-        safeMsg`${cfnFailureText(err)}.`
+    throw refuse(
+      safeMsg`reading the template CloudFormation last deployed failed: ${cfnFailureText(err)}.`
     );
   }
   if (!body) {
-    throw new Error(
-      '--migrate-from-cloudformation: CloudFormation returned no template body for the stack being migrated.'
+    throw refuse('CloudFormation returned no template body for the stack being migrated.');
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseCfnTemplate(body);
+  } catch (err) {
+    // `parseCfnTemplate`'s own message names only an offset and a size, never
+    // template text (issue #5254).
+    throw refuse(
+      safeMsg`the template CloudFormation last deployed could not be parsed: ${describeAwsFailure(err).detail}.`
     );
   }
-  const parsed = parseCfnTemplate(body);
   const resources = parsed['Resources'];
   if (resources === null || typeof resources !== 'object' || Array.isArray(resources)) {
-    throw new Error(
-      '--migrate-from-cloudformation: the template CloudFormation last deployed has no Resources section.'
-    );
+    throw refuse('the template CloudFormation last deployed has no Resources section.');
   }
   return parsed as unknown as CloudFormationTemplate;
 }
@@ -288,7 +296,7 @@ export function overlayDeployedProperties(
       logger.warn(
         safeMsg`--migrate-from-cloudformation: ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.Type)}) ` +
           safeMsg`in ${stackLabel} is recorded with the synthesized template's properties, not the ones ` +
-          `CloudFormation last deployed, because ${blocker}. If the code changed this resource after the ` +
+          safeMsg`CloudFormation last deployed, because ${blocker}. If the code changed this resource after the ` +
           `last 'cdk deploy', the next 'cdkd diff' does not show that change and 'cdkd deploy' does not ` +
           `apply it: compare the resource in AWS with the template before relying on the record.`
       );

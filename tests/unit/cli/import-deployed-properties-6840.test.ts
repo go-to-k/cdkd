@@ -12,7 +12,7 @@ import {
   overlayDeployedProperties,
   readDeployedTemplate,
 } from '../../../src/cli/commands/import/deployed-properties.js';
-import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
 import type { ConsoleLogger } from '../../../src/utils/logger.js';
 
 function logger(): { log: ConsoleLogger; warn: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> } {
@@ -31,7 +31,7 @@ describe('readDeployedTemplate', () => {
     const send = vi.fn(async () => ({
       TemplateBody: JSON.stringify({ Resources: { A: { Type: 'AWS::SNS::Topic' } } }),
     }));
-    const result = await readDeployedTemplate({ send } as never, 'arn:aws:cloudformation:x');
+    const result = await readDeployedTemplate({ send } as never, 'arn:aws:cloudformation:x', 'NOTHING WRITTEN.');
     const command = (send.mock.calls[0] as unknown[])[0] as GetTemplateCommand;
     expect(command).toBeInstanceOf(GetTemplateCommand);
     expect(command.input).toEqual({
@@ -45,7 +45,7 @@ describe('readDeployedTemplate', () => {
     const send = vi.fn(async () => ({
       TemplateBody: 'Resources:\n  A:\n    Type: AWS::SNS::Topic\n    Properties:\n      TopicName: !Ref Name\n',
     }));
-    const result = await readDeployedTemplate({ send } as never, 'S');
+    const result = await readDeployedTemplate({ send } as never, 'S', 'NOTHING WRITTEN.');
     expect(result.Resources['A']!.Properties).toEqual({ TopicName: { Ref: 'Name' } });
   });
 
@@ -53,18 +53,19 @@ describe('readDeployedTemplate', () => {
     const send = vi.fn(async () => {
       throw new Error('Stack with id S does not exist');
     });
-    await expect(readDeployedTemplate({ send } as never, 'S')).rejects.toThrow(
-      '--migrate-from-cloudformation: reading the template CloudFormation last deployed failed: Stack with id S does not exist.'
+    await expect(readDeployedTemplate({ send } as never, 'S', 'NOTHING WRITTEN.')).rejects.toThrow(
+      '--migrate-from-cloudformation: reading the template CloudFormation last deployed failed: Stack with id S does not exist. NOTHING WRITTEN.'
     );
   });
 
   it.each([
     ['no body', {}],
     ['no Resources section', { TemplateBody: '{"Outputs":{}}' }],
-  ])('refuses %s', async (_label, response) => {
+    ['an unparseable body', { TemplateBody: '{"Resources": {' }],
+  ])('refuses %s, ending in the caller\'s consequence', async (_label, response) => {
     const send = vi.fn(async () => response);
-    await expect(readDeployedTemplate({ send } as never, 'S')).rejects.toThrow(
-      /--migrate-from-cloudformation:/
+    await expect(readDeployedTemplate({ send } as never, 'S', 'NOTHING WRITTEN.')).rejects.toThrow(
+      /^--migrate-from-cloudformation: .* NOTHING WRITTEN\.$/
     );
   });
 });
@@ -141,7 +142,7 @@ describe('deployedPropertiesBlocker', () => {
 });
 
 describe('overlayDeployedProperties', () => {
-  const role = (sub: unknown) => ({
+  const role = (sub: unknown): TemplateResource => ({
     Type: 'AWS::IAM::Role',
     Properties: { AssumeRolePolicyDocument: { Condition: { sub } } },
     DependsOn: ['Other'],

@@ -5482,8 +5482,9 @@ describe('cdkd import', () => {
         await expect(
           runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
         ).rejects.toThrow();
-        expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
-          'read failed. cdkd state was not written and the CloudFormation stack was not changed.'
+        expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('read failed.');
+        expect(mockReadDeployedTemplate.mock.calls[0]![2]).toBe(
+          'cdkd state was not written and the CloudFormation stack was not changed.'
         );
         expect(mockSaveState).not.toHaveBeenCalled();
         expect(mockPrepareRetirement).not.toHaveBeenCalled();

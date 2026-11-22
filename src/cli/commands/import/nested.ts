@@ -394,17 +394,13 @@ export async function importNestedStackChildrenRecursive(args: {
       // CloudFormation last deployed THIS child, as the root does. Read by the
       // child stack's ARN, before the child's save, so a failure leaves this
       // child (and the DeleteStack) undone.
-      let childDeployedTemplate: CloudFormationTemplate;
-      try {
-        childDeployedTemplate = await readDeployedTemplate(args.cfnClient, childTreeNode.stackName);
-      } catch (err) {
-        throw new Error(
-          `${err instanceof Error ? err.message : String(err)} ` +
-            safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
-            `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
-            `was not deleted; the re-run needs --force.`
-        );
-      }
+      const childDeployedTemplate = await readDeployedTemplate(
+        args.cfnClient,
+        childTreeNode.stackName,
+        safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
+          `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
+          `was not deleted; the re-run needs --force.`
+      );
       const childRecordTemplate = overlayDeployedProperties(
         childStateTemplate,
         childDeployedTemplate,

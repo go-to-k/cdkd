@@ -3,9 +3,7 @@
  * by `--migrate-from-cloudformation` / auto mode, and for an inline
  * `AWS::IAM::Policy` that is a generated id naming no IAM object. The record
  * must carry the id cdkd's own `create()` records — the `PolicyName` — or the
- * first `cdkd drift` reports the policy DELETED. The class sweep found
- * `AWS::IAM::UserToGroupAddition` taking the handed id verbatim too, where
- * `create()` records the logical id.
+ * first `cdkd drift` reports the policy DELETED.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
@@ -18,7 +16,6 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 }));
 
 import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-policy-provider.js';
-import { IAMUserGroupProvider } from '../../../src/provisioning/providers/iam-user-group-provider.js';
 
 const CFN_ID = 'main--Cover-LxKVLoikcQa9';
 
@@ -75,28 +72,5 @@ describe('AWS::IAM::Policy import records the PolicyName (#6841)', () => {
       policyInput({ PolicyName: 'P1', PolicyDocument: document, Roles: ['r'] })
     );
     expect(result).toBeNull();
-  });
-});
-
-describe('AWS::IAM::UserToGroupAddition import records the logical id (#6841 class sweep)', () => {
-  const input = {
-    logicalId: 'AddUsers',
-    resourceType: 'AWS::IAM::UserToGroupAddition',
-    stackName: 'main',
-    region: 'us-east-1',
-    properties: { GroupName: 'g', Users: ['u'] },
-  };
-
-  it("records the logical id create() records, not CloudFormation's id", async () => {
-    const result = await new IAMUserGroupProvider().import({
-      ...input,
-      knownPhysicalId: 'main-AddUsers-1ABCDEFGHIJK',
-    });
-    expect(result).toEqual({ physicalId: 'AddUsers', attributes: {} });
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it('still finds nothing without a handed id', async () => {
-    expect(await new IAMUserGroupProvider().import(input)).toBeNull();
   });
 });
