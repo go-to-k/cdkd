@@ -169,8 +169,8 @@ export async function readIdIfExists(
  *    JSON-parsed, capped at IAM's documented 10-per-user limit, order
  *    reconciled against state's `Policies` array); `Tags` from `GetUser`;
  *    `LoginProfile.PasswordResetRequired` via `GetLoginProfile` (for a
- *    record declaring none: `{}` when the user has one, `null` when not (go-to-k/cdkd#6755;
- *    the password is write-only).
+ *    record declaring none: `{}` when the user has one, `null` when not;
+ *    go-to-k/cdkd#6755; the password is write-only).
  *  - **AWS::IAM::Group**: `GetGroup` for `GroupName`, `Path`;
  *    `ListAttachedGroupPolicies` for `ManagedPolicyArns`;
  *    `ListGroupPolicies` + `GetGroupPolicy` per name for inline
