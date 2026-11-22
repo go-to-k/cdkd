@@ -57,6 +57,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
     LogsDeliveryDestinationProvider,
     LogsDeliveryProvider,
     CloudWatchAlarmProvider,
+    LightsailAlarmProvider,
     CloudWatchAnomalyDetectorProvider,
     SecretsManagerSecretProvider,
     SSMParameterProvider,
@@ -171,6 +172,7 @@ export function registerAllProviders(registry: ProviderRegistry, classes: Provid
   registry.register('AWS::Logs::DeliveryDestination', new LogsDeliveryDestinationProvider());
   registry.register('AWS::Logs::Delivery', new LogsDeliveryProvider());
   registry.register('AWS::CloudWatch::Alarm', new CloudWatchAlarmProvider());
+  registry.register('AWS::Lightsail::Alarm', new LightsailAlarmProvider());
   registry.register('AWS::CloudWatch::AnomalyDetector', new CloudWatchAnomalyDetectorProvider());
 
   // Secrets / Config

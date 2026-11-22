@@ -12,8 +12,8 @@ For every SDK-backed resource type (whose CFn schema is cached under `tests/fixt
 
 ## Summary
 
-- SDK-backed types classified: **146**
-- Covered (every Arn/ARN/Url/URL readOnly resolvable): **76**
+- SDK-backed types classified: **147**
+- Covered (every Arn/ARN/Url/URL readOnly resolvable): **77**
 - No Arn/ARN/Url/URL readOnly attribute: **70**
 - **Latent gaps (blocks CI): 0**
 - Allow-listed KNOWN GAPs (real debt, tracked, does not block CI): **0**
@@ -83,6 +83,7 @@ None. Every `Arn`/`ARN`/`Url`/`URL` read-only attribute on a cached SDK-backed t
 | `AWS::Lambda::Url` | covered | `FunctionArn` (cached), `FunctionUrl` (cached) |
 | `AWS::Lambda::WebFunctionEndpoint` | covered | `EndpointArn` (cached), `FunctionArn` (cached) |
 | `AWS::Lambda::WebFunctionRevision` | covered | `FunctionArn` (cached), `RevisionArn` (cached) |
+| `AWS::Lightsail::Alarm` | covered | `AlarmArn` (cached) |
 | `AWS::Logs::Delivery` | covered | `Arn` (cached) |
 | `AWS::Logs::DeliveryDestination` | covered | `Arn` (cached) |
 | `AWS::Logs::DeliverySource` | covered | `Arn` (cached) |

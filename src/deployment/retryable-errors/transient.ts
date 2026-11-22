@@ -449,6 +449,38 @@ export function formatRetryClassificationSignals(error: unknown): string {
 }
 
 /**
+ * Whether a Cloud Control handler failed its operation with
+ * `ErrorCode: Throttling` (go-to-k/cdkd#6830): the downstream service refused
+ * the handler's own calls for rate, and the handler's SDK retries ran out.
+ * The status text is the service's, so no message pattern covers every
+ * handler — Lightsail's `PutAlarm` says "The maximum API request rate has been
+ * exceeded", not "Rate exceeded" — and the code is read off the chain instead.
+ *
+ * Separate from {@link isThrottlingError}, whose name / HTTP-status signals are
+ * an API-level refusal the throttle-only callers retry: a handler throttle is
+ * also AMBIGUOUS ({@link AMBIGUOUS_CC_HANDLER_ERROR_CODES}), so a CREATE replay
+ * after it runs with `withRetry`'s replay-may-collide latch armed, behind
+ * `cleanupFailedCreateRemnant`.
+ */
+export function isCcHandlerThrottlingError(error: unknown): boolean {
+  try {
+    let current: unknown = error;
+    for (
+      let depth = 0;
+      depth < MAX_CAUSE_CHAIN_DEPTH && typeof current === 'object' && current !== null;
+      depth++
+    ) {
+      const link = current as { ccErrorCode?: unknown; cause?: unknown };
+      if (link.ccErrorCode === 'Throttling') return true;
+      current = link.cause;
+    }
+  } catch {
+    // Unreadable chain: not a handler throttle.
+  }
+  return false;
+}
+
+/**
  * Determine whether an AWS error should be retried.
  *
  * Checks (in order):
@@ -462,6 +494,8 @@ export function formatRetryClassificationSignals(error: unknown): string {
  *      `name` or retryable HTTP status (most AWS throttles are HTTP 400, not
  *      429, so the name check carries most of the weight). See
  *      {@link isThrottlingError}.
+ *   1b. A Cloud Control handler that reported `ErrorCode: Throttling` — see
+ *      {@link isCcHandlerThrottlingError}.
  *   2. Transient SERVER-side HTTP status (500 / 502 / 503 / 504) on the error
  *      or any wrapped cause — see {@link isTransientServerError}. Ahead of the
  *      message patterns because it is the only check that still works when the
@@ -474,6 +508,7 @@ export function isRetryableTransientError(error: unknown, message: string): bool
   // it must not reach the `not authorized to perform` propagation pattern below.
   if (isExplicitDenyError(message)) return false;
   if (isThrottlingError(error)) return true;
+  if (isCcHandlerThrottlingError(error)) return true;
   // Issue #2026: a transient SERVER error (HTTP 500 / 502 / 503 / 504). Placed
   // after the throttle check and before the message patterns because it is the
   // check that survives an EMPTY message -- the measured failure carried the

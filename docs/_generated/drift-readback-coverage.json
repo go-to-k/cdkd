@@ -1,9 +1,9 @@
 {
   "summary": {
-    "types": 146,
+    "types": 147,
     "noReadback": 2,
-    "properties": 1554,
-    "read": 1402,
+    "properties": 1565,
+    "read": 1413,
     "unknown": 129,
     "baseline": 23,
     "gap": 0,
@@ -5431,6 +5431,59 @@
         },
         {
           "property": "ServiceConfig",
+          "status": "read"
+        }
+      ],
+      "unresolved": []
+    },
+    {
+      "resourceType": "AWS::Lightsail::Alarm",
+      "file": "src/provisioning/providers/lightsail-alarm-provider.ts",
+      "className": "LightsailAlarmProvider",
+      "hasReadback": true,
+      "properties": [
+        {
+          "property": "AlarmName",
+          "status": "read"
+        },
+        {
+          "property": "ComparisonOperator",
+          "status": "read"
+        },
+        {
+          "property": "ContactProtocols",
+          "status": "read"
+        },
+        {
+          "property": "DatapointsToAlarm",
+          "status": "read"
+        },
+        {
+          "property": "EvaluationPeriods",
+          "status": "read"
+        },
+        {
+          "property": "MetricName",
+          "status": "read"
+        },
+        {
+          "property": "MonitoredResourceName",
+          "status": "read"
+        },
+        {
+          "property": "NotificationEnabled",
+          "status": "read"
+        },
+        {
+          "property": "NotificationTriggers",
+          "status": "read"
+        },
+        {
+          "property": "Threshold",
+          "status": "read"
+        },
+        {
+          "property": "TreatMissingData",
           "status": "read"
         }
       ],

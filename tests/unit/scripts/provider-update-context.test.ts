@@ -275,6 +275,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'LambdaUrlProvider',
       'LambdaWebFunctionEndpointProvider',
       'LambdaWebFunctionRevisionProvider',
+      'LightsailAlarmProvider',
       'LogsDeliveryDestinationProvider',
       'LogsDeliveryProvider',
       'LogsDeliverySourceProvider',

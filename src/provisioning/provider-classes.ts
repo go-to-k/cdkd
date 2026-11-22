@@ -36,6 +36,7 @@ export { LogsDeliverySourceProvider } from './providers/logs-delivery-source-pro
 export { LogsDeliveryDestinationProvider } from './providers/logs-delivery-destination-provider.js';
 export { LogsDeliveryProvider } from './providers/logs-delivery-provider.js';
 export { CloudWatchAlarmProvider } from './providers/cloudwatch-alarm-provider.js';
+export { LightsailAlarmProvider } from './providers/lightsail-alarm-provider.js';
 export { CloudWatchAnomalyDetectorProvider } from './providers/cloudwatch-anomaly-detector-provider.js';
 export { SecretsManagerSecretProvider } from './providers/secretsmanager-secret-provider.js';
 export { SSMParameterProvider } from './providers/ssm-parameter-provider.js';

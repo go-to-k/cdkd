@@ -292,6 +292,9 @@ importers:
       '@aws-sdk/client-lambda-web':
         specifier: ^3.1169.0
         version: 3.1169.0
+      '@aws-sdk/client-lightsail':
+        specifier: ^3.1175.0
+        version: 3.1175.0
       '@aws-sdk/client-neptune':
         specifier: ^3.1169.0
         version: 3.1169.0
@@ -737,6 +740,10 @@ packages:
 
   '@aws-sdk/client-lambda@3.1175.0':
     resolution: {integrity: sha512-LhLSI9QpI8hx7Ls0Wz9/bdhgwylbkxSjrxEjIL6eR+djBoKdpRzyXSA6FbQxzYdj6MqSsO/bSCySSVHzKmIRQw==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-lightsail@3.1175.0':
+    resolution: {integrity: sha512-aYnrVMpd+QNfXkqho9epZh8qUrjGapy0oIAXPWaO/rm5JiBmO8OPkSurkJmk12yHaKIxK+y2wZz+4AL25KKIbw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-neptune@3.1169.0':
@@ -5529,6 +5536,17 @@ snapshots:
       tslib: 2.8.1
 
   '@aws-sdk/client-lambda@3.1175.0':
+    dependencies:
+      '@aws-sdk/core': 3.981.1
+      '@aws-sdk/credential-provider-node': 3.972.98
+      '@aws-sdk/types': 3.975.1
+      '@smithy/core': 3.40.0
+      '@smithy/fetch-http-handler': 5.8.1
+      '@smithy/node-http-handler': 4.14.2
+      '@smithy/types': 4.20.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-lightsail@3.1175.0':
     dependencies:
       '@aws-sdk/core': 3.981.1
       '@aws-sdk/credential-provider-node': 3.972.98

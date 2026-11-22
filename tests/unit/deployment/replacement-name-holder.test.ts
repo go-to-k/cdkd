@@ -949,6 +949,7 @@ describe('replacementNameProbe (go-to-k/cdkd#3937)', () => {
       'AWS::ElasticLoadBalancingV2::LoadBalancer',
       'AWS::ElasticLoadBalancingV2::TargetGroup',
       'AWS::Events::Rule',
+      'AWS::Lightsail::Alarm',
       'AWS::Logs::LogGroup',
       'AWS::S3::Bucket',
       'AWS::SNS::Topic',

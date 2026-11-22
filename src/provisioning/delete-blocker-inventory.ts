@@ -659,6 +659,7 @@ export const DELETE_BLOCKER_INVENTORY: readonly DeleteBlockerRow[] = [
     "https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DeleteDeliveryDestination.html (#6751 probe: DeleteDeliveryDestination succeeded with a delivery destination policy attached, and the policy went with it; the handler's logs:DeleteDeliveryDestinationPolicy clears nothing the delete needs)"
   ),
   none('AWS::CloudWatch::Alarm', perms('cloudwatch:DeleteAlarms')),
+  none('AWS::Lightsail::Alarm', perms('lightsail:DeleteAlarm')),
   none(
     'AWS::CloudWatch::AnomalyDetector',
     'https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_DeleteAnomalyDetector.html (no registry delete handler; no precondition)'

@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 97,
-    "wrapped": 89,
+    "classifiedCount": 98,
+    "wrapped": 90,
     "noAws": 8,
     "gap": 0,
     "unguardedWrap": 0,
@@ -533,6 +533,14 @@
       "file": "lambda-web-function-revision-provider.ts",
       "className": "LambdaWebFunctionRevisionProvider",
       "bucket": "no-aws",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "lightsail-alarm-provider.ts",
+      "className": "LightsailAlarmProvider",
+      "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],
       "unresolvedCallees": []

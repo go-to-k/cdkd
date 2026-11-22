@@ -94,6 +94,11 @@
       "schemaMaxLength": 512,
       "schemaPattern": "^[.\\-_/#A-Za-z0-9]{1,512}\\Z"
     },
+    "AWS::Lightsail::Alarm": {
+      "nameProperty": "AlarmName",
+      "apiMaxLength": 255,
+      "apiSource": "PutAlarm alarmName (measured us-east-1 2026-11-22: 255 accepted, 256 InvalidInputException)"
+    },
     "AWS::CloudWatch::Alarm": {
       "nameProperty": "AlarmName",
       "apiMaxLength": 255,

@@ -2013,6 +2013,11 @@
       "scenarios": []
     },
     {
+      "name": "lightsail-alarm-throttle",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "list-parameters",
       "annotated": false,
       "scenarios": []
@@ -4348,6 +4353,7 @@
     "lambda-web-function-revision-replace",
     "launchtemplate-asg-inplace",
     "legacy-synthesizer-assets",
+    "lightsail-alarm-throttle",
     "list-parameters",
     "local-aws-emulator",
     "local-engine-role-identity",

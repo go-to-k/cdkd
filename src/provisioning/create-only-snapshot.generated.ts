@@ -406,6 +406,7 @@ export const CREATE_ONLY_PATHS_SNAPSHOT: ReadonlyMap<
     'AWS::Lambda::WebFunctionRevision',
     [['BuildConfig'], ['Description'], ['FunctionName'], ['KmsKeyArn'], ['ServiceConfig']],
   ],
+  ['AWS::Lightsail::Alarm', [['AlarmName'], ['MetricName'], ['MonitoredResourceName']]],
   ['AWS::Logs::Delivery', [['DeliveryDestinationArn'], ['DeliverySourceName']]],
   [
     'AWS::Logs::DeliveryDestination',

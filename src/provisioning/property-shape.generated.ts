@@ -310,6 +310,7 @@ export const PROPERTY_SHAPES: ReadonlyMap<string, string> = new Map<string, stri
     'AWS::Lambda::WebFunctionRevision',
     '{"BuildConfig":"object","BuildConfig.CodeConfig":"object","BuildConfig.CodeConfig.S3Object":"object","BuildConfig.RuntimeConfig":"object","ServiceConfig":"object","ServiceConfig.EnvironmentVariables":"object","ServiceConfig.TelemetryConfig":"object","ServiceConfig.TelemetryConfig.LoggingConfig":"object"}',
   ],
+  ['AWS::Lightsail::Alarm', '{"ContactProtocols":"array","NotificationTriggers":"array"}'],
   ['AWS::Logs::Delivery', '{"RecordFields":"array","Tags":"array","Tags[]":"object"}'],
   [
     'AWS::Logs::DeliveryDestination',

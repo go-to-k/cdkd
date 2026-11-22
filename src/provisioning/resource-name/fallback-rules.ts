@@ -167,6 +167,8 @@ export const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
   // PutMetricAlarm: 1-255 characters.
   'AWS::CloudWatch::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 255 } },
   'AWS::Events::Rule': { nameProperty: 'Name', options: { maxLength: 64 } },
+  // PutAlarm: `\w[\w\-]*\w`, no stated length limit; CloudWatch's 255 is assumed.
+  'AWS::Lightsail::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 255 } },
   'AWS::Kinesis::Stream': { nameProperty: 'Name', options: { maxLength: 128 } },
   'AWS::StepFunctions::StateMachine': {
     nameProperty: 'StateMachineName',

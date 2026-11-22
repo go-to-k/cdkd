@@ -205,6 +205,8 @@ const SDK_NAMED_SINCE: readonly string[] = [
   'AWS::ServiceDiscovery::Service',
   // go-to-k/cdkd#6578: an SDK provider since, which names it through the rule.
   'AWS::Events::Archive',
+  // go-to-k/cdkd#6830: the same, for a Lightsail alarm (its AlarmName is required).
+  'AWS::Lightsail::Alarm',
 ];
 
 const sdkGeneratedTypes = [...Object.keys(OLD_SDK), ...SDK_NAMED_SINCE];

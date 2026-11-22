@@ -10,8 +10,8 @@
     }
   ],
   "summary": {
-    "classifiedCount": 146,
-    "covered": 76,
+    "classifiedCount": 147,
+    "covered": 77,
     "noArnAttr": 70,
     "gap": 0,
     "knownGap": 0,
@@ -950,6 +950,17 @@
         },
         {
           "name": "RevisionArn",
+          "status": "cached"
+        }
+      ],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::Lightsail::Alarm",
+      "bucket": "covered",
+      "arnAttributes": [
+        {
+          "name": "AlarmArn",
           "status": "cached"
         }
       ],
