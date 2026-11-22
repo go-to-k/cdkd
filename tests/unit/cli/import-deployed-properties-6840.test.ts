@@ -125,7 +125,10 @@ describe('deployedPropertiesBlocker', () => {
 
   it('counts a property-level `{Condition: X}` naming a DECLARED condition as that condition', () => {
     const deployed = tpl(synth.Resources, {
-      Conditions: { ...synth['Conditions' as never], IsProd: { 'Fn::Equals': ['x', 'y'] } },
+      Conditions: {
+        ...(synth as unknown as { Conditions: Record<string, unknown> }).Conditions,
+        IsProd: { 'Fn::Equals': ['x', 'y'] },
+      },
     });
     expect(deployedPropertiesBlocker({ P: { Condition: 'IsProd' } }, {}, synth, deployed)).toBe(
       'they use condition IsProd, which the synthesized template defines differently'
@@ -134,7 +137,7 @@ describe('deployedPropertiesBlocker', () => {
 
   it('admits a sibling the code added after the last deploy (no deployed type to compare)', () => {
     const grown = tpl({ ...synth.Resources, Added: { Type: 'AWS::SQS::Queue' } }, {
-      Parameters: synth['Parameters' as never],
+      Parameters: (synth as unknown as { Parameters: unknown }).Parameters,
     });
     expect(deployedPropertiesBlocker({ P: { Ref: 'Added' } }, {}, grown, synth)).toBeUndefined();
   });
