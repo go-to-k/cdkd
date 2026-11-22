@@ -40,7 +40,8 @@
 #   5b. (issue #6750) Add the named role to an instance profile created out of
 #      band, and assert `cdkd destroy` refuses the role naming that profile (as
 #      CloudFormation's DeleteConflict does) and leaves the role in it.
-#   5c. (issue #6770) Hold HeldRole and HeldGroup with an instance profile and
+#   5c. (issue #6770; runs BEFORE 5b, whose refused destroy deletes every
+#      unheld resource) Hold HeldRole and HeldGroup with an instance profile and
 #      a user created out of band, then deploy with CDKD_TEST_DROP_HELD=true:
 #      the template removal refuses both deletes naming the holders and leaves
 #      them held; once the holders are removed, the same deploy deletes both.
@@ -429,54 +430,18 @@ if [ "$(path_role_record physicalId)" != "${PATH_ROLE_NAME}" ] || [ "$(path_role
 fi
 echo "    ${PATH_ROLE_NAME} unchanged (RoleId ${PATH_ROLE_ID_P5}, nameGeneration 1)"
 
-# --- Phase 5b: an out-of-stack instance profile refuses the destroy (#6750)
-# CloudFormation's delete handler holds no iam:RemoveRoleFromInstanceProfile,
-# so DeleteRole answers DeleteConflict while a profile holds the role. Before
-# #6750 cdkd removed the role from the profile and the destroy succeeded.
-echo "==> Phase 5b: destroy refuses a role an out-of-stack instance profile holds (issue #6750)"
-aws iam create-instance-profile --instance-profile-name "${OOB_PROFILE}" >/dev/null
-aws iam add-role-to-instance-profile --instance-profile-name "${OOB_PROFILE}" --role-name "${ROLE_NAME}"
-# IAM is eventually consistent: wait until the role's own listing shows the
-# profile, so the destroy below meets the association.
-for _ in $(seq 1 15); do
-  OOB_LISTED="$(aws iam list-instance-profiles-for-role --role-name "${ROLE_NAME}" \
-    --query "length(InstanceProfiles[?InstanceProfileName=='${OOB_PROFILE}'])" --output text)"
-  [ "${OOB_LISTED}" = "1" ] && break
-  sleep 2
-done
-[ "${OOB_LISTED}" = "1" ] || { echo "FAIL: ${OOB_PROFILE} never listed for ${ROLE_NAME} (premise)" >&2; exit 1; }
-set +e
-REFUSE_5B_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
-refuse_5b_rc=$?
-set -e
-REFUSE_5B_PLAIN="$(printf '%s' "${REFUSE_5B_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
-if [ "${refuse_5b_rc}" -eq 0 ]; then
-  echo "FAIL: destroy succeeded although the out-of-stack instance profile ${OOB_PROFILE} held ${ROLE_NAME} (issue #6750)" >&2
-  exit 1
-fi
-NEEDLE_5B="role ${ROLE_NAME} is still in instance profile(s) ${OOB_PROFILE}, which this destroy did not delete"
-if ! grep -qF -- "${NEEDLE_5B}" <<<"${REFUSE_5B_PLAIN}"; then
-  echo "FAIL: the refused destroy does not name the out-of-stack instance profile (expected: ${NEEDLE_5B})" >&2
-  printf '%s\n' "${REFUSE_5B_PLAIN}" | tail -20 >&2
-  exit 1
-fi
-OOB_HOLDS="$(aws iam get-instance-profile --instance-profile-name "${OOB_PROFILE}" \
-  --query "length(InstanceProfile.Roles[?RoleName=='${ROLE_NAME}'])" --output text)"
-if [ "${OOB_HOLDS}" != "1" ]; then
-  echo "FAIL: the refused destroy removed ${ROLE_NAME} from ${OOB_PROFILE} (holds ${OOB_HOLDS}, expected 1; issue #6750)" >&2
-  exit 1
-fi
-echo "    OK: destroy refused, naming ${OOB_PROFILE}, which still holds the role"
-aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE}" --role-name "${ROLE_NAME}"
-aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE}"
-
 # --- Phase 5c: a deploy's template removal refuses like a destroy (#6770) ---
 # The deploy drops HeldRole and HeldGroup from the template while an instance
 # profile and a user created outside the stack still hold them. Before #6770
 # the removal stripped both holders and the deploy succeeded; now the role and
 # group deletes refuse (CloudFormation's DeleteConflict) and leave them held.
+# Runs before Phase 5b, whose refused destroy still deletes every unheld
+# resource, HeldRole and HeldGroup included.
 echo "==> Phase 5c: a deploy removing a held role and group refuses, leaving the holders (issue #6770)"
+aws iam get-role --role-name "${HELD_ROLE}" >/dev/null \
+  || { echo "FAIL: ${HELD_ROLE} does not exist before Phase 5c (premise)" >&2; exit 1; }
+aws iam get-group --group-name "${HELD_GROUP}" >/dev/null \
+  || { echo "FAIL: ${HELD_GROUP} does not exist before Phase 5c (premise)" >&2; exit 1; }
 aws iam create-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" >/dev/null
 aws iam add-role-to-instance-profile --instance-profile-name "${OOB_PROFILE_5C}" --role-name "${HELD_ROLE}"
 aws iam create-user --user-name "${OOB_USER_5C}" >/dev/null
@@ -533,6 +498,48 @@ CDKD_TEST_DROP_HELD=true CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TE
 assert_gone "role ${HELD_ROLE} still exists after its removal deploy" aws iam get-role --role-name "${HELD_ROLE}"
 assert_gone "group ${HELD_GROUP} still exists after its removal deploy" aws iam get-group --group-name "${HELD_GROUP}"
 echo "    OK: with the holders gone, the removal deploy deleted ${HELD_ROLE} and ${HELD_GROUP}"
+
+# --- Phase 5b: an out-of-stack instance profile refuses the destroy (#6750)
+# CloudFormation's delete handler holds no iam:RemoveRoleFromInstanceProfile,
+# so DeleteRole answers DeleteConflict while a profile holds the role. Before
+# #6750 cdkd removed the role from the profile and the destroy succeeded.
+echo "==> Phase 5b: destroy refuses a role an out-of-stack instance profile holds (issue #6750)"
+aws iam create-instance-profile --instance-profile-name "${OOB_PROFILE}" >/dev/null
+aws iam add-role-to-instance-profile --instance-profile-name "${OOB_PROFILE}" --role-name "${ROLE_NAME}"
+# IAM is eventually consistent: wait until the role's own listing shows the
+# profile, so the destroy below meets the association.
+for _ in $(seq 1 15); do
+  OOB_LISTED="$(aws iam list-instance-profiles-for-role --role-name "${ROLE_NAME}" \
+    --query "length(InstanceProfiles[?InstanceProfileName=='${OOB_PROFILE}'])" --output text)"
+  [ "${OOB_LISTED}" = "1" ] && break
+  sleep 2
+done
+[ "${OOB_LISTED}" = "1" ] || { echo "FAIL: ${OOB_PROFILE} never listed for ${ROLE_NAME} (premise)" >&2; exit 1; }
+set +e
+REFUSE_5B_LOG="$(node "${LOCAL_DIST}" destroy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)"
+refuse_5b_rc=$?
+set -e
+REFUSE_5B_PLAIN="$(printf '%s' "${REFUSE_5B_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${refuse_5b_rc}" -eq 0 ]; then
+  echo "FAIL: destroy succeeded although the out-of-stack instance profile ${OOB_PROFILE} held ${ROLE_NAME} (issue #6750)" >&2
+  exit 1
+fi
+NEEDLE_5B="role ${ROLE_NAME} is still in instance profile(s) ${OOB_PROFILE}, which this destroy did not delete"
+if ! grep -qF -- "${NEEDLE_5B}" <<<"${REFUSE_5B_PLAIN}"; then
+  echo "FAIL: the refused destroy does not name the out-of-stack instance profile (expected: ${NEEDLE_5B})" >&2
+  printf '%s\n' "${REFUSE_5B_PLAIN}" | tail -20 >&2
+  exit 1
+fi
+OOB_HOLDS="$(aws iam get-instance-profile --instance-profile-name "${OOB_PROFILE}" \
+  --query "length(InstanceProfile.Roles[?RoleName=='${ROLE_NAME}'])" --output text)"
+if [ "${OOB_HOLDS}" != "1" ]; then
+  echo "FAIL: the refused destroy removed ${ROLE_NAME} from ${OOB_PROFILE} (holds ${OOB_HOLDS}, expected 1; issue #6750)" >&2
+  exit 1
+fi
+echo "    OK: destroy refused, naming ${OOB_PROFILE}, which still holds the role"
+aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE}" --role-name "${ROLE_NAME}"
+aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE}"
 
 # --- Phase 6: destroy --------------------------------------------------
 echo "==> Phase 6: destroy"
