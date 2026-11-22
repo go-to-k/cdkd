@@ -318,7 +318,9 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
   ['AWS::AppFabric::AppAuthorization', new Map([['Credential', []]])],
   // Re-send FAILED on a Fargate environment ("parameters can't be updated for
   // Fargate compute environment"). An infrastructure update, which these two
-  // govern on EC2, comes only from a `ComputeResources` change.
+  // govern on EC2, comes only from a `ComputeResources` change. That key is
+  // itself write-only, so while declared it keeps both re-sent
+  // (go-to-k/cdkd#6822).
   [
     'AWS::Batch::ComputeEnvironment',
     new Map([
@@ -397,16 +399,27 @@ const WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED: ReadonlyMap<
  * (go-to-k/cdkd#6709, go-to-k/cdkd#6788). A changed one is still re-added:
  * that is the update.
  * A key is left out of the result when a sibling it travels with differs
- * between the two sides, so the caller re-adds it for that update.
+ * between the two sides, so the caller re-adds it for that update. So is a
+ * key whose sibling is itself write-only and declared in `properties`
+ * (`writeOnly`, the type's top-level write-only keys): the caller re-adds
+ * that sibling on every update, and the sibling sent without the key is a
+ * patch no one measured (go-to-k/cdkd#6788).
  */
 export function getWriteOnlyKeysKeptWhenOmitted(
   resourceType: string,
   properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>
+  previousProperties: Record<string, unknown>,
+  writeOnly: ReadonlySet<string> = new Set()
 ): ReadonlySet<string> {
   const result = new Set<string>();
   for (const [key, travelsWith] of WRITE_ONLY_KEYS_KEPT_WHEN_OMITTED.get(resourceType) ?? []) {
-    if (travelsWith.every((k) => isDeepStrictEqual(properties[k], previousProperties[k]))) {
+    if (
+      travelsWith.every(
+        (k) =>
+          isDeepStrictEqual(properties[k], previousProperties[k]) &&
+          !(writeOnly.has(k) && properties[k] !== undefined)
+      )
+    ) {
       result.add(key);
     }
   }

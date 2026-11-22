@@ -219,7 +219,9 @@ export async function updateInIdLogScope(
     // with Lambda's "Please provide a source for function code" (measured on
     // an inline zip function, x86_64 -> arm64, go-to-k/cdkd#6709).
     // go-to-k/cdkd#6788 measured more such keys (passwords re-set, a canary's
-    // code redeployed, re-sends a handler refuses); see the table.
+    // code redeployed, re-sends a handler refuses); see the table. A key
+    // whose declared sibling is itself write-only (so re-added here) is
+    // re-added with it: that pairing was never measured apart.
     // See `create()`: started alongside the update, awaited at its end.
     const attributeNamesLookup = getTopLevelDeployAttributeNames(resourceType);
     const writeOnlyProperties = await getTopLevelWriteOnlyProperties(resourceType);
@@ -231,7 +233,8 @@ export async function updateInIdLogScope(
       const keptWhenOmitted = getWriteOnlyKeysKeptWhenOmitted(
         resourceType,
         cleanProperties,
-        cleanPreviousProperties
+        cleanPreviousProperties,
+        writeOnlyProperties
       );
       const previousWithoutWriteOnly = { ...cleanPreviousProperties };
       for (const propertyName of writeOnlyProperties) {

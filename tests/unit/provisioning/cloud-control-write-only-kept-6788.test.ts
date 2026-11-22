@@ -190,6 +190,70 @@ describe('CloudControlProvider update: unchanged measured write-only keys are no
     expect(sentPatch()).toEqual([{ op: 'replace', path: '/Description', value: 'b' }]);
   });
 
+  it('re-adds an unchanged MasterUserPassword beside a declared write-only ManageMasterPassword', async () => {
+    // The sibling is re-added on every update; sending it alone was never measured.
+    mockCloudFormationSend.mockResolvedValue({
+      Schema: schema(['MasterUserPassword', 'ManageMasterPassword']),
+    });
+
+    await provider.update(
+      'Cluster',
+      'cluster-1',
+      'AWS::Redshift::Cluster',
+      { MasterUserPassword: 'Passw0rd!', ManageMasterPassword: false, Tags: TAGS_B },
+      { MasterUserPassword: 'Passw0rd!', ManageMasterPassword: false, Tags: TAGS_A }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({ op: 'add', path: '/MasterUserPassword', value: 'Passw0rd!' });
+    expect(patch).toContainEqual({ op: 'add', path: '/ManageMasterPassword', value: false });
+    expect(patch).toHaveLength(3);
+  });
+
+  it('re-adds unchanged OptionSettings beside a declared write-only TemplateName', async () => {
+    mockCloudFormationSend.mockResolvedValue({ Schema: schema(['OptionSettings', 'TemplateName']) });
+    const options = [{ Namespace: 'aws:autoscaling:asg', OptionName: 'MaxSize', Value: '2' }];
+
+    await provider.update(
+      'Env',
+      'env-1',
+      'AWS::ElasticBeanstalk::Environment',
+      { OptionSettings: options, TemplateName: 'tpl', Description: 'b' },
+      { OptionSettings: options, TemplateName: 'tpl', Description: 'a' }
+    );
+
+    expect(sentPatch().map((op) => op.path).sort()).toEqual([
+      '/Description',
+      '/OptionSettings',
+      '/TemplateName',
+    ]);
+  });
+
+  it('still sends a password recorded as a {{resolve:...}} reference', async () => {
+    // State keeps the reference, the desired side holds the resolved value:
+    // they never compare equal, so a rotated secret still reaches AWS.
+    mockCloudFormationSend.mockResolvedValue({ Schema: schema(['MasterUserPassword']) });
+
+    await provider.update(
+      'Cluster',
+      'cluster-1',
+      'AWS::Redshift::Cluster',
+      { MasterUserPassword: 'resolved-plaintext', Tags: TAGS_B },
+      {
+        MasterUserPassword: '{{resolve:secretsmanager:arn:aws:secretsmanager:us-east-1:123456789012:secret:db:SecretString:password::}}',
+        Tags: TAGS_A,
+      }
+    );
+
+    const patch = sentPatch();
+    expect(patch).toContainEqual({
+      op: 'add',
+      path: '/MasterUserPassword',
+      value: 'resolved-plaintext',
+    });
+    expect(patch).toHaveLength(2);
+  });
+
   it('still re-adds an unmeasured write-only key of a type with an entry', async () => {
     mockCloudFormationSend.mockResolvedValue({
       Schema: schema(['AuthToken', 'SecurityGroupIds']),
@@ -264,6 +328,18 @@ describe('getWriteOnlyKeysKeptWhenOmitted rows (go-to-k/cdkd#6788)', () => {
   ])('%s: a %s change re-adds %s', (type, sibling, key) => {
     expect(kept(type, { [sibling]: 'next' }, { [sibling]: 'prev' })).not.toContain(key);
     expect(kept(type, { [sibling]: 'same' }, { [sibling]: 'same' })).toContain(key);
+  });
+
+  it('leaves a key out of the result while a sibling is write-only and declared', () => {
+    const writeOnly = new Set(['MasterUserPassword', 'ManageMasterPassword']);
+    const declared = { ManageMasterPassword: false };
+    expect([
+      ...getWriteOnlyKeysKeptWhenOmitted('AWS::Redshift::Cluster', declared, declared, writeOnly),
+    ]).toEqual([]);
+    // Undeclared, it is not re-added, so the key stays omitted.
+    expect([
+      ...getWriteOnlyKeysKeptWhenOmitted('AWS::Redshift::Cluster', {}, {}, writeOnly),
+    ]).toEqual(['MasterUserPassword']);
   });
 
   it('names nothing for a measured row that is not in the table', () => {
