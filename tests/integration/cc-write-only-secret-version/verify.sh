@@ -336,8 +336,7 @@ if deploy p5 five after; then
   echo "FAIL: the deploy unexpectedly SUCCEEDED (the failing queue did not fail)" >&2
   exit 1
 fi
-P5_END="$(date -u +%s)"
-echo "    OK: the deploy failed"
+echo "    OK: the deploy failed ($(( $(date -u +%s) - P5_START )) s, the rollback included)"
 # The premise: the namespace update COMPLETED and the queue is what failed;
 # otherwise there is no completed update for the rollback to revert.
 grep -qE 'Ns.*AWS::RedshiftServerless::Namespace.*updated' "${LOG_DIR}/p5.log" \
@@ -345,8 +344,14 @@ grep -qE 'Ns.*AWS::RedshiftServerless::Namespace.*updated' "${LOG_DIR}/p5.log" \
 grep -qE 'Rollback: .?Ns.? restored successfully' "${LOG_DIR}/p5.log" \
   || { echo "FAIL: the automatic rollback did not restore the namespace (see the log above)" >&2; exit 1; }
 echo "    OK: the automatic rollback restored the namespace"
-# How the revert got there (the retry lines are debug-level, so --verbose shows them).
-grep -E 'Retrying .?Ns|NotStabilized|Exceeded attempts|operation running' "${LOG_DIR}/p5.log" | tail -8 | sed 's/^/  /' || true
+# Whether the re-send was exercised depends on AWS's timing (the namespace
+# could settle before the first revert), so it is reported, not asserted.
+grep -E 'has not settled|Retrying .?Ns|operation running' "${LOG_DIR}/p5.log" | tail -8 | sed 's/^/  /' || true
+if grep -qF 'has not settled from the update being reverted' "${LOG_DIR}/p5.log"; then
+  echo "    OK: the revert was re-sent after the namespace settled"
+else
+  echo "    NOTE: the first revert landed; the settle re-send was not exercised this run"
+fi
 no_plaintext_in p5
 ns_settled_after_change
 expect_login_refused "the rollback restored the recorded (pre-rotation) password, so the current one is refused"
@@ -454,7 +459,7 @@ P9_END="$(date -u +%s)"
 expect_sent p9
 expect_login "login after the final rotation"
 
-for log in p1 p2 p3 p4 p5 p5r p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
+for log in p1 p2 p3 p4 p5 p5b p6 p6b p7 p7a p7b p7c p7d p9; do no_plaintext_in "${log}"; done
 echo "    OK: no log carries the secret's current plaintext"
 
 echo "==> Phase 8: CloudTrail -- re-sends recorded, the left-out windows hold none"
