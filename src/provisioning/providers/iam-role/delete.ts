@@ -22,6 +22,7 @@ import { markDeleteStarted, type DeleteProgress } from '../../delete-started.js'
 import type { ResourceDeleteResult } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-identity.js';
+import { heldText, isStackOwnHolder, stackOwnHolders } from '../../stack-own-holders.js';
 
 /**
  * Delete an IAM role
@@ -29,9 +30,10 @@ import { assertRecordedIdentity, RecordedIdentityError } from '../../recorded-id
  * Before deleting, performs full cleanup:
  * 1. Detach all managed policies
  * 2. Delete all inline policies
- * 3. Remove role from all instance profiles, only on a same-name re-create's
- *    delete-first (`stackHoldersStillAttached`); every other delete refuses a
- *    role a profile still holds instead (go-to-k/cdkd#6750, #6770)
+ * 3. Remove role from the stack's own instance profiles, only on a same-name
+ *    re-create's delete-first (`stackHoldersStillAttached`); any other
+ *    profile, and every profile on every other delete, is refused instead
+ *    (go-to-k/cdkd#6750, #6770, #6808)
  * 4. Delete the role itself
  */
 export async function deleteImpl(
@@ -102,36 +104,95 @@ export async function deleteImpl(
       throw error;
     }
 
+    // The refusal of a role `held` names profiles of, which this run did not
+    // delete (go-to-k/cdkd#6750): worded, masked and non-retryable.
+    const refuseHeld = (held: { names: string[]; truncated: boolean }, cause?: Error): never => {
+      const run = holderRefusalRun(context);
+      const refusal = markNonRetryable(
+        new ProvisioningError(
+          log.mask(
+            `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
+              `instance profile(s) ${heldText(held)}, ` +
+              `which this ${run.noun} did not delete (a profile created outside the stack, or ` +
+              `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
+              `does not remove the role from them. If nothing still needs the role there, ` +
+              `remove it (aws iam remove-role-from-instance-profile --instance-profile-name ` +
+              `<profile> --role-name <role>) or delete the profile, then ${run.again}.`
+          ),
+          resourceType,
+          logicalId,
+          physicalId,
+          cause
+        )
+      );
+      PROFILE_REFUSALS.add(refusal);
+      throw refusal;
+    };
+
+    // go-to-k/cdkd#6808: a delete that may strip its holders
+    // (`stackHoldersStillAttached`: a same-name re-create's delete-first,
+    // go-to-k/cdkd#4461) strips only the stack's OWN instance profiles, those
+    // the records bound around this delete name. Any other profile still
+    // holding the role is refused HERE, before anything is changed: a refused
+    // delete-first leaves the role with its policies and the stack's own
+    // profile holding it, as their records say. A profile that drains during
+    // the settle (one the run deleted, IAM still listing it) is no refusal. A
+    // listing longer than one page is refused too: the profiles past it are
+    // unread.
+    let ownProfiles: string[] = [];
+    if (context?.stackHoldersStillAttached === true) {
+      const own = stackOwnHolders(resourceType, physicalId);
+      const isOwn = (entry: ProfileEntry) => isStackOwnHolder(own, entry.name, entry.id);
+      let listed: { entries: ProfileEntry[]; truncated: boolean } = {
+        entries: [],
+        truncated: false,
+      };
+      const foreign = await settledInstanceProfiles
+        .call(
+          this,
+          physicalId,
+          (entry) => !isOwn(entry),
+          (page) => (listed = page)
+        )
+        .catch((listError: unknown) => {
+          // The role gone since step 0: `DeleteRole` below says so.
+          if (listError instanceof NoSuchEntityException) return 'empty' as const;
+          throw listError;
+        });
+      if (foreign !== 'empty') refuseHeld(foreign);
+      // Past one page the profiles are unread: refused, nothing changed.
+      if (listed.truncated) refuseHeld({ names: [], truncated: true });
+      ownProfiles = listed.entries.filter(isOwn).map((entry) => entry.name);
+    }
+
     // Step 1: Detach all managed policies
     await this.detachAllManagedPolicies(physicalId, log, progress);
 
     // Step 2: Delete all inline policies
     await this.deleteAllInlinePolicies(physicalId, log, progress);
 
-    // Step 3: Remove role from all instance profiles — only where the
-    // stack's own profile may still hold it and is pointed at its
-    // replacement afterwards (`stackHoldersStillAttached`: a same-name
-    // re-create's delete-first, go-to-k/cdkd#4461). Every other delete — a
-    // destroy (go-to-k/cdkd#6750), a template removal, a nested child's
-    // teardown, a replaced copy's cleanup (go-to-k/cdkd#6770) — leaves the
-    // profiles alone: CloudFormation's delete handler holds no
-    // `iam:RemoveRoleFromInstanceProfile`, so `DeleteRole` fails with
-    // `DeleteConflict` while a profile still holds the role, and the run
-    // deletes or updates the stack's own profiles before this delete, so a
-    // profile left here is not this run's to change.
-    const stripHolders = context?.stackHoldersStillAttached === true;
-    if (stripHolders) await this.removeFromAllInstanceProfiles(physicalId, log, progress);
+    // Step 3: Remove role from the stack's own instance profiles listed above.
+    // Every other delete — a destroy (go-to-k/cdkd#6750), a template removal,
+    // a nested child's teardown, a replaced copy's cleanup
+    // (go-to-k/cdkd#6770) — leaves the profiles alone: CloudFormation's
+    // delete handler holds no `iam:RemoveRoleFromInstanceProfile`, so
+    // `DeleteRole` fails with `DeleteConflict` while a profile still holds
+    // the role, and the run deletes or updates the stack's own profiles before
+    // this delete, so a profile left here is not this run's to change.
+    if (ownProfiles.length > 0) {
+      await this.removeFromStackOwnInstanceProfiles(physicalId, log, progress, ownProfiles);
+    }
 
-    // Step 4: Delete the role. Two attempts at most where step 3 left the
-    // profiles alone: the second only after the settle below saw no profile
-    // still holding it, i.e. what refused the first was the stack's own
-    // profile being deleted.
+    // Step 4: Delete the role. Two attempts at most: the second only after
+    // the settle below saw no profile still holding it, i.e. what refused the
+    // first was the stack's own profile being deleted, or one step 3 removed
+    // the role from that IAM still listed.
     for (let attempt = 1; ; attempt++) {
       try {
         await this.iamClient.send(new DeleteRoleCommand({ RoleName: physicalId }));
         break;
       } catch (error) {
-        if (stripHolders || attempt > 1 || !(error instanceof DeleteConflictException)) {
+        if (attempt > 1 || !(error instanceof DeleteConflictException)) {
           throw error;
         }
         // Read only after the refusal, so a delete that succeeds costs no
@@ -174,26 +235,7 @@ export async function deleteImpl(
           continue;
         }
         if (held === undefined) throw error;
-        const run = holderRefusalRun(context);
-        const refusal = markNonRetryable(
-          new ProvisioningError(
-            log.mask(
-              `Failed to delete IAM role ${logicalId}: role ${physicalId} is still in ` +
-                `instance profile(s) ${held.names.join(', ')}${held.truncated ? ', and more' : ''}, ` +
-                `which this ${run.noun} did not delete (a profile created outside the stack, or ` +
-                `retained by a DeletionPolicy). Matching CloudFormation (DeleteConflict), cdkd ` +
-                `does not remove the role from them. If nothing still needs the role there, ` +
-                `remove it (aws iam remove-role-from-instance-profile --instance-profile-name ` +
-                `<profile> --role-name <role>) or delete the profile, then ${run.again}.`
-            ),
-            resourceType,
-            logicalId,
-            physicalId,
-            error
-          )
-        );
-        PROFILE_REFUSALS.add(refusal);
-        throw refusal;
+        refuseHeld(held, error);
       }
     }
 
@@ -255,38 +297,57 @@ const HELD_POLL_MS = 2000;
 const HELD_STABLE_POLLS = 5;
 const HELD_MAX_POLLS = 30;
 
-async function listInstanceProfileNames(
+/** One profile `ListInstanceProfilesForRole` lists: its name and `InstanceProfileId`. */
+interface ProfileEntry {
+  name: string;
+  id: string | undefined;
+}
+
+async function listInstanceProfiles(
   this: IAMRoleProvider,
   roleName: string
-): Promise<{ names: string[]; truncated: boolean }> {
-  // One page (IAM's default of 100), every name on it: the cap applies after
-  // `GetInstanceProfile` has confirmed which ones still hold the role.
+): Promise<{ entries: ProfileEntry[]; truncated: boolean }> {
+  // One page (IAM's default of 100), every profile on it: the cap applies
+  // after `GetInstanceProfile` has confirmed which ones still hold the role.
   const page = await this.iamClient.send(
     new ListInstanceProfilesForRoleCommand({ RoleName: roleName })
   );
-  const names = (page.InstanceProfiles ?? [])
-    .map((profile) => profile.InstanceProfileName)
-    .filter((name): name is string => !!name);
-  return { names, truncated: page.IsTruncated === true };
+  const entries = (page.InstanceProfiles ?? []).flatMap((profile) =>
+    profile.InstanceProfileName
+      ? [{ name: profile.InstanceProfileName, id: profile.InstanceProfileId }]
+      : []
+  );
+  return { entries, truncated: page.IsTruncated === true };
 }
 
 /**
  * The instance profiles still holding the role once the list has settled (see
  * {@link HELD_POLL_MS}) and `GetInstanceProfile` confirms each, or `'empty'`
- * when a listing shows none or none is confirmed.
+ * when a listing shows none or none is confirmed. `counts` narrows every
+ * listing to the profiles that matter (go-to-k/cdkd#6808: those not the
+ * stack's own); a listing with none of them returns `'empty'` at once, so a
+ * delete-first whose profiles are all the stack's lists once, as before.
  */
 async function settledInstanceProfiles(
   this: IAMRoleProvider,
-  roleName: string
+  roleName: string,
+  counts: (entry: ProfileEntry) => boolean = () => true,
+  /** Told each listing, unnarrowed; the last one told is the settled one. */
+  onListing?: (page: { entries: ProfileEntry[]; truncated: boolean }) => void
 ): Promise<{ names: string[]; truncated: boolean } | 'empty'> {
   const key = (held: { names: string[]; truncated: boolean }) =>
     JSON.stringify([held.names, held.truncated]);
-  let held = await listInstanceProfileNames.call(this, roleName);
+  const listed = async () => {
+    const { entries, truncated } = await listInstanceProfiles.call(this, roleName);
+    onListing?.({ entries, truncated });
+    return { names: entries.filter(counts).map((entry) => entry.name), truncated };
+  };
+  let held = await listed();
   if (held.names.length === 0) return 'empty';
   let unchanged = 0;
   for (let poll = 0; poll < HELD_MAX_POLLS && unchanged < HELD_STABLE_POLLS; poll++) {
     await new Promise((resolve) => setTimeout(resolve, HELD_POLL_MS));
-    const next = await listInstanceProfileNames.call(this, roleName);
+    const next = await listed();
     if (next.names.length === 0) return 'empty';
     unchanged = key(next) === key(held) ? unchanged + 1 : 0;
     held = next;
@@ -427,59 +488,34 @@ export async function deleteAllInlinePolicies(
 }
 
 /**
- * Remove the role from all instance profiles
+ * Remove the role from `holders`, the stack's own instance profiles
+ * listed as holding it (go-to-k/cdkd#6808). Any other profile keeps the role,
+ * so `DeleteRole` refuses (`DeleteConflict`) and the delete names it, as
+ * CloudFormation's delete handler (which holds no
+ * `iam:RemoveRoleFromInstanceProfile`) fails.
  */
-export async function removeFromAllInstanceProfiles(
+export async function removeFromStackOwnInstanceProfiles(
   this: IAMRoleProvider,
   roleName: string,
   log: MaskedLogSinks,
-  progress?: DeleteProgress
+  progress: DeleteProgress | undefined,
+  holders: readonly string[]
 ): Promise<void> {
   const { value: v } = log;
-  log.debug(`Removing role ${v(roleName)} from all instance profiles`);
-
-  try {
-    const instanceProfiles = await this.iamClient.send(
-      new ListInstanceProfilesForRoleCommand({ RoleName: roleName })
-    );
-
-    const profiles = instanceProfiles.InstanceProfiles || [];
-    if (profiles.length === 0) {
-      log.debug(`No instance profiles associated with role ${v(roleName)}`);
-      return;
+  for (const holder of holders) {
+    try {
+      await this.iamClient.send(
+        new RemoveRoleFromInstanceProfileCommand({
+          RoleName: roleName,
+          InstanceProfileName: holder,
+        })
+      );
+      if (progress) progress.stripped = true;
+      log.debug(`Removed role ${v(roleName)} from instance profile ${v(holder)}`);
+    } catch (error) {
+      // The profile gone, the role no longer in it, or the role gone.
+      if (!(error instanceof NoSuchEntityException)) throw error;
+      log.debug(`Role ${v(roleName)} already removed from instance profile ${v(holder)}`);
     }
-
-    for (const profile of profiles) {
-      if (profile.InstanceProfileName) {
-        try {
-          await this.iamClient.send(
-            new RemoveRoleFromInstanceProfileCommand({
-              RoleName: roleName,
-              InstanceProfileName: profile.InstanceProfileName,
-            })
-          );
-          if (progress) progress.stripped = true;
-          log.debug(
-            `Removed role ${v(roleName)} from instance profile ${v(profile.InstanceProfileName)}`
-          );
-        } catch (error) {
-          if (error instanceof NoSuchEntityException) {
-            log.debug(
-              `Role ${v(roleName)} already removed from instance profile ${v(profile.InstanceProfileName)}`
-            );
-          } else {
-            throw error;
-          }
-        }
-      }
-    }
-
-    log.debug(`Removed role ${v(roleName)} from ${profiles.length} instance profiles`);
-  } catch (error) {
-    if (error instanceof NoSuchEntityException) {
-      log.debug(`Role ${v(roleName)} not found when removing from instance profiles`);
-      return;
-    }
-    throw error;
   }
 }

@@ -1254,6 +1254,7 @@
         "codebuild-project",
         "generated-name-lifecycle",
         "iam-recreate-reattach",
+        "iam-role-prefixed-name-update",
         "loggroup-never-expire-guard",
         "lost-child-after-failed-deploy",
         "noecho-parameter-masking",

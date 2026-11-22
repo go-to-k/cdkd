@@ -40,6 +40,14 @@
 #   5b. (issue #6750) Add the named role to an instance profile created out of
 #      band, and assert `cdkd destroy` refuses the role naming that profile (as
 #      CloudFormation's DeleteConflict does) and leaves the role in it.
+#   5d. (issue #6808; runs BEFORE 5c) Deploy with CDKD_TEST_6808=true: ReRole
+#      and ReGroup, held by the stack's own ReProfile and ReMember. Hold them
+#      with an instance profile and a user created out of band too, then
+#      re-create both under the same name (--recreate-via-cc-api): the deploy
+#      refuses naming the out-of-band holders and strips nothing, the stack's
+#      own holders included. Once those are removed, the same deploy re-creates
+#      both and re-attaches the stack's own profile and member (#4461); a
+#      deploy without the flag then removes all four.
 #   5c. (issue #6770; runs BEFORE 5b, whose refused destroy deletes every
 #      unheld resource) Hold HeldRole and HeldGroup with an instance profile and
 #      a user created out of band, then deploy with CDKD_TEST_DROP_HELD=true:
@@ -101,6 +109,16 @@ OOB_PROFILE_5C="${STACK}-oob-6770"
 OOB_USER_5C="${STACK}-oob-6770-user"
 # Only Phase 5c sets it, per deploy.
 unset CDKD_TEST_DROP_HELD
+# Issue #6808: Phase 5d's role and group, the stack's own holders of them, and
+# the out-of-stack profile and user it holds them with. Only Phase 5d sets
+# CDKD_TEST_6808, per deploy.
+unset CDKD_TEST_6808
+RE_ROLE="${STACK}-re-role"
+RE_GROUP="${STACK}-re-group"
+RE_PROFILE="${STACK}-re-profile"
+RE_MEMBER="${STACK}-re-member"
+OOB_PROFILE_5D="${STACK}-oob-6808"
+OOB_USER_5D="${STACK}-oob-6808-user"
 FN_NAME="${STACK}-path-fn"
 # cdkd's generated name for the unnamed PathRole: `${STACK}-<logicalId>` (CDK
 # suffixes the logical id with a hash) cut to 64 - 13 characters, then `-` and
@@ -211,6 +229,13 @@ cleanup() {
   aws iam remove-user-from-group --group-name "${HELD_GROUP}" \
     --user-name "${OOB_USER_5C}" >/dev/null 2>&1
   aws iam delete-user --user-name "${OOB_USER_5C}" >/dev/null 2>&1
+  # And Phase 5d's (#6808).
+  aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE_5D}" \
+    --role-name "${RE_ROLE}" >/dev/null 2>&1
+  aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE_5D}" >/dev/null 2>&1
+  aws iam remove-user-from-group --group-name "${RE_GROUP}" \
+    --user-name "${OOB_USER_5D}" >/dev/null 2>&1
+  aws iam delete-user --user-name "${OOB_USER_5D}" >/dev/null 2>&1
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -219,6 +244,14 @@ cleanup() {
   # have left them.
   aws iam delete-role --role-name "${HELD_ROLE}" >/dev/null 2>&1
   aws iam delete-group --group-name "${HELD_GROUP}" >/dev/null 2>&1
+  # Phase 5d's, likewise.
+  aws iam remove-role-from-instance-profile --instance-profile-name "${RE_PROFILE}" \
+    --role-name "${RE_ROLE}" >/dev/null 2>&1
+  aws iam delete-instance-profile --instance-profile-name "${RE_PROFILE}" >/dev/null 2>&1
+  aws iam remove-user-from-group --group-name "${RE_GROUP}" --user-name "${RE_MEMBER}" >/dev/null 2>&1
+  aws iam delete-user --user-name "${RE_MEMBER}" >/dev/null 2>&1
+  aws iam delete-role --role-name "${RE_ROLE}" >/dev/null 2>&1
+  aws iam delete-group --group-name "${RE_GROUP}" >/dev/null 2>&1
   aws lambda delete-function --function-name "${FN_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   delete_path_managed_policy
   delete_path_roles
@@ -429,6 +462,115 @@ if [ "$(path_role_record physicalId)" != "${PATH_ROLE_NAME}" ] || [ "$(path_role
   exit 1
 fi
 echo "    ${PATH_ROLE_NAME} unchanged (RoleId ${PATH_ROLE_ID_P5}, nameGeneration 1)"
+
+# --- Phase 5d: a same-name re-create strips only the stack's own holders (#6808)
+# ReRole and ReGroup are held by the stack's own ReProfile and ReMember and,
+# from outside the stack, by an instance profile and a user created here.
+# Before #6808 their delete-first removed the role from EVERY profile and
+# every member from the group, so the re-create succeeded and the out-of-band
+# holders silently lost the role and the group; now it refuses, as
+# CloudFormation's DeleteConflict does, and changes nothing.
+echo "==> Phase 5d: a same-name re-create refuses an out-of-stack holder and strips nothing (issue #6808)"
+FLAGS_5D=(CDKD_TEST_6808=true CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true)
+env "${FLAGS_5D[@]}" node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --yes
+RE_ROLE_ID_0="$(aws iam get-role --role-name "${RE_ROLE}" --query 'Role.RoleId' --output text)" || exit 1
+RE_GROUP_ID_0="$(aws iam get-group --group-name "${RE_GROUP}" --query 'Group.GroupId' --output text)" || exit 1
+aws iam create-instance-profile --instance-profile-name "${OOB_PROFILE_5D}" >/dev/null
+aws iam add-role-to-instance-profile --instance-profile-name "${OOB_PROFILE_5D}" --role-name "${RE_ROLE}"
+aws iam create-user --user-name "${OOB_USER_5D}" >/dev/null
+aws iam add-user-to-group --group-name "${RE_GROUP}" --user-name "${OOB_USER_5D}"
+# The count of profile <profile> holding RE_ROLE, and of user <user> in RE_GROUP.
+profile_holds() {
+  aws iam get-instance-profile --instance-profile-name "$1" \
+    --query "length(InstanceProfile.Roles[?RoleName=='${RE_ROLE}'])" --output text
+}
+group_has() {
+  aws iam get-group --group-name "${RE_GROUP}" --query "length(Users[?UserName=='$1'])" --output text
+}
+# IAM is eventually consistent: wait until the re-create's own listings show
+# both out-of-band holders, so the deploy below meets them.
+for _ in $(seq 1 15); do
+  LISTED_PROFILES="$(aws iam list-instance-profiles-for-role --role-name "${RE_ROLE}" \
+    --query "length(InstanceProfiles[?InstanceProfileName=='${OOB_PROFILE_5D}'])" --output text)"
+  [ "${LISTED_PROFILES}" = "1" ] && [ "$(group_has "${OOB_USER_5D}")" = "1" ] && break
+  sleep 2
+done
+if [ "${LISTED_PROFILES}" != "1" ] || [ "$(group_has "${OOB_USER_5D}")" != "1" ]; then
+  echo "FAIL: ${OOB_PROFILE_5D} / ${OOB_USER_5D} never listed as holding ${RE_ROLE} / ${RE_GROUP} (premise)" >&2
+  exit 1
+fi
+if [ "$(profile_holds "${RE_PROFILE}")" != "1" ] || [ "$(group_has "${RE_MEMBER}")" != "1" ]; then
+  echo "FAIL: the stack's own ${RE_PROFILE} / ${RE_MEMBER} do not hold ${RE_ROLE} / ${RE_GROUP} before the re-create (premise)" >&2
+  exit 1
+fi
+recreate_5d() {
+  env "${FLAGS_5D[@]}" node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" --recreate-via-cc-api ReRole --recreate-via-cc-api ReGroup --yes 2>&1
+}
+set +e
+REFUSE_5D_LOG="$(recreate_5d)"
+refuse_5d_rc=$?
+set -e
+REFUSE_5D_PLAIN="$(printf '%s' "${REFUSE_5D_LOG}" | sed $'s/\x1b\\[[0-9;]*m//g')"
+if [ "${refuse_5d_rc}" -eq 0 ]; then
+  echo "FAIL: the same-name re-create of ${RE_ROLE} and ${RE_GROUP} succeeded although out-of-stack holders held them (issue #6808)" >&2
+  exit 1
+fi
+NEEDLE_5D_ROLE="role ${RE_ROLE} is still in instance profile(s) ${OOB_PROFILE_5D}, which this run did not delete"
+NEEDLE_5D_GROUP="group ${RE_GROUP} still has user(s) ${OOB_USER_5D}, whose membership this run did not remove"
+for needle in "${NEEDLE_5D_ROLE}" "${NEEDLE_5D_GROUP}"; do
+  if ! grep -qF -- "${needle}" <<<"${REFUSE_5D_PLAIN}"; then
+    echo "FAIL: the refused re-create does not name the out-of-stack holder alone (expected: ${needle})" >&2
+    printf '%s\n' "${REFUSE_5D_PLAIN}" | tail -30 >&2
+    exit 1
+  fi
+done
+# Nothing stripped: the out-of-band holders, and the stack's own ones, which
+# the refusal ran before.
+for pair in "${OOB_PROFILE_5D}:$(profile_holds "${OOB_PROFILE_5D}")" \
+  "${RE_PROFILE}:$(profile_holds "${RE_PROFILE}")" \
+  "${OOB_USER_5D}:$(group_has "${OOB_USER_5D}")" "${RE_MEMBER}:$(group_has "${RE_MEMBER}")"; do
+  if [ "${pair##*:}" != "1" ]; then
+    echo "FAIL: the refused re-create stripped ${pair%%:*} (holds ${pair##*:} of ${RE_ROLE} / ${RE_GROUP}, expected 1; issue #6808)" >&2
+    exit 1
+  fi
+done
+if [ "$(aws iam get-role --role-name "${RE_ROLE}" --query 'Role.RoleId' --output text)" != "${RE_ROLE_ID_0}" ] \
+  || [ "$(aws iam get-group --group-name "${RE_GROUP}" --query 'Group.GroupId' --output text)" != "${RE_GROUP_ID_0}" ]; then
+  echo "FAIL: the refused re-create still replaced ${RE_ROLE} or ${RE_GROUP}" >&2
+  exit 1
+fi
+echo "    OK: re-create refused, naming ${OOB_PROFILE_5D} and ${OOB_USER_5D}; every holder still holds"
+aws iam remove-role-from-instance-profile --instance-profile-name "${OOB_PROFILE_5D}" --role-name "${RE_ROLE}"
+aws iam delete-instance-profile --instance-profile-name "${OOB_PROFILE_5D}"
+aws iam remove-user-from-group --group-name "${RE_GROUP}" --user-name "${OOB_USER_5D}"
+aws iam delete-user --user-name "${OOB_USER_5D}"
+# The out-of-band holders gone (IAM may list them a while: the refusal's own
+# settle waits that out), the same re-create goes through and re-attaches the
+# stack's own profile and member (#4461).
+if ! RECREATE_5D_LOG="$(recreate_5d)"; then
+  echo "FAIL: the re-create of ${RE_ROLE} and ${RE_GROUP} failed once only the stack's own holders held them" >&2
+  printf '%s\n' "${RECREATE_5D_LOG}" | tail -30 >&2
+  exit 1
+fi
+if [ "$(aws iam get-role --role-name "${RE_ROLE}" --query 'Role.RoleId' --output text)" = "${RE_ROLE_ID_0}" ] \
+  || [ "$(aws iam get-group --group-name "${RE_GROUP}" --query 'Group.GroupId' --output text)" = "${RE_GROUP_ID_0}" ]; then
+  echo "FAIL: the re-create did not re-create ${RE_ROLE} and ${RE_GROUP} (same RoleId / GroupId)" >&2
+  exit 1
+fi
+if [ "$(profile_holds "${RE_PROFILE}")" != "1" ] || [ "$(group_has "${RE_MEMBER}")" != "1" ]; then
+  echo "FAIL: the re-create did not re-attach the stack's own ${RE_PROFILE} / ${RE_MEMBER} (issue #4461)" >&2
+  exit 1
+fi
+echo "    OK: with only the stack's own holders left, the re-create replaced both and re-attached them"
+env CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+assert_gone "role ${RE_ROLE} still exists after its removal deploy" aws iam get-role --role-name "${RE_ROLE}"
+assert_gone "group ${RE_GROUP} still exists after its removal deploy" aws iam get-group --group-name "${RE_GROUP}"
+assert_gone "profile ${RE_PROFILE} still exists after its removal deploy" \
+  aws iam get-instance-profile --instance-profile-name "${RE_PROFILE}"
+assert_gone "user ${RE_MEMBER} still exists after its removal deploy" aws iam get-user --user-name "${RE_MEMBER}"
 
 # --- Phase 5c: a deploy's template removal refuses like a destroy (#6770) ---
 # The deploy drops HeldRole and HeldGroup from the template while an instance

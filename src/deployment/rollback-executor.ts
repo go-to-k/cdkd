@@ -127,10 +127,13 @@ export async function replayRollback(
   return await withProducerRegions(
     () => replayProducerRegionEvidence(args[3]),
     // go-to-k/cdkd#4492: the replay's records, so deleting one holder of a
-    // resource another record still holds leaves it in place.
+    // resource another record still holds leaves it in place; and
+    // (go-to-k/cdkd#6808) the segment's failed ops, whose attempted writes
+    // are the run's own holders of a role or group it deletes.
     () =>
-      withStackRecords(replayStackRecordsView(args[1], args[4]?.orphanLogicalIds), () =>
-        replayRollbackUnbound(...args)
+      withStackRecords(
+        replayStackRecordsView(args[1], args[4]?.orphanLogicalIds, args[4]?.failedOperations),
+        () => replayRollbackUnbound(...args)
       )
   );
 }
@@ -145,9 +148,11 @@ export async function replayFailedOperations(
   return await withProducerRegions(
     () => replayProducerRegionEvidence(args[3]),
     // go-to-k/cdkd#4492: the replay's records, so deleting one holder of a
-    // resource another record still holds leaves it in place.
+    // resource another record still holds leaves it in place; and
+    // (go-to-k/cdkd#6808) the failed ops replayed, whose attempted writes are
+    // the run's own holders of a role or group it deletes.
     () =>
-      withStackRecords(replayStackRecordsView(args[1]), async () => {
+      withStackRecords(replayStackRecordsView(args[1], undefined, args[0]), async () => {
         // go-to-k/cdkd#6120: the ids a `--revert-failed` update moved off are
         // deleted after the last op: by the caller's own replay when it hands
         // a queue in (`cdkd rollback` runs it after the segment's completed

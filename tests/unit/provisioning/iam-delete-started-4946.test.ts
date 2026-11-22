@@ -47,6 +47,15 @@ import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-polic
 import { IAMInstanceProfileProvider } from '../../../src/provisioning/providers/iam-instance-profile-provider.js';
 import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
 import { replacedDeleteFailureVerdict } from '../../../src/deployment/rollback-executor/replaced-survivor.js';
+import {
+  destroyStackRecordsView,
+  withStackRecords,
+} from '../../../src/deployment/stack-records-scope.js';
+
+const ownHolder = (logicalId: string, resourceType: string, physicalId: string, properties: Record<string, unknown>) =>
+  destroyStackRecordsView({
+    [logicalId]: { resourceType, physicalId, properties, attributes: {}, dependencies: [] },
+  });
 
 /** An AWS refusal by name, shaped like the SDK's service exception. */
 function accessDenied(): Error {
@@ -116,11 +125,16 @@ beforeEach(() => {
 
 describe('AWS::IAM::Role delete (go-to-k/cdkd#4946)', () => {
   // A same-name re-create's delete-first, the one delete that still removes
-  // the role from its instance profiles (go-to-k/cdkd#6770).
+  // the role from its instance profiles (go-to-k/cdkd#6770): the stack's own,
+  // `prof` (go-to-k/cdkd#6808).
   const del = () =>
-    new IAMRoleProvider().delete('R', 'my-role', 'AWS::IAM::Role', undefined, {
-      stackHoldersStillAttached: true,
-    });
+    withStackRecords(
+      ownHolder('Prof', 'AWS::IAM::InstanceProfile', 'prof', { Roles: ['my-role'] }),
+      () =>
+        new IAMRoleProvider().delete('R', 'my-role', 'AWS::IAM::Role', undefined, {
+          stackHoldersStillAttached: true,
+        })
+    );
   const empty: Record<string, Handler> = {
     GetRoleCommand: () => ({ Role: { RoleName: 'my-role' } }),
     ListAttachedRolePoliciesCommand: () => ({ AttachedPolicies: [] }),
@@ -366,11 +380,14 @@ describe('AWS::IAM::User delete (go-to-k/cdkd#4946)', () => {
 
 describe('AWS::IAM::Group delete (go-to-k/cdkd#4946)', () => {
   // A same-name re-create's delete-first, the one delete that still removes
-  // the group's members (go-to-k/cdkd#6770).
+  // the group's members (go-to-k/cdkd#6770): the stack's own, `alice`
+  // (go-to-k/cdkd#6808).
   const del = () =>
-    new IAMUserGroupProvider().delete('G', 'eng', 'AWS::IAM::Group', undefined, {
-      stackHoldersStillAttached: true,
-    });
+    withStackRecords(ownHolder('Alice', 'AWS::IAM::User', 'alice', { Groups: ['eng'] }), () =>
+      new IAMUserGroupProvider().delete('G', 'eng', 'AWS::IAM::Group', undefined, {
+        stackHoldersStillAttached: true,
+      })
+    );
   const empty: Record<string, Handler> = {
     ListAttachedGroupPoliciesCommand: () => ({ AttachedPolicies: [] }),
     ListGroupPoliciesCommand: () => ({ PolicyNames: [] }),

@@ -39,6 +39,10 @@ import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-pr
 import { getLogger } from '../../../src/utils/logger.js';
 import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import {
+  destroyStackRecordsView,
+  withStackRecords,
+} from '../../../src/deployment/stack-records-scope.js';
+import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../src/utils/error-handler.js';
@@ -48,6 +52,26 @@ import {
 // (go-to-k/cdkd#6770); every other delete's refusal is
 // iam-role-refuse-out-of-stack-profile-6750.test.ts's.
 const DELETE_FIRST = { stackHoldersStillAttached: true } as const;
+// go-to-k/cdkd#6808: and from the stack's own profiles only, which its
+// records name: every profile these cases list is one.
+const OWN_PROFILES = destroyStackRecordsView(
+  Object.fromEntries(
+    ['profile-1', 'profile-2', 'my-instance-profile', 'already-removed'].map((name) => [
+      name,
+      {
+        resourceType: 'AWS::IAM::InstanceProfile',
+        physicalId: name,
+        properties: { Roles: ['my-role'] },
+        attributes: {},
+        dependencies: [],
+      },
+    ])
+  )
+);
+const deleteFirst = (provider: IAMRoleProvider) =>
+  withStackRecords(OWN_PROFILES, () =>
+    provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST)
+  );
 
 describe('IAMRoleProvider', () => {
   let provider: IAMRoleProvider;
@@ -63,7 +87,7 @@ describe('IAMRoleProvider', () => {
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
       );
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
@@ -71,6 +95,8 @@ describe('IAMRoleProvider', () => {
     it('should detach managed policies before deleting role', async () => {
       // GetRole - exists
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
@@ -83,12 +109,10 @@ describe('IAMRoleProvider', () => {
       mockSend.mockResolvedValueOnce({});
       // ListRolePolicies
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(7);
 
@@ -102,6 +126,8 @@ describe('IAMRoleProvider', () => {
     it('should delete inline policies before deleting role', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies
@@ -111,12 +137,10 @@ describe('IAMRoleProvider', () => {
       // DeleteRolePolicy x2
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({});
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(7);
 
@@ -129,10 +153,6 @@ describe('IAMRoleProvider', () => {
     it('should remove role from instance profiles before deleting role', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
-      // ListAttachedRolePolicies
-      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
-      // ListRolePolicies
-      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // ListInstanceProfilesForRole
       mockSend.mockResolvedValueOnce({
         InstanceProfiles: [
@@ -140,13 +160,17 @@ describe('IAMRoleProvider', () => {
           { InstanceProfileName: 'profile-2' },
         ],
       });
+      // ListAttachedRolePolicies
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      // ListRolePolicies
+      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // RemoveRoleFromInstanceProfile x2
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValueOnce({});
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(7);
 
@@ -160,6 +184,10 @@ describe('IAMRoleProvider', () => {
     it('should perform full cleanup: managed policies, inline policies, instance profiles, then delete', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({
+        InstanceProfiles: [{ InstanceProfileName: 'my-instance-profile' }],
+      });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
@@ -172,16 +200,12 @@ describe('IAMRoleProvider', () => {
       mockSend.mockResolvedValueOnce({ PolicyNames: ['InlinePolicy'] });
       // DeleteRolePolicy
       mockSend.mockResolvedValueOnce({});
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({
-        InstanceProfiles: [{ InstanceProfileName: 'my-instance-profile' }],
-      });
       // RemoveRoleFromInstanceProfile
       mockSend.mockResolvedValueOnce({});
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       // Total: GetRole + ListAttached + Detach + ListInline + DeleteInline + ListProfiles + RemoveFromProfile + DeleteRole = 8
       expect(mockSend).toHaveBeenCalledTimes(8);
@@ -194,6 +218,8 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException gracefully when detaching already-detached policy', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({
         AttachedPolicies: [
@@ -206,13 +232,11 @@ describe('IAMRoleProvider', () => {
       );
       // ListRolePolicies
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
       // Should not throw
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(6);
     });
@@ -220,6 +244,8 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException gracefully when deleting already-deleted inline policy', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies
@@ -228,12 +254,10 @@ describe('IAMRoleProvider', () => {
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
       );
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(6);
     });
@@ -241,14 +265,14 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException gracefully when removing role from already-removed instance profile', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
-      // ListAttachedRolePolicies
-      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
-      // ListRolePolicies
-      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // ListInstanceProfilesForRole
       mockSend.mockResolvedValueOnce({
         InstanceProfiles: [{ InstanceProfileName: 'already-removed' }],
       });
+      // ListAttachedRolePolicies
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      // ListRolePolicies
+      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // RemoveRoleFromInstanceProfile - already removed
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
@@ -256,7 +280,7 @@ describe('IAMRoleProvider', () => {
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(6);
     });
@@ -274,40 +298,40 @@ describe('IAMRoleProvider', () => {
       mockSend.mockRejectedValueOnce(new Error('Access Denied'));
 
       await expect(
-        provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST)
+        deleteFirst(provider)
       ).rejects.toThrow('Failed to delete IAM role MyRole');
     });
 
     it('should throw ProvisioningError when DeleteRole fails', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole - fails
       mockSend.mockRejectedValueOnce(new Error('DeleteConflict'));
 
       await expect(
-        provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST)
+        deleteFirst(provider)
       ).rejects.toThrow('Failed to delete IAM role MyRole');
     });
 
     it('should handle role with no attached policies, no inline policies, and no instance profiles', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
+      // ListInstanceProfilesForRole - empty
+      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // ListAttachedRolePolicies - empty
       mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
       // ListRolePolicies - empty
       mockSend.mockResolvedValueOnce({ PolicyNames: [] });
-      // ListInstanceProfilesForRole - empty
-      mockSend.mockResolvedValueOnce({ InstanceProfiles: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       // GetRole + 3 list calls + DeleteRole = 5
       expect(mockSend).toHaveBeenCalledTimes(5);
@@ -316,18 +340,18 @@ describe('IAMRoleProvider', () => {
     it('should handle NoSuchEntityException during ListInstanceProfilesForRole (role deleted between steps)', async () => {
       // GetRole
       mockSend.mockResolvedValueOnce({ Role: { RoleName: 'my-role' } });
-      // ListAttachedRolePolicies
-      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
-      // ListRolePolicies
-      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // ListInstanceProfilesForRole - role was deleted between steps
       mockSend.mockRejectedValueOnce(
         new NoSuchEntityException({ $metadata: {}, message: 'not found' })
       );
+      // ListAttachedRolePolicies
+      mockSend.mockResolvedValueOnce({ AttachedPolicies: [] });
+      // ListRolePolicies
+      mockSend.mockResolvedValueOnce({ PolicyNames: [] });
       // DeleteRole
       mockSend.mockResolvedValueOnce({});
 
-      await provider.delete('MyRole', 'my-role', 'AWS::IAM::Role', undefined, DELETE_FIRST);
+      await deleteFirst(provider);
 
       expect(mockSend).toHaveBeenCalledTimes(5);
     });

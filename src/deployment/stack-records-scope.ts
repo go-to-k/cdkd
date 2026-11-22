@@ -28,6 +28,9 @@ import { shouldRetainResource, type ResourceState } from '../types/state.js';
  *   `AWS::IAM::ManagedPolicy` provider asks the same of the principals it
  *   attaches to or detaches from (go-to-k/cdkd#6722). These are the only
  *   readers a `cdkd drift --revert` reaches (go-to-k/cdkd#6734).
+ * - `AWS::IAM::Role` / `AWS::IAM::Group` deletes that may strip their holders
+ *   (`stack-own-holders.ts`, go-to-k/cdkd#6808): the stack's own instance
+ *   profiles and member users, the only holders they remove.
  *
  * WHY AN ASYNC-LOCAL STORE rather than a `CreateContext` / `DeleteContext`
  * field: few providers read it, and the delete is reached from
@@ -77,6 +80,30 @@ export interface StackRecordsView {
    * view without one caches nothing.
    */
   readonly runKey?: object;
+  /**
+   * The writes of the journal a rollback replays that no record may hold
+   * (go-to-k/cdkd#6808): its failed ops, each with the properties it
+   * attempted. What they name is the rolled-back run's, so a rollback delete
+   * of a role or group strips the holders they add, as it does those a record
+   * names (`stack-own-holders.ts`). Only a replay has any.
+   */
+  readonly journaledWrites?: () => Iterable<JournaledWrite>;
+  /**
+   * Whether `logicalId`'s record leaves this operation while its resource
+   * stays (`DeletionPolicy: Retain` on a deploy's removal,
+   * go-to-k/cdkd#6808): such a holder is not pointed at a re-created role or
+   * group afterwards, so it is not the stack's to strip. Only a deploy has
+   * any.
+   */
+  readonly retainedLeaving?: (logicalId: string) => boolean;
+}
+
+/** A write a replayed journal names ({@link StackRecordsView.journaledWrites}). */
+export interface JournaledWrite {
+  readonly resourceType: string;
+  readonly physicalId?: string | undefined;
+  readonly properties?: Readonly<Record<string, unknown>> | undefined;
+  readonly attributes?: Readonly<Record<string, unknown>> | undefined;
 }
 
 const verifiedIdentityCaches = new WeakMap<object, Map<string, Promise<void>>>();
@@ -186,6 +213,10 @@ export function deployStackRecordsView(
     // SAME bag, and must not inherit the deploy's matches (it re-reads).
     runKey: {},
     live: settled,
+    retainedLeaving: (lid) =>
+      deleting.has(lid) &&
+      Object.hasOwn(before, lid) &&
+      shouldRetainResource(before[lid]!.deletionPolicy),
     survivors: () => [
       ...settled().filter(([lid]) => !deleting.has(lid)),
       ...Object.entries(before).filter(
@@ -217,7 +248,15 @@ export function destroyStackRecordsView(records: Record<string, ResourceState>):
  */
 export function replayStackRecordsView(
   records: Record<string, ResourceState>,
-  orphanLogicalIds: ReadonlySet<string> = new Set()
+  orphanLogicalIds: ReadonlySet<string> = new Set(),
+  /** The replayed journal's failed ops ({@link StackRecordsView.journaledWrites}). */
+  failedOps: ReadonlyArray<{
+    resourceType: string;
+    physicalId?: string | undefined;
+    attemptedProperties?: Record<string, unknown> | undefined;
+    physicalIdRecoveredFromError?: boolean | undefined;
+    createdResourceIdentity?: string | undefined;
+  }> = []
 ): StackRecordsView {
   // `=== 'Retain'`, not `shouldRetainResource`: the replay keeps a rolled-back
   // CREATE only under `Retain` (`rollback-executor/plan.ts`), deleting it under
@@ -232,8 +271,36 @@ export function replayStackRecordsView(
       ...Object.entries(records),
       ...kept.filter(([lid]) => !Object.hasOwn(records, lid)),
     ],
+    // An op `demoteSupersededOrphans` judged later activity may own
+    // (`physicalIdRecoveredFromError: false`) names nothing of this run's.
+    // The identity a failed create read back is the holder's recorded id
+    // (raw `UserId` / `InstanceProfileId`, the tokens the providers'
+    // `resourceIdentity` answer), so a same-named stranger is not stripped.
+    journaledWrites: () =>
+      failedOps
+        .filter((op) => op.physicalIdRecoveredFromError !== false)
+        .map((op) => {
+          const idKey = Object.hasOwn(JOURNALED_IDENTITY_KEYS, op.resourceType)
+            ? JOURNALED_IDENTITY_KEYS[op.resourceType]
+            : undefined;
+          return {
+            resourceType: op.resourceType,
+            physicalId: op.physicalId,
+            properties: op.attemptedProperties,
+            ...(idKey !== undefined &&
+              op.createdResourceIdentity !== undefined && {
+                attributes: { [idKey]: op.createdResourceIdentity },
+              }),
+          };
+        }),
   };
 }
+
+/** go-to-k/cdkd#6808: the attribute a journaled holder's read-back identity fills. */
+const JOURNALED_IDENTITY_KEYS: Readonly<Record<string, string>> = {
+  'AWS::IAM::User': 'UserId',
+  'AWS::IAM::InstanceProfile': 'InstanceProfileId',
+};
 
 /**
  * The record types a drift revert's view holds (go-to-k/cdkd#6734): the IAM

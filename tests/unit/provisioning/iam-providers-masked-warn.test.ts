@@ -65,6 +65,10 @@ import {
 } from '../../../src/provisioning/resource-name.js';
 import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';
 import { NoSuchEntityException } from '@aws-sdk/client-iam';
+import {
+  destroyStackRecordsView,
+  withStackRecords,
+} from '../../../src/deployment/stack-records-scope.js';
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import {
@@ -378,13 +382,26 @@ describe('the IAM deletes mask with DeleteContext.maskSecrets (go-to-k/cdkd#2007
     answerDelete();
     const provider = new IAMRoleProvider();
     const del = vi.spyOn(provider, 'delete');
-    await provider.update(
-      'MyRole',
-      OLD_SECRET,
-      'AWS::IAM::Role',
-      { RoleName: SECRET, AssumeRolePolicyDocument: DOC },
-      { RoleName: OLD_SECRET, AssumeRolePolicyDocument: DOC },
-      { maskSecrets }
+    // go-to-k/cdkd#6808: the profile listed is the stack's own, so the old
+    // role's delete strips it (and logs the strip masked).
+    const ownProfile = destroyStackRecordsView({
+      Profile: {
+        resourceType: 'AWS::IAM::InstanceProfile',
+        physicalId: SECRET,
+        properties: { Roles: [OLD_SECRET] },
+        attributes: {},
+        dependencies: [],
+      },
+    });
+    await withStackRecords(ownProfile, () =>
+      provider.update(
+        'MyRole',
+        OLD_SECRET,
+        'AWS::IAM::Role',
+        { RoleName: SECRET, AssumeRolePolicyDocument: DOC },
+        { RoleName: OLD_SECRET, AssumeRolePolicyDocument: DOC },
+        { maskSecrets }
+      )
     );
     const forwarded = del.mock.calls[0]![4]?.maskSecrets;
     expect(forwarded?.(OLD_SECRET)).toBe(SECRET_MASK);

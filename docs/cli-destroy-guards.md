@@ -119,7 +119,10 @@ refuses both the same way when it deletes the role or group because the
 template no longer has it, a nested stack holding it was removed, or it was
 replaced. Only a same-name re-create (`--recreate-via-*`, `--replace`'s
 delete-first), whose new copy the stack's own profile or membership takes back,
-and a rollback deleting what the failed deploy created still remove them.
+and a rollback deleting what the failed deploy created remove holders, and
+only the stack's own: the instance profiles and users the stack's records or
+the failed deploy name. A holder outside the stack refuses those too, before
+any holder is removed.
 
 ## `DeletionPolicy: Snapshot`: final snapshots on delete (`--skip-final-snapshot`)
 
