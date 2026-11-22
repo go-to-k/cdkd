@@ -334,6 +334,8 @@ export async function importCommand(
     if (overrides.size > 0) {
       logger.debug(`User-supplied physical IDs: ${[...overrides.keys()].join(', ')}`);
     }
+    // Taken before any CloudFormation-derived id is merged in (go-to-k/cdkd#6841).
+    const userOverrideIds: ReadonlySet<string> = new Set(overrides.keys());
 
     // Resolve the CloudFormation stack name we're migrating off, when the
     // user opted in. Done up front so we can populate overrides BEFORE the
@@ -735,6 +737,7 @@ export async function importCommand(
         assetRedirect,
         stateTemplate,
         overrides,
+        userOverrideIds,
         migrationCfnStackName,
         template,
         templateParser,

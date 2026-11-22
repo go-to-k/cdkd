@@ -42,7 +42,11 @@ import { importOne, refuseLostReplacedRows, warnMigrationOrphans } from './impor
 import { captureObservedForImportedResources } from './observed-capture.js';
 import { collectImportableResources, mergeCfnDerivedOverrides } from './overrides.js';
 import { resolveImportedProperties } from './resolve-properties.js';
-import { overlayDeployedProperties, readDeployedTemplate } from './deployed-properties.js';
+import {
+  overlayDeployedProperties,
+  readDeployedTemplate,
+  withDeployedDefinitions,
+} from './deployed-properties.js';
 import {
   buildStackState,
   rebuiltLogicalIdsFrom,
@@ -342,9 +346,29 @@ export async function importNestedStackChildrenRecursive(args: {
         overrides: childOverrides,
       });
 
+      // go-to-k/cdkd#6840: the child records its resources' properties as
+      // CloudFormation last deployed THIS child, as the root does, and its
+      // dispatch reads them too. Read by the child stack's ARN, before the
+      // child's dispatch and save, so a failure leaves this child (and the
+      // DeleteStack) undone.
+      const childDeployedTemplate = await readDeployedTemplate(
+        args.cfnClient,
+        childTreeNode.stackName,
+        safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
+          `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
+          `was not deleted; the re-run needs --force.`
+      );
+      const childOverlay = overlayDeployedProperties(
+        childStateTemplate,
+        childDeployedTemplate,
+        logger,
+        displaySafe(childStackName)
+      );
+      const childRecordTemplate = childOverlay.template;
+
       // Dispatch + collect rows (same shape as the root's dispatch loop).
       const rows: ImportRow[] = [];
-      for (const { logicalId, resource } of childResources) {
+      for (const { logicalId, resource } of withDeployedDefinitions(childResources, childOverlay)) {
         if (resource.Type === NESTED_STACK_RESOURCE_TYPE && childTreeNode.nested.has(logicalId)) {
           rows.push({
             logicalId,
@@ -362,6 +386,8 @@ export async function importNestedStackChildrenRecursive(args: {
           providerRegistry,
           override: childOverrides.get(logicalId),
           overrides: childOverrides,
+          // `--resource` overrides are root-scoped: every child id is CloudFormation's.
+          overrideFromCloudFormation: true,
         });
         rows.push(outcome);
       }
@@ -389,24 +415,6 @@ export async function importNestedStackChildrenRecursive(args: {
           `was not deleted; the re-run needs --force.`
       );
       warnMigrationOrphans(logger, childResources.length, childImported.size, childStackName);
-
-      // go-to-k/cdkd#6840: the child records its resources' properties as
-      // CloudFormation last deployed THIS child, as the root does. Read by the
-      // child stack's ARN, before the child's save, so a failure leaves this
-      // child (and the DeleteStack) undone.
-      const childDeployedTemplate = await readDeployedTemplate(
-        args.cfnClient,
-        childTreeNode.stackName,
-        safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
-          `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
-          `was not deleted; the re-run needs --force.`
-      );
-      const childRecordTemplate = overlayDeployedProperties(
-        childStateTemplate,
-        childDeployedTemplate,
-        logger,
-        displaySafe(childStackName)
-      );
 
       // Build child state (auto / whole-stack mode — no pre-existing
       // selective merge for a fresh nested child). Populate the v6

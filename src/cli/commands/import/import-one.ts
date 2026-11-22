@@ -34,7 +34,16 @@ function shownPhysicalId(
 
 export async function importOne(task: ImportTask): Promise<ImportRow> {
   const logger = getLogger();
-  const { logicalId, resource, stackName, region, providerRegistry, override, overrides } = task;
+  const {
+    logicalId,
+    resource,
+    stackName,
+    region,
+    providerRegistry,
+    override,
+    overrides,
+    overrideFromCloudFormation,
+  } = task;
 
   if (!providerRegistry.hasProvider(resource.Type)) {
     return {
@@ -107,6 +116,8 @@ export async function importOne(task: ImportTask): Promise<ImportRow> {
       region,
       properties,
       ...(override !== undefined && { knownPhysicalId: override }),
+      ...(override !== undefined &&
+        overrideFromCloudFormation === true && { knownPhysicalIdFromCloudFormation: true }),
     };
     const result: ResourceImportResult | null = await withPrintingSecrets(readBag, () =>
       provider.import!(input)

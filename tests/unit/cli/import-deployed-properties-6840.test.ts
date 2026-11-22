@@ -11,6 +11,7 @@ import {
   deployedPropertiesBlocker,
   overlayDeployedProperties,
   readDeployedTemplate,
+  withDeployedDefinitions,
 } from '../../../src/cli/commands/import/deployed-properties.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
 import type { ConsoleLogger } from '../../../src/utils/logger.js';
@@ -92,10 +93,38 @@ describe('deployedPropertiesBlocker', () => {
           F: { 'Fn::Sub': ['${Local}-${Stage}', { Local: { Ref: 'Sib' } }] },
           G: { 'Fn::If': ['Outer', 'x', { Ref: 'AWS::NoValue' }] },
           H: { 'Fn::FindInMap': ['M', 'a', 'b'] },
+          // A literal single-key `Condition` object naming no declared condition
+          // (SSM document content, say) is data, not a reference.
+          I: { Condition: 'NotACondition' },
         },
+        {},
         synth,
         synth
       )
+    ).toBeUndefined();
+  });
+
+  it('refuses a sibling whose TYPE changed, which answers Ref / GetAtt as the new type', () => {
+    const deployed = tpl({ ...synth.Resources, Sib: { Type: 'AWS::SQS::Queue' } });
+    expect(
+      deployedPropertiesBlocker({ P: { 'Fn::GetAtt': ['Sib', 'Arn'] } }, {}, synth, deployed)
+    ).toBe('they reference Sib, whose type changed in the synthesized template');
+  });
+
+  it.each([
+    ['Fn::ImportValue', { 'Fn::ImportValue': 'Producer:ExportsOutputRefOld' }],
+    ['Fn::GetStackOutput', { 'Fn::GetStackOutput': { StackName: 'P', OutputName: 'Old' } }],
+    ['an intrinsic the resolver does not model', { 'Fn::Unknown': ['x'] }],
+  ])('refuses %s the synthesized properties no longer make', (_label, node) => {
+    expect(deployedPropertiesBlocker({ P: node }, { P: 'literal' }, synth, synth)).toBe(
+      'they read a value from another stack that the synthesized properties no longer read'
+    );
+  });
+
+  it('admits a cross-stack read the synthesized properties make too, anywhere in them', () => {
+    const read = { 'Fn::ImportValue': 'Producer:Shared' };
+    expect(
+      deployedPropertiesBlocker({ P: read, Q: 'old' }, { Other: [read], Q: 'new' }, synth, synth)
     ).toBeUndefined();
   });
 
@@ -106,7 +135,7 @@ describe('deployedPropertiesBlocker', () => {
     ['a Sub target', { 'Fn::Sub': 'x-${Gone}' }],
     ['a Sub variable value', { 'Fn::Sub': ['${V}', { V: { Ref: 'Gone' } }] }],
   ])('refuses %s naming something the synthesized template lost', (_label, value) => {
-    expect(deployedPropertiesBlocker({ P: value }, synth, synth)).toBe(
+    expect(deployedPropertiesBlocker({ P: value }, {}, synth, synth)).toBe(
       'they reference Gone, which the synthesized template does not declare'
     );
   });
@@ -118,7 +147,7 @@ describe('deployedPropertiesBlocker', () => {
         Outer: { 'Fn::Not': [{ Condition: 'IsProd' }] },
       },
     });
-    expect(deployedPropertiesBlocker({ P: { 'Fn::If': ['Outer', 1, 2] } }, synth, deployed)).toBe(
+    expect(deployedPropertiesBlocker({ P: { 'Fn::If': ['Outer', 1, 2] } }, {}, synth, deployed)).toBe(
       'they use condition IsProd, which the synthesized template defines differently'
     );
   });
@@ -126,17 +155,16 @@ describe('deployedPropertiesBlocker', () => {
   it('refuses a mapping defined differently, and every mapping for a computed map name', () => {
     const deployed = tpl(synth.Resources, { Mappings: { M: { a: { b: 'OLD' } } } });
     expect(
-      deployedPropertiesBlocker({ P: { 'Fn::FindInMap': ['M', 'a', 'b'] } }, synth, deployed)
+      deployedPropertiesBlocker({ P: { 'Fn::FindInMap': ['M', 'a', 'b'] } }, {}, synth, deployed)
     ).toBe('they use mapping M, which the synthesized template defines differently');
     expect(
-      deployedPropertiesBlocker(
-        { P: { 'Fn::FindInMap': [{ Ref: 'Stage' }, 'a', 'b'] } },
+      deployedPropertiesBlocker({ P: { 'Fn::FindInMap': [{ Ref: 'Stage' }, 'a', 'b'] } }, {},
         synth,
         deployed
       )
     ).toMatch(/computed name/);
     expect(
-      deployedPropertiesBlocker({ P: { 'Fn::FindInMap': [{ Ref: 'Stage' }, 'a', 'b'] } }, synth, synth)
+      deployedPropertiesBlocker({ P: { 'Fn::FindInMap': [{ Ref: 'Stage' }, 'a', 'b'] } }, {}, synth, synth)
     ).toBeUndefined();
   });
 });
@@ -158,8 +186,8 @@ describe('overlayDeployedProperties', () => {
     const before = structuredClone(synth);
     const { log, info, warn } = logger();
     const out = overlayDeployedProperties(synth, deployed, log, 'S');
-    expect(out.Resources['R']).toEqual({ ...role('a') });
-    expect((out as unknown as { Outputs: unknown }).Outputs).toEqual({ O: { Value: 'synth' } });
+    expect(out.template.Resources['R']).toEqual({ ...role('a') });
+    expect((out.template as unknown as { Outputs: unknown }).Outputs).toEqual({ O: { Value: 'synth' } });
     expect(synth).toEqual(before);
     expect(info.mock.calls.flat().join(' ')).toContain('1 resource(s) in S differ');
     expect(warn).not.toHaveBeenCalled();
@@ -170,7 +198,7 @@ describe('overlayDeployedProperties', () => {
     const deployed = tpl({ Same: role('a') });
     const { log, info, warn } = logger();
     const out = overlayDeployedProperties(synth, deployed, log, 'S');
-    expect(out.Resources).toEqual(synth.Resources);
+    expect(out.template.Resources).toEqual(synth.Resources);
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
   });
@@ -187,7 +215,7 @@ describe('overlayDeployedProperties', () => {
       log,
       'S'
     );
-    expect(out.Resources['Child']!.Properties).toEqual({ TemplateURL: 'synth' });
+    expect(out.template.Resources['Child']!.Properties).toEqual({ TemplateURL: 'synth' });
   });
 
   it('keeps the synthesized Properties and WARNS when the type changed', () => {
@@ -198,7 +226,7 @@ describe('overlayDeployedProperties', () => {
       log,
       'S'
     );
-    expect(out.Resources['R']!.Properties).toEqual(role(['a', 'b']).Properties);
+    expect(out.template.Resources['R']!.Properties).toEqual(role(['a', 'b']).Properties);
     const warned = warn.mock.calls.flat().join(' ');
     expect(warned).toContain('R (AWS::IAM::Role) in S is recorded with the synthesized');
     expect(warned).toContain('CloudFormation deployed it as AWS::IAM::User');
@@ -212,10 +240,41 @@ describe('overlayDeployedProperties', () => {
       log,
       'S'
     );
-    expect(out.Resources['R']!.Properties).toEqual(role(['a', 'b']).Properties);
+    expect(out.template.Resources['R']!.Properties).toEqual(role(['a', 'b']).Properties);
     expect(warn.mock.calls.flat().join(' ')).toContain(
       'AssetParameterOld, which the synthesized template does not declare'
     );
+  });
+
+  it('records an EMPTY bag when CloudFormation deployed the resource with no Properties and the code added some', () => {
+    const { log } = logger();
+    const out = overlayDeployedProperties(
+      tpl({ B: { Type: 'AWS::S3::Bucket', Properties: { VersioningConfiguration: { Status: 'Enabled' } } } }),
+      tpl({ B: { Type: 'AWS::S3::Bucket' } }),
+      log,
+      'S'
+    );
+    expect(out.template.Resources['B']!.Properties).toEqual({});
+    expect([...out.overlaid]).toEqual(['B']);
+  });
+
+  it('withDeployedDefinitions swaps in only the overlaid definitions, keeping the rest by identity', () => {
+    const { log } = logger();
+    const synth = tpl({ Changed: role(['a', 'b']), Same: role('a') });
+    const overlay = overlayDeployedProperties(
+      synth,
+      tpl({ Changed: role('a'), Same: role('a') }),
+      log,
+      'S'
+    );
+    const rewritten = { Type: 'AWS::IAM::Role', Properties: { Rewritten: true } };
+    const entries = [
+      { logicalId: 'Changed', resource: synth.Resources['Changed']! },
+      { logicalId: 'Same', resource: rewritten },
+    ];
+    const out = withDeployedDefinitions(entries, overlay);
+    expect(out[0]!.resource.Properties).toEqual(role('a').Properties);
+    expect(out[1]).toBe(entries[1]);
   });
 
   it('writes a `__proto__` logical id as an OWN key, never as the prototype', () => {
@@ -223,8 +282,8 @@ describe('overlayDeployedProperties', () => {
     const deployed = tpl(JSON.parse('{"__proto__": {"Type": "AWS::SNS::Topic", "Properties": {"A": 2}}}'));
     const { log } = logger();
     const out = overlayDeployedProperties(synth, deployed, log, 'S');
-    expect(Object.getPrototypeOf(out.Resources)).toBe(Object.prototype);
-    expect(Object.prototype.hasOwnProperty.call(out.Resources, '__proto__')).toBe(true);
-    expect(out.Resources['__proto__']!.Properties).toEqual({ A: 2 });
+    expect(Object.getPrototypeOf(out.template.Resources)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(out.template.Resources, '__proto__')).toBe(true);
+    expect(out.template.Resources['__proto__']!.Properties).toEqual({ A: 2 });
   });
 });

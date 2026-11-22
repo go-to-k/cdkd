@@ -1114,6 +1114,68 @@ describe('cdkd import', () => {
     }
   });
 
+  it("refuses a nested child whose deployed template cannot be read, before its save and the DeleteStack (#6840)", async () => {
+    const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-deployed-fail-'));
+    try {
+      const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+      writeFileSync(
+        childTemplatePath,
+        JSON.stringify({
+          Resources: {
+            ChildPolicy: {
+              Type: 'AWS::IAM::Policy',
+              Properties: { PolicyName: 'p', Description: 'synth' },
+            },
+          },
+        })
+      );
+      const tmpl = template({
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'synth-url' } },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+      });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
+      });
+      const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'P',
+        physicalId: 'P',
+        resources: new Map([['Child', childArn]]),
+        nested: new Map([
+          [
+            'Child',
+            {
+              stackName: childArn,
+              physicalId: childArn,
+              resources: new Map([['ChildPolicy', 'p']]),
+              nested: new Map(),
+            },
+          ],
+        ]),
+      });
+      mockReadDeployedTemplate.mockImplementation(async (...args: unknown[]) => {
+        if (args[1] === childArn) throw new Error(`child read failed. ${String(args[2])}`);
+        return { Resources: {} };
+      });
+      mockPrepareRetirement.mockResolvedValue({ outcome: 'ready', templateUpdated: false });
+
+      await expect(
+        runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+      ).rejects.toThrow();
+
+      const printed = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toContain('child read failed. cdkd state for nested stack P~Child was not written');
+      const saved = mockSaveState.mock.calls.map((c) => (c as unknown[])[0]);
+      expect(saved).toEqual(['P']);
+      expect(mockDeleteRetiredStack).not.toHaveBeenCalled();
+    } finally {
+      rmSync(tmpdirPath, { recursive: true, force: true });
+    }
+  });
+
   it('leaves state untouched by the rewrite for nested-stack children (#1652)', async () => {
     // The recursive `--migrate-from-cloudformation` child walk reads each
     // nested template from its own file and applies the same §7 rewrite, so
@@ -4928,6 +4990,20 @@ describe('cdkd import', () => {
         expect(savedResource().observedProperties).toEqual({ BucketName: LIVE });
       });
 
+      it('ROOT migrate: a parameter only the DEPLOYED properties reference is still compared (#6840)', async () => {
+        setup();
+        const tmpl = paramTemplate();
+        tmpl.Resources['MyBucket']!.Properties = { BucketName: 'literal-in-code' };
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+        mockReadDeployedTemplate.mockResolvedValue(paramTemplate());
+        cfnSend.mockResolvedValue({
+          Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+        });
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation', 'Src']);
+        expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual(['Src']);
+        expect(savedResource().observedProperties).toBeUndefined();
+      });
+
       it('AUTO mode with a same-named CloudFormation stack asks about THAT stack and refuses', async () => {
         setup();
         mockTryGetCfnResourceMap.mockResolvedValue(new Map([['MyBucket', 'b']]));
@@ -5185,6 +5261,81 @@ describe('cdkd import', () => {
           cfnSend.mockResolvedValue({
             Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
           });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          // The parameterless ROOT asks nothing; the child asks by ARN.
+          expect(cfnSend.mock.calls.map((c) => c[0].input.StackName)).toEqual([childArn]);
+          const childSave = mockSaveState.mock.calls.find((c) => c[0] === 'P~Child')!;
+          const b = (childSave[2] as { resources: Record<string, { observedProperties?: unknown }> })
+            .resources['B']!;
+          expect(b.observedProperties).toBeUndefined();
+          expect(JSON.stringify(mockSaveState.mock.calls)).not.toContain(LIVE);
+          const warned = warnSpy.mock.calls.flat().join(' ');
+          expect(warned).toContain('resource(s) in P~Child depend');
+          expect(warned).not.toContain(childArn);
+        } finally {
+          rmSync(tmpdirPath, { recursive: true, force: true });
+        }
+      });
+      it('NESTED child: a parameter only the child\'s DEPLOYED properties reference is still compared (#6840)', async () => {
+        const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-2854-deployed-'));
+        try {
+          const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+          writeFileSync(
+            childTemplatePath,
+            JSON.stringify({
+              Parameters: { DbPassword: { Type: 'String', Default: 'CHANGEME', NoEcho: true } },
+              Resources: {
+                B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'literal-in-code' } },
+              },
+            })
+          );
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          // The readback belongs to the BUCKET alone: the parent's nested-stack
+          // row routes through the same mock, and a bucket-shaped answer there
+          // would put LIVE in the parent record by the fixture's own hand.
+          mockGetProvider.mockImplementation((t: string) => ({
+            import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+            readCurrentState: vi.fn(async () =>
+              t === 'AWS::S3::Bucket' ? { BucketName: LIVE } : undefined
+            ),
+          }));
+          const childArn = 'arn:aws:cloudformation:us-east-1:123456789012:stack/Child/u';
+          mockGetCfnResourceTree.mockResolvedValue({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                {
+                  stackName: childArn,
+                  physicalId: childArn,
+                  resources: new Map([['B', 'b']]),
+                  nested: new Map(),
+                },
+              ],
+            ]),
+          });
+          cfnSend.mockResolvedValue({
+            Stacks: [{ Parameters: [{ ParameterKey: 'DbPassword', ParameterValue: '****' }] }],
+          });
+          mockReadDeployedTemplate.mockImplementation(async (...args: unknown[]) =>
+            args[1] === childArn
+              ? {
+                  Resources: {
+                    B: { Type: 'AWS::S3::Bucket', Properties: { BucketName: { Ref: 'DbPassword' } } },
+                  },
+                }
+              : { Resources: {} }
+          );
 
           await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
 
@@ -5488,6 +5639,49 @@ describe('cdkd import', () => {
         );
         expect(mockSaveState).not.toHaveBeenCalled();
         expect(mockPrepareRetirement).not.toHaveBeenCalled();
+      });
+
+      it("hands the provider the DEPLOYED definition, and flags CloudFormation's id as such (#6841)", async () => {
+        const policy = (name: string): CloudFormationTemplate =>
+          template({
+            Pol: {
+              Type: 'AWS::IAM::Policy',
+              Properties: { PolicyName: name, PolicyDocument: { Statement: [] }, Roles: ['r'] },
+            },
+          });
+        mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', policy('RenamedInCode'))] });
+        mockHasProvider.mockReturnValue(true);
+        const importSpy = vi.fn(
+          async (_input: {
+            properties: Record<string, unknown>;
+            knownPhysicalIdFromCloudFormation?: boolean;
+          }) => ({ physicalId: 'p', attributes: {} })
+        );
+        mockGetProvider.mockReturnValue({ import: importSpy });
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'S',
+          physicalId: 'S',
+          resources: new Map([['Pol', 'S-Pol-1ABCDEFGHIJK']]),
+          nested: new Map(),
+        });
+        mockReadDeployedTemplate.mockResolvedValue(policy('DeployedName'));
+
+        await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(importSpy.mock.calls[0]![0].properties['PolicyName']).toBe('DeployedName');
+        expect(importSpy.mock.calls[0]![0].knownPhysicalIdFromCloudFormation).toBe(true);
+
+        importSpy.mockClear();
+        mockSaveState.mockClear();
+        await runImport([
+          'import',
+          '--app',
+          'x',
+          '--yes',
+          '--migrate-from-cloudformation',
+          '--resource',
+          'Pol=typed-by-the-operator',
+        ]);
+        expect(importSpy.mock.calls[0]![0].knownPhysicalIdFromCloudFormation).toBeUndefined();
       });
 
       it('never reads a deployed template outside a migration', async () => {

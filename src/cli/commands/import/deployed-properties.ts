@@ -87,11 +87,48 @@ interface ReferencedNames {
   mappings: Set<string>;
   /** A `Fn::FindInMap` whose map name is itself an intrinsic: every mapping counts. */
   anyMapping: boolean;
+  /** `{Condition: <name>}` objects: a condition only when some template declares the name. */
+  conditionKeys: Set<string>;
+  /**
+   * Intrinsic nodes whose value comes from OUTSIDE this stack's templates
+   * (`Fn::ImportValue`, `Fn::GetStackOutput`) or that the resolver does not
+   * model at all, verbatim.
+   */
+  external: unknown[];
 }
 
 function newNames(): ReferencedNames {
-  return { targets: new Set(), conditions: new Set(), mappings: new Set(), anyMapping: false };
+  return {
+    targets: new Set(),
+    conditions: new Set(),
+    mappings: new Set(),
+    anyMapping: false,
+    conditionKeys: new Set(),
+    external: [],
+  };
 }
+
+/**
+ * The intrinsics a value is resolved by from this stack's own templates, state
+ * and pseudo parameters alone. Any other `Fn::` key either reads another stack
+ * (`Fn::ImportValue`, `Fn::GetStackOutput`) or is not one the resolver knows.
+ */
+const STACK_LOCAL_INTRINSICS: ReadonlySet<string> = new Set([
+  'Fn::GetAtt',
+  'Fn::Join',
+  'Fn::Sub',
+  'Fn::Select',
+  'Fn::Split',
+  'Fn::If',
+  'Fn::Equals',
+  'Fn::And',
+  'Fn::Or',
+  'Fn::Not',
+  'Fn::FindInMap',
+  'Fn::Base64',
+  'Fn::GetAZs',
+  'Fn::Cidr',
+]);
 
 /** The `${X}` / `${X.Attr}` targets of a `Fn::Sub` string, minus its own variables. */
 function subTargets(text: string, localVariables: ReadonlySet<string>, out: Set<string>): void {
@@ -120,7 +157,9 @@ function collectNames(value: unknown, out: ReferencedNames): void {
       return;
     }
     if (key === 'Condition' && typeof arg === 'string') {
-      out.conditions.add(arg);
+      // A literal `{"Condition": "x"}` (an SSM document's content, say) is not
+      // a reference; the blocker counts only a name some template declares.
+      out.conditionKeys.add(arg);
       return;
     }
     if (key === 'Fn::GetAtt') {
@@ -160,6 +199,11 @@ function collectNames(value: unknown, out: ReferencedNames): void {
       collectNames(arg, out);
       return;
     }
+    if (key.startsWith('Fn::') && !STACK_LOCAL_INTRINSICS.has(key)) {
+      out.external.push(obj);
+      collectNames(arg, out);
+      return;
+    }
   }
   for (const child of Object.values(obj)) collectNames(child, out);
 }
@@ -195,6 +239,7 @@ function hasOwn(record: Record<string, unknown>, key: string): boolean {
  */
 export function deployedPropertiesBlocker(
   deployedProperties: unknown,
+  synthProperties: unknown,
   synthTemplate: CloudFormationTemplate,
   deployedTemplate: CloudFormationTemplate
 ): string | undefined {
@@ -203,14 +248,44 @@ export function deployedPropertiesBlocker(
 
   const synthParameters = section(synthTemplate, 'Parameters');
   const synthResources = section(synthTemplate, 'Resources');
+  const deployedResources = section(deployedTemplate, 'Resources');
   for (const target of names.targets) {
     if (target.startsWith('AWS::')) continue;
-    if (hasOwn(synthParameters, target) || hasOwn(synthResources, target)) continue;
+    if (hasOwn(synthParameters, target)) continue;
+    if (hasOwn(synthResources, target)) {
+      // A sibling whose TYPE changed answers `Ref` / `Fn::GetAtt` as the new type.
+      const was = hasOwn(deployedResources, target)
+        ? (deployedResources[target] as { Type?: unknown } | null)?.Type
+        : undefined;
+      const now = (synthResources[target] as { Type?: unknown } | null)?.Type;
+      if (was === undefined || was === now) continue;
+      return safeMsg`they reference ${logicalIdShown(target)}, whose type changed in the synthesized template`;
+    }
     return safeMsg`they reference ${logicalIdShown(target)}, which the synthesized template does not declare`;
+  }
+
+  // A cross-stack read (or an intrinsic the resolver does not model) is
+  // vouched for only when the synthesized properties make the SAME read: the
+  // value it named may be gone (a CDK auto-export the code stopped using is
+  // removed from the producer too) and the import has nothing else to resolve
+  // it from.
+  if (names.external.length > 0) {
+    const synthNames = newNames();
+    collectNames(synthProperties, synthNames);
+    for (const node of names.external) {
+      if (!synthNames.external.some((other) => isDeepStrictEqual(node, other))) {
+        return 'they read a value from another stack that the synthesized properties no longer read';
+      }
+    }
   }
 
   const synthConditions = section(synthTemplate, 'Conditions');
   const deployedConditions = section(deployedTemplate, 'Conditions');
+  for (const name of names.conditionKeys) {
+    if (hasOwn(synthConditions, name) || hasOwn(deployedConditions, name)) {
+      names.conditions.add(name);
+    }
+  }
   const pending = [...names.conditions];
   const seen = new Set<string>();
   while (pending.length > 0) {
@@ -226,7 +301,7 @@ export function deployedPropertiesBlocker(
     }
     const inner = newNames();
     collectNames(deployedConditions[condition], inner);
-    pending.push(...inner.conditions);
+    pending.push(...inner.conditions, ...inner.conditionKeys);
   }
 
   const synthMappings = section(synthTemplate, 'Mappings');
@@ -273,7 +348,7 @@ export function overlayDeployedProperties(
   deployedTemplate: CloudFormationTemplate,
   logger: ConsoleLogger,
   stackLabel: string
-): CloudFormationTemplate {
+): DeployedPropertiesOverlay {
   const deployedResources = section(deployedTemplate, 'Resources');
   const resources: Record<string, TemplateResource> = {};
   const pending: string[] = [];
@@ -291,7 +366,12 @@ export function overlayDeployedProperties(
     const blocker =
       deployed.Type !== resource.Type
         ? safeMsg`CloudFormation deployed it as ${resourceTypeShown(String(deployed.Type))}`
-        : deployedPropertiesBlocker(deployedProperties, synthTemplate, deployedTemplate);
+        : deployedPropertiesBlocker(
+            deployedProperties,
+            synthProperties,
+            synthTemplate,
+            deployedTemplate
+          );
     if (blocker !== undefined) {
       logger.warn(
         safeMsg`--migrate-from-cloudformation: ${logicalIdShown(logicalId)} (${resourceTypeShown(resource.Type)}) ` +
@@ -315,5 +395,33 @@ export function overlayDeployedProperties(
         `CloudFormation deployed, so the next 'cdkd diff' shows the change and 'cdkd deploy' applies it.`
     );
   }
-  return { ...synthTemplate, Resources: resources };
+  return { template: { ...synthTemplate, Resources: resources }, overlaid: new Set(pending) };
+}
+
+/** {@link overlayDeployedProperties}' answer. */
+export interface DeployedPropertiesOverlay {
+  /** The template whose `Properties` the import records. */
+  template: CloudFormationTemplate;
+  /**
+   * The logical ids whose `Properties` are the DEPLOYED ones. The dispatch
+   * hands a provider's `import()` these, since they are what AWS holds (an
+   * `AWS::IAM::Policy` records its deployed `PolicyName`, not a renamed one).
+   */
+  overlaid: ReadonlySet<string>;
+}
+
+/**
+ * The dispatch's resource list with each overlaid resource's definition taken
+ * from `overlay.template`, the rest unchanged (in cdkd-assets mode the
+ * unchanged ones keep the asset-rewritten definition `provider.import()` got
+ * before go-to-k/cdkd#6840).
+ */
+export function withDeployedDefinitions<
+  T extends { logicalId: string; resource: TemplateResource },
+>(resources: readonly T[], overlay: DeployedPropertiesOverlay): T[] {
+  return resources.map((entry) =>
+    overlay.overlaid.has(entry.logicalId)
+      ? { ...entry, resource: overlay.template.Resources[entry.logicalId]! }
+      : entry
+  );
 }

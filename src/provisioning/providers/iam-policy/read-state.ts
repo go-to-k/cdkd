@@ -15,7 +15,7 @@ import { DriftReadRefusedError, RESOURCE_NOT_FOUND } from '../../../types/resour
 import { safeMsg } from '../../../utils/display-safe.js';
 import { calculateResourceDrift } from '../../../analyzer/drift-calculator.js';
 import { verbatimEchoDriftKeys } from '../../../analyzer/drift-verbatim-paths.js';
-import { readPolicyTargetLists } from './shared.js';
+import { IAM_POLICY_NAME, readPolicyTargetLists } from './shared.js';
 import { markCopiesAgreed } from './agreeing-copies.js';
 import { isStoredExpression } from '../../iam-sibling-managed-policies.js';
 import {
@@ -345,16 +345,18 @@ export function decodePolicyDocument(this: IAMPolicyProvider, raw: string | unde
  * Cloud Control API fallback handles import via the same explicit
  * override mode.
  *
- * **The recorded id is the template's `PolicyName`** whenever that is a plain
- * string (go-to-k/cdkd#6841). It is what `create()` records and what every
- * reader (`readCurrentState`, `delete()`) addresses the policy by, while the id
- * an import is handed may not be a name at all: `--migrate-from-cloudformation`
- * and auto mode seed it from CloudFormation's `PhysicalResourceId`, which for
- * this type is a generated id (`main--Cover-LxKVLoikcQa9`) naming no IAM
- * object, so the record read as DELETED on the first `cdkd drift`. A
- * `PolicyName` that is not a plain string (an intrinsic the import could not
- * resolve, or a `{{resolve:...}}` reference, whose value must never become a
- * physical id) keeps the handed id, as before.
+ * **A CloudFormation-supplied id is recorded as the template's `PolicyName`**
+ * (go-to-k/cdkd#6841). The name is what `create()` records and what every
+ * reader (`readCurrentState`, `delete()`) addresses the policy by, while
+ * `--migrate-from-cloudformation`, auto mode and a nested child hand this
+ * import CloudFormation's `PhysicalResourceId`, which for this type is a
+ * generated id (`main--Cover-LxKVLoikcQa9`) naming no IAM object, so the record
+ * read as DELETED on the first `cdkd drift`. Under a migration the properties
+ * are the DEPLOYED ones, so the name is the one AWS holds. An id the operator
+ * passed with `--resource` is kept as given, and so is any id when `PolicyName`
+ * is not a plain IAM policy name (an unresolved intrinsic, a `{{resolve:...}}`
+ * reference, whose value must never become a physical id, or a `:` that
+ * `delete()` would split as the legacy `policy:role` form).
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- explicit-override-only intentionally has no AWS calls
 export async function importImpl(
@@ -364,9 +366,9 @@ export async function importImpl(
   if (input.knownPhysicalId) {
     const policyName = input.properties['PolicyName'];
     if (
+      input.knownPhysicalIdFromCloudFormation === true &&
       typeof policyName === 'string' &&
-      policyName.length > 0 &&
-      !policyName.includes('{{resolve:') &&
+      IAM_POLICY_NAME.test(policyName) &&
       policyName !== input.knownPhysicalId
     ) {
       this.logger.debug(

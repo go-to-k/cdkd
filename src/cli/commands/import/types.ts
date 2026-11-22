@@ -147,6 +147,12 @@ export interface ImportTask {
    * `--migrate-from-cloudformation`).
    */
   overrides: Map<string, string>;
+  /**
+   * `override` is CloudFormation's `PhysicalResourceId` (a migration, an
+   * auto-mode lookup, a nested child), not a value the operator passed with
+   * `--resource` / `--resource-mapping` (go-to-k/cdkd#6841).
+   */
+  overrideFromCloudFormation?: boolean;
 }
 
 /** Per-filter counts from {@link mergeCfnDerivedOverrides}. */

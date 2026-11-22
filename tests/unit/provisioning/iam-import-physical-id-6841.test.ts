@@ -19,7 +19,11 @@ import { IAMPolicyProvider } from '../../../src/provisioning/providers/iam-polic
 
 const CFN_ID = 'main--Cover-LxKVLoikcQa9';
 
-function policyInput(properties: Record<string, unknown>, knownPhysicalId?: string) {
+function policyInput(
+  properties: Record<string, unknown>,
+  knownPhysicalId?: string,
+  fromCloudFormation = true
+) {
   return {
     logicalId: 'CoverageAuditRoleDefaultPolicy8A0E635C',
     resourceType: 'AWS::IAM::Policy',
@@ -27,6 +31,8 @@ function policyInput(properties: Record<string, unknown>, knownPhysicalId?: stri
     region: 'us-east-1',
     properties,
     ...(knownPhysicalId !== undefined && { knownPhysicalId }),
+    ...(knownPhysicalId !== undefined &&
+      fromCloudFormation && { knownPhysicalIdFromCloudFormation: true }),
   };
 }
 
@@ -59,12 +65,20 @@ describe('AWS::IAM::Policy import records the PolicyName (#6841)', () => {
     ['an unresolved intrinsic', { 'Fn::Join': ['', ['a', 'b']] }],
     ['a dynamic reference', '{{resolve:ssm:/policy/name}}'],
     ['an empty string', ''],
+    ['not an IAM policy name (a `:` delete would split as policy:role)', 'a:victimRole'],
     ['an absent key', undefined],
   ])('keeps the handed id when PolicyName is %s', async (_label, policyName) => {
     const properties: Record<string, unknown> = { PolicyDocument: document, Roles: ['r'] };
     if (policyName !== undefined) properties['PolicyName'] = policyName;
     const result = await new IAMPolicyProvider().import(policyInput(properties, CFN_ID));
     expect(result?.physicalId).toBe(CFN_ID);
+  });
+
+  it('keeps an id the OPERATOR passed with --resource, whatever the template names', async () => {
+    const result = await new IAMPolicyProvider().import(
+      policyInput({ PolicyName: 'P1', PolicyDocument: document, Roles: ['r'] }, 'legacy-name', false)
+    );
+    expect(result?.physicalId).toBe('legacy-name');
   });
 
   it('still finds nothing without a handed id', async () => {
