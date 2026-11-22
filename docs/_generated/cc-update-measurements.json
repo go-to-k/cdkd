@@ -1,8 +1,8 @@
 {
   "summary": {
-    "types": 83,
+    "types": 86,
     "clean": 60,
-    "refuses": 5,
+    "refuses": 8,
     "no-mutable-property": 18,
     "not-measured": 0
   },
@@ -134,6 +134,15 @@
       "measured": "2026-11-20"
     },
     {
+      "type": "AWS::Bedrock::Flow",
+      "probe": "DefinitionString / DefinitionSubstitutions / DefinitionS3Location (UpdateFlow)",
+      "result": "refuses",
+      "fix": "cc-read-back-exclusive-keys",
+      "issue": 6819,
+      "measured": "2026-11-22",
+      "note": "read-back Definition sent beside the declared DefinitionString or DefinitionS3Location"
+    },
+    {
       "type": "AWS::CloudFront::Function",
       "probe": "FunctionConfig.Comment (UpdateFunction + PublishFunction)",
       "result": "clean",
@@ -238,6 +247,15 @@
       "result": "no-mutable-property",
       "issue": 6676,
       "measured": "2026-11-20"
+    },
+    {
+      "type": "AWS::Connect::User",
+      "probe": "IdentityInfo.FirstName (UpdateUserIdentityInfo)",
+      "result": "refuses",
+      "fix": "cc-read-back-default-paths",
+      "issue": 6820,
+      "measured": "2026-11-22",
+      "note": "read-back VoiceEnhancementConfigs [{ Channel: VOICE }] lacks the required VoiceEnhancementMode; Cloud Control model validation refuses it"
     },
     {
       "type": "AWS::DSQL::Cluster",
@@ -579,6 +597,15 @@
       "result": "no-mutable-property",
       "issue": 6676,
       "measured": "2026-11-20"
+    },
+    {
+      "type": "AWS::StepFunctions::StateMachineAlias",
+      "probe": "DeploymentPreference ALL_AT_ONCE and CANARY (UpdateStateMachineAlias)",
+      "result": "refuses",
+      "fix": "cc-read-back-exclusive-keys",
+      "issue": 6818,
+      "measured": "2026-11-22",
+      "note": "read-back RoutingConfiguration sent beside the declared DeploymentPreference"
     },
     {
       "type": "AWS::VerifiedPermissions::PolicyStore",

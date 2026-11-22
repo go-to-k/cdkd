@@ -26,6 +26,7 @@
 export type CcUpdateFix =
   | 'cc-read-back-empty-keys'
   | 'cc-read-back-default-paths'
+  | 'cc-read-back-exclusive-keys'
   | 'guardduty-detector-patch'
   | 'elbv2-listener-rule-patch';
 
@@ -33,6 +34,7 @@ export type CcUpdateFix =
 export const CC_UPDATE_FIX_MODULES: Readonly<Record<CcUpdateFix, string>> = {
   'cc-read-back-empty-keys': 'cc-read-back-empty-keys.ts',
   'cc-read-back-default-paths': 'cc-read-back-default-paths.ts',
+  'cc-read-back-exclusive-keys': 'cc-read-back-exclusive-keys.ts',
   'guardduty-detector-patch': 'guardduty-detector-patch.ts',
   'elbv2-listener-rule-patch': 'elbv2-listener-rule-patch.ts',
 };
@@ -181,6 +183,15 @@ export const CC_UPDATE_MEASUREMENTS: readonly CcUpdateMeasurement[] = [
     measured: '2026-11-20',
   },
   {
+    type: 'AWS::Bedrock::Flow',
+    probe: 'DefinitionString / DefinitionSubstitutions / DefinitionS3Location (UpdateFlow)',
+    result: 'refuses',
+    fix: 'cc-read-back-exclusive-keys',
+    issue: 6819,
+    measured: '2026-11-22',
+    note: 'read-back Definition sent beside the declared DefinitionString or DefinitionS3Location',
+  },
+  {
     type: 'AWS::CloudFront::Function',
     probe: 'FunctionConfig.Comment (UpdateFunction + PublishFunction)',
     result: 'clean',
@@ -285,6 +296,15 @@ export const CC_UPDATE_MEASUREMENTS: readonly CcUpdateMeasurement[] = [
     result: 'no-mutable-property',
     issue: 6676,
     measured: '2026-11-20',
+  },
+  {
+    type: 'AWS::Connect::User',
+    probe: 'IdentityInfo.FirstName (UpdateUserIdentityInfo)',
+    result: 'refuses',
+    fix: 'cc-read-back-default-paths',
+    issue: 6820,
+    measured: '2026-11-22',
+    note: 'read-back VoiceEnhancementConfigs [{ Channel: VOICE }] lacks the required VoiceEnhancementMode; Cloud Control model validation refuses it',
   },
   {
     type: 'AWS::DSQL::Cluster',
@@ -626,6 +646,15 @@ export const CC_UPDATE_MEASUREMENTS: readonly CcUpdateMeasurement[] = [
     result: 'no-mutable-property',
     issue: 6676,
     measured: '2026-11-20',
+  },
+  {
+    type: 'AWS::StepFunctions::StateMachineAlias',
+    probe: 'DeploymentPreference ALL_AT_ONCE and CANARY (UpdateStateMachineAlias)',
+    result: 'refuses',
+    fix: 'cc-read-back-exclusive-keys',
+    issue: 6818,
+    measured: '2026-11-22',
+    note: 'read-back RoutingConfiguration sent beside the declared DeploymentPreference',
   },
   {
     type: 'AWS::VerifiedPermissions::PolicyStore',

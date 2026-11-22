@@ -24,9 +24,13 @@ import {
   SERVICE_TOKEN_CHANGE_REFUSED,
   serviceTokenUpdateRefusal,
 } from '../../custom-resource-service-token.js';
+import { movedReferencesRefusedOnUpdate } from '../../../provisioning/write-only-properties.js';
 import { setAtCoordinate } from './helpers.js';
 import type { ResolvedUpdateInputs } from './resolve-inputs.js';
 import type { ComparedUpdate } from './compare-record.js';
+
+/** The error code of the refused re-pointed write-only reference (go-to-k/cdkd#6820). */
+export const WRITE_ONLY_KEY_CHANGE_REFUSED = 'WRITE_ONLY_KEY_CHANGE_REFUSED';
 
 /** What `provisionUpdate` hands {@link finishUpdate}: its parameters and the values its phases bound. */
 export interface FinishUpdateInput
@@ -280,6 +284,28 @@ export async function finishUpdate(
             createSecretMasker(updateSecrets)
           ),
           SERVICE_TOKEN_CHANGE_REFUSED
+        )
+      )
+    );
+  }
+  // go-to-k/cdkd#6820: a write-only key the handler refuses on every update
+  // (a Connect user's `Password`) whose template now reads ANOTHER secret
+  // reference. The provider leaves a reference-only difference out (a rotation
+  // of the same reference must not be re-sent), so sent on, this would succeed
+  // while AWS keeps the old value and the record names the new one. Compared
+  // as written, never by `changedProperties`: its provenance arm counts a
+  // rotation as a change.
+  const movedRefused = movedReferencesRefusedOnUpdate(
+    resourceType,
+    desiredForSkipCheckAsWritten,
+    currentPropsAsWritten
+  );
+  if (movedRefused.length > 0) {
+    throw markRefusedBeforeApplying(
+      markNonRetryable(
+        new CdkdError(
+          safeMsg`${logicalId} (${resourceType}): ${movedRefused.join(', ')} cannot be changed after creation, and its secret reference changed (or was added or removed) since the recorded value. Restore the recorded reference, or replace the resource under a new logical id.`,
+          WRITE_ONLY_KEY_CHANGE_REFUSED
         )
       )
     );

@@ -25,6 +25,12 @@ export interface CcReadBackDefault {
  *   only supported with Opensearch Optimized instance types", then "Serverless
  *   Vector Acceleration features are supported from OS 3.1"). The same update
  *   with both removed succeeds, and AWS still reports the same values.
+ * - `AWS::Connect::User`: a user created without it reads back (and
+ *   `DescribeUser` reports) `VoiceEnhancementConfigs: [{ Channel: "VOICE" }]`,
+ *   which lacks the `VoiceEnhancementMode` the schema requires, so Cloud
+ *   Control's model validation refuses every update ("#/VoiceEnhancementConfigs/0:
+ *   required key [VoiceEnhancementMode] not found", go-to-k/cdkd#6820). The same
+ *   update with it removed succeeds, and AWS still reports the same value.
  *
  * A path joins by measurement, never by reading its schema, with the exact
  * value seen refused: a different value is something the user or AWS chose,
@@ -33,6 +39,7 @@ export interface CcReadBackDefault {
  * read-back.
  */
 export const CC_READ_BACK_DEFAULT_PATHS: Readonly<Record<string, readonly CcReadBackDefault[]>> = {
+  'AWS::Connect::User': [{ path: ['VoiceEnhancementConfigs'], value: [{ Channel: 'VOICE' }] }],
   'AWS::OpenSearchService::Domain': [
     { path: ['AdvancedOptions', 'override_main_response_version'], value: 'false' },
     {

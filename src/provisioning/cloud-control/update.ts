@@ -21,18 +21,23 @@ import {
   hasCcReadBackEmptyKeys,
   withCcReadBackEmptyKeyRemovals,
 } from '../cc-read-back-empty-keys.js';
+import { withCcReadBackExclusiveKeyRemovals } from '../cc-read-back-exclusive-keys.js';
 import {
   apiGatewayV2DefinitionObject,
   isApiGatewayV2Import,
   splitApiGatewayV2ImportPatch,
   type ApiGatewayV2Reimport,
 } from '../apigwv2-body-import-patch.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
+import {
+  onlySecretReferencesDiffer,
+  unchangedBehindSecretReference,
+} from '../secret-reference-immutable.js';
 import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
 import {
   getTopLevelKeysHoldingUnreadableCreateOnly,
   getTopLevelWriteOnlyProperties,
   getWriteOnlyKeysKeptWhenOmitted,
+  isWriteOnlyKeyRefusedOnUpdate,
 } from '../write-only-properties.js';
 import {
   getReadOnlyPropertyPaths,
@@ -238,10 +243,23 @@ export async function updateInIdLogScope(
       );
       const previousWithoutWriteOnly = { ...cleanPreviousProperties };
       for (const propertyName of writeOnlyProperties) {
+        const previous = cleanPreviousProperties[propertyName];
+        const desired = cleanProperties[propertyName];
         if (
           (keptOnPreviousSide.has(propertyName) || keptWhenOmitted.has(propertyName)) &&
-          isDeepStrictEqual(cleanPreviousProperties[propertyName], cleanProperties[propertyName])
+          isDeepStrictEqual(previous, desired)
         ) {
+          continue;
+        }
+        // go-to-k/cdkd#6820: a key the handler refuses on every update stays
+        // out while only its secret references differ (a resolved
+        // `{{resolve:...}}` password); see the table.
+        if (
+          keptWhenOmitted.has(propertyName) &&
+          isWriteOnlyKeyRefusedOnUpdate(resourceType, propertyName) &&
+          onlySecretReferencesDiffer(desired, previous, context?.maskSecrets)
+        ) {
+          previousWithoutWriteOnly[propertyName] = desired;
           continue;
         }
         delete previousWithoutWriteOnly[propertyName];
@@ -306,6 +324,17 @@ export async function updateInIdLogScope(
         await readLiveModel()
       );
     }
+
+    // go-to-k/cdkd#6818, go-to-k/cdkd#6819: a write-only key the read model
+    // holds under another key AWS refuses beside it (an alias's
+    // `DeploymentPreference` vs `RoutingConfiguration`); see the helper. Same
+    // shared read, taken only when the patch writes such a key.
+    patch = await withCcReadBackExclusiveKeyRemovals(
+      resourceType,
+      patch,
+      cleanProperties,
+      readLiveModel
+    );
 
     // go-to-k/cdkd#6294: a whole-object op drops the AWS-defaulted nested
     // create-only members Cloud Control reads; see the helper. The schema

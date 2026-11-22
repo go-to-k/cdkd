@@ -23,12 +23,19 @@ const texts: HelperTexts = {
     "export const CC_READ_BACK_EMPTY_KEYS: Readonly<Record<string, readonly string[]>> = {\n  'AWS::DataSync::Task': ['Schedule'],\n};\n",
   'cc-read-back-default-paths':
     "export const CC_READ_BACK_DEFAULT_PATHS: Readonly<Record<string, readonly X[]>> = {\n  'AWS::OpenSearchService::Domain': [\n    { path: ['AdvancedOptions'], value: { 'AWS::No::Nest': 1 } },\n  ],\n};\n",
+  'cc-read-back-exclusive-keys':
+    "export const CC_READ_BACK_EXCLUSIVE_KEYS: Readonly<\n  Record<string, readonly X[]>\n> = {\n  'AWS::StepFunctions::StateMachineAlias': [\n    { readBack: 'RoutingConfiguration', writtenAs: ['DeploymentPreference'] },\n  ],\n};\n",
   'guardduty-detector-patch': "const DETECTOR_TYPE = 'AWS::GuardDuty::Detector';\n",
   'elbv2-listener-rule-patch': "const LISTENER_RULE_TYPE = 'AWS::ELBv2::ListenerRule';\n",
 };
 const good: CcUpdateMeasurement[] = [
   row({ type: 'AWS::OpenSearchService::Domain', result: 'refuses', fix: 'cc-read-back-default-paths' }),
   row({ type: 'AWS::DataSync::Task', result: 'refuses', fix: 'cc-read-back-empty-keys' }),
+  row({
+    type: 'AWS::StepFunctions::StateMachineAlias',
+    result: 'refuses',
+    fix: 'cc-read-back-exclusive-keys',
+  }),
   row({ type: 'AWS::GuardDuty::Detector', result: 'refuses', fix: 'guardduty-detector-patch' }),
   row({ type: 'AWS::ELBv2::ListenerRule', result: 'refuses', fix: 'elbv2-listener-rule-patch' }),
 ];
