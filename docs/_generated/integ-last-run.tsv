@@ -459,9 +459,6 @@ s3-object-lock	2026-11-22T06:03:31Z	PASS	90	verify.sh	us-east-1 rc ok, orph clea
 s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-11-10T16:44:10Z	PASS	80	verify.sh	rc ok, orph clean, us-west-2
 s3-subconfig-removal	2026-11-22T06:03:31Z	PASS	351	verify.sh	us-east-1 rc ok, orph clean, head ee69b4747 (#6817)
-s3-tables	2026-11-22T05:45:00Z	PASS	295	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
-s3-vectors	2026-11-21T21:47:36Z	PASS	80	verify.sh	rc ok, orph clean; Phase 1.9 in-stack index delete cleared listing
-s3-subconfig-removal	2026-11-06T16:07:14Z	PASS	270	verify.sh	post-hoc on main after #5842 split; rc ok, orph clean
 s3-tables	2026-11-22T09:34:17Z	PASS	300	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean; #6772 refusal mask path
 s3-vectors	2026-11-22T09:34:17Z	PASS	90	verify.sh	rc ok, orph clean; Phase 1.9 in-stack index delete cleared listing; #6772 refusal mask path
 schedule-group-rename-rollback	2026-11-16T15:41:55Z	PASS	228	verify.sh	rc ok, orph clean; phase 2b red on pre-fix build (#6423)
