@@ -305,6 +305,52 @@ describe('AppConfigEnvironmentProvider wiring and failure handling', () => {
       expect(inputOf(0)).toEqual({ ApplicationId: 'app123', EnvironmentId: 'env456' });
     });
 
+    it('completes a bare CloudFormation EnvironmentId with the resolved ApplicationId (#6848)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.import({
+        logicalId: 'Env',
+        resourceType: TYPE,
+        stackName: 's',
+        region: 'us-east-1',
+        properties: { ApplicationId: 'app123' },
+        knownPhysicalId: 'env456',
+      });
+      expect(result).toEqual({ physicalId: ID, attributes: { EnvironmentId: 'env456' } });
+      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(GetEnvironmentCommand);
+      expect(inputOf(0)).toEqual({ ApplicationId: 'app123', EnvironmentId: 'env456' });
+    });
+
+    it.each([{}, { ApplicationId: '' }, { ApplicationId: { Ref: 'App' } }])(
+      'still refuses a bare id without a usable ApplicationId (%j)',
+      async (properties) => {
+        await expect(
+          provider.import({
+            logicalId: 'Env',
+            resourceType: TYPE,
+            stackName: 's',
+            region: 'us-east-1',
+            properties,
+            knownPhysicalId: 'env456',
+          })
+        ).rejects.toThrow(/not "<ApplicationId>\|<EnvironmentId>"/);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it('leaves a composite id untouched even when ApplicationId differs (#6848)', async () => {
+      mockSend.mockResolvedValueOnce({});
+      const result = await provider.import({
+        logicalId: 'Env',
+        resourceType: TYPE,
+        stackName: 's',
+        region: 'us-east-1',
+        properties: { ApplicationId: 'other' },
+        knownPhysicalId: ID,
+      });
+      expect(result?.physicalId).toBe(ID);
+      expect(inputOf(0)).toEqual({ ApplicationId: 'app123', EnvironmentId: 'env456' });
+    });
+
     it('rethrows an import failure that is not a not-found', async () => {
       mockSend.mockRejectedValueOnce(
         Object.assign(new Error('denied'), {

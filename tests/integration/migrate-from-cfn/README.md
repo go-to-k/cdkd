@@ -15,7 +15,7 @@ model — that skill exercises `cdkd deploy` → `cdkd destroy`.
 ## Prerequisites
 
 - AWS credentials with permission to deploy CloudFormation, S3, IAM,
-  Lambda, and SSM in the target region (default `us-east-1`).
+  Lambda, AppConfig, and SSM in the target region (default `us-east-1`).
 - cdkd state bucket bootstrapped (`cdkd bootstrap`). The script auto-detects
   `cdkd-state-{accountId}` and falls back to the legacy
   `cdkd-state-{accountId}-{region}` bucket.
@@ -70,6 +70,11 @@ AWS resources.
   PR #113 (the only path the small stack does NOT exercise).
 - That `cdkd destroy` can walk and delete state populated by the migration
   rather than by `cdkd deploy`.
+- That an `AWS::AppConfig::Environment` migrates (issue #6848): CloudFormation
+  reports the bare EnvironmentId, so the import must exit 0, state must record
+  `<ApplicationId>|<EnvironmentId>` built from the id captured from
+  `describe-stack-resources` before the migrate, and `cdkd drift` must list it
+  as clean. The destroy deletes the Environment before its Application.
 - That state records the physical id CloudFormation holds after the Retain
   update, including a resource that update replaced.
 
