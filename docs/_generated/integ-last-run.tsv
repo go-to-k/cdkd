@@ -38,7 +38,7 @@ basic	2026-11-20T11:06:50Z	PASS	95	standard	CDKD_TEST_FAIL=true rollback path th
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-11-07T00:37:38Z	PASS	506	verify.sh	#5941 agentcore-runtime split head; rc ok, orph clean
 bench-ccapi	2026-11-05T11:21:32Z	PASS	82	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
-bench-cdk-sample	2026-11-19T14:40:15Z	PASS	452	standard	#6626 HEAD 341ad3edc: rc ok, destroy 0 errors, orph clean
+bench-cdk-sample	2026-11-22T18:06:46Z	PASS	432	standard	#6824 HEAD 339d8558c: rc ok, destroy 0 errors (2 log groups retained by DeletionPolicy), orph clean
 bench-sdk	2026-11-05T11:20:09Z	PASS	28	standard	sweep n7 own bucket; destroy 0 errors, 0 orphans
 bootstrap-free-region	2026-11-04T07:51:26Z	PASS	140	verify.sh	rc 0, 0 orphans; ca-central-1 (#2624 PR #4573)
 bucket-deployment	2026-11-13T07:46:30Z	PASS	95	verify.sh	rc 0, destroy clean, 0 orphans, no incomplete MPU (#6184)
