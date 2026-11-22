@@ -56,6 +56,8 @@ cleanup() {
   for i in 0 1 2 3 4 5 6 7; do
     for s in 1 2; do
       aws lightsail delete-alarm --alarm-name "${STACK}-alarm-${i}-${s}" --region "${REGION}" >/dev/null 2>&1 || true
+      # DeleteAlarm refills one token per second: a burst would be throttled.
+      sleep 1
     done
   done
   aws lightsail delete-instance --instance-name "${INSTANCE}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -77,12 +79,23 @@ echo "==> Pre-run cleanup"; cleanup
 DEPLOY_LOG="$(mktemp)"
 
 echo "==> Deploy (${ALARM_COUNT} alarms in one burst)"
-node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
   --concurrency "${ALARM_COUNT}" --yes 2>&1 | tee "${DEPLOY_LOG}"
 
-# The provider paces its own calls, so no alarm should reach the engine's retry.
+# The provider paces its own calls, so no alarm reaches the engine's retry.
+# Sentinel: the engine's retry line also carries "(attempt N/M"; one with that
+# marker but not the parsed wording means the wording drifted under the grep.
 RETRIES=$(grep -c 'Retrying Alarm' "${DEPLOY_LOG}" || true)
-echo "    INFO: ${RETRIES} engine-level alarm create retr(y/ies) in this run"
+ATTEMPTS=$(grep -c '(attempt [0-9]' "${DEPLOY_LOG}" || true)
+if [ "${ATTEMPTS}" != "0" ] && [ "${RETRIES}" = "0" ]; then
+  echo "FAIL: ${ATTEMPTS} engine retry line(s) not in the 'Retrying Alarm' wording this check parses" >&2
+  exit 1
+fi
+if [ "${RETRIES}" != "0" ]; then
+  echo "FAIL: ${RETRIES} alarm create(s) reached the engine's retry; the provider's pacing did not hold" >&2
+  exit 1
+fi
+echo "    OK: no alarm create reached the engine's retry"
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 BY="$(jq -r '.resources.Alarm0x1.provisionedBy // "<absent>"' <<<"${STATE_JSON}")"
@@ -92,8 +105,9 @@ if [ "${BY}" != "sdk" ]; then
 fi
 echo "    OK: alarms provisioned through the SDK provider"
 
-ALARMS=$(aws lightsail get-alarms --monitored-resource-name "${INSTANCE}" --region "${REGION}" \
-  --query 'length(alarms)' --output text)
+ALARM_NAMES=$(aws lightsail get-alarms --monitored-resource-name "${INSTANCE}" --region "${REGION}" \
+  --query 'alarms[].name' --output text)
+ALARMS=$(tr '\t' '\n' <<<"${ALARM_NAMES}" | grep -c .)
 if [ "${ALARMS}" != "${ALARM_COUNT}" ]; then
   echo "FAIL: ${ALARMS} alarms on ${INSTANCE}, expected ${ALARM_COUNT}" >&2
   exit 1
@@ -110,6 +124,19 @@ if ! jq -e '.[0] == "CPUUtilization" and .[1] == "GreaterThanOrEqualToThreshold"
 fi
 echo "    OK: alarm-0-2 settings reached Lightsail"
 
+echo "==> UPDATE (threshold 90 -> 80 on the first alarm of each pair)"
+ARN_BEFORE=$(aws lightsail get-alarms --alarm-name "${STACK}-alarm-0-1" --region "${REGION}" \
+  --query 'alarms[0].arn' --output text)
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --concurrency "${ALARM_COUNT}" --yes
+UPDATED=$(aws lightsail get-alarms --alarm-name "${STACK}-alarm-0-1" --region "${REGION}" \
+  --query 'alarms[0].[threshold,arn]' --output json)
+if ! jq -e --arg arn "${ARN_BEFORE}" '.[0] == 80 and .[1] == $arn' >/dev/null <<<"${UPDATED}"; then
+  echo "FAIL: alarm-0-1 after UPDATE is ${UPDATED}, expected threshold 80 on ARN ${ARN_BEFORE}" >&2
+  exit 1
+fi
+echo "    OK: alarm-0-1 threshold updated in place (same ARN)"
+
 echo "==> Destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -117,6 +144,8 @@ for i in 0 1 2 3 4 5 6 7; do
   for s in 1 2; do
     assert_gone "alarm ${STACK}-alarm-${i}-${s} still exists after destroy" \
       aws lightsail get-alarms --alarm-name "${STACK}-alarm-${i}-${s}" --region "${REGION}"
+    # GetAlarms refills one token per second: a throttled probe is undetermined.
+    sleep 1
   done
 done
 echo "    OK: alarms gone"

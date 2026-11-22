@@ -49,7 +49,7 @@ import { safeMsg } from '../../utils/display-safe.js';
  * refill per second, from the Lightsail API throttling page of the Lightsail
  * user guide: `PutAlarm` 3 / 1, `DeleteAlarm` 3 / 1, `GetAlarms` 5 / 1.
  */
-type LightsailAlarmApi = 'PutAlarm' | 'GetAlarms' | 'DeleteAlarm';
+export type LightsailAlarmApi = 'PutAlarm' | 'GetAlarms' | 'DeleteAlarm';
 
 const AWS_BUCKETS: Record<LightsailAlarmApi, { size: number; refillPerSecond: number }> = {
   PutAlarm: { size: 3, refillPerSecond: 1 },
@@ -111,11 +111,13 @@ export class LightsailTokenBucket {
 
 /**
  * One bucket per region and API, process-wide: AWS counts per account and
- * region, and `deploy --all` runs several stacks in one process.
+ * region, and `deploy --all` runs several stacks in one process. The key has
+ * no account: stacks of two accounts in one process share a bucket, which is
+ * only slower.
  */
 const buckets = new Map<string, LightsailTokenBucket>();
 
-function bucketFor(region: string, api: LightsailAlarmApi): LightsailTokenBucket {
+export function bucketFor(region: string, api: LightsailAlarmApi): LightsailTokenBucket {
   const key = `${region}|${api}`;
   let bucket = buckets.get(key);
   if (bucket === undefined) {
@@ -182,9 +184,13 @@ export class LightsailAlarmProvider implements ResourceProvider {
     bucketFor(region, api).take();
 
   getClient(): LightsailClient {
+    // `maxAttempts: 1`: the SDK's own throttle retries would resend outside
+    // the bucket; {@link send} owns every retry, each taking a token. A 5xx
+    // reaches the engine's retry, and every call here is safe to resend.
     this.client ??= new LightsailClient({
       ...ambientClientDefaults(),
       ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      maxAttempts: 1,
     });
     return this.client;
   }
@@ -332,6 +338,16 @@ export class LightsailAlarmProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(safeMsg`Deleting Lightsail alarm ${logicalId}: ${physicalId}`);
+    // The id is a NAME: a client in another region than the record would
+    // delete a same-named alarm cdkd does not manage there (go-to-k/cdkd#2613).
+    assertRegionMatch(
+      context?.expectedRegion ? await this.getClient().config.region() : undefined,
+      context?.expectedRegion,
+      resourceType,
+      logicalId,
+      physicalId,
+      'pre-delete'
+    );
     try {
       await this.send('DeleteAlarm', logicalId, (client) =>
         client.send(new DeleteAlarmCommand({ alarmName: physicalId }))

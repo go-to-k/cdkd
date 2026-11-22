@@ -42,7 +42,8 @@ export class LightsailAlarmThrottleStack extends cdk.Stack {
           metricName,
           comparisonOperator: 'GreaterThanOrEqualToThreshold',
           evaluationPeriods: 1,
-          threshold: slot === 1 ? 90 : 99,
+          // CDKD_TEST_UPDATE lowers the first alarm of each pair in place.
+          threshold: slot === 1 ? (process.env.CDKD_TEST_UPDATE === 'true' ? 80 : 90) : 99,
         });
       }
     });
