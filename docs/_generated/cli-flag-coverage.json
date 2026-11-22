@@ -648,7 +648,6 @@
         "access-key-cloudmap-fix-forward-orphan",
         "alb",
         "appsync",
-        "cc-write-only-secret-version",
         "codedeploy-lambda-deployment-group",
         "created-before-failure-revert",
         "cross-backend-same-stack-migration",

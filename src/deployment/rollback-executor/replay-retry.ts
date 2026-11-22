@@ -22,6 +22,7 @@ import {
 } from '../secret-redaction.js';
 import { withRetry } from '../retry.js';
 import { MAX_CAUSE_CHAIN_DEPTH } from '../retryable-errors/marks.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { withoutUnsettledProperties } from '../../state/unsettled-properties.js';
 import {
   addedByFailedUpdateWarning,
@@ -159,8 +160,8 @@ export async function updateWithRollbackRetry(
         // failure `withRetry` then gives up on announces no wait.
         if (++unsettledFailures <= UNSETTLED_REVERT_RETRY_SCHEDULE.maxRetries) {
           logger.info(
-            `  Rollback: ${shownId} has not settled from the update being reverted ` +
-              `(Cloud Control ${code}); re-sending the revert after a wait`
+            safeMsg`  Rollback: ${shownId} has not settled from the update being reverted ` +
+              safeMsg`(Cloud Control ${code}); re-sending the revert after a wait`
           );
         }
         return true;
