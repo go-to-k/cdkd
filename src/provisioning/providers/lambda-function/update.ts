@@ -125,7 +125,7 @@ export async function update(
       // A replay restores a record, not a template the user can edit here.
       log.warn(
         `${head}: the live RuntimeConfig stays on AWS, so this replay leaves it in place; ` +
-          `the next deploy or \`cdkd drift\` shows it.`
+          `the next deploy or drift check shows it.`
       );
     } else {
       throw markNonRetryable(
@@ -149,7 +149,7 @@ export async function update(
       // A replay restores a record, not a template the user can edit here.
       log.warn(
         `${head}: the live AcceleratorConfig stays on AWS, so this replay leaves it in place; ` +
-          `the next deploy or \`cdkd drift\` shows it.`
+          `the next deploy or drift check shows it.`
       );
     } else {
       throw markNonRetryable(
