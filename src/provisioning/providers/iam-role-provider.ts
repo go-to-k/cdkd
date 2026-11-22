@@ -188,9 +188,9 @@ export class IAMRoleProvider implements ResourceProvider {
     roleName: string,
     log: MaskedLogSinks,
     progress: DeleteProgress | undefined,
-    profileNames: readonly string[]
+    holders: readonly string[]
   ): Promise<void> {
-    return removeFromStackOwnInstanceProfiles.call(this, roleName, log, progress, profileNames);
+    return removeFromStackOwnInstanceProfiles.call(this, roleName, log, progress, holders);
   }
 
   updateManagedPolicies(

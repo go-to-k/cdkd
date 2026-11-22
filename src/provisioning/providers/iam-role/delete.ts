@@ -478,7 +478,7 @@ export async function deleteAllInlinePolicies(
 }
 
 /**
- * Remove the role from `profileNames`, the stack's own instance profiles
+ * Remove the role from `holders`, the stack's own instance profiles
  * listed as holding it (go-to-k/cdkd#6808). Any other profile keeps the role,
  * so `DeleteRole` refuses (`DeleteConflict`) and the delete names it, as
  * CloudFormation's delete handler (which holds no
@@ -489,23 +489,23 @@ export async function removeFromStackOwnInstanceProfiles(
   roleName: string,
   log: MaskedLogSinks,
   progress: DeleteProgress | undefined,
-  profileNames: readonly string[]
+  holders: readonly string[]
 ): Promise<void> {
   const { value: v } = log;
-  for (const profileName of profileNames) {
+  for (const holder of holders) {
     try {
       await this.iamClient.send(
         new RemoveRoleFromInstanceProfileCommand({
           RoleName: roleName,
-          InstanceProfileName: profileName,
+          InstanceProfileName: holder,
         })
       );
       if (progress) progress.stripped = true;
-      log.debug(`Removed role ${v(roleName)} from instance profile ${v(profileName)}`);
+      log.debug(`Removed role ${v(roleName)} from instance profile ${v(holder)}`);
     } catch (error) {
       // The profile gone, the role no longer in it, or the role gone.
       if (!(error instanceof NoSuchEntityException)) throw error;
-      log.debug(`Role ${v(roleName)} already removed from instance profile ${v(profileName)}`);
+      log.debug(`Role ${v(roleName)} already removed from instance profile ${v(holder)}`);
     }
   }
 }
