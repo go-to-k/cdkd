@@ -6717,6 +6717,7 @@
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
         "iam-secret-derived-principals",
+        "import-migrate-pending-change",
         "migrate-from-cfn",
         "require-approval-broadening",
         "ssm-generated-name-grant"
@@ -6763,6 +6764,9 @@
         ],
         "iam-secret-derived-principals": [
           "l1",
+          "literal"
+        ],
+        "import-migrate-pending-change": [
           "literal"
         ],
         "migrate-from-cfn": [
@@ -6851,6 +6855,7 @@
         "import-attribute-readback-misc",
         "import-deployed-parameter-secret",
         "import-heal-prefix-record",
+        "import-migrate-pending-change",
         "infra-security",
         "intrinsic-functions",
         "iot-topic-rule-role",
@@ -7155,6 +7160,10 @@
         ],
         "import-heal-prefix-record": [
           "l1"
+        ],
+        "import-migrate-pending-change": [
+          "l2",
+          "literal"
         ],
         "infra-security": [
           "l2"

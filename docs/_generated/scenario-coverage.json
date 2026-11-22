@@ -1773,6 +1773,13 @@
       ]
     },
     {
+      "name": "import-migrate-pending-change",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
       "name": "import-migrate-vpc",
       "annotated": true,
       "scenarios": [
@@ -3907,6 +3914,7 @@
         "import-heal-prefix-record",
         "import-lambda-url-attributes",
         "import-migrate-appsync",
+        "import-migrate-pending-change",
         "import-migrate-vpc",
         "import-retain-destroy",
         "migrate-from-cfn"
