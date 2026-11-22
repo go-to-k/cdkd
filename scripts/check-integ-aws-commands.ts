@@ -309,10 +309,15 @@ export function blankQuotedSpans(line: string, state: ScanState = newScanState()
  * Comments are stripped BEFORE matching (both trailing and whole-line): two
  * `verify.sh` files discuss `aws emr list-instance-groups` in prose explaining
  * why they avoid it, and flagging those would make the check unusable.
+ *
+ * A shell function whose body forwards `aws "$@"` counts as `aws` at its call
+ * sites: `_revert_identity_aws emr list-instance-groups` reached real AWS
+ * unseen (#6810). A body holding a `}` before the forward is not recognized.
  */
 export function extractAwsInvocations(content: string): AwsInvocation[] {
   const joined = joinContinuedLines(content);
   const invocations: AwsInvocation[] = [];
+  const awsNames = awsForwarderNames(content);
   // ONE state for the whole file: quote / heredoc context spans lines (the
   // multi-line `node -e "..."` blocks these fixtures embed).
   const scan = newScanState();
@@ -341,7 +346,7 @@ export function extractAwsInvocations(content: string): AwsInvocation[] {
     for (const segment of splitShellCommands(blanked)) {
       const tokens = segment.split(TOKEN_SEPARATOR).filter(Boolean);
       for (let t = 0; t < tokens.length - 2; t++) {
-        if (tokens[t] !== 'aws') continue;
+        if (!awsNames.has(tokens[t]!)) continue;
 
         // Step past GLOBAL options, which the AWS CLI accepts BOTH before the
         // service (`aws --region us-east-1 emr list-clusters`) and between the
@@ -361,6 +366,18 @@ export function extractAwsInvocations(content: string): AwsInvocation[] {
   }
 
   return invocations;
+}
+
+const FUNCTION_BODY = /^[ \t]*(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(\)[ \t]*\{([^}]*)\}/gm;
+const FORWARDS_AWS = /(^|[\s;&|(])aws[ \t]+"\$@"/;
+
+/** `aws` plus every function in `content` whose body forwards `aws "$@"`. */
+export function awsForwarderNames(content: string): Set<string> {
+  const names = new Set(['aws']);
+  for (const m of content.matchAll(FUNCTION_BODY)) {
+    if (FORWARDS_AWS.test(m[2]!)) names.add(m[1]!);
+  }
+  return names;
 }
 
 export interface AwsCommandViolation {
