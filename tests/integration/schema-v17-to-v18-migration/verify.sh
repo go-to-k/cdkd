@@ -483,11 +483,17 @@ assert_gone "endpoint ${ENDPOINT_ID} still exists after the destroy" \
   aws dms describe-endpoints --region "${REGION}" --filters "Name=endpoint-id,Values=${ENDPOINT_ID}"
 pass "the endpoint is gone after the destroy"
 # A deleted secret may still answer with DeletedDate set (scheduled): deleted.
-if ! gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}"; then
-  SECRET_DELETED="$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}" \
-    --query DeletedDate --output text)" || fail "describe-secret requery failed"
-  [ -n "${SECRET_DELETED}" ] && [ "${SECRET_DELETED}" != "None" ] || fail "secret ${SECRET_ARN} is still active after the destroy"
+if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" --region "${REGION}"; then
+  SECRET_DELETED="GONE"
+elif ! SECRET_DELETED="$(aws secretsmanager describe-secret --secret-id "${SECRET_ARN}" \
+    --region "${REGION}" --query DeletedDate --output text 2>&1)"; then
+  # TOCTOU: the secret can vanish between gone_probe and this requery.
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${SECRET_DELETED}" \
+    && SECRET_DELETED="GONE" \
+    || fail "describe-secret requery undetermined: ${SECRET_DELETED}"
 fi
+[ "${SECRET_DELETED}" = "GONE" ] || { [ -n "${SECRET_DELETED}" ] && [ "${SECRET_DELETED}" != "None" ]; } \
+  || fail "secret ${SECRET_ARN} is still active after the destroy"
 pass "the secret is deleted after the destroy"
 
 trap - EXIT INT TERM
