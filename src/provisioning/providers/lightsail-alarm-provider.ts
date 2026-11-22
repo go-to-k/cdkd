@@ -23,6 +23,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import { definedAttributes } from '../attribute-map.js';
 import { coerceCfnBoolean } from '../config-shape.js';
+import { injectiveKey } from '../../state/record-keys.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -118,7 +119,7 @@ export class LightsailTokenBucket {
 const buckets = new Map<string, LightsailTokenBucket>();
 
 export function bucketFor(region: string, api: LightsailAlarmApi): LightsailTokenBucket {
-  const key = `${region}|${api}`;
+  const key = injectiveKey(region, api);
   let bucket = buckets.get(key);
   if (bucket === undefined) {
     const aws = AWS_BUCKETS[api];
