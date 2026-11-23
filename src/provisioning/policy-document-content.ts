@@ -237,6 +237,49 @@ function normalizeStatement(statement: unknown, partition: string | undefined): 
       out[key] = normalizePrincipal(out[key], partition);
     }
   }
+  // S3 PutBucketPolicy accepts `"Effect": "allow"` and stores `"Allow"`
+  // (measured us-east-1, 2026-11-23; IAM CreatePolicy refuses the lowercase
+  // form), so the two cases of `Allow` / `Deny` are one effect. Any other
+  // value is kept.
+  const effect = out['Effect'];
+  if (typeof effect === 'string') {
+    const lower = effect.toLowerCase();
+    if (lower === 'allow') out['Effect'] = 'Allow';
+    else if (lower === 'deny') out['Effect'] = 'Deny';
+  }
+  if (Object.prototype.hasOwnProperty.call(out, 'Condition')) {
+    out['Condition'] = normalizeConditionValues(out['Condition']);
+  }
+  return out;
+}
+
+/**
+ * Condition values with a JSON number or boolean as its exact `String()` form:
+ * S3 returns a condition value `1.2` as `"1.2"` and `false` as `"false"`
+ * (measured us-east-1, 2026-11-23; CDK's `minimumTLSVersion` emits
+ * `NumericLessThan {"s3:TlsVersion": 1.2}`). Only that form: `1.2` is not
+ * `"1.20"`, `1` is not `"1.0"`. List order and one-element lists are kept
+ * as they are; operator and key names are compared exactly.
+ */
+function normalizeConditionValues(condition: unknown): unknown {
+  if (condition === null || typeof condition !== 'object' || Array.isArray(condition)) {
+    return condition;
+  }
+  const scalar = (v: unknown): unknown =>
+    typeof v === 'number' || typeof v === 'boolean' ? String(v) : v;
+  // Null prototype: a `__proto__` operator or key stays an own key and is compared.
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [operator, block] of Object.entries(condition as Record<string, unknown>)) {
+    if (block === null || typeof block !== 'object' || Array.isArray(block)) {
+      out[operator] = block;
+      continue;
+    }
+    const values = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(block as Record<string, unknown>)) {
+      values[key] = Array.isArray(value) ? value.map(scalar) : scalar(value);
+    }
+    out[operator] = values;
+  }
   return out;
 }
 
@@ -260,7 +303,9 @@ function canonicalJson(value: unknown): string {
 /**
  * A policy document's content key, IAM-equivalent spellings folded: within
  * each statement, a one-element `Action` / `NotAction` / `Resource` /
- * `NotResource` / principal list equals its scalar, a bare 12-digit account id
+ * `NotResource` / principal list equals its scalar, `Effect` is compared
+ * case-insensitively, a condition value number or boolean equals its
+ * `String()` form, a bare 12-digit account id
  * in `Principal.AWS` equals its root ARN (of `partition` when given, see
  * {@link accountKey}), a `"*"`
  * principal equals `{ "AWS": "*" }`, and a single `Statement` object equals a

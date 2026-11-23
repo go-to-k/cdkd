@@ -99,6 +99,38 @@ describe('policyContentKey boundaries (go-to-k/cdkd#6854)', () => {
   });
 });
 
+describe('policyContentKey Effect and Condition scalars (go-to-k/cdkd#6854, measured on S3)', () => {
+  const cond = (value: unknown, operator = 'NumericLessThan', key = 's3:TlsVersion') => ({
+    Effect: 'Deny',
+    Condition: { [operator]: { [key]: value } },
+  });
+
+  it.each([
+    ['lowercase allow', { Effect: 'allow', Action: 'a' }, { Effect: 'Allow', Action: 'a' }],
+    ['uppercase DENY', { Effect: 'DENY', Action: 'a' }, { Effect: 'Deny', Action: 'a' }],
+    ['a number condition value', cond(1.2), cond('1.2')],
+    ['a boolean condition value', cond(false, 'Bool', 'aws:SecureTransport'), cond('false', 'Bool', 'aws:SecureTransport')],
+    ['numbers inside a condition value list', cond([1, 2]), cond(['1', '2'])],
+  ])('folds %s', (_what, a, b) => {
+    expect(policyContentKey(doc(a))).toBe(policyContentKey(doc(b)));
+    expect(policyContentKey(JSON.stringify(doc(b)), 'aws')).toBe(policyContentKey(doc(a), 'aws'));
+  });
+
+  it.each([
+    ['allow is not Deny', { Effect: 'allow', Action: 'a' }, { Effect: 'Deny', Action: 'a' }],
+    ['another word is not Allow', { Effect: 'Allowed', Action: 'a' }, { Effect: 'Allow', Action: 'a' }],
+    ['1.2 is not "1.20"', cond(1.2), cond('1.20')],
+    ['1 is not "1.0"', cond(1), cond('1.0')],
+    ['true is not "True"', cond(true, 'Bool', 'aws:SecureTransport'), cond('True', 'Bool', 'aws:SecureTransport')],
+    ['a condition key is compared in its case', cond('1.2', 'NumericLessThan', 's3:TlsVersion'), cond('1.2', 'NumericLessThan', 'S3:TlsVersion')],
+    ['condition value order is kept', cond(['1', '2']), cond(['2', '1'])],
+    ['a number outside Condition is not folded', { Effect: 'Allow', Sid: 1 }, { Effect: 'Allow', Sid: '1' }],
+    ['a __proto__ condition key is compared', { Effect: 'Allow', Condition: JSON.parse('{"StringEquals":{"__proto__":"x"}}') }, { Effect: 'Allow', Condition: { StringEquals: {} } }],
+  ])('does NOT fold %s', (_what, a, b) => {
+    expect(policyContentKey(doc(a))).not.toBe(policyContentKey(doc(b)));
+  });
+});
+
 describe('isPermanentResolutionError (go-to-k/cdkd#4612)', () => {
   const err = (props: Record<string, unknown>): Error => Object.assign(new Error(String(props['message'] ?? 'x')), props);
   it.each([
