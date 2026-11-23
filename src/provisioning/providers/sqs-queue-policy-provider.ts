@@ -40,6 +40,7 @@ import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { markRedactedCause } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { attemptedPolicyDocument, policyContentKey } from '../policy-document-content.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
   declaredPolicyDocument,
   OWN_WRITE_REREAD_DELAYS_MS,
@@ -405,8 +406,10 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       return { outcome: 'deleted', leftInPlace: QUEUE_POLICY_NOT_COMPARED_LEFT_REASON };
     }
     // IAM-equivalent spellings folded: SQS stores a bare account-id principal
-    // as its root ARN, for one.
-    const reference = policyContentKey(sentPolicyDocument(attempted.document));
+    // as its root ARN, for one; in the client's partition, as SQS refuses a
+    // root ARN of another (go-to-k/cdkd#6854).
+    const { partition } = derivePartitionAndUrlSuffix(await this.sqsClient.config.region());
+    const reference = policyContentKey(sentPolicyDocument(attempted.document), partition);
     // A queue a QueuePolicy of this very deploy wrote: a read may still return
     // the failed create's document (SQS propagates in up to 60 seconds), so it
     // is never read back here.
@@ -458,7 +461,7 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         this.logger.warn(
           safeMsg`Could not read the policy of queue ${queueUrl} (${current.reason}), so it is not cleared: it may still carry the policy of ${logicalId}.`
         );
-      } else if (current.kind === 'none' || policyContentKey(current.policy) === reference) {
+      } else if (current.kind === 'none' || policyContentKey(current.policy, partition) === reference) {
         // No policy read back is cleared too: right after the create wrote
         // it (the automatic rollback) a stale read can still show the empty
         // policy from before, and clearing an empty queue changes nothing.

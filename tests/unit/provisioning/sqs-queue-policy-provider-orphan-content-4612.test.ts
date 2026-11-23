@@ -230,6 +230,24 @@ describe('SQSQueuePolicyProvider: a failed create orphan is cleared by content (
     expect(cleared()).toEqual([Q1]);
   });
 
+  // go-to-k/cdkd#6854: the root ARN is the client partition's. SQS refuses a
+  // root ARN of another partition (InvalidAttributeValue, measured us-east-1,
+  // 2026-11-23), so an attempt naming one never is what the queue holds.
+  it.each([
+    ['us-east-1', 'arn:aws-cn:iam::123456789012:root', 'arn:aws:iam::123456789012:root', false],
+    ['us-east-1', '123456789012', 'arn:aws-cn:iam::123456789012:root', false],
+    ['cn-north-1', '123456789012', 'arn:aws-cn:iam::123456789012:root', true],
+    ['cn-north-1', '123456789012', 'arn:aws:iam::123456789012:root', false],
+    ['us-east-1', '123456789012', 'arn:aws:iam::123456789012:root', true],
+  ])('client in %s: attempted principal %s against stored %s clears: %s (go-to-k/cdkd#6854)', async (region, sentPrincipal, storedPrincipal, clears) => {
+    mockRegion.mockImplementation(() => Promise.resolve(region));
+    const statement = (aws: string) => ({ Sid: 'P', Effect: 'Allow', Principal: { AWS: aws }, Action: 'sqs:SendMessage' });
+    routeAws({ [Q1]: JSON.stringify({ Version: '2012-10-17', Statement: [statement(storedPrincipal)] }) });
+    const result = await orphanDelete(Q1, { PolicyDocument: { Version: '2012-10-17', Statement: [statement(sentPrincipal)] } });
+    expect(cleared()).toEqual(clears ? [Q1] : []);
+    expect(result).toEqual(clears ? undefined : { outcome: 'deleted', leftInPlace: QUEUE_POLICY_MISMATCH_LEFT_REASON });
+  });
+
   it.each([
     ['a reference', '{{resolve:ssm-secure:p}}'],
     ['the state mask', '***'],

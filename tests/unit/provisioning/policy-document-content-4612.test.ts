@@ -59,6 +59,46 @@ describe('policyContentKey (go-to-k/cdkd#4612)', () => {
   });
 });
 
+describe('policyContentKey boundaries (go-to-k/cdkd#6854)', () => {
+  const key = (statement: Record<string, unknown>, partition?: string): string =>
+    policyContentKey(doc(statement), partition);
+
+  it.each([
+    ['aws', '123456789012', 'arn:aws:iam::123456789012:root'],
+    ['aws-cn', '123456789012', 'arn:aws-cn:iam::123456789012:root'],
+    ['aws-us-gov', ['123456789012'], 'arn:aws-us-gov:iam::123456789012:root'],
+  ])('in partition %s a bare id is that partition root ARN', (partition, a, b) => {
+    expect(key({ Principal: { AWS: a } }, partition)).toBe(key({ Principal: { AWS: b } }, partition));
+  });
+
+  it.each([
+    ['a bare id is not another partition root ARN', '123456789012', 'arn:aws-cn:iam::123456789012:root'],
+    ['two partitions root ARNs differ', 'arn:aws:iam::123456789012:root', 'arn:aws-cn:iam::123456789012:root'],
+    ['an id inside a list is not another partition root ARN', ['123456789012', '*'], ['arn:aws-us-gov:iam::123456789012:root', '*']],
+  ])('with a partition, %s', (_what, a, b) => {
+    expect(key({ Principal: { AWS: a } }, 'aws')).not.toBe(key({ Principal: { AWS: b } }, 'aws'));
+    expect(key({ NotPrincipal: { AWS: a } }, 'aws')).not.toBe(key({ NotPrincipal: { AWS: b } }, 'aws'));
+  });
+
+  it.each([
+    ['a role of the same account is not its root', { Principal: { AWS: 'arn:aws:iam::123456789012:root' } }, { Principal: { AWS: 'arn:aws:iam::123456789012:role/root' } }],
+    ['a user named root is not the account', { Principal: { AWS: '123456789012' } }, { Principal: { AWS: 'arn:aws:iam::123456789012:user/root' } }],
+    ['an STS root ARN is not the IAM one', { Principal: { AWS: '123456789012' } }, { Principal: { AWS: 'arn:aws:sts::123456789012:root' } }],
+    ['an 11-digit id is not an account', { Principal: { AWS: '12345678901' } }, { Principal: { AWS: 'arn:aws:iam::12345678901:root' } }],
+    ['an id in a Condition is not folded', { Condition: { StringEquals: { 'aws:SourceAccount': '123456789012' } } }, { Condition: { StringEquals: { 'aws:SourceAccount': 'arn:aws:iam::123456789012:root' } } }],
+    ['a one-element Condition value list is not its scalar here', { Condition: { StringEquals: { 'aws:SourceAccount': ['123456789012'] } } }, { Condition: { StringEquals: { 'aws:SourceAccount': '123456789012' } } }],
+    ['principal text spelling an account key is not the account', { Principal: { AWS: 'account:123456789012' } }, { Principal: { AWS: '123456789012' } }],
+    ['a string principal spelling the anyone key is not "*"', { Principal: 'anyone:*' }, { Principal: '*' }],
+    ['a Federated "*" is not anyone', { Principal: { Federated: '*' } }, { Principal: '*' }],
+    ['Action case is kept', { Action: 'SQS:SendMessage' }, { Action: 'sqs:SendMessage' }],
+    ['Effect is compared', { Effect: 'Allow', Action: 'a' }, { Effect: 'Deny', Action: 'a' }],
+    ['principal list order is kept', { Principal: { AWS: ['111111111111', '222222222222'] } }, { Principal: { AWS: ['222222222222', '111111111111'] } }],
+  ])('does NOT fold %s, with or without a partition', (_what, a, b) => {
+    expect(key(a)).not.toBe(key(b));
+    expect(key(a, 'aws')).not.toBe(key(b, 'aws'));
+  });
+});
+
 describe('isPermanentResolutionError (go-to-k/cdkd#4612)', () => {
   const err = (props: Record<string, unknown>): Error => Object.assign(new Error(String(props['message'] ?? 'x')), props);
   it.each([

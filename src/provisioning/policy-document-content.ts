@@ -158,12 +158,8 @@ export async function attemptedPolicyDocument(
 }
 
 const ACCOUNT_ID = /^\d{12}$/;
-/**
- * An account's root principal in any partition. The partition is not compared:
- * a policy cannot name a principal of another partition, so an id's root ARN
- * and the bare id name the same account wherever the policy lives.
- */
-const ACCOUNT_ROOT_ARN = /^arn:[a-z-]+:iam::(\d{12}):root$/;
+/** An account's root principal: `arn:<partition>:iam::<id>:root`. */
+const ACCOUNT_ROOT_ARN = /^arn:([a-z-]+):iam::(\d{12}):root$/;
 /** Statement keys whose one-element list equals its scalar. */
 const LIST_KEYS = ['Action', 'NotAction', 'Resource', 'NotResource'];
 const PRINCIPAL_KEYS = ['Principal', 'NotPrincipal'];
@@ -173,19 +169,37 @@ function unwrapSingle(value: unknown): unknown {
   return Array.isArray(value) && value.length === 1 ? value[0] : value;
 }
 
-/** An account principal in one spelling: a bare id and its root ARN agree. */
-export function accountKey(value: unknown): unknown {
+/**
+ * An account principal in one spelling: a bare id and its root ARN agree.
+ *
+ * With `partition` (the partition of the resource the policy is on), a bare
+ * id is that partition's root ARN, the form SQS and SNS store it in, and a
+ * root ARN of ANOTHER partition stays a different principal: SQS and SNS
+ * refuse one (`InvalidAttributeValue` / `InvalidParameter`, measured
+ * us-east-1, 2026-11-23), so it is never what the resource holds. Without
+ * `partition` the partition is not compared (go-to-k/cdkd#6854: a caller
+ * that cannot name the resource's partition).
+ *
+ * Every other string is tagged, so no principal text can spell an account's
+ * key (`account:...`) and compare equal to it.
+ */
+export function accountKey(value: unknown, partition?: string): unknown {
   if (typeof value !== 'string') return value;
-  if (ACCOUNT_ID.test(value)) return `account:${value}`;
+  if (ACCOUNT_ID.test(value)) {
+    return partition === undefined ? `account:${value}` : `account:${partition}:${value}`;
+  }
   const m = ACCOUNT_ROOT_ARN.exec(value);
-  return m ? `account:${m[1]}` : value;
+  if (!m) return `principal:${value}`;
+  return partition === undefined ? `account:${m[2]}` : `account:${m[1]}:${m[2]}`;
 }
 
 /** `"*"` and `{ "AWS": "*" }` (in any list spelling) name everyone alike. */
 const ANYONE = 'anyone:*';
 
-function normalizePrincipal(principal: unknown): unknown {
+function normalizePrincipal(principal: unknown, partition: string | undefined): unknown {
   if (principal === '*') return ANYONE;
+  // Any other string principal is tagged, so it never spells ANYONE.
+  if (typeof principal === 'string') return `principal:${principal}`;
   if (principal === null || typeof principal !== 'object' || Array.isArray(principal)) {
     return principal;
   }
@@ -200,13 +214,17 @@ function normalizePrincipal(principal: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(principal as Record<string, unknown>)) {
     const value =
-      key === 'AWS' ? (Array.isArray(raw) ? raw.map(accountKey) : accountKey(raw)) : raw;
+      key === 'AWS'
+        ? Array.isArray(raw)
+          ? raw.map((v) => accountKey(v, partition))
+          : accountKey(raw, partition)
+        : raw;
     out[key] = unwrapSingle(value);
   }
   return out;
 }
 
-function normalizeStatement(statement: unknown): unknown {
+function normalizeStatement(statement: unknown, partition: string | undefined): unknown {
   if (statement === null || typeof statement !== 'object' || Array.isArray(statement)) {
     return statement;
   }
@@ -215,7 +233,7 @@ function normalizeStatement(statement: unknown): unknown {
     if (Object.prototype.hasOwnProperty.call(out, key)) out[key] = unwrapSingle(out[key]);
   }
   for (const key of PRINCIPAL_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(out, key)) out[key] = normalizePrincipal(out[key]);
+    if (Object.prototype.hasOwnProperty.call(out, key)) out[key] = normalizePrincipal(out[key], partition);
   }
   return out;
 }
@@ -241,13 +259,14 @@ function canonicalJson(value: unknown): string {
  * A policy document's content key, IAM-equivalent spellings folded: within
  * each statement, a one-element `Action` / `NotAction` / `Resource` /
  * `NotResource` / principal list equals its scalar, a bare 12-digit account id
- * in `Principal.AWS` equals its `arn:<partition>:iam::<id>:root`, a `"*"`
+ * in `Principal.AWS` equals its root ARN (of `partition` when given, see
+ * {@link accountKey}), a `"*"`
  * principal equals `{ "AWS": "*" }`, and a single `Statement` object equals a
  * one-element list. Object keys are sorted; list
  * order is kept. A string is read as JSON; text that does not parse is keyed
  * as itself under a prefix no JSON form can produce.
  */
-export function policyContentKey(document: unknown): string {
+export function policyContentKey(document: unknown, partition?: string): string {
   let value = document;
   if (typeof document === 'string') {
     try {
@@ -260,7 +279,7 @@ export function policyContentKey(document: unknown): string {
     const doc = { ...(value as Record<string, unknown>) };
     if (Object.prototype.hasOwnProperty.call(doc, 'Statement')) {
       const statements = Array.isArray(doc['Statement']) ? doc['Statement'] : [doc['Statement']];
-      doc['Statement'] = statements.map(normalizeStatement);
+      doc['Statement'] = statements.map((statement) => normalizeStatement(statement, partition));
     }
     value = doc;
   }
