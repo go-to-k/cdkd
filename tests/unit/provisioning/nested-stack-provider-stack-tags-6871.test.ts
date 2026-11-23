@@ -48,6 +48,7 @@ import {
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import type { DeployEngineOptions } from '../../../src/deployment/deploy-engine.js';
+import { withCurrentResourceSecrets } from '../../../src/deployment/resource-secrets-scope.js';
 
 const NESTED = 'AWS::CloudFormation::Stack';
 let dir: string;
@@ -124,5 +125,19 @@ describe('NestedStackProvider threads the child stack tags (go-to-k/cdkd#6871)',
       new NestedStackProvider().create('Child', NESTED, {})
     );
     expect(childOptions().stackTags).toEqual({});
+  });
+
+  it('hands a row tag resolved from a secret down as its expression, never the plaintext (security review M1)', async () => {
+    const plaintext = 'row-tag-secret-6871';
+    const expression = '{{resolve:secretsmanager:prod/tag:SecretString:v::}}';
+    await withCurrentResourceSecrets(new Map([[plaintext, expression]]), () =>
+      withNestedStackContext(makeContext({ a: '1' }), () =>
+        new NestedStackProvider().create('Child', NESTED, {
+          Tags: [{ Key: 's', Value: plaintext }],
+        })
+      )
+    );
+    expect(childOptions().stackTags).toEqual({ a: '1', s: expression });
+    expect(JSON.stringify(childContextOptions()?.stackTags)).not.toContain(plaintext);
   });
 });

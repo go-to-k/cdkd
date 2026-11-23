@@ -9,7 +9,8 @@ import {
   withNestedStackContext,
   type NestedStackProviderContext,
 } from '../../nested-stack-context.js';
-import { childStackTags, literalRowTags } from '../../stack-tags.js';
+import { childStackTags } from '../../stack-tags.js';
+import { childRowTags } from './row-tags.js';
 import { displayIdent, safeMsg } from '../../../utils/display-safe.js';
 import {
   hasMaskableValues,
@@ -32,13 +33,19 @@ export async function runChildDeploy(
   // with the row's own (resolved) `Tags` winning, as CloudFormation tags a
   // nested stack's resources. Always set, so a grandchild never inherits its
   // grandparent's as its own.
-  const rowLiteralTags = literalRowTags(rowTags);
-  if (rowLiteralTags === undefined) {
+  // A value resolved from a secret goes down as its expression (row-tags.ts).
+  const rowOwn = childRowTags(rowTags, getCurrentResourceSecrets());
+  if (rowOwn.tags === undefined) {
     this.logger.warn(
       safeMsg`Nested stack ${displayIdent(logicalId)}: its Tags are not a list of string Key/Value pairs, so only the parent stack's tags are applied to its resources.`
     );
   }
-  const stackTags = childStackTags(parentCtx.options?.stackTags, rowLiteralTags);
+  for (const key of rowOwn.withheld) {
+    this.logger.warn(
+      safeMsg`Nested stack ${displayIdent(logicalId)}: its tag ${key} is not applied to the nested stack's resources: its value holds a NoEcho value cdkd does not write to state.`
+    );
+  }
+  const stackTags = childStackTags(parentCtx.options?.stackTags, rowOwn.tags);
   // Issue #1903. The parent resolved this row's `Parameters` block before
   // calling us, so `childParameters` above holds PLAINTEXT for any parameter
   // fed by a `{{resolve:secretsmanager:...}}` / SecureString `{{resolve:ssm:...}}`
