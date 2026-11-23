@@ -115,13 +115,23 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
     // listed across the rename, which is the principal that used to keep the
     // OLD-named policy. Fixed names, so verify.sh reads each back exactly.
     const renamed = process.env.CDKD_TEST_RENAME === 'true';
+    // go-to-k/cdkd#6874: the CASE-RENAME phase also respells this policy's
+    // name only in case, with another action.
     new iam.CfnPolicy(this, 'RenamedPolicy', {
       policyName: renamed
-        ? 'cdkd-iam-drift-clean-renamed-new'
+        ? caseRenamed
+          ? 'cdkd-iam-drift-clean-RENAMED-new'
+          : 'cdkd-iam-drift-clean-renamed-new'
         : 'cdkd-iam-drift-clean-renamed-old',
       policyDocument: {
         Version: '2012-10-17',
-        Statement: [{ Effect: 'Allow', Action: 'sqs:GetQueueUrl', Resource: queue.queueArn }],
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: caseRenamed ? 'sqs:ListQueueTags' : 'sqs:GetQueueUrl',
+            Resource: queue.queueArn,
+          },
+        ],
       },
       roles: [role.roleName],
     });

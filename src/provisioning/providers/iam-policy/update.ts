@@ -20,6 +20,7 @@ import {
   assertInlinePolicyAttachTargets,
   verifyInlinePolicyPrincipals,
 } from './principal-identity.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 
 /**
  * Update an IAM inline policy
@@ -183,12 +184,12 @@ export async function update(
         kind: 'role',
         desired: new Set(newRoles || []),
         recorded: new Set(oldRoles || []),
-        put: (name: string, policyName: string) =>
+        put: (name: string, policyName: string, document?: string) =>
           this.iamClient.send(
             new PutRolePolicyCommand({
               RoleName: name,
               PolicyName: policyName,
-              PolicyDocument: policyDoc,
+              PolicyDocument: document ?? policyDoc,
             })
           ),
         remove: (name: string, policyName: string) =>
@@ -200,12 +201,12 @@ export async function update(
         kind: 'group',
         desired: new Set(newGroups || []),
         recorded: new Set(oldGroups || []),
-        put: (name: string, policyName: string) =>
+        put: (name: string, policyName: string, document?: string) =>
           this.iamClient.send(
             new PutGroupPolicyCommand({
               GroupName: name,
               PolicyName: policyName,
-              PolicyDocument: policyDoc,
+              PolicyDocument: document ?? policyDoc,
             })
           ),
         remove: (name: string, policyName: string) =>
@@ -217,12 +218,12 @@ export async function update(
         kind: 'user',
         desired: new Set(newUsers || []),
         recorded: new Set(oldUsers || []),
-        put: (name: string, policyName: string) =>
+        put: (name: string, policyName: string, document?: string) =>
           this.iamClient.send(
             new PutUserPolicyCommand({
               UserName: name,
               PolicyName: policyName,
-              PolicyDocument: policyDoc,
+              PolicyDocument: document ?? policyDoc,
             })
           ),
         remove: (name: string, policyName: string) =>
@@ -240,8 +241,10 @@ export async function update(
     // A case-only rename is NOT a rename here: IAM inline policy names are
     // case-insensitive on one principal (measured: put `MyPolicy`, then put
     // `mypolicy`, and the role lists ONE policy, still spelled `MyPolicy`,
-    // which `get-role-policy mypolicy` reads), so the removal would delete
-    // the policy the put just wrote and strip the live grant.
+    // which `get-role-policy mypolicy` reads), so a removal AFTER the put
+    // would delete the policy the put just wrote and strip the live grant.
+    // Its old spelling is deleted BEFORE the put instead (go-to-k/cdkd#6874,
+    // below).
     //
     // go-to-k/cdkd#4156: a name another resource of this deploy has ALREADY
     // written onto the principal (a swap of two policies' names, a hand-off
@@ -345,9 +348,54 @@ export async function update(
     // an earlier kind's leaving principals are already revoked when a later
     // kind fails. A re-run converges: every put is idempotent, and a
     // removal of a name already gone is NoSuchEntity.
+    // go-to-k/cdkd#6874: CloudFormation renames a policy only in case by
+    // deleting the old spelling and then putting the new one on each
+    // principal (CloudTrail of a CFn A/B, us-east-1 2026-11-23: in place,
+    // `DeleteRolePolicy CasePol`, then `PutRolePolicy casepol`; back the same
+    // way), so the new spelling is listed. A put alone keeps IAM's first
+    // spelling. Each principal that held the old spelling (a recorded one)
+    // gets that delete right before its put; a put that then fails puts the
+    // old spelling back with the recorded document (best effort) before the
+    // error propagates.
+    const respelled = oldPolicyNames.filter(
+      (name) => name !== newPolicyName && name.toLowerCase() === newPolicyName.toLowerCase()
+    );
+    const recordedDocument = previousProperties['PolicyDocument'];
+    const previousDoc =
+      typeof recordedDocument === 'string'
+        ? recordedDocument
+        : recordedDocument !== undefined && recordedDocument !== null
+          ? JSON.stringify(recordedDocument)
+          : undefined;
     for (const { kind, desired, recorded, put, remove } of kinds) {
+      const held = new Set([...recorded].map((name) => name.toLowerCase()));
       for (const name of desired) {
-        await put(name, newPolicyName);
+        const respell = held.has(name.toLowerCase()) ? respelled : [];
+        for (const policyName of respell) {
+          try {
+            await remove(name, policyName);
+          } catch (error) {
+            if (!(error instanceof NoSuchEntityException)) throw error;
+          }
+          log.debug(
+            `Deleted inline policy ${v(policyName)} from ${kind} ${v(name)} before putting it as ${v(newPolicyName)}`
+          );
+        }
+        try {
+          await put(name, newPolicyName);
+        } catch (error) {
+          for (const policyName of respell) {
+            try {
+              if (previousDoc === undefined) throw new Error('no recorded document');
+              await put(name, policyName, previousDoc);
+            } catch {
+              log.warn(
+                `Could not put inline policy ${v(policyName)} back on ${kind} ${v(name)} after its re-put as ${v(newPolicyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
+              );
+            }
+          }
+          throw error;
+        }
         log.debug(`Attached inline policy ${v(newPolicyName)} to ${kind} ${v(name)}`);
       }
       // Principal names are case-insensitive in IAM too: a recorded `MyRole`
