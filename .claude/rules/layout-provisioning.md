@@ -20,7 +20,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete`.
 
-- **region-check.ts** - `DeleteContext` + `assertRegionMatch()`: region unset or empty -> no-op; match -> silent; mismatch or unresolvable client region -> non-retryable refusal. Physical ids are usually NAMES shared across regions: a wrong-region call hits the WRONG resource.
+- **region-check.ts** - `DeleteContext` + `assertRegionMatch()`: region unset or empty -> no-op; mismatch or unresolvable client region -> non-retryable refusal. Physical ids are usually region-shared NAMES.
 
 - **config-shape.ts** - Shape guards for CFn config blocks, which otherwise substitute a default (often the OPPOSITE of the intent) for a malformed container (#1471). **A guard behind a TRUTHINESS gate is skipped by a FALSY malformed container: the gate must be `!= null`.** `onUnusable` (warn + default) is for UPDATE-path sites ONLY, since a rollback replays `update()` with a STATE record as the desired bag.
 
@@ -40,7 +40,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
 
-- **ec2-instance-state.ts** - `isSettledInstanceState`: only `pending` and NO state are unsettled. A LEAF.
+- **ec2-instance-state.ts** - `isSettledInstanceState`: only `pending` / NO state are unsettled. A LEAF.
 
 - **changed-properties-consumers.ts** - `changedProperties` readers (#5112) whose readback returns the keys read get its NoEcho readback. A LEAF.
 
@@ -59,7 +59,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **composite-id.ts** - Refusal guard for COMPOSITE physicalIds (#1672). The separator is unescaped, so a segment containing one yields the wrong ARITY yet passes every guard: the deploy SUCCEEDS, then destroy deletes the wrong one. `packCompositeId` is the ACTION (throws, or warns-and-packs while replaying state); `compositeIdSeparatorRefusal` is the bare PREDICATE for `import()` paths that warn-and-SKIP. A type whose every reader ANCHORS on a recorded segment need not pack through here: `AWS::Glue::Table` builds `<db>|<table>` directly (`segmentAfterAnchor`; `|` allowed in both; an unanchored id is skipped; #3892), and `AWS::Route53::RecordSet` its id, the name anchored on the recorded `Name` / `Type` (#3890).
 
-- **stack-tags.ts** + **stack-tag-targets.ts** - stack tags merged before the diff (#6871); secret row tags: **providers/nested-stack/row-tags.ts**.
+- **stack-tags.ts** + **stack-tag-targets.ts** - stack tags merged pre-diff (#6871); row tags: **providers/nested-stack/row-tags.ts**, spelled by `deployment/secret-redaction/nested-stack/row-tag-spellings.ts` (#6893).
 
 - **nested-stack-messages.ts** - What `NestedStackProvider.delete` THROWS on child-destroy errors. **Must stay a LEAF — no imports, ever**: importing it back from the provider closes a cycle through `destroy-runner.ts`. A builder, not a literal: both callers classify failures by MESSAGE and read already-deleted phrases as idempotent success, DROPPING the state row.
 

@@ -1,8 +1,8 @@
 {
   "summary": {
     "types": 147,
-    "properties": 1562,
-    "update": 1141,
+    "properties": 1563,
+    "update": 1142,
     "replacement": 400,
     "allowListed": 21,
     "gap": 0,
@@ -1292,6 +1292,10 @@
       "properties": [
         {
           "property": "Parameters",
+          "status": "update"
+        },
+        {
+          "property": "Tags",
           "status": "update"
         },
         {

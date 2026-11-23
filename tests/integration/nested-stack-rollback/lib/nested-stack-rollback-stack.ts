@@ -37,7 +37,8 @@ export class NestedStackRollbackStack extends cdk.Stack {
     super(scope, id, props);
 
     // No stack-wide `cdk.Tags` aspect: it would tag the nested-stack row too,
-    // and cdkd refuses `AWS::CloudFormation::Stack` `Tags` as CFn-only.
+    // whose `AWS::CloudFormation::Stack` `Tags` cdkd refused before
+    // go-to-k/cdkd#6893 and which this fixture does not exercise.
     const child = new ChildNestedStack(this, 'Child');
 
     if (process.env.INJECT_FAIL === 'true') {

@@ -2157,7 +2157,7 @@ describe('NestedStackProvider', () => {
     });
 
     it("drops the SDK route's unwired properties BEFORE marking, so the engine's own narrowing keeps the mark", async () => {
-      // `Tags` is SDK-unwired on this type. The engine narrows every
+      // `NotificationARNs` is SDK-unwired on this type. The engine narrows every
       // `effectiveProperties` bag again; a narrowing that drops a key returns
       // a NEW, unmarked object, which would persist a short secret in the
       // row's `Parameters` as plaintext.
@@ -2168,7 +2168,7 @@ describe('NestedStackProvider', () => {
       const created = await withNestedStackContext(ctx, () =>
         provider.create('Child', 'AWS::CloudFormation::Stack', {
           ...PROPS,
-          Tags: [{ Key: 'team', Value: 'a' }],
+          NotificationARNs: ['arn:aws:sns:us-east-1:123456789012:topic'],
         })
       );
 
@@ -2222,12 +2222,14 @@ describe('NestedStackProvider', () => {
       expect(provider.disableCcApiFallback).toBe(true);
     });
 
-    it('only TemplateURL + Parameters wire through; everything else is unhandled-by-design with a rationale', () => {
+    it('only TemplateURL + Parameters + Tags wire through; everything else is unhandled-by-design with a rationale', () => {
       const provider = new NestedStackProvider();
       const handled = provider.handledProperties!.get('AWS::CloudFormation::Stack');
-      expect(handled).toEqual(new Set(['TemplateURL', 'Parameters']));
+      // `Tags` since go-to-k/cdkd#6893: the child's stack tags (#6871).
+      expect(handled).toEqual(new Set(['TemplateURL', 'Parameters', 'Tags']));
 
       const unhandled = provider.unhandledByDesign!.get('AWS::CloudFormation::Stack');
+      expect(unhandled?.has('Tags')).toBe(false);
       // Every property in unhandled set must have a non-empty rationale string.
       expect(unhandled).toBeDefined();
       for (const [name, rationale] of unhandled!) {

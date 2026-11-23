@@ -191,6 +191,14 @@ import { Construct } from 'constructs';
  *    printed `port:m8`; #3114 masked them through the log twin the parent
  *    registered, since the carry refused the frame. Since #3156 the carry
  *    records a whole-value entry for it and the lines are masked whole.
+ *  - `Child` row `Tags` — THE #6893 ARM. The row carries ONE tag whose value
+ *    is a LITERAL frame around a 2-character secret
+ *    (`tag:{{resolve:...:pintag::}}` -> `tag:w4`). Since #6871 the row's tags
+ *    become the child's stack tags on every child resource; below
+ *    `MIN_NEEDLE_LENGTH` the provider's substring carry could not turn
+ *    `tag:w4` back into its expression, so the child persisted it. The
+ *    parent's recorder now certifies the spelling by position, and the child
+ *    gets (and persists) the frame.
  *  - `ParentConsumer` (parent) — reads the child's OUTPUT through
  *    `Fn::GetAtt: [Child, 'Outputs.ChildSecretOutput']`. Since PR #1899 the
  *    child persists that output REDACTED, so before #2055 the parent shipped
@@ -1239,6 +1247,32 @@ export class NestedStackSecretStack extends cdk.Stack {
         },
       }
     );
+
+    // THE #6893 ARM: the row's own `Tags`, one LITERAL frame around an
+    // EIGHTH JSON key (`pintag`) holding its OWN 2-character value. Its own
+    // value for the reason `pinJoinReference` gives: an equal framed value
+    // would be redacted by another arm's whole-value entry. An override, not
+    // `cdk.Tags.of(child)`: that tags the child's resources from INSIDE the
+    // child template, where the row's tag carry is not involved. Kept in
+    // sync with verify.sh's `PIN_TAG_*` and its secret JSON.
+    // A SECOND tag spells its own 2-character value (`pintagjoin`) the CDK
+    // `secretValueFromJson` way, an `Fn::Join` with the account `Ref` inside
+    // the token (`pinJoinReference`'s shape): the provider takes its spelling
+    // from the join's own resolution record rather than a literal.
+    (child.nestedStackResource as cdk.CfnResource).addPropertyOverride('Tags', [
+      {
+        Key: 'cdkd-pintag',
+        Value: `tag:{{resolve:secretsmanager:${secretName}:SecretString:pintag::}}`,
+      },
+      {
+        Key: 'cdkd-pintagjoin',
+        Value: cdk.Fn.join('', [
+          'tagj:{{resolve:secretsmanager:cdkd-nested-secret-',
+          cdk.Aws.ACCOUNT_ID,
+          ':SecretString:pintagjoin::}}',
+        ]),
+      },
+    ]);
 
     const parentConsumer = new ssm.StringParameter(this, 'ParentConsumer', {
       parameterName: `cdkd-nested-parent-consumer-${account}`,

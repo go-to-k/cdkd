@@ -153,6 +153,7 @@ export {
 } from './secret-redaction/cross-stack.js';
 export {
   recordNestedStackParameterExpressions,
+  nestedStackRowTagSpellingOf,
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,
   inheritedRenderedToken,
