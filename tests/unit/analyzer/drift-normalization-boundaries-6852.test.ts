@@ -17,6 +17,7 @@ import {
   undeclaredEmptyObservedKeys,
 } from '../../../src/analyzer/drift-calculator.js';
 import { verbatimEchoDriftKeys } from '../../../src/analyzer/drift-verbatim-paths.js';
+import { orderSignificantIdArrayPaths } from '../../../src/analyzer/drift-normalize.js';
 import { canonicalizePrincipalUniqueIds } from '../../../src/analyzer/drift-principal-normalize.js';
 import { canonicalizeIpProtocols } from '../../../src/analyzer/drift-protocol-normalize.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
@@ -73,28 +74,33 @@ describe('id / ARN lists: a set, except where the type acts on the order', () =>
   });
 
   // A container's argument vector is passed to the process in list order.
-  it.each([
-    ['AWS::Lambda::Function', 'ImageConfig.Command'],
-    ['AWS::Lambda::Function', 'ImageConfig.EntryPoint'],
-    ['AWS::Lambda::Function', 'Layers'],
-    ['AWS::ECS::TaskDefinition', 'ContainerDefinitions.Command'],
-    ['AWS::ECS::TaskDefinition', 'ContainerDefinitions.EntryPoint'],
-    ['AWS::ECS::TaskDefinition', 'ContainerDefinitions.HealthCheck.Command'],
-    ['AWS::Batch::JobDefinition', 'ContainerProperties.Command'],
-    ['AWS::Batch::JobDefinition', 'EksProperties.PodProperties.Containers.Args'],
-    ['AWS::EMR::Step', 'HadoopJarStep.Args'],
-    ['AWS::EMR::Cluster', 'Steps.HadoopJarStep.Args'],
-    ['AWS::EMR::Cluster', 'BootstrapActions.ScriptBootstrapAction.Args'],
-  ])('%s %s: an out-of-band reorder of two ARN arguments is drift', (type, path) => {
+  // Every declared path, so an entry deleted from the table goes red here.
+  const ORDERED_TYPES = [
+    'AWS::Lambda::Function',
+    'AWS::ECS::TaskDefinition',
+    'AWS::Batch::JobDefinition',
+    'AWS::EMR::Step',
+    'AWS::EMR::Cluster',
+  ];
+  const EXPECTED_ORDERED_PATH_COUNT = 22;
+  const ordered = ORDERED_TYPES.flatMap((type) =>
+    orderSignificantIdArrayPaths(type).map((path) => [type, path] as const)
+  );
+  it('covers every declared order-significant path', () => {
+    expect(ordered).toHaveLength(EXPECTED_ORDERED_PATH_COUNT);
+  });
+  it.each(ordered)('%s %s: an out-of-band reorder of two ARN arguments is drift', (type, path) => {
     const at = (list: string[]): Bag => {
-      // Build the bag along `path`; a segment named as a list in CFn
-      // (`ContainerDefinitions`, `Containers`, `Steps`) holds one element.
+      // Build the bag along `path`; a segment that is a list in CFn holds one
+      // element.
       const LISTS = new Set([
         'ContainerDefinitions',
         'Containers',
         'InitContainers',
+        'NodeRangeProperties',
         'Steps',
         'BootstrapActions',
+        'Applications',
       ]);
       const segments = path.split('.');
       let value: unknown = list;
