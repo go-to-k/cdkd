@@ -97,20 +97,24 @@ export class NestedStackProvider implements ResourceProvider {
    * (cdkd reads the local template file via `Metadata['aws:asset:path']`,
    * so the URL itself is informational here); `Parameters` is the typed
    * parameter map forwarded as `DeployEngineOptions.parameters` to the
-   * child engine.
+   * child engine; `Tags` become the child's stack tags with the parent's
+   * (go-to-k/cdkd#6871). `Tags` is recorded in the row's state like any
+   * handled property, so a tag change is an ordinary property UPDATE and
+   * secret-derived values go through the row's normal redaction.
    */
   handledProperties: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-    ['AWS::CloudFormation::Stack', new Set<string>(['TemplateURL', 'Parameters'])],
+    ['AWS::CloudFormation::Stack', new Set<string>(['TemplateURL', 'Parameters', 'Tags'])],
   ]);
 
   /**
    * Every other property on `AWS::CloudFormation::Stack` is intentionally
    * not threaded through — cdkd does not go through CloudFormation, so
    * CFn-only inputs (rollback / capability / role / notification /
-   * termination-protection / stack-update policy / per-stack timeout /
-   * tags) have no equivalent. The synthesized `Ref` ARN is a placeholder,
-   * not a real AWS resource — so `Tags` and `Description` similarly
-   * have nothing to attach to. `StackName` is replaced by cdkd's derived
+   * termination-protection / stack-update policy / per-stack timeout)
+   * have no equivalent. The synthesized `Ref` ARN is a placeholder,
+   * not a real AWS resource — so `Description` similarly has nothing to
+   * attach to. (`Tags` IS handled: since go-to-k/cdkd#6871 they become the
+   * child's stack tags, as CloudFormation tags a nested stack's resources.) `StackName` is replaced by cdkd's derived
    * `<parent>~<logicalId>` key per design §3, and `TemplateBody` is
    * superseded by the local `Metadata['aws:asset:path']` lookup.
    */
@@ -150,10 +154,6 @@ export class NestedStackProvider implements ResourceProvider {
         ],
         ['StackPolicyURL', 'CFn-only stack-update policy URL — cdkd has no equivalent'],
         ['StackStatusReason', 'CFn-only read-only output — never a real input property'],
-        [
-          'Tags',
-          'CFn-only — cdkd does not tag the synthesized "stack" (the parent\'s synthesized ARN is a cdkd-local placeholder, not a real AWS resource)',
-        ],
         [
           'TimeoutInMinutes',
           'CFn-only stack-create deadline — cdkd uses per-resource --resource-timeout instead',

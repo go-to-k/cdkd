@@ -694,7 +694,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::CloudFormation::Stack',
     {
-      handled: new Set<string>(['Parameters', 'TemplateURL']),
+      handled: new Set<string>(['Parameters', 'Tags', 'TemplateURL']),
       sdkUnwired: new Map<string, string>([
         [
           'Capabilities',
@@ -724,10 +724,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ],
         ['StackPolicyURL', 'CFn-only stack-update policy URL — cdkd has no equivalent'],
         ['StackStatusReason', 'CFn-only read-only output — never a real input property'],
-        [
-          'Tags',
-          'CFn-only — cdkd does not tag the synthesized "stack" (the parent\'s synthesized ARN is a cdkd-local placeholder, not a real AWS resource)',
-        ],
         [
           'TemplateBody',
           "CFn-only inline template — cdkd reads the child template from the synth output via Metadata['aws:asset:path'] instead of accepting it inline",
