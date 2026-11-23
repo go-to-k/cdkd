@@ -24,7 +24,7 @@ import {
   renderAssemblyPathEscape,
   resolveAssemblyPath,
 } from '../utils/assembly-path.js';
-import { nullPrototypeRecord } from '../utils/own-keys.js';
+import { defineOwnKey, nullPrototypeRecord } from '../utils/own-keys.js';
 import { CdkdError, SynthesisError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
@@ -130,6 +130,14 @@ export interface StackInfo {
    * flag is a CDK property not stored in cdkd state.json.
    */
   terminationProtection?: boolean | undefined;
+
+  /**
+   * The stack's tags (CDK `StackProps.tags`, the manifest's `tags`): every
+   * taggable resource of the stack is deployed with them, as CloudFormation
+   * applies the stack tags the AWS CDK CLI passes it (go-to-k/cdkd#6871).
+   * Only string values are kept; absent when the stack has none.
+   */
+  tags?: Record<string, string> | undefined;
 
   /**
    * Per-logical-id absolute file paths of nested templates one level below
@@ -670,6 +678,7 @@ export class AssemblyReader {
         terminationProtection: props.terminationProtection,
       }),
       ...(Object.keys(nestedTemplates).length > 0 && { nestedTemplates }),
+      ...stackTagsField(props?.tags),
       ...(typeof lookupRoleArn === 'string' && { lookupRoleArn }),
       ...(legacyAssetEntries.length > 0 && {
         legacyAssets: { entries: legacyAssetEntries, assemblyDir },
@@ -684,4 +693,17 @@ export class AssemblyReader {
   hasAssets(stackInfo: StackInfo): boolean {
     return stackInfo.assetManifestPath !== undefined;
   }
+}
+
+/**
+ * The manifest's stack `tags` as a `StackInfo` field: string pairs only (the
+ * manifest is parsed JSON), none at all when there are none.
+ */
+function stackTagsField(tags: unknown): { tags?: Record<string, string> } {
+  if (tags === null || typeof tags !== 'object' || Array.isArray(tags)) return {};
+  const kept: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tags)) {
+    if (typeof value === 'string') defineOwnKey(kept, key, value);
+  }
+  return Object.keys(kept).length > 0 ? { tags: kept } : {};
 }

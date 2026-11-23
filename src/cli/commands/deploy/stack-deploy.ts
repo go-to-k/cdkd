@@ -427,6 +427,8 @@ export async function deployStackInScope(
       ...(approveDeployment && { requireApproval, approveDeployment }),
       // go-to-k/cdkd#5238: recorded so `cdkd state destroy` can honor it.
       ...(stackInfo.terminationProtection === true && { terminationProtection: true }),
+      // go-to-k/cdkd#6871: merged into every taggable resource.
+      ...(stackInfo.tags !== undefined && { stackTags: stackInfo.tags }),
       inRunStacks: ctx.inRunStacks,
     };
 

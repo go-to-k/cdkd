@@ -16,6 +16,8 @@ import { OutputsRunState } from './outputs.js';
 import { SecretsRunState } from './masking.js';
 import { doDeployWithPrefetch } from './deploy-flow.js';
 import { NoEchoRunState } from './noecho.js';
+import { applyStackTagsToTemplate } from '../../provisioning/stack-tag-targets.js';
+import { nonEmptyStackTags } from '../../provisioning/stack-tags.js';
 
 export function deploy(
   this: DeployEngine,
@@ -147,8 +149,16 @@ export async function doDeploy(
   const createOnlyPrefetch = prefetchCreateOnlyPropertyPaths(
     templateResourceTypes(template.Resources).filter((type) => !hasNoRegistrySchema(type))
   );
+  // go-to-k/cdkd#6871: the stack tags merged into each taggable resource,
+  // started now so the per-type DescribeType lookups overlap the lock and
+  // state read; nothing at all for a stack without stack tags. Never rejects.
+  const stackTags = nonEmptyStackTags(this.options.stackTags);
+  const stackTagged =
+    stackTags === undefined
+      ? undefined
+      : applyStackTagsToTemplate(template, stackTags, (line) => this.logger.warn(line));
   try {
-    return await doDeployWithPrefetch(this, stackName, template, createOnlyPrefetch);
+    return await doDeployWithPrefetch(this, stackName, template, createOnlyPrefetch, stackTagged);
   } finally {
     createOnlyPrefetch.cancel();
   }

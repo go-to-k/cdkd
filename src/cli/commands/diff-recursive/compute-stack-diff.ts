@@ -1,3 +1,4 @@
+import { markStackTagChildRuns } from '../../../deployment/nested-stack-tags.js';
 import { stripControlChars, stripForDisplay } from '../../../utils/regexp.js';
 import {
   findUpdatePolicyReplacementRefusals,
@@ -552,6 +553,10 @@ export async function computeStackDiff(
     // go-to-k/cdkd#6437: the deploy's diff takes the same flag.
     options.updatePolicy === true
   );
+  // go-to-k/cdkd#6871: the rows the deploy updates for their child's tags.
+  if (options.stackTagChildRuns !== undefined) {
+    markStackTagChildRuns(changes, options.stackTagChildRuns);
+  }
   // go-to-k/cdkd#6146: a property whose recorded NoEcho value MACs prove the
   // value moved is a change, as the deploy sends it. No KMS call unless a
   // record carries MACs; none in a nested child.

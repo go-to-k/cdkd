@@ -305,6 +305,12 @@ export interface ComputeStackDiffOptions {
    * child's engine re-spells such a name (`checkNestedSsmNames`).
    */
   forcedNestedChildRuns?: ReadonlySet<string>;
+  /**
+   * go-to-k/cdkd#6871: the nested-stack rows the deploy updates so their
+   * child's engine applies changed effective stack tags
+   * (`nestedRowsNeedingTagRun`).
+   */
+  stackTagChildRuns?: ReadonlySet<string>;
   parameters?: Record<string, unknown>;
   /**
    * Same per-type normalization the deploy engine applies (issue #1591).

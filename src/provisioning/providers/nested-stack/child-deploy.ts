@@ -9,6 +9,8 @@ import {
   withNestedStackContext,
   type NestedStackProviderContext,
 } from '../../nested-stack-context.js';
+import { childStackTags, literalRowTags } from '../../stack-tags.js';
+import { displayIdent, safeMsg } from '../../../utils/display-safe.js';
 import {
   hasMaskableValues,
   passedNoEchoParametersOf,
@@ -23,8 +25,20 @@ export async function runChildDeploy(
   childRegion: string,
   childTemplate: CloudFormationTemplate,
   childParameters: Record<string, string>,
-  grandchildTemplates: Record<string, string>
+  grandchildTemplates: Record<string, string>,
+  rowTags?: unknown
 ): Promise<number> {
+  // go-to-k/cdkd#6871: the child's effective stack tags -- this stack's,
+  // with the row's own (resolved) `Tags` winning, as CloudFormation tags a
+  // nested stack's resources. Always set, so a grandchild never inherits its
+  // grandparent's as its own.
+  const rowLiteralTags = literalRowTags(rowTags);
+  if (rowLiteralTags === undefined) {
+    this.logger.warn(
+      safeMsg`Nested stack ${displayIdent(logicalId)}: its Tags are not a list of string Key/Value pairs, so only the parent stack's tags are applied to its resources.`
+    );
+  }
+  const stackTags = childStackTags(parentCtx.options?.stackTags, rowLiteralTags);
   // Issue #1903. The parent resolved this row's `Parameters` block before
   // calling us, so `childParameters` above holds PLAINTEXT for any parameter
   // fed by a `{{resolve:secretsmanager:...}}` / SecureString `{{resolve:ssm:...}}`
@@ -169,6 +183,8 @@ export async function runChildDeploy(
       // child's own in-process rollback. Always overwritten: none bound
       // (no parent engine on the stack) reads as incomplete in the child.
       inheritedProducerRegions: getCurrentProducerRegions(),
+      // go-to-k/cdkd#6871: this child's own, never the parent's spread value.
+      stackTags,
       parentStackInfo: {
         parentStack: parentCtx.parentStackName,
         parentLogicalId: logicalId,
@@ -184,6 +200,8 @@ export async function runChildDeploy(
     parentStackName: childStackName,
     parentRegion: childRegion,
     nestedTemplates: grandchildTemplates,
+    // go-to-k/cdkd#6871: a grandchild's tags derive from THIS child's.
+    options: { ...(parentCtx.options ?? {}), stackTags },
     // The PARENT row's slot never reaches the child: the child engine binds
     // its own per row, and a grandchild writing straight into this one would
     // be counted again through the child's `DeployResult` below.

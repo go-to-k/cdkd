@@ -597,6 +597,8 @@ async function diffCommand(
           displayName: shownName,
           region: stackRegion,
           template: stackInfo.template,
+          // go-to-k/cdkd#6871: merged into each taggable resource, as deploy does.
+          ...(stackInfo.tags !== undefined && { stackTags: stackInfo.tags }),
           // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480): the
           // index is omitted when no row carried a usable asset path, and on a
           // `{}` fallback the `if (!nestedTemplates[id])` readers answer an

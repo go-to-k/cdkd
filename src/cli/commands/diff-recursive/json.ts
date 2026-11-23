@@ -20,6 +20,8 @@ export interface DiffChangeJson {
   attributeChanges?: ResourceChange['attributeChanges'];
   /** go-to-k/cdkd#6282: a nested stack updated so its child re-spells an SSM parameter name. */
   nestedChildHeal?: true;
+  /** go-to-k/cdkd#6871: a nested stack updated so its child applies changed stack tags. */
+  nestedStackTagsChanged?: true;
   /** go-to-k/cdkd#6509: why the provider re-creates the resource for this update. */
   providerReplacement?: string;
   /**
@@ -178,6 +180,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
         ? { attributeChanges: change.attributeChanges }
         : {}),
       ...(change.nestedChildHeal === true && { nestedChildHeal: true as const }),
+      ...(change.nestedStackTagsChanged === true && { nestedStackTagsChanged: true as const }),
       ...(change.providerReplacement !== undefined && {
         providerReplacement: change.providerReplacement,
       }),

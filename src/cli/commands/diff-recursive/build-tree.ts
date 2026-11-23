@@ -1,3 +1,9 @@
+import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
+import { childStackTags, literalRowTags } from '../../../provisioning/stack-tags.js';
+import {
+  expectedNestedStackTags,
+  nestedRowsNeedingTagRun,
+} from '../../../deployment/nested-stack-tags.js';
 import { hintSidesOf, rollbackOrphanIds } from '../../../analyzer/refactor-hints.js';
 import type { CreateRouteOf } from '../../../deployment/deploy-engine/update-policy.js';
 import { displayIdent, displayStackName } from '../../../utils/display-safe.js';
@@ -69,6 +75,7 @@ import { collectCcApiRoutes } from './routes.js';
 function childRowRunsEngine(row: ResourceChange | undefined): boolean {
   if (row?.changeType === 'CREATE') return true;
   if (row?.changeType === 'UPDATE' && row.nestedChildHeal === true) return true;
+  if (row?.changeType === 'UPDATE' && row.nestedStackTagsChanged === true) return true;
   return row?.changeType === 'UPDATE' && (row.propertyChanges?.length ?? 0) > 0;
 }
 
@@ -241,12 +248,19 @@ export async function buildDiffTree(args: {
   inheritedReferenceProvenance?: ReadonlyMap<string, ReferenceProvenance>;
   /** go-to-k/cdkd#4929: as `computeStackDiff`'s; absent at the root. */
   inheritedSecretTokens?: SecretTokensByParameter;
+  /**
+   * go-to-k/cdkd#6871: this node's effective stack tags, merged into each
+   * taggable resource before the diff, as the deploy does. The root's are
+   * the stack's `StackProps.tags`; a child's, its parent's merged with the
+   * row's literal `Tags`.
+   */
+  stackTags?: Readonly<Record<string, string>>;
 }): Promise<DiffTreeNode> {
   const {
     stackName,
     displayName,
     region,
-    template,
+    template: synthTemplate,
     nestedTemplates,
     recursive,
     stateBackend,
@@ -275,14 +289,26 @@ export async function buildDiffTree(args: {
     refusalRecovery,
     inheritedReferenceProvenance,
     inheritedSecretTokens,
+    stackTags,
   } = args;
   const unboundHealer = attributeHealerFor?.(stackName, region);
+  // go-to-k/cdkd#6871: the stack tags merged as the deploy merges them,
+  // started beside the state read; nothing at all without stack tags.
+  const stackTagged = applyStackTagsToTemplate(synthTemplate, stackTags, (line) =>
+    logger.warn(line)
+  );
 
   const { state, unreadable, unreadableContainers, deployRefusals, found } = await loadStateOrEmpty(
     stackName,
     region,
     stateBackend,
     refusalRecovery
+  );
+  const template = await stackTagged;
+  // go-to-k/cdkd#6871: the rows whose child's effective stack tags changed.
+  const stackTagChildRuns = nestedRowsNeedingTagRun(
+    expectedNestedStackTags(template, stackTags),
+    state
   );
   // go-to-k/cdkd#3869: `computeStackDiff` binds each heal's printing bag over
   // the records it diffs; this node's child-parameter pass binds its own below.
@@ -370,6 +396,7 @@ export async function buildDiffTree(args: {
         previewMaskedInputs: !isNestedChild,
         ...(ssmNameHeal && { ssmNameHeal }),
         ...(nestedSsmCheck && { forcedNestedChildRuns: nestedSsmCheck.forcedRows }),
+        ...(stackTagChildRuns.size > 0 && { stackTagChildRuns }),
         nestedTemplates,
       }
     );
@@ -666,6 +693,12 @@ export async function buildDiffTree(args: {
         ...(refusalRecovery && { refusalRecovery }),
         ...(childReferenceProvenance && { inheritedReferenceProvenance: childReferenceProvenance }),
         ...(childSecretTokens.size > 0 && { inheritedSecretTokens: childSecretTokens }),
+        // go-to-k/cdkd#6871: a row's non-literal Tags are known only once the
+        // deploy resolves them; the preview applies the parent's tags alone.
+        stackTags: childStackTags(
+          stackTags,
+          literalRowTags((resource as { Properties?: Record<string, unknown> }).Properties?.['Tags'])
+        ),
       });
     node.children.push(
       await (hasMaskableValues(childDerivedNames)

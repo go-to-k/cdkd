@@ -1,3 +1,8 @@
+import {
+  expectedNestedStackTags,
+  nestedRowsNeedingTagRun,
+  nestedStackTagsField,
+} from '../nested-stack-tags.js';
 import { armSignalReceiver, ensureSignalReceiver, settledAfter } from './signal-receiver-run.js';
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
@@ -78,9 +83,16 @@ const TAIL_WARM_CONNECTIONS = 3;
 export async function doDeployWithPrefetch(
   engine: DeployEngine,
   stackName: string,
-  template: CloudFormationTemplate,
-  createOnlyPrefetch: CreateOnlyPrefetch
+  synthTemplate: CloudFormationTemplate,
+  createOnlyPrefetch: CreateOnlyPrefetch,
+  /**
+   * go-to-k/cdkd#6871: `synthTemplate` with the stack tags merged, started
+   * beside the lock acquisition (its DescribeType lookups overlap it) and
+   * awaited once the state is read. Absent: the stack has no stack tags.
+   */
+  stackTagged?: Promise<CloudFormationTemplate>
 ): Promise<DeployResult> {
+  let template = synthTemplate;
   const startTime = Date.now();
   // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
   const clock = new PhaseClock(phaseScopeForStack(stackName, engine.stackRegion));
@@ -176,6 +188,9 @@ export async function doDeployWithPrefetch(
       readRefactorMarker(engine.stateBackend),
     ]);
     clock.lap('state load');
+    // go-to-k/cdkd#6871: everything below -- diff, provisioning, the recorded
+    // properties -- sees the template with the stack tags merged.
+    if (stackTagged !== undefined) template = await stackTagged;
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
     noteDeployStateRecord(currentStateData?.state !== undefined);
@@ -574,6 +589,9 @@ export async function doDeployWithPrefetch(
     // go-to-k/cdkd#6705: a stack declaring a CreationPolicy signal or cfn-init
     // metadata has a CloudFormation signal receiver, found or created here,
     // before the diff, so `AWS::StackId` resolves to its real ARN everywhere.
+    // go-to-k/cdkd#6871: each nested row's child effective stack tags; a row
+    // whose tags differ from those its child was deployed with updates.
+    const expectedChildTags = expectedNestedStackTags(effectiveTemplate, engine.options.stackTags);
     const signalReceiverChanged = await ensureSignalReceiver(
       engine,
       stackName,
@@ -588,6 +606,7 @@ export async function doDeployWithPrefetch(
       conditions,
       clock,
       forcedNestedChildRuns: nestedCheck?.forcedRows,
+      stackTagChildRuns: nestedRowsNeedingTagRun(expectedChildTags, currentState),
     });
     clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
@@ -837,6 +856,10 @@ export async function doDeployWithPrefetch(
     ) {
       newState.nestedSsmNamesChecked = true;
     }
+    // go-to-k/cdkd#6871: every nested row's child now holds these tags.
+    const childTagsField = nestedStackTagsField(expectedChildTags);
+    if (childTagsField === undefined) delete newState.nestedStackTags;
+    else newState.nestedStackTags = childTagsField;
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is

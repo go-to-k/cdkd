@@ -69,7 +69,8 @@ export async function create(
       childRegion,
       childTemplate,
       childParameters,
-      grandchildTemplates
+      grandchildTemplates,
+      properties['Tags']
     );
   } catch (error) {
     // go-to-k/cdkd#4583: the child's journal already holds its rows' marks;
@@ -176,7 +177,8 @@ export async function update(
     childRegion,
     childTemplate,
     childParameters,
-    grandchildTemplates
+    grandchildTemplates,
+    properties['Tags']
   );
   const pendingRecord = recordWithPendingChildDeletes(properties, pendingChildDeletes);
 
