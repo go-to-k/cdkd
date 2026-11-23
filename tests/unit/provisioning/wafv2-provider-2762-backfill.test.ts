@@ -372,3 +372,94 @@ describe('WAFv2WebACLProvider #2762 backfill', () => {
     });
   });
 });
+
+// `AnalyticsConfig` (added to the schema in the 2026-11-23 refresh). Measured
+// live on REGIONAL and CLOUDFRONT web ACLs: an `UpdateWebACL` without it resets
+// a stored `CROSS_REGION` or `DISABLED` to the scope default, and GetWebACL
+// reports no member for a web ACL that never set one. So it rides like the
+// full-replace members: sent from `next` on every call, omitted on removal.
+describe('WAFv2WebACLProvider AnalyticsConfig', () => {
+  const CROSS_REGION = { Mode: 'CROSS_REGION' };
+  const DISABLED = { Mode: 'DISABLED' };
+
+  beforeEach(() => {
+    mockSend.mockReset();
+  });
+
+  it('is declared handled', () => {
+    const handled = new WAFv2WebACLProvider().handledProperties.get('AWS::WAFv2::WebACL');
+    expect(handled?.has('AnalyticsConfig')).toBe(true);
+  });
+
+  it('create sends it verbatim, and leaves it out when undeclared', async () => {
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'CreateWebACLCommand') {
+        return { Summary: { ARN, Id: ID } };
+      }
+      return { WebACL: { ARN, Id: ID } };
+    });
+    await new WAFv2WebACLProvider().create('MyWebACL', 'AWS::WAFv2::WebACL', {
+      ...BASE,
+      AnalyticsConfig: CROSS_REGION,
+    });
+    expect(commandInput('CreateWebACLCommand')['AnalyticsConfig']).toEqual(CROSS_REGION);
+
+    mockSend.mockClear();
+    await new WAFv2WebACLProvider().create('MyWebACL', 'AWS::WAFv2::WebACL', BASE);
+    expect(commandInput('CreateWebACLCommand')['AnalyticsConfig']).toBeUndefined();
+  });
+
+  it('update re-sends an unchanged value (an omitted one would reset it)', async () => {
+    const bag = { ...BASE, AnalyticsConfig: DISABLED };
+    const input = await runUpdate(bag, bag);
+    expect(input['AnalyticsConfig']).toEqual(DISABLED);
+  });
+
+  it('update sends a changed value', async () => {
+    const input = await runUpdate(
+      { ...BASE, AnalyticsConfig: DISABLED },
+      { ...BASE, AnalyticsConfig: CROSS_REGION }
+    );
+    expect(input['AnalyticsConfig']).toEqual(DISABLED);
+  });
+
+  it('update leaves it out when the template removed it, so AWS resets it to the scope default', async () => {
+    const input = await runUpdate(BASE, { ...BASE, AnalyticsConfig: CROSS_REGION });
+    expect(input['AnalyticsConfig']).toBeUndefined();
+  });
+
+  it('readCurrentState reads a reported value back verbatim', async () => {
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'GetWebACLCommand') {
+        return {
+          LockToken: 'lock-1',
+          WebACL: { Name: 'my-acl', Id: ID, ARN, AnalyticsConfig: CROSS_REGION },
+        };
+      }
+      return { TagInfoForResource: { TagList: [] } };
+    });
+    const state = (await new WAFv2WebACLProvider().readCurrentState(
+      ARN,
+      'MyWebACL',
+      'AWS::WAFv2::WebACL',
+      { ...BASE }
+    )) as Record<string, unknown>;
+    expect(state['AnalyticsConfig']).toEqual(CROSS_REGION);
+  });
+
+  it('readCurrentState omits it when AWS reports none (never set: no phantom drift)', async () => {
+    mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'GetWebACLCommand') {
+        return { LockToken: 'lock-1', WebACL: { Name: 'my-acl', Id: ID, ARN } };
+      }
+      return { TagInfoForResource: { TagList: [] } };
+    });
+    const state = (await new WAFv2WebACLProvider().readCurrentState(
+      ARN,
+      'MyWebACL',
+      'AWS::WAFv2::WebACL',
+      { ...BASE }
+    )) as Record<string, unknown>;
+    expect('AnalyticsConfig' in state).toBe(false);
+  });
+});

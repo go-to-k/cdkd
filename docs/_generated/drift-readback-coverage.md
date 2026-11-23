@@ -13,8 +13,8 @@ For every SDK provider type and every top-level property its `handledProperties`
 ## Summary
 
 - SDK provider types: **147** (without a readback, reported as `drift unknown`: **2**)
-- Handled properties classified: **1565**
-- Named on the readback path: **1424**
+- Handled properties classified: **1566**
+- Named on the readback path: **1425**
 - Declared unreadable by `getDriftUnknownPaths`: **118**
 - In the committed baseline (does NOT block CI): **23**
 - Classified though the schema capture does not list them: **12**
@@ -203,5 +203,5 @@ For every SDK provider type and every top-level property its `handledProperties`
 | `AWS::SQS::QueuePolicy` | `SQSQueuePolicyProvider` | PolicyDocument, Queues |  |
 | `AWS::SSM::Parameter` | `SSMParameterProvider` | AllowedPattern, DataType, Description, Name, Policies, Tags, Tier, Type, Value |  |
 | `AWS::StepFunctions::StateMachine` | `StepFunctionsProvider` | Definition, EncryptionConfiguration, LoggingConfiguration, RoleArn, StateMachineName, StateMachineType, Tags, TracingConfiguration |  |
-| `AWS::WAFv2::WebACL` | `WAFv2WebACLProvider` | ApplicationConfig, AssociationConfig, CaptchaConfig, ChallengeConfig, CustomResponseBodies, DataProtectionConfig, DefaultAction, Description, MonetizationConfig, Name, OnSourceDDoSProtectionConfig, Rules, Scope, Tags, TokenDomains, VisibilityConfig |  |
+| `AWS::WAFv2::WebACL` | `WAFv2WebACLProvider` | AnalyticsConfig, ApplicationConfig, AssociationConfig, CaptchaConfig, ChallengeConfig, CustomResponseBodies, DataProtectionConfig, DefaultAction, Description, MonetizationConfig, Name, OnSourceDDoSProtectionConfig, Rules, Scope, Tags, TokenDomains, VisibilityConfig |  |
 

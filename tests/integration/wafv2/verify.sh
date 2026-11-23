@@ -25,6 +25,10 @@
 #      replacement)
 #   4  destroy; assert every resource and the state file are gone
 #
+# PR #6884 rides the same phases with AnalyticsConfig: CROSS_REGION on the
+# deploy, DISABLED on the update, and dropped on the removal, where GetWebACL
+# must report no member (UpdateWebACL without it resets the scope default).
+#
 # ApplicationConfig and MonetizationConfig are wired too but unit-tested only
 # (see lib/wafv2-stack.ts). For ApplicationConfig, AWS refuses arbitrary
 # attribute names and publishes no allowed set. Measured 2026-10-30: the create
@@ -244,14 +248,15 @@ assert_acl "DataProtections[1] field type" \
   '.DataProtectionConfig.DataProtections[1].Field.FieldType' '"QUERY_STRING"'
 assert_acl "DataProtections[1] action" '.DataProtectionConfig.DataProtections[1].Action' '"SUBSTITUTION"'
 assert_acl "ALBLowReputationMode" '.OnSourceDDoSProtectionConfig.ALBLowReputationMode' '"ALWAYS_ON"'
+assert_acl "AnalyticsConfig mode" '.AnalyticsConfig.Mode' '"CROSS_REGION"'
 
 echo "==> Phase 1: drift of the #2762 members against their TEMPLATE values must be clean"
 # With the deploy-time observedProperties as the baseline, both sides come from
 # the same readCurrentState and the check could not fail. So the two members'
-# baseline is overwritten with their TEMPLATED values: a reordered list, or an
+# baseline (and AnalyticsConfig's, PR #6884) is overwritten with their TEMPLATED values: a reordered list, or an
 # echoed Exclude* default the read-back failed to drop (the second
 # data-protection entry leaves both booleans out), then shows up as drift.
-# Only these two are swapped, so the rest of the web ACL keeps its observed
+# Only these three are swapped, so the rest of the web ACL keeps its observed
 # baseline and cannot fail this phase for a reason that predates #2762.
 STATE_TMP_IN="${TMPDIR:-/tmp}/cdkd-2762-waf-state-in.$$.json"
 STATE_TMP_OUT="${TMPDIR:-/tmp}/cdkd-2762-waf-state-out.$$.json"
@@ -261,12 +266,12 @@ if [ "$(jq -r '.resources.WebAcl.observedProperties | type' "${STATE_TMP_IN}")" 
   rm -f "${STATE_TMP_IN}" "${STATE_TMP_OUT}"
   exit 1
 fi
-if [ "$(jq -r '.resources.WebAcl.properties | [.DataProtectionConfig, .OnSourceDDoSProtectionConfig] | map(type) | join(",")' "${STATE_TMP_IN}")" != "object,object" ]; then
+if [ "$(jq -r '.resources.WebAcl.properties | [.DataProtectionConfig, .OnSourceDDoSProtectionConfig, .AnalyticsConfig] | map(type) | join(",")' "${STATE_TMP_IN}")" != "object,object,object" ]; then
   echo "FAIL: the WebAcl record's templated properties lack a #2762 member -- the drift assertion would be vacuous" >&2
   rm -f "${STATE_TMP_IN}" "${STATE_TMP_OUT}"
   exit 1
 fi
-jq '.resources.WebAcl.observedProperties += (.resources.WebAcl.properties | {DataProtectionConfig, OnSourceDDoSProtectionConfig})' \
+jq '.resources.WebAcl.observedProperties += (.resources.WebAcl.properties | {DataProtectionConfig, OnSourceDDoSProtectionConfig, AnalyticsConfig})' \
   "${STATE_TMP_IN}" > "${STATE_TMP_OUT}"
 aws s3 cp "${STATE_TMP_OUT}" "s3://${STATE_BUCKET}/${STATE_KEY}" --region "${REGION}" >/dev/null
 rm -f "${STATE_TMP_IN}" "${STATE_TMP_OUT}"
@@ -287,10 +292,11 @@ assert_acl "DataProtections[0] action after update" \
 # re-send would be reset by AWS.
 assert_acl "ALBLowReputationMode re-sent unchanged" \
   '.OnSourceDDoSProtectionConfig.ALBLowReputationMode' '"ALWAYS_ON"'
+assert_acl "AnalyticsConfig mode after update" '.AnalyticsConfig.Mode' '"DISABLED"'
 drift_clean "drift clean after the update" CDKD_TEST_WAF_UPDATE=true
 
 # --- Phase 3: removal --------------------------------------------------------
-echo "==> Phase 3: redeploy with CDKD_TEST_WAF_REMOVAL=true (both dropped)"
+echo "==> Phase 3: redeploy with CDKD_TEST_WAF_REMOVAL=true (all three dropped)"
 CDKD_TEST_WAF_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -303,6 +309,7 @@ if [ "${DDOS_MODE}" = '"ALWAYS_ON"' ]; then
   exit 1
 fi
 echo "    ok: ALBLowReputationMode left ALWAYS_ON (now ${DDOS_MODE})"
+assert_acl "AnalyticsConfig reset to the scope default" '.AnalyticsConfig' 'null'
 drift_clean "drift clean after the removal" CDKD_TEST_WAF_REMOVAL=true
 
 # --- Phase 4: destroy --------------------------------------------------------

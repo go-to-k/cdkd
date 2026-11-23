@@ -14,6 +14,7 @@ import {
   type DataProtectionConfig,
   type OnSourceDDoSProtectionConfig,
   type MonetizationConfig,
+  type AnalyticsConfig,
   type WebACL,
 } from '@aws-sdk/client-wafv2';
 import { maskerOrIdentity } from '../../masked-retry-logger.js';
@@ -111,6 +112,18 @@ export async function update(
           previousProperties['ApplicationConfig']
         ),
         MonetizationConfig: properties['MonetizationConfig'] as MonetizationConfig | undefined,
+        // Sent as declared, and omitted when the template omits it. Unlike
+        // `ApplicationConfig`, an omitted `AnalyticsConfig` is not kept:
+        // measured live on REGIONAL and CLOUDFRONT web ACLs, an `UpdateWebACL`
+        // without it resets a stored `CROSS_REGION` or `DISABLED` to the
+        // scope's default (GetWebACL then reports no member), exactly as the
+        // rest of this full-replace request does. So removing it from the
+        // template returns the web ACL to AWS's default for its scope, as it
+        // does for the other full-replace members; never a silent
+        // keep of a cross-Region transfer the template no longer declares.
+        // A template that must keep request logs in-Region on a CLOUDFRONT
+        // web ACL (default enabled) declares `Mode: DISABLED` explicitly.
+        AnalyticsConfig: properties['AnalyticsConfig'] as AnalyticsConfig | undefined,
       })
     );
 

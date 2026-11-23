@@ -3703,6 +3703,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::WAFv2::WebACL',
     {
       handled: new Set<string>([
+        'AnalyticsConfig',
         'ApplicationConfig',
         'AssociationConfig',
         'CaptchaConfig',

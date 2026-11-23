@@ -540,7 +540,7 @@ vpc-lambda	2026-11-10T16:15:04Z	PASS	339	standard	deploy+destroy rc 0, orph clea
 vpc-lambda-cr-race	2026-11-10T16:21:52Z	PASS	375	standard	deploy+destroy rc 0, orph clean
 vpc-lookup	2026-11-05T10:15:28Z	PASS	25	standard	deploy+destroy rc 0, AlwaysMissingLookup=latest, orph clean (#5811 round 3)
 vpc-nat-gateway	2026-11-21T21:07:36Z	PASS	2043	verify.sh	rc ok, orph clean (PR 6795 0162f3918)
-wafv2	2026-11-22T02:46:37Z	PASS	180	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
+wafv2	2026-11-23T16:57:19Z	PASS	308	verify.sh	rc ok, orph clean; PR #6884 AnalyticsConfig CROSS_REGION/DISABLED/removed phases
 wait-condition-ec2-signal	2026-11-20T18:30:13Z	PASS	336	verify.sh	rc ok, orph clean; #6704 concurrency 1 + placeholder re-issue (us-east-1)
 wait-condition-handle	2026-11-20T18:28:25Z	PASS	90	verify.sh	rc ok, orph clean; #6704 placeholder untouched (us-east-1)
 wide-independent	2026-11-21T01:28:31Z	PASS	1390	verify.sh	PR6710 run at bf25fb0b3, same PR delta except the log-group message; rc ok, orph clean

@@ -1526,6 +1526,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
   [
     'AWS::WAFv2::WebACL',
     new Map<string, readonly string[]>([
+      ['AnalyticsConfig', ['Mode']],
       ['ApplicationConfig', ['Attributes']],
       ['ApplicationConfig.Attributes', ['Name', 'Values']],
       ['CaptchaConfig.ImmunityTimeProperty', ['ImmunityTime']],

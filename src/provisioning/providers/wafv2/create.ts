@@ -14,6 +14,7 @@ import {
   type OnSourceDDoSProtectionConfig,
   type ApplicationConfig,
   type MonetizationConfig,
+  type AnalyticsConfig,
   type WebACL,
 } from '@aws-sdk/client-wafv2';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -80,6 +81,7 @@ export async function create(
           | undefined,
         ApplicationConfig: properties['ApplicationConfig'] as ApplicationConfig | undefined,
         MonetizationConfig: properties['MonetizationConfig'] as MonetizationConfig | undefined,
+        AnalyticsConfig: properties['AnalyticsConfig'] as AnalyticsConfig | undefined,
       })
     );
 
