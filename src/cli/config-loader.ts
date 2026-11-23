@@ -26,6 +26,8 @@ export interface CdkConfig {
   requireApproval?: unknown;
   /** `cdk deploy --outputs-file`'s cdk.json key; validated by `resolveOutputsFile`. */
   outputsFile?: unknown;
+  /** `cdk deploy --tags`'s cdk.json key; validated by `resolveStackTagsOverride`. */
+  tags?: unknown;
 }
 
 /**

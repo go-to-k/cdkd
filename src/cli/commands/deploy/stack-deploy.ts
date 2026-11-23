@@ -70,6 +70,8 @@ export interface DeployStackContext {
   exportIndexStore: ExportIndexStore;
   accountId: string;
   outputsFile: string | undefined;
+  /** `--tags` / cdk.json "tags": replaces each stack's own tags when set (go-to-k/cdkd#6886). */
+  stackTagsOverride: Readonly<Record<string, string>> | undefined;
   stackOutputs: StackOutputsByStack;
   /** Adds a stack's unaddressed resources (and the cross-prefix part) to the run's totals. */
   addUnaddressed: (stackUnaddressed: number, crossPrefixKept: number) => void;
@@ -375,6 +377,8 @@ export async function deployStackInScope(
     // go-to-k/cdkd#6437: undefined (neither flag, no cdk.json key) is the default.
     const updatePolicy = resolveUpdatePolicy(options.updatePolicy);
 
+    // go-to-k/cdkd#6886: `--tags` replaces the stack's own tags.
+    const stackTags = ctx.stackTagsOverride ?? stackInfo.tags;
     const deployEngineOptions: DeployEngineOptions = {
       concurrency: options.concurrency,
       dryRun: options.dryRun,
@@ -428,7 +432,7 @@ export async function deployStackInScope(
       // go-to-k/cdkd#5238: recorded so `cdkd state destroy` can honor it.
       ...(stackInfo.terminationProtection === true && { terminationProtection: true }),
       // go-to-k/cdkd#6871: merged into every taggable resource.
-      ...(stackInfo.tags !== undefined && { stackTags: stackInfo.tags }),
+      ...(stackTags !== undefined && { stackTags }),
       inRunStacks: ctx.inRunStacks,
     };
 

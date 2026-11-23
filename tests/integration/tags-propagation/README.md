@@ -104,6 +104,9 @@ parameter keep theirs, and `cdkd drift` stays clean.
    `canonicalizeTagListsDeep`), nor a map-vs-list readback-shape mismatch.
 5. Redeploy with only the stack tags changed (`CDKD_TEST_STACK_TAGS=2`, above)
    and assert the in-place update and a clean `cdkd drift`.
+   Then `cdkd diff --tags` must preview, and `cdkd deploy -t` apply, a
+   `CdkdFlagTag` REPLACING the stack's own tags (`CdkdStackTag` untagged), and
+   `cdkd drift` stays clean (go-to-k/cdkd#6886).
 6. `cdkd destroy --force`.
 7. Redeploy as the role with only `ec2:CreateTags` denied (above), assert each
    EC2 create was re-sent untagged and warned, then `cdkd destroy --force` and

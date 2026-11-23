@@ -33,7 +33,7 @@ Index of every area: [code-layout.md](code-layout.md).
   `--app` and `--state-bucket`).
 - **src/cli/stack-matcher.ts** - shared stack-name matcher for deploy / diff /
   destroy / list / synth, CDK-compatible
-  ([#4474](https://github.com/go-to-k/cdkd/issues/4474)): a pattern is matched
+  (#4474): a pattern is matched
   against the hierarchical id with `pathGlobMatches` (`*` within a segment,
   `**` across), plus the EXACT physical name as a cdkd extension — never a glob
   over it, or `'*'` would reach every Stage's stacks — and consulted only when
@@ -70,8 +70,9 @@ Index of every area: [code-layout.md](code-layout.md).
   ([#4045](https://github.com/go-to-k/cdkd/issues/4045)), which escapes only
   what `displaySafe` leaves. Residuals (#4045): a control-only name sanitizes
   to EMPTY, and sanitizing is MANY-TO-ONE. Selection matches the RAW name.
+- **src/cli/options/stack-tags.ts** - `--tags` / cdk.json `tags` parsing (#6886).
 - **src/cli/region-options.ts** - shared region normalization
-  ([#2065](https://github.com/go-to-k/cdkd/issues/2065)). `foldRegionOption`
+  (#2065). `foldRegionOption`
   canonicalizes `--region` AND the `AWS_REGION` / `AWS_DEFAULT_REGION` env vars
   — the env half is what the AWS SDK's own chain reads. `namedCliRegion` answers "which region did the
   user NAME" (`undefined` when none); `rawCliRegion` preserves the spelling for

@@ -69,6 +69,23 @@ new MyStack(app, 'MyStack', { tags: { team: 'platform', costCenter: 'cc-1234' } 
 | A nested stack | Its resources get the parent's stack tags plus the nested stack resource's own `Tags`, which win on a shared key. |
 | Only the stack tags changed | The resources are updated in place: a changed or added tag is applied, and a tag removed from the stack is removed from each resource that did not declare it. A nested stack is updated for its resources too. |
 
+`--tags KEY=VALUE` (`-t`, repeatable) replaces the tags of every selected
+stack for this deploy, as `cdk deploy --tags` does. The AWS CDK CLI marks it
+deprecated, since the tags belong in the app; it is here for scripts that
+still pass it.
+
+| Case | What cdkd does |
+| --- | --- |
+| At least one `KEY=VALUE` | Those tags are used in place of each stack's own `StackProps.tags`; the two are not merged. |
+| No flag | The top-level `tags` of the project's `cdk.json` (a `[{"Key": ..., "Value": ...}]` list of strings; `~/.cdk.json` is not read) is used the same way, when present and non-empty. Otherwise each stack keeps its own tags. |
+| An argument without `=` | A warning, and the argument is ignored. |
+| Only empty strings (`--tags ""`) | Each stack keeps its own tags; `cdk.json` is not read. |
+| An empty key or value (`=v`, `k=`) | The deploy stops before any change, as CloudFormation refuses an empty tag key or value. |
+| A key given twice | The last value is used. |
+| A later deploy without the flag | The resources go back to the stack's own tags, as with CloudFormation. |
+
+`cdkd diff` takes the same flag, so its preview matches the deploy.
+
 The tags are part of what cdkd records for each resource, so
 [`cdkd drift`](cli-drift.md) compares them, as CloudFormation drift detection
 does, and [`cdkd diff`](cli-diff.md) shows them.
@@ -119,6 +136,7 @@ These six flags are explained on this page.
 | `--no-rollback` | rollback on | Leave a failed deploy in place and skip the automatic rollback. See [Roll Back a Failed Deploy](rollback.md). |
 | `--require-approval <level>` | `never` | Ask before `any-change`, `broadening` or `destructive` changes. See [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md). |
 | `-O`, `--outputs-file <path>` | none | Write every deployed stack's outputs to a JSON file. Also read from `outputsFile` in `cdk.json`. See [Write outputs to a file](stack-outputs.md#write-outputs-to-a-file). |
+| `-t`, `--tags <key=value...>` | the stack's tags | Replace every selected stack's tags. Repeatable. Also read from `tags` in `cdk.json`. Deprecated in the AWS CDK CLI. See [Stack tags](#stack-tags). |
 
 ### Assets
 

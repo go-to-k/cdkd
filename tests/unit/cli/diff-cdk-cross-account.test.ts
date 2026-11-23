@@ -42,6 +42,8 @@ vi.mock('../../../src/synthesis/synthesizer.js', () => ({
 }));
 
 vi.mock('../../../src/cli/config-loader.js', () => ({
+  // No cdk.json "tags" (go-to-k/cdkd#6886).
+  loadCdkJson: vi.fn(() => null),
   resolveApp: vi.fn(() => 'node app.ts'),
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
   resolveUpdatePolicy: vi.fn(() => undefined),

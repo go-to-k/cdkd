@@ -14,6 +14,7 @@ import {
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { requireApprovalOption } from './require-approval.js';
 import { outputsFileOption } from './outputs-file.js';
+import { stackTagsOption } from '../options/stack-tags.js';
 import { deployCommand } from './deploy/command.js';
 
 export { forceQuitReleaseCommand, splitUpdatePartial } from './deploy/helpers.js';
@@ -42,6 +43,7 @@ export function createDeployCommand(): Command {
     noLocalCustomResourcesOption,
     requireApprovalOption,
     outputsFileOption,
+    stackTagsOption,
     ...contextOptions,
     ...annotationMessageOptions,
   ].forEach((opt) => cmd.addOption(opt));
