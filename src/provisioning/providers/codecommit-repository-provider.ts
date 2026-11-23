@@ -397,8 +397,8 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
    * - A baseline without `Triggers` (captured, or accepted, by a read that
    *   failed, or recorded before the key was read) takes the template's when
    *   the template declares it and the readback holds it, so the key is
-   *   compared against what the deploy sent. An undeclared `Triggers` stays
-   *   uncompared, as any undeclared key whose baseline holds nothing.
+   *   compared against what the deploy sent. With no declared `Triggers`, a
+   *   baseline lacking the key compares none until its next capture.
    *
    * `drift --revert` passes its desired bag through here too; it then sends
    * the template's triggers only where `Triggers` drifted.
