@@ -1712,6 +1712,20 @@ describe('cdkd destroy: a Stage that failed to load fails synthesis (go-to-k/cdk
     expect(mockRunDestroyForStack).toHaveBeenCalledTimes(2);
   });
 
+  it('forwards --no-lookups to the synthesizer (go-to-k/cdkd#6883)', async () => {
+    mockSynthesize.mockResolvedValue({
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      stacks: [makeStackInfo('Other')],
+      failedLookups: [],
+    });
+    mockListStacks.mockResolvedValue([{ stackName: 'Other', region: 'us-east-1' }]);
+
+    await runDestroy(['Other', '--yes', '--no-lookups']);
+
+    expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ lookups: false });
+  });
+
   // go-to-k/cdkd#5807: destroy never refuses a failed context lookup, so its
   // synthesis tells the Synthesizer the caller owns that check.
   it('synthesizes with failedLookupsCheckedByCaller and destroys despite an unattributable failed lookup', async () => {

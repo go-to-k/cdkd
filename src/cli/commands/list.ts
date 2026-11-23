@@ -150,6 +150,7 @@ async function listCommand(
     profile?: string;
     roleArn?: string;
     context?: string[];
+    lookups?: boolean;
     long: boolean;
     showDependencies: boolean;
     json: boolean;
@@ -206,6 +207,7 @@ async function listCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    ...(options.lookups !== undefined && { lookups: options.lookups }),
     // Issue #1150: listing needs only names / display paths /
     // dependency edges from the manifest — never expanded templates —
     // so a macro app lists without an AWS region or CloudFormation

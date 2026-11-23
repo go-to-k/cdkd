@@ -229,6 +229,7 @@ async function diffCommand(
     roleArn?: string;
     verbose: boolean;
     context?: string[];
+    lookups?: boolean;
     useCdkBootstrapAssets?: boolean;
     cfnFallback?: boolean;
     updatePolicy?: boolean;
@@ -317,6 +318,7 @@ async function diffCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
+      ...(options.lookups !== undefined && { lookups: options.lookups }),
       // Threaded so the macro-expander has a real state bucket for
       // the > 51,200-byte template upload path (Issue #463).
       stateBucket,

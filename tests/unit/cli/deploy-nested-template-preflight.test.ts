@@ -649,6 +649,19 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
     expect(synthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
   });
 
+  it('forwards --no-lookups to the synthesizer (go-to-k/cdkd#6883)', async () => {
+    synthStacks.value = [makeStack('Root')];
+    const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
+    const synthesize = vi.fn(async (_options: unknown) => ({ stacks: synthStacks.value }));
+    vi.mocked(Synthesizer).mockImplementationOnce(
+      () => ({ synthesize, expandMacrosForStacks: expandMacrosSpy }) as never
+    );
+
+    await runDeploy(['--yes', '--dry-run', '--no-lookups']);
+
+    expect(synthesize.mock.calls[0]![0]).toMatchObject({ lookups: false });
+  });
+
   async function runWithLookups(stacks: unknown[], argv: string[]): Promise<number | undefined> {
     const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
     const synthesize = vi.fn(async () => ({

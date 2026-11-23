@@ -316,7 +316,8 @@ The full rules are in
 | `--region <region>` | AWS profile / `AWS_REGION` | The region for a stack without `env.region`. See [Region resolution](cli-reference-region.md). |
 
 `cdkd diff` also accepts the flags every command shares: `--app`,
-`--state-bucket`, `--state-prefix`, `--context`, `--profile`, `--role-arn`,
+`--state-bucket`, `--state-prefix`, `--context`, `--lookups` /
+`--no-lookups`, `--profile`, `--role-arn`,
 `--verbose`. See the [CLI Reference](cli-reference.md).
 
 ## Stack selection

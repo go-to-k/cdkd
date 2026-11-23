@@ -116,6 +116,12 @@ failed lookup, or when no stack can be matched to it, instead of running on its
 default value; a failure in another stack does not block them, as with the AWS
 CDK CLI. `cdkd list` and `cdkd destroy` go ahead either way.
 
+With `--no-lookups` the loop never looks anything up: the first manifest that
+reports missing context fails synthesis with `Context lookups have been
+disabled`, naming the keys, and `cdk.context.json` is not written. A
+pre-synthesized assembly (`-a <dir>`) that still reports missing context is
+refused the same way.
+
 ```text diagram=synthesizer-loop
 1. Execute CDK app (AppExecutor)
    ↓

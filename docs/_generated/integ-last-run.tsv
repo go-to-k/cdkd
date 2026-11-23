@@ -48,7 +48,7 @@ cache-streaming	2026-11-21T21:07:36Z	PASS	3507	verify.sh	rc ok, orph clean (PR 6
 cc-abandoned-create-resume	2026-11-05T03:51:49Z	PASS	120	verify.sh	rc ok, orph clean; fixture ran vp run build
 cc-api-fallback	2026-11-21T08:55:26Z	PASS	230	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
 cc-api-fallback-transitions	2026-11-21T08:55:26Z	PASS	115	verify.sh	rc 0, orph clean (PR 6721 9efccc8+main)
-cc-api-lookup	2026-11-18T08:37:35Z	PASS	85	verify.sh	rc ok, orph clean; #6542 cc-api arrays + stale-entry heal + cdk synth --no-lookups parity
+cc-api-lookup	2026-11-23T16:05:08Z	PASS	81	verify.sh	rc ok, orph clean; at 7a7905e29 (#6883 cdkd synth --no-lookups Phase 3b)
 cc-final-snapshot-handlers	2026-11-06T12:35:19Z	PASS	867	verify.sh	rc ok, destroy 0 errors, orph clean (#5846 a87a46584)
 cc-getatt-readback	2026-11-04T21:32:32Z	PASS	90	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
 cc-nested-create-only-update	2026-11-18T12:47:19Z	PASS	85	verify.sh	rc ok, orph clean (#6553 PR #6554 r2)
@@ -274,7 +274,7 @@ iot-topic-rule-role	2026-11-18T15:35:34Z	PASS	105	verify.sh	us-east-1, rc ok, or
 kinesis-esm-filter	2026-11-06T21:02:05Z	PASS	91	verify.sh	#5918 kinesis split head; rc ok, orph clean
 kinesis-stream-mode-switch	2026-11-22T02:46:37Z	PASS	180	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 kms-encryption	2026-11-22T03:31:56Z	PASS	151	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
-lambda	2026-11-22T05:45:21Z	PASS	115	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors)
+lambda	2026-11-23T16:05:08Z	PASS	135	verify.sh	rc ok, orph clean; at 7a7905e29 (#6883 destroy/deploy touch)
 lambda-accelerator-config	2026-11-21T17:25:48Z	PASS	923	verify.sh	SDK route create/update/removal-refused/destroy; rc ok, orph clean (us-east-1, 1 subnet, 4-vCPU GPU)
 lambda-alias-provisioned-concurrency	2026-11-17T09:08:06Z	PASS	265	verify.sh	rc ok, orph clean (#6437 PR #6483)
 lambda-arch-switch	2026-11-06T18:48:58Z	PASS	66	verify.sh	#5901 lambda-function split head; rc ok, orph clean

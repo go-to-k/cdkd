@@ -33,6 +33,8 @@ Implemented in `src/cli/config-loader.ts`; option parsing in
   fixture's `--region`. The state-bucket S3 client still auto-detects the
   bucket's region via `GetBucketLocation`, independent of the flag.
 - **`--context` / `-c`** — repeatable `key=value`, merged over cdk.json context.
+- **`--lookups` / `--no-lookups`** ride in `contextOptions`; unset means on. Do
+  not read cdk.json `"lookups"`: the `cdk` CLI ignores it too (#6883).
 - **`-y` / `--yes`** is global; `cdkd destroy` also takes `-f` / `--force` with
   the same effect there.
 

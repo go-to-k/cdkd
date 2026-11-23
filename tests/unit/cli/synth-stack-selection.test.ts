@@ -258,6 +258,17 @@ describe('synth stack selection (issue #3550)', () => {
     expect(passed['failedLookupsCheckedByCaller']).toBe(true);
   });
 
+  it('forwards --no-lookups / --lookups, and nothing when neither is given (go-to-k/cdkd#6883)', async () => {
+    const passed = (i: number) => mockSynthesize.mock.calls[i]![0] as Record<string, unknown>;
+    await runSynth(['--no-lookups', 'DataStack']);
+    await runSynth(['--lookups', 'DataStack']);
+    await runSynth(['DataStack']);
+    expect(passed(0)['lookups']).toBe(false);
+    expect(passed(1)['lookups']).toBe(true);
+    // Unset leaves the default to the synthesizer.
+    expect(passed(2)).not.toHaveProperty('lookups');
+  });
+
   // go-to-k/cdkd#5807: `synth` waives annotations with --ignore-errors, but a
   // lookup failure no stack carries has no annotation to waive.
   it('refuses a failed lookup no stack carries, whatever the selection', async () => {

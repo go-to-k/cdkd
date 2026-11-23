@@ -97,6 +97,7 @@ export interface RefactorOptions {
   roleArn?: string;
   verbose: boolean;
   context?: string[];
+  lookups?: boolean;
   useCdkBootstrapAssets?: boolean;
   cfnFallback?: boolean;
 }
@@ -172,6 +173,7 @@ export async function refactorCommand(stacks: string[], options: RefactorOptions
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
+      ...(options.lookups !== undefined && { lookups: options.lookups }),
       stateBucket,
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
       deferMacroExpansion: true,
