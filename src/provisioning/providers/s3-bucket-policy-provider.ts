@@ -708,7 +708,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         ...(record.attributes !== undefined && { attributes: record.attributes }),
       };
     }
-    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings });
+    // Right after cdkd's own write attempt, so the transient form is expected.
+    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings }, true);
     return policyContentKey(live);
   }
 
@@ -821,7 +822,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
 
     // Issue #872: every recognizable CloudFront OAI grant principal back to the
     // template's canonical user id form (the three unstable forms are below).
-    await this.normalizeOaiPrincipals(policyDoc, properties, context);
+    // A bare unique id is read as the OAI's transient form only right after
+    // cdkd's own write (go-to-k/cdkd#6854); anywhere else it is compared as is.
+    await this.normalizeOaiPrincipals(policyDoc, properties, context, context?.afterOwnWrite === true);
     result['PolicyDocument'] = policyDoc;
     return result;
   }
@@ -838,11 +841,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    *   - `{ AWS: <bare-IAM-unique-id> }` -> the transient post-PutBucketPolicy
    *     rendering, which carries no recoverable link to the OAI. Canonicalize
    *     it only by matching the corresponding template statement (same Effect /
-   *     Action / Resource) carrying a `{ CanonicalUser }` principal. A user
-   *     cannot author a bare IAM unique id as a bucket-policy principal, so
-   *     adopting the template form here only fires for AWS's transient
-   *     rendering; a repoint seen only during that transient phase is
-   *     reported by the next drift run, once the ARN form shows.
+   *     Action / Resource) carrying a `{ CanonicalUser }` principal, and only
+   *     when `afterOwnWrite` says the read follows cdkd's own write. S3 also
+   *     renders a DELETED IAM user's grant as its bare `AIDA…` id, and keeps
+   *     it (measured us-east-1, 2026-11-23, go-to-k/cdkd#6854), so on any
+   *     other read (drift, `state refresh-observed`, import) the id is
+   *     compared as is: adopting the template form there reported a grant to
+   *     a deleted user as the template's OAI grant.
    * Statements whose principal is not a single-string `AWS` OAI form (e.g. a
    * wildcard, a service principal, a normal role ARN, or an `AWS` ARRAY of
    * principals) are left untouched — skipping is safe (it can only leave a
@@ -851,8 +856,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    */
   private async normalizeOaiPrincipals(
     policyDoc: unknown,
-    templateProps?: Record<string, unknown>,
-    context?: ReadCurrentStateContext
+    templateProps: Record<string, unknown> | undefined,
+    context: ReadCurrentStateContext | undefined,
+    afterOwnWrite: boolean
   ): Promise<void> {
     const stmts = extractStatements(policyDoc);
     if (stmts.length === 0) return;
@@ -876,7 +882,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         continue;
       }
 
-      if (IAM_UNIQUE_ID_RE.test(awsPrincipal)) {
+      if (afterOwnWrite && IAM_UNIQUE_ID_RE.test(awsPrincipal)) {
         const tmplCanonical = findTemplateCanonicalUser(stmt, templateStmts);
         if (tmplCanonical) stmt['Principal'] = { CanonicalUser: tmplCanonical };
       }
