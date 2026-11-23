@@ -1255,10 +1255,22 @@ export class NestedStackSecretStack extends cdk.Stack {
     // `cdk.Tags.of(child)`: that tags the child's resources from INSIDE the
     // child template, where the row's tag carry is not involved. Kept in
     // sync with verify.sh's `PIN_TAG_*` and its secret JSON.
+    // A SECOND tag spells its own 2-character value (`pintagjoin`) the CDK
+    // `secretValueFromJson` way, an `Fn::Join` with the account `Ref` inside
+    // the token (`pinJoinReference`'s shape): the provider takes its spelling
+    // from the join's own resolution record rather than a literal.
     (child.nestedStackResource as cdk.CfnResource).addPropertyOverride('Tags', [
       {
         Key: 'cdkd-pintag',
         Value: `tag:{{resolve:secretsmanager:${secretName}:SecretString:pintag::}}`,
+      },
+      {
+        Key: 'cdkd-pintagjoin',
+        Value: cdk.Fn.join('', [
+          'tagj:{{resolve:secretsmanager:cdkd-nested-secret-',
+          cdk.Aws.ACCOUNT_ID,
+          ':SecretString:pintagjoin::}}',
+        ]),
       },
     ]);
 
