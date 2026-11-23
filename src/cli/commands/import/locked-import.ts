@@ -33,9 +33,11 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
+  readDeployedStackTags,
   readDeployedTemplate,
   withDeployedDefinitions,
 } from './deployed-properties.js';
+import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
 import {
   buildStackState,
   claimRegistryMarkerAfterImport,
@@ -177,6 +179,23 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
     recordTemplate = overlay.template;
     dispatchResources = withDeployedDefinitions(resources, overlay);
   }
+  // go-to-k/cdkd#6887: each taggable resource records the stack tags merged
+  // into its tag property, as `cdkd deploy` desires them (#6871), so the next
+  // deploy shows no `Tags` update for tags AWS already holds. A migration
+  // merges the tags the CloudFormation stack HOLDS (what CloudFormation
+  // propagated to the resources); any other import records the synthesized
+  // template, so it merges the synthesized stack tags.
+  const recordStackTags =
+    migrationCfnStackName !== undefined
+      ? await readDeployedStackTags(
+          regionClients.cloudFormation,
+          migrationCfnStackName,
+          'cdkd state was not written and the CloudFormation stack was not changed.'
+        )
+      : stackInfo.tags;
+  recordTemplate = await applyStackTagsToTemplate(recordTemplate, recordStackTags, (line) =>
+    logger.warn(line)
+  );
 
   // The dispatch over every template resource. A closure so the Retain
   // update below can re-run it when CloudFormation REPLACED a resource and

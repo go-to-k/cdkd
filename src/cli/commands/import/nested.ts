@@ -45,9 +45,11 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
+  readDeployedStackTags,
   readDeployedTemplate,
   withDeployedDefinitions,
 } from './deployed-properties.js';
+import { applyStackTagsToTemplate } from '../../../provisioning/stack-tag-targets.js';
 import {
   buildStackState,
   rebuiltLogicalIdsFrom,
@@ -365,7 +367,20 @@ export async function importNestedStackChildrenRecursive(args: {
         logger,
         displaySafe(childStackName)
       );
-      const childRecordTemplate = childOverlay.template;
+      // go-to-k/cdkd#6887: the stack tags this child's CloudFormation stack
+      // holds (the parent's plus its row's own), merged into each taggable
+      // resource's record, as the root's are.
+      const childRecordTemplate = await applyStackTagsToTemplate(
+        childOverlay.template,
+        await readDeployedStackTags(
+          args.cfnClient,
+          childTreeNode.stackName,
+          safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
+            `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
+            `was not deleted; the re-run needs --force.`
+        ),
+        (line) => logger.warn(line)
+      );
 
       // Dispatch + collect rows (same shape as the root's dispatch loop).
       const rows: ImportRow[] = [];

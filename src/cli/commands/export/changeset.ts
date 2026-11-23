@@ -13,6 +13,7 @@ import {
   waitUntilStackUpdateComplete,
   type ResourceToImport,
   type Parameter,
+  type Tag,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../../../utils/logger.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
@@ -415,27 +416,59 @@ async function collectImportFailureSummary(
  * true no-op — same template, same params, only the flip Tag changes).
  * Empty array = the stack has no Parameters, so the field is omitted.
  *
+ * go-to-k/cdkd#6887: `stackTags` are the stack's own stack tags (what
+ * CloudFormation gives a nested child: its parent's plus its row's). The
+ * update REPLACES the stack's tag set and CloudFormation re-tags every
+ * resource to match (measured us-east-1, 2026-11-24: a flip sending only the
+ * flip tag stripped two stack tags from an imported queue), so they ride
+ * along with the flip tag.
+ *
  * Exported for unit testing.
  */
 export async function flipStackToUpdateComplete(
   cfnClient: AwsClients['cloudFormation'],
   cfnStackName: string,
-  parameters: Parameter[]
+  parameters: Parameter[],
+  stackTags: Readonly<Record<string, string>> = {}
+): Promise<void> {
+  await updateStackTagsOnly(cfnClient, cfnStackName, parameters, [
+    ...cfnTagList(stackTags),
+    {
+      Key: 'cdkd:nested-export-flip',
+      Value: `${new Date().toISOString()}-${randomUUID().slice(0, 8)}`,
+    },
+  ]);
+}
+
+/** A stack-tag map as CloudFormation's `Tags` list. */
+export function cfnTagList(tags: Readonly<Record<string, string>>): Tag[] {
+  return Object.entries(tags).map(([Key, Value]) => ({ Key, Value }));
+}
+
+/**
+ * A no-op `UpdateStack` (`UsePreviousTemplate: true`) whose only change is
+ * the stack's tag set, which it REPLACES with `tags`; CloudFormation applies
+ * the new set to every taggable resource. Awaited to `UPDATE_COMPLETE`.
+ *
+ * `parameters` must be the SAME Parameters the stack was just IMPORTed
+ * with: a `UsePreviousTemplate: true` update on a stack that declares
+ * Parameters (especially no-`Default` ones fed by a parent-side `Ref`)
+ * is rejected by CFn with `Parameters: [X] must have values` unless every
+ * Parameter is re-supplied. Empty array = the stack has no Parameters, so
+ * the field is omitted.
+ */
+async function updateStackTagsOnly(
+  cfnClient: AwsClients['cloudFormation'],
+  cfnStackName: string,
+  parameters: Parameter[],
+  tags: Tag[]
 ): Promise<void> {
   await cfnClient.send(
     new UpdateStackCommand({
       StackName: cfnStackName,
       UsePreviousTemplate: true,
-      // Re-supply the stack's Parameters (no-op values) so the
-      // UsePreviousTemplate update validates against a template that
-      // declares no-`Default` Parameters. Omitted when the stack has none.
       ...(parameters.length > 0 && { Parameters: parameters }),
-      Tags: [
-        {
-          Key: 'cdkd:nested-export-flip',
-          Value: `${new Date().toISOString()}-${randomUUID().slice(0, 8)}`,
-        },
-      ],
+      Tags: tags,
       // Preserve all the standard cdkd export Capabilities (CDK templates
       // routinely declare IAM resources). The previous template's
       // capabilities are NOT auto-inherited — the SDK call needs them
@@ -449,6 +482,44 @@ export async function flipStackToUpdateComplete(
     { client: cfnClient, maxWaitTime: 1800, minDelay: 5, maxDelay: 10 },
     { StackName: cfnStackName }
   );
+}
+
+/**
+ * go-to-k/cdkd#6887: give the exported stack its stack tags (the manifest's
+ * `StackProps.tags`, which `cdk deploy` passes as the stack's `Tags`).
+ * Nothing at all for a stack without stack tags.
+ *
+ * Its own step after every change set, because an IMPORT change set creating
+ * a stack refuses stack tags (measured us-east-1, 2026-11-24: `As part of the
+ * import operation, you cannot modify or add [Tags]`, even with the resource
+ * already holding them), while a tag-only update after it sets them and
+ * re-tags the imported resources. A later change set without `Tags` keeps
+ * them (measured the same day), so phase 2 needs none.
+ *
+ * Never throws: by now every resource is CloudFormation-managed and the
+ * export completes; the stack tags alone are missing, with a warning, until
+ * the next `cdk deploy` passes them.
+ */
+export async function applyExportedStackTags(
+  cfnClient: AwsClients['cloudFormation'],
+  cfnStackName: string,
+  parameters: Parameter[],
+  stackTags: Readonly<Record<string, string>> | undefined
+): Promise<void> {
+  if (stackTags === undefined || Object.keys(stackTags).length === 0) return;
+  const logger = getLogger();
+  logger.info(
+    `Setting the stack tags of CloudFormation stack ${quotedOrNotShown(cfnStackName)}...`
+  );
+  try {
+    await updateStackTagsOnly(cfnClient, cfnStackName, parameters, cfnTagList(stackTags));
+  } catch (err) {
+    logger.warn(
+      `The stack tags of CloudFormation stack ${quotedOrNotShown(cfnStackName)} were not set: ` +
+        `${displayAwsMessage(describeAwsFailure(err).detail)}. The export itself completed; ` +
+        `the next 'cdk deploy' of the stack sets them.`
+    );
+  }
 }
 
 /**

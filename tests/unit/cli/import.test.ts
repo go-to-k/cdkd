@@ -146,10 +146,31 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
 const mockReadDeployedTemplate = vi.hoisted(() =>
   vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ Resources: {} }))
 );
+// go-to-k/cdkd#6887: the stack tags the migrated CloudFormation stack holds.
+// Defaults to none, so a migration merges nothing -- the shape every
+// pre-#6887 test here was written against.
+const mockReadDeployedStackTags = vi.hoisted(() =>
+  vi.fn<(...args: unknown[]) => Promise<Record<string, string>>>(async () => ({}))
+);
 vi.mock('../../../src/cli/commands/import/deployed-properties.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/cli/commands/import/deployed-properties.js')>()),
   readDeployedTemplate: mockReadDeployedTemplate,
+  readDeployedStackTags: mockReadDeployedStackTags,
 }));
+// go-to-k/cdkd#6887: the stack-tag merge with every non-nested, schema'd type
+// taking a `Tags` list (no DescribeType call); the merge itself is the REAL
+// `applyStackTags`. A stack with no stack tags merges nothing.
+vi.mock('../../../src/provisioning/stack-tag-targets.js', async (importOriginal) => {
+  const { applyStackTags } = await import('../../../src/provisioning/stack-tags.js');
+  return {
+    ...(await importOriginal<typeof import('../../../src/provisioning/stack-tag-targets.js')>()),
+    applyStackTagsToTemplate: vi.fn(
+      async (t: CloudFormationTemplate, tags: Record<string, string> | undefined) =>
+        applyStackTags(t, tags, () => ({ kind: 'apply', property: 'Tags', shape: 'array' }))
+          .template
+    ),
+  };
+});
 
 // Steps 1-3 of the retirement (the Retain update) and step 4 (DeleteStack),
 // split so the import writes state between them (issue #4873).
@@ -427,6 +448,8 @@ describe('cdkd import', () => {
     mockTryGetCfnResourceMap.mockResolvedValue(null);
     mockReadDeployedTemplate.mockReset();
     mockReadDeployedTemplate.mockResolvedValue({ Resources: {} });
+    mockReadDeployedStackTags.mockReset();
+    mockReadDeployedStackTags.mockResolvedValue({});
     cfnSend.mockReset();
     // Default: the cdkd-NATIVE answer — no CloudFormation stack of that name —
     // so every test not about issue #2854 keeps its pre-#2854 path. A
@@ -8248,6 +8271,145 @@ describe('cdkd import', () => {
       expect(state.resources['MyPerm']?.properties['FunctionName']).toEqual({
         'Fn::GetAtt': ['NotImportedFn', 'Arn'],
       });
+    });
+  });
+
+  // go-to-k/cdkd#6887: each taggable resource records the stack tags merged
+  // in, as `cdkd deploy` desires them (#6871), so the next deploy shows no
+  // `Tags` update for tags the resource already holds.
+  describe('stack tags in the recorded properties (#6887)', () => {
+    const topicTemplate = (): CloudFormationTemplate =>
+      template({
+        Topic: {
+          Type: 'AWS::SNS::Topic',
+          Properties: { TopicName: 't', Tags: [{ Key: 'own', Value: 'mine' }] },
+        },
+      });
+    function setup(tags: Record<string, string> | undefined): void {
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('S', topicTemplate()), ...(tags !== undefined && { tags }) }],
+      });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+      });
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'S',
+        physicalId: 'S',
+        resources: new Map([['Topic', 'topic-arn']]),
+        nested: new Map(),
+      });
+    }
+    function savedTags(stack = 'S'): unknown {
+      const call = (
+        mockSaveState.mock.calls as unknown as [
+          string,
+          string,
+          { resources: Record<string, { properties: Record<string, unknown> }> },
+        ][]
+      ).find((c) => c[0] === stack)!;
+      return call[2].resources['Topic']!.properties['Tags'];
+    }
+
+    it('records the synthesized stack tags after the resource\'s own, for an import that records the synthesized template', async () => {
+      setup({ team: 'core', own: 'stack-loses' });
+
+      await runImport(['import', '--app', 'x', '--yes', '--resource', 'Topic=topic-arn']);
+
+      expect(savedTags()).toEqual([
+        { Key: 'own', Value: 'mine' },
+        { Key: 'team', Value: 'core' },
+      ]);
+      expect(mockReadDeployedStackTags).not.toHaveBeenCalled();
+    });
+
+    it('records the resource\'s own tags alone for a stack without stack tags', async () => {
+      setup(undefined);
+
+      await runImport(['import', '--app', 'x', '--yes', '--resource', 'Topic=topic-arn']);
+
+      expect(savedTags()).toEqual([{ Key: 'own', Value: 'mine' }]);
+    });
+
+    it('records the tags the MIGRATED CloudFormation stack holds, not the synthesized ones: those are what CloudFormation propagated', async () => {
+      setup({ team: 'synthesized' });
+      mockReadDeployedStackTags.mockResolvedValue({ team: 'deployed' });
+
+      await runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+      expect(mockReadDeployedStackTags.mock.calls.map((c) => c[1])).toEqual(['S']);
+      expect(savedTags()).toEqual([
+        { Key: 'own', Value: 'mine' },
+        { Key: 'team', Value: 'deployed' },
+      ]);
+    });
+
+    it('writes nothing when the migrated stack\'s tags cannot be read', async () => {
+      setup({ team: 'synthesized' });
+      mockReadDeployedStackTags.mockRejectedValue(
+        new Error('--migrate-from-cloudformation: reading the stack tags failed. NOTHING WRITTEN.')
+      );
+
+      await expect(
+        runImport(['import', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'reading the stack tags failed. NOTHING WRITTEN.'
+      );
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockPrepareRetirement).not.toHaveBeenCalled();
+    });
+
+    it("records a nested child's resources with the tags the CHILD's CloudFormation stack holds", async () => {
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-stack-tags-'));
+      try {
+        const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(childTemplatePath, JSON.stringify(topicTemplate()));
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [
+            { ...stackInfo('P', tmpl), tags: { team: 'synth' }, nestedTemplates: { Child: childTemplatePath } },
+          ],
+        });
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['Topic', 'topic-arn']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+        mockReadDeployedStackTags.mockImplementation(
+          async (...args: unknown[]): Promise<Record<string, string>> =>
+            args[1] === childArn ? { team: 'parent', row: 'child' } : { team: 'parent' }
+        );
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+        expect(mockReadDeployedStackTags.mock.calls.map((c) => c[1])).toEqual(['P', childArn]);
+        expect(savedTags('P~Child')).toEqual([
+          { Key: 'own', Value: 'mine' },
+          { Key: 'team', Value: 'parent' },
+          { Key: 'row', Value: 'child' },
+        ]);
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
     });
   });
 });

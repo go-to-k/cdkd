@@ -42,6 +42,7 @@ import { blockedMigrationTail, buildImportPlan, groupBlockedReasons } from './im
 import { preDeleteListingLines, preDeleteManualCommands } from './pre-delete.js';
 import { assertCfnStackAbsent, awsStackNameArg, confirmPrompt } from './command-helpers.js';
 import { type PerStackPlan, runPerStackImportPhases } from './per-stack-phases.js';
+import { exportedStackTagsByStack } from './exported-stack-tags.js';
 
 /**
  * Per-stack record of a successfully-IMPORTed stack within a
@@ -186,6 +187,8 @@ export async function runPerStackImportLoop(args: {
     childMap: Map<string, string>;
   };
   rootParameters: Parameter[];
+  /** The root's manifest stack tags (go-to-k/cdkd#6887); absent when it has none. */
+  rootStackTags?: Readonly<Record<string, string>> | undefined;
   deps: RunPerStackImportLoopDeps;
   options: RunPerStackImportLoopOptions;
   /**
@@ -388,6 +391,14 @@ export async function runPerStackImportLoop(args: {
   }
 
   // Aggregate phase-2 totals for the include-non-importable gate.
+  // go-to-k/cdkd#6887: each CloudFormation stack's stack tags, warned (an
+  // intrinsic row `Tags`) before the confirmation.
+  const stackTagsByCdkdName = exportedStackTagsByStack(
+    perStackPlans,
+    rootStackName,
+    args.rootStackTags,
+    (line) => logger.warn(line)
+  );
   const totalPhase2Creates = perStackPlans.reduce((acc, p) => acc + p.phase2Creates.length, 0);
   const totalRecreate = perStackPlans.reduce((acc, p) => acc + p.recreateBeforePhase2.length, 0);
 
@@ -668,6 +679,7 @@ export async function runPerStackImportLoop(args: {
         cfnStackNameOf,
         perStackPlans,
         paramsByCdkdName,
+        stackTagsByCdkdName,
         sessionIntrinsicSkipped,
         cfnArnByCdkdName,
         uploadCleanups,

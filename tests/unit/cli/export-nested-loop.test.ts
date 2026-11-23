@@ -1190,6 +1190,173 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
   });
 });
 
+// go-to-k/cdkd#6887: each exported CloudFormation stack gets its stack tags. An
+// IMPORT change set refuses stack tags, so a non-root stack takes them with its
+// flip (which REPLACES the tag set) and the root with a tag-only update after
+// its last change set.
+describe('runPerStackImportLoop — stack tags (go-to-k/cdkd#6887)', () => {
+  let tmpRoot: string;
+  beforeEach(() => {
+    infoSpy.mockReset();
+    warnSpy.mockReset();
+    errorSpy.mockReset();
+    waitChangeSetCreate.mockReset();
+    waitChangeSetCreate.mockResolvedValue(undefined);
+    waitStackImport.mockReset();
+    waitStackImport.mockResolvedValue(undefined);
+    waitStackUpdate.mockReset();
+    waitStackUpdate.mockResolvedValue(undefined);
+    tmpRoot = mkdtempSync(join(tmpdir(), 'cdkd-export-stack-tags-'));
+  });
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  async function run(
+    rowTags: unknown,
+    rootStackTags: Record<string, string> | undefined
+  ): Promise<SendCall[]> {
+    const childPath = join(tmpRoot, 'Child.nested.template.json');
+    writeFileSync(
+      childPath,
+      JSON.stringify({
+        Resources: {
+          ChildBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'child-b' } },
+        },
+      }),
+      'utf-8'
+    );
+    const root = makeState({
+      stackName: 'Root',
+      region: 'us-east-1',
+      resources: {
+        ParentBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'parent-b' },
+        Child: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
+      },
+    });
+    const child = makeState({
+      stackName: 'Root~Child',
+      region: 'us-east-1',
+      resources: { ChildBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'child-b' } },
+      parentStack: 'Root',
+      parentLogicalId: 'Child',
+    });
+    const { backend: stateBackend } = buildStateBackend({
+      'Root|us-east-1': root,
+      'Root~Child|us-east-1': child,
+    });
+    const { manager: lockManager } = buildLockManager();
+    const { client: cfnClient, calls } = buildCfnClient();
+    const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+      rootStackName: 'Root',
+      rootRegion: 'us-east-1',
+      rootStackInfoNestedTemplates: { Child: childPath },
+      rootTemplateFormat: 'json',
+      tree: {
+        stackName: 'Root',
+        region: 'us-east-1',
+        state: root,
+        nestedChildren: new Map([
+          [
+            'Child',
+            { stackName: 'Root~Child', region: 'us-east-1', state: child, nestedChildren: new Map() },
+          ],
+        ]),
+      },
+      rootTemplate: {
+        Resources: {
+          ParentBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'parent-b' } },
+          Child: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: {
+              TemplateURL: 'https://cdk-asset/.../Child.template.json',
+              ...(rowTags !== undefined && { Tags: rowTags }),
+            },
+            Metadata: { 'aws:asset:path': 'Child.nested.template.json' },
+          },
+        },
+      },
+      cfnStackNameOverrides: { childMap: new Map() },
+      rootParameters: [],
+      rootStackTags,
+      deps: {
+        cfnClient,
+        stateBackend,
+        lockManager,
+        uploadOpts: { stateBucket: STATE_BUCKET },
+        lockOwner: 'tester@host:1234',
+        ssmClient: UNUSED_SSM,
+      },
+      options: {
+        dryRun: false,
+        yes: true,
+        includeNonImportable: false,
+        recreateImportUnsupported: true,
+      },
+    });
+    expect(result.outcome).toBe('success');
+    return calls;
+  }
+
+  it("flips the child with its parent's tags and its row's own (the row winning), and tags the root after its adoption", async () => {
+    const calls = await run(
+      [
+        { Key: 'own', Value: 'row' },
+        { Key: 'rowOnly', Value: 'r' },
+      ],
+      { team: 'core', own: 'root' }
+    );
+
+    const updates = calls.filter((c) => c.name === 'UpdateStack');
+    expect(updates.map((c) => c.input['StackName'])).toEqual(['Root-Child', 'Root']);
+    const flipTags = updates[0]!.input['Tags'] as Array<{ Key: string; Value: string }>;
+    expect(flipTags.slice(0, -1)).toEqual([
+      { Key: 'team', Value: 'core' },
+      { Key: 'own', Value: 'row' },
+      { Key: 'rowOnly', Value: 'r' },
+    ]);
+    expect(flipTags.at(-1)!.Key).toBe('cdkd:nested-export-flip');
+    expect(updates[1]!.input).toMatchObject({
+      UsePreviousTemplate: true,
+      Tags: [
+        { Key: 'team', Value: 'core' },
+        { Key: 'own', Value: 'root' },
+      ],
+    });
+    // The root's tags go on AFTER its last change set (Phase 1B).
+    const order = calls
+      .filter((c) => c.name === 'UpdateStack' || c.name === 'CreateChangeSet')
+      .map((c) => `${c.name}:${String(c.input['StackName'])}`);
+    expect(order.at(-1)).toBe('UpdateStack:Root');
+    // No IMPORT change set carries stack tags: CloudFormation refuses them.
+    for (const create of calls.filter((c) => c.name === 'CreateChangeSet')) {
+      expect(create.input['Tags']).toBeUndefined();
+    }
+  });
+
+  it("flips a child whose row Tags are an intrinsic with its parent's tags alone, WARNED", async () => {
+    const calls = await run({ 'Fn::If': ['C', [], []] }, { team: 'core' });
+
+    const flip = calls.find(
+      (c) => c.name === 'UpdateStack' && c.input['StackName'] === 'Root-Child'
+    )!;
+    const flipTags = flip.input['Tags'] as Array<{ Key: string; Value: string }>;
+    expect(flipTags.slice(0, -1)).toEqual([{ Key: 'team', Value: 'core' }]);
+    expect(warnSpy.mock.calls.flat().join('\n')).toContain(
+      "The Tags of nested stack row Child in 'Root' are not literal"
+    );
+  });
+
+  it('makes no root tag update for a stack without stack tags', async () => {
+    const calls = await run(undefined, undefined);
+
+    const updates = calls.filter((c) => c.name === 'UpdateStack');
+    expect(updates.map((c) => c.input['StackName'])).toEqual(['Root-Child']);
+    expect((updates[0]!.input['Tags'] as unknown[]).length).toBe(1);
+  });
+});
+
 describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semantics', () => {
   beforeEach(() => {
     infoSpy.mockReset();

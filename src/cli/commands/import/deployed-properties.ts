@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
-import { GetTemplateCommand, type CloudFormationClient } from '@aws-sdk/client-cloudformation';
+import {
+  DescribeStacksCommand,
+  GetTemplateCommand,
+  type CloudFormationClient,
+} from '@aws-sdk/client-cloudformation';
 import { parseCfnTemplate } from '../../yaml-cfn.js';
 import { NESTED_STACK_RESOURCE_TYPE, cfnFailureText } from '../retire-cfn-stack.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -77,6 +81,43 @@ export async function readDeployedTemplate(
     throw refuse('the template CloudFormation last deployed has no Resources section.');
   }
   return parsed as unknown as CloudFormationTemplate;
+}
+
+/**
+ * go-to-k/cdkd#6887 — the stack tags a CloudFormation stack holds, which
+ * CloudFormation propagated to every taggable resource of the stack: what a
+ * migration records in each resource's tag property, since that is what AWS
+ * holds (the deployed template carries the resources' own tags only). `aws:`
+ * keys are CloudFormation's own and never a stack tag a template can pass.
+ * `stackName` may be a stack ARN (a nested child).
+ *
+ * Throws on any failure, the message ending in `consequence`, as
+ * {@link readDeployedTemplate} does.
+ */
+export async function readDeployedStackTags(
+  cfnClient: CloudFormationClient,
+  stackName: string,
+  consequence: string
+): Promise<Record<string, string>> {
+  let tags: ReadonlyArray<{ Key?: string | undefined; Value?: string | undefined }>;
+  try {
+    const response = await cfnClient.send(new DescribeStacksCommand({ StackName: stackName }));
+    const stack = response.Stacks?.[0];
+    if (stack === undefined) throw new Error('the stack was not returned');
+    tags = stack.Tags ?? [];
+  } catch (err) {
+    throw new Error(
+      `--migrate-from-cloudformation: ` +
+        safeMsg`reading the stack tags of the CloudFormation stack failed: ${cfnFailureText(err)}.` +
+        ` ${consequence}`
+    );
+  }
+  const read: Record<string, string> = {};
+  for (const { Key: key, Value: value } of tags) {
+    if (typeof key !== 'string' || typeof value !== 'string' || key.startsWith('aws:')) continue;
+    defineOwnKey(read, key, value);
+  }
+  return read;
 }
 
 /** The names a properties tree refers to, by kind. */
