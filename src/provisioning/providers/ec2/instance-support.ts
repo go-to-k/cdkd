@@ -536,6 +536,19 @@ export function ssmDocumentName(nameOrArn: string): string {
 }
 
 /**
+ * Whether two `DocumentName` spellings name one SSM document
+ * (go-to-k/cdkd#6866): both bare names and equal, or both ARNs and equal. A
+ * document shared from another account must be named by its full ARN, and SSM
+ * refuses an association by the ARN of an own-account or AWS document
+ * ("Use '<name>' instead", measured us-east-1, 2026-11-23), so an ARN and a
+ * bare name never name the same document. The drift readback, the update
+ * diff ({@link sameSsmAssociations}) and the association lookup all use this.
+ */
+export function sameSsmDocument(a: string, b: string): boolean {
+  return a === b;
+}
+
+/**
  * go-to-k/cdkd#5630: whether two `SsmAssociations` values associate the same
  * documents with the same parameters (parameter order aside; the order of a
  * parameter's values counts). An unusable side is never the same.
@@ -552,7 +565,7 @@ export function sameSsmAssociations(a: unknown, b: unknown, resourceType: string
   if (left.length !== right.length) return false;
   return left.every((l, i) => {
     const r = right[i]!;
-    if (ssmDocumentName(l.DocumentName) !== ssmDocumentName(r.DocumentName)) return false;
+    if (!sameSsmDocument(l.DocumentName, r.DocumentName)) return false;
     const lk = Object.keys(l.Parameters).sort();
     const rk = Object.keys(r.Parameters).sort();
     return (
