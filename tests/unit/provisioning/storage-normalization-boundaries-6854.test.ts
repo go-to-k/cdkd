@@ -210,7 +210,7 @@ describe('AWS::DynamoDB::Table rules (#6854)', () => {
       ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
     };
 
-    it('drops the SDK-only members and the on-demand 0/0 placeholder', () => {
+    it('drops the SDK-only members and the decrease counter', () => {
       const stale = {
         ...current,
         IndexStatus: 'ACTIVE',

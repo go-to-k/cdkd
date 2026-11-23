@@ -19,8 +19,10 @@ parity, not over-normalization.
 
 Tests: `tests/unit/provisioning/storage-normalization-boundaries-6854.test.ts`
 holds a pair each rule must equate and a pair it must not, run through the
-provider hooks the way the drift and diff commands call them. The per-rule
-suites named in the last column hold the rest.
+provider hooks the way the drift and diff commands call them. A rule it does
+not cover (the `canonicalizeDriftPair` completions, the read-side folds, the
+bucket policy) is tested in that provider's own suites under
+`tests/unit/provisioning/`, which the issue numbers in the table name.
 
 ## How the hooks apply
 
@@ -56,6 +58,7 @@ suites named in the last column hold the rest.
 | `Replicas[]` is a set | same | Registry schema `insertionOrder: false` (DescribeType, #3573). Keyed by `Region`. Leaf-only. | A replica member change, another region. Lists inside a replica keep their order. | Correct |
 | `VectorIndexes` is a set, with every list inside it | same | As on the table. | As on the table. | Correct |
 | `TableType` skipped | `getDriftUnknownPaths` | No API member returns it (measured readback). | Never compared: nothing to compare with. | Correct (not comparable) |
+| Table-level `WarmThroughput` skipped when the template declares no usable block | `getDriftUnknownPaths` | AWS reports a computed value for every table (#2762). CloudFormation parity. | A declared block is compared. | Correct |
 | `ReadProvisionedThroughputSettings` skipped unless `BillingMode` is `PROVISIONED` | same | CloudFormation accepts and ignores it on on-demand tables (measured). | Compared on a provisioned table. | Correct |
 | Per-index `WarmThroughput` stripped from both sides | `canonicalizeDriftProperties`, `projection.ts` | AWS reports a computed value for every index (12000 / 4000, measured, #1742). | Strips a DECLARED value too, so a declared per-index warm throughput that differs from live is not reported. Other index members are compared. | Over-equates. Decision pending (see below) |
 | Implied stream on a multi-replica table | `canonicalizeDesiredProperties` | `create()` enables `NEW_AND_OLD_IMAGES` there (#1723). | Another view type, one replica, or a declared `MultiRegionConsistency` stays different. | Correct |
@@ -108,7 +111,9 @@ suites named in the last column hold the rest.
 | Rule | Where | Why AWS treats the spellings as one | Boundary (what stays different) | Verdict |
 | --- | --- | --- | --- | --- |
 | OAI user ARN equals the OAI's `CanonicalUser` | `s3-bucket-policy-provider.ts` `normalizeOaiPrincipals` | S3 shows a `CanonicalUser` OAI grant as the OAI's IAM user ARN (#872). Resolved through the OAI's own `S3CanonicalUserId`. | Another OAI resolves to another id; a failed lookup leaves the ARN. | Correct |
-| Bare `AIDA…` id equals the template statement's `CanonicalUser` | same | S3 shows a new OAI grant as a bare id first, then the ARN (measured: about 6 s after `PutBucketPolicy` with a fresh OAI). | Only on the read right after cdkd's own write. S3 keeps showing a deleted IAM user's grant as its `AIDA…` id (measured), so elsewhere the id is compared as read. S3 refuses an authored `AIDA…` principal (measured `MalformedPolicy`). | Tightened in #6854 |
+| Bare `AIDA…` id equals the template statement's `CanonicalUser` | same | S3 shows a new OAI grant as a bare id first, then the ARN (measured: about 6 s after `PutBucketPolicy` with a fresh OAI). | Only on the read right after cdkd's own write. Elsewhere the id is compared as read. | Tightened in #6854 |
+| A template-claimed bare id is re-read on any other read | `readCurrentState` `outwaitTransientUniqueId` | Not an equivalence: the read waits up to 9 s for the transient form to become the ARN. | S3 keeps a deleted IAM user's grant as its `AIDA…` id (measured), which is then reported. S3 refuses an authored `AIDA…` principal (measured `MalformedPolicy`). | Added in #6854 |
+| A journal bag's live policy matched on create | `isOwnLeftover` | The bag is an earlier deploy's attempt, so a bare id there is no transient form. | Compared as read; the create's re-reads (3 x 5 s) cover a transient one. | Tightened in #6854 |
 | One-element `Action` / `Resource` equals its scalar, for matching only | same, `findTemplateCanonicalUser` | S3 returns a one-element list as the scalar (#6109). | Selects the statement; rewrites no value. | Correct |
 | Policy document comparison | `src/provisioning/policy-document-content.ts` | Audited in lane C. | - | Out of scope |
 
