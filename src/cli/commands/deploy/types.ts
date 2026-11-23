@@ -32,6 +32,8 @@ export interface DeployCommandOptions {
   yes: boolean;
   verbose: boolean;
   context?: string[];
+  /** `--tags KEY=VALUE` (go-to-k/cdkd#6886). */
+  tags?: string[];
   lookups?: boolean;
   allowUnsupportedTypes?: string[];
   preferSdkRoute?: string[];

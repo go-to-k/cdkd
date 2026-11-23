@@ -14,6 +14,7 @@ import {
   noCfnFallbackOption,
   diffUpdatePolicyOptions,
 } from '../options.js';
+import { resolveStackTagsOverride, stackTagsOption } from '../options/stack-tags.js';
 import { getLogger } from '../../utils/logger.js';
 import { withErrorHandling, CdkdError } from '../../utils/error-handler.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
@@ -229,6 +230,8 @@ async function diffCommand(
     roleArn?: string;
     verbose: boolean;
     context?: string[];
+    /** `--tags KEY=VALUE` (go-to-k/cdkd#6886). */
+    tags?: string[];
     lookups?: boolean;
     useCdkBootstrapAssets?: boolean;
     cfnFallback?: boolean;
@@ -248,6 +251,9 @@ async function diffCommand(
   }
   const providerClasses = await loadProviderClasses();
   const logger = getLogger();
+  // go-to-k/cdkd#6886: the tags `cdkd deploy --tags` would apply, so the
+  // preview matches that deploy; resolved before synth so a bad value fails fast.
+  const stackTagsOverride = resolveStackTagsOverride(options.tags, (line) => logger.warn(line));
 
   if (options.json) {
     // Keep stdout clean for machine consumers: suppress info/debug progress
@@ -591,14 +597,16 @@ async function diffCommand(
             `stack ${stackInfo.stackName}`
         );
       }
+      const stackTags = stackTagsOverride ?? stackInfo.tags;
       trees.push(
         await buildDiffTree({
           stackName: stackInfo.stackName,
           displayName: shownName,
           region: stackRegion,
           template: stackInfo.template,
-          // go-to-k/cdkd#6871: merged into each taggable resource, as deploy does.
-          ...(stackInfo.tags !== undefined && { stackTags: stackInfo.tags }),
+          // go-to-k/cdkd#6871: merged into each taggable resource, as deploy
+          // does; `--tags` replaces the stack's own (go-to-k/cdkd#6886).
+          ...(stackTags !== undefined && { stackTags }),
           // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480): the
           // index is omitted when no row carried a usable asset path, and on a
           // `{}` fallback the `if (!nestedTemplates[id])` readers answer an
@@ -831,6 +839,7 @@ export function createDiffCommand(): Command {
     (opt) => cmd.addOption(opt)
   );
 
+  cmd.addOption(stackTagsOption);
   cmd.addOption(regionOption);
 
   return cmd;

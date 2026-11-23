@@ -74,6 +74,7 @@ import {
 import { deployStackRegion } from '../cross-prefix-gate.js';
 import { CrossPrefixGuard } from '../../../state/stack-registry.js';
 import type { DeployCommandOptions } from './types.js';
+import { resolveStackTagsOverride } from '../../options/stack-tags.js';
 import { prepareStateInfra, fetchCallerIdentity } from './prep.js';
 import { addStacksToWorkGraph, dryRunPredictsAutoCreatedStorage } from './work-graph.js';
 import { deployStackInScope, type DeployStackContext } from './stack-deploy.js';
@@ -138,6 +139,9 @@ export async function deployCommand(
   // under a dry run too; a dry run only writes no file (go-to-k/cdkd#5819).
   const resolvedOutputsFile = resolveOutputsFile(options.outputsFile);
   const outputsFile = options.dryRun ? undefined : resolvedOutputsFile;
+  // go-to-k/cdkd#6886: `--tags` (else cdk.json "tags") replaces every
+  // selected stack's own tags; resolved before synth so a bad value fails fast.
+  const stackTagsOverride = resolveStackTagsOverride(options.tags, (line) => logger.warn(line));
 
   // Issue #2065 - fold `--region` ONCE, here, so no raw spelling reaches an SDK
   // client, an ARN segment or a state key. This command is where the class was
@@ -799,6 +803,7 @@ export async function deployCommand(
       exportIndexStore,
       accountId,
       outputsFile,
+      stackTagsOverride,
       stackOutputs,
       addUnaddressed: (stackUnaddressed, crossPrefixKept) => {
         totalUnaddressed += stackUnaddressed;

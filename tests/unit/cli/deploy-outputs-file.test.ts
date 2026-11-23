@@ -398,3 +398,52 @@ describe('deploy --update-policy reaches each stack engine (go-to-k/cdkd#6437)',
     expect(vi.mocked(resolveUpdatePolicy)).toHaveBeenCalledWith(undefined);
   });
 });
+
+describe('deploy --tags replaces each stack engine stack tags (go-to-k/cdkd#6886)', () => {
+  beforeEach(() => {
+    engineResults.clear();
+    engineOutputs.clear();
+    failingStacks.clear();
+    cancelledStacks.clear();
+    synthStacks.value = [
+      makeStack('StackA', { tags: { team: 'manifest-a' } }),
+      makeStack('StackB'),
+    ];
+    synthError.value = undefined;
+    process.env['CDKD_NO_LIVE'] = '1';
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env['CDKD_NO_LIVE'];
+  });
+
+  async function engineStackTags(argv: string[]): Promise<unknown[]> {
+    const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+    const { error } = await runDeploy(['--all', '--yes', ...argv]);
+    expect(error).toBeUndefined();
+    const calls = vi.mocked(DeployEngine).mock.calls;
+    expect(calls).toHaveLength(2);
+    return calls.map((c) => (c[5] as unknown as Record<string, unknown>)['stackTags']);
+  }
+
+  it('hands every stack the --tags tags, in place of its own', async () => {
+    expect(await engineStackTags(['--tags', 'team=flag', '-t', 'env=prod'])).toEqual([
+      { team: 'flag', env: 'prod' },
+      { team: 'flag', env: 'prod' },
+    ]);
+  });
+
+  it("keeps each stack's own tags without the flag", async () => {
+    expect(await engineStackTags([])).toEqual([{ team: 'manifest-a' }, undefined]);
+  });
+
+  it('refuses an empty tag value before deploying anything', async () => {
+    const { DeployEngine } = await import('../../../src/deployment/deploy-engine.js');
+    await runDeploy(['--all', '--yes', '--tags', 'team=']);
+    expect(vi.mocked(DeployEngine).mock.calls).toHaveLength(0);
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'non-empty key and value'
+    );
+  });
+});
