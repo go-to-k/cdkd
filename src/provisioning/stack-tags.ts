@@ -183,7 +183,9 @@ function mergeReplicas(
   const merged: unknown[] = [];
   for (const replica of replicas) {
     if (!isRecord(replica) || isIntrinsicShaped(replica)) return undefined;
-    const current = hasOwnKey(replica, 'Tags') ? replica['Tags'] : undefined;
+    const declared = hasOwnKey(replica, 'Tags') ? replica['Tags'] : undefined;
+    // `Tags: {Ref: AWS::NoValue}` declares no tags, as an absent `Tags` does.
+    const current = isRecord(declared) && declared['Ref'] === 'AWS::NoValue' ? undefined : declared;
     if (current !== undefined && !Array.isArray(current)) return undefined;
     const tags = mergeList(current ?? [], stackTags, resourceType);
     if (tags === undefined) return undefined;

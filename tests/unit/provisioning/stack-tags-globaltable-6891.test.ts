@@ -91,12 +91,42 @@ describe('stack tags on a DynamoDB global table (go-to-k/cdkd#6891)', () => {
       [{ Region: 'us-east-1', Tags: [{ Key: { Ref: 'K' }, Value: 'v' }] }],
     ],
     ['an absent Replicas', undefined],
+    [
+      'an Fn::If tag whose branch may declare a stack key',
+      [
+        {
+          Region: 'us-east-1',
+          Tags: [{ 'Fn::If': ['C', { Key: 'team', Value: 'x' }, { Ref: 'AWS::NoValue' }] }],
+        },
+      ],
+    ],
   ])('leaves the table untouched with one warning for %s', (_label, replicas) => {
     const input = table(replicas);
     const { template, warnings } = applyStackTags(input, STACK_TAGS, replicasTarget);
     expect(template).toBe(input);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('Replicas');
+  });
+
+  it('treats a replica Tags of AWS::NoValue as no Tags, and keeps an empty Replicas list', () => {
+    const noValue = applyStackTags(
+      table([{ Region: 'us-east-1', Tags: { Ref: 'AWS::NoValue' } }]),
+      STACK_TAGS,
+      replicasTarget
+    );
+    expect(noValue.warnings).toEqual([]);
+    expect(replicasOf(noValue.template)).toEqual([
+      {
+        Region: 'us-east-1',
+        Tags: [
+          { Key: 'shared', Value: 'fromstack' },
+          { Key: 'team', Value: 'a' },
+        ],
+      },
+    ]);
+    const empty = applyStackTags(table([]), STACK_TAGS, replicasTarget);
+    expect(empty.warnings).toEqual([]);
+    expect(replicasOf(empty.template)).toEqual([]);
   });
 
   it('answers replicas without a DescribeType lookup', async () => {
