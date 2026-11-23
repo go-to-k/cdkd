@@ -126,6 +126,11 @@ export class ExportNestedStackExample extends cdk.Stack {
     // hash suffix. Per memory rule `feedback_cdk_nested_stack_overridelogical_id.md`.
     if (child.nestedStackResource) {
       (child.nestedStackResource as cdk.CfnResource).overrideLogicalId('Child');
+      // go-to-k/cdkd#6887: the row's own literal Tags, which the child's
+      // CloudFormation stack gets on top of the parent's stack tags.
+      (child.nestedStackResource as cdk.CfnResource).addPropertyOverride('Tags', [
+        { Key: 'cdkd-integ-row-tag', Value: 'child-6887' },
+      ]);
     }
 
     const parentParam = new ssm.StringParameter(this, 'ParentParam', {

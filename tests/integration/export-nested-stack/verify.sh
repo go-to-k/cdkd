@@ -385,6 +385,31 @@ aws ssm get-parameter --name "${PARENT_PARAM_NAME}" --region "${REGION}" >/dev/n
 aws ssm get-parameter --name "${CHILD_PARAM_NAME}" --region "${REGION}" >/dev/null
 echo "[verify] step 10 ok: both SSM parameters still alive"
 
+echo "[verify] step 10b: each CFn stack holds its stack tags; the child's resource keeps them (go-to-k/cdkd#6887)"
+# An IMPORT changeset refuses stack tags, so the root's come from a tag-only
+# update after its last changeset and the child's (parent's + its row's own)
+# ride on its flip, which REPLACES the tag set and re-tags the resources.
+stack_tag() {
+  aws cloudformation describe-stacks --stack-name "$1" --region "${REGION}" \
+    --query "Stacks[0].Tags[?Key=='$2'].Value | [0]" --output text
+}
+param_tag() {
+  aws ssm list-tags-for-resource --resource-type Parameter --resource-id "$1" --region "${REGION}" \
+    --query "TagList[?Key=='$2'].Value | [0]" --output text
+}
+expect_tag() {
+  if [[ "$1" != "$2" ]]; then
+    echo "[verify] FAIL: $3 is '$1', expected '$2'"
+    exit 1
+  fi
+}
+expect_tag "$(stack_tag "${PARENT_STACK}" cdkd-integ-stack-tag)" export-nested-6887 "root stack tag"
+expect_tag "$(stack_tag "${CHILD_CFN_STACK}" cdkd-integ-stack-tag)" export-nested-6887 "child stack tag (inherited)"
+expect_tag "$(stack_tag "${CHILD_CFN_STACK}" cdkd-integ-row-tag)" child-6887 "child stack tag (row)"
+expect_tag "$(param_tag "${CHILD_PARAM_NAME}" cdkd-integ-stack-tag)" export-nested-6887 "child parameter's stack tag"
+expect_tag "$(param_tag "${CHILD_PARAM_NAME}" cdkd-integ-row-tag)" child-6887 "child parameter's row tag"
+echo "[verify] step 10b ok: root, child and the child's parameter hold their stack tags"
+
 echo "[verify] step 11: assert cdkd state files GONE (per-stack leaf-first cleanup)"
 assert_gone "parent cdkd state still present at s3://${STATE_BUCKET}/${PARENT_STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${PARENT_STATE_KEY}" --region "${REGION}"
 assert_gone "child cdkd state still present at s3://${STATE_BUCKET}/${CHILD_STATE_KEY}" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${CHILD_STATE_KEY}" --region "${REGION}"

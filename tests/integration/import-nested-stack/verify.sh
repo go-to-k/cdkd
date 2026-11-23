@@ -262,6 +262,31 @@ if [ "${PARENT_LINK}" != "${EXPECTED_LINK}" ]; then
 fi
 echo "[verify] step 9 ok: child state parent-link=${PARENT_LINK}"
 
+echo "[verify] step 9b: both stacks' parameters record the stack tag CloudFormation applied (go-to-k/cdkd#6887)"
+# The deployed template carries no stack tags; the record merges the tags each
+# CloudFormation stack held. AWS::SSM::Parameter takes a `{key: value}` map,
+# and the list shape is accepted too so the check does not pin the shape.
+record_tag() {
+  python3 -c '
+import sys, json
+tags = json.load(sys.stdin)["resources"][sys.argv[1]]["properties"].get("Tags")
+if isinstance(tags, dict):
+    print(tags.get("cdkd-integ-stack-tag", ""))
+else:
+    print(next((t.get("Value") for t in tags or [] if t.get("Key") == "cdkd-integ-stack-tag"), ""))
+' "$1"
+}
+for pair in "PARENT:ParentParam" "CHILD:ChildParam"; do
+  which="${pair%%:*}"; logical="${pair#*:}"
+  if [ "${which}" = PARENT ]; then state="${PARENT_STATE}"; else state="${CHILD_STATE}"; fi
+  got="$(echo "${state}" | record_tag "${logical}")"
+  if [ "${got}" != "import-nested-6887" ]; then
+    echo "[verify] FAIL: ${logical} records cdkd-integ-stack-tag='${got}', expected 'import-nested-6887'"
+    exit 1
+  fi
+done
+echo "[verify] step 9b ok: ParentParam and ChildParam record the stack tag"
+
 echo "[verify] step 10: assert source CFn stacks are retired (parent + child both gone)"
 if ! gone_probe aws cloudformation describe-stacks --stack-name "${PARENT_STACK}" --region "${REGION}"; then
   # Still present at the first probe -- but the stack can finish deleting
