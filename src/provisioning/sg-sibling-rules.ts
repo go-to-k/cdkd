@@ -41,6 +41,7 @@ import {
   SG_RULE_ID_PATTERN,
   cfnIngressPortValue,
   recordedSgRuleId,
+  sgCidrKey,
   sgProtocolKey,
 } from './sg-rule-identity.js';
 import {
@@ -93,7 +94,10 @@ export function sgRuleOwnershipIdentity(rule: unknown, direction: SgDirection): 
     sgProtocolKey(rule['IpProtocol']),
     from,
     to,
-    ...PEER_KEYS[direction].map((key) => rule[key] ?? null),
+    // go-to-k/cdkd#6854: a CIDR as EC2 stores it, as every rule identity keys it.
+    ...PEER_KEYS[direction].map((key) =>
+      key.startsWith('Cidr') ? sgCidrKey(rule[key] ?? null) : (rule[key] ?? null)
+    ),
   ]);
 }
 

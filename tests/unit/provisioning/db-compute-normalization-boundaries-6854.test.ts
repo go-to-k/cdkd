@@ -47,7 +47,9 @@ import {
   reconcileSgRules,
   sgRuleKey,
   withRecordedCidrSpelling,
+  comparableIngressIdentity,
 } from '../../../src/provisioning/providers/ec2/sg-support.js';
+import { sgRuleOwnershipIdentity } from '../../../src/provisioning/sg-sibling-rules.js';
 import {
   canonicalizeDriftPair as elbv2Pair,
   getDriftUnorderedPaths as elbv2Unordered,
@@ -384,6 +386,23 @@ describe('Security group rule identity by CIDR (ec2/sg-support.ts sgCidrKey / sg
     expect(sgRuleKey(rule('0.0.0.0/0'), 'ingress')).not.toBe(sgRuleKey(rule('10.0.0.0/'), 'ingress'));
     expect(sgRuleKey(rule('10.0.0.10/32'), 'ingress')).not.toBe(sgRuleKey(rule('10.0.0.010/32'), 'ingress'));
     expect(sgRuleKey(rule('10.0.0.0/24'), 'ingress')).not.toBe(sgRuleKey(rule(' 10.0.0.0/24'), 'ingress'));
+  });
+
+  it('pairs a group inline rule and a sibling standalone rule spelled two ways (holder and sibling strip)', () => {
+    const host = rule('10.0.0.5/24');
+    const net = rule('10.0.0.0/24');
+    expect(comparableIngressIdentity('sg-1', host)).toBe(comparableIngressIdentity('sg-1', net));
+    expect(sgRuleOwnershipIdentity(host, 'ingress')).toBe(sgRuleOwnershipIdentity(net, 'ingress'));
+    expect(sgRuleOwnershipIdentity(rule('10.0.0.0/24'), 'egress')).toBe(
+      sgRuleOwnershipIdentity(rule('10.0.0.9/24'), 'egress')
+    );
+    // Another network, prefix, or a group name that only looks like a CIDR stay apart.
+    expect(comparableIngressIdentity('sg-1', rule('10.0.1.0/24'))).not.toBe(comparableIngressIdentity('sg-1', net));
+    expect(sgRuleOwnershipIdentity(rule('10.0.0.0/25'), 'ingress')).not.toBe(sgRuleOwnershipIdentity(net, 'ingress'));
+    const named = (SourceSecurityGroupName: string): Bag => ({ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, SourceSecurityGroupName });
+    expect(sgRuleOwnershipIdentity(named('2001:db8::5/64'), 'ingress')).not.toBe(
+      sgRuleOwnershipIdentity(named('2001:db8::/64'), 'ingress')
+    );
   });
 
   it('pairs a host-bit record with its live rule and reads it back in the record spelling', () => {

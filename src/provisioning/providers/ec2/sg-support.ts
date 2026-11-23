@@ -1,8 +1,6 @@
 import { type IpPermission, type SecurityGroupRule } from '@aws-sdk/client-ec2';
 import { requireConfigString } from '../../config-shape.js';
 import { canonicalizeIpProtocolValue } from '../../../utils/ip-protocol.js';
-import { canonicalizeIpv4Cidr } from '../../../utils/ipv4-cidr.js';
-import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
 import type { ResourceState } from '../../../types/state.js';
 import { isRedactedRecordedValue } from '../../redacted-delete-address.js';
 import { THROTTLING_ERROR_NAMES } from '../../../deployment/retryable-errors.js';
@@ -10,8 +8,10 @@ import {
   SG_RULE_ID_PATTERN,
   cfnIngressPortValue,
   recordedSgRuleId,
+  sgCidrKey,
   sgProtocolKey,
 } from '../../sg-rule-identity.js';
+export { sgCidrKey } from '../../sg-rule-identity.js';
 
 export { SG_RULE_ID_PATTERN, cfnIngressPortValue, recordedSgRuleId, sgProtocolKey };
 
@@ -261,8 +261,9 @@ export function ingressRuleIdentity(groupId: unknown, properties: Record<string,
     p: sgProtocolKey(properties['IpProtocol']),
     f: cfnIngressPortValue(properties['FromPort']),
     t: cfnIngressPortValue(properties['ToPort']),
-    c4: source('CidrIp'),
-    c6: source('CidrIpv6'),
+    // go-to-k/cdkd#6854: as EC2 stores it, as every rule identity keys it.
+    c4: sgCidrKey(source('CidrIp')),
+    c6: sgCidrKey(source('CidrIpv6')),
     sg: source('SourceSecurityGroupId'),
     sgName: source('SourceSecurityGroupName'),
     sgOwner: source('SourceSecurityGroupOwnerId'),
@@ -289,9 +290,10 @@ const INGRESS_IDENTITY_KEYS = [
  * numbers, or whose identity holds a redacted value (`***`, an unresolved
  * reference), matches nothing — two such records can compare equal while
  * naming different rules. Spellings are compared as written otherwise
- * (`IpProtocol` / ports aside), so two spellings of one rule (a group name
- * against its id, `-1` with explicit ports, a CIDR written two ways, an owner
- * id present on one side only) do not pair: that fails CLOSED (a refusal, or
+ * (`IpProtocol` / ports aside, and a CIDR keyed as EC2 stores it,
+ * go-to-k/cdkd#6854), so two spellings of one rule (a group name against its
+ * id, `-1` with explicit ports, an owner id present on one side only) do not
+ * pair: that fails CLOSED (a refusal, or
  * a revoke the sibling's own create re-authorizes on the next deploy).
  */
 export function comparableIngressIdentity(group: unknown, rule: unknown): string | undefined {
@@ -590,30 +592,6 @@ export function securityGroupRuleMatchesCfnIngress(
     if (declared !== undefined && declared !== null && declared !== actual) return false;
   }
   return true;
-}
-
-/**
- * go-to-k/cdkd#6854: a security-group rule CIDR as EC2 stores it, for rule
- * identity. EC2 clears host bits and writes IPv6 compressed and lower-cased
- * (`10.0.0.5/24` is stored as `10.0.0.0/24`, `2001:DB8:0:2:0:0:0:5/64` as
- * `2001:db8:0:2::/64`), and refuses a second rule at another spelling of one
- * network as `InvalidPermission.Duplicate` (all measured us-east-1,
- * 2026-11-23), so two spellings with one key are one rule. A spelling EC2
- * refuses as malformed (a leading zero in an octet or a prefix, a prefix with
- * no digits) or anything that is not a CIDR is keyed as written, never folded
- * onto a valid network. Not a string: returned as it is.
- */
-export function sgCidrKey(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  const ipv4 = /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}\/(0|[1-9]\d?)$/.test(value)
-    ? canonicalizeIpv4Cidr(value)
-    : undefined;
-  if (ipv4 !== undefined) return ipv4;
-  const slash = value.lastIndexOf('/');
-  if (value.includes(':') && /^(0|[1-9]\d{0,2})$/.test(value.slice(slash + 1))) {
-    return canonicalizeIpv6Cidr(value) ?? value;
-  }
-  return value;
 }
 
 /**
