@@ -45,7 +45,7 @@ import { resolveImportedProperties } from './resolve-properties.js';
 import {
   deployedPropertiesOf,
   overlayDeployedProperties,
-  readDeployedStackTags,
+  nestedChildStackTags,
   readDeployedTemplate,
   withDeployedDefinitions,
 } from './deployed-properties.js';
@@ -219,6 +219,10 @@ export async function importNestedStackChildrenRecursive(args: {
   /** AssemblyReader-built `childLogicalId → local template file path` index for the parent's direct children. */
   parentNestedTemplates: Record<string, string>;
   parentTree: CfnStackResourceTree;
+  /** The parent's stack tags as its records carry them (go-to-k/cdkd#6887). */
+  parentStackTags: Readonly<Record<string, string>>;
+  /** The template CloudFormation last deployed for the parent; its rows' `Tags` reach each child. */
+  parentDeployedTemplate: CloudFormationTemplate | undefined;
   /** Nested-stack logical ids from the root down to the PARENT; `[]` at the root. */
   nestedPath: string[];
   /**
@@ -367,18 +371,17 @@ export async function importNestedStackChildrenRecursive(args: {
         logger,
         displaySafe(childStackName)
       );
-      // go-to-k/cdkd#6887: the stack tags this child's CloudFormation stack
-      // holds (the parent's plus its row's own), merged into each taggable
-      // resource's record, as the root's are.
+      // go-to-k/cdkd#6887: this child's stack tags (the parent's plus its
+      // row's literal own, never a value CloudFormation resolved), merged into
+      // each taggable resource's record, as the root's are.
+      const childStackTags = nestedChildStackTags(
+        args.parentStackTags,
+        args.parentDeployedTemplate,
+        childLogicalId
+      );
       const childRecordTemplate = await applyStackTagsToTemplate(
         childOverlay.template,
-        await readDeployedStackTags(
-          args.cfnClient,
-          childTreeNode.stackName,
-          safeMsg`cdkd state for nested stack ${displaySafe(childStackName)} was not written ` +
-            `(the parent's and earlier nested stacks' were), and the CloudFormation stack ` +
-            `was not deleted; the re-run needs --force.`
-        ),
+        childStackTags,
         (line) => logger.warn(line)
       );
 
@@ -551,6 +554,8 @@ export async function importNestedStackChildrenRecursive(args: {
             childTemplatePath
           ),
           parentTree: childTreeNode,
+          parentStackTags: childStackTags,
+          parentDeployedTemplate: childDeployedTemplate,
           nestedPath: [...args.nestedPath, childLogicalId],
           replaced: args.replaced,
           stateBackend,

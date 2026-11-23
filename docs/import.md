@@ -195,10 +195,12 @@ template, so it records your current properties, as before.
 
 The deployed template holds only each resource's own tags; CloudFormation added
 the stack's tags to the resources. State records each taggable resource with
-the tags the CloudFormation stack holds merged in, a nested stack's resources
-with that nested stack's. A [stack tag](cli-deploy.md#stack-tags) your code
-changed after the last deploy then shows in the next `cdkd diff`, as any other
-change does.
+the tags the CloudFormation stack holds merged in. A nested stack's resources
+get those plus the nested stack resource's own `Tags` as last deployed; a tag
+whose value CloudFormation resolved (a `Ref` to a `NoEcho` parameter, a dynamic
+reference) is not recorded, so no secret reaches state, and the next deploy
+re-sends it. A [stack tag](cli-deploy.md#stack-tags) your code changed after
+the last deploy then shows in the next `cdkd diff`, as any other change does.
 
 ### If the migration stops partway
 
@@ -435,8 +437,11 @@ and a resource you did not import shows as `to create`.
 
 Each taggable resource is recorded with the stack's
 [stack tags](cli-deploy.md#stack-tags) merged in, as `cdkd deploy` applies them,
-so the first deploy does not re-send tags the resource already holds. A
-migration records the tags the CloudFormation stack holds instead (see
+so the first deploy does not re-send tags the resource already holds. cdkd
+does not check that AWS holds them: a resource made by hand, or deployed by a
+cdkd that did not apply stack tags, records tags it lacks, and `cdkd diff` does
+not show them (`cdkd drift` does). A migration records the tags the
+CloudFormation stack holds instead (see
 [above](#code-you-changed-after-the-last-cdk-deploy)).
 [After an import](import-after.md) covers the less common cases.
 

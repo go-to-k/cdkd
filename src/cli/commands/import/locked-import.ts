@@ -663,6 +663,8 @@ export async function runLockedImport(ctx: LockedImportContext): Promise<void> {
       // Null-prototype on the ABSENT arm too (issue go-to-k/cdkd#3480).
       parentNestedTemplates: stackInfo.nestedTemplates ?? nullPrototypeRecord<string>(),
       parentTree: migrationTree,
+      parentStackTags: recordStackTags ?? {},
+      parentDeployedTemplate: deployedTemplate,
       nestedPath: [],
       replaced: nestedReplaced,
       stateBackend,

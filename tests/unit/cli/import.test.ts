@@ -8360,7 +8360,7 @@ describe('cdkd import', () => {
       expect(mockPrepareRetirement).not.toHaveBeenCalled();
     });
 
-    it("records a nested child's resources with the tags the CHILD's CloudFormation stack holds", async () => {
+    it("records a nested child's resources with its parent's tags plus its row's LITERAL ones, never a value CloudFormation resolved", async () => {
       const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-stack-tags-'));
       try {
         const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
@@ -8394,14 +8394,37 @@ describe('cdkd import', () => {
             ],
           ]),
         });
-        mockReadDeployedStackTags.mockImplementation(
-          async (...args: unknown[]): Promise<Record<string, string>> =>
-            args[1] === childArn ? { team: 'parent', row: 'child' } : { team: 'parent' }
+        mockReadDeployedStackTags.mockResolvedValue({ team: 'parent', secret: 'parent-value' });
+        // The row's Tags as CloudFormation last deployed them: a literal pair,
+        // a `Ref` CloudFormation resolved (a NoEcho parameter, say) and a
+        // dynamic reference. The child CloudFormation stack holds all three
+        // RESOLVED, so its own tags are never read.
+        mockReadDeployedTemplate.mockImplementation(async (...args: unknown[]) =>
+          args[1] === childArn
+            ? { Resources: {} }
+            : {
+                Parameters: { Secret: { Type: 'String', NoEcho: true } },
+                Resources: {
+                  Child: {
+                    Type: 'AWS::CloudFormation::Stack',
+                    Properties: {
+                      TemplateURL: 'u',
+                      Tags: [
+                        { Key: 'row', Value: 'child' },
+                        { Key: 'secret', Value: { Ref: 'Secret' } },
+                        { Key: 'dyn', Value: '{{resolve:secretsmanager:s}}' },
+                      ],
+                    },
+                  },
+                },
+              }
         );
 
         await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
 
-        expect(mockReadDeployedStackTags.mock.calls.map((c) => c[1])).toEqual(['P', childArn]);
+        expect(mockReadDeployedStackTags.mock.calls.map((c) => c[1])).toEqual(['P']);
+        // The parent's tags plus the row's literal pair; a key the row sets to
+        // a resolved value is not recorded, the parent's value for it neither.
         expect(savedTags('P~Child')).toEqual([
           { Key: 'own', Value: 'mine' },
           { Key: 'team', Value: 'parent' },

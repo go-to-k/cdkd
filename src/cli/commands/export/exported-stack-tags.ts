@@ -31,7 +31,7 @@ function rowTagsProperty(template: Record<string, unknown>, logicalId: string): 
 
 /**
  * Per cdkd stack name, the stack tags its CloudFormation stack gets. A row
- * whose `Tags` are not literal (an intrinsic) is warned and its child takes
+ * whose `Tags` are not literal (an intrinsic, or a dynamic reference) is warned and its child takes
  * the parent's tags alone: cdkd never guesses a resolved value.
  */
 export function exportedStackTagsByStack(
@@ -48,6 +48,12 @@ export function exportedStackTagsByStack(
     if (plan === undefined) return;
     for (const row of plan.nestedStackRows) {
       let rowTags = literalRowTags(rowTagsProperty(plan.template, row.logicalId));
+      // A dynamic reference is resolved in a template, never in the stack-tag
+      // API: sent there, the expression itself would replace the resolved
+      // value on every resource.
+      if (rowTags !== undefined && Object.values(rowTags).some((v) => v.includes('{{resolve:'))) {
+        rowTags = undefined;
+      }
       if (rowTags === undefined) {
         warn(
           `The Tags of nested stack row ${rowIdent(row.logicalId)} in ${quotedOrNotShown(cdkdName)} ` +

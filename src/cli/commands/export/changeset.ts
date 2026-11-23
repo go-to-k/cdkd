@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { displayAwsMessage } from '../../../utils/display-safe.js';
+import { displayAwsMessage, safeMsg } from '../../../utils/display-safe.js';
 import {
   CreateChangeSetCommand,
   DescribeChangeSetCommand,
@@ -509,14 +509,14 @@ export async function applyExportedStackTags(
   if (stackTags === undefined || Object.keys(stackTags).length === 0) return;
   const logger = getLogger();
   logger.info(
-    `Setting the stack tags of CloudFormation stack ${quotedOrNotShown(cfnStackName)}...`
+    safeMsg`Setting the stack tags of CloudFormation stack ${quotedOrNotShown(cfnStackName)}...`
   );
   try {
     await updateStackTagsOnly(cfnClient, cfnStackName, parameters, cfnTagList(stackTags));
   } catch (err) {
     logger.warn(
-      `The stack tags of CloudFormation stack ${quotedOrNotShown(cfnStackName)} were not set: ` +
-        `${displayAwsMessage(describeAwsFailure(err).detail)}. The export itself completed; ` +
+      safeMsg`The stack tags of CloudFormation stack ${quotedOrNotShown(cfnStackName)} were not set: ` +
+        safeMsg`${displayAwsMessage(describeAwsFailure(err).detail)}. The export itself completed; ` +
         `the next 'cdk deploy' of the stack sets them.`
     );
   }

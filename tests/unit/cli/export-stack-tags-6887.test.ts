@@ -273,6 +273,27 @@ describe('exportedStackTagsByStack (go-to-k/cdkd#6887)', () => {
     expect(result.get('R~C')).toEqual({});
   });
 
+  it("treats a dynamic reference in a row tag as non-literal: the stack-tag API never resolves it", () => {
+    const warn = vi.fn();
+    const result = exportedStackTagsByStack(
+      [
+        { cdkdName: 'R~C', template: { Resources: {} }, nestedStackRows: [] },
+        {
+          cdkdName: 'R',
+          template: {
+            Resources: { C: row([{ Key: 'k', Value: '{{resolve:secretsmanager:s}}' }]) },
+          },
+          nestedStackRows: [{ logicalId: 'C', childStackName: 'R~C' }],
+        },
+      ],
+      'R',
+      { team: 'root' },
+      warn
+    );
+    expect(result.get('R~C')).toEqual({ team: 'root' });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("warns on a non-literal row Tags and gives its child the parent's tags alone", () => {
     const warn = vi.fn();
     const result = exportedStackTagsByStack(
@@ -372,6 +393,7 @@ describe('cdkd export gives the CloudFormation stack its stack tags (go-to-k/cdk
           displayName: 'Exported',
           artifactId: 'Exported',
           template: {
+            Parameters: { Stage: { Type: 'String' } },
             Resources: { MyBucket: { Type: 'AWS::S3::Bucket', Properties: {} } },
           },
           dependencyNames: [],
@@ -396,6 +418,8 @@ describe('cdkd export gives the CloudFormation stack its stack tags (go-to-k/cdk
           '--stack-region',
           'us-east-1',
           '--skip-import-support-preflight',
+          '--parameter',
+          'Stage=prod',
           '-y',
         ],
         { from: 'user' }
@@ -420,7 +444,10 @@ describe('cdkd export gives the CloudFormation stack its stack tags (go-to-k/cdk
       StackName: 'Exported',
       UsePreviousTemplate: true,
       Tags: [{ Key: 'team', Value: 'core' }],
+      // A `UsePreviousTemplate` update must re-supply the IMPORT's Parameters.
+      Parameters: create.input['Parameters'],
     });
+    expect(create.input['Parameters']).toEqual([{ ParameterKey: 'Stage', ParameterValue: 'prod' }]);
     expect(names.indexOf('UpdateStackCommand')).toBeGreaterThan(
       names.indexOf('ExecuteChangeSetCommand')
     );

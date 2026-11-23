@@ -2053,6 +2053,168 @@ describe('runPerStackImportLoop (issue #464 PR B2) — 3-level tree (post-Phase-
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('go-to-k/cdkd#6887: BOTH of the middle stack\'s flips carry its tags, and the root\'s tag update re-supplies its Parameters', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdkd-export-loop-3level-tags-'));
+    try {
+      // CDK synth shape: root template has nested-stack row 'Middle'
+      // pointing at middle.nested.template.json; middle template has
+      // nested-stack row 'Grandchild' pointing at grand.nested.template.json
+      // (sibling of middle template).
+      const grandTemplate = {
+        Resources: {
+          GrandBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'grand-bucket' } },
+        },
+      };
+      const grandPath = join(tmp, 'Grandchild.nested.template.json');
+      writeFileSync(grandPath, JSON.stringify(grandTemplate), 'utf-8');
+      const middleTemplate = {
+        Resources: {
+          MiddleBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'middle-bucket' } },
+          Grandchild: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: { TemplateURL: 'https://cdk-asset/.../Grandchild.template.json' },
+            Metadata: { 'aws:asset:path': 'Grandchild.nested.template.json' },
+          },
+        },
+      };
+      const middlePath = join(tmp, 'Middle.nested.template.json');
+      writeFileSync(middlePath, JSON.stringify(middleTemplate), 'utf-8');
+      const rootTemplate = {
+        Resources: {
+          RootBucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: 'root-bucket' } },
+          Middle: {
+            Type: 'AWS::CloudFormation::Stack',
+            Properties: {
+              TemplateURL: 'https://cdk-asset/.../Middle.template.json',
+              Tags: [{ Key: 'tier', Value: 'mid' }],
+            },
+            Metadata: { 'aws:asset:path': 'Middle.nested.template.json' },
+          },
+        },
+      };
+
+      const root = makeState({
+        stackName: 'Root',
+        region: 'us-east-1',
+        resources: {
+          RootBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'root-bucket' },
+          Middle: { resourceType: 'AWS::CloudFormation::Stack', physicalId: 'arn:cdkd-local:...' },
+        },
+      });
+      const middle = makeState({
+        stackName: 'Root~Middle',
+        region: 'us-east-1',
+        resources: {
+          MiddleBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'middle-bucket' },
+          Grandchild: {
+            resourceType: 'AWS::CloudFormation::Stack',
+            physicalId: 'arn:cdkd-local:...',
+          },
+        },
+        parentStack: 'Root',
+        parentLogicalId: 'Middle',
+      });
+      const grand = makeState({
+        stackName: 'Root~Middle~Grandchild',
+        region: 'us-east-1',
+        resources: { GrandBucket: { resourceType: 'AWS::S3::Bucket', physicalId: 'grand-bucket' } },
+        parentStack: 'Root~Middle',
+        parentLogicalId: 'Grandchild',
+      });
+      const { backend: stateBackend, deleted } = buildStateBackend({
+        'Root|us-east-1': root,
+        'Root~Middle|us-east-1': middle,
+        'Root~Middle~Grandchild|us-east-1': grand,
+      });
+      const { manager: lockManager, acquired, released } = buildLockManager();
+      const { client: cfnClient, calls } = buildCfnClient();
+
+      const tree: CdkdStateStackTree = {
+        stackName: 'Root',
+        region: 'us-east-1',
+        state: root,
+        nestedChildren: new Map([
+          [
+            'Middle',
+            {
+              stackName: 'Root~Middle',
+              region: 'us-east-1',
+              state: middle,
+              nestedChildren: new Map([
+                [
+                  'Grandchild',
+                  {
+                    stackName: 'Root~Middle~Grandchild',
+                    region: 'us-east-1',
+                    state: grand,
+                    nestedChildren: new Map(),
+                  },
+                ],
+              ]),
+            },
+          ],
+        ]),
+      };
+
+      const result = await runPerStackImportLoop({
+      lockRecovery: { stateBucket: 'bkt' },
+        rootStackName: 'Root',
+        rootRegion: 'us-east-1',
+        rootStackInfoNestedTemplates: { Middle: middlePath },
+        rootTemplateFormat: 'json',
+        tree,
+        rootTemplate,
+        cfnStackNameOverrides: { childMap: new Map() },
+        rootParameters: [{ ParameterKey: 'Stage', ParameterValue: 'prod' }],
+        rootStackTags: { team: 'core' },
+        deps: {
+          cfnClient,
+          stateBackend,
+          lockManager,
+          uploadOpts: { stateBucket: STATE_BUCKET },
+          lockOwner: 'tester@host:1234',
+          ssmClient: UNUSED_SSM,
+        },
+        options: {
+          dryRun: false,
+          yes: true,
+          includeNonImportable: false,
+          recreateImportUnsupported: true,
+        },
+      });
+
+      expect(result.outcome).toBe('success');
+      const updates = calls.filter((c) => c.name === 'UpdateStack');
+      expect(updates.map((c) => c.input['StackName'])).toEqual([
+        'Root-Middle-Grandchild',
+        'Root-Middle',
+        'Root-Middle',
+        'Root',
+      ]);
+      const tagsOf = (i: number) =>
+        (updates[i]!.input['Tags'] as Array<{ Key: string; Value: string }>).filter(
+          (t) => t.Key !== 'cdkd:nested-export-flip'
+        );
+      // The grandchild inherits the middle stack's tags (its row declares none).
+      expect(tagsOf(0)).toEqual([
+        { Key: 'team', Value: 'core' },
+        { Key: 'tier', Value: 'mid' },
+      ]);
+      // Each middle flip REPLACES its tag set, so the post-1B one carries it too.
+      expect(tagsOf(1)).toEqual([
+        { Key: 'team', Value: 'core' },
+        { Key: 'tier', Value: 'mid' },
+      ]);
+      expect(tagsOf(2)).toEqual(tagsOf(1));
+      expect(updates[3]!.input).toMatchObject({
+        Tags: [{ Key: 'team', Value: 'core' }],
+        Parameters: [{ ParameterKey: 'Stage', ParameterValue: 'prod' }],
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runPerStackImportLoop (issue #464 PR B2) — Phase 2 UPDATE per stack', () => {

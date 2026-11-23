@@ -120,6 +120,44 @@ export async function readDeployedStackTags(
   return read;
 }
 
+/**
+ * go-to-k/cdkd#6887 — the stack tags a migrated nested child records on its
+ * resources: its parent's (as recorded) plus each entry of the row's `Tags` in
+ * the PARENT's deployed template that is a literal pair, the row's winning, as
+ * CloudFormation tags a nested stack. Never the child stack's tags as AWS
+ * reports them: an entry CloudFormation resolved (a `Ref` to a `NoEcho`
+ * parameter, a dynamic reference) would put the plaintext value in state, so
+ * such an entry, and one whose key cannot be read, is not recorded at all (the
+ * next deploy then re-sends it, never a secret).
+ */
+export function nestedChildStackTags(
+  parentStackTags: Readonly<Record<string, string>>,
+  parentDeployedTemplate: CloudFormationTemplate | undefined,
+  rowLogicalId: string
+): Record<string, string> {
+  const tags: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parentStackTags)) defineOwnKey(tags, key, value);
+  const resources = parentDeployedTemplate?.Resources;
+  const row =
+    resources !== undefined && hasOwn(resources, rowLogicalId)
+      ? resources[rowLogicalId]
+      : undefined;
+  const rowTags: unknown = row?.Properties?.['Tags'];
+  if (!Array.isArray(rowTags)) return tags;
+  for (const entry of rowTags as unknown[]) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const { Key: key, Value: value } = entry as Record<string, unknown>;
+    if (typeof key !== 'string') continue;
+    if (typeof value === 'string' && !value.includes('{{resolve:')) {
+      defineOwnKey(tags, key, value);
+    } else {
+      // The parent's value for the key is not this stack's any more either.
+      delete tags[key];
+    }
+  }
+  return tags;
+}
+
 /** The names a properties tree refers to, by kind. */
 interface ReferencedNames {
   /** `Ref`, `Fn::GetAtt` and `Fn::Sub` targets: a parameter, resource or pseudo parameter. */
