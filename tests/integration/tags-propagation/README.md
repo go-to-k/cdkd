@@ -17,6 +17,7 @@ provider independently:
 | Tags wire shape           | Types in this fixture                                          |
 | ------------------------- | ------------------------------------------------------------- |
 | `{Key,Value}[]` list      | S3 Bucket, SNS Topic, IAM Role, DynamoDB Table, Athena WorkGroup |
+| per-replica `Replicas[].Tags` | DynamoDB GlobalTable (no top-level `Tags`; cdkd merges the `StackProps.tags` into every replica, go-to-k/cdkd#6891) |
 | `{ k: v }` map            | SQS Queue, SSM Parameter, Logs LogGroup, Lambda Function      |
 
 Per the `feedback_ssm_parameter_tags_is_a_map` lesson,
@@ -36,7 +37,7 @@ handling differs between the two paths, so this fixture exercises both:
 
 - **SDK-provider path** (registered in `src/provisioning/register-providers.ts`):
   S3 Bucket, SNS Topic, SQS Queue, SSM Parameter, IAM Role, Logs LogGroup,
-  Lambda Function, DynamoDB Table.
+  Lambda Function, DynamoDB Table, DynamoDB GlobalTable.
 - **Cloud Control API path**: Athena WorkGroup has **no** SDK provider, so
   cdkd routes it through Cloud Control. `verify.sh` asserts
   `state.resources.*.provisionedBy == 'cc-api'` for it and `'sdk'` for the
@@ -87,15 +88,16 @@ parameter keep theirs, and `cdkd drift` stays clean.
    — applies 4 stack-level tags
    (`CdkdTagOwner=cdkd-integ`, `CdkdTagEnv=test`, `CdkdTagCostCenter=cc-1234`,
    set via `cdk.Tags.of(app)` in `bin/app.ts`, and `CdkdStackTag=from-stackprops`
-   from `StackProps.tags`) to all 16 taggable resources.
+   from `StackProps.tags`) to all 17 taggable resources.
    A wrong-Tags-shape crash on any type (e.g. the SSM map regression), or a
    create sent without its tags, fails the deploy here with specifics.
-2. Reads `state.json` and asserts the routing split (15 `sdk` + 1 `cc-api`).
-3. For **each** of the 16 types, reads the live AWS-side tags via that
+2. Reads `state.json` and asserts the routing split (16 `sdk` + 1 `cc-api`).
+3. For **each** of the 17 types, reads the live AWS-side tags via that
    type's type-specific list/describe API and asserts **all 4** stack-level
    tags are present with the correct value. A type missing a tag (a dropped
    tag) **FAILs naming the type**. Then the resource-declared `CdkdTagShared`
-   must win on the queue and the parameter, and the topic carries the stack's.
+   must win on the queue and the parameter, and the topic and the global table's
+   replica carry the stack's.
 4. `cdkd drift` immediately after deploy must report **exit 0** — a tag-list
    reorder from AWS must not show as a false-positive drift (issue
    [#802](https://github.com/go-to-k/cdkd/issues/802)
@@ -119,6 +121,7 @@ parameter keep theirs, and `cdkd drift` stays clean.
 | `AWS::Logs::LogGroup`    | sdk    | `logs list-tags-for-resource --resource-arn`                       | `tags{ k: v }` map     |
 | `AWS::Lambda::Function`  | sdk    | `lambda list-tags --resource <arn>`                                | `Tags{ k: v }` map     |
 | `AWS::DynamoDB::Table`   | sdk    | `dynamodb list-tags-of-resource --resource-arn`                    | `Tags[{Key,Value}]`    |
+| `AWS::DynamoDB::GlobalTable` | sdk | `dynamodb list-tags-of-resource --resource-arn` (the replica) | `Tags[{Key,Value}]`    |
 | `AWS::Kinesis::Stream`   | sdk    | `kinesis list-tags-for-stream --stream-name`                       | `Tags[{Key,Value}]`    |
 | `AWS::EC2::*` (6 types)  | sdk    | `ec2 describe-tags --filters Name=resource-id,Values=<id>`         | `Tags[{Key,Value}]`    |
 | `AWS::Athena::WorkGroup` | cc-api | `athena list-tags-for-resource --resource-arn`                     | `Tags[{Key,Value}]`    |

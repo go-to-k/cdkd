@@ -16,6 +16,12 @@
  *   such type on the strength of it.
  * - Drift's expected side includes the propagated tags, so they belong in the
  *   desired (and so the recorded) properties.
+ * - `AWS::DynamoDB::GlobalTable` has no top-level tag property (its schema has
+ *   no `tagging` block); its tags live per replica. CloudFormation merged the
+ *   stack tags into EVERY replica's `Tags` — a replica declaring no `Tags`
+ *   included — each replica's own value winning on a shared key, and drift's
+ *   expected `Replicas[].Tags` held the merged list (two-region probe,
+ *   us-east-1 + us-west-2, 2026-11-24, go-to-k/cdkd#6891).
  *
  * This module is the PURE half: {@link applyStackTags} takes the per-type
  * answer as a function. `stack-tag-targets.ts` resolves it from
@@ -45,6 +51,11 @@ const PROPAGATE_AT_LAUNCH_TYPES: ReadonlySet<string> = new Set([
 export type StackTagTarget =
   /** Merge into the top-level `property`, in that property's shape. */
   | { readonly kind: 'apply'; readonly property: string; readonly shape: 'array' | 'object' }
+  /**
+   * Merge into each `Replicas[]` entry's list-shaped `Tags`
+   * (`AWS::DynamoDB::GlobalTable`, go-to-k/cdkd#6891).
+   */
+  | { readonly kind: 'replicas' }
   /** CloudFormation applies none (not taggable, tags not updatable, no tag property). */
   | { readonly kind: 'skip' }
   /** cdkd cannot tell how; the resource is left alone and `reason` is warned once. */
@@ -157,6 +168,34 @@ function mergeMap(
   return merged;
 }
 
+/**
+ * The merged `Replicas` list: each replica's `Tags` merged like a list-shaped
+ * tag property, a replica without `Tags` getting the stack tags alone.
+ * `undefined` when the list, a replica, or a replica's `Tags` is not literal
+ * enough to tell which keys it declares — then no replica is touched.
+ */
+function mergeReplicas(
+  replicas: unknown,
+  stackTags: Readonly<Record<string, string>>,
+  resourceType: string
+): unknown[] | undefined {
+  if (!Array.isArray(replicas)) return undefined;
+  const merged: unknown[] = [];
+  for (const replica of replicas) {
+    if (!isRecord(replica) || isIntrinsicShaped(replica)) return undefined;
+    const declared = hasOwnKey(replica, 'Tags') ? replica['Tags'] : undefined;
+    // `Tags: {Ref: AWS::NoValue}` declares no tags, as an absent `Tags` does.
+    const current = isRecord(declared) && declared['Ref'] === 'AWS::NoValue' ? undefined : declared;
+    if (current !== undefined && !Array.isArray(current)) return undefined;
+    const tags = mergeList(current ?? [], stackTags, resourceType);
+    if (tags === undefined) return undefined;
+    const next: Record<string, unknown> = { ...replica };
+    defineOwnKey(next, 'Tags', tags);
+    merged.push(next);
+  }
+  return merged;
+}
+
 function notApplied(logicalId: string, resourceType: string, why: string): string {
   return safeMsg`Stack tags were not applied to ${displayIdent(logicalId)} (${resourceType}): ${why}. CloudFormation would tag it; cdkd leaves its tags as the template declares them.`;
 }
@@ -203,31 +242,36 @@ export function applyStackTags(
       warnings.push(notApplied(logicalId, type, 'its Properties are not a literal map'));
       continue;
     }
-    const current = isRecord(properties) ? properties[target.property] : undefined;
+    let property: string;
     let merged: unknown;
-    if (current === undefined) {
-      merged =
-        target.shape === 'array'
-          ? mergeList([], tags, type)
-          : mergeMap({} as Record<string, unknown>, tags);
-    } else if (target.shape === 'array' && Array.isArray(current)) {
-      merged = mergeList(current, tags, type);
-    } else if (target.shape === 'object' && isRecord(current) && !isIntrinsicShaped(current)) {
-      merged = mergeMap(current, tags);
+    let why: string;
+    if (target.kind === 'replicas') {
+      property = 'Replicas';
+      merged = mergeReplicas(isRecord(properties) ? properties[property] : undefined, tags, type);
+      why =
+        'its Replicas is not a literal list, or a replica or its Tags is an intrinsic or holds a tag whose key cdkd cannot read';
+    } else {
+      property = target.property;
+      const current = isRecord(properties) ? properties[property] : undefined;
+      if (current === undefined) {
+        merged =
+          target.shape === 'array'
+            ? mergeList([], tags, type)
+            : mergeMap({} as Record<string, unknown>, tags);
+      } else if (target.shape === 'array' && Array.isArray(current)) {
+        merged = mergeList(current, tags, type);
+      } else if (target.shape === 'object' && isRecord(current) && !isIntrinsicShaped(current)) {
+        merged = mergeMap(current, tags);
+      }
+      why = `its ${property} is an intrinsic or holds a tag whose key cdkd cannot read`;
     }
     if (merged === undefined) {
-      warnings.push(
-        notApplied(
-          logicalId,
-          type,
-          `its ${target.property} is an intrinsic or holds a tag whose key cdkd cannot read`
-        )
-      );
+      warnings.push(notApplied(logicalId, type, why));
       continue;
     }
     resources ??= { ...template.Resources };
     const nextProperties: Record<string, unknown> = { ...(properties ?? {}) };
-    defineOwnKey(nextProperties, target.property, merged);
+    defineOwnKey(nextProperties, property, merged);
     defineOwnKey(resources, logicalId, { ...resource, Properties: nextProperties });
   }
   return {

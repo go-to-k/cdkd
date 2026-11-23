@@ -14,7 +14,7 @@
 # `Tags.map()` crashed deploy. This fixture deliberately tags an SSM
 # Parameter so that regression is caught end-to-end.
 #
-# What this proves that no other fixture does: for EACH of 16 taggable
+# What this proves that no other fixture does: for EACH of 17 taggable
 # types, the verify reads the live AWS-side tags via that type's
 # type-specific list/describe API and asserts ALL 3 stack-level tags are
 # present with the correct value. A type that DROPS a tag (or crashes on
@@ -42,7 +42,7 @@
 #      untagged create of every type under test meets the explicit deny)
 #   2. cdkd deploy CdkdTagsPropagationExample AS that role (a Tags-shape
 #      crash on any type, or a create sent without its tags, fails here)
-#   3. read state.json; assert routing split (15 sdk + 1 cc-api)
+#   3. read state.json; assert routing split (16 sdk + 1 cc-api)
 #   4. for each type, read live AWS tags + assert all 4 stack tags present
 #      (3 from `Tags.of(app)`, 1 from `StackProps.tags`, go-to-k/cdkd#6871)
 #   4b. a resource-declared tag wins over the same StackProps.tags key, on a
@@ -330,7 +330,7 @@ if ! as_role node "${REPO_ROOT}/dist/cli.js" deploy "${STACK}" --state-bucket "$
   exit 1
 fi
 
-echo "[verify] step 3: read state.json + assert routing split (15 sdk + 1 cc-api)"
+echo "[verify] step 3: read state.json + assert routing split (16 sdk + 1 cc-api)"
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 if [ -z "${STATE}" ]; then
   echo "[verify] FAIL: no state at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
@@ -359,7 +359,7 @@ fi
 echo "[verify]   ok: Athena WorkGroup routed via cc-api"
 for T in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::SQS::Queue' 'AWS::SSM::Parameter' \
          'AWS::IAM::Role' 'AWS::Logs::LogGroup' 'AWS::Lambda::Function' 'AWS::DynamoDB::Table' \
-         'AWS::Kinesis::Stream' 'AWS::EC2::VPC' 'AWS::EC2::Subnet' 'AWS::EC2::InternetGateway' \
+         'AWS::DynamoDB::GlobalTable' 'AWS::Kinesis::Stream' 'AWS::EC2::VPC' 'AWS::EC2::Subnet' 'AWS::EC2::InternetGateway' \
          'AWS::EC2::RouteTable' 'AWS::EC2::NetworkAcl' 'AWS::EC2::SecurityGroup'; do
   R="$(provisioned_for_type "${T}")"
   if [ -z "${R}" ]; then
@@ -371,7 +371,7 @@ for T in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::SQS::Queue' 'AWS::SSM::Parame
     exit 1
   fi
 done
-echo "[verify]   ok: 15 SDK-path types routed via sdk"
+echo "[verify]   ok: 16 SDK-path types routed via sdk"
 
 # assert_tag <human-label> <newline-separated "key<TAB>value" pairs from AWS>
 # Fails NAMING the type if any of the 3 stack tags is missing/wrong.
@@ -469,6 +469,15 @@ DDB_TAGS="$(aws dynamodb list-tags-of-resource --resource-arn "${DDB_ARN}" --reg
   --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
 assert_all_tags "DynamoDB Table (${DDB_NAME})" "${DDB_TAGS}"
 
+# --- DynamoDB GlobalTable (go-to-k/cdkd#6891): the one replica's tags ---
+# No top-level Tags: the StackProps.tags reach it only through cdkd merging
+# them into every Replicas[].Tags.
+GT_NAME="$(physid_for_type 'AWS::DynamoDB::GlobalTable')"
+GT_ARN="arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${GT_NAME}"
+GT_TAGS="$(aws dynamodb list-tags-of-resource --resource-arn "${GT_ARN}" --region "${REGION}" \
+  --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
+assert_all_tags "DynamoDB GlobalTable replica (${GT_NAME})" "${GT_TAGS}"
+
 # --- Kinesis Stream: list-tags-for-stream -> Tags[{Key,Value}] (go-to-k/cdkd#4971) ---
 KIN_NAME="$(physid_for_type 'AWS::Kinesis::Stream')"
 KIN_TAGS="$(aws kinesis list-tags-for-stream --stream-name "${KIN_NAME}" --region "${REGION}" \
@@ -497,6 +506,7 @@ echo "[verify] step 4b: go-to-k/cdkd#6871 -- a resource's own tag wins over a St
 expect_tag "SQS Queue" "${SQS_TAGS}" CdkdTagShared from-resource
 expect_tag "SSM Parameter" "${SSM_TAGS}" CdkdTagShared from-resource
 expect_tag "SNS Topic" "${SNS_TAGS}" CdkdTagShared from-stack
+expect_tag "DynamoDB GlobalTable replica" "${GT_TAGS}" CdkdTagShared from-stack
 # The recorded properties carry the merged tags (drift's expected side).
 REC_PARAM_TAG="$(echo "${STATE}" | jq -r \
   '[.resources | to_entries[] | select(.key | startswith("TaggedParameter")) | .value.properties.Tags.CdkdStackTag] | first // ""')"
@@ -521,6 +531,7 @@ echo "[verify] step 5b: go-to-k/cdkd#6871 -- a stack-tag-only change updates the
 SQS_URL_1="${SQS_URL}"
 SNS_ARN_1="${SNS_ARN}"
 SSM_NAME_1="${SSM_NAME}"
+GT_NAME_1="${GT_NAME}"
 # `cdkd diff` merges the stack tags as the deploy does: it must preview the
 # change (exit 1 under --fail), and none once the deploy applied it.
 set +e
@@ -533,7 +544,8 @@ if [ "${DIFF_RC}" -ne 1 ]; then
 fi
 CDKD_TEST_STACK_TAGS=2 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
 STATE_5B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-for PAIR in "TaggedQueue|${SQS_URL_1}" "TaggedTopic|${SNS_ARN_1}" "TaggedParameter|${SSM_NAME_1}"; do
+for PAIR in "TaggedQueue|${SQS_URL_1}" "TaggedTopic|${SNS_ARN_1}" "TaggedParameter|${SSM_NAME_1}" \
+            "TaggedGlobalTable|${GT_NAME_1}"; do
   LID="${PAIR%%|*}"
   NOW="$(echo "${STATE_5B}" | jq -r --arg p "${LID}" \
     '[.resources | to_entries[] | select(.key | startswith($p)) | .value.physicalId] | first // ""')"
@@ -559,9 +571,13 @@ SSM_TAGS_2="$(aws ssm list-tags-for-resource --resource-type Parameter --resourc
 expect_tag "SQS Queue (phase 2)" "${SQS_TAGS_2}" CdkdStackTag from-stackprops-2
 expect_tag "SNS Topic (phase 2)" "${SNS_TAGS_2}" CdkdStackTag from-stackprops-2
 expect_tag "SSM Parameter (phase 2)" "${SSM_TAGS_2}" CdkdStackTag from-stackprops-2
+GT_TAGS_2="$(aws dynamodb list-tags-of-resource --resource-arn "${GT_ARN}" --region "${REGION}" \
+  --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
+expect_tag "DynamoDB GlobalTable replica (phase 2)" "${GT_TAGS_2}" CdkdStackTag from-stackprops-2
 # The key dropped from the stack is untagged where the resource did not declare
 # it, and stays where it did.
 expect_tag "SNS Topic (phase 2)" "${SNS_TAGS_2}" CdkdTagShared ""
+expect_tag "DynamoDB GlobalTable replica (phase 2)" "${GT_TAGS_2}" CdkdTagShared ""
 expect_tag "SQS Queue (phase 2)" "${SQS_TAGS_2}" CdkdTagShared from-resource
 expect_tag "SSM Parameter (phase 2)" "${SSM_TAGS_2}" CdkdTagShared from-resource
 set +e

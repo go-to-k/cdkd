@@ -35,6 +35,17 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 
 const targetCache = new Map<string, Promise<StackTagTarget>>();
 
+/**
+ * Types whose tags the registry schema's `tagging` block cannot describe,
+ * answered without a lookup. `AWS::DynamoDB::GlobalTable` has no `tagging`
+ * block and no top-level tag property, so its schema reads as untaggable,
+ * yet CloudFormation tags every replica (measured 2026-11-24,
+ * go-to-k/cdkd#6891; see `stack-tags.ts`).
+ */
+const FIXED_TARGETS: ReadonlyMap<string, StackTagTarget> = new Map<string, StackTagTarget>([
+  ['AWS::DynamoDB::GlobalTable', { kind: 'replicas' }],
+]);
+
 /** Clear the per-type cache. Test-only helper. */
 export function clearStackTagTargetCache(): void {
   targetCache.clear();
@@ -174,6 +185,8 @@ function fallbackTarget(resourceType: string, detail: string): StackTagTarget {
  * lookup is cached.
  */
 export function getStackTagTarget(resourceType: string): Promise<StackTagTarget> {
+  const fixed = FIXED_TARGETS.get(resourceType);
+  if (fixed !== undefined) return Promise.resolve(fixed);
   const cached = targetCache.get(resourceType);
   if (cached) return cached;
   const entry = scheduleDescribeType(resourceType)

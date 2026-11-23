@@ -528,7 +528,7 @@ stepfunctions-sync-managed-rule	2026-11-10T13:24:25Z	PASS	100	verify.sh	rc ok, o
 stream-delete-redeploy	2026-11-19T06:52:45Z	PASS	972	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 subnet-mappublicip-removal	2026-11-15T12:58:41Z	PASS	90	verify.sh	rc ok, orph clean; #6342 pre-fix RED at remove phase
 synthetics-canary	2026-11-18T13:56:57Z	PASS	175	verify.sh	rc ok, orph clean; marker re-set after comment-only commit e44c0ae38 (#6553 PR #6554)
-tags-propagation	2026-11-23T16:12:34Z	PASS	300	verify.sh	rc ok, orph clean; #6871 StackProps.tags merge + phase-2 stack-tag update
+tags-propagation	2026-11-23T18:48:26Z	PASS	341	verify.sh	rc ok, orph clean; #6891 GlobalTable replica stack tags
 termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
 throttle-wide-dag	2026-11-05T12:05:22Z	PASS	241	verify.sh	rc ok, orph clean
 type-change-replacement	2026-11-21T12:40:02Z	PASS	225	verify.sh	rc ok, orph clean (#6762 run)

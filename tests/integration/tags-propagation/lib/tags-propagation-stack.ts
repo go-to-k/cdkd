@@ -137,6 +137,16 @@ export class TagsPropagationStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // DynamoDB global table — no top-level Tags; the tags live per replica
+    // (`Replicas[].Tags`), so cdkd merges the `StackProps.tags` into every
+    // replica as CloudFormation does (go-to-k/cdkd#6891). One replica, in
+    // the stack's region, keeps the create fast.
+    new dynamodb.TableV2(this, 'TaggedGlobalTable', {
+      partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+      billing: dynamodb.Billing.onDemand(),
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // --- go-to-k/cdkd#4971: creates that must carry their tags ---
 
     // Kinesis Stream — Tags on CreateStream ({ k: v } map on the wire;
