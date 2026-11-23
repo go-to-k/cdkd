@@ -85,11 +85,17 @@ export class IamRolePoliciesDriftCleanStack extends cdk.Stack {
       new iam.PolicyDocument({
         statements: [new iam.PolicyStatement({ actions: [action], resources: [queue.queueArn] })],
       });
+    // go-to-k/cdkd#6874: the CASE-RENAME phase (CDKD_TEST_CASE_RENAME=true)
+    // respells DeclaredInline only in case, with another action, so verify.sh
+    // can tell the new document is the one held under the new spelling.
+    const caseRenamed = process.env.CDKD_TEST_CASE_RENAME === 'true';
     const role = new iam.Role(this, 'WorkerRole', {
       roleName: 'cdkd-iam-drift-clean-test-role',
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       inlinePolicies: {
-        DeclaredInline: doc('sqs:GetQueueAttributes'),
+        [caseRenamed ? 'declaredinline' : 'DeclaredInline']: doc(
+          caseRenamed ? 'sqs:ChangeMessageVisibility' : 'sqs:GetQueueAttributes'
+        ),
         // Hand-off 3: the role's own Policies takes the name ToRolePolicy
         // renames away from. ToRolePolicy names the role by Ref, so the role
         // updates (puts the name) BEFORE the policy's rename would remove it.

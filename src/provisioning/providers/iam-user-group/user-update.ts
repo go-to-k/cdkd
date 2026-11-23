@@ -31,6 +31,8 @@ import {
   compareMembershipWrites,
   verifyOwnIdentityBeforeUpdate,
 } from '../iam-policy/principal-identity.js';
+import { planInlinePolicyNames, sameInlinePolicyName } from '../iam-role/update.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 
 /**
  * go-to-k/cdkd#6609: each removal below is noted once its call succeeds (a
@@ -422,17 +424,54 @@ export async function updateUserInlinePolicies(
   const { value: v } = log;
   const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
   const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+  const plan = planInlinePolicyNames(newMap.keys(), oldMap.keys());
 
-  // Add or update policies
+  // Add or update policies. go-to-k/cdkd#6874: a name respelled only in
+  // case is the same policy, so its old spelling is deleted right before the
+  // put of the new one, as CloudFormation does, and the new spelling is
+  // listed. A put that then fails puts the old spelling back with its
+  // recorded document (best effort) before the error propagates, so the
+  // principal is not left without the policy.
   for (const [policyName, policyDoc] of newMap) {
     const policyDocument = typeof policyDoc === 'string' ? policyDoc : JSON.stringify(policyDoc);
-    await this.iamClient.send(
-      new PutUserPolicyCommand({
-        UserName: userName,
-        PolicyName: policyName,
-        PolicyDocument: policyDocument,
-      })
-    );
+    const respelled = plan.respelled.filter((old) => sameInlinePolicyName(old, policyName));
+    for (const old of respelled) {
+      try {
+        await this.iamClient.send(
+          new DeleteUserPolicyCommand({ UserName: userName, PolicyName: old })
+        );
+      } catch (error) {
+        if (!(error instanceof NoSuchEntityException)) throw error;
+      }
+      log.debug(`Deleted inline policy ${v(old)} before putting it as ${v(policyName)}`);
+    }
+    try {
+      await this.iamClient.send(
+        new PutUserPolicyCommand({
+          UserName: userName,
+          PolicyName: policyName,
+          PolicyDocument: policyDocument,
+        })
+      );
+    } catch (error) {
+      for (const old of respelled) {
+        const oldDoc = oldMap.get(old);
+        try {
+          await this.iamClient.send(
+            new PutUserPolicyCommand({
+              UserName: userName,
+              PolicyName: old,
+              PolicyDocument: typeof oldDoc === 'string' ? oldDoc : JSON.stringify(oldDoc),
+            })
+          );
+        } catch {
+          log.warn(
+            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
+          );
+        }
+      }
+      throw error;
+    }
     log.debug(`Updated inline policy ${v(policyName)} on user ${v(userName)}`);
   }
 
@@ -441,29 +480,27 @@ export async function updateUserInlinePolicies(
   // this user in the same run is not removed. Set by a rollback revert,
   // where the policy that took this name over may have been put back
   // before this principal's own revert drops it.
-  for (const policyName of oldMap.keys()) {
-    if (!newMap.has(policyName)) {
-      if (claimed?.('user', userName, policyName) === true) {
-        log.debug(
-          `Kept inline policy ${v(policyName)} on user ${v(userName)}: another resource of this deploy or rollback wrote it`
-        );
-        continue;
-      }
-      try {
-        await this.iamClient.send(
-          new DeleteUserPolicyCommand({
-            UserName: userName,
-            PolicyName: policyName,
-          })
-        );
-        log.debug(`Deleted inline policy ${v(policyName)} from user ${v(userName)}`);
-      } catch (error) {
-        if (!(error instanceof NoSuchEntityException)) {
-          throw error;
-        }
-      }
-      recordOwnWriteRemoval(USER_TYPE, userName, 'Policies', policyName);
+  for (const policyName of plan.removed) {
+    if (claimed?.('user', userName, policyName) === true) {
+      log.debug(
+        `Kept inline policy ${v(policyName)} on user ${v(userName)}: another resource of this deploy or rollback wrote it`
+      );
+      continue;
     }
+    try {
+      await this.iamClient.send(
+        new DeleteUserPolicyCommand({
+          UserName: userName,
+          PolicyName: policyName,
+        })
+      );
+      log.debug(`Deleted inline policy ${v(policyName)} from user ${v(userName)}`);
+    } catch (error) {
+      if (!(error instanceof NoSuchEntityException)) {
+        throw error;
+      }
+    }
+    recordOwnWriteRemoval(USER_TYPE, userName, 'Policies', policyName);
   }
 }
 

@@ -13,6 +13,7 @@ import {
   UntagRoleCommand,
   PutRolePermissionsBoundaryCommand,
   DeleteRolePermissionsBoundaryCommand,
+  NoSuchEntityException,
 } from '@aws-sdk/client-iam';
 import { safeStringify } from '../../../utils/aws-failure-text.js';
 import {
@@ -39,6 +40,7 @@ import type {
   InlinePolicyClaimed,
   ResourceUpdateResult,
 } from '../../../types/resource.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 
 /**
  * Update an IAM role
@@ -520,6 +522,46 @@ export async function updateManagedPolicies(
 }
 
 /**
+ * go-to-k/cdkd#6874: how an inline-policy name change reaches IAM, which
+ * holds ONE inline policy per name ignoring case on a principal and keeps the
+ * spelling it was first put under (measured us-east-1, 2026-11-23: a
+ * `PutRolePolicy` of `casepol` over `CasePol` replaces the document and
+ * `CasePol` stays listed). A recorded name the desired list holds only in
+ * another case is that same policy, so it is never a removal: deleting it
+ * after the put deleted the policy just written. CloudFormation deletes the
+ * old spelling FIRST and then puts the new one, so the new spelling is listed
+ * (CloudTrail, same A/B); `respelled` are those old spellings, deleted before
+ * the puts, and `removed` the recorded names no desired name matches in any
+ * case.
+ */
+export function planInlinePolicyNames(
+  desired: Iterable<string>,
+  recorded: Iterable<string>
+): { respelled: string[]; removed: string[] } {
+  // A malformed (non-string) name is compared as is, as before: the put or
+  // delete that carries it fails on AWS's side.
+  const fold = (name: unknown): unknown => (typeof name === 'string' ? name.toLowerCase() : name);
+  const desiredExact = new Set(desired);
+  const desiredFolded = new Set([...desiredExact].map(fold));
+  const respelled: string[] = [];
+  const removed: string[] = [];
+  for (const name of recorded) {
+    if (desiredExact.has(name)) continue;
+    if (desiredFolded.has(fold(name))) respelled.push(name);
+    else removed.push(name);
+  }
+  return { respelled, removed };
+}
+
+/** Whether two inline policy names are one IAM policy (case ignored; go-to-k/cdkd#6874). */
+export function sameInlinePolicyName(a: string, b: string): boolean {
+  return (
+    a === b ||
+    (typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase())
+  );
+}
+
+/**
  * Update inline policies
  */
 export async function updateInlinePolicies(
@@ -533,18 +575,54 @@ export async function updateInlinePolicies(
   const { value: v } = log;
   const newMap = new Map((newPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
   const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
+  const plan = planInlinePolicyNames(newMap.keys(), oldMap.keys());
 
-  // Add or update policies
+  // Add or update policies. go-to-k/cdkd#6874: a name respelled only in
+  // case is the same policy, so its old spelling is deleted right before the
+  // put of the new one, as CloudFormation does, and the new spelling is
+  // listed. A put that then fails puts the old spelling back with its
+  // recorded document (best effort) before the error propagates, so the
+  // principal is not left without the policy.
   for (const [policyName, policyDoc] of newMap) {
     const policyDocument = typeof policyDoc === 'string' ? policyDoc : JSON.stringify(policyDoc);
-
-    await this.iamClient.send(
-      new PutRolePolicyCommand({
-        RoleName: roleName,
-        PolicyName: policyName,
-        PolicyDocument: policyDocument,
-      })
-    );
+    const respelled = plan.respelled.filter((old) => sameInlinePolicyName(old, policyName));
+    for (const old of respelled) {
+      try {
+        await this.iamClient.send(
+          new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: old })
+        );
+      } catch (error) {
+        if (!(error instanceof NoSuchEntityException)) throw error;
+      }
+      log.debug(`Deleted inline policy ${v(old)} before putting it as ${v(policyName)}`);
+    }
+    try {
+      await this.iamClient.send(
+        new PutRolePolicyCommand({
+          RoleName: roleName,
+          PolicyName: policyName,
+          PolicyDocument: policyDocument,
+        })
+      );
+    } catch (error) {
+      for (const old of respelled) {
+        const oldDoc = oldMap.get(old);
+        try {
+          await this.iamClient.send(
+            new PutRolePolicyCommand({
+              RoleName: roleName,
+              PolicyName: old,
+              PolicyDocument: typeof oldDoc === 'string' ? oldDoc : JSON.stringify(oldDoc),
+            })
+          );
+        } catch {
+          log.warn(
+            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
+          );
+        }
+      }
+      throw error;
+    }
     log.debug(`Updated inline policy ${v(policyName)}`);
   }
 
@@ -553,23 +631,21 @@ export async function updateInlinePolicies(
   // this role in the same run is not removed. Set by a rollback revert,
   // where the policy that took this name over may have been put back
   // before this principal's own revert drops it.
-  for (const policyName of oldMap.keys()) {
-    if (!newMap.has(policyName)) {
-      if (claimed?.('role', roleName, policyName) === true) {
-        log.debug(
-          `Kept inline policy ${v(policyName)} on role ${v(roleName)}: another resource of this deploy or rollback wrote it`
-        );
-        continue;
-      }
-      await this.iamClient.send(
-        new DeleteRolePolicyCommand({
-          RoleName: roleName,
-          PolicyName: policyName,
-        })
+  for (const policyName of plan.removed) {
+    if (claimed?.('role', roleName, policyName) === true) {
+      log.debug(
+        `Kept inline policy ${v(policyName)} on role ${v(roleName)}: another resource of this deploy or rollback wrote it`
       );
-      recordOwnWriteRemoval(ROLE_TYPE, roleName, 'Policies', policyName);
-      log.debug(`Deleted inline policy ${v(policyName)}`);
+      continue;
     }
+    await this.iamClient.send(
+      new DeleteRolePolicyCommand({
+        RoleName: roleName,
+        PolicyName: policyName,
+      })
+    );
+    recordOwnWriteRemoval(ROLE_TYPE, roleName, 'Policies', policyName);
+    log.debug(`Deleted inline policy ${v(policyName)}`);
   }
 }
 
