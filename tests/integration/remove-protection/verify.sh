@@ -101,6 +101,8 @@ OOB_ENDPOINT_SERVICE_ID=""
 # Step 4b's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the step's own `rm`.
 DESTROY_4B_LOG=""
+# Step 3's captured destroy output (issue #6855), removed by cleanup the same way.
+DESTROY_3_LOG=""
 # Step 4b's go-to-k/cdkd#2319 check: the deployments/*.jsonl keys before the
 # destroy, and the RESOURCE_FAILED events read after it (AWS text: removed by
 # cleanup on every exit).
@@ -177,6 +179,7 @@ deployment_event_keys() {
 cleanup() {
   rc=$?
   [ -n "${DESTROY_4B_LOG}" ] && rm -f "${DESTROY_4B_LOG}"
+  [ -n "${DESTROY_3_LOG}" ] && rm -f "${DESTROY_3_LOG}"
   [ -n "${EVENT_KEYS_4B}" ] && rm -f "${EVENT_KEYS_4B}"
   [ -n "${FAILED_4B}" ] && rm -f "${FAILED_4B}"
   if [ "${rc}" -ne 0 ]; then
@@ -354,16 +357,41 @@ echo "[verify] step 2d ok: DeletionProtectionEnabled is true, same table"
 # yielding. 6m is the minimum that exceeds the default 5m
 # `--resource-warn-after` (cdkd validates `warn < timeout`).
 echo "[verify] step 3: cdkd destroy --force WITHOUT --remove-protection (expect non-zero)"
+DESTROY_3_LOG="$(mktemp)"
 set +e
-${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force --resource-timeout 6m
+${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force --resource-timeout 6m \
+  > "${DESTROY_3_LOG}" 2>&1
 rc=$?
 set -e
+cat "${DESTROY_3_LOG}"
 if [ "${rc}" -eq 0 ]; then
   echo "[verify] FAIL: bare destroy unexpectedly succeeded — protected resources were silently stripped."
   echo "[verify]       This is a regression in cdkd's --remove-protection gating."
   exit 1
 fi
 echo "[verify] step 3 ok: bare destroy rejected (exit ${rc})"
+
+# Issue #6855: each protection refusal's failure line is followed by cdkd's
+# line naming the protection and --remove-protection. The failure line is the
+# sentinel: its absence means the resource did not fail the way this reads.
+echo "[verify] step 3a: each protected resource's failure names --remove-protection (#6855)"
+PROTECTION_HINT='AWS refused the delete because deletion protection is on for this resource.'
+for prefix in ProtectedLogGroup ProtectedTable ProtectedUserPool ProtectedInstance ProtectedAlb ProtectedNlb ProtectedAsg; do
+  # The line after this resource's failure line, ANSI colour stripped.
+  next_line="$(sed -e 's/\x1b\[[0-9;]*m//g' "${DESTROY_3_LOG}" \
+    | awk -v p="Failed to delete ${prefix}" 'found { print; exit } index($0, p) { found = 1 }')"
+  if ! grep -qF "Failed to delete ${prefix}" "${DESTROY_3_LOG}"; then
+    echo "[verify] FAIL (#6855): no failure line for ${prefix} in step 3's destroy"
+    exit 1
+  fi
+  if [[ "${next_line}" != *"${PROTECTION_HINT}"* ]]; then
+    echo "[verify] FAIL (#6855): ${prefix}'s failure is not followed by the deletion-protection hint; next line: ${next_line}"
+    exit 1
+  fi
+done
+echo "[verify] step 3a ok: every protected resource's failure names --remove-protection"
+rm -f "${DESTROY_3_LOG}"
+DESTROY_3_LOG=""
 
 # State must still exist — destroy was rejected, not partially applied.
 echo "[verify] step 4: cdkd state list (stack should still be listed)"
