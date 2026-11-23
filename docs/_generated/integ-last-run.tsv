@@ -453,8 +453,8 @@ route53-drift-import	2026-11-20T11:22:10Z	PASS	130	verify.sh	PR6652 be63cc056, u
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
-s3-bucket-policy-existing	2026-11-23T10:10:37Z	PASS	117	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
-s3-cloudfront	2026-11-23T11:06:38Z	PASS	290	verify.sh	rc ok, orph clean (PR 6860)
+s3-bucket-policy-existing	2026-11-23T12:27:18Z	PASS	161	verify.sh	rc ok, orph clean (#6879)
+s3-cloudfront	2026-11-23T12:27:18Z	PASS	321	verify.sh	rc ok, orph clean (#6879)
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean
 s3-event-notification	2026-11-20T11:22:10Z	PASS	310	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
