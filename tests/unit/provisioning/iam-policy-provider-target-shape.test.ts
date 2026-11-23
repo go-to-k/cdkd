@@ -456,8 +456,9 @@ describe('IAMPolicyProvider.update removes the OLD-named policy on a rename (go-
   it.each([
     ['upper to lower', 'MyPolicy', 'mypolicy'],
     ['lower to upper', 'mypolicy', 'MyPolicy'],
-  ])('a case-only rename (%s) removes nothing from a retained principal', async (_what, from, to) => {
-    // Measured: IAM inline policy names are case-insensitive on one principal.
+  ])('a case-only rename (%s) deletes the old spelling from a retained principal BEFORE the put, as CloudFormation does (go-to-k/cdkd#6874)', async (_what, from, to) => {
+    // Measured: IAM inline policy names are case-insensitive on one principal,
+    // and a put alone keeps the first spelling; CFn sends delete-then-put.
     await new IAMPolicyProvider().update(
       'P',
       from,
@@ -465,19 +466,26 @@ describe('IAMPolicyProvider.update removes the OLD-named policy on a rename (go-
       { PolicyName: to, PolicyDocument: DOC, Roles: ['kept'] },
       { PolicyName: from, PolicyDocument: DOC, Roles: ['kept', 'gone'] }
     );
-    expect(inputs()).toEqual([put('Role', 'kept', to), del('Role', 'gone', from)]);
+    expect(inputs()).toEqual([
+      del('Role', 'kept', from),
+      put('Role', 'kept', to),
+      del('Role', 'gone', from),
+    ]);
   });
 
-  it('a case-only rename, spelled out, removes nothing from a retained principal (IAM names are case-insensitive)', async () => {
+  it('a case-only rename, spelled out: a retained principal is re-put in the new spelling, never left without it; a leaver loses it', async () => {
     await new IAMPolicyProvider().update(
       'P',
       'MyPolicy',
       TYPE,
-      { PolicyName: 'mypolicy', PolicyDocument: DOC, Roles: ['kept'] },
+      { PolicyName: 'mypolicy', PolicyDocument: DOC, Roles: ['kept', 'added'] },
       { PolicyName: 'MyPolicy', PolicyDocument: DOC, Roles: ['kept', 'gone'] }
     );
     expect(inputs()).toEqual([
+      del('Role', 'kept', 'MyPolicy'),
       put('Role', 'kept', 'mypolicy'),
+      // A principal new to the list never held the old spelling: put only.
+      put('Role', 'added', 'mypolicy'),
       // A leaving principal still loses the name it holds.
       del('Role', 'gone', 'MyPolicy'),
     ]);

@@ -36,7 +36,8 @@
 #       name a rolled-back create took over included (go-to-k/cdkd#4408).
 #   2d. Respell the role's own inline policy only in case and back: it must
 #       survive each time, held under the new spelling with the new document,
-#       and drift stays clean (go-to-k/cdkd#6874).
+#       and drift stays clean (go-to-k/cdkd#6874); the standalone
+#       RenamedPolicy is respelled only in case the same way.
 #   2c. Hand inline policy names between resources on the role in ONE deploy
 #       (go-to-k/cdkd#4156): a swap of two policies' names, a delete beside a
 #       create of the same name, and a rename away from a name the role's own
@@ -532,15 +533,49 @@ case_rename_check() { # usage: case_rename_check <want-name> <gone-name> <want-a
   fi
   echo "    $4: the role holds $1 with $3"
 }
+assert_no_renamed_policy_drift() { # usage: assert_no_renamed_policy_drift <label> [case:true|false]
+  local out err rc=0 hits
+  err="$(mktemp)"
+  if [ "${2:-false}" = "true" ]; then
+    out="$(env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true CDKD_TEST_CASE_RENAME=true node "${LOCAL_DIST}" drift "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>"${err}")" || rc=$?
+  else
+    out="$(env -u CDKD_TEST_HANDOFF -u CDKD_TEST_CASE_RENAME CDKD_TEST_RENAME=true node "${LOCAL_DIST}" drift "${STACK}" \
+      --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>"${err}")" || rc=$?
+  fi
+  if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 1 ]; then
+    echo "FAIL [6874]: cdkd drift exited ${rc} ($1)" >&2
+    cat "${err}" >&2
+    rm -f "${err}"
+    exit 1
+  fi
+  rm -f "${err}"
+  # A drifted RenamedPolicy, or one reported deleted, fails.
+  if ! hits="$(printf '%s' "${out}" | jq -c '[.[] | (.drifted // [])[] | select(.logicalId | test("^RenamedPolicy")) | .changes[].path] + [.[] | (.deleted // [])[] | select(.logicalId | test("^RenamedPolicy")) | "deleted"]')"; then
+    echo "FAIL [6874]: could not parse cdkd drift --json ($1): ${out}" >&2
+    exit 1
+  fi
+  if [ "${hits}" != "[]" ]; then
+    echo "FAIL [6874]: cdkd drift reported RenamedPolicy (AWS::IAM::Policy) ($1): ${hits}" >&2
+    exit 1
+  fi
+  echo "    $1: no RenamedPolicy drift"
+}
 echo "==> Phase 2d: respell DeclaredInline only in case; the policy must survive with the new document"
 env -u CDKD_TEST_HANDOFF CDKD_TEST_RENAME=true CDKD_TEST_CASE_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 case_rename_check declaredinline DeclaredInline sqs:ChangeMessageVisibility "after the case-only rename"
+# The standalone AWS::IAM::Policy renamed only in case too (go-to-k/cdkd#6874
+# follow-up): the role must hold the new spelling with the new document.
+case_rename_check cdkd-iam-drift-clean-RENAMED-new "${NEW_POLICY}" sqs:ListQueueTags "after the policy's case-only rename"
 assert_no_role_drift "after the case-only rename" true
+assert_no_renamed_policy_drift "after the case-only rename" true
 env -u CDKD_TEST_HANDOFF -u CDKD_TEST_CASE_RENAME CDKD_TEST_RENAME=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 case_rename_check DeclaredInline declaredinline sqs:GetQueueAttributes "after renaming it back"
+case_rename_check "${NEW_POLICY}" cdkd-iam-drift-clean-RENAMED-new sqs:GetQueueUrl "after renaming the policy back"
 assert_no_role_drift "after renaming it back" true
+assert_no_renamed_policy_drift "after renaming it back"
 
 # --- Phase 2c: hand inline policy names over in one deploy (go-to-k/cdkd#4156)
 # Each name must end up held, with the RECEIVING resource's document (its own

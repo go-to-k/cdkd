@@ -144,6 +144,35 @@ describe.each(KINDS)('$kind inline Policies (go-to-k/cdkd#6874)', ({ prefix, run
     expect(JSON.parse(String(restore.input['PolicyDocument']))).toEqual(DOC_A);
   });
 
+  it.each([
+    ['a {{resolve:}} reference', '{{resolve:secretsmanager:vpce:SecretString:id}}'],
+    ['the mask', '***'],
+  ])('a recorded document holding %s is not put back after a failed put', async (_what, secret) => {
+    send.mockImplementation(async (command: Cmd) => {
+      const name = String(command.input['PolicyName']);
+      calls.push(`${command.constructor.name.replace(/Command$/, '')} ${name}`);
+      if (name === 'casepol') throw new Error('Throttling');
+      return {};
+    });
+    const recorded = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Action: 's3:*',
+          Resource: '*',
+          Condition: { StringNotEquals: { 'aws:SourceVpce': secret } },
+        },
+      ],
+    };
+    await expect(
+      run([{ PolicyName: 'casepol', PolicyDocument: DOC_B }], [
+        { PolicyName: 'CasePol', PolicyDocument: recorded },
+      ])
+    ).rejects.toThrow('Throttling');
+    expect(calls).toEqual([`Delete${prefix}Policy CasePol`, `Put${prefix}Policy casepol`]);
+  });
+
   it("another policy's failing put leaves a respelled policy that was not reached in place", async () => {
     send.mockImplementation(async (command: Cmd) => {
       const name = String(command.input['PolicyName']);

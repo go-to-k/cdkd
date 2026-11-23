@@ -41,6 +41,7 @@ import type {
   ResourceUpdateResult,
 } from '../../../types/resource.js';
 import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
+import { holdsSecretDerivedEntry } from '../../iam-policy-targets.js';
 
 /**
  * Update an IAM role
@@ -605,19 +606,30 @@ export async function updateInlinePolicies(
         })
       );
     } catch (error) {
-      for (const old of respelled) {
-        const oldDoc = oldMap.get(old);
-        try {
-          await this.iamClient.send(
-            new PutRolePolicyCommand({
-              RoleName: roleName,
-              PolicyName: old,
-              PolicyDocument: typeof oldDoc === 'string' ? oldDoc : JSON.stringify(oldDoc),
-            })
-          );
-        } catch {
+      // One spelling is put back (IAM holds one policy for all of them), and
+      // only a recorded document that is what AWS held: a `{{resolve:`
+      // reference or a mask kept in state is not.
+      const restoreName = respelled[0];
+      if (restoreName !== undefined) {
+        const oldDoc = oldMap.get(restoreName);
+        let restored = false;
+        if (oldDoc !== undefined && oldDoc !== null && !holdsSecretDerivedEntry(oldDoc)) {
+          try {
+            await this.iamClient.send(
+              new PutRolePolicyCommand({
+                RoleName: roleName,
+                PolicyName: restoreName,
+                PolicyDocument: typeof oldDoc === 'string' ? oldDoc : JSON.stringify(oldDoc),
+              })
+            );
+            restored = true;
+          } catch {
+            // warned below
+          }
+        }
+        if (!restored) {
           log.warn(
-            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
+            `Could not put inline policy ${v(restoreName)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
           );
         }
       }
