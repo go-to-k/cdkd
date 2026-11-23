@@ -941,7 +941,13 @@ in the plan checks, after the diff and before any provider call, in two halves:
    custom resource updated in place is `deferred`
    ([#6865](https://github.com/go-to-k/cdkd/issues/6865)), unless its
    published value is a `***` mask, it holds a dynamic reference, or it already
-   resolves differently.
+   resolves differently. It is deferred only when `deferralIsReversible`
+   holds for the whole plan: no DELETE, no replacement (a `--recreate-via-*`
+   target included), and no created or updated nested stack. A replacement
+   deletes its old copy inside the create / update phase, and a nested child
+   runs its own DELETE phase there, so a refusal after either would leave the
+   rollback re-creating a deleted resource (a stateful one empty). Otherwise
+   the export stays `changed` and is refused before anything is touched.
 2. Only when that list is non-empty does it call `scanActiveConsumers`, the
    same O(N) scan destroy uses. A consumer in `DeployEngineOptions.inRunStacks`
    (every stack this `cdkd deploy` deploys) is exempt. Unlike destroy, a

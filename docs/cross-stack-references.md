@@ -133,7 +133,10 @@ Cannot deploy stack 'ProducerStack' (us-east-1): this deploy would change or rem
 
 An export that reads a custom resource the deploy updates in place is checked
 after that update instead, as CloudFormation checks it: only the handler knows
-what it returns. If the handler returns the published value, the deploy goes
+what it returns. This applies only when the deploy deletes and replaces nothing
+and updates no nested stack; otherwise the export is refused up front, before
+anything is changed, because a later refusal could not restore what was
+deleted. If the handler returns the published value, the deploy goes
 through. If the value changed, the deploy fails with the same refusal and is
 rolled back, which re-runs the handler with the previous properties. Under
 `--no-rollback` the update stays; `cdkd rollback` reverts it. `--dry-run` runs no handler, so it
