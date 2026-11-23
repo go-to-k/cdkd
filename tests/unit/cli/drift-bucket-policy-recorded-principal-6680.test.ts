@@ -253,6 +253,56 @@ describe('cdkd drift on a bucket policy whose recorded principal is not the live
     expect(explained[0]).not.toContain('arn:aws:iam::');
   });
 
+  // go-to-k/cdkd#6854: `GetRole` finds a role case-insensitively, but IAM and
+  // S3 refuse a principal ARN whose name or path differs only in case
+  // ("Invalid principal in policy", measured), so that ARN is another
+  // principal and its unique id is not proven equal.
+  describe('a principal ARN spelled in another case than the live role (go-to-k/cdkd#6854)', () => {
+    const CASED_PATH_ARN = 'arn:aws:iam::123456789012:role/Prod/MyRole';
+    const casedState = (recorded: string, declared: string) => {
+      const s = stateWith(policy(recorded));
+      s.state.resources['DriftBucketPolicy']!.properties = policy(declared);
+      return s;
+    };
+
+    it('the exact ARN proves the unique id: no drift (positive control)', async () => {
+      mockIamSend.mockResolvedValue({ Role: { Arn: CASED_PATH_ARN, RoleId: ROLE_UNIQUE_ID } });
+      live = policy(CASED_PATH_ARN);
+      mockGetState.mockResolvedValue(casedState(ROLE_UNIQUE_ID, CASED_PATH_ARN));
+
+      const { code, out } = await runDrift([]);
+
+      expect(code ?? 0).toBe(0);
+      expect(out).toContain('no drift detected');
+    });
+
+    it('a role NAME differing only in case is drift', async () => {
+      mockIamSend.mockResolvedValue({ Role: { Arn: CASED_PATH_ARN, RoleId: ROLE_UNIQUE_ID } });
+      const lowerName = 'arn:aws:iam::123456789012:role/Prod/myrole';
+      live = policy(lowerName);
+      mockGetState.mockResolvedValue(casedState(ROLE_UNIQUE_ID, lowerName));
+
+      const { code, out } = await runDrift([]);
+
+      expect(code).toBe(1);
+      expect(out).toContain('DriftBucketPolicy');
+    });
+
+    it('an IAM PATH differing only in case is drift', async () => {
+      mockIamSend.mockResolvedValue({ Role: { Arn: CASED_PATH_ARN, RoleId: ROLE_UNIQUE_ID } });
+      const lowerPath = 'arn:aws:iam::123456789012:role/prod/MyRole';
+      live = policy(lowerPath);
+      mockGetState.mockResolvedValue(casedState(ROLE_UNIQUE_ID, lowerPath));
+
+      const { code, out } = await runDrift([]);
+
+      expect(code).toBe(1);
+      expect(out).toContain('DriftBucketPolicy');
+      const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(warned.filter((w) => w.includes('cannot be matched'))).toHaveLength(1);
+    });
+  });
+
   describe('an out-of-band change to the live policy (blast radius)', () => {
     it.each([
       ['principal swapped for another account', policy(OTHER_ACCOUNT_ROLE)],
