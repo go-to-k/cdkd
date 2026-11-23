@@ -162,8 +162,10 @@ export async function listInstanceSsmAssociations(
         : owner === 'ambiguous'
           ? 'more than one association carries that name, so cdkd cannot tell which'
           : `DescribeDocument failed (${owner.failed}), so cdkd cannot tell`;
+    // Never the operator's default region (staleSsmAssociationRemedy's rule).
+    const region = (await this.ssmRemedyRegion(undefined)) ?? "<the stack's region>";
     this.logger.warn(
-      safeMsg`An SSM association that the record declares by a shared document's ARN was not found on ${instanceId} under that ARN; association(s) ${ids} carry the document's bare name, but ${why}. cdkd leaves it in place. If it is the shared document's, delete it: aws ssm delete-association --association-id <id>.`
+      safeMsg`An SSM association that the record declares by a shared document's ARN was not found on ${instanceId} under that ARN; association(s) ${ids} carry the document's bare name, but ${why}. cdkd leaves it in place. If it is the shared document's, delete it: aws ssm delete-association --association-id <id> --region ${region}.`
     );
   }
   return out;

@@ -979,7 +979,7 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
       await remove();
       expect(ssmWrites()).toEqual([]);
       expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
-      expect(warn.mock.calls.flat().join('\n')).toMatch(/assoc-a, assoc-b .*more than one association/);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(/assoc-a, assoc-b .*more than one association.*delete-association --association-id <id> --region us-east-1\./);
     });
 
     it('applies on the instance delete too', async () => {
