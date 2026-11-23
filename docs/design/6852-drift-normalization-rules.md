@@ -16,7 +16,8 @@ reports "no drift" or "no change" over a real difference (#6680, #6842).
 This page lists every rule in the analyzer layer: what it equates, the AWS
 behavior that makes the two spellings one value, and the boundary. The provider
 canonicalizers, the Cloud Control read-back tables and the drift command's own
-steps (`src/cli/commands/drift/**`) are audited in #6854 and get rows here.
+steps (`src/cli/commands/drift/**`) are audited in #6854, in their own pages
+(see [Rules outside src/analyzer](#rules-outside-src-analyzer-6854)).
 
 A rule may equate two values only when AWS treats them as one. Where AWS
 behavior is unknown, the values compare as different. A rule that SKIPS a key
@@ -73,3 +74,18 @@ an oracle that knows only the equivalences below.
   it equates nothing.
 - `src/provisioning/canonicalize-properties.ts` only dispatches to each
   provider's `canonicalizeDesiredProperties` (#6854).
+
+## Rules outside src/analyzer (#6854)
+
+Each area's inventory, in the same table shape, is its own page in this
+directory:
+
+- `6854-a-storage-normalization-rules.md`: DynamoDB, S3, Kinesis and Cognito
+  providers.
+- `6854-b-db-compute-normalization-rules.md`: RDS, DocumentDB, Neptune, FSx,
+  Auto Scaling, EC2, ELBv2, CodeBuild and Lambda providers.
+- `6854-c-edge-api-policy-normalization-rules.md`: API Gateway, AppSync,
+  CloudFront, CloudTrail, Route 53, Budgets, SNS, Cloud Map, CodeCommit, and
+  the SNS / SQS policy providers.
+- `6854-d-drift-cc-normalization-rules.md`: the drift command's comparison
+  steps and the Cloud Control read-back tables.
