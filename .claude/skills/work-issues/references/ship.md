@@ -50,11 +50,14 @@ it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (runners never read this file) makes marker and ledger due once the last PID
 exits — a no-edit brief still names the ledger row it owes (#6332); while the
 lane's branch holds UNPUSHED commits the runner commits nothing and writes the
-rows to `<scratch>/integ-<PR>.rows`; the parent appends them per `/run-integ`
-step 11 (normalize, commit) after its own push (runner pushes went non-ff
-twice in the #6610 run) —
-names only fixtures `ls tests/integration/` lists in the PR's OWN repo, has it run `/run-integ` step 5's block AS
-WRITTEN and UNWRAPPED in ONE launch call per fixture (its `wait` works only in the
+rows to `<scratch>/integ-<PR>.rows` by step 11's `printf` alone (TAB-joined,
+the MEASURED `duration_s`: a space-joined name or a `0` fails the normalize at
+merge, #6852 run); the parent appends them per `/run-integ` step 11 (normalize,
+commit) after its own push (#6610) —
+names only fixtures `ls tests/integration/` lists in the PR's OWN repo, PASTES `/run-integ` step 5's block
+with `AWS_REGION=<r> STATE_BUCKET=<bucket>` filled into its `perl ... bash verify.sh`
+line (runners' own launchers dropped `STATE_BUCKET` four times, #5150, #6852 run)
+for the runner to run AS WRITTEN and UNWRAPPED in ONE launch call per fixture (its `wait` works only in the
 shell that ran the `&`), never step 5's SET loop (zsh leaves `set -- $p` unsplit;
 the brief QUOTES this ban, #6438) under the budget the PARENT computed with that block, named per
 fixture in the brief (never the runner's own, #5657), take each
@@ -75,7 +78,8 @@ fixture batches), each run's fixture,
 prefix appended as a line to `<scratch>/integ-<PR>.live` at launch. BEFORE
 dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
 open PRs touching each fixture: a held one gets a lock watcher, not a runner
-(#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
+(#5190). An open peer PR changing `src/` the lane's new arm RELIES ON or exercises
+merges first, and the lane rebases before its integ (#6673; #6872's arm needed #6857). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
 re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
 read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`),
 `SendMessage`s the runner as each exits, and alarms when no PID has run for 15
