@@ -34,7 +34,13 @@ import {
   orderSignificantIdArrayPaths,
 } from './drift-normalize.js';
 import { hasPlainPrototype } from '../utils/own-keys.js';
-import { isOmittedVersionDefault, isVerbatimStatementPath } from './drift-verbatim-paths.js';
+import {
+  NOT_A_POLICY_PATH,
+  canonicalPolicyFoldForm,
+  policyFoldLeafEqual,
+  isOmittedVersionDefault,
+  isVerbatimStatementPath,
+} from './drift-verbatim-paths.js';
 
 /**
  * A single property-level drift between state and AWS-current.
@@ -94,8 +100,9 @@ export interface PropertyDrift {
  * verbatim (`verbatimEchoDriftKeys`, go-to-k/cdkd#6622), where a key only AWS
  * holds can only have been added out of band. Same prefix rule. At
  * `<entry>.Statement` a statement object equals a one-element list holding it
- * (go-to-k/cdkd#6624), so entries must be `verbatimEchoDriftKeys` values: a
- * non-verbatim entry would take the fold too.
+ * (go-to-k/cdkd#6624), and at and under it the measured policy-statement folds
+ * apply (`canonicalPolicyFoldForm`, go-to-k/cdkd#6852), so entries must be
+ * `verbatimEchoDriftKeys` values: a non-verbatim entry would take the folds too.
  *
  * `options.resourceType` keeps that type's ORDER-SIGNIFICANT id/ARN lists
  * (Lambda `Layers`, go-to-k/cdkd#6761) out of the id/ARN sort, on both sides.
@@ -255,6 +262,13 @@ function diffAt(
     awsForm = asStatementList(awsForm, stateForm);
   }
   if (deepEqual(stateForm, awsForm)) return;
+  // go-to-k/cdkd#6852: inside a verbatim-echo document's `Statement`, the
+  // spellings a service returns for what the template sent (a one-element
+  // list as its scalar, an account id as its root ARN, `Effect` case, a
+  // Condition number as its string) are one value. Folded for this
+  // comparison only: on a difference the walk below continues over the
+  // original forms, so a report and `--revert` carry what each side holds.
+  if (policyFoldsEqual(path, stateForm, awsForm, unionWalkPaths)) return;
 
   // FALLBACK for a state leaf whose `{{resolve:...}}` dynamic reference could
   // not be resolved (GHSA fix: cdkd persists the expression, not the resolved
@@ -354,10 +368,17 @@ function jsonForm(value: unknown): unknown {
  * JSON form via {@link jsonForm}, so the persisted ISO string of an accepted
  * readback equals the `Date` the next readback returns.
  */
-function deepEqual(a: unknown, b: unknown): boolean {
+function deepEqual(
+  a: unknown,
+  b: unknown,
+  stringLeafEqual?: (a: string, b: string) => boolean
+): boolean {
   a = jsonForm(a);
   b = jsonForm(b);
   if (a === b) return true;
+  if (stringLeafEqual && typeof a === 'string' && typeof b === 'string') {
+    return stringLeafEqual(a, b);
+  }
   if (a === null || b === null || a === undefined || b === undefined) {
     return a === b;
   }
@@ -367,7 +388,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b)) return false;
     if (a.length !== b.length) return false;
-    return a.every((v, i) => deepEqual(v, b[i]));
+    return a.every((v, i) => deepEqual(v, b[i], stringLeafEqual));
   }
 
   const aObj = a as Record<string, unknown>;
@@ -376,7 +397,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (aKeys.length !== definedKeys(bObj).length) return false;
   for (const key of aKeys) {
     if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
-    if (!deepEqual(aObj[key], bObj[key])) return false;
+    if (!deepEqual(aObj[key], bObj[key], stringLeafEqual)) return false;
   }
   return true;
 }
@@ -564,6 +585,25 @@ function asStatementList(statement: unknown, other: unknown): unknown {
   return isPlainObject(statement) && !Array.isArray(statement) && Array.isArray(other)
     ? [statement]
     : statement;
+}
+
+/**
+ * True when `path` lies in a verbatim-echo policy statement and the two values
+ * are equal under the measured policy folds (`canonicalPolicyFoldForm`).
+ */
+function policyFoldsEqual(
+  path: string,
+  stateForm: unknown,
+  awsForm: unknown,
+  verbatimKeys: readonly string[]
+): boolean {
+  const state = canonicalPolicyFoldForm(path, stateForm, verbatimKeys);
+  if (state === NOT_A_POLICY_PATH) return false;
+  return deepEqual(
+    state,
+    canonicalPolicyFoldForm(path, awsForm, verbatimKeys),
+    policyFoldLeafEqual
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

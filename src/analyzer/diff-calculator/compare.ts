@@ -116,17 +116,10 @@ export async function compareProperties(
 ): Promise<PropertyChange[]> {
   const changes: PropertyChange[] = [];
 
-  // Get all property keys
+  // Every key of either side is compared. A custom resource's `Timestamp` is
+  // too (go-to-k/cdkd#6853): CloudFormation sends an Update for it, and a
+  // template writes a fresh one to re-run the handler on purpose.
   const allKeys = new Set([...Object.keys(currentProperties), ...Object.keys(desiredProperties)]);
-
-  // Properties to ignore in diff (non-deterministic, changes on every synth)
-  const ignoredProperties = new Set<string>();
-  if (
-    resourceType === 'AWS::CloudFormation::CustomResource' ||
-    resourceType.startsWith('Custom::')
-  ) {
-    ignoredProperties.add('Timestamp');
-  }
 
   // CFn-schema `createOnlyProperties` fallback for replacement detection.
   // The hand-authored `ReplacementRulesRegistry` only covers ~25 types, so an
@@ -143,8 +136,6 @@ export async function compareProperties(
   let createOnlyPaths: ReadonlyArray<readonly string[]> | undefined;
 
   for (const key of allKeys) {
-    if (ignoredProperties.has(key)) continue;
-
     const oldValue = currentProperties[key];
     const newValue = desiredProperties[key];
 

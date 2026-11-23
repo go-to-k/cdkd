@@ -786,7 +786,15 @@ template's document whole and does not list it as preserved. S3, SQS, SNS, KMS,
 Secrets Manager and the IAM trust policy return a single-object `Statement` as
 a one-element list, so detection reads the two forms at `<key>.Statement` as
 one value. That list is then compared whole, so a key added inside it is still
-drift. The same services (and the IAM trust policy) write `Version: 2008-10-17`
+drift. Inside a statement, `canonicalPolicyFoldForm` folds the other measured
+respellings (#6852): a one-element `Action` / `Resource` / principal list and
+its scalar, a bare account id and its root ARN under `Principal.AWS` only,
+`Effect` case, and a `Condition` number or boolean and its exact `String()`.
+The fold decides equality only; a remaining difference is reported with the
+original values. Order, `Sid` and a `Condition` scalar against a one-element
+list (#6842) stay strict; the boundaries are in
+`docs/design/6852-drift-normalization-rules.md`. The same services (and the IAM
+trust policy) write `Version: 2008-10-17`
 into a document that omits it, which is what an omitted `Version` means. On
 this baseline that live value is not compared against a template without one. A
 live `2012-10-17` there (policy variables on) and any change to a declared

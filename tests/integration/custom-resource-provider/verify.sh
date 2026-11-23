@@ -5,7 +5,8 @@
 #
 #   A. The pre-existing async CDK Provider framework resource (onEvent +
 #      isComplete + Step Functions), which this fixture has always exercised as
-#      a plain deploy / destroy.
+#      a plain deploy / destroy. Its `Timestamp` changes on every synth, so the
+#      phase 2 redeploy must UPDATE it and re-run the handler (issue #6853).
 #
 #   B. Failure-seeking, issues #2054 / #1866. A SECOND custom resource manages
 #      an SSM parameter and can be told to REFUSE its own Delete. cdkd used to
@@ -428,6 +429,19 @@ if [ -z "${STATE}" ]; then
 fi
 echo "    OK: state file written"
 
+# Issue #6853: the async resource's `Timestamp` and the one its isComplete
+# handler echoed back (`SeenTimestamp`). Phase 2's redeploy synthesizes a new
+# Timestamp, so it must UPDATE the resource and re-run the handler.
+cr_timestamps() { # usage: cr_timestamps <state-json>; prints "<Timestamp> <SeenTimestamp>"
+  printf '%s' "$1" | jq -r '.resources.AsyncResource | "\(.properties.Timestamp // "") \(.attributes.SeenTimestamp // "")"'
+}
+read -r CR_TS1 CR_SEEN1 <<<"$(cr_timestamps "${STATE}")" || true
+if [ -z "${CR_TS1:-}" ] || [ "${CR_TS1}" != "${CR_SEEN1:-}" ]; then
+  echo "FAIL: AsyncResource Timestamp '${CR_TS1:-}' vs handler-seen '${CR_SEEN1:-}' after phase 1" >&2
+  exit 1
+fi
+echo "    OK: the async handler saw Timestamp ${CR_TS1}"
+
 # Read the waiter state machine's ARN out of STATE rather than rebuilding it
 # from `<stack>-<logicalId>`: that IS cdkd's naming rule, but the logical id
 # carries a CDK-generated hash (`Providerwaiterstatemachine5D4A9DF0`) that moves
@@ -480,6 +494,23 @@ CDKD_TEST_UPDATE=cr-delete-fails node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+
+# --- Assertion: issue #6853, a Timestamp-only change re-ran the handler -------
+# Before the fix the diff ignored a custom resource's `Timestamp`: this redeploy
+# left AsyncResource NO_CHANGE, so state kept phase 1's Timestamp and the
+# handler never saw the new one.
+STATE2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+read -r CR_TS2 CR_SEEN2 <<<"$(cr_timestamps "${STATE2}")" || true
+if [ -z "${CR_TS2:-}" ] || [ "${CR_TS2}" = "${CR_TS1}" ]; then
+  echo "FAIL: AsyncResource Timestamp stayed '${CR_TS2:-}' over the phase 2 redeploy (issue #6853)" >&2
+  echo "    => a new custom-resource Timestamp was not deployed as an UPDATE." >&2
+  exit 1
+fi
+if [ "${CR_SEEN2:-}" != "${CR_TS2}" ]; then
+  echo "FAIL: the async handler saw '${CR_SEEN2:-}', expected the redeployed Timestamp ${CR_TS2} (issue #6853)" >&2
+  exit 1
+fi
+echo "    OK: the redeploy updated AsyncResource and its handler saw Timestamp ${CR_TS2} (issue #6853)"
 
 # --- Phase 3: destroy — the handler refuses, cdkd must NOT report deleted ---
 echo "==> Phase 3: destroy (the delete handler will answer FAILED)"

@@ -124,8 +124,39 @@ describe('order-significant id/ARN lists (go-to-k/cdkd#6761)', () => {
     VpcConfig: { SubnetIds: subnetIds },
   });
 
-  it('declares Lambda Layers and nothing for an unknown or absent type', () => {
-    expect(orderSignificantIdArrayPaths('AWS::Lambda::Function')).toEqual(['Layers']);
+  it('declares Lambda Layers (and its image argv, #6852) and nothing for an unknown or absent type', () => {
+    expect(orderSignificantIdArrayPaths('AWS::Lambda::Function')).toEqual([
+      'Layers',
+      'ImageConfig.Command',
+      'ImageConfig.EntryPoint',
+    ]);
+    // The argv paths (#6852), spelled as the CloudFormation schema spells
+    // them: a misspelled entry would match nothing and sort the list again.
+    expect(orderSignificantIdArrayPaths('AWS::ECS::TaskDefinition')).toEqual([
+      'ContainerDefinitions.Command',
+      'ContainerDefinitions.EntryPoint',
+      'ContainerDefinitions.HealthCheck.Command',
+    ]);
+    expect(orderSignificantIdArrayPaths('AWS::Batch::JobDefinition')).toEqual([
+      'ContainerProperties.Command',
+      'EcsProperties.TaskProperties.Containers.Command',
+      'EksProperties.PodProperties.Containers.Command',
+      'EksProperties.PodProperties.Containers.Args',
+      'EksProperties.PodProperties.InitContainers.Command',
+      'EksProperties.PodProperties.InitContainers.Args',
+      'NodeProperties.NodeRangeProperties.Container.Command',
+      'NodeProperties.NodeRangeProperties.EcsProperties.TaskProperties.Containers.Command',
+      'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.Containers.Command',
+      'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.Containers.Args',
+      'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.InitContainers.Command',
+      'NodeProperties.NodeRangeProperties.EksProperties.PodProperties.InitContainers.Args',
+    ]);
+    expect(orderSignificantIdArrayPaths('AWS::EMR::Step')).toEqual(['HadoopJarStep.Args']);
+    expect(orderSignificantIdArrayPaths('AWS::EMR::Cluster')).toEqual([
+      'Steps.HadoopJarStep.Args',
+      'BootstrapActions.ScriptBootstrapAction.Args',
+      'Applications.Args',
+    ]);
     expect(orderSignificantIdArrayPaths('AWS::EC2::Instance')).toEqual([]);
     expect(orderSignificantIdArrayPaths('__proto__')).toEqual([]);
     expect(orderSignificantIdArrayPaths(undefined)).toEqual([]);

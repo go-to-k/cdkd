@@ -48,9 +48,12 @@ def handler(event, context):
       code: lambda.Code.fromInline(`
 def handler(event, context):
     print(f"IsComplete check")
+    # Issue #6853: echo the Timestamp this invocation was handed, so verify.sh
+    # can tell a redeploy that re-ran the handler from one that skipped it.
+    seen = (event.get('ResourceProperties') or {}).get('Timestamp', '')
     return {
         'IsComplete': True,
-        'Data': {'Result': 'Async operation completed!'}
+        'Data': {'Result': 'Async operation completed!', 'SeenTimestamp': seen}
     }
 `),
       timeout: cdk.Duration.seconds(30),
@@ -62,7 +65,9 @@ def handler(event, context):
       isCompleteHandler,
     });
 
-    // Custom resource using the async Provider
+    // Custom resource using the async Provider. `Timestamp` is new on every
+    // synth, so every deploy UPDATEs it and re-runs the handler, as in
+    // CloudFormation (issue #6853; verify.sh asserts it on the phase 2 redeploy).
     const resource = new cdk.CustomResource(this, 'AsyncResource', {
       serviceToken: provider.serviceToken,
       properties: {

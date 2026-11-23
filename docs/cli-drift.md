@@ -81,7 +81,14 @@ These are `PolicyDocument` on `AWS::IAM::Policy`, `AWS::IAM::ManagedPolicy`,
 and `ResourcePolicy` on `AWS::SecretsManager::ResourcePolicy`. A key only AWS
 holds there, such as a `Condition` added to a single-object `Statement`, is
 reported as drift. Some of these services return a single-object `Statement`
-as a one-element list, and drift treats the two forms as the same value. They
+as a one-element list, and drift treats the two forms as the same value.
+Inside a statement, drift also treats as one value the other spellings these
+services return for what was sent: a one-element `Action`, `Resource` or
+principal list and its single value, an account id under `Principal.AWS` and
+its `arn:aws:iam::<id>:root`, `Effect` in another case, and a `Condition`
+number or boolean and its string (`1.2` and `"1.2"`). A changed order, a
+changed `Sid`, and a single `Condition` value against a one-element list are
+still reported. They
 also write `Version: 2008-10-17` into a document that omits `Version`, which is
 what the omission means, so drift does not report that either. A live
 `2012-10-17` against a template without `Version` is reported. You can record a
