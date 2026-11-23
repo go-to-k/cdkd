@@ -588,6 +588,9 @@ the fallback:
    CloudFormation types use as legitimate inputs (`Status`, `State`,
    `VersionId`, `Arn`) are NOT stripped, so a real `Status` change on
    `AWS::ECS::CapacityProvider.ManagedScaling` still surfaces as drift.
+   Nothing inside a user-keyed map (`Tags`, `Parameters`, `Variables`,
+   `DockerLabels`, and similar) is stripped, since a key there is the user's
+   own name, not an AWS field.
 
 A deny-listed type is fixed by giving it a first-class SDK read-back, which
 makes the deny-list entry unreachable.
@@ -599,6 +602,11 @@ Cloud Control model, so without this a field such as `UpdateTime` changed on
 every out-of-band edit, and `--revert` would send the old value in a patch
 Cloud Control refuses. The schema comes from `cloudformation:DescribeType`,
 read once per type; when it cannot be read, every field is compared.
+
+A Cloud Control read never returns a write-only property. On a record with no
+deploy-time snapshot, whose template is the baseline, the type's schema
+write-only fields are therefore not compared, as CloudFormation drift does
+not compare them; a write-only field inside a list stays compared.
 
 A read can also echo one member beside the member it is derived from, where a
 write accepts only one (`stripDerivedEchoMembers`, go-to-k/cdkd#6497): a

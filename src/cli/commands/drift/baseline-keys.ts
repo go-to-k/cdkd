@@ -30,6 +30,10 @@ import {
   stringListIsDeclared,
 } from '../../../provisioning/settle-own-write-members.js';
 import { sgRulesAreDeclared } from '../../../provisioning/sg-own-write-rules.js';
+import {
+  getSettledWriteOnlyPropertyPaths,
+  tryGetTopLevelWriteOnlyProperties,
+} from '../../../provisioning/write-only-properties.js';
 import { readHadAgreeingCopies } from '../../../provisioning/providers/iam-policy/agreeing-copies.js';
 import {
   declaredTagsReadback,
@@ -117,6 +121,13 @@ const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = 
  * and `--revert` sends `null`, which the provider's `update()` turns into one
  * `DeleteLoginProfile` (the `iam-access-key` integ's login-profile arm
  * measures it).
+ *
+ * `AWS::CodeCommit::Repository` `Triggers` (go-to-k/cdkd#6854): only
+ * `PutRepositoryTriggers` writes them, no CloudFormation type other than the
+ * repository does, and a repository is created with none (`[]`). A trigger
+ * added out of band is drift, and `--revert` sends `[]`, which the provider
+ * puts as the whole set: measured us-east-1, `PutRepositoryTriggers` with
+ * `[]` leaves `GetRepositoryTriggers` answering `[]`.
  */
 const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::BedrockAgentCore::Runtime': [
@@ -125,6 +136,7 @@ const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>
     'RequestHeaderConfiguration',
     'ResourceConfigurations',
   ],
+  'AWS::CodeCommit::Repository': ['Triggers'],
   'AWS::IAM::User': ['LoginProfile'],
 };
 
@@ -607,6 +619,62 @@ export function readOnlyUncomparedDriftPaths(
     return true;
   };
   return readOnlyPaths.filter((path) => !declared(path));
+}
+
+/**
+ * The schema write-only paths of `resourceType` as dotted drift paths
+ * (`MasterUserPassword`, `Config.Secret`), or `undefined` when the schema
+ * could not be read (go-to-k/cdkd#6854). A Cloud Control read never returns
+ * a write-only property, so on a record with no observed baseline (the
+ * template's `properties` are the baseline) every declared one read as
+ * removed. CloudFormation drift does not compare write-only properties
+ * either. A path through a list (`*`), or naming a key a dotted path cannot
+ * spell, is left out: it stays compared. Never throws.
+ */
+export function writeOnlyDriftPaths(resourceType: string): Promise<string[] | undefined> {
+  let entry = writeOnlyDriftPathsCache.get(resourceType);
+  if (entry === undefined) {
+    entry = lookUpWriteOnlyDriftPaths(resourceType);
+    writeOnlyDriftPathsCache.set(resourceType, entry);
+  }
+  return entry;
+}
+
+/**
+ * One lookup per type for the run, an unreadable schema included: a denied
+ * `cloudformation:DescribeType` is not retried for every record of the type.
+ */
+const writeOnlyDriftPathsCache = new Map<string, Promise<string[] | undefined>>();
+
+/** Clear {@link writeOnlyDriftPaths}'s per-type cache. Test-only helper. */
+export function clearWriteOnlyDriftPathsCache(): void {
+  writeOnlyDriftPathsCache.clear();
+}
+
+async function lookUpWriteOnlyDriftPaths(resourceType: string): Promise<string[] | undefined> {
+  try {
+    // Only says whether the schema was read. Its names are the CONTAINING
+    // top-level property of every write-only pointer (`Config` for
+    // `/properties/Config/Secret`), and skipping one would hide the
+    // writable members beside the write-only one; the paths come from the
+    // pointers themselves.
+    if ((await tryGetTopLevelWriteOnlyProperties(resourceType)) === undefined) return undefined;
+    const paths: string[] = [];
+    for (const segments of getSettledWriteOnlyPropertyPaths(resourceType)) {
+      if (
+        segments.length > 0 &&
+        segments.every(
+          (segment) =>
+            segment !== '' && segment !== '*' && !segment.includes('.') && !segment.endsWith('[]')
+        )
+      ) {
+        paths.push(segments.join('.'));
+      }
+    }
+    return paths;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

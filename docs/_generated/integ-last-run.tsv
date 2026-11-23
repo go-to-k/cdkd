@@ -83,7 +83,7 @@ cloudwatch-anomaly-detector	2026-11-22T05:59:15Z	PASS	111	verify.sh	#6810 run at
 cloudwatch-metric-stream-default-name	2026-11-18T14:11:36Z	PASS	205	verify.sh	rc ok, orph clean; rerun with clean-diff line fix, both diff phases clean (#6555 PR #6556)
 codebuild-project	2026-11-19T12:17:26Z	PASS	170	verify.sh	#6620 f519ac2dd; rc ok, orph clean, member baseline OK x1
 codebuild-webhook	2026-11-02T13:36:25Z	PASS	111	verify.sh	rc ok, destroy 0 errors, 0 orphans, 0 hooks left (#5627 Triggers; pre-fix red at Phase 1)
-codecommit	2026-11-23T11:06:38Z	PASS	236	verify.sh	rc ok, orph clean (PR 6860)
+codecommit	2026-11-23T12:11:05Z	PASS	193	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 codedeploy-lambda-deployment-group	2026-11-17T09:08:06Z	PASS	1182	verify.sh	rc ok, orph clean (#6437 PR #6483)
 cognito	2026-11-22T05:45:00Z	PASS	249	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on main after #5861 split; rc ok, orph clean
@@ -140,11 +140,11 @@ docdb-global-cluster	2026-11-22T02:46:37Z	PASS	245	verify.sh	rc ok, orph clean, 
 docdb-neptune	2026-11-07T20:39:51Z	PASS	5818	verify.sh	rc 0, destroy 0 errors, 0 orphans, own bucket (#6031)
 docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split head; rc ok, orph clean
 docker-image-asset	2026-11-23T10:52:49Z	PASS	128	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
-drift-cc-read-only-props	2026-11-20T10:54:34Z	PASS	130	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1, own state bucket)
+drift-cc-read-only-props	2026-11-23T12:11:05Z	PASS	119	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
 drift-revert	2026-11-23T10:50:16Z	PASS	849	verify.sh	rc ok, orph clean (#6857 6852 normalization audit)
 drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
-drift-revert-nested-write-only	2026-11-20T11:50:48Z	PASS	259	verify.sh	PR6652 be63cc056, us-west-2; rc 0, kept identity x3, orph clean
+drift-revert-nested-write-only	2026-11-23T12:11:05Z	PASS	289	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 drift-revert-vpc	2026-11-23T08:26:12Z	PASS	499	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
 drift-sg-sibling-rules	2026-11-23T08:26:12Z	PASS	499	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
@@ -228,7 +228,7 @@ getstackoutput-crossregion	2026-11-21T11:36:21Z	PASS	341	verify.sh	rc 0, own buc
 globaltable-delete-protection-preflight	2026-11-15T21:16:54Z	PASS	547	verify.sh	rc ok, orph clean (#6367); us-east-1 + us-west-2
 globaltable-fix-forward-orphan	2026-11-10T17:32:16Z	PASS	180	verify.sh	rc ok, orph clean; own bucket
 globaltable-keyschema-replace	2026-11-22T05:45:00Z	PASS	96	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
-globaltable-template-baseline-drift	2026-11-05T03:19:21Z	PASS	69	verify.sh	#5789/#5790 template-bag baseline drift; red-then-green proof (pre-fix binary FAIL Phase 3 [Replicas], fix binary all 5 phases PASS); orph clean (re-run after review fix f3c52eda2)
+globaltable-template-baseline-drift	2026-11-23T12:11:05Z	PASS	102	verify.sh	PR6876 828e1c821 us-east-1 rc ok, orph clean (duration not timed; see logs)
 glue-securityconfig-replace	2026-11-16T08:22:27Z	PASS	70	verify.sh	rc ok, orph clean (#6374 sweep)
 glue-update-hardening	2026-11-21T15:34:28Z	PASS	291	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-20T10:54:34Z	PASS	331	verify.sh	PR6652 be63cc056, rc ok, no pre-existing detector, revert-identity kept x2, orph clean (eu-west-1)

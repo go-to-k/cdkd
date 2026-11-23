@@ -90,6 +90,12 @@ interface CompareDriftReadbackArgs {
    */
   readOnlyPathsLookup?: Promise<readonly string[] | undefined>;
   /**
+   * The type's schema write-only paths (`writeOnlyDriftPaths`), started
+   * beside a Cloud Control read of a record with no observed baseline
+   * (go-to-k/cdkd#6854); absent otherwise.
+   */
+  writeOnlyPathsLookup?: Promise<readonly string[] | undefined>;
+  /**
    * The ARNs of the stack's managed policies this run did not compare
    * (`not-compared-policies.ts`, go-to-k/cdkd#6697); absent when none was
    * looked up (a managed policy's own comparison).
@@ -120,6 +126,7 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     aws,
     readContext,
     readOnlyPathsLookup,
+    writeOnlyPathsLookup,
     notComparedPolicyArns,
   } = args;
   // Providers can declare state property paths they cannot read back
@@ -522,11 +529,17 @@ export async function compareDriftReadback(args: CompareDriftReadbackArgs): Prom
     readOnlyPathsLookup ? await readOnlyPathsLookup : undefined,
     resource.properties
   );
+  // go-to-k/cdkd#6854: a Cloud Control read never returns a write-only
+  // property, so against the template baseline a declared one read as
+  // removed. Only without an observed baseline, which never holds one.
+  const writeOnlyIgnorePaths =
+    !useObserved && writeOnlyPathsLookup ? ((await writeOnlyPathsLookup) ?? []) : [];
   const extraIgnorePaths = [
     ...observedIgnorePaths,
     ...ownedIgnorePaths,
     ...preFixIgnorePaths,
     ...readOnlyIgnorePaths,
+    ...writeOnlyIgnorePaths,
   ];
   const changes = calculateResourceDrift(comparedBaseline, paired.aws, {
     ignorePaths: extraIgnorePaths.length ? [...ignorePaths, ...extraIgnorePaths] : ignorePaths,

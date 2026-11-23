@@ -30,7 +30,8 @@
  * meaningfully via a CFn template.
  *
  * Strips are shallow only — fields are removed if they appear at any
- * depth (recursive walk) but the values themselves are not modified.
+ * depth (recursive walk), except at or below a user-keyed free-form map
+ * (`FREE_FORM_MAP_PARENTS`), but the values themselves are not modified.
  * Arrays are walked element-wise. The rebuild target is a NULL-prototype
  * record and a non-plain object is returned by identity, for the reason
  * `drift-normalize.ts`'s header gives (issue #3121): the walk feeds the
@@ -140,17 +141,41 @@ export function stripCcApiAwsManagedFields(
   return stripWalk(awsProps) as Record<string, unknown>;
 }
 
-function stripWalk(value: unknown): unknown {
+/**
+ * Properties whose value is a user-keyed free-form map (go-to-k/cdkd#6854):
+ * an {@link ALWAYS_STRIPPED_FIELDS} name there is the user's own key (a tag
+ * named `CreatedBy`, a nested stack `Parameters` entry named `OwnerId`, a
+ * Lambda environment variable named `LastModified`), not an AWS-managed
+ * field, so nothing at or below such a key is stripped. Stripping it made the
+ * comparator report the user's key as removed. Ported from cdk-real-drift's
+ * `FREE_FORM_MAP_PARENTS` (`src/normalize/cc-api-strip.ts`), the same list.
+ */
+const FREE_FORM_MAP_PARENTS: ReadonlySet<string> = new Set([
+  'Variables', // AWS::Lambda::Function Environment.Variables
+  'Parameters', // AWS::CloudFormation::Stack, AWS::Glue::Table / Database
+  'DefaultArguments', // AWS::Glue::Job
+  'DockerLabels', // AWS::ECS::TaskDefinition container definitions
+  'Labels',
+  'Tags',
+  'UserPoolTags', // AWS::Cognito::UserPool
+  'BackupPlanTags', // AWS::Backup::BackupPlan
+  'BackupVaultTags', // AWS::Backup::BackupVault
+  'RecoveryPointTags', // AWS::Backup::* recovery points
+  'TieringConfigurationTags', // AWS::Backup::TieringConfiguration
+  'TestAliasTags', // AWS::Bedrock::Agent / AWS::Bedrock::Flow
+]);
+
+function stripWalk(value: unknown, freeForm = false): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
-    return value.map(stripWalk);
+    return value.map((element) => stripWalk(element, freeForm));
   }
   if (typeof value === 'object') {
     if (!hasPlainPrototype(value)) return value;
     const out = nullPrototypeRecord();
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (ALWAYS_STRIPPED_FIELDS.has(key)) continue;
-      out[key] = stripWalk(child);
+      if (!freeForm && ALWAYS_STRIPPED_FIELDS.has(key)) continue;
+      out[key] = stripWalk(child, freeForm || FREE_FORM_MAP_PARENTS.has(key));
     }
     return out;
   }
