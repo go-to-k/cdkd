@@ -31,9 +31,11 @@ export interface ForceQuitRegistration {
    * The engine takes over journaling: unregister, and answer whether it MAY
    * write its own segment. `false` means a force-quit flush already started
    * for this run, which writes the segment itself; the engine must then write
-   * none, or `cdkd rollback` replays the same operations twice.
+   * none, or `cdkd rollback` replays the same operations twice. On `false` it
+   * resolves only once that flush settled: the engine's next step may end the
+   * process (an error exit), which must not cut the flush's write short.
    */
-  takeOver(): boolean;
+  takeOver(): Promise<boolean>;
   /** Unregister (idempotent). For the run's `finally`. */
   unregister(): void;
 }
@@ -48,19 +50,41 @@ export interface StartedForceQuitFlush {
 
 interface Entry {
   flush: ForceQuitFlush;
-  started: boolean;
+  /** The flush, once a force-quit started it. */
+  started?: Promise<string | undefined>;
 }
 
 const registered = new Set<Entry>();
 
+/** Journal writes in flight, whoever started them (`trackJournalWrite`). */
+const journalWrites = new Set<Promise<unknown>>();
+
+/**
+ * Track one rollback-journal write until it settles, so a force-quit that
+ * starts meanwhile waits for it (inside its exit budget) instead of exiting
+ * mid-write. Answers `write` itself.
+ */
+export function trackJournalWrite<T>(write: Promise<T>): Promise<T> {
+  // `Promise.resolve`: a test double may answer a bare value.
+  const tracked = Promise.resolve(write);
+  journalWrites.add(tracked);
+  const untrack = (): void => {
+    journalWrites.delete(tracked);
+  };
+  tracked.then(untrack, untrack);
+  return tracked;
+}
+
 /** Register a run's flusher; see {@link ForceQuitRegistration}. */
 export function registerForceQuitFlush(flush: ForceQuitFlush): ForceQuitRegistration {
-  const entry: Entry = { flush, started: false };
+  const entry: Entry = { flush };
   registered.add(entry);
   return {
-    takeOver: (): boolean => {
+    takeOver: async (): Promise<boolean> => {
       registered.delete(entry);
-      return !entry.started;
+      if (entry.started === undefined) return true;
+      await entry.started.catch(() => undefined);
+      return false;
     },
     unregister: (): void => {
       registered.delete(entry);
@@ -91,23 +115,26 @@ export async function withForceQuitFlushScope<T>(
 }
 
 /**
- * Run every registered flusher once, concurrently. Each is marked started
- * BEFORE it is called, synchronously, so an engine path reaching its
- * `takeOver` afterwards writes no second segment. A flusher that throws
- * counts as having written nothing.
+ * Run every registered flusher once, concurrently, and wait for every journal
+ * write already in flight. Each flusher is marked started synchronously,
+ * before it runs, so an engine path reaching its `takeOver` afterwards writes
+ * no second segment. A flusher that throws counts as having written nothing.
  */
 export function startForceQuitFlushes(): StartedForceQuitFlush {
   const entries = [...registered];
   registered.clear();
-  for (const entry of entries) entry.started = true;
-  const done = Promise.allSettled(
-    entries.map((entry) => Promise.resolve().then(() => entry.flush()))
-  ).then((results) =>
-    results.flatMap((result) =>
-      result.status === 'fulfilled' && result.value !== undefined ? [result.value] : []
+  for (const entry of entries) {
+    entry.started = Promise.resolve().then(() => entry.flush());
+  }
+  const inFlight = [...journalWrites];
+  const done = Promise.allSettled(inFlight).then(() =>
+    Promise.allSettled(entries.map((entry) => entry.started!)).then((results) =>
+      results.flatMap((result) =>
+        result.status === 'fulfilled' && result.value !== undefined ? [result.value] : []
+      )
     )
   );
-  return { pending: entries.length, done };
+  return { pending: entries.length + inFlight.length, done };
 }
 
 /** How many flushers are registered. For tests. */
@@ -119,6 +146,8 @@ export function registeredForceQuitFlushCount(): number {
  * How long a flusher waits for the state saves already queued before it
  * writes the segment: best-effort, so the record and the journal agree as far
  * as possible, while leaving the journal write most of the force-quit's
- * 5-second exit budget (`FORCE_QUIT_ABORT_BUDGET_MS`).
+ * 5-second exit budget (`FORCE_QUIT_ABORT_BUDGET_MS`). Short, because a
+ * cancelled GitHub Actions job sends SIGKILL about 2.5 s after the SIGTERM
+ * that force-quits the deploy, and the journal write must fit in that.
  */
-export const FORCE_QUIT_STATE_WAIT_MS = 2000;
+export const FORCE_QUIT_STATE_WAIT_MS = 1000;

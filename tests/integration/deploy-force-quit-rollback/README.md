@@ -19,14 +19,19 @@ writes mid-deploy (issue
 ## Behavior under test
 
 From a clean v1 stack, a v2 deploy runs in the background until state.json
-records the three first updates, then:
+records the three first updates and the custom resource's handler has logged
+the start of its update, then:
 
 1. **Two SIGINTs** (a force-quit, as a cancelled CI job sends): the deploy
-   exits `130` and leaves `rollback-journal.json` whose newest segment is
-   `interrupted` and lists the three completed updates.
-2. **One SIGHUP** (a closed terminal): the deploy exits `129` with the same
-   journal, which also lists the in-flight custom resource as a failed
-   operation.
+   exits `130`, prints the `cdkd force-unlock` and `cdkd rollback` commands,
+   and leaves `rollback-journal.json` whose newest segment is `interrupted`,
+   lists the three completed updates, and lists the in-flight custom resource
+   as a failed operation.
+2. **A closed terminal**: the deploy runs on a pseudo-terminal (`script`),
+   which the arm kills. The kernel delivers `SIGHUP`, every later write to the
+   terminal fails with `EIO`, and the deploy must still write the same
+   journal. Its exit code is not readable there, so the journal is the
+   assertion.
 
 After each, `cdkd force-unlock` releases the lock the force-quit leaves, and
 `cdkd rollback --force` puts the parameter, the queue and the function back to
@@ -43,4 +48,5 @@ Before the fix, both arms exited with no journal, and `cdkd rollback` answered
 
 The two 90-second custom-resource updates keep running in Lambda after the
 deploy exits; their late responses land under cdkd's custom-resource response
-prefix, where nothing reads them.
+prefix, where nothing reads them. The run waits the last one out before it
+sweeps the stack's Lambda log groups and asserts none is left.

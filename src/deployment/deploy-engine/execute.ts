@@ -291,6 +291,7 @@ async function executeDeploymentBody(
     startedUpdates,
     settledUpdates,
     inFlightWrites,
+    inFlightCreatedSinks: new Map(),
   };
 
   // go-to-k/cdkd#6894: a force-quit or a closed terminal exits before any
@@ -592,7 +593,9 @@ async function executeDeploymentBody(
 
     // go-to-k/cdkd#6894: a force-quit flush that already started writes this
     // run's segment; a second one would replay the same operations twice.
-    if (forceQuit.takeOver()) {
+    // `takeOver` waits for that flush, so the rethrow cannot end the process
+    // mid-write.
+    if (await forceQuit.takeOver()) {
       await rollbackFailedDeploy(run, error, initialDeploy, currentEtag);
     }
 
@@ -666,7 +669,7 @@ async function executeDeploymentBody(
     );
   } catch (outputError) {
     // go-to-k/cdkd#6894: journaled below, unless a force-quit flush did.
-    const journalHere = forceQuit.takeOver();
+    const journalHere = await forceQuit.takeOver();
     // go-to-k/cdkd#6398: the cleanup phase runs only once the outputs
     // resolved, so the journal written below never sits over deletes already
     // made; the deferred deletes are left for a rollback or the next deploy.
@@ -734,7 +737,7 @@ async function executeDeploymentBody(
   // below deletes superseded resources, which a segment written over it would
   // not describe, so a force-quit from here on journals nothing, as before;
   // one whose flush already started stops this run before any delete.
-  if (!forceQuit.takeOver()) throw new InterruptedError('user');
+  if (!(await forceQuit.takeOver())) throw new InterruptedError('user');
 
   // go-to-k/cdkd#4900: CloudFormation's cleanup phase, for the deletes a
   // still-unupdated dependent refused inside the DAG. After the outputs

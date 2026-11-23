@@ -14,6 +14,7 @@ import {
 } from '../../../src/deployment/force-quit-journal.js';
 import { inFlightOperationsAsFailed } from '../../../src/deployment/deploy-engine/execute/force-quit-flush.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { reportCreatedResource } from '../../../src/provisioning/created-resource-sink.js';
 import type { ResourceChange, ResourceState, StackState } from '../../../src/types/state.js';
 
 vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
@@ -72,25 +73,62 @@ function record(logicalId: string): ResourceState {
   };
 }
 
+const DEPENDENT = 'Dependent';
+const OLD = 'Old';
+const SECRET = 's3cr3t-plaintext-value-6894-0123456789';
+const SECRET_REF = '{{resolve:secretsmanager:ForceQuitSecret}}';
+
+interface Scenario {
+  /** CREATE `DEPENDENT`, which depends on SLOW. */
+  dependent?: boolean;
+  /** DELETE `OLD` (in state), whose delete waits for `releaseDelete`. */
+  slowDelete?: boolean;
+  /** No pre-deploy state record: a first deploy. */
+  firstDeploy?: boolean;
+  /** SLOW's provider reports the resource it made before it waits. */
+  slowReports?: string;
+  /** SLOW's attempted bag carries a resolved secret. */
+  slowSecret?: boolean;
+  /** Fail output resolution (`--strict-getatt`). */
+  failOutputs?: boolean;
+}
+
 describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
   let appendRollbackJournalSegment: ReturnType<typeof vi.fn>;
   let saveState: ReturnType<typeof vi.fn>;
+  let createCalls: string[];
   let releaseSlow: (() => void) | undefined;
+  let releaseDelete: (() => void) | undefined;
   let slowFails: boolean;
 
   beforeEach(() => {
     vi.clearAllMocks();
     void startForceQuitFlushes().done; // nothing left over from another case
+    createCalls = [];
     releaseSlow = undefined;
+    releaseDelete = undefined;
     slowFails = false;
   });
 
-  /** Two CREATEs with no dependency: FAST returns at once, SLOW waits for `releaseSlow`. */
-  function buildEngine(): DeployEngine {
+  function buildEngine(scenario: Scenario = {}): DeployEngine {
+    // eslint-disable-next-line prefer-const
+    let engine: DeployEngine;
     const provider = {
       create: vi.fn().mockImplementation((logicalId: string) => {
+        createCalls.push(logicalId);
         if (logicalId !== SLOW) {
           return Promise.resolve({ physicalId: `phys-${logicalId}`, attributes: {} });
+        }
+        if (scenario.slowReports !== undefined) {
+          reportCreatedResource(SLOW, TYPE, scenario.slowReports);
+        }
+        if (scenario.slowSecret) {
+          const internals = engine as unknown as {
+            secretsRun: { perResourceSecrets: Map<string, Map<string, string>> };
+            attemptedResolvedProps: Map<string, Record<string, unknown>>;
+          };
+          internals.secretsRun.perResourceSecrets.set(SLOW, new Map([[SECRET, SECRET_REF]]));
+          internals.attemptedResolvedProps.set(SLOW, { Password: SECRET });
         }
         return new Promise((resolve, reject) => {
           releaseSlow = () =>
@@ -100,26 +138,43 @@ describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
         });
       }),
       update: vi.fn(),
-      delete: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockImplementation((logicalId: string) =>
+        logicalId === OLD
+          ? new Promise<void>((resolve) => (releaseDelete = resolve))
+          : Promise.resolve(undefined)
+      ),
     };
     const currentState: StackState = {
       version: 8,
       stackName: STACK,
       region: 'us-east-1',
-      resources: {},
+      resources: scenario.slowDelete ? { [OLD]: record(OLD) } : {},
       outputs: {},
       lastModified: Date.now(),
     };
     appendRollbackJournalSegment = vi.fn().mockResolvedValue(undefined);
     saveState = vi.fn().mockResolvedValue('etag-1');
-    const changes = new Map<string, ResourceChange>([
-      [FAST, createChange(FAST)],
-      [SLOW, createChange(SLOW)],
-    ]);
-    return new DeployEngine(
+    const changes = new Map<string, ResourceChange>(
+      scenario.slowDelete
+        ? [[OLD, { logicalId: OLD, changeType: 'DELETE', resourceType: TYPE } as never]]
+        : [
+            [FAST, createChange(FAST)],
+            [SLOW, createChange(SLOW)],
+            ...(scenario.dependent
+              ? ([[DEPENDENT, createChange(DEPENDENT)]] as [string, ResourceChange][])
+              : []),
+          ]
+    );
+    engine = new DeployEngine(
       {
-        getState: vi.fn().mockResolvedValue({ state: currentState, etag: 'e0' }),
+        getState: vi
+          .fn()
+          .mockResolvedValue(scenario.firstDeploy ? null : { state: currentState, etag: 'e0' }),
         saveState,
+        stackInstanceIdForFirstWrite: vi
+          .fn()
+          .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
+        listStacks: vi.fn().mockResolvedValue([]),
         appendRollbackJournalSegment,
         deleteRollbackJournal: vi.fn().mockResolvedValue(undefined),
         loadRollbackJournal: vi.fn().mockResolvedValue(null),
@@ -134,8 +189,12 @@ describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
       } as never,
       {
         buildGraph: vi.fn().mockReturnValue({}),
-        getExecutionLevels: vi.fn().mockReturnValue([[FAST, SLOW]]),
-        getDirectDependencies: vi.fn().mockReturnValue([]),
+        getExecutionLevels: vi
+          .fn()
+          .mockReturnValue(scenario.dependent ? [[FAST, SLOW], [DEPENDENT]] : [[FAST, SLOW]]),
+        getDirectDependencies: vi
+          .fn()
+          .mockImplementation((_dag: unknown, id: string) => (id === DEPENDENT ? [SLOW] : [])),
       } as never,
       {
         calculateDiff: vi.fn().mockResolvedValue(changes),
@@ -157,21 +216,47 @@ describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
       { concurrency: 4, noRollback: false },
       'us-east-1'
     );
+    return engine;
   }
 
   const template: CloudFormationTemplate = {
     Resources: {
       [FAST]: { Type: TYPE, Properties: {} },
       [SLOW]: { Type: TYPE, Properties: {} },
+      [DEPENDENT]: { Type: TYPE, Properties: {} },
     },
   };
 
-  /** Until FAST is saved and SLOW is in flight. */
-  async function untilSlowInFlight(): Promise<void> {
+  /** Make output resolution throw, as `--strict-getatt` does on a missing attribute. */
+  function failingOutputs(engine: DeployEngine): CloudFormationTemplate {
+    (engine as unknown as { options: { strictGetAtt: boolean } }).options.strictGetAtt = true;
+    const sentinel = { 'Fn::GetAtt': ['Missing', 'Arn'] };
+    const resolver = (engine as unknown as { resolver: { resolve: ReturnType<typeof vi.fn> } })
+      .resolver;
+    resolver.resolve.mockImplementation((value: unknown) =>
+      value === sentinel ? Promise.reject(new Error('unresolvable output')) : Promise.resolve(value)
+    );
+    return { ...template, Outputs: { Bad: { Value: sentinel } } };
+  }
+
+  /** Until FAST completed and SLOW is in flight. */
+  async function untilSlowInFlight(firstDeploy = false): Promise<void> {
     await vi.waitFor(() => {
       expect(releaseSlow).toBeDefined();
-      expect(saveState).toHaveBeenCalled();
+      // A first deploy saves no per-resource state; FAST's completion is then
+      // read from the create calls alone.
+      if (!firstDeploy) expect(saveState).toHaveBeenCalled();
     });
+    await new Promise((r) => setTimeout(r, 5));
+  }
+
+  function settledFlag(p: Promise<unknown>): () => boolean {
+    let settled = false;
+    p.then(
+      () => (settled = true),
+      () => (settled = true)
+    );
+    return () => settled;
   }
 
   it('a force-quit mid-deploy writes one interrupted segment: completed ops plus the in-flight one as failed', async () => {
@@ -203,6 +288,27 @@ describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
     expect(registeredForceQuitFlushCount()).toBe(0);
   });
 
+  it('the engine waits for a started flush before it ends the run, so its exit cannot cut the write short', async () => {
+    const deploying = buildEngine().deploy(STACK, template);
+    const settled = settledFlag(deploying);
+    await untilSlowInFlight();
+    let finishWrite!: () => void;
+    appendRollbackJournalSegment.mockImplementationOnce(
+      () => new Promise<void>((r) => (finishWrite = r))
+    );
+    const started = startForceQuitFlushes();
+    await vi.waitFor(() => expect(finishWrite).toBeDefined());
+    // SLOW completes at once: the engine reaches its takeover while the
+    // flush's journal write is still in flight.
+    releaseSlow!();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled()).toBe(false);
+    finishWrite();
+    await started.done;
+    await expect(deploying).rejects.toThrow();
+    expect(appendRollbackJournalSegment).toHaveBeenCalledOnce();
+  });
+
   it('no duplicate when the in-flight op then FAILS: the failure path journals nothing more', async () => {
     slowFails = true;
     const deploying = buildEngine().deploy(STACK, template);
@@ -213,6 +319,106 @@ describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
     releaseSlow!();
     await expect(deploying).rejects.toThrow();
     expect(appendRollbackJournalSegment).toHaveBeenCalledOnce();
+  });
+
+  it('no duplicate when the outputs then fail to resolve: the output-failure path journals nothing more', async () => {
+    const engine = buildEngine();
+    const deploying = engine.deploy(STACK, failingOutputs(engine));
+    deploying.catch(() => undefined);
+    await untilSlowInFlight();
+    await startForceQuitFlushes().done;
+    expect(appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    releaseSlow!();
+    await expect(deploying).rejects.toThrow();
+    expect(appendRollbackJournalSegment).toHaveBeenCalledOnce();
+    expect(appendRollbackJournalSegment.mock.calls[0]![2].reason).toBe('interrupted');
+  });
+
+  it('a force-quit with no first Ctrl-C (a hang-up) dispatches nothing new', async () => {
+    const deploying = buildEngine({ dependent: true }).deploy(STACK, template);
+    deploying.catch(() => undefined);
+    await untilSlowInFlight();
+    await startForceQuitFlushes().done;
+    releaseSlow!();
+    await expect(deploying).rejects.toThrow();
+    expect(createCalls).not.toContain(DEPENDENT);
+  });
+
+  it('an in-flight DELETE is journaled as a failed DELETE carrying its record', async () => {
+    const deploying = buildEngine({ slowDelete: true }).deploy(STACK, template);
+    deploying.catch(() => undefined);
+    await vi.waitFor(() => expect(releaseDelete).toBeDefined());
+    await startForceQuitFlushes().done;
+    const segment = appendRollbackJournalSegment.mock.calls[0]![2];
+    expect(segment.failedOperations).toEqual([
+      expect.objectContaining({ logicalId: OLD, changeType: 'DELETE', physicalId: `phys-${OLD}` }),
+    ]);
+    releaseDelete!();
+    await expect(deploying).rejects.toThrow();
+  });
+
+  it('an in-flight CREATE whose provider reported its resource is journaled with that id', async () => {
+    const deploying = buildEngine({ slowReports: 'phys-made-by-slow' }).deploy(STACK, template);
+    deploying.catch(() => undefined);
+    await untilSlowInFlight();
+    await startForceQuitFlushes().done;
+    const op = appendRollbackJournalSegment.mock.calls[0]![2].failedOperations[0];
+    expect(op).toMatchObject({
+      logicalId: SLOW,
+      changeType: 'CREATE',
+      physicalId: 'phys-made-by-slow',
+      physicalIdRecoveredFromError: true,
+      provisionedBy: 'sdk',
+    });
+    releaseSlow!();
+    await expect(deploying).rejects.toThrow();
+  });
+
+  it("an in-flight op's resolved secret is journaled as its reference, never the plaintext", async () => {
+    const deploying = buildEngine({ slowSecret: true }).deploy(STACK, template);
+    deploying.catch(() => undefined);
+    await untilSlowInFlight();
+    await startForceQuitFlushes().done;
+    const segment = appendRollbackJournalSegment.mock.calls[0]![2];
+    const body = JSON.stringify(segment);
+    expect(body).not.toContain(SECRET);
+    expect(segment.failedOperations[0].attemptedProperties).toBeDefined();
+    expect(JSON.stringify(segment.failedOperations[0].attemptedProperties)).toContain(SECRET_REF);
+    releaseSlow!();
+    await expect(deploying).rejects.toThrow();
+  });
+
+  it('a first deploy journals initialDeploy: true', async () => {
+    const deploying = buildEngine({ firstDeploy: true }).deploy(STACK, template);
+    deploying.catch(() => undefined);
+    await untilSlowInFlight(true);
+    await startForceQuitFlushes().done;
+    expect(appendRollbackJournalSegment.mock.calls[0]![2].initialDeploy).toBe(true);
+    releaseSlow!();
+    await expect(deploying).rejects.toThrow();
+  });
+
+  it("a force-quit during the engine's OWN journal write waits for that write", async () => {
+    slowFails = true;
+    let finishWrite: (() => void) | undefined;
+    const deploying = buildEngine().deploy(STACK, template);
+    deploying.catch(() => undefined);
+    await untilSlowInFlight();
+    appendRollbackJournalSegment.mockImplementationOnce(
+      () => new Promise<void>((r) => (finishWrite = r))
+    );
+    releaseSlow!();
+    await vi.waitFor(() => expect(finishWrite).toBeDefined());
+    // The engine took journaling over, so no flusher is left; its own write
+    // is what a force-quit now has to wait for.
+    const started = startForceQuitFlushes();
+    expect(started.pending).toBe(1);
+    const settled = settledFlag(started.done);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(settled()).toBe(false);
+    finishWrite!();
+    await started.done;
+    await expect(deploying).rejects.toThrow();
   });
 
   it('the engine journals its own failure and unregisters; a later force-quit finds nothing', async () => {
@@ -259,7 +465,10 @@ describe('inFlightOperationsAsFailed', () => {
     const attempted = { Name: 'new' };
     const ops = inFlightOperationsAsFailed(
       {
-        engine: { attemptedResolvedProps: new Map([['Changed', attempted]]) } as never,
+        engine: {
+          attemptedResolvedProps: new Map([['Changed', attempted]]),
+          replacementRun: { oldDeletedBeforeCreate: new Set(['Changed']) },
+        } as never,
         currentState: {
           resources: {
             Changed: record('Changed'),
@@ -283,6 +492,9 @@ describe('inFlightOperationsAsFailed', () => {
       provisionedBy: 'sdk',
       previousState: record('Changed'),
       attemptedProperties: attempted,
+      // Its replacement already deleted the old resource: `--revert-failed`
+      // takes the skip-failed-replaced-deleted path, not an update to it.
+      oldDeletedBeforeCreate: true,
     });
     expect(deleted).toMatchObject({
       changeType: 'DELETE',

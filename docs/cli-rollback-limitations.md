@@ -289,7 +289,10 @@ leaves with `cdkd force-unlock` first.
 
 The journal write is bounded by the same five seconds the force-quit allows for
 aborting asset uploads. When it does not finish in time, the deploy says so,
-and `cdkd rollback` may find nothing to revert.
+and `cdkd rollback` may find nothing to revert. A cancelled GitHub Actions job
+allows less: it sends `SIGKILL` about 2.5 seconds after the `SIGTERM` that
+force-quits the deploy, and a journal write still in progress then is lost
+with the process.
 
 A deploy that is killed outright runs none of this: `kill -9`, an
 out-of-memory kill, a CI runner's final `SIGKILL`, or a power loss leave the

@@ -104,6 +104,7 @@ export async function provisionCreateUpdateNode(
   // is saved (`settleReportedCreates`). Fresh per operation;
   // its retries share it, as they share the carried mark.
   const createdSink = new CreatedResourceSink(logicalId, change.resourceType);
+  run.inFlightCreatedSinks.set(logicalId, createdSink);
   // go-to-k/cdkd#6705: a CreationPolicy timeout counts from the create.
   const signalWaitStart = Date.now();
   const physicalIdBefore = newResources[logicalId]?.physicalId;
@@ -135,6 +136,7 @@ export async function provisionCreateUpdateNode(
       succeeded = true;
     } finally {
       inFlightWrites.delete(logicalId);
+      run.inFlightCreatedSinks.delete(logicalId);
       settle(succeeded);
     }
   } catch (provisionError) {

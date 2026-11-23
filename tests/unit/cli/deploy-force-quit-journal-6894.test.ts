@@ -35,18 +35,19 @@ function deferredFlush(pending = 1): {
 
 function harness(flush: () => StartedForceQuitFlush) {
   const order: string[] = [];
+  const onFirst = vi.fn(() => void order.push('onFirst'));
   const exit = vi.fn((code: number) => void order.push(`exit ${code}`));
   const write = vi.fn((text: string) => void order.push(`write ${text.trim()}`));
   const abort = vi.fn(() => ({ destinations: [], done: Promise.resolve() }));
   const handler = createDeploySigintHandler({
-    onFirst: () => undefined,
+    onFirst,
     write,
     exit,
     abort,
     flush,
     budgetMs: 1000,
   });
-  return { handler, order, exit, write, abort };
+  return { handler, order, exit, write, abort, onFirst };
 }
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -114,6 +115,9 @@ describe('deploy force-quit writes the rollback journal before it exits', () => 
     h.handler.hangup();
     expect(f.calls()).toBe(1);
     expect(h.abort).toHaveBeenCalledOnce();
+    // The run is told to stop, so no further stack starts while the journal
+    // is written.
+    expect(h.onFirst).toHaveBeenCalledOnce();
     expect(h.order.some((l) => l.startsWith('write Interrupted — waiting'))).toBe(false);
     // A later SIGINT / forwarded SIGTERM does not cut the hang-up's flush short.
     h.handler();
@@ -146,5 +150,36 @@ describe('deploy force-quit writes the rollback journal before it exits', () => 
     expect(h.exit).not.toHaveBeenCalled();
     h.handler();
     expect(h.exit).toHaveBeenCalledExactlyOnceWith(130);
+  });
+
+  it('the budget expiring with no journal write pending says nothing about the journal', async () => {
+    vi.useFakeTimers();
+    const write = vi.fn();
+    const exit = vi.fn();
+    void exitAfterAbortingUploads(
+      exit,
+      write,
+      () => ({ destinations: [], done: new Promise<void>(() => undefined) }),
+      1000,
+      () => ({ pending: 0, done: Promise.resolve([]) })
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(130);
+    expect(write.mock.calls.map((c) => String(c[0])).join('')).not.toContain('rollback journal');
+  });
+
+  it('a flush that throws synchronously still exits with the code asked for', async () => {
+    const exit = vi.fn();
+    await exitAfterAbortingUploads(
+      exit,
+      () => undefined,
+      () => ({ destinations: [], done: Promise.resolve() }),
+      1000,
+      () => {
+        throw new Error('registry broke');
+      },
+      129
+    );
+    expect(exit).toHaveBeenCalledExactlyOnceWith(129);
   });
 });

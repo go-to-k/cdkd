@@ -75,10 +75,15 @@ AFTER_QUEUE_NAME="${STACK}-after-queue"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 LOG_DIR="$(mktemp -d)"
 DEPLOY_PID=""
+# The node deploy itself (under `script` in the SIGHUP arm, a grandchild).
+DEPLOY_NODE_PID=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover deploy, lock, stack and state"
   set +eu
+  if [ -n "${DEPLOY_NODE_PID}" ] && kill -0 "${DEPLOY_NODE_PID}" 2>/dev/null; then
+    kill -KILL "${DEPLOY_NODE_PID}" 2>/dev/null
+  fi
   if [ -n "${DEPLOY_PID}" ] && kill -0 "${DEPLOY_PID}" 2>/dev/null; then
     kill -KILL "${DEPLOY_PID}" 2>/dev/null
     wait "${DEPLOY_PID}" 2>/dev/null
@@ -200,54 +205,129 @@ echo "    function: ${FN_NAME}; custom resource handler: ${GATE_FN_NAME}"
 assert_v1 "after the v1 deploy"
 
 # --- one interrupted v2 deploy, then the rollback --------------------------
-# usage: interrupt_arm <arm> <int2|hup> <expected exit code>
+
+# Epoch ms, for the log-event filter below (BSD date has no %N).
+now_ms() { echo $(($(date +%s) * 1000)); }
+
+# True once the custom resource handler logged the start of an Update since
+# $1 (epoch ms): the deploy is then inside the handler's 90 s sleep.
+gate_update_started() { # usage: gate_update_started <since-ms>
+  local n
+  n="$(aws logs filter-log-events --log-group-name "/aws/lambda/${GATE_FN_NAME}" \
+    --region "${REGION}" --start-time "$1" --filter-pattern '"GATE_UPDATE_START"' \
+    --query 'length(events)' --output text 2>&1)" || return 1
+  [ "${n}" != "0" ] && [ "${n}" != "None" ]
+}
+
+# The node deploy process under `script` (the command may run under a shell
+# that `script` started, so walk down until a `node` process is found).
+node_under() { # usage: node_under <pid>
+  local pid="$1" depth=0 child
+  while [ "${depth}" -lt 4 ]; do
+    if [ "$(ps -o comm= -p "${pid}" 2>/dev/null | sed 's#.*/##')" = "node" ]; then
+      echo "${pid}"
+      return 0
+    fi
+    child="$(pgrep -P "${pid}" | head -n 1)" || return 1
+    [ -n "${child}" ] || return 1
+    pid="${child}"
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+# The last time a Gate update started, so the run can wait its 90 s sleep out
+# before the final log-group sweep (a handler still running re-creates its
+# log group after the sweep).
+LAST_GATE_UPDATE_MS=0
+
+# usage: interrupt_arm <arm> <int2|hup> <expected exit code, or - when unknowable>
+#
+# int2: a plain background deploy, sent SIGINT twice.
+# hup:  the deploy runs on a pseudo-terminal (`script`), and the terminal is
+#       closed by killing `script`: the kernel delivers the SIGHUP, and every
+#       later write to the terminal fails with EIO, which must not kill the
+#       deploy before its journal is written. Its exit code cannot be read
+#       (it is not this shell's child), so the arm asserts the journal.
 interrupt_arm() {
   local arm="$1" mode="$2" expected="$3"
   local log="${LOG_DIR}/${arm}-deploy.log"
+  local since
+  since="$(now_ms)"
+  local node_pid
   echo "==> Arm ${arm}: deploy v2 in the background"
-  FIXTURE_VERSION=v2 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" --yes >"${log}" 2>&1 &
-  DEPLOY_PID=$!
+  if [ "${mode}" = "int2" ]; then
+    FIXTURE_VERSION=v2 node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+      --region "${REGION}" --yes >"${log}" 2>&1 &
+    DEPLOY_PID=$!
+    node_pid="${DEPLOY_PID}"
+  else
+    if [ "$(uname -s)" = "Darwin" ]; then
+      FIXTURE_VERSION=v2 script -q "${log}" node "${LOCAL_DIST}" deploy "${STACK}" \
+        --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes </dev/null >/dev/null 2>&1 &
+    else
+      FIXTURE_VERSION=v2 script -q -e -c "node '${LOCAL_DIST}' deploy '${STACK}' --state-bucket '${STATE_BUCKET}' --region '${REGION}' --yes" \
+        "${log}" </dev/null >/dev/null 2>&1 &
+    fi
+    DEPLOY_PID=$!
+    local tries=0
+    node_pid=""
+    while [ -z "${node_pid}" ] && [ "${tries}" -lt 30 ]; do
+      node_pid="$(node_under "${DEPLOY_PID}" || true)"
+      [ -n "${node_pid}" ] || sleep 1
+      tries=$((tries + 1))
+    done
+    if [ -z "${node_pid}" ]; then
+      echo "FAIL: ${arm}: no node process under script (PID ${DEPLOY_PID})" >&2
+      exit 1
+    fi
+  fi
 
+  DEPLOY_NODE_PID="${node_pid}"
   local waited=0
-  until first_updates_recorded; do
-    if ! kill -0 "${DEPLOY_PID}" 2>/dev/null; then
-      echo "FAIL: ${arm}: the deploy exited before the first updates were recorded" >&2
+  until first_updates_recorded && gate_update_started "${since}"; do
+    if ! kill -0 "${node_pid}" 2>/dev/null; then
+      echo "FAIL: ${arm}: the deploy exited before the custom resource's update started" >&2
       cat "${log}" >&2
       exit 1
     fi
     if [ "${waited}" -ge 240 ]; then
-      echo "FAIL: ${arm}: the first updates were not recorded within 240 s" >&2
+      echo "FAIL: ${arm}: the first updates and the custom resource's start were not seen within 240 s" >&2
       cat "${log}" >&2
       exit 1
     fi
     sleep 2
     waited=$((waited + 2))
   done
-  # The custom resource is dispatched once its three dependencies completed;
-  # its handler then sleeps 90 s, so the deploy is mid-operation for that long.
-  sleep 5
-  if ! kill -0 "${DEPLOY_PID}" 2>/dev/null; then
-    echo "FAIL: ${arm}: the deploy finished before it could be interrupted" >&2
-    cat "${log}" >&2
-    exit 1
-  fi
+  LAST_GATE_UPDATE_MS="$(now_ms)"
+  echo "    the three first updates are recorded and the custom resource's update is running"
 
-  if [ "${mode}" = "int2" ]; then
-    echo "    sending SIGINT twice to ${DEPLOY_PID}"
-    kill -INT "${DEPLOY_PID}"
-    sleep 0.2
-    kill -INT "${DEPLOY_PID}"
-  else
-    echo "    sending SIGHUP to ${DEPLOY_PID}"
-    kill -HUP "${DEPLOY_PID}"
-  fi
   local rc=0
-  wait "${DEPLOY_PID}" || rc=$?
+  if [ "${mode}" = "int2" ]; then
+    echo "    sending SIGINT twice to ${node_pid}"
+    kill -INT "${node_pid}"
+    sleep 0.2
+    kill -INT "${node_pid}"
+    wait "${DEPLOY_PID}" || rc=$?
+  else
+    echo "    closing the deploy's terminal (killing script ${DEPLOY_PID})"
+    kill -KILL "${DEPLOY_PID}"
+    wait "${DEPLOY_PID}" 2>/dev/null || true
+    local left=0
+    while kill -0 "${node_pid}" 2>/dev/null; do
+      if [ "${left}" -ge 20 ]; then
+        echo "FAIL: ${arm}: the deploy was still running 10 s after its terminal closed" >&2
+        exit 1
+      fi
+      sleep 0.5
+      left=$((left + 1))
+    done
+  fi
   DEPLOY_PID=""
-  echo "    deploy exited ${rc}; its output:"
+  DEPLOY_NODE_PID=""
+  echo "    deploy output (rc ${rc}):"
   sed 's/^/      | /' "${log}"
-  if [ "${rc}" -ne "${expected}" ]; then
+  if [ "${expected}" != "-" ] && [ "${rc}" -ne "${expected}" ]; then
     echo "FAIL: ${arm}: the deploy exited ${rc}, expected ${expected}" >&2
     exit 1
   fi
@@ -269,20 +349,25 @@ interrupt_arm() {
     jq '.segments[-1].operations | map(.logicalId)' <<<"${journal}" >&2
     exit 1
   fi
-  if [ "${mode}" = "hup" ]; then
-    # A hang-up never drains, so the custom resource was still in flight.
-    if ! jq -e '[.segments[-1].failedOperations[]?.logicalId] | any(startswith("Gate") and (startswith("GateHandler") | not))' \
-      <<<"${journal}" >/dev/null; then
-      echo "FAIL: ${arm}: the in-flight custom resource is not a failed operation in the segment" >&2
-      exit 1
-    fi
-    echo "    OK: ${arm}: the in-flight custom resource is journaled as a failed operation"
-  fi
-  if ! grep -q "Release with: " "${log}"; then
-    echo "FAIL: ${arm}: the force-quit did not print the lock-release command" >&2
+  # The custom resource was still running: its outcome is unknown.
+  if ! jq -e '[.segments[-1].failedOperations[]?.logicalId] | any(startswith("Gate") and (startswith("GateHandler") | not))' \
+    <<<"${journal}" >/dev/null; then
+    echo "FAIL: ${arm}: the in-flight custom resource is not a failed operation in the segment" >&2
     exit 1
   fi
-  echo "    OK: ${arm}: exit ${rc}, an interrupted journal segment with the completed updates"
+  echo "    OK: ${arm}: the in-flight custom resource is journaled as a failed operation"
+  if [ "${mode}" = "int2" ]; then
+    # A closed terminal shows nothing, so only the Ctrl-C arm reads its output.
+    if ! grep -q "Release with: " "${log}"; then
+      echo "FAIL: ${arm}: the force-quit did not print the lock-release command" >&2
+      exit 1
+    fi
+    if ! grep -q "revert it with: cdkd rollback" "${log}"; then
+      echo "FAIL: ${arm}: the force-quit did not print the cdkd rollback command" >&2
+      exit 1
+    fi
+  fi
+  echo "    OK: ${arm}: an interrupted journal segment with the completed updates"
 
   echo "==> Arm ${arm}: force-unlock, then cdkd rollback --force"
   node "${LOCAL_DIST}" force-unlock "${STACK}" --state-bucket "${STATE_BUCKET}" \
@@ -302,7 +387,7 @@ interrupt_arm() {
 }
 
 interrupt_arm int2 int2 130
-interrupt_arm hup hup 129
+interrupt_arm hup hup -
 
 # --- Phase 3: destroy and orphan check ------------------------------------
 echo "==> Phase 3: destroy"
@@ -329,6 +414,22 @@ done <<EOF
 ${ROLE_NAMES}
 EOF
 echo "    OK: every resource is gone"
+
+# The Gate handler's last interrupted update runs on for its 90 s sleep and
+# logs again when it ends, which would re-create its log group after a sweep.
+GATE_WAIT_S=$(((LAST_GATE_UPDATE_MS + 100000 - $(now_ms)) / 1000))
+if [ "${GATE_WAIT_S}" -gt 0 ]; then
+  echo "==> Waiting ${GATE_WAIT_S} s for the custom resource handler's last invocation to end"
+  sleep "${GATE_WAIT_S}"
+fi
+sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
+LEFT_GROUPS="$(aws logs describe-log-groups --region "${REGION}" \
+  --log-group-name-prefix "/aws/lambda/${STACK}-" --query 'length(logGroups)' --output text)"
+if [ "${LEFT_GROUPS}" != "0" ]; then
+  echo "FAIL: ${LEFT_GROUPS} Lambda log group(s) under /aws/lambda/${STACK}- left after the sweep" >&2
+  exit 1
+fi
+echo "    OK: no Lambda log group left"
 
 echo ""
 echo "[verify] PASS"

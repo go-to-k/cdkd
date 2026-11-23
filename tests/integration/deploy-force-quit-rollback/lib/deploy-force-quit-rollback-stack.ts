@@ -29,6 +29,8 @@ const GATE_HANDLER = `
 const https = require('https');
 exports.handler = async (event) => {
   if (event.RequestType === 'Update') {
+    // verify.sh waits for this line before it interrupts the deploy.
+    console.log('GATE_UPDATE_START');
     await new Promise((resolve) => setTimeout(resolve, 90000));
   }
   const body = JSON.stringify({

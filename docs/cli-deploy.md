@@ -366,6 +366,13 @@ explains why.
 | `0` | Every resource was deployed. |
 | `1` | The deploy failed. |
 | `2` | The stack deployed, but resources were left unaddressed. |
+| `129` | The terminal was closed (`SIGHUP`) mid-deploy. |
+| `130` | Force-quit with a second {kbd:ctrl+c}, or the `SIGTERM` a cancelled CI job sends after its `SIGINT`. |
+
+Exits `129` and `130` record what the deploy changed so far in the rollback
+journal before exiting, so `cdkd rollback` can revert it once the lock is
+released with `cdkd force-unlock`. See
+[A deploy that was killed](cli-rollback-limitations.md#a-deploy-that-was-killed).
 
 Exit `1` covers bad arguments (including `--no-wait` with `--full-wait`), an
 auth failure, a synthesis crash, a refused state record, a deploy refused

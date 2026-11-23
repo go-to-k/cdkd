@@ -163,7 +163,7 @@ export function exitAfterAbortingUploads(
 }
 
 export interface DeploySigintHandlerOptions {
-  /** Called on the first signal, after its notice. */
+  /** Called on the first signal, after its notice, and on a hang-up. */
   onFirst: () => void;
   /** Test seams; default to the process. */
   write?: (text: string) => void;
@@ -257,6 +257,8 @@ export function createDeploySigintHandler(
     hangup: (): void => {
       // A hang-up during a force-quit already under way changes nothing.
       if (forceQuitting !== undefined) return;
+      // Stop the run starting another stack while the journal is written.
+      options.onFirst();
       forceQuit(SIGHUP_EXIT_CODE);
     },
   });

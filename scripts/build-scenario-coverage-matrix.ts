@@ -150,7 +150,7 @@ const KNOWN_SCENARIOS: Record<string, string> = {
   'destroy-interrupt':
     'Graceful SIGINT on destroy (#816 — first Ctrl-C drains in-flight deletes, flushes trimmed state, releases the lock, exits non-zero; no 30m stranded lock) + Custom Resource replay fail-fast on re-run (#804 — the CR delete does NOT stall ~10 minutes invoking GetFunction against the already-deleted backing Lambda; the re-run resumes cleanly and quickly).',
   'deploy-force-quit-rollback':
-    'Force-quit (two SIGINTs) and closed terminal (SIGHUP) mid-deploy (#6894) — while a custom resource\'s 90 s update is in flight, the deploy exits 130 / 129 after writing an `interrupted` rollback-journal segment (the completed updates, plus the in-flight custom resource as a failed operation); `cdkd force-unlock` + `cdkd rollback --force` put the SSM parameter, the SQS queue\'s visibility timeout and the Lambda environment back to v1.',
+    'Force-quit (two SIGINTs) and a closed terminal (a killed pseudo-terminal: SIGHUP, then EIO on every write) mid-deploy (#6894) — while a custom resource\'s 90 s update is in flight, the deploy exits after writing an `interrupted` rollback-journal segment (the completed updates, plus the in-flight custom resource as a failed operation); `cdkd force-unlock` + `cdkd rollback --force` put the SSM parameter, the SQS queue\'s visibility timeout and the Lambda environment back to v1.',
 
   // ---- Migration patterns ----
   'export-to-cfn-handover':

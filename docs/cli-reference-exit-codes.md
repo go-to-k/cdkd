@@ -29,7 +29,7 @@ esac
 | `3` | `cdkd diff` only: the deploy it previews would refuse to start. |
 | `70` | cdkd stopped on an internal error, most likely a bug. |
 | `129` | `cdkd deploy` only: its terminal was closed (`SIGHUP`). See [Force-quitting a deploy](#force-quitting-a-deploy). |
-| `130` | A `cdkd local` command interrupted with {kbd:ctrl+c}, or a `cdkd deploy` or `cdkd destroy` force-quit with a second one. |
+| `130` | A `cdkd local` command interrupted with {kbd:ctrl+c}, or a `cdkd deploy`, `cdkd destroy` or `cdkd state destroy` force-quit with a second one. |
 | `143` | `cdkd local` only: stopped by `SIGTERM`. |
 
 [Local Execution](local-emulation.md) links to the pages of the `cdkd local`
