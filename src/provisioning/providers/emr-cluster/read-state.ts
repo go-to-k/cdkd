@@ -1,6 +1,10 @@
 import type { EMRClusterProvider } from '../emr-cluster-provider.js';
+import { isPermissionDenial } from '../../identity-read-denied.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 import {
   DescribeClusterCommand,
+  GetAutoTerminationPolicyCommand,
+  GetManagedScalingPolicyCommand,
   ListInstanceGroupsCommand,
   ListInstanceFleetsCommand,
   InvalidRequestException,
@@ -195,9 +199,11 @@ export async function describeClusterOrUndefined(
  *
  * Scope: the reversible property set — the reverse-mapped `Instances` block,
  * `Tags` (via `normalizeAwsTagsToCfn`, `aws:*` stripped), and the top-level
- * scalar fields `DescribeCluster` returns directly. Create-only sub-config
- * that AWS does not read back faithfully (`ManagedScalingPolicy` /
- * `AutoTerminationPolicy` — separate Get* APIs; `BootstrapActions` / `Steps`
+ * scalar fields `DescribeCluster` returns directly. `AutoTerminationPolicy`
+ * and `ManagedScalingPolicy` (go-to-k/cdkd#6854) are read with their own
+ * `Get*` call, each only when the template declares it (the comparison skips
+ * an undeclared one), alongside the instance list read. Create-only sub-config
+ * that AWS does not read back faithfully (`BootstrapActions` / `Steps`
  * / `KerberosAttributes` / `Configurations` nesting / `AdditionalInfo` /
  * `PlacementGroupConfigs`; `Instances` EBS / auto-scaling sub-specs) is
  * declared in `getDriftUnknownPaths` so the drift comparator skips it on the
@@ -214,7 +220,8 @@ export async function readCurrentState(
   this: EMRClusterProvider,
   physicalId: string,
   _logicalId: string,
-  _resourceType: string
+  _resourceType: string,
+  properties?: Record<string, unknown>
 ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
   const cluster = await this.describeClusterOrUndefined(physicalId);
   if (!cluster) return undefined;
@@ -224,10 +231,27 @@ export async function readCurrentState(
 
   let instanceGroups: InstanceGroup[] = [];
   let instanceFleets: InstanceFleet[] = [];
-  if (cluster.InstanceCollectionType === 'INSTANCE_FLEET') {
-    instanceFleets = await this.listInstanceFleets(physicalId);
-  } else {
-    instanceGroups = await this.listInstanceGroups(physicalId);
+  const declares = (key: string): boolean => properties?.[key] != null;
+  let policies: Record<string, unknown>;
+  try {
+    [, policies] = await Promise.all([
+      cluster.InstanceCollectionType === 'INSTANCE_FLEET'
+        ? this.listInstanceFleets(physicalId).then((fleets) => {
+            instanceFleets = fleets;
+          })
+        : this.listInstanceGroups(physicalId).then((groups) => {
+            instanceGroups = groups;
+          }),
+      readDeclaredPolicies.call(this, physicalId, {
+        autoTermination: declares('AutoTerminationPolicy'),
+        managedScaling: declares('ManagedScalingPolicy'),
+      }),
+    ]);
+  } catch (err) {
+    // The cluster left between the Describe and these reads: the same
+    // drift-unknown answer `describeClusterOrUndefined` gives.
+    if (err instanceof InvalidRequestException) return undefined;
+    throw err;
   }
 
   const out: Record<string, unknown> = {
@@ -250,6 +274,7 @@ export async function readCurrentState(
     Applications: cluster.Applications ?? [],
     Tags: normalizeAwsTagsToCfn(cluster.Tags),
     Instances: this.reverseInstancesToCfn(cluster, instanceGroups, instanceFleets),
+    ...policies,
   };
   // go-to-k/cdkd#5824: emitted only when DescribeCluster reports them (a
   // declared response field is not a populated one), and skipped by the
@@ -268,6 +293,108 @@ export async function readCurrentState(
         }).filter(([, v]) => v !== undefined)
       ),
     };
+  }
+  return out;
+}
+
+const POLICY_KEYS = ['AutoTerminationPolicy', 'ManagedScalingPolicy'] as const;
+
+/**
+ * The unsettled-update read (go-to-k/cdkd#6854): `readCurrentState` with each
+ * unsettled policy read whether or not the record declares it, its removed
+ * spelling (`{}`) reported as absent, and a FAILURE when an unsettled
+ * policy's `Get*Policy` could not be read. The convergence would otherwise
+ * take the missing key as "the cluster holds no policy", and a template that
+ * also omits it would skip the Remove while the record calls it settled.
+ */
+export async function readUnsettled(
+  this: EMRClusterProvider,
+  physicalId: string,
+  logicalId: string,
+  resourceType: string,
+  names: ReadonlySet<string>,
+  recordedProperties?: Record<string, unknown>
+): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+  const wanted = POLICY_KEYS.filter((key) => names.has(key));
+  const properties: Record<string, unknown> = { ...recordedProperties };
+  for (const key of wanted) if (properties[key] == null) properties[key] = {};
+  const live = await this.readCurrentState(physicalId, logicalId, resourceType, properties);
+  if (live === undefined || live === RESOURCE_NOT_FOUND) return live;
+  const out = { ...live };
+  for (const key of wanted) {
+    if (!Object.hasOwn(out, key)) {
+      throw new Error(`the ${key} of EMR cluster ${logicalId} could not be read`);
+    }
+    const value = out[key];
+    if (typeof value === 'object' && value !== null && Object.keys(value).length === 0) {
+      delete out[key];
+    }
+  }
+  return out;
+}
+
+/**
+ * go-to-k/cdkd#6854: the cluster's `AutoTerminationPolicy` /
+ * `ManagedScalingPolicy`, each read only when asked for. EMR returns each as
+ * it was put, with no member filled in, and an empty answer once removed
+ * (measured us-east-1, 2026-11-23: `IdleTimeout`, and `ComputeLimits` with
+ * and without the optional limits, `ScalingStrategy` and
+ * `UtilizationPerformanceIndex`). An empty answer emits the key as `{}`, so a
+ * declared policy removed out of band reads as removed (and a revert's
+ * previous side holds no policy, so `update()` puts it back).
+ *
+ * A read that fails for any reason but a gone cluster (a denied
+ * `elasticmapreduce:Get*Policy`, a throttle) leaves only that key out, with a
+ * warning naming the error class: the rest of the readback stands, and
+ * `canonicalizeDriftPair` leaves the key uncompared on that read.
+ */
+async function readDeclaredPolicies(
+  this: EMRClusterProvider,
+  clusterId: string,
+  wanted: { autoTermination: boolean; managedScaling: boolean }
+): Promise<Record<string, unknown>> {
+  const readOne = <T extends object>(
+    key: string,
+    action: string,
+    send: () => Promise<T | undefined>
+  ): Promise<{ value: T | undefined } | undefined> =>
+    send().then(
+      (value) => ({ value }),
+      (err: unknown) => {
+        // The cluster left between the Describe and this read: fail the read.
+        if (err instanceof InvalidRequestException) throw err;
+        const name = (err as { name?: unknown } | null)?.name;
+        const errorClass =
+          typeof name === 'string' && /^[A-Za-z0-9]{1,64}$/.test(name) ? name : 'an error';
+        const hint = isPermissionDenial(err) ? `; allow elasticmapreduce:${action}` : '';
+        this.logger.warn(
+          safeMsg`EMR cluster ${clusterId}: ${key} not read (${errorClass}${hint}).`
+        );
+        return undefined;
+      }
+    );
+  const [autoTermination, managedScaling] = await Promise.all([
+    wanted.autoTermination
+      ? readOne('AutoTerminationPolicy', 'GetAutoTerminationPolicy', () =>
+          this.getClient()
+            .send(new GetAutoTerminationPolicyCommand({ ClusterId: clusterId }))
+            .then((resp) => resp.AutoTerminationPolicy)
+        )
+      : Promise.resolve(undefined),
+    wanted.managedScaling
+      ? readOne('ManagedScalingPolicy', 'GetManagedScalingPolicy', () =>
+          this.getClient()
+            .send(new GetManagedScalingPolicyCommand({ ClusterId: clusterId }))
+            .then((resp) => resp.ManagedScalingPolicy)
+        )
+      : Promise.resolve(undefined),
+  ]);
+  const out: Record<string, unknown> = {};
+  if (autoTermination !== undefined) {
+    out['AutoTerminationPolicy'] = structuredClone(autoTermination.value ?? {});
+  }
+  if (managedScaling !== undefined) {
+    out['ManagedScalingPolicy'] = structuredClone(managedScaling.value ?? {});
   }
   return out;
 }

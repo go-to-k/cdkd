@@ -96,7 +96,8 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
   ['readClusterIdentity', 'read-state', 'readClusterIdentity', 1],
   ['import', 'read-state', 'importImpl', 1],
   ['describeClusterOrUndefined', 'read-state', 'describeClusterOrUndefined', 1],
-  ['readCurrentState', 'read-state', 'readCurrentState', 3],
+  ['readCurrentState', 'read-state', 'readCurrentState', 4],
+  ['readUnsettled', 'read-state', 'readUnsettled', 5],
   ['listInstanceGroups', 'read-state', 'listInstanceGroups', 1],
   ['listInstanceFleets', 'read-state', 'listInstanceFleets', 1],
   ['reverseInstancesToCfn', 'read-state', 'reverseInstancesToCfn', 3],
@@ -105,7 +106,12 @@ const DELEGATORS: ReadonlyArray<readonly [string, string, string, number]> = [
 ];
 
 /** Methods whose bodies stay on the class. */
-const KEPT_ON_CLASS = new Set(['constructor', 'getMinResourceTimeoutMs', 'getDriftUnknownPaths']);
+const KEPT_ON_CLASS = new Set([
+  'constructor',
+  'getMinResourceTimeoutMs',
+  'getDriftUnknownPaths',
+  'canonicalizeDriftPair',
+]);
 
 type Callable = (...args: unknown[]) => unknown;
 type Spy = ReturnType<typeof vi.fn>;

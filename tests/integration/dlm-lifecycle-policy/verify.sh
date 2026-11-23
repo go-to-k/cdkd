@@ -11,9 +11,12 @@
 #   1b. Assert `cdkd drift` reports ZERO drift on the freshly-deployed policy
 #      (exit 0). GetLifecyclePolicy returns PolicyDetails with server-injected
 #      defaults (e.g. PolicyLanguage: SIMPLIFIED) the template never set; the
-#      provider's readCurrentState + getDriftUnknownPaths must exclude those so
-#      they never surface as phantom drift (issue #1067). This is the whole
+#      provider compares only the members the template declares, so those
+#      never surface as phantom drift (issue #1067, #6854). This is the whole
 #      point of the drift caveat — a no-op deploy MUST be drift-free.
+#   1c. Change a declared member of each policy out of band (RetainRule.Count,
+#      CreateInterval): drift must name both, `drift --revert` must restore
+#      them in place, and drift must be clean again (issue #6854).
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: description change + State
 #      ENABLED -> DISABLED (UpdateLifecyclePolicy), tag value change AND tag
 #      removal (TagResource / UntagResource — the #981 regression class).
@@ -207,10 +210,9 @@ echo "==> Phase 1b: assert cdkd drift reports NO drift on the freshly-deployed p
 # `cdkd drift` exits 0 when in sync, 1 when drift is detected. GetLifecyclePolicy
 # returns PolicyDetails with server-injected defaults (e.g. PolicyLanguage:
 # SIMPLIFIED, PolicyType/ResourceTypes/per-schedule defaults) that the template
-# never set. The provider's readCurrentState surfaces only
-# Description/State/ExecutionRoleArn/Tags and lists PolicyDetails + the
-# default-policy shorthand fields in getDriftUnknownPaths, so those server
-# defaults must NOT register as phantom drift. A freshly-deployed, unmodified
+# never set. The provider compares PolicyDetails and the default-policy
+# shorthand fields on the members the template declares only (#6854), so those
+# server defaults must NOT register as phantom drift. A freshly-deployed, unmodified
 # policy MUST be drift-free — that is the whole point of issue #1067.
 if node "${LOCAL_DIST}" drift "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}"; then
@@ -219,6 +221,55 @@ else
   echo "FAIL: cdkd drift reported drift on a freshly-deployed DLM policy (expected none) — server-injected PolicyDetails defaults are leaking as phantom drift" >&2
   exit 1
 fi
+
+# --- Phase 1c: declared PolicyDetails / shorthand drift (issue #6854) ------
+# PolicyDetails and the default policy's shorthand fields used to be skipped
+# whole. Change a DECLARED member of each out of band (the custom policy's
+# RetainRule.Count 1 -> 5, the default policy's CreateInterval 2 -> 3, which must stay <= its
+# RetainInterval 3 or DLM refuses the update), expect
+# drift naming each, revert, and expect AWS back at the template's values with
+# neither policy replaced and drift clean again.
+echo "==> Phase 1c: out-of-band RetainRule.Count / CreateInterval change is drift, and reverts (#6854)"
+DETAILS_1C="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region "${REGION}" \
+  --query 'Policy.PolicyDetails' --output json)"
+[ "$(printf '%s' "${DETAILS_1C}" | jq -r '.Schedules[0].RetainRule.Count')" = "1" ] || {
+  echo "FAIL: #6854 premise: expected RetainRule.Count 1 before the out-of-band change, got ${DETAILS_1C}" >&2; exit 1; }
+aws dlm update-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region "${REGION}" \
+  --policy-details "$(printf '%s' "${DETAILS_1C}" | jq -c '.Schedules[0].RetainRule.Count = 5')" >/dev/null
+aws dlm update-lifecycle-policy --policy-id "${DEFAULT_POLICY_ID_P1}" --region "${REGION}" \
+  --create-interval 3 >/dev/null
+drift_rc=0
+DRIFT_1C_ERR="$(mktemp)"
+DRIFT_1C="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json 2>"${DRIFT_1C_ERR}")" || drift_rc=$?
+[ "${drift_rc}" -eq 1 ] || { echo "FAIL: expected drift (exit 1) after the out-of-band DLM changes, drift exited ${drift_rc}" >&2; cat "${DRIFT_1C_ERR}" >&2; exit 1; }
+PATHS_1C="$(printf '%s' "${DRIFT_1C}" | jq -c '[.[].drifted[] | select(.type == "AWS::DLM::LifecyclePolicy") | .changes[].path] | sort')"
+case "${PATHS_1C}" in
+  *'"CreateInterval"'*'"PolicyDetails'*) ;;
+  *)
+    echo "FAIL: cdkd drift did not report both PolicyDetails and CreateInterval after the out-of-band changes (#6854), got ${PATHS_1C}" >&2
+    printf '%s' "${DRIFT_1C}" | jq '.[].drifted' >&2
+    exit 1
+    ;;
+esac
+echo "    out-of-band changes reported as drift: ${PATHS_1C}"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+COUNT_1C="$(aws dlm get-lifecycle-policy --policy-id "${POLICY_ID_P1}" --region "${REGION}" \
+  --query 'Policy.PolicyDetails.Schedules[0].RetainRule.Count' --output text)"
+CREATE_1C="$(aws dlm get-lifecycle-policy --policy-id "${DEFAULT_POLICY_ID_P1}" --region "${REGION}" \
+  --query 'Policy.PolicyDetails.CreateInterval' --output text)"
+if [ "${COUNT_1C}" != "1" ] || [ "${CREATE_1C}" != "2" ]; then
+  echo "FAIL: drift --revert did not restore RetainRule.Count / CreateInterval (got ${COUNT_1C} / ${CREATE_1C}, expected 1 / 2)" >&2
+  exit 1
+fi
+if [ "$(policy_id_from_state PolicyId)" != "${POLICY_ID_P1}" ] || \
+   [ "$(policy_id_from_state DefaultPolicyId)" != "${DEFAULT_POLICY_ID_P1}" ]; then
+  echo "FAIL: drift --revert replaced a DLM policy (#6639: a revert never replaces)" >&2
+  exit 1
+fi
+drift_rc=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" || drift_rc=$?
+[ "${drift_rc}" -eq 0 ] || { echo "FAIL: expected zero drift after the revert, drift exited ${drift_rc}" >&2; exit 1; }
+echo "    reverted in place (Count 1, CreateInterval 2), drift clean again"
 
 # --- Phase 2: in-place update (state/description/tags) ------------------
 echo "==> Phase 2: re-deploy with CDKD_TEST_UPDATE=true (DISABLED, tag change + removal)"
