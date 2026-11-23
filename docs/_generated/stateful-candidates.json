@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-18T22:29:17.892Z",
+  "generatedAt": "2026-11-23T05:11:59.926Z",
   "summary": {
-    "tier2Count": 1659,
-    "schemasRead": 1659,
-    "withCreateOnly": 1453,
+    "tier2Count": 1670,
+    "schemasRead": 1670,
+    "withCreateOnly": 1464,
     "schemasWithNoProperties": 0,
     "candidateCount": 121,
     "guardedCount": 90,
@@ -15,7 +15,7 @@
       "storage-capacity": 23,
       "deletion-protection": 13,
       "encryption-at-rest": 19,
-      "data-store-noun": 69
+      "data-store-noun": 68
     }
   },
   "candidates": [
@@ -540,17 +540,6 @@
       ],
       "signals": [
         "snapshot-or-backup"
-      ],
-      "guarded": true
-    },
-    {
-      "typeName": "AWS::Elasticsearch::Domain",
-      "createOnlyProperties": [
-        "/properties/DomainName"
-      ],
-      "signals": [
-        "data-store-noun",
-        "encryption-at-rest"
       ],
       "guarded": true
     },
@@ -1103,6 +1092,17 @@
       "guarded": false
     },
     {
+      "typeName": "AWS::OpenSearchMemory::Space",
+      "createOnlyProperties": [
+        "/properties/EncryptionConfiguration",
+        "/properties/Name"
+      ],
+      "signals": [
+        "encryption-at-rest"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::OpenSearchServerless::Collection",
       "createOnlyProperties": [
         "/properties/CollectionGroupName",
@@ -1377,7 +1377,7 @@
         "/properties/DistanceMetric",
         "/properties/EncryptionConfiguration",
         "/properties/IndexName",
-        "/properties/MetadataConfiguration",
+        "/properties/MetadataConfiguration/NonFilterableMetadataKeys",
         "/properties/VectorBucketArn",
         "/properties/VectorBucketName"
       ],

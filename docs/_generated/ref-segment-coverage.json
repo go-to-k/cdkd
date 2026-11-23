@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "types": 340,
+    "types": 342,
     "mapped": 62,
-    "compound": 200,
+    "compound": 201,
     "no-ref": 40,
     "not-a-segment": 7,
-    "unverified": 31,
+    "unverified": 32,
     "gap": 0
   },
   "types": [
@@ -763,6 +763,16 @@
       ],
       "status": "unverified",
       "detail": "docs Return values: Ref returns the ARN (no segment holds it); not measured (needs an AVAILABLE connection, an OAuth handshake)"
+    },
+    {
+      "resourceType": "AWS::Cognito::CIMDPolicy",
+      "tier": 2,
+      "primaryIdentifier": [
+        "UserPoolId",
+        "CIMDPolicyId"
+      ],
+      "status": "compound",
+      "detail": "measured, CloudFormation stack cdkd-probe-6851 (us-east-1, 2026-11-23): `<UserPoolId>|<CIMDPolicyId>`"
     },
     {
       "resourceType": "AWS::Cognito::IdentityPoolPrincipalTag",
@@ -2571,6 +2581,16 @@
       ],
       "status": "compound",
       "detail": "measured, CloudFormation stack cdkd-probe-6612 (us-east-1, 2026-11-19): `<Type>|<Name>` (the docs say the policy name)"
+    },
+    {
+      "resourceType": "AWS::OpenSearchService::ReplicationPeer",
+      "tier": 2,
+      "primaryIdentifier": [
+        "DomainName",
+        "PeerDomainArn"
+      ],
+      "status": "unverified",
+      "detail": "docs: no page published yet (2026-11-23); not measured (needs two OpenSearch domains)"
     },
     {
       "resourceType": "AWS::PCAConnectorAD::ServicePrincipalName",
