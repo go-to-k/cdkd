@@ -123,6 +123,46 @@ describe.each(KINDS)('$kind inline Policies (go-to-k/cdkd#6874)', ({ prefix, run
     expect(calls).toEqual([`Put${prefix}Policy Keep`, `Delete${prefix}Policy Gone`]);
   });
 
+  it('a put of the new spelling that fails puts the old one back with its document, then throws', async () => {
+    send.mockImplementation(async (command: Cmd) => {
+      const name = String(command.input['PolicyName']);
+      calls.push(`${command.constructor.name.replace(/Command$/, '')} ${name}`);
+      if (name === 'casepol') throw new Error('MalformedPolicyDocument');
+      return {};
+    });
+    await expect(
+      run([{ PolicyName: 'casepol', PolicyDocument: DOC_B }], [
+        { PolicyName: 'CasePol', PolicyDocument: DOC_A },
+      ])
+    ).rejects.toThrow('MalformedPolicyDocument');
+    expect(calls).toEqual([
+      `Delete${prefix}Policy CasePol`,
+      `Put${prefix}Policy casepol`,
+      `Put${prefix}Policy CasePol`,
+    ]);
+    const restore = send.mock.calls.at(-1)![0] as Cmd;
+    expect(JSON.parse(String(restore.input['PolicyDocument']))).toEqual(DOC_A);
+  });
+
+  it("another policy's failing put leaves a respelled policy that was not reached in place", async () => {
+    send.mockImplementation(async (command: Cmd) => {
+      const name = String(command.input['PolicyName']);
+      calls.push(`${command.constructor.name.replace(/Command$/, '')} ${name}`);
+      if (name === 'First') throw new Error('Throttling');
+      return {};
+    });
+    await expect(
+      run(
+        [
+          { PolicyName: 'First', PolicyDocument: DOC_A },
+          { PolicyName: 'casepol', PolicyDocument: DOC_B },
+        ],
+        [{ PolicyName: 'CasePol', PolicyDocument: DOC_A }]
+      )
+    ).rejects.toThrow('Throttling');
+    expect(calls).toEqual([`Put${prefix}Policy First`]);
+  });
+
   it('an old spelling already gone (NoSuchEntity) still gets the new one put', async () => {
     send.mockImplementationOnce(async (command: Cmd) => {
       calls.push(`${command.constructor.name.replace(/Command$/, '')} ${String(command.input['PolicyName'])}`);

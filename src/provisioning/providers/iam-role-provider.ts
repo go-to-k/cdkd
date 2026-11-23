@@ -314,7 +314,7 @@ export function collectInlinePolicyNamesManagedBySiblings(
   targetPhysicalId: string,
   context: import('../../types/resource.js').ReadCurrentStateContext | undefined,
   attachmentField: 'Roles' | 'Users' | 'Groups'
-): Set<string> {
+): ReadonlySet<string> {
   // Iteration yields each name as written; `has` ignores case.
   const result = new Set<string>();
   const folded = new Set<string>();

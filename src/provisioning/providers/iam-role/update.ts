@@ -552,6 +552,14 @@ export function planInlinePolicyNames(
   return { respelled, removed };
 }
 
+/** Whether two inline policy names are one IAM policy (case ignored; go-to-k/cdkd#6874). */
+export function sameInlinePolicyName(a: string, b: string): boolean {
+  return (
+    a === b ||
+    (typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase())
+  );
+}
+
 /**
  * Update inline policies
  */
@@ -568,31 +576,52 @@ export async function updateInlinePolicies(
   const oldMap = new Map((oldPolicies || []).map((p) => [p.PolicyName, p.PolicyDocument]));
   const plan = planInlinePolicyNames(newMap.keys(), oldMap.keys());
 
-  // go-to-k/cdkd#6874: a name respelled only in case is the same policy;
-  // its old spelling goes first, as CloudFormation does, so the put below
-  // lists the new one.
-  for (const policyName of plan.respelled) {
-    try {
-      await this.iamClient.send(
-        new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: policyName })
-      );
-    } catch (error) {
-      if (!(error instanceof NoSuchEntityException)) throw error;
-    }
-    log.debug(`Deleted inline policy ${v(policyName)} before re-putting it in another case`);
-  }
-
-  // Add or update policies
+  // Add or update policies. go-to-k/cdkd#6874: a name respelled only in
+  // case is the same policy, so its old spelling is deleted right before the
+  // put of the new one, as CloudFormation does, and the new spelling is
+  // listed. A put that then fails puts the old spelling back with its
+  // recorded document (best effort) before the error propagates, so the
+  // principal is not left without the policy.
   for (const [policyName, policyDoc] of newMap) {
     const policyDocument = typeof policyDoc === 'string' ? policyDoc : JSON.stringify(policyDoc);
-
-    await this.iamClient.send(
-      new PutRolePolicyCommand({
-        RoleName: roleName,
-        PolicyName: policyName,
-        PolicyDocument: policyDocument,
-      })
-    );
+    const respelled = plan.respelled.filter((old) => sameInlinePolicyName(old, policyName));
+    for (const old of respelled) {
+      try {
+        await this.iamClient.send(
+          new DeleteRolePolicyCommand({ RoleName: roleName, PolicyName: old })
+        );
+      } catch (error) {
+        if (!(error instanceof NoSuchEntityException)) throw error;
+      }
+      log.debug(`Deleted inline policy ${v(old)} before putting it as ${v(policyName)}`);
+    }
+    try {
+      await this.iamClient.send(
+        new PutRolePolicyCommand({
+          RoleName: roleName,
+          PolicyName: policyName,
+          PolicyDocument: policyDocument,
+        })
+      );
+    } catch (error) {
+      for (const old of respelled) {
+        const oldDoc = oldMap.get(old);
+        try {
+          await this.iamClient.send(
+            new PutRolePolicyCommand({
+              RoleName: roleName,
+              PolicyName: old,
+              PolicyDocument: typeof oldDoc === 'string' ? oldDoc : JSON.stringify(oldDoc),
+            })
+          );
+        } catch {
+          log.warn(
+            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or 'cdkd drift --revert'`
+          );
+        }
+      }
+      throw error;
+    }
     log.debug(`Updated inline policy ${v(policyName)}`);
   }
 
