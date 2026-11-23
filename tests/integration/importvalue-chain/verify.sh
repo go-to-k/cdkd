@@ -323,7 +323,7 @@ echo ""
 echo "==> Step 3: STRONG-REF CHAIN — destroy a producer that a consumer imports"
 echo "==> Step 3a: Destroy B (C still imports ChainDerivedValue) -> expect refusal"
 set +e
-DESTROY_B=$(${CDKD} destroy ${STACK_B} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
+DESTROY_B=$(${CDKD} destroy ${STACK_B} --exclusively --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
 DESTROY_B_RC=$?
 set -e
 if [[ "${DESTROY_B_RC}" -eq 0 ]]; then
@@ -351,7 +351,7 @@ echo "    B destroy refused, names ${STACK_C} + ChainDerivedValue (exit ${DESTRO
 echo ""
 echo "==> Step 3b: Destroy A (B still imports ChainTopicArn) -> expect refusal"
 set +e
-DESTROY_A=$(${CDKD} destroy ${STACK_A} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
+DESTROY_A=$(${CDKD} destroy ${STACK_A} --exclusively --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force 2>&1)
 DESTROY_A_RC=$?
 set -e
 if [[ "${DESTROY_A_RC}" -eq 0 ]]; then
