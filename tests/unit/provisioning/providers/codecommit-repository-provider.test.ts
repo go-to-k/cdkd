@@ -1325,7 +1325,8 @@ describe('CodeCommitRepositoryProvider', () => {
     it('reports a repo deleted BETWEEN GetRepository and ListTagsForResource as RESOURCE_NOT_FOUND', async () => {
       mockSend
         .mockResolvedValueOnce({ repositoryMetadata: metadata() }) // GetRepository succeeds
-        .mockRejectedValueOnce(notFound()); // ListTagsForResource: repo gone mid-read
+        .mockRejectedValueOnce(notFound()) // ListTagsForResource: repo gone mid-read
+        .mockResolvedValueOnce({ triggers: [] }); // GetRepositoryTriggers
 
       const current = await provider.readCurrentState(
         'my-repo',
@@ -1421,12 +1422,42 @@ describe('CodeCommitRepositoryProvider', () => {
         );
       });
 
-      it('a failed trigger read that is not NotFound propagates', async () => {
+      it.each([
+        ['AccessDeniedException', 'allow codecommit:GetRepositoryTriggers'],
+        ['ThrottlingException', ''],
+      ])('a %s on the trigger read leaves Triggers out of the read, warns, and the rest is still read', async (name, hint) => {
         mockSend
-          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
-          .mockResolvedValueOnce({ tags: {} })
-          .mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'AccessDeniedException' }));
-        await expect(provider.readCurrentState('my-repo', 'MyRepo', 'AWS::CodeCommit::Repository')).rejects.toThrow('denied');
+          .mockResolvedValueOnce({ repositoryMetadata: metadata({ repositoryDescription: 'd' }) })
+          .mockResolvedValueOnce({ tags: { env: 'dev' } })
+          .mockRejectedValueOnce(Object.assign(new Error('secret aws text'), { name }));
+        const warn = vi.spyOn(provider.logger, 'warn');
+        const result = bagOf(await provider.readCurrentState('my-repo', 'MyRepo', 'AWS::CodeCommit::Repository'));
+        expect(result).toEqual({
+          RepositoryName: 'my-repo',
+          RepositoryDescription: 'd',
+          KmsKeyId: expect.any(String),
+          Tags: [{ Key: 'env', Value: 'dev' }],
+        });
+        const line = warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(line).toContain(`Triggers not read (${name}`);
+        expect(line).not.toContain('secret aws text');
+        if (hint) expect(line).toContain(hint);
+        else expect(line).not.toContain('allow ');
+        warn.mockRestore();
+      });
+
+      it('an unread Triggers is not compared: no phantom removal against a baseline holding triggers', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const baseline = { RepositoryName: 'my-repo', Triggers: [{ Name: 'n', DestinationArn: TOPIC, Branches: [], Events: ['all'] }] };
+        const aws = { RepositoryName: 'my-repo' };
+        const pair = await provider.canonicalizeDriftPair(type, baseline, aws);
+        expect(pair.baseline).toBe(baseline); // never dropped: --revert sends it, and a missing Triggers clears them
+        expect(drift(pair.baseline, pair.aws)).toEqual([]);
+        // A read that HAS Triggers is compared as is.
+        const read = { RepositoryName: 'my-repo', Triggers: [] };
+        const same = await provider.canonicalizeDriftPair(type, baseline, read);
+        expect(same.aws).toBe(read);
+        expect(drift(same.baseline, same.aws)).toEqual(['Triggers']);
       });
     });
 

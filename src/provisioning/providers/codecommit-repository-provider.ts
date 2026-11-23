@@ -386,6 +386,24 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     return canonicalizeTriggers(properties);
   }
 
+  /**
+   * A readback without `Triggers` (its read failed, see `readCurrentState`)
+   * takes the baseline's, so the key is not compared on that read. The
+   * readback is completed rather than the baseline dropped: `drift --revert`
+   * sends this baseline, and `update()` reads a missing `Triggers` as a
+   * removal that clears every trigger.
+   */
+  canonicalizeDriftPair(
+    _resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (Object.hasOwn(aws, 'Triggers') || !Object.hasOwn(baseline, 'Triggers')) {
+      return Promise.resolve({ baseline, aws });
+    }
+    return Promise.resolve({ baseline, aws: { ...aws, Triggers: baseline['Triggers'] } });
+  }
+
   /** The same fold for the unsettled-update check's template-vs-live compare. */
   canonicalizeUnsettledProperties(
     _resourceType: string,
