@@ -824,7 +824,12 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     // template's canonical user id form (the three unstable forms are below).
     // A bare unique id is read as the OAI's transient form only right after
     // cdkd's own write (go-to-k/cdkd#6854); anywhere else it is compared as is.
-    await this.normalizeOaiPrincipals(policyDoc, properties, context, context?.afterOwnWrite === true);
+    await this.normalizeOaiPrincipals(
+      policyDoc,
+      properties,
+      context,
+      context?.afterOwnWrite === true
+    );
     result['PolicyDocument'] = policyDoc;
     return result;
   }

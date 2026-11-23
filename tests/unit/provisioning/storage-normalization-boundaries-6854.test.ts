@@ -468,7 +468,7 @@ describe('AWS::Cognito::UserPool rules (#6854)', () => {
   });
 
   it('declares no unordered path: a reordered list attribute is compared as written', () => {
-    expect(provider.getDriftUnorderedPaths?.(T) ?? []).toEqual([]);
+    expect((provider as ResourceProvider).getDriftUnorderedPaths?.(T) ?? []).toEqual([]);
   });
 });
 
