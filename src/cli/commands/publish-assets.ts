@@ -58,6 +58,7 @@ interface PublishAssetsOptions {
   stack?: string;
   all?: boolean;
   context?: string[];
+  lookups?: boolean;
   verbose: boolean;
   region?: string;
   profile?: string;
@@ -129,6 +130,7 @@ async function publishAssetsCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    ...(options.lookups !== undefined && { lookups: options.lookups }),
     failedLookupsCheckedByCaller: true,
   };
   const result = await synthesizer.synthesize(synthOptions);

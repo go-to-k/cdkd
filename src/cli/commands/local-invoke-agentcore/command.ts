@@ -362,6 +362,7 @@ export async function localInvokeAgentCoreCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
+      ...(options.lookups !== undefined && { lookups: options.lookups }),
       // Every synthesis below (the first and each watch reload) refuses a
       // failed context lookup only for the invoked stack (go-to-k/cdkd#5807).
       failedLookupsCheckedByCaller: true,

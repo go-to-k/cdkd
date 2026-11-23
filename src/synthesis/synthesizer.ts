@@ -148,6 +148,15 @@ export interface SynthesisOptions {
    * (go-to-k/cdkd#5805).
    */
   failedLookupsCheckedByCaller?: boolean;
+
+  /**
+   * `--lookups` / `--no-lookups` (go-to-k/cdkd#6883); unset means `true`. A
+   * `lookups` key in cdk.json is NOT read: the AWS CDK CLI's flag defaults to
+   * `true` and the command line overrides cdk.json, so `cdk` ignores it too.
+   * Disabled, missing context fails synthesis before any context-provider
+   * call, and cdk.context.json is not written.
+   */
+  lookups?: boolean;
 }
 
 /**
@@ -205,9 +214,15 @@ export class Synthesizer {
     // as a pre-synthesized cloud assembly and skip subprocess execution.
     // See aws-cdk/lib/cxapp/exec.ts: "bypass 'synth' if app points to a cloud assembly".
     const appPath = resolve(options.app);
+    const lookups = options.lookups ?? true;
     if (isPreSynthesizedAssembly(options.app)) {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
+      // The AWS CDK CLI runs a directory's assembly through the same
+      // missing-context loop, so `--no-lookups` refuses it here too.
+      if (!lookups && manifest.missing && manifest.missing.length > 0) {
+        throw lookupsDisabledError(new Set(manifest.missing.map((m) => m.key)));
+      }
       const { stacks } = this.assemblyReader.readAssembly(appPath, manifest);
       // The pre-synth branch may still hit the macro-expander when an
       // assembly built elsewhere contains a `Transform` block.
@@ -328,6 +343,7 @@ export class Synthesizer {
       // that assembly.
       if (manifest.missing && manifest.missing.length > 0) {
         const missingKeys = new Set(manifest.missing.map((m) => m.key));
+        if (!lookups) throw lookupsDisabledError(missingKeys);
         if (!previousMissingKeys || !setsEqual(missingKeys, previousMissingKeys)) {
           previousMissingKeys = missingKeys;
           this.logger.debug(`Missing context: ${manifest.missing.length} value(s)`);
@@ -613,6 +629,18 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(item)) return false;
   }
   return true;
+}
+
+/**
+ * The `--no-lookups` refusal, worded as the AWS CDK CLI's
+ * `ContextLookupsDisabled`. Each key is sanitized SEPARATELY, as above.
+ */
+function lookupsDisabledError(missingKeys: ReadonlySet<string>): SynthesisError {
+  return new SynthesisError(
+    'Context lookups have been disabled. ' +
+      "Make sure all necessary context is already in 'cdk.context.json' by running 'cdkd synth' on a machine with sufficient AWS credentials and committing the result. " +
+      `Missing context keys: '${[...missingKeys].map((k) => displaySafe(k)).join(', ')}'`
+  );
 }
 
 /** A failed lookup's `$providerError` text, as `ContextProviderRegistry` stores it. */

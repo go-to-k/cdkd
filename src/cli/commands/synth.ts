@@ -113,6 +113,7 @@ export async function synthCommand(
     profile?: string;
     roleArn?: string;
     context?: string[];
+    lookups?: boolean;
     strict?: boolean;
     ignoreErrors?: boolean;
   }
@@ -181,6 +182,7 @@ export async function synthCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    ...(options.lookups !== undefined && { lookups: options.lookups }),
     failedLookupsCheckedByCaller: true,
   };
 

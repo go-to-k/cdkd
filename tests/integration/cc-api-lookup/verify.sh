@@ -19,6 +19,9 @@
 #      again (the stale entry was dropped, re-looked-up and overwritten).
 #   3. Run the fixture-local upstream `cdk synth --no-lookups` against the SAME
 #      context file: it must succeed from the cached values alone.
+#   3b. `cdkd synth --no-lookups` succeeds on the same file, and with one
+#      entry removed refuses with the lookups-disabled error naming that key,
+#      without writing it back (go-to-k/cdkd#6883).
 #   4. Destroy, then assert both parameters and the state file are gone.
 #
 # Required env vars:
@@ -118,7 +121,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1
   fi
-  rm -f "${CONTEXT_FILE}" "${CONTEXT_FILE}.tmp"
+  rm -f "${CONTEXT_FILE}" "${CONTEXT_FILE}.tmp" "${CONTEXT_FILE}.full"
   # The pre-run call runs in the main shell: restore strict mode, or every
   # later failing command would be ignored.
   set -eu
@@ -206,6 +209,33 @@ assert_context_arrays "phase 2"
 echo "==> Phase 3: upstream cdk synth --no-lookups reads the same context file"
 cdk synth --no-lookups --quiet --region "${REGION}"
 
+echo "==> Phase 3b: cdkd synth --no-lookups (go-to-k/cdkd#6883)"
+node "${LOCAL_DIST}" synth --no-lookups --region "${REGION}" >/dev/null
+# Drop one entry: the app reports it missing, and with lookups disabled cdkd
+# must refuse WITHOUT looking it up or writing the context file back.
+DROPPED_KEY="$(jq -r '[to_entries[] | select(.key | startswith("cc-api-provider:")) | .key][0]' "${CONTEXT_FILE}")"
+cp "${CONTEXT_FILE}" "${CONTEXT_FILE}.full"
+jq --arg k "${DROPPED_KEY}" 'del(.[$k])' "${CONTEXT_FILE}.full" >"${CONTEXT_FILE}"
+NO_LOOKUPS_RC=0
+NO_LOOKUPS_ERR="$(node "${LOCAL_DIST}" synth --no-lookups --region "${REGION}" 2>&1 >/dev/null)" || NO_LOOKUPS_RC=$?
+if [ "${NO_LOOKUPS_RC}" = "0" ]; then
+  echo "FAIL: cdkd synth --no-lookups succeeded with ${DROPPED_KEY} missing" >&2
+  exit 1
+fi
+# Two independent markers: the refusal's opening clause, and the dropped key
+# named after `Missing context keys:` — a reword of either fails loudly.
+if ! grep -qF 'Context lookups have been disabled' <<<"${NO_LOOKUPS_ERR}" ||
+  ! grep -qF "Missing context keys: '${DROPPED_KEY}'" <<<"${NO_LOOKUPS_ERR}"; then
+  echo "FAIL: cdkd synth --no-lookups exited ${NO_LOOKUPS_RC} without the lookups-disabled refusal naming ${DROPPED_KEY}: ${NO_LOOKUPS_ERR}" >&2
+  exit 1
+fi
+if [ "$(jq --arg k "${DROPPED_KEY}" 'has($k)' "${CONTEXT_FILE}")" != "false" ]; then
+  echo "FAIL: cdkd synth --no-lookups looked ${DROPPED_KEY} up and wrote it to cdk.context.json" >&2
+  exit 1
+fi
+mv "${CONTEXT_FILE}.full" "${CONTEXT_FILE}"
+echo "    cdkd synth --no-lookups passes on cached context and refuses a missing key without writing it"
+
 echo "==> Phase 4: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
@@ -217,4 +247,4 @@ echo "==> Delete the out-of-band IAM role"
 aws iam delete-role --role-name "${ROLE_NAME}"
 assert_gone "role ${ROLE_NAME} still exists after delete-role" aws iam get-role --role-name "${ROLE_NAME}"
 
-echo "[verify] PASS — cc-api-provider lookups (PrefixList.fromLookup, Role.fromLookup) are stored as one-element arrays with Identifier, a stale bare-object entry is re-looked-up by cdkd synth, upstream cdk synth --no-lookups accepts the same context file, and destroy leaves nothing behind (go-to-k/cdkd#6542)"
+echo "[verify] PASS — cc-api-provider lookups (PrefixList.fromLookup, Role.fromLookup) are stored as one-element arrays with Identifier, a stale bare-object entry is re-looked-up by cdkd synth, upstream cdk synth --no-lookups accepts the same context file, cdkd synth --no-lookups accepts it and refuses a missing key without writing it (go-to-k/cdkd#6883), and destroy leaves nothing behind (go-to-k/cdkd#6542)"

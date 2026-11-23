@@ -87,6 +87,7 @@ export async function selectDestroyTargets(
     app?: string;
     output?: string;
     context?: string[];
+    lookups?: boolean;
     all?: boolean;
     stack?: string;
     exclusively?: boolean;
@@ -116,6 +117,7 @@ export async function selectDestroyTargets(
         app: appCmd,
         output: options.output || 'cdk.out',
         ...(Object.keys(context).length > 0 && { context }),
+        ...(options.lookups !== undefined && { lookups: options.lookups }),
         // Issue #1150: destroy never consumes expanded templates —
         // the destroy engine works off cdkd STATE, and the synth
         // result feeds only stack-name matching plus the cross-stack

@@ -16,11 +16,13 @@
     "--full-wait",
     "--ignore-errors",
     "--image-build-concurrency",
+    "--lookups",
     "--no-aggressive-vpc-parallel",
     "--no-auto-asset-storage",
     "--no-capture-observed-state",
     "--no-cfn-fallback",
     "--no-local-custom-resources",
+    "--no-lookups",
     "--no-rollback",
     "--no-update-policy",
     "--no-wait",
@@ -642,6 +644,12 @@
       "flag": "--no-cfn-fallback",
       "integs": [
         "cross-stack-cfn-fallback"
+      ]
+    },
+    {
+      "flag": "--no-lookups",
+      "integs": [
+        "cc-api-lookup"
       ]
     },
     {
@@ -2993,6 +3001,7 @@
     "--emulate-role-via",
     "--ignore-errors",
     "--image-build-concurrency",
+    "--lookups",
     "--no-aggressive-vpc-parallel",
     "--no-local-custom-resources",
     "--no-update-policy",
@@ -3360,7 +3369,6 @@
     "--no-enable-resource-name-dns-aaaa-record-on-launch",
     "--no-fund",
     "--no-interactive-overrides",
-    "--no-lookups",
     "--no-paginate",
     "--no-password-reset-required",
     "--no-path-metadata",

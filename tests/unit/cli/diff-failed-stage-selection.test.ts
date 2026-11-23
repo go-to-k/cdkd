@@ -252,6 +252,19 @@ describe('cdkd diff and a failed context lookup (issue #5807)', () => {
     messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
   };
 
+  it('forwards --no-lookups to the synthesizer (go-to-k/cdkd#6883)', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('Other')],
+      failedLookups: [],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    await runDiff(['Other', '--no-lookups']);
+
+    expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ lookups: false });
+  });
+
   it('diffs a stack that did not ask for the failed lookup', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [makeStack('Other'), asking],

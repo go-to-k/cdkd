@@ -48,6 +48,7 @@ export interface ScrubOptions {
   roleArn?: string;
   verbose: boolean;
   context?: string[];
+  lookups?: boolean;
 }
 
 /**
@@ -183,6 +184,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    ...(options.lookups !== undefined && { lookups: options.lookups }),
     stateBucket,
     deferMacroExpansion: true,
     failedLookupsCheckedByCaller: true,

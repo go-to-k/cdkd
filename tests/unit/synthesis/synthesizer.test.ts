@@ -130,6 +130,67 @@ describe('Synthesizer', () => {
       expect(mockContextStoreSave).toHaveBeenCalledTimes(1);
     });
 
+    describe('--no-lookups (go-to-k/cdkd#6883)', () => {
+      const disabled =
+        "Context lookups have been disabled. Make sure all necessary context is already in 'cdk.context.json'";
+
+      it('refuses missing context without a lookup or a cdk.context.json write', async () => {
+        mockReadManifest.mockReturnValue(manifestMissing([ssmKey, 'b']));
+
+        await expect(
+          synthesizer.synthesize({ app: 'node app.ts', lookups: false })
+        ).rejects.toThrow(disabled);
+        await expect(
+          synthesizer.synthesize({ app: 'node app.ts', lookups: false })
+        ).rejects.toThrow(`Missing context keys: '${ssmKey}, b'`);
+        expect(mockResolve).not.toHaveBeenCalled();
+        expect(mockContextStoreSave).not.toHaveBeenCalled();
+      });
+
+      it('passes an app that reports nothing missing', async () => {
+        mockAssemblyStacks.mockReturnValue([{ stackName: 'App' }]);
+
+        const result = await synthesizer.synthesize({ app: 'node app.ts', lookups: false });
+
+        expect(result.stacks).toEqual([{ stackName: 'App' }]);
+      });
+
+      it('ignores a cdk.json / ~/.cdk.json "lookups": false, as the cdk CLI does', async () => {
+        // The cdk CLI's flag defaults to true and the command line overrides
+        // cdk.json, so only --no-lookups ever disables lookups.
+        mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+        mockLoadCdkJson.mockReturnValue({ lookups: false });
+        mockLoadUserCdkJson.mockReturnValue({ lookups: false });
+
+        await synthesizer.synthesize({ app: 'node app.ts' });
+
+        expect(mockResolve).toHaveBeenCalledTimes(1);
+      });
+
+      describe('a pre-synthesized assembly (-a <dir>)', () => {
+        beforeEach(() => {
+          mockExistsSync.mockReturnValue(true);
+          mockStatSync.mockReturnValue({ isDirectory: () => true });
+        });
+
+        it('refuses one that still reports missing context', async () => {
+          mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+
+          await expect(
+            synthesizer.synthesize({ app: 'cdk.out', lookups: false })
+          ).rejects.toThrow(`Missing context keys: '${ssmKey}'`);
+          await expect(synthesizer.synthesize({ app: 'cdk.out' })).resolves.toBeDefined();
+          expect(mockExecute).not.toHaveBeenCalled();
+        });
+
+        it('reads one that reports nothing missing', async () => {
+          await expect(
+            synthesizer.synthesize({ app: 'cdk.out', lookups: false })
+          ).resolves.toBeDefined();
+        });
+      });
+    });
+
     it('keeps resolving while the missing keys change', async () => {
       mockReadManifest
         .mockReturnValueOnce(manifestMissing(['a']))

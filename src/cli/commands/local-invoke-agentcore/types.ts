@@ -10,6 +10,7 @@ export interface LocalInvokeAgentCoreOptions {
   caBundle?: string;
   roleArn?: string;
   context?: string[];
+  lookups?: boolean;
   event?: string;
   eventStdin?: boolean;
   envVars?: string;

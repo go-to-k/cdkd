@@ -28,7 +28,8 @@ cdkd list --long --json
 ```
 
 The command changes nothing in AWS, but it does call AWS. Synthesis resolves
-the account through STS and runs the context lookups the app asks for, so
+the account through STS and runs the context lookups the app asks for
+(unless `--no-lookups` is given), so
 `--profile` and `--role-arn` matter here too.
 
 ## Options
@@ -42,6 +43,7 @@ the account through STS and runs the context lookups the app asks for, so
 | `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
 | `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `--lookups`, `--no-lookups` | on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 | `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
 | `--verbose` | `false` | Debug-level logging. |
