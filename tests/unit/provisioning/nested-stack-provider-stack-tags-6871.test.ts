@@ -140,4 +140,14 @@ describe('NestedStackProvider threads the child stack tags (go-to-k/cdkd#6871)',
     expect(childOptions().stackTags).toEqual({ a: '1', s: expression });
     expect(JSON.stringify(childContextOptions()?.stackTags)).not.toContain(plaintext);
   });
+
+  it("warns, naming the row, when the row's Tags are not a literal list, and applies the parent's tags alone", async () => {
+    const provider = new NestedStackProvider();
+    const warn = vi.spyOn(provider.logger, 'warn');
+    await withNestedStackContext(makeContext({ a: '1' }), () =>
+      provider.create('Child', NESTED, { Tags: 'not-a-list' })
+    );
+    expect(childOptions().stackTags).toEqual({ a: '1' });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('Child') && String(c[0]).includes('Tags'))).toBe(true);
+  });
 });

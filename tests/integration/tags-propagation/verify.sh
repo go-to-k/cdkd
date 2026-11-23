@@ -415,7 +415,7 @@ expect_tag() {
   echo "[verify]   ok: $1: $3=${4:-<absent>}"
 }
 
-echo "[verify] step 4: read live AWS tags per type + assert all 3 stack tags present"
+echo "[verify] step 4: read live AWS tags per type + assert all ${#EXPECTED_KEYS[@]} stack tags present"
 
 # --- S3 Bucket: get-bucket-tagging -> TagSet[{Key,Value}] ---
 S3_ID="$(physid_for_type 'AWS::S3::Bucket')"
@@ -499,7 +499,7 @@ expect_tag "SSM Parameter" "${SSM_TAGS}" CdkdTagShared from-resource
 expect_tag "SNS Topic" "${SNS_TAGS}" CdkdTagShared from-stack
 # The recorded properties carry the merged tags (drift's expected side).
 REC_PARAM_TAG="$(echo "${STATE}" | jq -r \
-  '[.resources[] | select(.resourceType == "AWS::SSM::Parameter") | .properties.Tags.CdkdStackTag] | first // ""')"
+  '[.resources | to_entries[] | select(.key | startswith("TaggedParameter")) | .value.properties.Tags.CdkdStackTag] | first // ""')"
 if [ "${REC_PARAM_TAG}" != "from-stackprops" ]; then
   echo "[verify] FAIL: the SSM Parameter's recorded Tags lack CdkdStackTag (got '${REC_PARAM_TAG}'); the stack tags were not merged before the record (go-to-k/cdkd#6871)" >&2
   exit 1
@@ -521,17 +521,35 @@ echo "[verify] step 5b: go-to-k/cdkd#6871 -- a stack-tag-only change updates the
 SQS_URL_1="${SQS_URL}"
 SNS_ARN_1="${SNS_ARN}"
 SSM_NAME_1="${SSM_NAME}"
+# `cdkd diff` merges the stack tags as the deploy does: it must preview the
+# change (exit 1 under --fail), and none once the deploy applied it.
+set +e
+CDKD_TEST_STACK_TAGS=2 ${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --fail >/dev/null
+DIFF_RC=$?
+set -e
+if [ "${DIFF_RC}" -ne 1 ]; then
+  echo "[verify] FAIL: cdkd diff --fail exited ${DIFF_RC} for a stack-tag-only change, expected 1 (the preview must show the tag update, go-to-k/cdkd#6871)" >&2
+  exit 1
+fi
 CDKD_TEST_STACK_TAGS=2 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
 STATE_5B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-for PAIR in "AWS::SQS::Queue|${SQS_URL_1}" "AWS::SNS::Topic|${SNS_ARN_1}" "AWS::SSM::Parameter|${SSM_NAME_1}"; do
-  T="${PAIR%%|*}"
-  NOW="$(echo "${STATE_5B}" | jq -r --arg t "${T}" \
-    '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.physicalId] | first // ""')"
+for PAIR in "TaggedQueue|${SQS_URL_1}" "TaggedTopic|${SNS_ARN_1}" "TaggedParameter|${SSM_NAME_1}"; do
+  LID="${PAIR%%|*}"
+  NOW="$(echo "${STATE_5B}" | jq -r --arg p "${LID}" \
+    '[.resources | to_entries[] | select(.key | startswith($p)) | .value.physicalId] | first // ""')"
   if [ "${NOW}" != "${PAIR#*|}" ]; then
-    echo "[verify] FAIL: ${T} was replaced by a stack-tag-only change (${PAIR#*|} -> ${NOW}); CloudFormation updates it in place" >&2
+    echo "[verify] FAIL: ${LID} was replaced by a stack-tag-only change (${PAIR#*|} -> ${NOW}); CloudFormation updates it in place" >&2
     exit 1
   fi
 done
+set +e
+CDKD_TEST_STACK_TAGS=2 ${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" --fail >/dev/null
+DIFF_RC=$?
+set -e
+if [ "${DIFF_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: cdkd diff --fail exited ${DIFF_RC} after the stack-tag update was deployed, expected 0 (go-to-k/cdkd#6871)" >&2
+  exit 1
+fi
 SQS_TAGS_2="$(aws sqs list-queue-tags --queue-url "${SQS_URL_1}" --region "${REGION}" \
   --query 'Tags' --output json | jq -r 'to_entries[] | "\(.key)\t\(.value)"')"
 SNS_TAGS_2="$(aws sns list-tags-for-resource --resource-arn "${SNS_ARN_1}" --region "${REGION}" \

@@ -524,11 +524,7 @@ export async function computeStackDiff(
     // `Fn::If`; an unknown one masks the whole leaf.
     noEchoComparisonForTemplate(
       effectiveTemplate,
-      conditions === undefined
-        ? undefined
-        : Object.fromEntries(
-            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
-          ),
+      namingConditions,
       mergedParameters,
       stateForDiff.resources,
       new Set([region, stackName]),
@@ -987,12 +983,7 @@ export async function computeStackDiff(
     namingSecretsFor: noEchoJudge,
     resolvedParameters: mergedParameters,
     conditions,
-    knownConditions:
-      conditions === undefined
-        ? undefined
-        : Object.fromEntries(
-            Object.entries(conditions).filter(([name]) => !stillUnknown.includes(name))
-          ),
+    knownConditions,
     trust: {
       parameters: trustedParameters,
       conditions: trustedConditions,

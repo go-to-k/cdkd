@@ -190,3 +190,17 @@ export async function settleStackTagChildRuns(args: {
   markStackTagChildRuns(args.changes, nestedRowsNeedingTagRun(expected, args.state));
   return expected;
 }
+
+/**
+ * Write the `nestedStackTags` field a successful deploy saves onto `state`
+ * (which carries the loaded record's): rows with no tags are left out, and
+ * with none the field is removed, so a stale record cannot force runs forever.
+ */
+export function recordNestedStackTags(
+  state: Pick<StackState, 'nestedStackTags'>,
+  expected: ReadonlyMap<string, Record<string, string> | undefined>
+): void {
+  const field = nestedStackTagsField(expected);
+  if (field === undefined) delete state.nestedStackTags;
+  else state.nestedStackTags = field;
+}

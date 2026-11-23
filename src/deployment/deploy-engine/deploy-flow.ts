@@ -1,4 +1,4 @@
-import { nestedStackTagsField } from '../nested-stack-tags.js';
+import { recordNestedStackTags } from '../nested-stack-tags.js';
 import { armSignalReceiver, ensureSignalReceiver, settledAfter } from './signal-receiver-run.js';
 import { readRefactorMarker } from '../../state/refactor-marker.js';
 import { seedPersistedNoEchoAttributes } from './noecho.js';
@@ -81,11 +81,7 @@ export async function doDeployWithPrefetch(
   stackName: string,
   synthTemplate: CloudFormationTemplate,
   createOnlyPrefetch: CreateOnlyPrefetch,
-  /**
-   * go-to-k/cdkd#6871: `synthTemplate` with the stack tags merged, started
-   * beside the lock acquisition (its DescribeType lookups overlap it) and
-   * awaited once the state is read. Absent: the stack has no stack tags.
-   */
+  /** go-to-k/cdkd#6871: `synthTemplate` with the stack tags merged; absent without tags. */
   stackTagged?: Promise<CloudFormationTemplate>
 ): Promise<DeployResult> {
   let template = synthTemplate;
@@ -184,8 +180,7 @@ export async function doDeployWithPrefetch(
       readRefactorMarker(engine.stateBackend),
     ]);
     clock.lap('state load');
-    // go-to-k/cdkd#6871: everything below -- diff, provisioning, the recorded
-    // properties -- sees the template with the stack tags merged.
+    // go-to-k/cdkd#6871: diff, provisioning and the record all see the merged template.
     if (stackTagged !== undefined) template = await stackTagged;
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
@@ -600,8 +595,6 @@ export async function doDeployWithPrefetch(
         conditions,
         clock,
         forcedNestedChildRuns: nestedCheck?.forcedRows,
-        // go-to-k/cdkd#6871: a nested row whose child's tags differ updates.
-        stackTags: engine.options.stackTags,
       });
     clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
@@ -852,9 +845,7 @@ export async function doDeployWithPrefetch(
       newState.nestedSsmNamesChecked = true;
     }
     // go-to-k/cdkd#6871: every nested row's child now holds these tags.
-    const childTagsField = nestedStackTagsField(expectedChildTags);
-    if (childTagsField === undefined) delete newState.nestedStackTags;
-    else newState.nestedStackTags = childTagsField;
+    recordNestedStackTags(newState, expectedChildTags);
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is

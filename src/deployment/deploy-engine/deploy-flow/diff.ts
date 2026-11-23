@@ -25,7 +25,6 @@ export async function calculateDeployDiff(
     conditions,
     clock,
     forcedNestedChildRuns,
-    stackTags,
   }: {
     stackName: string;
     currentState: StackState;
@@ -35,8 +34,6 @@ export async function calculateDeployDiff(
     clock: PhaseClock;
     /** go-to-k/cdkd#6282: see `DiffCalculator.calculateDiff`'s parameter. */
     forcedNestedChildRuns?: ReadonlySet<string> | undefined;
-    /** go-to-k/cdkd#6871: this stack's effective stack tags, for the nested rows. */
-    stackTags?: Readonly<Record<string, string>> | undefined;
   }
 ) {
   // 5. Calculate diff
@@ -205,7 +202,7 @@ export async function calculateDeployDiff(
   const expectedChildTags = await settleStackTagChildRuns({
     changes,
     template: effectiveTemplate,
-    stackTags,
+    stackTags: engine.options.stackTags,
     state: currentState,
     resolve: diffResolveFn,
     secrets: diffResolverContext.recordedSecretValues,

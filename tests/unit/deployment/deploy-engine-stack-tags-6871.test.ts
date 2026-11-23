@@ -232,4 +232,29 @@ describe('cdkd deploy applies stack tags (go-to-k/cdkd#6871)', () => {
     });
     expect(provider.update).not.toHaveBeenCalled();
   });
+
+  it('drops the recorded field once no nested row has tags, so the next deploy runs nothing (test review)', async () => {
+    const rowRecord = {
+      resourceType: ROW,
+      physicalId: 'arn:cdkd-local:x',
+      properties: { TemplateURL: 'u' },
+      attributes: {},
+      dependencies: [],
+    };
+    const nested = { Resources: { Child: { Type: ROW, Properties: { TemplateURL: 'u' } } } };
+    stateBackend.getState.mockResolvedValue({
+      state: makeState({ Child: rowRecord }, { nestedStackTags: { Child: { team: 'x' } } }),
+      etag: 'e',
+    });
+    await makeEngine([['Child']]).deploy(STACK, structuredClone(nested));
+    // The tags were removed: the child runs once to untag, and the record drops the field.
+    expect(provider.update).toHaveBeenCalledTimes(1);
+    const saved = savedStates(stateBackend.saveState).at(-1)!;
+    expect(Object.hasOwn(saved, 'nestedStackTags')).toBe(false);
+
+    provider.update.mockClear();
+    stateBackend.getState.mockResolvedValue({ state: saved, etag: 'e2' });
+    await makeEngine([['Child']]).deploy(STACK, structuredClone(nested));
+    expect(provider.update).not.toHaveBeenCalled();
+  });
 });
