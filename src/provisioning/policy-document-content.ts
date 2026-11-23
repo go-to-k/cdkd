@@ -233,7 +233,9 @@ function normalizeStatement(statement: unknown, partition: string | undefined): 
     if (Object.prototype.hasOwnProperty.call(out, key)) out[key] = unwrapSingle(out[key]);
   }
   for (const key of PRINCIPAL_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(out, key)) out[key] = normalizePrincipal(out[key], partition);
+    if (Object.prototype.hasOwnProperty.call(out, key)) {
+      out[key] = normalizePrincipal(out[key], partition);
+    }
   }
   return out;
 }

@@ -461,7 +461,10 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         this.logger.warn(
           safeMsg`Could not read the policy of queue ${queueUrl} (${current.reason}), so it is not cleared: it may still carry the policy of ${logicalId}.`
         );
-      } else if (current.kind === 'none' || policyContentKey(current.policy, partition) === reference) {
+      } else if (
+        current.kind === 'none' ||
+        policyContentKey(current.policy, partition) === reference
+      ) {
         // No policy read back is cleared too: right after the create wrote
         // it (the automatic rollback) a stale read can still show the empty
         // policy from before, and clearing an empty queue changes nothing.

@@ -7,6 +7,7 @@
  * document key (`policyContentKey`) is in policy-document-content-4612.test.ts.
  */
 import { describe, it, expect } from 'vite-plus/test';
+import type { ResourceRecordSet } from '@aws-sdk/client-route-53';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { ApiGatewayV2Provider } from '../../../src/provisioning/providers/apigatewayv2-provider.js';
@@ -203,13 +204,14 @@ describe('Route 53 (go-to-k/cdkd#6854)', () => {
   });
 
   it('a record set: key order, name spelling and alias case are one; ResourceRecords order and TTL are not', () => {
-    const base = { Name: 'www.example.com.', Type: 'A', TTL: 60, ResourceRecords: [{ Value: '1.1.1.1' }, { Value: '2.2.2.2' }] } as const;
+    const base: ResourceRecordSet = { Name: 'www.example.com.', Type: 'A', TTL: 60, ResourceRecords: [{ Value: '1.1.1.1' }, { Value: '2.2.2.2' }] };
     expect(sameRecordSet({ ...base, Name: 'WWW.example.com' }, { TTL: 60, Type: 'A', Name: 'www.example.com.', ResourceRecords: [{ Value: '1.1.1.1' }, { Value: '2.2.2.2' }] })).toBe(true);
     expect(sameRecordSet(base, { ...base, ResourceRecords: [{ Value: '2.2.2.2' }, { Value: '1.1.1.1' }] })).toBe(false);
     expect(sameRecordSet(base, { ...base, TTL: 300 })).toBe(false);
-    const alias = { Name: 'a.example.com.', Type: 'A', AliasTarget: { HostedZoneId: 'Z1', DNSName: 'D.cloudfront.net', EvaluateTargetHealth: false } } as const;
-    expect(sameRecordSet(alias, { ...alias, AliasTarget: { ...alias.AliasTarget, DNSName: 'd.cloudfront.net.' } })).toBe(true);
-    expect(sameRecordSet(alias, { ...alias, AliasTarget: { ...alias.AliasTarget, DNSName: 'dualstack.d.cloudfront.net.' } })).toBe(false);
+    const aliasTarget = { HostedZoneId: 'Z1', DNSName: 'D.cloudfront.net', EvaluateTargetHealth: false };
+    const alias: ResourceRecordSet = { Name: 'a.example.com.', Type: 'A', AliasTarget: aliasTarget };
+    expect(sameRecordSet(alias, { ...alias, AliasTarget: { ...aliasTarget, DNSName: 'd.cloudfront.net.' } })).toBe(true);
+    expect(sameRecordSet(alias, { ...alias, AliasTarget: { ...aliasTarget, DNSName: 'dualstack.d.cloudfront.net.' } })).toBe(false);
   });
 
   it('HostedZone VPCs are a multiset of {VPCId, VPCRegion}: order is not drift, another region is', () => {

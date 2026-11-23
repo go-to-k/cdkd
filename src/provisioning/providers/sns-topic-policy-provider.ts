@@ -489,7 +489,8 @@ export class SNSTopicPolicyProvider implements ResourceProvider {
       }
       const partition = arnPartition(topicArn);
       const reference = policyContentKey(sent, partition);
-      const live = current.kind === 'none' ? undefined : policyContentKey(current.policy, partition);
+      const live =
+        current.kind === 'none' ? undefined : policyContentKey(current.policy, partition);
       // No policy read back is reset too: right after the create wrote it
       // (the automatic rollback) a stale read can still show nothing, and the
       // reset writes only the default.
