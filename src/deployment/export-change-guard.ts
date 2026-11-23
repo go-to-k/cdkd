@@ -50,6 +50,9 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  *   (`refuseDeferredExportChanges`). It is `changed` up front instead when
  *   the value cannot be compared later (a published value holding `***`, a
  *   dynamic reference) or already differs at plan time.
+ *   The caller (`refuseInUseExportChanges`) also keeps it `changed` when the
+ *   plan replaces or deletes anything or updates a nested stack: those act
+ *   irreversibly before the post-update check could run.
  * - Otherwise the value is resolved and compared with the published one. A
  *   value that does not resolve counts as changing only when it references a
  *   resource this plan touches. A published `***` (a `NoEcho` source) cannot

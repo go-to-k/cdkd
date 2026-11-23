@@ -241,38 +241,69 @@ async function refuseInUseExportChanges(
     diffResolverContext: ResolverContext;
   }
 ): Promise<AffectedExport[]> {
+  // The plan's replacement rule (`change-plan.ts`): a replacing property
+  // change, a Type change, or a `--recreate-via-*` target.
+  const replaces = (logicalId: string): boolean => {
+    const change = changes.get(logicalId);
+    const record = currentState.resources[logicalId];
+    if (change === undefined || record === undefined) return false;
+    return (
+      (change.changeType === 'UPDATE' &&
+        // An in-place propagation's `requiresReplacement` is a ceiling the
+        // engine lowers when the read value did not move: not a verdict.
+        ((change.propertyChanges ?? []).some(
+          (pc) => pc.requiresReplacement && pc.inPlacePropagated !== true
+        ) ||
+          record.resourceType !== change.resourceType)) ||
+      recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(logicalId) === true
+    );
+  };
   const found = await findAffectedExports({
     template: effectiveTemplate,
     conditions,
     changes,
     currentState,
     resolve: (value) => engine.resolver.resolve(value, diffResolverContext),
-    // The plan's replacement rule (`change-plan.ts`): a replacing property
-    // change, a Type change, or a `--recreate-via-*` target.
-    replaces: (logicalId) => {
-      const change = changes.get(logicalId);
-      const record = currentState.resources[logicalId];
-      if (change === undefined || record === undefined) return false;
-      return (
-        (change.changeType === 'UPDATE' &&
-          // An in-place propagation's `requiresReplacement` is a ceiling the
-          // engine lowers when the read value did not move: not a verdict.
-          ((change.propertyChanges ?? []).some(
-            (pc) => pc.requiresReplacement && pc.inPlacePropagated !== true
-          ) ||
-            record.resourceType !== change.resourceType)) ||
-        recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(logicalId) === true
-      );
-    },
+    replaces,
   });
-  const deferred = found.filter((a) => a.reason === 'deferred');
+  // go-to-k/cdkd#6865: an export is judged after the custom resource update
+  // only when nothing the deploy does before that check is irreversible. A
+  // replacement deletes its old copy inside the create / update phase, and a
+  // nested stack's child runs its own DELETE phase there, so a refusal after
+  // either would leave a rollback re-creating what was deleted (a stateful
+  // copy EMPTY). Any of these, or a DELETE anywhere in the plan, keeps the
+  // plan-time verdict: refused before anything is touched.
+  const deferrable = deferralIsReversible(changes, replaces);
+  const deferred = deferrable ? found.filter((a) => a.reason === 'deferred') : [];
   await refuseInUseExports(
     engine,
     stackName,
-    found.filter((a) => a.reason !== 'deferred'),
+    found
+      .filter((a) => a.reason !== 'deferred' || !deferrable)
+      .map((a) => (a.reason === 'deferred' ? { exportName: a.exportName, reason: 'changed' } : a)),
     { ssmNameHeals, effectiveTemplate }
   );
   return deferred;
+}
+
+/**
+ * Whether a refusal after the create / update phase can still be undone by the
+ * rollback: the plan replaces nothing, deletes nothing, and updates or creates
+ * no nested stack (whose child plan, computed inside the child, may delete or
+ * replace). A `NO_CHANGE` row counts only as a `--recreate-via-*` target.
+ */
+export function deferralIsReversible(
+  changes: ReadonlyMap<string, ResourceChange>,
+  replaces: (logicalId: string) => boolean
+): boolean {
+  for (const [logicalId, change] of changes) {
+    if (change.changeType === 'DELETE') return false;
+    if (replaces(logicalId)) return false;
+    if (change.changeType !== 'NO_CHANGE' && change.resourceType === 'AWS::CloudFormation::Stack') {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**

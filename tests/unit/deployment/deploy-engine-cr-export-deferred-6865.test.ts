@@ -64,7 +64,12 @@ async function deploy(opts: {
   returns: string;
   noRollback?: boolean;
   consumerImports?: boolean;
+  /** A queue record the template drops: the plan DELETEs it. */
+  withDelete?: boolean;
+  /** A queue whose name changes: the plan REPLACES it. */
+  withReplacement?: boolean;
 }): Promise<{
+  provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
   updates: UpdateCall[];
   thrown: unknown;
   listStacks: ReturnType<typeof vi.fn>;
@@ -72,7 +77,7 @@ async function deploy(opts: {
 }> {
   const updates: UpdateCall[] = [];
   const provider = {
-    create: vi.fn(),
+    create: vi.fn(async () => ({ physicalId: 'new-queue', attributes: {} })),
     update: vi.fn(
       async (
         _logicalId: string,
@@ -88,9 +93,18 @@ async function deploy(opts: {
         return { physicalId: pid, attributes: { Value: value } };
       }
     ),
-    delete: vi.fn(),
+    delete: vi.fn(async () => undefined),
     getAttribute: vi.fn(),
   };
+  const queue = (name: string): ResourceState =>
+    ({
+      physicalId: `https://sqs.us-east-1.amazonaws.com/123456789012/${name}`,
+      resourceType: 'AWS::SQS::Queue',
+      properties: { QueueName: name },
+      attributes: {},
+      dependencies: [],
+      provisionedBy: 'sdk',
+    }) as ResourceState;
   const producer: StackState = {
     version: STATE_SCHEMA_VERSION_CURRENT,
     stackName: 'Producer',
@@ -104,6 +118,8 @@ async function deploy(opts: {
         dependencies: [],
         provisionedBy: 'sdk',
       } as ResourceState,
+      ...(opts.withDelete === true && { Gone: queue('gone-q') }),
+      ...(opts.withReplacement === true && { Q: queue('q1') }),
     },
     outputs: { Exported: 'v1', [EXPORT]: 'v1' },
     exportNames: [EXPORT],
@@ -116,7 +132,12 @@ async function deploy(opts: {
         : [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: EXPORT }],
   };
   const template = {
-    Resources: { Cr: { Type: CR, Properties: { ServiceToken: TOKEN, Ts: '2' } } },
+    Resources: {
+      Cr: { Type: CR, Properties: { ServiceToken: TOKEN, Ts: '2' } },
+      ...(opts.withReplacement === true && {
+        Q: { Type: 'AWS::SQS::Queue', Properties: { QueueName: 'q2' } },
+      }),
+    },
     Outputs: {
       Exported: { Value: { 'Fn::GetAtt': ['Cr', 'Value'] }, Export: { Name: EXPORT } },
     },
@@ -148,7 +169,9 @@ async function deploy(opts: {
     { acquireLockWithRetry: vi.fn().mockResolvedValue(true), releaseLock: vi.fn() } as never,
     {
       buildGraph: vi.fn().mockReturnValue({}),
-      getExecutionLevels: vi.fn().mockReturnValue([['Cr']]),
+      getExecutionLevels: vi
+        .fn()
+        .mockReturnValue([opts.withReplacement === true ? ['Cr', 'Q'] : ['Cr']]),
       getDirectDependencies: vi.fn().mockReturnValue([]),
     } as never,
     new DiffCalculator(),
@@ -166,7 +189,7 @@ async function deploy(opts: {
   await engine.deploy('Producer', template).catch((e: unknown) => {
     thrown = e;
   });
-  return { updates, thrown, listStacks, journalReasons };
+  return { provider, updates, thrown, listStacks, journalReasons };
 }
 
 beforeEach(() => {
@@ -192,6 +215,23 @@ describe('a custom resource feeding an imported export (#6865)', () => {
       { ts: '1', previousTs: '2' },
     ]);
     expect(run.journalReasons).toContain('auto-rollback-started');
+    // An UPDATE's rollback deletes nothing.
+    expect(run.provider.delete).not.toHaveBeenCalled();
+  });
+
+  // The post-update check runs after the create / update phase, where a
+  // replacement's old copy and a nested child's deletes are already gone: such
+  // a plan keeps the plan-time refusal, before anything is touched.
+  it.each([
+    ['a DELETE', { withDelete: true }],
+    ['a replacement', { withReplacement: true }],
+  ])('refuses at plan time, touching nothing, when the plan also has %s', async (_label, extra) => {
+    const run = await deploy({ returns: 'v1', ...extra });
+    expect(run.thrown).toBeInstanceOf(ExportInUseError);
+    expect((run.thrown as Error).message).toContain('Nothing was changed.');
+    expect(run.updates).toEqual([]);
+    expect(run.provider.create).not.toHaveBeenCalled();
+    expect(run.provider.delete).not.toHaveBeenCalled();
   });
 
   it('under --no-rollback, fails without reverting and journals the update for cdkd rollback', async () => {

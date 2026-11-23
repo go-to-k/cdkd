@@ -11,6 +11,7 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { findAffectedExports, inRunStackKey } from '../../../src/deployment/export-change-guard.js';
 import {
+  deferralIsReversible,
   refuseDeferredExportChanges,
   refuseUnsafePlan,
 } from '../../../src/deployment/deploy-engine/deploy-flow/plan-checks.js';
@@ -729,5 +730,44 @@ describe('ExportInUseError after provisioning names a runnable rollback (#6865)'
     }).message;
     expect(message).toContain('run cdkd rollback Root)');
     expect(message).not.toContain('cdkd rollback Root~Child');
+  });
+});
+
+describe('deferralIsReversible (#6865)', () => {
+  const plan = (...rows: Array<[string, Partial<ResourceChange> & Pick<ResourceChange, 'changeType'>]>) =>
+    new Map(rows.map(([id, c]) => [id, { logicalId: id, resourceType: 'Custom::Thing', ...c }]));
+  const none = (): boolean => false;
+  it('allows a plan of in-place updates, creates and unchanged rows', () => {
+    expect(
+      deferralIsReversible(
+        plan(['Cr', { changeType: 'UPDATE' }], ['New', { changeType: 'CREATE' }], ['Same', { changeType: 'NO_CHANGE' }]),
+        none
+      )
+    ).toBe(true);
+  });
+  it.each([
+    ['a DELETE', plan(['Cr', { changeType: 'UPDATE' }], ['Gone', { changeType: 'DELETE' }]), none],
+    ['a replacement', plan(['Cr', { changeType: 'UPDATE' }], ['Q', { changeType: 'UPDATE' }]), (id: string) => id === 'Q'],
+    ['a --recreate-via-* target left NO_CHANGE', plan(['Cr', { changeType: 'UPDATE' }], ['Q', { changeType: 'NO_CHANGE' }]), (id: string) => id === 'Q'],
+    [
+      'an updated nested stack',
+      plan(['Cr', { changeType: 'UPDATE' }], ['Child', { changeType: 'UPDATE', resourceType: 'AWS::CloudFormation::Stack' }]),
+      none,
+    ],
+    [
+      'a created nested stack',
+      plan(['Cr', { changeType: 'UPDATE' }], ['Child', { changeType: 'CREATE', resourceType: 'AWS::CloudFormation::Stack' }]),
+      none,
+    ],
+  ])('refuses deferral for a plan with %s', (_label, changes, replaces) => {
+    expect(deferralIsReversible(changes, replaces)).toBe(false);
+  });
+  it('ignores an unchanged nested stack', () => {
+    expect(
+      deferralIsReversible(
+        plan(['Cr', { changeType: 'UPDATE' }], ['Child', { changeType: 'NO_CHANGE', resourceType: 'AWS::CloudFormation::Stack' }]),
+        none
+      )
+    ).toBe(true);
   });
 });
