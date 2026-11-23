@@ -63,6 +63,7 @@ new MyStack(app, 'MyStack', { tags: { team: 'platform', costCenter: 'cc-1234' } 
 | A resource declares the same tag key | The resource's own value is kept. |
 | A list-shaped tag property (`[{ Key, Value }]`) or a map-shaped one (`{ key: value }`) | The tags are added in the shape the resource type uses, under the property its registry schema names (`UserPoolTags` for a Cognito user pool, for example). |
 | An Auto Scaling group | Each stack tag is sent with `PropagateAtLaunch: true`. |
+| A DynamoDB global table (`AWS::DynamoDB::GlobalTable`) | The tags are added to every replica's `Tags`, including a replica that declares none; a replica's own value is kept on a shared key. |
 | A type whose registry schema says `taggable: false`, or `tagUpdatable: false` (such as `AWS::EC2::PlacementGroup`) | No stack tags, as in CloudFormation. |
 | Custom resources | No stack tags. |
 | A nested stack | Its resources get the parent's stack tags plus the nested stack resource's own `Tags`, which win on a shared key. |

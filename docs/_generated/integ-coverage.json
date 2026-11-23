@@ -1546,7 +1546,8 @@
         "globaltable-keyschema-replace",
         "globaltable-template-baseline-drift",
         "lambda",
-        "rollback-replay-effective-props"
+        "rollback-replay-effective-props",
+        "tags-propagation"
       ],
       "signals": {
         "dynamodb-globaltable": [
@@ -1582,6 +1583,9 @@
         ],
         "rollback-replay-effective-props": [
           "l1"
+        ],
+        "tags-propagation": [
+          "l2"
         ]
       }
     },
