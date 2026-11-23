@@ -51,9 +51,7 @@ function deref(schema: Record<string, unknown>, node: unknown): unknown {
   const match = /^#\/definitions\/([^/]+)$/.exec(ref);
   const definitions = schema['definitions'];
   if (!match || !isRecord(definitions)) return undefined;
-  return hasOwnKey(definitions, match[1]!)
-    ? definitions[match[1]!]
-    : undefined;
+  return hasOwnKey(definitions, match[1]!) ? definitions[match[1]!] : undefined;
 }
 
 /**
@@ -94,7 +92,10 @@ export function stackTagTargetFromSchema(resourceType: string, schema: unknown):
   if (definition === undefined) {
     return tagging === undefined
       ? { kind: 'skip' }
-      : { kind: 'unknown', reason: `its registry schema does not define its tag property ${property}` };
+      : {
+          kind: 'unknown',
+          reason: `its registry schema does not define its tag property ${property}`,
+        };
   }
   if (!isRecord(definition)) {
     return { kind: 'unknown', reason: `its tag property ${property} has an unreadable schema` };
@@ -112,7 +113,11 @@ export function stackTagTargetFromSchema(resourceType: string, schema: unknown):
     if (!hasOwnKey(members, 'Key') || !hasOwnKey(members, 'Value')) {
       return { kind: 'unknown', reason: `its tag property ${property} is not a Key/Value list` };
     }
-    const allowed = new Set(['Key', 'Value', ...(EXTRA_REQUIRED_ENTRY_MEMBERS[resourceType] ?? [])]);
+    const allowed = new Set([
+      'Key',
+      'Value',
+      ...(EXTRA_REQUIRED_ENTRY_MEMBERS[resourceType] ?? []),
+    ]);
     const required = isRecord(item) && Array.isArray(item['required']) ? item['required'] : [];
     if (required.some((member) => typeof member !== 'string' || !allowed.has(member))) {
       return {

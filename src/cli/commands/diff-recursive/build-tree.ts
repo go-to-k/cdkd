@@ -697,7 +697,9 @@ export async function buildDiffTree(args: {
         // deploy resolves them; the preview applies the parent's tags alone.
         stackTags: childStackTags(
           stackTags,
-          literalRowTags((resource as { Properties?: Record<string, unknown> }).Properties?.['Tags'])
+          literalRowTags(
+            (resource as { Properties?: Record<string, unknown> }).Properties?.['Tags']
+          )
         ),
       });
     node.children.push(

@@ -16,7 +16,12 @@
  * row UPDATE.
  */
 
-import { childStackTags, literalRowTags, NESTED_STACK_ROW_TYPE, sameTags } from '../provisioning/stack-tags.js';
+import {
+  childStackTags,
+  literalRowTags,
+  NESTED_STACK_ROW_TYPE,
+  sameTags,
+} from '../provisioning/stack-tags.js';
 import { hasOwnKey } from '../utils/own-keys.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange } from '../types/state/changes.js';
@@ -72,7 +77,7 @@ export function recordedNestedStackTagsOf(
  */
 export function nestedRowsNeedingTagRun(
   expected: ReadonlyMap<string, Record<string, string> | undefined>,
-  state: Pick<StackState, 'nestedStackTags'> & { resources?: Record<string, ResourceState> },
+  state: Pick<StackState, 'nestedStackTags'> & { resources?: Record<string, ResourceState> }
 ): Set<string> {
   const rows = new Set<string>();
   if (expected.size === 0) return rows;
