@@ -11,6 +11,7 @@ import type {
   ResourceNotFound,
 } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
+import { parseLambdaFunctionAddress } from '../../../utils/lambda-function-name.js';
 import {
   classifyEventSource,
   consumptionModeOf,
@@ -36,7 +37,8 @@ import {
  * resolution, but a hand-authored state might carry the bare function
  * name. We surface the form that matches state when possible: if the
  * `properties?.FunctionName` is the bare name AND the AWS-current
- * ARN's last segment matches that name, emit the bare name; otherwise
+ * ARN is that function's unqualified ARN, emit the bare name; otherwise
+ * (a qualified ARN, `...:function:<name>:<alias or version>`, included)
  * emit the ARN. (The two forms address the same Lambda function — the
  * shape-mismatch was the only reason a clean run fired drift.)
  *
@@ -67,11 +69,19 @@ export async function readCurrentState(
 
   if (resp.FunctionArn !== undefined) {
     // Match state's shape when state holds the bare function name and
-    // the ARN's last segment matches — avoids false drift from
-    // ARN-vs-name mismatch. Otherwise emit the ARN as-is.
+    // the ARN is that function's UNQUALIFIED ARN — avoids false drift from
+    // ARN-vs-name mismatch. Otherwise emit the ARN as-is. go-to-k/cdkd#6854:
+    // a mapping on an alias or version reads `...:function:<name>:<qualifier>`,
+    // whose last segment is the QUALIFIER, so a last-segment match made a
+    // mapping on `other-fn:prod` read as one on a function named `prod`.
     const stateFn = properties?.['FunctionName'];
-    const arnTail = resp.FunctionArn.split(':').pop();
-    if (typeof stateFn === 'string' && !stateFn.includes(':') && stateFn === arnTail) {
+    const live = parseLambdaFunctionAddress(resp.FunctionArn);
+    if (
+      typeof stateFn === 'string' &&
+      !stateFn.includes(':') &&
+      live?.region !== undefined &&
+      live.name === stateFn
+    ) {
       result['FunctionName'] = stateFn;
     } else {
       result['FunctionName'] = resp.FunctionArn;

@@ -24,6 +24,7 @@
 import { type SecurityGroupRule } from '@aws-sdk/client-ec2';
 import type { ReadCurrentStateContext } from '../../../types/resource.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { cfnIngressPortValue, recordedSgRuleId, sgProtocolKey } from '../../sg-rule-identity.js';
 import {
@@ -201,13 +202,19 @@ export function sgRevokesHeldBySiblings(
   return held;
 }
 
-/** A CIDR in one spelling: an IPv4 network with its host bits cleared, an IPv6 address normalized. */
-function cidrKey(value: unknown): unknown {
+/**
+ * A CIDR in one spelling: the network with its host bits cleared, as EC2
+ * stores a rule's CIDR (`10.0.0.5/24` reads back `10.0.0.0/24`, and
+ * `2001:db8::5/64` reads back `2001:db8::/64`; measured us-east-1, 2026-11-23,
+ * go-to-k/cdkd#6854). A prefix that is not 1-3 digits (`10.0.0.0/`, which EC2
+ * refuses as malformed) is left as written, never read as `/0`.
+ */
+export function cidrKey(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const [address, prefix, ...rest] = value.trim().split('/');
   if (address === undefined || prefix === undefined || rest.length > 0) return value;
+  if (!/^\d{1,3}$/.test(prefix)) return value;
   const length = Number(prefix);
-  if (!Number.isInteger(length)) return value;
   const octets = address.split('.');
   if (octets.length === 4 && length >= 0 && length <= 32) {
     const parts = octets.map(Number);
@@ -217,11 +224,7 @@ function cidrKey(value: unknown): unknown {
     const out = [24, 16, 8, 0].map((shift) => Math.floor(network / 2 ** shift) % 256);
     return `${out.join('.')}/${length}`;
   }
-  try {
-    return `${new URL(`http://[${address}]`).hostname}/${length}`;
-  } catch {
-    return value;
-  }
+  return canonicalizeIpv6Cidr(`${address}/${length}`) ?? value;
 }
 
 /** The keys a standalone ingress rule's identity reads. */
