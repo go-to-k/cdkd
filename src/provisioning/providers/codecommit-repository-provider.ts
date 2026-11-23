@@ -1,6 +1,8 @@
 import {
   CodeCommitClient,
   GetRepositoryCommand,
+  GetRepositoryTriggersCommand,
+  RepositoryDoesNotExistException,
   type RepositoryMetadata,
   type RepositoryTrigger,
 } from '@aws-sdk/client-codecommit';
@@ -388,21 +390,57 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
   }
 
   /**
-   * A readback without `Triggers` (its read failed, see `readCurrentState`)
-   * takes the baseline's, so the key is not compared on that read. The
-   * readback is completed rather than the baseline dropped: `drift --revert`
-   * sends this baseline, and `update()` reads a missing `Triggers` as a
-   * removal that clears every trigger.
+   * `Triggers` around a read that could not see it (go-to-k/cdkd#6854):
+   *
+   * - A readback without `Triggers` (its read failed, see `readCurrentState`)
+   *   takes the baseline's, so the key is not compared on that read.
+   * - A baseline without `Triggers` (captured, or accepted, by a read that
+   *   failed, or recorded before the key was read) takes the template's when
+   *   the template declares it and the readback holds it, so the key is
+   *   compared against what the deploy sent. An undeclared `Triggers` stays
+   *   uncompared, as any undeclared key whose baseline holds nothing.
+   *
+   * `drift --revert` passes its desired bag through here too; it then sends
+   * the template's triggers only where `Triggers` drifted.
    */
   canonicalizeDriftPair(
     _resourceType: string,
     baseline: Record<string, unknown>,
-    aws: Record<string, unknown>
+    aws: Record<string, unknown>,
+    properties: Record<string, unknown> = {}
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
-    if (Object.hasOwn(aws, 'Triggers') || !Object.hasOwn(baseline, 'Triggers')) {
-      return Promise.resolve({ baseline, aws });
+    const inAws = Object.hasOwn(aws, 'Triggers');
+    const inBaseline = Object.hasOwn(baseline, 'Triggers');
+    if (!inAws && inBaseline) {
+      return Promise.resolve({ baseline, aws: { ...aws, Triggers: baseline['Triggers'] } });
     }
-    return Promise.resolve({ baseline, aws: { ...aws, Triggers: baseline['Triggers'] } });
+    if (inAws && !inBaseline && Array.isArray(properties['Triggers'])) {
+      const declared = canonicalizeTriggers({ Triggers: properties['Triggers'] })['Triggers'];
+      return Promise.resolve({ baseline: { ...baseline, Triggers: declared }, aws });
+    }
+    return Promise.resolve({ baseline, aws });
+  }
+
+  /**
+   * An unsettled `Triggers` stays unsettled while its read fails: `--accept`
+   * and `--revert` clear every name this does not return, and a read that
+   * cannot see the triggers proves nothing about a half-applied set. Any
+   * other name is never in transition. A gone repository answers nothing.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    if (!names.has('Triggers')) return new Set();
+    try {
+      await this.getClient().send(new GetRepositoryTriggersCommand({ repositoryName: physicalId }));
+      return new Set();
+    } catch (err) {
+      if (err instanceof RepositoryDoesNotExistException) return new Set();
+      return new Set(['Triggers']);
+    }
   }
 
   /**

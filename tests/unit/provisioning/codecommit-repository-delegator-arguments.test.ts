@@ -87,8 +87,8 @@ describe('CodeCommitRepositoryProvider delegators hand every argument to the mov
       // constructor, getClient, getCreateClient, getS3Client, toAttributes,
       // wrapCaughtError, getAttribute, getDriftUnknownPaths, getRepositoryMetadata,
       // canonicalizeDriftProperties, canonicalizeUnsettledProperties, canonicalizeDriftPair,
-      // readUnsettled
-      own.length + 13
+      // readUnsettled, unsettledInTransition
+      own.length + 14
     );
     expect(own.sort()).toEqual(DELEGATORS.map(([name]) => name).sort());
   });

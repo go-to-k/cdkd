@@ -79,6 +79,7 @@ import {
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 import { settleUnsettledPrevious } from '../../../../src/deployment/unsettled-convergence.js';
+import { settleUnsettled } from '../../../../src/cli/commands/drift/report-json.js';
 import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 
 const REPO_ARN = 'arn:aws:codecommit:us-east-1:123456789012:my-repo';
@@ -1469,10 +1470,8 @@ describe('CodeCommitRepositoryProvider', () => {
       });
 
       it('end to end: a denied trigger read refuses the convergence of an unsettled Triggers before any write', async () => {
-        mockSend
-          .mockResolvedValueOnce({ repositoryMetadata: metadata() })
-          .mockResolvedValueOnce({ tags: {} })
-          .mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        // unsettledInTransition's own trigger read answers first.
+        mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
         await expect(
           settleUnsettledPrevious({
             provider,
@@ -1485,6 +1484,52 @@ describe('CodeCommitRepositoryProvider', () => {
           })
         ).rejects.toThrow('left Triggers unsettled');
         expect(mockSend.mock.calls.some((c) => c[0] instanceof PutRepositoryTriggersCommand)).toBe(false);
+      });
+
+      it('a baseline without Triggers (a denied capture or accept) takes the declared ones, so a later readable drift reports a change', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const declared = [{ Name: 'n', DestinationArn: TOPIC, Events: ['all'] }]; // no Branches, as CDK emits
+        const pairDrift = async (baseline: Record<string, unknown>, aws: Record<string, unknown>, properties: Record<string, unknown>) => {
+          const b = provider.canonicalizeDriftProperties(type, baseline);
+          const a = provider.canonicalizeDriftProperties(type, aws);
+          const pair = await provider.canonicalizeDriftPair(type, b, a, properties);
+          return calculateResourceDrift(pair.baseline, pair.aws, { ignorePaths: provider.getDriftUnknownPaths(type), resourceType: type }).map((d) => d.path);
+        };
+        const baseline = { RepositoryName: 'my-repo' }; // what the denied capture recorded
+        const changed = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['createReference'] }]))!;
+        expect(await pairDrift(baseline, changed, { Triggers: declared })).toEqual(['Triggers']);
+        const same = bagOf(await live([{ name: 'n', destinationArn: TOPIC, branches: [], events: ['all'] }]))!;
+        expect(await pairDrift(baseline, same, { Triggers: declared })).toEqual([]);
+        // Undeclared: stays uncompared, as any undeclared key with an empty baseline.
+        expect(await pairDrift(baseline, changed, {})).toEqual([]);
+      });
+
+      it('under a denied read the pair fabricates no Triggers: nothing for --accept to record wrongly', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        const aws = { RepositoryName: 'my-repo' }; // Triggers unread
+        const bare = { RepositoryName: 'my-repo' };
+        const out = await provider.canonicalizeDriftPair(type, bare, aws, { Triggers: [{ Name: 'n' }] });
+        expect(out.baseline).toBe(bare);
+        expect(out.aws).toBe(aws);
+        const held = { RepositoryName: 'my-repo', Triggers: [{ Name: 'kept' }] };
+        expect((await provider.canonicalizeDriftPair(type, held, aws, {})).aws['Triggers']).toEqual([{ Name: 'kept' }]);
+      });
+
+      it('an unsettled Triggers stays in transition while its read fails; --accept keeps it unsettled', async () => {
+        const type = 'AWS::CodeCommit::Repository';
+        mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        expect([...(await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Triggers', 'Tags'])))]).toEqual(['Triggers']);
+        mockSend.mockResolvedValueOnce({ triggers: [] });
+        expect((await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Triggers']))).size).toBe(0);
+        mockSend.mockRejectedValueOnce(notFound());
+        expect((await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Triggers']))).size).toBe(0);
+        const calls = mockSend.mock.calls.length;
+        expect((await provider.unsettledInTransition('my-repo', 'MyRepo', type, new Set(['Tags']))).size).toBe(0);
+        expect(mockSend.mock.calls.length).toBe(calls); // no read without Triggers
+        mockSend.mockRejectedValueOnce(Object.assign(new Error('x'), { name: 'AccessDeniedException' }));
+        const record = { resourceType: type, physicalId: 'my-repo', properties: {}, attributes: {}, unsettledProperties: ['Triggers'] };
+        const settled = await settleUnsettled(record as never, 'MyRepo', () => provider);
+        expect((settled as { unsettledProperties?: string[] }).unsettledProperties).toEqual(['Triggers']);
       });
 
       it('an unread Triggers is not compared: no phantom removal against a baseline holding triggers', async () => {
