@@ -1610,6 +1610,29 @@ describe('EC2Provider.readCurrentState', () => {
         });
       });
 
+      // go-to-k/cdkd#6854: EC2 stores 10.0.5.5/16 as 10.0.0.0/16, so a host-bit
+      // record pairs by identity and reads back in its own spelling.
+      it('returns a host-bit record in its own CIDR spelling, the Description edit still drift', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
+
+        const result = await provider.readCurrentState(
+          PHYS,
+          'Logical',
+          TYPE,
+          { ...declared, CidrIp: '10.0.5.5/16' },
+          own
+        );
+
+        expect(result).toEqual({
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.5.5/16',
+          Description: 'edited in the console',
+        });
+      });
+
       it('returns the live rule without a Description when it was removed', async () => {
         mockSend
           .mockResolvedValueOnce(liveGroup([{ CidrIp: '10.0.0.0/16' }]))

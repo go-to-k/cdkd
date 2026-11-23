@@ -3,7 +3,7 @@
  * (`ReadCurrentStateContext.afterOwnWrite`, go-to-k/cdkd#6609): when a
  * declared rule reads back, compared on a key both spellings share.
  */
-import { cfnIngressPortValue, sgProtocolKey } from './sg-rule-identity.js';
+import { cfnIngressPortValue, sgCidrKey, sgProtocolKey } from './sg-rule-identity.js';
 import { mergeDeclaredEntries, type OwnWriteMember } from './settle-own-write-members.js';
 import type { MemberRead } from './settle-after-own-write.js';
 
@@ -16,7 +16,9 @@ type SgDirection = 'ingress' | 'egress';
  *    ports as numbers (CFn accepts `'443'`);
  *  - `''` the same as an absent value (a `Description: ''`);
  *  - no peer owner id, which AWS adds to a peer-group ingress rule and CDK
- *    never declares.
+ *    never declares;
+ *  - a CIDR through `sgCidrKey` (host bits cleared, IPv6 compressed, as EC2
+ *    stores it).
  *
  * `undefined` for a rule declaring its peer by `SourceSecurityGroupName`
  * alone: AWS reads it back as the group id, which the declaration does not
@@ -44,8 +46,9 @@ export function sgSettleRuleKey(
     p: protocol,
     f: port(rule['FromPort']),
     t: port(rule['ToPort']),
-    c4: present(rule['CidrIp']),
-    c6: present(rule['CidrIpv6']),
+    // go-to-k/cdkd#6854: a CIDR as EC2 stores it, as every rule identity keys it.
+    c4: sgCidrKey(present(rule['CidrIp'])),
+    c6: sgCidrKey(present(rule['CidrIpv6'])),
     peer: present(peer),
     pl: present(
       direction === 'egress' ? rule['DestinationPrefixListId'] : rule['SourcePrefixListId']

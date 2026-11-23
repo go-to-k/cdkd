@@ -42,7 +42,11 @@ export function sgRuleDiffKey(
   return JSON.stringify({
     // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
     // MUST agree on identity, which is what this function's sibling JSDoc
-    // promises. `sgRuleKey` also keys `Description`, which only pairs drift
+    // promises. One deliberate exception (go-to-k/cdkd#6854): the CIDR is
+    // keyed as written here, so a template edit between two spellings of one
+    // network revokes and re-authorizes that rule (churn, never another
+    // rule); the drift readback echoes the record's spelling, so a revert
+    // sees no such pair. `sgRuleKey` also keys `Description`, which only pairs drift
     // read-back rules; here the description is compared per pair below.
     // Without it a `--revert` of a drifted inline rule set keys the
     // previous side (AWS's `tcp`) differently from the desired side

@@ -50,6 +50,7 @@ import {
   comparableIngressIdentity,
 } from '../../../src/provisioning/providers/ec2/sg-support.js';
 import { sgRuleOwnershipIdentity } from '../../../src/provisioning/sg-sibling-rules.js';
+import { sgSettleRuleKey } from '../../../src/provisioning/sg-own-write-rules.js';
 import {
   canonicalizeDriftPair as elbv2Pair,
   getDriftUnorderedPaths as elbv2Unordered,
@@ -396,6 +397,8 @@ describe('Security group rule identity by CIDR (ec2/sg-support.ts sgCidrKey / sg
     expect(sgRuleOwnershipIdentity(rule('10.0.0.0/24'), 'egress')).toBe(
       sgRuleOwnershipIdentity(rule('10.0.0.9/24'), 'egress')
     );
+    expect(sgSettleRuleKey(host, 'ingress')).toBe(sgSettleRuleKey(net, 'ingress'));
+    expect(sgSettleRuleKey(rule('10.0.1.0/24'), 'ingress')).not.toBe(sgSettleRuleKey(net, 'ingress'));
     // Another network, prefix, or a group name that only looks like a CIDR stay apart.
     expect(comparableIngressIdentity('sg-1', rule('10.0.1.0/24'))).not.toBe(comparableIngressIdentity('sg-1', net));
     expect(sgRuleOwnershipIdentity(rule('10.0.0.0/25'), 'ingress')).not.toBe(sgRuleOwnershipIdentity(net, 'ingress'));
