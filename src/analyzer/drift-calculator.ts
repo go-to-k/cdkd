@@ -99,8 +99,9 @@ export interface PropertyDrift {
  * verbatim (`verbatimEchoDriftKeys`, go-to-k/cdkd#6622), where a key only AWS
  * holds can only have been added out of band. Same prefix rule. At
  * `<entry>.Statement` a statement object equals a one-element list holding it
- * (go-to-k/cdkd#6624), so entries must be `verbatimEchoDriftKeys` values: a
- * non-verbatim entry would take the fold too.
+ * (go-to-k/cdkd#6624), and at and under it the measured policy-statement folds
+ * apply (`canonicalPolicyFoldForm`, go-to-k/cdkd#6852), so entries must be
+ * `verbatimEchoDriftKeys` values: a non-verbatim entry would take the folds too.
  *
  * `options.resourceType` keeps that type's ORDER-SIGNIFICANT id/ARN lists
  * (Lambda `Layers`, go-to-k/cdkd#6761) out of the id/ARN sort, on both sides.
