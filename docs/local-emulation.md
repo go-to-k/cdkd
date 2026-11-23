@@ -344,7 +344,7 @@ only the flags of its own.
 | --- | --- | --- |
 | `-a`, `--app <cmd-or-dir>` | `cdk.json` / `CDKD_APP` | CDK app command, or a synthesized cloud assembly directory. `-a cdk.out` skips synthesis. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
-| `-c`, `--context <key=value...>` | — | CDK context value. Repeatable. |
+| `-c`, `--context <key=value>` | — | CDK context value. Repeatable. |
 | `--no-pull` | off | Skip `docker pull` and use the cached image. |
 | `--from-state` | off | Resolve intrinsic values from cdkd's S3 state. |
 | `--from-cfn-stack [name]` | off | Resolve them from a deployed CloudFormation stack. The bare form uses the stack's own name. |

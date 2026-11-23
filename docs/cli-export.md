@@ -157,19 +157,19 @@ blocks, including a damaged state record and a recorded value of `***`.
 | `[stack]` | — | Stack to export. Detected when the app defines a single stack. |
 | `--dry-run` | off | Print the import plan and exit. No lock, no changeset, no AWS writes. |
 | `--cfn-stack-name <name>` | the cdkd stack name | Name of the destination CloudFormation stack. |
-| `--cfn-child-stack-name <pair...>` | `~` replaced by `-` | Name for a nested child, as `'<cdkdName>=<cfnName>'`. Repeatable. |
+| `--cfn-child-stack-name <pair>` | `~` replaced by `-` | Name for a nested child, as `'<cdkdName>=<cfnName>'`. Repeatable. |
 | `--template <path>` | — | Use this CloudFormation template (JSON or YAML) and skip synthesis. |
 | `--stack-region <region>` | — | Region of the cdkd state record. Required when the stack name has state in several regions. |
 | `--include-non-importable` | off | Migrate Custom Resources in a second phase instead of refusing. |
 | `--no-recreate-import-unsupported` | off | Refuse on `AWS::IAM::Policy` instead of deleting and re-creating it. |
-| `--parameter <key=value...>` | template `Default` | Template Parameter value. Repeatable. |
+| `--parameter <key=value>` | template `Default` | Template Parameter value. Repeatable. |
 | `--accept-transient-context` | off | Allow `-c` overrides at export time. |
 | `--strict-cross-stack` | off | Refuse when other stacks in the app read this one through `Fn::GetStackOutput`. |
 | `--skip-import-support-preflight` | off | Skip the checks for types CloudFormation cannot import. |
 | `-y`, `--yes` | off | Answer the confirmation prompts automatically. |
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a synthesized cloud assembly directory. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
-| `-c`, `--context <key=value...>` | — | Context values. Refused without `--accept-transient-context`. |
+| `-c`, `--context <key=value>` | — | Context values. Refused without `--accept-transient-context`. |
 | `--lookups`, `--no-lookups` | on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state records. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |

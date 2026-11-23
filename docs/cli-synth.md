@@ -41,7 +41,7 @@ which template reaches stdout and which stack cdkd checks for annotations.
 | `--ignore-errors` | `false` | Never fail on annotations. The template will likely not deploy. |
 | `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
-| `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `-c`, `--context <key=value>` | | Context values. Repeatable. |
 | `--lookups`, `--no-lookups` | on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. Use it in CI to check that `cdk.context.json` is complete. |
 | `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |

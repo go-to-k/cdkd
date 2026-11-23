@@ -42,7 +42,7 @@ the account through STS and runs the context lookups the app asks for
 | `--json` | `false` | Encode the `--long` / `--show-dependencies` payload as JSON, not YAML. No effect on the default output. |
 | `-a`, `--app <command>` | `CDKD_APP`, then `cdk.json` | The CDK app command, or a path to a synthesized assembly directory. |
 | `--output <path>` | `cdk.out` | Directory to synthesize into. |
-| `-c`, `--context <key=value...>` | | Context values. Repeatable. |
+| `-c`, `--context <key=value>` | | Context values. Repeatable. |
 | `--lookups`, `--no-lookups` | on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 | `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
