@@ -77,8 +77,9 @@ still pass it.
 | Case | What cdkd does |
 | --- | --- |
 | At least one `KEY=VALUE` | Those tags are used in place of each stack's own `StackProps.tags`; the two are not merged. |
-| No flag | The top-level `tags` of `cdk.json` (a `[{"Key": ..., "Value": ...}]` list) is used the same way, when present and non-empty. Otherwise each stack keeps its own tags. |
+| No flag | The top-level `tags` of the project's `cdk.json` (a `[{"Key": ..., "Value": ...}]` list of strings; `~/.cdk.json` is not read) is used the same way, when present and non-empty. Otherwise each stack keeps its own tags. |
 | An argument without `=` | A warning, and the argument is ignored. |
+| Only empty strings (`--tags ""`) | Each stack keeps its own tags; `cdk.json` is not read. |
 | An empty key or value (`=v`, `k=`) | The deploy stops before any change, as CloudFormation refuses an empty tag key or value. |
 | A key given twice | The last value is used. |
 | A later deploy without the flag | The resources go back to the stack's own tags, as with CloudFormation. |

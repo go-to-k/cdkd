@@ -593,11 +593,12 @@ fi
 echo "[verify]   ok: the stack-tag update is drift-free"
 
 echo "[verify] step 5c: go-to-k/cdkd#6886 -- deploy --tags replaces the stack tags"
-# The same synth as phase 2 (CdkdStackTag=from-stackprops-2); `--tags` must
-# win over it for every resource, and `diff --tags` must preview exactly that.
+# The same synth as phase 2 (CdkdStackTag=from-stackprops-2). `--tags` names a
+# DIFFERENT key, so a merge (both keys) is told apart from the replacement the
+# CDK CLI does (only the flag's key); `diff --tags` must preview exactly that.
 set +e
 CDKD_TEST_STACK_TAGS=2 ${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --tags CdkdStackTag=from-flag --fail >/dev/null
+  --tags CdkdFlagTag=from-flag --fail >/dev/null
 DIFF_RC=$?
 set -e
 if [ "${DIFF_RC}" -ne 1 ]; then
@@ -605,10 +606,10 @@ if [ "${DIFF_RC}" -ne 1 ]; then
   exit 1
 fi
 CDKD_TEST_STACK_TAGS=2 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  -t CdkdStackTag=from-flag
+  -t CdkdFlagTag=from-flag
 set +e
 CDKD_TEST_STACK_TAGS=2 ${CLI} diff "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --tags CdkdStackTag=from-flag --fail >/dev/null
+  --tags CdkdFlagTag=from-flag --fail >/dev/null
 DIFF_RC=$?
 set -e
 if [ "${DIFF_RC}" -ne 0 ]; then
@@ -619,10 +620,23 @@ SNS_TAGS_3="$(aws sns list-tags-for-resource --resource-arn "${SNS_ARN_1}" --reg
   --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
 GT_TAGS_3="$(aws dynamodb list-tags-of-resource --resource-arn "${GT_ARN}" --region "${REGION}" \
   --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
-expect_tag "SNS Topic (--tags)" "${SNS_TAGS_3}" CdkdStackTag from-flag
-expect_tag "DynamoDB GlobalTable replica (--tags)" "${GT_TAGS_3}" CdkdStackTag from-flag
+expect_tag "SNS Topic (--tags)" "${SNS_TAGS_3}" CdkdFlagTag from-flag
+expect_tag "DynamoDB GlobalTable replica (--tags)" "${GT_TAGS_3}" CdkdFlagTag from-flag
+# The stack's own tag is REPLACED, not merged: untagged everywhere.
+expect_tag "SNS Topic (--tags)" "${SNS_TAGS_3}" CdkdStackTag ""
+expect_tag "DynamoDB GlobalTable replica (--tags)" "${GT_TAGS_3}" CdkdStackTag ""
 # The App-scope tags live in the template, so --tags leaves them.
 expect_tag "SNS Topic (--tags)" "${SNS_TAGS_3}" CdkdTagOwner cdkd-integ
+# drift compares the record, which carries the --tags tags.
+set +e
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+rc=$?
+set -e
+if [ "${rc}" -ne 0 ]; then
+  echo "[verify] FAIL: the --tags deploy left drift (exit ${rc}) (go-to-k/cdkd#6886)" >&2
+  exit 1
+fi
+echo "[verify]   ok: the --tags deploy is drift-free"
 
 echo "[verify] step 6: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force

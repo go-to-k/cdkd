@@ -102,11 +102,18 @@ describe('parseTagsArgs / resolveStackTagsOverride (go-to-k/cdkd#6886)', () => {
     expect(String(warn.mock.calls[0]![0])).toContain('MyStack');
   });
 
-  it('names no tags for no flag, only empty strings, or only non-assignments', () => {
+  it('names no tags for no flag or only non-assignments, so cdk.json applies', () => {
     const warn = vi.fn();
     expect(parseTagsArgs(undefined, warn)).toBeUndefined();
-    expect(parseTagsArgs([''], warn)).toBeUndefined();
     expect(parseTagsArgs(['nope'], warn)).toBeUndefined();
+    const json = { tags: [{ Key: 'team', Value: 'json' }] };
+    expect(resolveStackTagsOverride(['nope'], warn, json)).toEqual({ team: 'json' });
+  });
+
+  it("only empty strings keep each stack's own tags, cdk.json included (CDK's [])", () => {
+    expect(parseTagsArgs([''], vi.fn())).toEqual({});
+    const json = { tags: [{ Key: 'team', Value: 'json' }] };
+    expect(resolveStackTagsOverride([''], vi.fn(), json)).toBeUndefined();
   });
 
   it.each([['=v'], ['k=']])('refuses %s: CloudFormation refuses an empty key or value', (arg) => {
@@ -140,20 +147,35 @@ describe('parseTagsArgs / resolveStackTagsOverride (go-to-k/cdkd#6886)', () => {
 });
 
 describe('the --tags option (go-to-k/cdkd#6886)', () => {
-  function parsed(create: () => import('commander').Command, args: string[]): unknown {
-    const cmd = create();
+  function parsedDeploy(args: string[]): { tags: unknown; stacks: string[] } {
+    const cmd = createDeployCommand();
     cmd.exitOverride();
     cmd.action(() => {});
     cmd.parse(args, { from: 'user' });
-    return cmd.opts()['tags'];
+    return { tags: cmd.opts()['tags'], stacks: cmd.args };
+  }
+  function parsedDiff(args: string[]): { tags: unknown; stacks: string[] } {
+    const cmd = createDiffCommand();
+    cmd.exitOverride();
+    cmd.action(() => {});
+    cmd.parse(args, { from: 'user' });
+    return { tags: cmd.opts()['tags'], stacks: cmd.args };
   }
 
-  it.each([
-    ['deploy', createDeployCommand],
-    ['diff', createDiffCommand],
-  ] as const)('%s: repeatable, with the -t alias', (_name, create) => {
-    expect(parsed(create, ['--tags', 'a=1', '-t', 'b=2'])).toEqual(['a=1', 'b=2']);
-    expect(parsed(create, [])).toBeUndefined();
+  it('deploy: repeatable, with the -t alias, one value each (a stack name after it stays a stack)', () => {
+    expect(parsedDeploy(['--tags', 'a=1', '-t', 'b=2', 'S'])).toEqual({
+      tags: ['a=1', 'b=2'],
+      stacks: ['S'],
+    });
+    expect(parsedDeploy(['S']).tags).toBeUndefined();
+  });
+
+  it('diff: repeatable, with the -t alias, one value each (a stack name after it stays a stack)', () => {
+    expect(parsedDiff(['-t', 'a=1', 'S', '--tags', 'b=2'])).toEqual({
+      tags: ['a=1', 'b=2'],
+      stacks: ['S'],
+    });
+    expect(parsedDiff(['S']).tags).toBeUndefined();
   });
 });
 
