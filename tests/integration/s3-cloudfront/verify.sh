@@ -567,6 +567,13 @@ assert_gone "CloudFront key group ${KG_ID} still exists after destroy" aws cloud
 assert_gone "CloudFront public key ${PK_ID} still exists after destroy" aws cloudfront get-public-key --id "${PK_ID}"
 echo "    OK: CloudFront key group and public key are gone"
 
+# go-to-k/cdkd#6854: the two log buckets.
+for domain in "${LOG_BUCKET_DOMAIN}" "${ALT_LOG_BUCKET_DOMAIN}"; do
+  log_bucket="${domain%%.s3.*}"
+  assert_gone "log bucket ${log_bucket} still exists after destroy" aws s3api head-bucket --bucket "${log_bucket}"
+done
+echo "    OK: both log buckets are gone"
+
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"
 

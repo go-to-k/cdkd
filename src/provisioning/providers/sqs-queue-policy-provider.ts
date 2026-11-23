@@ -406,10 +406,10 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
       return { outcome: 'deleted', leftInPlace: QUEUE_POLICY_NOT_COMPARED_LEFT_REASON };
     }
     // IAM-equivalent spellings folded: SQS stores a bare account-id principal
-    // as its root ARN, for one; in the client's partition, as SQS refuses a
+    // as its root ARN, for one; in the queue's partition, as SQS refuses a
     // root ARN of another (go-to-k/cdkd#6854).
-    const { partition } = derivePartitionAndUrlSuffix(await this.sqsClient.config.region());
-    const reference = policyContentKey(sentPolicyDocument(attempted.document), partition);
+    const sent = sentPolicyDocument(attempted.document);
+    const sqsRegion = await this.sqsClient.config.region();
     // A queue a QueuePolicy of this very deploy wrote: a read may still return
     // the failed create's document (SQS propagates in up to 60 seconds), so it
     // is never read back here.
@@ -463,7 +463,8 @@ export class SQSQueuePolicyProvider implements ResourceProvider {
         );
       } else if (
         current.kind === 'none' ||
-        policyContentKey(current.policy, partition) === reference
+        policyContentKey(current.policy, queuePartition(queueUrl, sqsRegion)) ===
+          policyContentKey(sent, queuePartition(queueUrl, sqsRegion))
       ) {
         // No policy read back is cleared too: right after the create wrote
         // it (the automatic rollback) a stale read can still show the empty
@@ -952,6 +953,15 @@ function policyReference(document: unknown): string | undefined {
   if (typeof document === 'string' && document.length > 0) return canonicalPolicy(document);
   if (document !== null && typeof document === 'object') return canonicalJson(document);
   return undefined;
+}
+
+/**
+ * The partition of the region a queue URL names (`sqs.<region>.amazonaws.com`,
+ * `<region>.queue.amazonaws.com`), else of the client's region.
+ */
+function queuePartition(queueUrl: string, clientRegion: string): string {
+  const m = /^https?:\/\/(?:sqs\.)?([a-z]{2}(?:-[a-z]+)+-\d+)\./.exec(queueUrl);
+  return derivePartitionAndUrlSuffix(m?.[1] ?? clientRegion).partition;
 }
 
 /** The queue URLs a physical id names. */
