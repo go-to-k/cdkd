@@ -490,11 +490,18 @@ export async function readRouteCurrentState(
   );
   const rtb = resp.RouteTables?.[0];
   if (!rtb) return RESOURCE_NOT_FOUND;
+  // go-to-k/cdkd#6854: only a route CreateRoute made is this resource's. A
+  // route a virtual private gateway PROPAGATES (`EnableVgwRoutePropagation`)
+  // can share the destination, and the table's `local` route
+  // (`CreateRouteTable`) is no Route resource's: matched by destination
+  // alone, either one read as this route after it was deleted out of band.
   const route = rtb.Routes?.find(
     (r) =>
-      r.DestinationCidrBlock === destination ||
-      r.DestinationIpv6CidrBlock === destination ||
-      r.DestinationPrefixListId === destination
+      r.Origin !== 'EnableVgwRoutePropagation' &&
+      r.Origin !== 'CreateRouteTable' &&
+      (r.DestinationCidrBlock === destination ||
+        r.DestinationIpv6CidrBlock === destination ||
+        r.DestinationPrefixListId === destination)
   );
   if (!route) return RESOURCE_NOT_FOUND;
 

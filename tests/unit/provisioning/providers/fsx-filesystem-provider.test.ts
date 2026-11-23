@@ -1632,6 +1632,41 @@ describe('FSxFileSystemProvider readCurrentState variant blocks', () => {
     expect(state?.['OpenZFSConfiguration']).toBeUndefined();
   });
 
+  // go-to-k/cdkd#6854: a failed or departing alias is not one of the names.
+  it('reads neither a CREATE_FAILED nor a DELETING alias as held', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          {
+            FileSystemId: FS_ID,
+            Lifecycle: 'AVAILABLE',
+            FileSystemType: 'WINDOWS',
+            StorageCapacity: 32,
+            SubnetIds: ['subnet-111'],
+            WindowsConfiguration: {
+              Aliases: [
+                { Name: 'available.example.com', Lifecycle: 'AVAILABLE' },
+                { Name: 'creating.example.com', Lifecycle: 'CREATING' },
+                { Name: 'failed.example.com', Lifecycle: 'CREATE_FAILED' },
+                { Name: 'leaving.example.com', Lifecycle: 'DELETING' },
+                { Name: 'stuck.example.com', Lifecycle: 'DELETE_FAILED' },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+    const windows = state?.['WindowsConfiguration'] as Record<string, unknown>;
+
+    expect(windows['Aliases']).toEqual([
+      'available.example.com',
+      'creating.example.com',
+      'stuck.example.com',
+    ]);
+  });
+
   it('reverse-maps OntapConfiguration without the read-only Endpoints block', async () => {
     routeSend({
       DescribeFileSystemsCommand: {

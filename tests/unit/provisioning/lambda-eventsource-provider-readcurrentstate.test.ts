@@ -97,7 +97,7 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
   it('surfaces FunctionName as bare name when state holds the bare name and ARN tail matches', async () => {
     mockSend.mockResolvedValueOnce({
       UUID: 'abc-123',
-      FunctionArn: 'arn:aws:lambda:us-east-1:123:function:my-fn',
+      FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:my-fn',
       EventSourceArn: 'arn:aws:sqs:us-east-1:123:my-queue',
       EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123:event-source-mapping:abc-123',
       State: 'Enabled',
@@ -114,6 +114,32 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
     // State carried the bare name; the ARN tail matches; surface the
     // bare-name shape so the comparator sees no drift.
     expect(result?.['FunctionName']).toBe('my-fn');
+  });
+
+  // go-to-k/cdkd#6854: the last segment of a QUALIFIED ARN is the alias or
+  // version, not the function name.
+  it.each([
+    ['an alias of another function whose qualifier equals the recorded name', 'other-fn:prod', 'prod'],
+    ['a version of the recorded function', 'my-fn:3', 'my-fn'],
+    ['an alias of the recorded function', 'my-fn:live', 'my-fn'],
+  ])('surfaces FunctionName as the qualified ARN for %s', async (_label, target, recorded) => {
+    const arn = `arn:aws:lambda:us-east-1:123456789012:function:${target}`;
+    mockSend.mockResolvedValueOnce({
+      UUID: 'abc-123',
+      FunctionArn: arn,
+      EventSourceArn: 'arn:aws:sqs:us-east-1:123456789012:my-queue',
+      EventSourceMappingArn: 'arn:aws:lambda:us-east-1:123456789012:event-source-mapping:abc-123',
+      State: 'Enabled',
+    });
+    mockSend.mockResolvedValueOnce({ Tags: {} });
+
+    const result = bagOf(
+      await provider.readCurrentState('abc-123', 'Logical', 'AWS::Lambda::EventSourceMapping', {
+        FunctionName: recorded,
+      })
+    );
+
+    expect(result?.['FunctionName']).toBe(arn);
   });
 
   it('surfaces FunctionName as ARN when state holds the ARN form', async () => {

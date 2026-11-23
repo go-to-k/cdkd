@@ -1156,6 +1156,42 @@ describe('EC2Provider.readCurrentState', () => {
       );
       expect(result).toBe(RESOURCE_NOT_FOUND);
     });
+
+    // go-to-k/cdkd#6854: a propagated or local route at the destination is
+    // not this route.
+    it.each([
+      ['a VGW-propagated route', 'EnableVgwRoutePropagation', { GatewayId: 'vgw-1' }],
+      ["the table's local route", 'CreateRouteTable', { GatewayId: 'local' }],
+    ])('reads %s at the destination as the route gone', async (_label, origin, target) => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [
+          {
+            RouteTableId: 'rtb-1',
+            Routes: [{ DestinationCidrBlock: '10.1.0.0/16', Origin: origin, State: 'active', ...target }],
+          },
+        ],
+      });
+      expect(
+        await provider.readCurrentState('rtb-1|10.1.0.0/16', 'Logical', 'AWS::EC2::Route')
+      ).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('reads the CreateRoute route when a propagated one shares its destination', async () => {
+      mockSend.mockResolvedValueOnce({
+        RouteTables: [
+          {
+            RouteTableId: 'rtb-1',
+            Routes: [
+              { DestinationCidrBlock: '10.1.0.0/16', GatewayId: 'vgw-2', Origin: 'EnableVgwRoutePropagation' },
+              { DestinationCidrBlock: '10.1.0.0/16', GatewayId: 'vgw-1', Origin: 'CreateRoute' },
+            ],
+          },
+        ],
+      });
+      expect(
+        bagOf(await provider.readCurrentState('rtb-1|10.1.0.0/16', 'Logical', 'AWS::EC2::Route'))
+      ).toEqual({ RouteTableId: 'rtb-1', DestinationCidrBlock: '10.1.0.0/16', GatewayId: 'vgw-1' });
+    });
   });
 
   describe('AWS::EC2::SubnetRouteTableAssociation', () => {

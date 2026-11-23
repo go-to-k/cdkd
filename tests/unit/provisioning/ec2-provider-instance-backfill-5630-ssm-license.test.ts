@@ -832,20 +832,20 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
     expect(ssmWrites()).toEqual(['Delete assoc-ghost', 'Create Custom-Doc']);
   });
 
-  it('matches an ARN-declared document to the listed name (T4)', async () => {
-    const ARN_DOC = { DocumentName: 'arn:aws:ssm:us-east-1:123456789012:document/Custom-Doc' };
-    held.push({ AssociationId: 'assoc-custom', InstanceId: 'i-new', Name: 'Custom-Doc' });
+  it('matches an ARN-declared (shared) document to that ARN (T4)', async () => {
+    const ARN_DOC = { DocumentName: 'arn:aws:ssm:us-east-1:222222222222:document/Custom-Doc' };
+    held.push({ AssociationId: 'assoc-custom', InstanceId: 'i-new', Name: ARN_DOC.DocumentName });
     held.push({ AssociationId: 'assoc-shell', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
-    // The same document by name and by ARN is no change.
+    // The same ARN is no change.
     await new EC2Provider().update(
       'Inst',
       'i-new',
       TYPE,
       { ...BASE, SsmAssociations: [ARN_DOC] },
-      { ...BASE, SsmAssociations: [{ DocumentName: 'Custom-Doc' }] }
+      { ...BASE, SsmAssociations: [ARN_DOC] }
     );
     expect(ssmSend).not.toHaveBeenCalled();
-    // The readback keeps the declared ARN spelling, so it compares equal.
+    // The readback reports the ARN, so it compares equal.
     const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
       ...BASE,
       SsmAssociations: [ARN_DOC],

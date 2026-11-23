@@ -123,11 +123,18 @@ export function readWindowsConfiguration(
   putIfDefined(config, 'CopyTagsToBackups', windows.CopyTagsToBackups);
 
   // CFn takes Aliases as a plain name list; the API returns objects
-  // carrying a per-alias lifecycle state.
+  // carrying a per-alias lifecycle state. go-to-k/cdkd#6854: an alias that
+  // FAILED to associate (`CREATE_FAILED`) or is being disassociated
+  // (`DELETING`) does not answer for the file system, so it is not read as
+  // one of its names (a declared one then reads as drift, and a revert
+  // re-associates it, as `applyAliasDelta` handles those two lifecycles).
+  // `CREATING` and `DELETE_FAILED` still count as held.
   if (windows.Aliases !== undefined) {
-    config['Aliases'] = windows.Aliases.map((alias) => alias.Name).filter(
-      (name): name is string => name !== undefined
-    );
+    config['Aliases'] = windows.Aliases.filter(
+      (alias) => alias.Lifecycle !== 'CREATE_FAILED' && alias.Lifecycle !== 'DELETING'
+    )
+      .map((alias) => alias.Name)
+      .filter((name): name is string => name !== undefined);
   }
 
   if (windows.SelfManagedActiveDirectoryConfiguration) {
