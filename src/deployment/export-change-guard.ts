@@ -36,11 +36,20 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  *   or replaces CHANGES: the new value is known only after deploy. The
  *   caller's `replaces` decides replacement.
  * - So does one reading an attribute an IN-PLACE update may move, by the
- *   diff calculator's own promotion rule (`in-place-promotion.ts`, arms 1-4):
- *   an attribute named after a changed property, a derived attribute of the
- *   type (a launch template's version, a nested stack's `Outputs.*`), or any
- *   read of a custom resource. The diff context still holds the OLD value
- *   there, so resolving it would compare equal.
+ *   diff calculator's own promotion rule (`in-place-promotion.ts`, arms 1-3):
+ *   an attribute named after a changed property, or a derived attribute of
+ *   the type (a launch template's version, a nested stack's `Outputs.*`). The
+ *   diff context still holds the OLD value there, so resolving it would
+ *   compare equal.
+ * - One reading a CUSTOM RESOURCE this plan updates in place is DEFERRED
+ *   (go-to-k/cdkd#6865): only the handler knows what it returns, and
+ *   CloudFormation runs the update and refuses only when the export's value
+ *   then differs (measured: it updates the custom resource, fails the stack,
+ *   and its rollback re-invokes the handler with the old properties). The
+ *   deploy re-checks it once the custom resources are updated
+ *   (`refuseDeferredExportChanges`). It is `changed` up front instead when
+ *   the value cannot be compared later (a published `***`, a dynamic
+ *   reference) or already differs at plan time.
  * - Otherwise the value is resolved and compared with the published one. A
  *   value that does not resolve counts as changing only when it references a
  *   resource this plan touches. A published `***` (a `NoEcho` source) cannot
@@ -54,7 +63,9 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  */
 export interface AffectedExport {
   exportName: string;
-  reason: 'removed' | 'changed';
+  reason: 'removed' | 'changed' | 'deferred';
+  /** `deferred` only: the output's `Value`, resolved again after provisioning. */
+  value?: unknown;
 }
 
 export async function findAffectedExports({
@@ -108,10 +119,16 @@ export async function findAffectedExports({
       affected.push({ exportName, reason: 'removed' });
       continue;
     }
-    if (
-      await valueMayChange(output, currentState.outputs[exportName], changes, resolve, replaces)
-    ) {
-      affected.push({ exportName, reason: 'changed' });
+    const verdict = await valueMayChange(
+      output,
+      currentState.outputs[exportName],
+      changes,
+      resolve,
+      replaces
+    );
+    if (verdict === 'changed') affected.push({ exportName, reason: 'changed' });
+    else if (verdict === 'deferred') {
+      affected.push({ exportName, reason: 'deferred', value: output.Value });
     }
   }
   return affected;
@@ -123,35 +140,74 @@ async function valueMayChange(
   changes: ReadonlyMap<string, ResourceChange>,
   resolve: (value: unknown) => Promise<unknown>,
   replaces: (logicalId: string) => boolean
-): Promise<boolean> {
+): Promise<'changed' | 'deferred' | 'unchanged'> {
   let touchesChangedResource = false;
+  let readsUpdatedCustomResource = false;
   for (const [logicalId, reads] of extractGetAttRefs(output.Value)) {
-    if (replaces(logicalId)) return true;
+    if (replaces(logicalId)) return 'changed';
     const change = changes.get(logicalId);
     if (change === undefined || change.changeType === 'NO_CHANGE') continue;
-    if (change.changeType !== 'UPDATE') return true;
-    if (inPlaceUpdateMayMove(change, reads)) return true;
+    if (change.changeType !== 'UPDATE') return 'changed';
     touchesChangedResource = true;
+    if (isCustomResourceType(change.resourceType)) readsUpdatedCustomResource = true;
+    else if (inPlaceUpdateMayMove(change, reads)) return 'changed';
   }
-  if (publishedValue === SECRET_MASK) return false;
-  if (holdsDynamicReference(output.Value)) return touchesChangedResource;
+  // A custom resource's new value is known only after its update; a value
+  // that cannot be compared then is judged now, as every in-place custom
+  // resource read was before go-to-k/cdkd#6865.
+  if (publishedValue === SECRET_MASK) return readsUpdatedCustomResource ? 'changed' : 'unchanged';
+  if (holdsDynamicReference(output.Value)) return touchesChangedResource ? 'changed' : 'unchanged';
   let desired: unknown;
   try {
     desired = await resolve(output.Value);
   } catch {
-    return touchesChangedResource;
+    return touchesChangedResource ? 'changed' : 'unchanged';
   }
-  if (desired === undefined) return touchesChangedResource;
-  return !isDeepStrictEqual(desired, publishedValue);
+  if (desired === undefined) return touchesChangedResource ? 'changed' : 'unchanged';
+  if (!isDeepStrictEqual(desired, publishedValue)) return 'changed';
+  return readsUpdatedCustomResource ? 'deferred' : 'unchanged';
+}
+
+function isCustomResourceType(type: string): boolean {
+  return type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource';
 }
 
 /**
- * Whether an in-place `change` may move one of `reads` (attribute names, or
- * `REF_READ`): `promoteInPlaceAttributeDependents`'s arms 1-4.
+ * go-to-k/cdkd#6865: the `deferred` exports whose value moved, judged once
+ * the custom resources they read are updated. `resolve` resolves against the
+ * deploy's records as they stand after the create / update phase. A value
+ * that does not resolve, or resolves to nothing, counts as changed: the
+ * outputs pass will fail on it too, and a consumer must not be left behind.
+ */
+export async function findChangedDeferredExports(
+  deferred: readonly AffectedExport[],
+  currentState: Pick<StackState, 'outputs'>,
+  resolve: (value: unknown) => Promise<unknown>
+): Promise<AffectedExport[]> {
+  const changed: AffectedExport[] = [];
+  for (const entry of deferred) {
+    if (entry.reason !== 'deferred') continue;
+    let value: unknown;
+    try {
+      value = await resolve(entry.value);
+    } catch {
+      value = undefined;
+    }
+    if (value === undefined || !isDeepStrictEqual(value, currentState.outputs[entry.exportName])) {
+      changed.push({ exportName: entry.exportName, reason: 'changed' });
+    }
+  }
+  return changed;
+}
+
+/**
+ * Whether an in-place `change` of a resource that is not a custom resource
+ * may move one of `reads` (attribute names, or `REF_READ`):
+ * `promoteInPlaceAttributeDependents`'s arms 1-3. Arm 4, any read of a custom
+ * resource, is deferred by the caller (go-to-k/cdkd#6865).
  */
 function inPlaceUpdateMayMove(change: ResourceChange, reads: ReadonlySet<string>): boolean {
   const type = change.resourceType;
-  if (type.startsWith('Custom::') || type === 'AWS::CloudFormation::CustomResource') return true;
   const changed = new Set((change.propertyChanges ?? []).map((pc) => pc.path));
   const derived = Object.hasOwn(IN_PLACE_UPDATE_DERIVED_ATTRS, type)
     ? IN_PLACE_UPDATE_DERIVED_ATTRS[type]
