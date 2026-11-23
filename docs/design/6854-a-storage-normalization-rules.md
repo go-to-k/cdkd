@@ -60,7 +60,7 @@ bucket policy) is tested in that provider's own suites under
 | `TableType` skipped | `getDriftUnknownPaths` | No API member returns it (measured readback). | Never compared: nothing to compare with. | Correct (not comparable) |
 | Table-level `WarmThroughput` skipped when the template declares no usable block | `getDriftUnknownPaths` | AWS reports a computed value for every table (#2762). CloudFormation parity. | A declared block is compared. | Correct |
 | `ReadProvisionedThroughputSettings` skipped unless `BillingMode` is `PROVISIONED` | same | CloudFormation accepts and ignores it on on-demand tables (measured). | Compared on a provisioned table. | Correct |
-| Per-index `WarmThroughput` stripped from both sides | `canonicalizeDriftProperties`, `projection.ts` | AWS reports a computed value for every index (12000 / 4000, measured, #1742). | Strips a DECLARED value too, so a declared per-index warm throughput that differs from live is not reported. Other index members are compared. | Over-equates. Decision pending (see below) |
+| Per-index `WarmThroughput` read against the declaration | `canonicalizeDriftPair`, `canonicalizeIndexWarmThroughput` | AWS reports a computed value for every index (12000 / 4000, measured, #1742), so an index declaring none is stripped, as is every index when no template is recorded. | A declared index compares its declared members, a value AWS grew included (CloudFormation parity); `--revert` skips that decrease (#1857). While a raise is `UPDATING` the readback reads the declared value (#5606). | Tightened in #6854 |
 | Implied stream on a multi-replica table | `canonicalizeDesiredProperties` | `create()` enables `NEW_AND_OLD_IMAGES` there (#1723). | Another view type, one replica, or a declared `MultiRegionConsistency` stays different. | Correct |
 | Local replica completed on a legacy baseline | `replica-shape.ts` `completeLegacyLocalReplica` | Records before #3573 lacked the local region's entry; CloudFormation requires the stack region in `Replicas`. | Only when the baseline has no local entry. | Correct |
 | Pre-#5381 replica baseline converged | `dynamodb-replica-settings.ts` | Moves the legacy top-level spelling onto the local replica (#5381). | Only when the baseline carries the legacy keys. | Correct |
@@ -116,13 +116,3 @@ bucket policy) is tested in that provider's own suites under
 | A journal bag's live policy matched on create | `isOwnLeftover` | The bag is an earlier deploy's attempt, so a bare id there is no transient form. | Compared as read; the create's re-reads (3 x 5 s) cover a transient one. | Tightened in #6854 |
 | One-element `Action` / `Resource` equals its scalar, for matching only | same, `findTemplateCanonicalUser` | S3 returns a one-element list as the scalar (#6109). | Selects the statement; rewrites no value. | Correct |
 | Policy document comparison | `src/provisioning/policy-document-content.ts` | Audited in lane C. | - | Out of scope |
-
-## Decision pending
-
-`AWS::DynamoDB::GlobalTable` per-index `WarmThroughput` is stripped from both
-sides even when the template declares it. `canonicalizeDriftPair` receives
-the template, so a gate keyed on the declaration is possible, as the table
-type has. Comparing the declared arm would report a value AWS grew with
-traffic (as CloudFormation drift would), and `drift --revert` would then send
-a decrease AWS refuses, a new per-resource revert failure. That changes an
-exit code, so it waits for the maintainer.

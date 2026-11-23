@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+import { canonicalizeIndexWarmThroughput } from '../../../src/provisioning/providers/dynamodb-globaltable/drift.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
@@ -329,23 +330,26 @@ describe('AWS::DynamoDB::GlobalTable rules (#6854)', () => {
     ).toEqual(['Replicas']);
   });
 
-  it('the per-index WarmThroughput strip leaves every other index member compared', () => {
+  it('the per-index WarmThroughput strip (no declaration) leaves every other index member compared', () => {
     const gsi = (write: number): Bag => ({
       IndexName: 'g',
       KeySchema: [{ AttributeName: 'x', KeyType: 'HASH' }],
       Projection: { ProjectionType: 'ALL' },
       WriteProvisionedThroughputSettings: { WriteCapacityUnits: write },
     });
+    // The pair hook's per-index rule (#6854); the template declares none.
+    const declaresNone = { GlobalSecondaryIndexes: [gsi(5)] };
+    const warm = (bag: Bag): Bag => canonicalizeIndexWarmThroughput(bag, declaresNone);
     expect(
       driftPaths(
         provider,
         T,
-        { GlobalSecondaryIndexes: [gsi(5)] },
-        {
+        warm({ GlobalSecondaryIndexes: [gsi(5)] }),
+        warm({
           GlobalSecondaryIndexes: [
             { ...gsi(5), WarmThroughput: { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 } },
           ],
-        }
+        })
       )
     ).toEqual([]);
     expect(

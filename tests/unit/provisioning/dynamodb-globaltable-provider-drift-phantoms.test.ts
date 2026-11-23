@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { canonicalizeUnorderedArraysAtPaths } from '../../../src/analyzer/drift-normalize.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import { canonicalizeIndexWarmThroughput } from '../../../src/provisioning/providers/dynamodb-globaltable/drift.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 
@@ -122,8 +123,10 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
   // ─── defect 2: the AWS-computed per-index WarmThroughput ───────────────
 
   /**
-   * The half #1773 left open, now shipped on the #1784
-   * `canonicalizeDriftProperties` seam.
+   * The half #1773 left open. With no recorded template to decide with
+   * (`properties` absent) every index's member is stripped, which is what
+   * these cases pin; #6854's declaration gate is in
+   * `dynamodb-globaltable-gsi-warm-declared-6854.test.ts`.
    *
    * The two candidate answers the issue proposed are both unusable and each is
    * pinned by a case below: declaring the path in `getDriftUnknownPaths` cannot
@@ -144,7 +147,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
     };
 
     it('strips the member from an AWS-side readback bag', () => {
-      const canonical = provider.canonicalizeDriftProperties(RESOURCE_TYPE, {
+      const canonical = canonicalizeIndexWarmThroughput({
         GlobalSecondaryIndexes: [
           { IndexName: 'gsi1', KeySchema: [], WarmThroughput: AWS_COMPUTED_WARM },
         ],
@@ -175,8 +178,8 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       };
 
       const changes = calculateResourceDrift(
-        provider.canonicalizeDriftProperties(RESOURCE_TYPE, staleObserved),
-        provider.canonicalizeDriftProperties(RESOURCE_TYPE, freshReadback)
+        canonicalizeIndexWarmThroughput(staleObserved),
+        canonicalizeIndexWarmThroughput(freshReadback)
       );
 
       expect(changes).toEqual([]);
@@ -221,10 +224,10 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       expect(changes).toHaveLength(1);
 
       const canonicalized = calculateResourceDrift(
-        provider.canonicalizeDriftProperties(RESOURCE_TYPE, {
+        canonicalizeIndexWarmThroughput({
           GlobalSecondaryIndexes: [{ IndexName: 'gsi1' }],
         }),
-        provider.canonicalizeDriftProperties(RESOURCE_TYPE, {
+        canonicalizeIndexWarmThroughput({
           GlobalSecondaryIndexes: [
             {
               IndexName: 'gsi1',
@@ -240,13 +243,13 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       // The trade the whole mechanism exists to avoid — suppressing the array.
       // AWS also dropped an index here, which must still report.
       const changes = calculateResourceDrift(
-        provider.canonicalizeDriftProperties(RESOURCE_TYPE, {
+        canonicalizeIndexWarmThroughput({
           GlobalSecondaryIndexes: [
             { IndexName: 'gsi1', WarmThroughput: AWS_COMPUTED_WARM },
             { IndexName: 'gsi2', WarmThroughput: AWS_COMPUTED_WARM },
           ],
         }),
-        provider.canonicalizeDriftProperties(RESOURCE_TYPE, {
+        canonicalizeIndexWarmThroughput({
           GlobalSecondaryIndexes: [{ IndexName: 'gsi1', WarmThroughput: AWS_COMPUTED_WARM }],
         })
       );
@@ -260,7 +263,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       const bag = {
         GlobalSecondaryIndexes: [{ IndexName: 'gsi1', Projection: { ProjectionType: 'ALL' } }],
       };
-      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toBe(bag);
+      expect(canonicalizeIndexWarmThroughput(bag)).toBe(bag);
     });
 
     it('strips a member declared as an explicit undefined, not just a present value', () => {
@@ -274,9 +277,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       const withExplicitUndefined = {
         GlobalSecondaryIndexes: [{ IndexName: 'gsi1', WarmThroughput: undefined }],
       };
-      const result = provider.canonicalizeDriftProperties(
-        RESOURCE_TYPE,
-        withExplicitUndefined
+      const result = canonicalizeIndexWarmThroughput(withExplicitUndefined
       ) as { GlobalSecondaryIndexes: Array<Record<string, unknown>> };
 
       expect(Object.keys(result.GlobalSecondaryIndexes[0]!)).toEqual(['IndexName']);
@@ -285,23 +286,9 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       expect(result).not.toBe(withExplicitUndefined);
     });
 
-    it('returns the input by IDENTITY for a bag with no index list, and for another type', () => {
+    it('returns the input by IDENTITY for a bag with no index list', () => {
       const noIndexes = { TableName: 't', AttributeDefinitions: [] };
-      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, noIndexes)).toBe(noIndexes);
-
-      // The type guard is UNREACHABLE in production and this row pins it as a
-      // shape guard only, not as a live path: `drift.ts` resolves the provider
-      // by `(resourceType, provisionedBy)` and passes that same type back in,
-      // and this provider is registered for exactly one type. An earlier
-      // comment here cited the #1784 CC-API-fallback caveat as the reason —
-      // that caveat is about the BAG SHAPE for a type with no
-      // `readCurrentState` and never produces a foreign `resourceType`.
-      const otherType = {
-        GlobalSecondaryIndexes: [{ IndexName: 'gsi1', WarmThroughput: AWS_COMPUTED_WARM }],
-      };
-      expect(provider.canonicalizeDriftProperties('AWS::DynamoDB::Table', otherType)).toBe(
-        otherType
-      );
+      expect(canonicalizeIndexWarmThroughput(noIndexes)).toBe(noIndexes);
     });
 
     it('shape-guards a NON-ARRAY index list and a non-object element', () => {
@@ -311,7 +298,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       // is rewritten: the comparator can still report it, which is the honest
       // answer for a value cdkd could not read.
       const malformed = { GlobalSecondaryIndexes: 'not-an-array' };
-      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, malformed)).toBe(malformed);
+      expect(canonicalizeIndexWarmThroughput(malformed)).toBe(malformed);
 
       const intrinsicElement = { Ref: 'SomeParam' };
       const mixed = {
@@ -321,7 +308,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
           { IndexName: 'gsi1', WarmThroughput: AWS_COMPUTED_WARM },
         ],
       };
-      const canonical = provider.canonicalizeDriftProperties(RESOURCE_TYPE, mixed);
+      const canonical = canonicalizeIndexWarmThroughput(mixed);
       const list = canonical['GlobalSecondaryIndexes'] as unknown[];
       expect(list[0]).toBe(intrinsicElement);
       expect(list[1]).toBeNull();
@@ -336,7 +323,7 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       };
       const before = JSON.parse(JSON.stringify(bag)) as unknown;
 
-      provider.canonicalizeDriftProperties(RESOURCE_TYPE, bag);
+      canonicalizeIndexWarmThroughput(bag);
 
       expect(bag).toEqual(before);
     });
