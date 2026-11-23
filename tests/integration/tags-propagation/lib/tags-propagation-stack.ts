@@ -82,15 +82,20 @@ export class TagsPropagationStack extends cdk.Stack {
     });
 
     // SQS Queue — Tags wire shape: { k: v } map (list-queue-tags).
-    new sqs.Queue(this, 'TaggedQueue', {
+    const queue = new sqs.Queue(this, 'TaggedQueue', {
       retentionPeriod: cdk.Duration.days(4),
     });
+    // go-to-k/cdkd#6871: a key the stack's `StackProps.tags` also set (bin/app.ts);
+    // the resource's own value wins, on this list-shaped Tags and on the
+    // parameter's map-shaped one below.
+    cdk.Tags.of(queue).add('CdkdTagShared', 'from-resource');
 
     // SSM Parameter — Tags wire shape: { k: v } MAP in CFn (the known
     // crash-prone type; see memory feedback_ssm_parameter_tags_is_a_map).
-    new ssm.StringParameter(this, 'TaggedParameter', {
+    const parameter = new ssm.StringParameter(this, 'TaggedParameter', {
       stringValue: 'cdkd-tags-propagation',
     });
+    cdk.Tags.of(parameter).add('CdkdTagShared', 'from-resource');
 
     // IAM Role — Tags wire shape: {Key,Value}[] (list-role-tags). This is
     // the SOLE IAM role in the stack (it also backs the Lambda below) so

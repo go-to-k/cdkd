@@ -69,25 +69,41 @@ succeed: each EC2 create is re-sent once without its tags and the follow-up
 `CreateTags` warns. `verify.sh` asserts the re-send and the warning for each of
 the six EC2 resources, and that none carries the stack tags.
 
+### `StackProps.tags` (issue [#6871](https://github.com/go-to-k/cdkd/issues/6871))
+
+`StackProps.tags` reach only the cloud assembly manifest, never a resource's
+`Tags`: CloudFormation applies them, and so does cdkd, merging them into every
+taggable resource. The stack sets `CdkdStackTag=from-stackprops` and
+`CdkdTagShared=from-stack`; the SQS queue (list-shaped `Tags`) and the SSM
+parameter (map-shaped) declare `CdkdTagShared=from-resource` themselves, and
+their own value must win. A second deploy with `CDKD_TEST_STACK_TAGS=2`
+changes `CdkdStackTag` and drops `CdkdTagShared` from the stack: the resources
+are updated in place, the topic loses `CdkdTagShared`, the queue and the
+parameter keep theirs, and `cdkd drift` stays clean.
+
 ## What it does
 
 1. `cdkd deploy CdkdTagsPropagationExample`, as the tag-requiring role above
-   — applies 3 stack-level tags
+   — applies 4 stack-level tags
    (`CdkdTagOwner=cdkd-integ`, `CdkdTagEnv=test`, `CdkdTagCostCenter=cc-1234`,
-   set via `cdk.Tags.of(app)` in `bin/app.ts`) to all 16 taggable resources.
+   set via `cdk.Tags.of(app)` in `bin/app.ts`, and `CdkdStackTag=from-stackprops`
+   from `StackProps.tags`) to all 16 taggable resources.
    A wrong-Tags-shape crash on any type (e.g. the SSM map regression), or a
    create sent without its tags, fails the deploy here with specifics.
 2. Reads `state.json` and asserts the routing split (15 `sdk` + 1 `cc-api`).
 3. For **each** of the 16 types, reads the live AWS-side tags via that
-   type's type-specific list/describe API and asserts **all 3** stack-level
+   type's type-specific list/describe API and asserts **all 4** stack-level
    tags are present with the correct value. A type missing a tag (a dropped
-   tag) **FAILs naming the type**.
+   tag) **FAILs naming the type**. Then the resource-declared `CdkdTagShared`
+   must win on the queue and the parameter, and the topic carries the stack's.
 4. `cdkd drift` immediately after deploy must report **exit 0** — a tag-list
    reorder from AWS must not show as a false-positive drift (issue
    [#802](https://github.com/go-to-k/cdkd/issues/802)
    `canonicalizeTagListsDeep`), nor a map-vs-list readback-shape mismatch.
-5. `cdkd destroy --force`.
-6. Redeploy as the role with only `ec2:CreateTags` denied (above), assert each
+5. Redeploy with only the stack tags changed (`CDKD_TEST_STACK_TAGS=2`, above)
+   and assert the in-place update and a clean `cdkd drift`.
+6. `cdkd destroy --force`.
+7. Redeploy as the role with only `ec2:CreateTags` denied (above), assert each
    EC2 create was re-sent untagged and warned, then `cdkd destroy --force` and
    delete the role.
 

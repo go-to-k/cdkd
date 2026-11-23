@@ -43,8 +43,14 @@
 #   2. cdkd deploy CdkdTagsPropagationExample AS that role (a Tags-shape
 #      crash on any type, or a create sent without its tags, fails here)
 #   3. read state.json; assert routing split (15 sdk + 1 cc-api)
-#   4. for each type, read live AWS tags + assert all 3 stack tags present
+#   4. for each type, read live AWS tags + assert all 4 stack tags present
+#      (3 from `Tags.of(app)`, 1 from `StackProps.tags`, go-to-k/cdkd#6871)
+#   4b. a resource-declared tag wins over the same StackProps.tags key, on a
+#      list-shaped (SQS) and a map-shaped (SSM) Tags; the record carries them
 #   5. cdkd drift -> assert exit 0 (no tag-order false positive, #802)
+#   5b. redeploy with only the stack tags changed: the resources are updated
+#      in place, a dropped stack key is untagged unless the resource declares
+#      it, and drift stays exit 0 (go-to-k/cdkd#6871)
 #   6. cdkd destroy --force (as the caller); the stream and EC2 resources
 #      are gone
 #   7. rewrite the role to deny only ec2:CreateTags and deploy again as it:
@@ -104,9 +110,12 @@ STATE_BUCKET="${STATE_BUCKET:-cdkd-state-${ACCOUNT_ID}}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 echo "[verify] region=${REGION} stack=${STACK} state-bucket=${STATE_BUCKET}"
 
-# The 3 stack-level tags — MUST match bin/app.ts exactly.
-EXPECTED_KEYS=("CdkdTagOwner" "CdkdTagEnv" "CdkdTagCostCenter")
-EXPECTED_VALS=("cdkd-integ" "test" "cc-1234")
+# The stack-level tags — MUST match bin/app.ts exactly. The first 3 come from
+# `cdk.Tags.of(app)` (CDK writes them into each resource's `Tags`); the 4th is
+# a `StackProps.tags` key, which reaches only the manifest, so it lands on a
+# resource only through cdkd's stack-tag propagation (go-to-k/cdkd#6871).
+EXPECTED_KEYS=("CdkdTagOwner" "CdkdTagEnv" "CdkdTagCostCenter" "CdkdStackTag")
+EXPECTED_VALS=("cdkd-integ" "test" "cc-1234" "from-stackprops")
 
 # go-to-k/cdkd#4971: the role the deploy runs as (see the header).
 ROLE="${STACK}-TagRequired"
@@ -370,7 +379,7 @@ assert_all_tags() {
   local label="$1"
   local aws_pairs="$2"
   local i key val got
-  for i in 0 1 2; do
+  for i in "${!EXPECTED_KEYS[@]}"; do
     key="${EXPECTED_KEYS[$i]}"
     val="${EXPECTED_VALS[$i]}"
     # exact key match on the first field, emit the second field
@@ -386,7 +395,24 @@ assert_all_tags() {
       exit 1
     fi
   done
-  echo "[verify]   ok: ${label} carries all 3 stack-level tags"
+  echo "[verify]   ok: ${label} carries all ${#EXPECTED_KEYS[@]} stack-level tags"
+}
+
+# tag_value <newline-separated "key<TAB>value" pairs> <key>: the key's value, or
+# nothing when the key is absent.
+tag_value() {
+  printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k {print $2}'
+}
+# expect_tag <label> <pairs> <key> <expected value, empty = absent>
+expect_tag() {
+  local got
+  got="$(tag_value "$2" "$3")"
+  if [ "${got}" != "$4" ]; then
+    echo "[verify] FAIL: $1: tag '$3' is '${got:-<absent>}' on AWS, expected '${4:-<absent>}' (go-to-k/cdkd#6871)" >&2
+    printf '%s\n' "$2" >&2
+    exit 1
+  fi
+  echo "[verify]   ok: $1: $3=${4:-<absent>}"
 }
 
 echo "[verify] step 4: read live AWS tags per type + assert all 3 stack tags present"
@@ -465,6 +491,21 @@ WG_TAGS="$(aws athena list-tags-for-resource --resource-arn "${WG_ARN}" --region
   --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
 assert_all_tags "Athena WorkGroup [CC-API] (${WG_NAME})" "${WG_TAGS}"
 
+echo "[verify] step 4b: go-to-k/cdkd#6871 -- a resource's own tag wins over a StackProps.tags key, on both tag shapes"
+# The queue (list-shaped Tags) and the parameter (map-shaped) declare
+# CdkdTagShared themselves; the topic does not, so it takes the stack's value.
+expect_tag "SQS Queue" "${SQS_TAGS}" CdkdTagShared from-resource
+expect_tag "SSM Parameter" "${SSM_TAGS}" CdkdTagShared from-resource
+expect_tag "SNS Topic" "${SNS_TAGS}" CdkdTagShared from-stack
+# The recorded properties carry the merged tags (drift's expected side).
+REC_PARAM_TAG="$(echo "${STATE}" | jq -r \
+  '[.resources[] | select(.resourceType == "AWS::SSM::Parameter") | .properties.Tags.CdkdStackTag] | first // ""')"
+if [ "${REC_PARAM_TAG}" != "from-stackprops" ]; then
+  echo "[verify] FAIL: the SSM Parameter's recorded Tags lack CdkdStackTag (got '${REC_PARAM_TAG}'); the stack tags were not merged before the record (go-to-k/cdkd#6871)" >&2
+  exit 1
+fi
+echo "[verify]   ok: the recorded SSM Parameter Tags carry the stack tag"
+
 echo "[verify] step 5: cdkd drift immediately after deploy (expect exit 0, no #802 tag-order false positive)"
 set +e
 ${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
@@ -475,6 +516,45 @@ if [ "${rc}" -ne 0 ]; then
   exit 1
 fi
 echo "[verify]   ok: clean deploy is drift-free (no tag-order false positive)"
+
+echo "[verify] step 5b: go-to-k/cdkd#6871 -- a stack-tag-only change updates the resources in place"
+SQS_URL_1="${SQS_URL}"
+SNS_ARN_1="${SNS_ARN}"
+SSM_NAME_1="${SSM_NAME}"
+CDKD_TEST_STACK_TAGS=2 ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}"
+STATE_5B=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+for PAIR in "AWS::SQS::Queue|${SQS_URL_1}" "AWS::SNS::Topic|${SNS_ARN_1}" "AWS::SSM::Parameter|${SSM_NAME_1}"; do
+  T="${PAIR%%|*}"
+  NOW="$(echo "${STATE_5B}" | jq -r --arg t "${T}" \
+    '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.physicalId] | first // ""')"
+  if [ "${NOW}" != "${PAIR#*|}" ]; then
+    echo "[verify] FAIL: ${T} was replaced by a stack-tag-only change (${PAIR#*|} -> ${NOW}); CloudFormation updates it in place" >&2
+    exit 1
+  fi
+done
+SQS_TAGS_2="$(aws sqs list-queue-tags --queue-url "${SQS_URL_1}" --region "${REGION}" \
+  --query 'Tags' --output json | jq -r 'to_entries[] | "\(.key)\t\(.value)"')"
+SNS_TAGS_2="$(aws sns list-tags-for-resource --resource-arn "${SNS_ARN_1}" --region "${REGION}" \
+  --query 'Tags' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
+SSM_TAGS_2="$(aws ssm list-tags-for-resource --resource-type Parameter --resource-id "${SSM_NAME_1}" \
+  --region "${REGION}" --query 'TagList' --output json | jq -r '.[] | "\(.Key)\t\(.Value)"')"
+expect_tag "SQS Queue (phase 2)" "${SQS_TAGS_2}" CdkdStackTag from-stackprops-2
+expect_tag "SNS Topic (phase 2)" "${SNS_TAGS_2}" CdkdStackTag from-stackprops-2
+expect_tag "SSM Parameter (phase 2)" "${SSM_TAGS_2}" CdkdStackTag from-stackprops-2
+# The key dropped from the stack is untagged where the resource did not declare
+# it, and stays where it did.
+expect_tag "SNS Topic (phase 2)" "${SNS_TAGS_2}" CdkdTagShared ""
+expect_tag "SQS Queue (phase 2)" "${SQS_TAGS_2}" CdkdTagShared from-resource
+expect_tag "SSM Parameter (phase 2)" "${SSM_TAGS_2}" CdkdTagShared from-resource
+set +e
+${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}"
+rc=$?
+set -e
+if [ "${rc}" -ne 0 ]; then
+  echo "[verify] FAIL: the stack-tag update left drift (exit ${rc}) (go-to-k/cdkd#6871)" >&2
+  exit 1
+fi
+echo "[verify]   ok: the stack-tag update is drift-free"
 
 echo "[verify] step 6: cdkd destroy --force"
 ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
