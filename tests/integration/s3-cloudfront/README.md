@@ -9,6 +9,7 @@ This example deploys an S3 bucket with a CloudFront distribution using Origin Ac
 - **CloudFront Distribution** - CDN with S3 origin, HTTPS redirect
 - **S3 Bucket Policy** - Grants OAI read access to bucket objects
 - **CloudFront Public Key + Key Group** - A `/private/*` behavior restricted to signed URLs (`trustedKeyGroups`, issue #5393)
+- **Log buckets** - Two ACL-enabled buckets: the distribution logs to the first; `verify.sh` switches it to the second out of band and asserts `cdkd drift` reports `Logging.Bucket` (issue #6854)
 
 ## What it demonstrates
 

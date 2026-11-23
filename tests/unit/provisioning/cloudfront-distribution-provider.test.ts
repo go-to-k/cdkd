@@ -2835,10 +2835,9 @@ describe('CloudFrontDistributionProvider', () => {
   });
 
   describe('getDriftUnknownPaths', () => {
-    it('excludes CallerReference + Logging.Bucket for CloudFront::Distribution (OriginGroups is now drift-checked, #873)', () => {
+    it('excludes only CallerReference for CloudFront::Distribution (OriginGroups #873 and Logging.Bucket #6854 are drift-checked)', () => {
       expect(provider.getDriftUnknownPaths('AWS::CloudFront::Distribution')).toEqual([
         'DistributionConfig.CallerReference',
-        'DistributionConfig.Logging.Bucket',
       ]);
     });
 

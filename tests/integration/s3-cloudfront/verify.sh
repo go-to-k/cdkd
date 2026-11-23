@@ -10,6 +10,9 @@
 # Provider. Without the fix, every CDK-deployed CloudFront distro
 # silently lost its tags on the way through cdkd.
 #
+# go-to-k/cdkd#6854: the out-of-band drift write also switches the standard
+# logging bucket to AltLogBucket, and drift must report `Logging.Bucket`.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -349,7 +352,16 @@ ETAG=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGI
   --query 'ETag' --output text)
 CONF=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
   --query 'DistributionConfig' --output json)
-DRIFTED_CONF=$(echo "${CONF}" | jq '.Comment = "drifted-out-of-band"')
+# go-to-k/cdkd#6854: the same write switches the log bucket to AltLogBucket.
+LOG_BUCKET_DOMAIN=$(echo "${STATE}" | jq -r '.outputs.LogBucketDomain // empty')
+ALT_LOG_BUCKET_DOMAIN=$(echo "${STATE}" | jq -r '.outputs.AltLogBucketDomain // empty')
+LIVE_LOG_BUCKET=$(echo "${CONF}" | jq -r '.Logging.Bucket')
+if [ -z "${ALT_LOG_BUCKET_DOMAIN}" ] || [ -z "${LOG_BUCKET_DOMAIN}" ] || [ "${LIVE_LOG_BUCKET}" != "${LOG_BUCKET_DOMAIN}" ]; then
+  echo "FAIL: #6854 premise: the distribution does not log to LogBucket (live '${LIVE_LOG_BUCKET}', LogBucketDomain '${LOG_BUCKET_DOMAIN}', AltLogBucketDomain '${ALT_LOG_BUCKET_DOMAIN}')" >&2
+  exit 1
+fi
+DRIFTED_CONF=$(echo "${CONF}" | jq --arg alt "${ALT_LOG_BUCKET_DOMAIN}" \
+  '.Comment = "drifted-out-of-band" | .Logging.Bucket = $alt')
 echo "${DRIFTED_CONF}" > /tmp/cdkd-cf-drift-conf.json
 aws cloudfront update-distribution --id "${DIST_ID}" --region "${REGION}" \
   --if-match "${ETAG}" \
@@ -371,6 +383,15 @@ if [ "${DIST_COMMENT_DRIFT}" -lt 1 ]; then
   exit 1
 fi
 echo "    OK: cdkd drift detected the out-of-band Comment change on the distribution"
+# go-to-k/cdkd#6854: Logging.Bucket was a drift-unknown path, so the switch
+# reported nothing.
+DIST_LOG_BUCKET_DRIFT=$(echo "${DRIFT_JSON}" | jq '[.[].drifted[] | select(.type == "AWS::CloudFront::Distribution") | .changes[] | select(.path | test("Logging\\.Bucket$"))] | length')
+if [ "${DIST_LOG_BUCKET_DRIFT}" -lt 1 ]; then
+  echo "FAIL: cdkd drift did not detect the out-of-band Logging.Bucket switch on the distribution (#6854)" >&2
+  echo "${DRIFT_JSON}" | jq '.[].drifted[] | select(.type == "AWS::CloudFront::Distribution")' >&2
+  exit 1
+fi
+echo "    OK: cdkd drift detected the out-of-band Logging.Bucket switch (#6854)"
 
 # Revert the out-of-band change so the disable+delete in Phase 2 starts from
 # the cdkd-managed config (avoids an extra propagation cycle on a drifted config).
