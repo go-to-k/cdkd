@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import {
+  calculateResourceDrift,
+  undeclaredEmptyObservedKeys,
+} from '../../../src/analyzer/drift-calculator.js';
 import { stripCcApiAwsManagedFields } from '../../../src/analyzer/cc-api-strip.js';
 import {
   readOnlyUncomparedDriftPaths,
   stripDerivedEchoMembers,
+  undeclaredEmptyComparedDriftKeys,
 } from '../../../src/cli/commands/drift/baseline-keys.js';
 import { withoutSiblingOwned } from '../../../src/provisioning/iam-sibling-managed-policies.js';
 import { sgRuleOwnershipIdentity } from '../../../src/provisioning/sg-sibling-rules.js';
@@ -193,5 +197,35 @@ describe('readOnlyUncomparedDriftPaths: undeclared read-only positions only (go-
 
   it('skips nothing when the schema could not be read', () => {
     expect(readOnlyUncomparedDriftPaths(undefined, {})).toEqual([]);
+  });
+});
+
+describe('undeclared captured-empty CodeCommit Triggers are compared (go-to-k/cdkd#6854)', () => {
+  const TRIGGER = { Name: 'oob', DestinationArn: 'arn:aws:sns:us-east-1:123456789012:t', Events: ['all'], Branches: [] };
+  const skipped = (type: string) =>
+    undeclaredEmptyObservedKeys({ Triggers: [], RepositoryName: 'r' }, { RepositoryName: 'r' }, undeclaredEmptyComparedDriftKeys(type));
+
+  it('an out-of-band trigger on a repository captured with none is drift', () => {
+    const ignore = skipped('AWS::CodeCommit::Repository');
+    expect(ignore).not.toContain('Triggers');
+    expect(
+      driftPaths({ Triggers: [], RepositoryName: 'r' }, { Triggers: [TRIGGER], RepositoryName: 'r' }, {
+        ignorePaths: ignore,
+        unionWalkObjects: true,
+      })
+    ).toEqual(['Triggers']);
+  });
+
+  it('no trigger on either side is clean', () => {
+    expect(
+      driftPaths({ Triggers: [], RepositoryName: 'r' }, { Triggers: [], RepositoryName: 'r' }, {
+        ignorePaths: skipped('AWS::CodeCommit::Repository'),
+        unionWalkObjects: true,
+      })
+    ).toEqual([]);
+  });
+
+  it('another type keeps the captured-empty skip for the same key name', () => {
+    expect(skipped('AWS::Other::Thing')).toContain('Triggers');
   });
 });

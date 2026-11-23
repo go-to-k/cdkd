@@ -121,6 +121,13 @@ const UNDECLARED_UNCOMPARED_KEYS: Readonly<Record<string, readonly string[]>> = 
  * and `--revert` sends `null`, which the provider's `update()` turns into one
  * `DeleteLoginProfile` (the `iam-access-key` integ's login-profile arm
  * measures it).
+ *
+ * `AWS::CodeCommit::Repository` `Triggers` (go-to-k/cdkd#6854): only
+ * `PutRepositoryTriggers` writes them, no CloudFormation type other than the
+ * repository does, and a repository is created with none (`[]`). A trigger
+ * added out of band is drift, and `--revert` sends `[]`, which the provider
+ * puts as the whole set: measured us-east-1, `PutRepositoryTriggers` with
+ * `[]` leaves `GetRepositoryTriggers` answering `[]`.
  */
 const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>> = {
   'AWS::BedrockAgentCore::Runtime': [
@@ -129,6 +136,7 @@ const UNDECLARED_EMPTY_COMPARED_KEYS: Readonly<Record<string, readonly string[]>
     'RequestHeaderConfiguration',
     'ResourceConfigurations',
   ],
+  'AWS::CodeCommit::Repository': ['Triggers'],
   'AWS::IAM::User': ['LoginProfile'],
 };
 
