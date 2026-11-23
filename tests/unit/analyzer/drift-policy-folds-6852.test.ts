@@ -219,12 +219,29 @@ describe('a Condition key holding dots', () => {
 });
 
 describe('partition spelling of a root ARN', () => {
-  const p = (v: string) => trust({ Effect: 'Allow', Action: 'sts:AssumeRole', Principal: { AWS: v } });
+  const p = (v: unknown) => trust({ Effect: "Allow", Action: "sts:AssumeRole", Principal: { AWS: v } });
   it.each(['aws', 'aws-cn', 'aws-us-gov', 'aws-iso-b'])('folds the %s partition', (part) => {
     expect(sameBothWays(ROLE, p(ACCOUNT), p(`arn:${part}:iam::${ACCOUNT}:root`))).toBe(true);
   });
   it.each(['awsx', 'aws-', 'AWS', 'gcp'])('does not fold a made-up partition %s', (part) => {
     expect(differsBothWays(ROLE, p(ACCOUNT), p(`arn:${part}:iam::${ACCOUNT}:root`))).toBe(true);
+  });
+  it.each([
+    ['aws', 'aws-cn'],
+    ['aws', 'aws-us-gov'],
+    ['aws-cn', 'aws-iso-b'],
+  ])('reports two root ARNs of the %s and %s partitions', (a, b) => {
+    const root = (part: string) => `arn:${part}:iam::${ACCOUNT}:root`;
+    expect(differsBothWays(ROLE, p(root(a)), p(root(b)))).toBe(true);
+    // In a list, and as a one-element list against the scalar.
+    expect(differsBothWays(ROLE, p([root(a), ACCOUNT]), p([root(b), ACCOUNT]))).toBe(
+      true
+    );
+    expect(differsBothWays(ROLE, p([root(a)]), p(root(b)))).toBe(true);
+  });
+  it('equates two bare ids only when they are the same id', () => {
+    expect(sameBothWays(ROLE, p(ACCOUNT), p([ACCOUNT]))).toBe(true);
+    expect(differsBothWays(ROLE, p(ACCOUNT), p(OTHER_ACCOUNT))).toBe(true);
   });
 });
 

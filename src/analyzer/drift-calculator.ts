@@ -37,6 +37,7 @@ import { hasPlainPrototype } from '../utils/own-keys.js';
 import {
   NOT_A_POLICY_PATH,
   canonicalPolicyFoldForm,
+  policyFoldLeafEqual,
   isOmittedVersionDefault,
   isVerbatimStatementPath,
 } from './drift-verbatim-paths.js';
@@ -367,10 +368,17 @@ function jsonForm(value: unknown): unknown {
  * JSON form via {@link jsonForm}, so the persisted ISO string of an accepted
  * readback equals the `Date` the next readback returns.
  */
-function deepEqual(a: unknown, b: unknown): boolean {
+function deepEqual(
+  a: unknown,
+  b: unknown,
+  stringLeafEqual?: (a: string, b: string) => boolean
+): boolean {
   a = jsonForm(a);
   b = jsonForm(b);
   if (a === b) return true;
+  if (stringLeafEqual && typeof a === 'string' && typeof b === 'string') {
+    return stringLeafEqual(a, b);
+  }
   if (a === null || b === null || a === undefined || b === undefined) {
     return a === b;
   }
@@ -380,7 +388,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b)) return false;
     if (a.length !== b.length) return false;
-    return a.every((v, i) => deepEqual(v, b[i]));
+    return a.every((v, i) => deepEqual(v, b[i], stringLeafEqual));
   }
 
   const aObj = a as Record<string, unknown>;
@@ -389,7 +397,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (aKeys.length !== definedKeys(bObj).length) return false;
   for (const key of aKeys) {
     if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
-    if (!deepEqual(aObj[key], bObj[key])) return false;
+    if (!deepEqual(aObj[key], bObj[key], stringLeafEqual)) return false;
   }
   return true;
 }
@@ -591,7 +599,11 @@ function policyFoldsEqual(
 ): boolean {
   const state = canonicalPolicyFoldForm(path, stateForm, verbatimKeys);
   if (state === NOT_A_POLICY_PATH) return false;
-  return deepEqual(state, canonicalPolicyFoldForm(path, awsForm, verbatimKeys));
+  return deepEqual(
+    state,
+    canonicalPolicyFoldForm(path, awsForm, verbatimKeys),
+    policyFoldLeafEqual
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

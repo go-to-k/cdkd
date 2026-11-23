@@ -121,11 +121,10 @@ const POLICY_LIST_KEYS = new Set(['Action', 'NotAction', 'Resource', 'NotResourc
 const POLICY_PRINCIPAL_KEYS = new Set(['Principal', 'NotPrincipal']);
 const BARE_ACCOUNT_ID = /^\d{12}$/;
 /**
- * An account's root principal. The partition is not compared: the comparator
- * has no partition input, and a policy cannot name a principal of another
- * partition than its own, so the bare id and its root ARN of the resource's
- * partition are the only pair that can meet here (`policyContentKey` reads it
- * the same way).
+ * An account's root principal, in any real partition. Only the measured pair
+ * is folded: a bare id against the root ARN of the same id (the readback is in
+ * the resource's partition, which the comparator cannot know). Two root ARNs
+ * are compared as strings, so a partition change is still drift.
  */
 const ACCOUNT_ROOT_PRINCIPAL = /^arn:aws(?:-[a-z]+)*:iam::(\d{12}):root$/;
 
@@ -159,15 +158,33 @@ function unwrapOneElementList(value: unknown): unknown {
  * "<12-digit id>"}` as `"arn:aws:iam::<id>:root"` (SQS stores it the same
  * way, `policyContentKey`). Only under the `AWS` key: a 12-digit value under
  * `Service`, `Federated` or `CanonicalUser` names no account and is kept as
- * written. cdk-real-drift `src/normalize/policy-canonical.ts`
- * `normalizeAccountPrincipal` folds the same pair (under every principal key).
+ * written. Two root ARNs compare as strings ({@link policyFoldLeafEqual}).
+ * cdk-real-drift `src/normalize/policy-canonical.ts`
+ * `normalizeAccountPrincipal` folds the same pair, looser: under every
+ * principal key, and two root ARNs of different partitions alike.
  */
 function accountPrincipalForm(value: unknown): unknown {
   // The NUL-prefixed form cannot meet a real principal: IAM refuses a NUL in one.
-  if (typeof value !== 'string') return value;
-  if (BARE_ACCOUNT_ID.test(value)) return `\u0000account:${value}`;
-  const root = ACCOUNT_ROOT_PRINCIPAL.exec(value);
-  return root ? `\u0000account:${root[1]}` : value;
+  return typeof value === 'string' && BARE_ACCOUNT_ID.test(value)
+    ? `${BARE_ACCOUNT_MARK}${value}`
+    : value;
+}
+
+const BARE_ACCOUNT_MARK = '\u0000account:';
+
+/**
+ * The leaf rule of the account fold, for two STRING leaves at the same
+ * position of two folded values: a bare id (marked by
+ * {@link canonicalPolicyFoldForm}, only under `Principal.AWS` /
+ * `NotPrincipal.AWS`) equals the root ARN of the same id. Everything else
+ * compares as written.
+ */
+export function policyFoldLeafEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [bare, other] = a.startsWith(BARE_ACCOUNT_MARK) ? [a, b] : [b, a];
+  if (!bare.startsWith(BARE_ACCOUNT_MARK)) return false;
+  const root = ACCOUNT_ROOT_PRINCIPAL.exec(other);
+  return root !== null && root[1] === bare.slice(BARE_ACCOUNT_MARK.length);
 }
 
 /**
