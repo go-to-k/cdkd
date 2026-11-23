@@ -219,7 +219,7 @@ describe('a Condition key holding dots', () => {
 });
 
 describe('partition spelling of a root ARN', () => {
-  const p = (v: unknown) => trust({ Effect: "Allow", Action: "sts:AssumeRole", Principal: { AWS: v } });
+  const p = (v: unknown) => trust({ Effect: 'Allow', Action: 'sts:AssumeRole', Principal: { AWS: v } });
   it.each(['aws', 'aws-cn', 'aws-us-gov', 'aws-iso-b'])('folds the %s partition', (part) => {
     expect(sameBothWays(ROLE, p(ACCOUNT), p(`arn:${part}:iam::${ACCOUNT}:root`))).toBe(true);
   });
