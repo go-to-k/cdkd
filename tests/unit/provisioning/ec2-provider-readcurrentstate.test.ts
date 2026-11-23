@@ -1232,6 +1232,39 @@ describe('EC2Provider.readCurrentState', () => {
   });
 
   describe('AWS::EC2::SecurityGroupIngress (standalone)', () => {
+    // go-to-k/cdkd#6854: EC2 stores 192.168.5.5/16 as 192.168.0.0/16, so the
+    // record's host-bit spelling pairs with that rule and reads back as written;
+    // a rule on another network does not.
+    it('pairs a host-bit CIDR record with the network AWS stores, in the record spelling', async () => {
+      const sg = {
+        SecurityGroups: [
+          {
+            GroupId: 'sg-1',
+            IpPermissions: [
+              {
+                IpProtocol: 'tcp',
+                FromPort: 80,
+                ToPort: 80,
+                IpRanges: [{ CidrIp: '10.0.0.0/8' }, { CidrIp: '192.168.0.0/16' }],
+              },
+            ],
+          },
+        ],
+      };
+      const state = { GroupId: 'sg-1', IpProtocol: 'tcp', FromPort: 80, ToPort: 80, CidrIp: '192.168.5.5/16' };
+      mockSend.mockResolvedValueOnce(sg);
+      expect(
+        bagOf(await provider.readCurrentState('sg-1|tcp|80|80', 'Logical', 'AWS::EC2::SecurityGroupIngress', state))
+      ).toEqual(state);
+      mockSend.mockResolvedValueOnce(sg);
+      expect(
+        await provider.readCurrentState('sg-1|tcp|80|80', 'Logical', 'AWS::EC2::SecurityGroupIngress', {
+          ...state,
+          CidrIp: '192.169.0.0/16',
+        })
+      ).toBeUndefined();
+    });
+
     it('finds the matching rule by full state signature when multiple AWS rules share the (group, protocol, ports) tuple', async () => {
       mockSend.mockResolvedValueOnce({
         SecurityGroups: [
@@ -1574,6 +1607,29 @@ describe('EC2Provider.readCurrentState', () => {
         expect(call).toBeInstanceOf(DescribeSecurityGroupRulesCommand);
         expect((call as DescribeSecurityGroupRulesCommand).input).toEqual({
           SecurityGroupRuleIds: [ID],
+        });
+      });
+
+      // go-to-k/cdkd#6854: EC2 stores 10.0.5.5/16 as 10.0.0.0/16, so a host-bit
+      // record pairs by identity and reads back in its own spelling.
+      it('returns a host-bit record in its own CIDR spelling, the Description edit still drift', async () => {
+        mockSend.mockResolvedValueOnce(edited).mockResolvedValueOnce(byId());
+
+        const result = await provider.readCurrentState(
+          PHYS,
+          'Logical',
+          TYPE,
+          { ...declared, CidrIp: '10.0.5.5/16' },
+          own
+        );
+
+        expect(result).toEqual({
+          GroupId: 'sg-1',
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '10.0.5.5/16',
+          Description: 'edited in the console',
         });
       });
 

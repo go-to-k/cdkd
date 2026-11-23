@@ -24,7 +24,6 @@
 import { type SecurityGroupRule } from '@aws-sdk/client-ec2';
 import type { ReadCurrentStateContext } from '../../../types/resource.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
-import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { cfnIngressPortValue, recordedSgRuleId, sgProtocolKey } from '../../sg-rule-identity.js';
 import {
@@ -32,7 +31,7 @@ import {
   sgRuleOwnershipIdentity,
   sgSiblingDecidedById,
 } from '../../sg-sibling-rules.js';
-import { type CfnSgRule } from './sg-support.js';
+import { type CfnSgRule, sgCidrKey } from './sg-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 type SgDirection = 'ingress' | 'egress';
@@ -202,31 +201,6 @@ export function sgRevokesHeldBySiblings(
   return held;
 }
 
-/**
- * A CIDR in one spelling: the network with its host bits cleared, as EC2
- * stores a rule's CIDR (`10.0.0.5/24` reads back `10.0.0.0/24`, and
- * `2001:db8::5/64` reads back `2001:db8::/64`; measured us-east-1, 2026-11-23,
- * go-to-k/cdkd#6854). A prefix that is not 1-3 digits (`10.0.0.0/`, which EC2
- * refuses as malformed) is left as written, never read as `/0`.
- */
-export function cidrKey(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  const [address, prefix, ...rest] = value.trim().split('/');
-  if (address === undefined || prefix === undefined || rest.length > 0) return value;
-  if (!/^\d{1,3}$/.test(prefix)) return value;
-  const length = Number(prefix);
-  const octets = address.split('.');
-  if (octets.length === 4 && length >= 0 && length <= 32) {
-    const parts = octets.map(Number);
-    if (parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return value;
-    const n = parts.reduce((acc, p) => acc * 256 + p, 0);
-    const network = length === 0 ? 0 : n - (n % 2 ** (32 - length));
-    const out = [24, 16, 8, 0].map((shift) => Math.floor(network / 2 ** shift) % 256);
-    return `${out.join('.')}/${length}`;
-  }
-  return canonicalizeIpv6Cidr(`${address}/${length}`) ?? value;
-}
-
 /** The keys a standalone ingress rule's identity reads. */
 const INGRESS_IDENTITY_KEYS = [
   'IpProtocol',
@@ -253,8 +227,8 @@ function describedRuleMatchesRecord(
   if ((rule.FromPort ?? -1) !== cfnIngressPortValue(properties['FromPort'])) return false;
   if ((rule.ToPort ?? -1) !== cfnIngressPortValue(properties['ToPort'])) return false;
   const pairs: Array<[unknown, unknown]> = [
-    [cidrKey(properties['CidrIp'] ?? undefined), cidrKey(rule.CidrIpv4)],
-    [cidrKey(properties['CidrIpv6'] ?? undefined), cidrKey(rule.CidrIpv6)],
+    [sgCidrKey(properties['CidrIp'] ?? undefined), sgCidrKey(rule.CidrIpv4)],
+    [sgCidrKey(properties['CidrIpv6'] ?? undefined), sgCidrKey(rule.CidrIpv6)],
     [properties['SourceSecurityGroupId'] ?? undefined, rule.ReferencedGroupInfo?.GroupId],
     [properties['SourcePrefixListId'] ?? undefined, rule.PrefixListId],
   ];

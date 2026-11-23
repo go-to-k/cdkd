@@ -27,6 +27,7 @@ import {
   reconcileSgRules,
   recordedSgRuleId,
   securityGroupRuleMatchesCfnIngress,
+  withRecordedCidrSpelling,
   sgProtocolKey,
   sgRuleKey,
   stackIngressRuleHolder,
@@ -671,7 +672,7 @@ export async function readSecurityGroupIngressCurrentState(
       // Re-attach the parent group id so the caller sees the full CFn
       // shape (the standalone resource type carries GroupId at the top
       // level, unlike the inline-rule case).
-      return { GroupId: groupId, ...match };
+      return { GroupId: groupId, ...withRecordedCidrSpelling(match, properties) };
     }
     // No exact match: the identity fallback (issue #4447).
     const fallback = await this.readSgIngressByIdentity(groupId, flat, properties, context);
@@ -789,7 +790,7 @@ export async function readSgIngressByIdentity(
   // on every run, with `--revert` re-authorizing the same rule each time.
   // (`IpProtocol` needs no echo: `canonicalizeIpProtocols` folds both sides.)
   return {
-    ...match,
+    ...withRecordedCidrSpelling(match, properties),
     ...(properties['FromPort'] != null && { FromPort: properties['FromPort'] }),
     ...(properties['ToPort'] != null && { ToPort: properties['ToPort'] }),
   };

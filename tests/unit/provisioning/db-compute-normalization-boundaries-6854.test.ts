@@ -42,7 +42,15 @@ import {
   canonicalizeDriftPair as ec2Pair,
   canonicalizeDesiredProperties as ec2Desired,
 } from '../../../src/provisioning/providers/ec2/drift.js';
-import { cidrKey } from '../../../src/provisioning/providers/ec2/sg-rule-by-id.js';
+import {
+  sgCidrKey as cidrKey,
+  reconcileSgRules,
+  sgRuleKey,
+  withRecordedCidrSpelling,
+  comparableIngressIdentity,
+} from '../../../src/provisioning/providers/ec2/sg-support.js';
+import { sgRuleOwnershipIdentity } from '../../../src/provisioning/sg-sibling-rules.js';
+import { sgSettleRuleKey } from '../../../src/provisioning/sg-own-write-rules.js';
 import {
   canonicalizeDriftPair as elbv2Pair,
   getDriftUnorderedPaths as elbv2Unordered,
@@ -342,6 +350,72 @@ describe('EC2 (ec2/drift.ts, ec2/sg-rule-by-id.ts)', () => {
     expect(sameAfter(canon, { IpProtocol: 'TCP' }, { IpProtocol: 'tcp' })).toBe(true);
     expect(sameAfter(canon, { IpProtocol: 17 }, { IpProtocol: 'tcp' })).toBe(false);
     expect(sameAfter(canon, { IpProtocol: '-1' }, { IpProtocol: 'all' })).toBe(false);
+  });
+});
+
+describe('Security group rule identity by CIDR (ec2/sg-support.ts sgCidrKey / sgRuleKey)', () => {
+  const rule = (CidrIp: string, extra: Bag = {}): Bag => ({
+    IpProtocol: 'tcp',
+    FromPort: 443,
+    ToPort: 443,
+    CidrIp,
+    ...extra,
+  });
+
+  it('keys the spellings EC2 stores as one rule alike (measured: host bits, IPv6 case and compression)', () => {
+    expect(sgRuleKey(rule('10.0.0.5/24'), 'ingress')).toBe(sgRuleKey(rule('10.0.0.0/24'), 'ingress'));
+    expect(
+      sgRuleKey({ IpProtocol: 'tcp', CidrIpv6: '2001:DB8:0:2:0:0:0:5/64' }, 'ingress')
+    ).toBe(sgRuleKey({ IpProtocol: 'tcp', CidrIpv6: '2001:db8:0:2::/64' }, 'ingress'));
+  });
+
+  it('never keys two different rules alike', () => {
+    // Distinct networks (host bits already clear) never share a key.
+    const networks: string[] = [];
+    for (let prefix = 0; prefix <= 32; prefix++) {
+      for (const base of [0x0a000000, 0x0a000080, 0x0a000100, 0xc0a80000, 0xffffffff]) {
+        const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+        const n = (base & mask) >>> 0;
+        networks.push(`${n >>> 24}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}/${prefix}`);
+      }
+    }
+    const distinct = [...new Set(networks)];
+    expect(new Set(distinct.map((c) => String(cidrKey(c)))).size).toBe(distinct.length);
+    // Concrete pairs AWS keeps apart.
+    expect(sgRuleKey(rule('10.0.0.0/24'), 'ingress')).not.toBe(sgRuleKey(rule('10.0.0.0/25'), 'ingress'));
+    expect(sgRuleKey(rule('10.0.0.0/24'), 'ingress')).not.toBe(sgRuleKey(rule('10.0.1.0/24'), 'ingress'));
+    expect(sgRuleKey(rule('0.0.0.0/0'), 'ingress')).not.toBe(sgRuleKey(rule('10.0.0.0/'), 'ingress'));
+    expect(sgRuleKey(rule('10.0.0.10/32'), 'ingress')).not.toBe(sgRuleKey(rule('10.0.0.010/32'), 'ingress'));
+    expect(sgRuleKey(rule('10.0.0.0/24'), 'ingress')).not.toBe(sgRuleKey(rule(' 10.0.0.0/24'), 'ingress'));
+  });
+
+  it('pairs a group inline rule and a sibling standalone rule spelled two ways (holder and sibling strip)', () => {
+    const host = rule('10.0.0.5/24');
+    const net = rule('10.0.0.0/24');
+    expect(comparableIngressIdentity('sg-1', host)).toBe(comparableIngressIdentity('sg-1', net));
+    expect(sgRuleOwnershipIdentity(host, 'ingress')).toBe(sgRuleOwnershipIdentity(net, 'ingress'));
+    expect(sgRuleOwnershipIdentity(rule('10.0.0.0/24'), 'egress')).toBe(
+      sgRuleOwnershipIdentity(rule('10.0.0.9/24'), 'egress')
+    );
+    expect(sgSettleRuleKey(host, 'ingress')).toBe(sgSettleRuleKey(net, 'ingress'));
+    expect(sgSettleRuleKey(rule('10.0.1.0/24'), 'ingress')).not.toBe(sgSettleRuleKey(net, 'ingress'));
+    // Another network, prefix, or a group name that only looks like a CIDR stay apart.
+    expect(comparableIngressIdentity('sg-1', rule('10.0.1.0/24'))).not.toBe(comparableIngressIdentity('sg-1', net));
+    expect(sgRuleOwnershipIdentity(rule('10.0.0.0/25'), 'ingress')).not.toBe(sgRuleOwnershipIdentity(net, 'ingress'));
+    const named = (SourceSecurityGroupName: string): Bag => ({ IpProtocol: 'tcp', FromPort: 443, ToPort: 443, SourceSecurityGroupName });
+    expect(sgRuleOwnershipIdentity(named('2001:db8::5/64'), 'ingress')).not.toBe(
+      sgRuleOwnershipIdentity(named('2001:db8::/64'), 'ingress')
+    );
+  });
+
+  it('pairs a host-bit record with its live rule and reads it back in the record spelling', () => {
+    const live = [rule('10.0.1.0/24'), rule('10.0.0.0/24')];
+    const out = reconcileSgRules(live as never, [rule('10.0.0.5/24')], 'ingress');
+    expect(out).toEqual([rule('10.0.0.5/24'), rule('10.0.1.0/24')]);
+    // Only the CIDR is echoed; every other member stays AWS's.
+    expect(withRecordedCidrSpelling(rule('10.0.0.0/24', { Description: 'aws' }) as never, rule('10.0.0.5/24'))).toEqual(
+      rule('10.0.0.5/24', { Description: 'aws' })
+    );
   });
 });
 

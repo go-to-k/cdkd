@@ -163,6 +163,9 @@ describe('sibling-owned strips: what counts as the sibling\'s member (go-to-k/cd
     ['a protocol number', { IpProtocol: '6' }],
     ['a port as a string', { FromPort: '443', ToPort: '443' }],
     ['another Description (EC2 refuses a second rule differing only in it)', { Description: 'x' }],
+    // go-to-k/cdkd#6854: EC2 stores 10.0.0.1/8 as 10.0.0.0/8 and refuses a
+    // second rule at the other spelling as InvalidPermission.Duplicate (measured).
+    ['the same network spelled with host bits', { CidrIp: '10.0.0.1/8' }],
   ])('an SG rule identity equates %s', (_label, over) => {
     expect(sgRuleOwnershipIdentity(rule(over), 'ingress')).toBe(sgRuleOwnershipIdentity(rule({}), 'ingress'));
   });
@@ -170,7 +173,11 @@ describe('sibling-owned strips: what counts as the sibling\'s member (go-to-k/cd
   it.each<[string, Record<string, unknown>]>([
     ['another port', { ToPort: 444 }],
     ['another protocol', { IpProtocol: 'udp' }],
-    ['a CIDR spelled differently', { CidrIp: '10.0.0.1/8' }],
+    ['another network', { CidrIp: '11.0.0.0/8' }],
+    ['another prefix length', { CidrIp: '10.0.0.0/9' }],
+    // Spellings EC2 refuses as malformed stay as written (measured).
+    ['a leading-zero octet', { CidrIp: '010.0.0.0/8' }],
+    ['a prefix with no digits', { CidrIp: '10.0.0.0/' }],
     ['another peer kind', { CidrIp: undefined, SourcePrefixListId: 'pl-1' }],
     ['all traffic against tcp', { IpProtocol: '-1', FromPort: -1, ToPort: -1 }],
   ])('an SG rule identity does not equate %s', (_label, over) => {

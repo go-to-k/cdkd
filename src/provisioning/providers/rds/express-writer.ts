@@ -34,7 +34,7 @@ export class ExpressWriterRefusal extends Error {
  * RDS identifiers are case-insensitive and reported lowercase, while a declared
  * `DBClusterIdentifier` is recorded as written.
  */
-function sameDbIdentifier(a: string | undefined, b: string): boolean {
+export function sameDbIdentifier(a: string | undefined, b: string): boolean {
   return a !== undefined && a.toLowerCase() === b.toLowerCase();
 }
 

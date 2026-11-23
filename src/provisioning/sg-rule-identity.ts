@@ -6,6 +6,8 @@
  * EC2 provider.
  */
 import { canonicalizeIpProtocolValue } from '../utils/ip-protocol.js';
+import { canonicalizeIpv4Cidr } from '../utils/ipv4-cidr.js';
+import { canonicalizeIpv6Cidr } from '../utils/ipv6-cidr.js';
 
 /**
  * The `IpProtocol` component of a security-group rule identity key.
@@ -37,6 +39,30 @@ export function sgProtocolKey(value: unknown): unknown {
   // here too, and keeps the standalone lookup and the inline-rule reconcile
   // reading ONE definition of protocol identity.
   return canonicalizeIpProtocolValue(value ?? '-1');
+}
+
+/**
+ * go-to-k/cdkd#6854: a security-group rule CIDR as EC2 stores it, for rule
+ * identity. EC2 clears host bits and writes IPv6 compressed and lower-cased
+ * (`10.0.0.5/24` is stored as `10.0.0.0/24`, `2001:DB8:0:2:0:0:0:5/64` as
+ * `2001:db8:0:2::/64`), and refuses a second rule at another spelling of one
+ * network as `InvalidPermission.Duplicate` (all measured us-east-1,
+ * 2026-11-23), so two spellings with one key are one rule. A spelling EC2
+ * refuses as malformed (a leading zero in an octet or a prefix, a prefix with
+ * no digits) or anything that is not a CIDR is keyed as written, never folded
+ * onto a valid network. Not a string: returned as it is.
+ */
+export function sgCidrKey(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const ipv4 = /^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){3}\/(0|[1-9]\d?)$/.test(value)
+    ? canonicalizeIpv4Cidr(value)
+    : undefined;
+  if (ipv4 !== undefined) return ipv4;
+  const slash = value.lastIndexOf('/');
+  if (value.includes(':') && /^(0|[1-9]\d{0,2})$/.test(value.slice(slash + 1))) {
+    return canonicalizeIpv6Cidr(value) ?? value;
+  }
+  return value;
 }
 
 /**

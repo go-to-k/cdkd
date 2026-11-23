@@ -724,8 +724,8 @@ function readRevisionWeights(
   });
 }
 
-/** Order-insensitive equality of two weight lists. */
-function sameWeights(
+/** Order-insensitive equality of two weight lists (exported for its boundary test, go-to-k/cdkd#6854). */
+export function sameWeights(
   a: ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }>,
   b: ReadonlyArray<{ revisionId?: string | undefined; weight?: number | undefined }> | undefined
 ): boolean {
