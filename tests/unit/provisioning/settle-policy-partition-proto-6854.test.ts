@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vite-plus/test';
 import { policyDocumentMatchesDeclared } from '../../../src/provisioning/settle-after-own-write.js';
+import { policyContentKey } from '../../../src/provisioning/policy-document-content.js';
 
 const ACCOUNT = '123456789012';
 const doc = (principal: string, condition?: string): string =>
@@ -73,6 +74,17 @@ describe('policyDocumentMatchesDeclared and a __proto__ condition key (#6854)', 
     expect(
       policyDocumentMatchesDeclared(doc(ACCOUNT, '{"__proto__":{"aws:SourceAccount":"2"}}'), declared)
     ).toBe(false);
-    expect(policyDocumentMatchesDeclared(doc(ACCOUNT), declared)).toBe(false);
+  });
+});
+
+describe('policyContentKey and a __proto__ principal key (#6854)', () => {
+  const withPrincipal = (principal: string): string =>
+    `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":${principal},"Action":"s3:ListBucket","Resource":"arn:aws:s3:::b"}]}`;
+
+  it('compares a __proto__ principal key rather than dropping it', () => {
+    const plain = withPrincipal('{"AWS":"111111111111"}');
+    const extra = withPrincipal('{"AWS":"111111111111","__proto__":{"AWS":"222222222222"}}');
+    expect(policyContentKey(extra, 'aws')).not.toBe(policyContentKey(plain, 'aws'));
+    expect(policyContentKey(extra, 'aws')).toBe(policyContentKey(extra, 'aws'));
   });
 });

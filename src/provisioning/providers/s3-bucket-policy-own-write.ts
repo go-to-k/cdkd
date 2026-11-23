@@ -43,7 +43,7 @@ export async function settleBucketPolicyRead(
     context: ReadCurrentStateContext | undefined;
     delaysMs: readonly number[];
     /** The bucket's partition, for the account id / root ARN fold (go-to-k/cdkd#6854). */
-    partition?: string;
+    partition?: string | undefined;
     logger: { warn: (message: string) => void };
   }
 ): Promise<BucketPolicyRead> {

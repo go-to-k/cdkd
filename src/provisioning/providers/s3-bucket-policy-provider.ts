@@ -729,7 +729,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const read = () => this.readPolicyOnce(physicalId, properties, context);
     const delaysMs = this.ownWriteRereadDelaysMs;
-    const partition = await this.bucketPartition();
+    // Only the post-write capture compares against the declared document.
+    const partition = context?.afterOwnWrite === true ? await this.bucketPartition() : undefined;
     const options = { logicalId, properties, context, delaysMs, partition, logger: this.logger };
     let first = await read();
     if (context?.afterOwnWrite !== true) {
