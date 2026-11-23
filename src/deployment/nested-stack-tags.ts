@@ -158,7 +158,8 @@ export async function settleStackTagChildRuns(args: {
   /**
    * The resolver's bag: a resolved value holding one of its secrets (a
    * `NoEcho` parameter's value, which the diff resolver serves as plaintext)
-   * leaves the row unknowable, so no plaintext is ever recorded.
+   * leaves the row unknowable, so no plaintext is ever recorded. Absent,
+   * no resolved row is recorded at all (fail closed).
    */
   secrets: RecordedSecretValues | undefined;
 }): Promise<Map<string, Record<string, string> | undefined>> {
@@ -174,10 +175,11 @@ export async function settleStackTagChildRuns(args: {
       const secrets = args.secrets;
       const holdsSecret =
         rowTags !== undefined &&
-        secrets !== undefined &&
-        Object.entries(rowTags).some(
-          ([key, value]) => holdsRecordedSecret(key, secrets) || holdsRecordedSecret(value, secrets)
-        );
+        (secrets === undefined ||
+          Object.entries(rowTags).some(
+            ([key, value]) =>
+              holdsRecordedSecret(key, secrets) || holdsRecordedSecret(value, secrets)
+          ));
       if (rowTags !== undefined && !holdsSecret) {
         expected.set(logicalId, childStackTags(args.stackTags, rowTags));
       }

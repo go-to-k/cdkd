@@ -145,7 +145,7 @@ describe('settleStackTagChildRuns (go-to-k/cdkd#6871, code review M2)', () => {
       stackTags: undefined,
       state: recorded({ Child: { env: 'prod' } }),
       resolve: async () => [{ Key: 'env', Value: 'prod' }],
-      secrets: undefined,
+      secrets: new Map(),
     });
     expect(expected.get('Child')).toEqual({ env: 'prod' });
     expect(changes.get('Child')?.changeType).toBe('NO_CHANGE');
@@ -160,7 +160,7 @@ describe('settleStackTagChildRuns (go-to-k/cdkd#6871, code review M2)', () => {
       stackTags: undefined,
       state: recorded({ Child: { env: 'prod' } }),
       resolve: async () => [{ Key: 'env', Value: 'dev' }],
-      secrets: undefined,
+      secrets: new Map(),
     });
     expect(changes.get('Child')).toMatchObject({ changeType: 'UPDATE', nestedStackTagsChanged: true });
   });
@@ -203,5 +203,18 @@ describe('settleStackTagChildRuns never records a secret (go-to-k/cdkd#6871, sec
     expect(expected.get('Child')).toBeUndefined();
     expect(JSON.stringify(nestedStackTagsField(expected) ?? {})).not.toContain('noecho-6871-value');
     expect(changes.get('Child')?.changeType).toBe('UPDATE');
+  });
+
+  it('records no resolved row without a bag (fail closed)', async () => {
+    const { settleStackTagChildRuns } = await import('../../../src/deployment/nested-stack-tags.js');
+    const expected = await settleStackTagChildRuns({
+      changes: new Map(),
+      template: template([{ Key: 'k', Value: { Ref: 'P' } }]),
+      stackTags: undefined,
+      state: recorded({}),
+      resolve: async () => [{ Key: 'k', Value: 'v' }],
+      secrets: undefined,
+    });
+    expect(expected.get('Child')).toBeUndefined();
   });
 });
