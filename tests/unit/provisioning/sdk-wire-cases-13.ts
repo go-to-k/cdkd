@@ -1838,7 +1838,9 @@ const NESTED_CASES: TypeCase[] = [
     physicalId: `arn:cdkd-local:${REGION}:${ACCOUNT}:nested-stack/${NESTED_PARENT}/${NESTED_LOGICAL_ID}`,
     createOnly: createOnlyOf('AWS::CloudFormation::Stack'),
     arm: armNestedChild,
-    exempt: {},
+    exempt: {
+      Tags: `no wire call of the row: they become the child engine's stack tags (go-to-k/cdkd#6871), merged into each child resource's own Tags before the child's diff; pinned by nested-stack-provider-stack-tags-6871.test.ts and the nested-stack-secret integ fixture`,
+    },
     targets: [],
     bags: [
       {

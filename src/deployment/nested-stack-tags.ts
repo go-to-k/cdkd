@@ -6,7 +6,8 @@
  * parent's stack tags with the row's own `Tags` winning. CloudFormation
  * updates a nested stack when either changes, even with the child template
  * unchanged. In cdkd the row updates (and so runs the child engine) only when
- * its own properties diff, and `Tags` is not one of them, so the parent
+ * its own properties diff; its own `Tags` are one of them since
+ * go-to-k/cdkd#6893, the PARENT's stack tags are not, so the parent
  * records what each row's child was deployed with
  * (`StackState.nestedStackTags`) and a row whose tags differ is forced to
  * UPDATE. A record without the field reads every row as `{}`: a tagged row
