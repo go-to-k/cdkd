@@ -341,6 +341,30 @@ describe('S3BucketPolicyProvider.readCurrentState', () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  // go-to-k/cdkd#6854: the post-write capture settles on a bare account id
+  // read back as the root ARN of the bucket's partition, never of another.
+  it("right after its own write, settles a bare account id only on its partition's root ARN", async () => {
+    const accountPolicy = (principal: string) =>
+      JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          { Effect: 'Allow', Principal: { AWS: principal }, Action: 's3:ListBucket', Resource: 'arn:aws:s3:::b' },
+        ],
+      });
+    const declared = { Bucket: 'my-bucket', PolicyDocument: JSON.parse(accountPolicy('123456789012')) };
+    Object.assign(provider, { ownWriteRereadDelaysMs: [0], sleep: async () => {} });
+
+    mockSend.mockResolvedValue({ Policy: accountPolicy('arn:aws:iam::123456789012:root') });
+    await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy', declared, { afterOwnWrite: true });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+
+    mockSend.mockReset();
+    mockSend.mockResolvedValue({ Policy: accountPolicy('arn:aws-cn:iam::123456789012:root') });
+    await provider.readCurrentState('my-bucket', 'L', 'AWS::S3::BucketPolicy', declared, { afterOwnWrite: true });
+    // Not the declared document: re-read on the schedule.
+    expect(mockSend).toHaveBeenCalledTimes(2);
+  });
+
   it('on a drift read, never re-reads a policy with no template-claimed bare unique id', async () => {
     mockSend.mockResolvedValueOnce({ Policy: oaiPolicy({ AWS: 'AIDAIBJOSOJSBZ753XCAW' }) });
     const sleep = vi.fn(async () => {});

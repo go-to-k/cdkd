@@ -42,6 +42,8 @@ export async function settleBucketPolicyRead(
     properties: Record<string, unknown> | undefined;
     context: ReadCurrentStateContext | undefined;
     delaysMs: readonly number[];
+    /** The bucket's partition, for the account id / root ARN fold (go-to-k/cdkd#6854). */
+    partition?: string | undefined;
     logger: { warn: (message: string) => void };
   }
 ): Promise<BucketPolicyRead> {
@@ -55,7 +57,7 @@ export async function settleBucketPolicyRead(
   const settled = await settleDeclaredMember(
     asMember(first),
     async () => asMember(await read()),
-    (value) => policyDocumentMatchesDeclared(value['PolicyDocument'], declared),
+    (value) => policyDocumentMatchesDeclared(value['PolicyDocument'], declared, options.partition),
     NO_BASELINE,
     options.delaysMs,
     () =>

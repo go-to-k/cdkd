@@ -211,7 +211,9 @@ function normalizePrincipal(principal: unknown, partition: string | undefined): 
   ) {
     return ANYONE;
   }
-  const out: Record<string, unknown> = {};
+  // Null prototype: a `__proto__` principal key stays an own key and is
+  // compared, where `{}` would take it as the prototype (go-to-k/cdkd#6854).
+  const out = Object.create(null) as Record<string, unknown>;
   for (const [key, raw] of Object.entries(principal as Record<string, unknown>)) {
     const value =
       key === 'AWS'

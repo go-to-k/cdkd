@@ -260,12 +260,22 @@ export function declaredPolicyDocument(properties: unknown): unknown {
  * omitted `Version` means, which S3, SQS, SNS, KMS, Secrets Manager and IAM's
  * role trust policy write into it (go-to-k/cdkd#6634). A read `2012-10-17`
  * there, or any change to a declared `Version`, still differs.
+ *
+ * `partition` is the policy's resource partition, when the caller knows it: a
+ * bare account id then equals only that partition's root ARN
+ * ({@link policyContentKey}, go-to-k/cdkd#6854).
  */
-export function policyDocumentMatchesDeclared(answer: unknown, declared: unknown): boolean {
+export function policyDocumentMatchesDeclared(
+  answer: unknown,
+  declared: unknown,
+  partition?: string
+): boolean {
   return (
     answer !== undefined &&
-    policyContentKey(foldConditionValues(withoutOmittedVersionDefault(answer, declared))) ===
-      policyContentKey(foldConditionValues(declared))
+    policyContentKey(
+      foldConditionValues(withoutOmittedVersionDefault(answer, declared)),
+      partition
+    ) === policyContentKey(foldConditionValues(declared), partition)
   );
 }
 
@@ -321,13 +331,15 @@ function foldConditionValues(document: unknown): unknown {
       if (typeof condition !== 'object' || condition === null || Array.isArray(condition)) {
         return entry;
       }
-      const folded: Record<string, unknown> = {};
+      // Null prototypes: a `__proto__` operator or condition key stays an own
+      // key and is compared, where `{}` would take it as the prototype.
+      const folded = Object.create(null) as Record<string, unknown>;
       for (const [operator, block] of Object.entries(condition as Record<string, unknown>)) {
         if (typeof block !== 'object' || block === null || Array.isArray(block)) {
           folded[operator] = block;
           continue;
         }
-        const values: Record<string, unknown> = {};
+        const values = Object.create(null) as Record<string, unknown>;
         for (const [key, value] of Object.entries(block as Record<string, unknown>)) {
           values[key] = Array.isArray(value) && value.length === 1 ? value[0] : value;
         }
