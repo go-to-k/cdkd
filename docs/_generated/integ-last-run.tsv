@@ -166,8 +166,8 @@ dynamodb-table-policy-baseline	2026-11-22T05:45:00Z	PASS	190	verify.sh	PR6814 2a
 dynamodb-tableclass-switch	2026-11-06T16:03:56Z	PASS	75	verify.sh	post-hoc on main after #5841 split; rc ok, orph clean
 dynamodb-ttl-attr-change	2026-11-19T06:52:45Z	PASS	1900	verify.sh	#6600 final: rc ok, destroy 0 errors, orph clean
 ec2-eip-instance-association	2026-11-21T15:34:28Z	PASS	101	verify.sh	rc ok, orph clean
-ec2-instance	2026-11-21T21:51:13Z	PASS	859	verify.sh	rc ok, orph clean (PR 6795 8ad8ddb90)
-ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
+ec2-instance	2026-11-23T08:55:56Z	PASS	809	verify.sh	rc 0, orph clean (#6867 SsmAssociations ARN/name; merge-base b70da242f)
+ec2-instance-fanout	2026-11-23T08:55:56Z	PASS	178	verify.sh	rc 0, orph clean (#6867)
 ec2-instance-volume-attachment-drift	2026-11-22T03:31:56Z	PASS	220	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
 ec2-route-targets	2026-11-23T08:26:12Z	PASS	725	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 ec2-sg-source-group-name	2026-11-10T16:20:27Z	PASS	65	verify.sh	rc ok, orph clean
