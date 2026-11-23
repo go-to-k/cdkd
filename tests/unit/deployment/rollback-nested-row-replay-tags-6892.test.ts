@@ -60,16 +60,25 @@ describe("a reverse-replacement replay of a nested-stack row keeps the row's Tag
       } as unknown as RollbackExecutorContext['providerRegistry'],
       recordEvent: () => undefined,
     };
+    // A nested row's physical id is fixed (`synthesizeArn` of parent and
+    // logical id), and a Type change to or from a nested stack is refused, so
+    // the arm a row reaches is the same-id re-create (go-to-k/cdkd#5096):
+    // `cdkd deploy --replace Child` re-created it delete-first, here with a
+    // new child template.
+    const ID = 'arn:cdkd-local:us-east-1:123456789012:nested-stack/Parent/Child';
+    const forward = { TemplateURL: 'https://bucket/child-2.json', Tags: [] };
     const ops: CompletedOperation[] = [
       {
         logicalId: 'Child',
         changeType: 'UPDATE',
         resourceType: ROW,
-        physicalId: 'arn:row-new',
-        previousState: row('arn:row-old', recorded),
+        physicalId: ID,
+        oldDeletedBeforeCreate: true,
+        properties: forward,
+        previousState: row(ID, recorded),
       },
     ];
-    const state = { Child: row('arn:row-new', { TemplateURL: 'https://bucket/child-2.json' }) };
+    const state = { Child: row(ID, forward) };
 
     const result = await replayRollback(ops, state, 'Parent', ctx, { isInterrupted: () => false });
 
