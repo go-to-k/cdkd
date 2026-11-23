@@ -193,3 +193,16 @@ describe('getStackTagTarget / applyStackTagsToTemplate (go-to-k/cdkd#6871)', () 
     expect(String(warn.mock.calls[0]![0])).toContain('AWS::Not::InTheTable');
   });
 });
+
+describe('applyStackTagsToTemplate never rejects (go-to-k/cdkd#6871)', () => {
+  it('warns and returns the template unchanged when the merge itself throws', async () => {
+    const template = {
+      get Resources(): never {
+        throw new Error('boom');
+      },
+    } as unknown as Parameters<typeof applyStackTagsToTemplate>[0];
+    const warn = vi.fn();
+    await expect(applyStackTagsToTemplate(template, { a: '1' }, warn)).resolves.toBe(template);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});

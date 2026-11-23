@@ -586,12 +586,12 @@ export async function doDeployWithPrefetch(
       !Object.values(orphanPlan.adopted).some(
         (r) => r.resourceType === 'AWS::CloudFormation::Stack'
       );
-    // go-to-k/cdkd#6705: a stack declaring a CreationPolicy signal or cfn-init
-    // metadata has a CloudFormation signal receiver, found or created here,
-    // before the diff, so `AWS::StackId` resolves to its real ARN everywhere.
     // go-to-k/cdkd#6871: each nested row's child effective stack tags; a row
     // whose tags differ from those its child was deployed with updates.
     const expectedChildTags = expectedNestedStackTags(effectiveTemplate, engine.options.stackTags);
+    // go-to-k/cdkd#6705: a stack declaring a CreationPolicy signal or cfn-init
+    // metadata has a CloudFormation signal receiver, found or created here,
+    // before the diff, so `AWS::StackId` resolves to its real ARN everywhere.
     const signalReceiverChanged = await ensureSignalReceiver(
       engine,
       stackName,

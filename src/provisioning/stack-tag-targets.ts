@@ -191,15 +191,24 @@ export async function applyStackTagsToTemplate(
 ): Promise<CloudFormationTemplate> {
   const tags = nonEmptyStackTags(stackTags);
   if (tags === undefined) return template;
-  const types = stackTagCandidateTypes(template);
-  const targets = new Map(
-    await Promise.all(types.map(async (type) => [type, await getStackTagTarget(type)] as const))
-  );
-  const result = applyStackTags(
-    template,
-    tags,
-    (type) => targets.get(type) ?? { kind: 'unknown', reason: 'it was not looked up' }
-  );
-  for (const line of result.warnings) warn(line);
-  return result.template;
+  try {
+    const types = stackTagCandidateTypes(template);
+    const targets = new Map(
+      await Promise.all(types.map(async (type) => [type, await getStackTagTarget(type)] as const))
+    );
+    const result = applyStackTags(
+      template,
+      tags,
+      (type) => targets.get(type) ?? { kind: 'unknown', reason: 'it was not looked up' }
+    );
+    for (const line of result.warnings) warn(line);
+    return result.template;
+  } catch (error) {
+    // Never rejects: a caller starts this before the lock and may never await
+    // it (a failed acquisition), so a rejection would go unhandled.
+    warn(
+      `Stack tags were not applied to this stack's resources: ${describeAwsFailure(error).detail}.`
+    );
+    return template;
+  }
 }
