@@ -170,7 +170,7 @@ blocks, including a damaged state record and a recorded value of `***`.
 | `-a`, `--app <command>` | `cdk.json` / `CDKD_APP` | CDK app command, or a synthesized cloud assembly directory. |
 | `--output <path>` | `cdk.out` | Synthesis output directory. |
 | `-c`, `--context <key=value...>` | — | Context values. Refused without `--accept-transient-context`. |
-| `--lookups`, `--no-lookups` | `cdk.json` `"lookups"`, then on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
+| `--lookups`, `--no-lookups` | on | With `--no-lookups`, synthesis fails when the app needs a context lookup, instead of calling AWS. |
 | `--state-bucket <bucket>` | `CDKD_STATE_BUCKET` / `cdk.json` | S3 bucket holding the state records. |
 | `--state-prefix <prefix>` | `cdkd` | S3 key prefix for state files. |
 | `--profile <profile>` | — | AWS profile. |

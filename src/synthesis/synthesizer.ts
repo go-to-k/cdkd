@@ -150,10 +150,11 @@ export interface SynthesisOptions {
   failedLookupsCheckedByCaller?: boolean;
 
   /**
-   * `--lookups` / `--no-lookups` (go-to-k/cdkd#6883). Unset falls back to the
-   * `lookups` key of cdk.json, then of ~/.cdk.json, then `true`, as in the AWS
-   * CDK CLI. Disabled, an app that reports missing context fails synthesis
-   * before any context-provider call, and cdk.context.json is not written.
+   * `--lookups` / `--no-lookups` (go-to-k/cdkd#6883); unset means `true`. A
+   * `lookups` key in cdk.json is NOT read: the AWS CDK CLI's flag defaults to
+   * `true` and the command line overrides cdk.json, so `cdk` ignores it too.
+   * Disabled, missing context fails synthesis before any context-provider
+   * call, and cdk.context.json is not written.
    */
   lookups?: boolean;
 }
@@ -213,9 +214,15 @@ export class Synthesizer {
     // as a pre-synthesized cloud assembly and skip subprocess execution.
     // See aws-cdk/lib/cxapp/exec.ts: "bypass 'synth' if app points to a cloud assembly".
     const appPath = resolve(options.app);
+    const lookups = options.lookups ?? true;
     if (isPreSynthesizedAssembly(options.app)) {
       this.logger.debug(`Using pre-synthesized cloud assembly at ${appPath}`);
       const manifest = this.assemblyReader.readManifest(appPath);
+      // The AWS CDK CLI runs a directory's assembly through the same
+      // missing-context loop, so `--no-lookups` refuses it here too.
+      if (!lookups && manifest.missing && manifest.missing.length > 0) {
+        throw lookupsDisabledError(new Set(manifest.missing.map((m) => m.key)));
+      }
       const { stacks } = this.assemblyReader.readAssembly(appPath, manifest);
       // The pre-synth branch may still hit the macro-expander when an
       // assembly built elsewhere contains a `Transform` block.
@@ -243,8 +250,6 @@ export class Synthesizer {
     const cdkJson = loadCdkJson();
     const cdkJsonContext = (cdkJson?.context as Record<string, unknown>) ?? {};
     const cliContext = (options.context as Record<string, unknown>) ?? {};
-    // The AWS CDK CLI's `canLookup`: CLI > cdk.json > ~/.cdk.json > true.
-    const lookups = !!(options.lookups ?? cdkJson?.lookups ?? userCdkJson?.lookups ?? true);
 
     // CDK CLI injects these context values by default for framework compatibility
     const cdkDefaults: Record<string, unknown> = {

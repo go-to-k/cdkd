@@ -26,8 +26,6 @@ export interface CdkConfig {
   requireApproval?: unknown;
   /** `cdk deploy --outputs-file`'s cdk.json key; validated by `resolveOutputsFile`. */
   outputsFile?: unknown;
-  /** `cdk --lookups`'s cdk.json key; read as the AWS CDK CLI does, `!!(value ?? true)`. */
-  lookups?: unknown;
 }
 
 /**

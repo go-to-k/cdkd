@@ -665,15 +665,15 @@ export const deployOptions = [
  *
  * -c / --context can be specified multiple times to pass context key=value pairs.
  * `--lookups` / `--no-lookups` ride along because every command that takes
- * `-c` synthesizes the app (go-to-k/cdkd#6883). Neither carries a default:
- * unset falls back to cdk.json's `lookups` inside the synthesizer.
+ * `-c` synthesizes the app (go-to-k/cdkd#6883). Unset leaves `lookups`
+ * undefined, which the synthesizer reads as on.
  */
 export const contextOptions = [
   new Option(
     '-c, --context <key=value...>',
     'Set context values (can be specified multiple times)'
   ),
-  new Option('--lookups', 'Perform context lookups (the default; overrides cdk.json "lookups")'),
+  new Option('--lookups', 'Perform context lookups (the default)'),
   new Option(
     '--no-lookups',
     'Do not perform context lookups: synthesis fails if context lookups need to be performed'

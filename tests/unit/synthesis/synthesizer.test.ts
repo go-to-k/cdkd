@@ -155,32 +155,39 @@ describe('Synthesizer', () => {
         expect(result.stacks).toEqual([{ stackName: 'App' }]);
       });
 
-      it('reads cdk.json "lookups": false when the flag is unset', async () => {
+      it('ignores a cdk.json / ~/.cdk.json "lookups": false, as the cdk CLI does', async () => {
+        // The cdk CLI's flag defaults to true and the command line overrides
+        // cdk.json, so only --no-lookups ever disables lookups.
         mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
         mockLoadCdkJson.mockReturnValue({ lookups: false });
-
-        await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toThrow(disabled);
-        expect(mockResolve).not.toHaveBeenCalled();
-      });
-
-      it('reads ~/.cdk.json "lookups": false below cdk.json', async () => {
-        mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
         mockLoadUserCdkJson.mockReturnValue({ lookups: false });
 
-        await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toThrow(disabled);
-
-        mockLoadCdkJson.mockReturnValue({ lookups: true });
         await synthesizer.synthesize({ app: 'node app.ts' });
+
         expect(mockResolve).toHaveBeenCalledTimes(1);
       });
 
-      it('lets --lookups override cdk.json "lookups": false', async () => {
-        mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
-        mockLoadCdkJson.mockReturnValue({ lookups: false });
+      describe('a pre-synthesized assembly (-a <dir>)', () => {
+        beforeEach(() => {
+          mockExistsSync.mockReturnValue(true);
+          mockStatSync.mockReturnValue({ isDirectory: () => true });
+        });
 
-        await synthesizer.synthesize({ app: 'node app.ts', lookups: true });
+        it('refuses one that still reports missing context', async () => {
+          mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
 
-        expect(mockResolve).toHaveBeenCalledTimes(1);
+          await expect(
+            synthesizer.synthesize({ app: 'cdk.out', lookups: false })
+          ).rejects.toThrow(`Missing context keys: '${ssmKey}'`);
+          await expect(synthesizer.synthesize({ app: 'cdk.out' })).resolves.toBeDefined();
+          expect(mockExecute).not.toHaveBeenCalled();
+        });
+
+        it('reads one that reports nothing missing', async () => {
+          await expect(
+            synthesizer.synthesize({ app: 'cdk.out', lookups: false })
+          ).resolves.toBeDefined();
+        });
       });
     });
 

@@ -191,7 +191,6 @@ export async function assertCfnStackAbsent(
  */
 export function refuseTransientContextIfUnsafe(options: {
   context?: string[];
-  lookups?: boolean;
   acceptTransientContext: boolean;
 }): void {
   const overrides = options.context ?? [];
