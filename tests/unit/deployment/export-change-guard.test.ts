@@ -577,6 +577,10 @@ describe('findAffectedExports: a custom resource updated in place is deferred (#
     expect(await run(exported(value), changes, undefined, '***')).toEqual([
       { exportName: EXPORT, reason: 'changed' },
     ]);
+    // A published value holding a mask (a nested child's inherited secret).
+    expect(
+      await run(exported(value), changes, () => Promise.resolve('pre-***-post'), 'pre-***-post')
+    ).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
     // A dynamic reference in the value.
     expect(
       await run(exported({ 'Fn::Join': ['', [value, '{{resolve:ssm:/p}}']] }), changes)
@@ -705,5 +709,25 @@ describe('refuseDeferredExportChanges (#6865)', () => {
   it('lets a moved value through when its only consumer deploys in the same run, or none imports it', async () => {
     await expect(check(engineWith(['Consumer'], ['Producer', 'Consumer']).engine, 'arn:new')).resolves.toBeUndefined();
     await expect(check(engineWith([]).engine, 'arn:new')).resolves.toBeUndefined();
+  });
+});
+
+describe('ExportInUseError after provisioning names a runnable rollback (#6865)', () => {
+  const change = [
+    { consumerStack: 'Consumer', consumerRegion: 'us-east-1', exportName: EXPORT, reason: 'changed' as const },
+  ];
+  it('names the stack itself at the top level', () => {
+    const message = new ExportInUseError('Producer', 'us-east-1', change, { afterProvisioning: true })
+      .message;
+    expect(message).toContain('run cdkd rollback Producer)');
+    expect(message).not.toContain('Nothing was changed');
+  });
+  it('names the top-level stack for a nested child, which cdkd rollback refuses directly', () => {
+    const message = new ExportInUseError('Root~Child', 'us-east-1', change, {
+      afterProvisioning: true,
+      nested: true,
+    }).message;
+    expect(message).toContain('run cdkd rollback Root)');
+    expect(message).not.toContain('cdkd rollback Root~Child');
   });
 });

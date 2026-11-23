@@ -48,8 +48,8 @@ import type { CloudFormationTemplate, TemplateOutput } from '../types/resource.j
  *   and its rollback re-invokes the handler with the old properties). The
  *   deploy re-checks it once the custom resources are updated
  *   (`refuseDeferredExportChanges`). It is `changed` up front instead when
- *   the value cannot be compared later (a published `***`, a dynamic
- *   reference) or already differs at plan time.
+ *   the value cannot be compared later (a published value holding `***`, a
+ *   dynamic reference) or already differs at plan time.
  * - Otherwise the value is resolved and compared with the published one. A
  *   value that does not resolve counts as changing only when it references a
  *   resource this plan touches. A published `***` (a `NoEcho` source) cannot
@@ -156,6 +156,15 @@ async function valueMayChange(
   // that cannot be compared then is judged now, as every in-place custom
   // resource read was before go-to-k/cdkd#6865.
   if (publishedValue === SECRET_MASK) return readsUpdatedCustomResource ? 'changed' : 'unchanged';
+  // A value published with a mask inside it (a nested child's inherited
+  // secret) compares the redacted plan-time value; the post-update compare
+  // would see the real one and refuse a value that did not move.
+  if (
+    readsUpdatedCustomResource &&
+    JSON.stringify(publishedValue)?.includes(SECRET_MASK) === true
+  ) {
+    return 'changed';
+  }
   if (holdsDynamicReference(output.Value)) return touchesChangedResource ? 'changed' : 'unchanged';
   let desired: unknown;
   try {

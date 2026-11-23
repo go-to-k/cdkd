@@ -194,6 +194,9 @@ expect_eq "custom resource value after step 1b" "${CR_VAL1:-}" "v1"
 expect_eq "custom resource export after step 1b" "${CR_EXP1:-}" "v1"
 
 echo "==> Step 1c: the custom-resource producer alone, value v2, fails after the update and rolls back"
+# Only the handler log lines written from here on count: step 1b's forward
+# update already logged "REQUEST Update <step-1b Timestamp> v1".
+CR_LOG_SINCE_MS=$(( $(date +%s) * 1000 ))
 CR_OUT=""
 CR_RC=0
 CR_OUT=$(CDKD_TEST_CR_VALUE=v2 ${CDKD} deploy "${CRPROD}" --exclusively --region "${AWS_REGION}" \
@@ -223,7 +226,7 @@ saw_request() { # usage: saw_request <filter-pattern>; polls the handler's log (
   local n=0 hits
   while [ "${n}" -lt 12 ]; do
     hits=$(aws logs filter-log-events --log-group-name /aws/lambda/cdkd-integ-eiu-cr-on-event \
-      --region "${AWS_REGION}" --filter-pattern "$1" --query 'events[].eventId' --output text) || return 1
+      --region "${AWS_REGION}" --start-time "${CR_LOG_SINCE_MS}" --filter-pattern "$1" --query 'events[].eventId' --output text) || return 1
     # Event ids, not `length(...)`: --query applies per PAGE, and an empty
     # page prints `None` or nothing.
     [ -n "$(tr '\t ' '\n\n' <<<"${hits}" | grep -v -e '^None$' -e '^$' || true)" ] && return 0

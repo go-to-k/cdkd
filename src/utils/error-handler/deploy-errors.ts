@@ -547,7 +547,15 @@ export class ExportInUseError extends CdkdError {
         respelledBlock +
         (opts.afterProvisioning === true
           ? `The new value was known only after the custom resources it reads were updated,\n` +
-            `so this deploy fails and is rolled back (with --no-rollback, run ${pasteableCommand('cdkd rollback', [{ value: producerStack, hole: 'stack' }]).command}).\n`
+            `so this deploy fails and is rolled back (with --no-rollback, run ${
+              pasteableCommand('cdkd rollback', [
+                // A nested child is rolled back through its top-level stack.
+                {
+                  value: opts.nested === true ? producerStack.split('~')[0]! : producerStack,
+                  hole: 'stack',
+                },
+              ]).command
+            }).\n`
           : opts.nested === true
             ? ''
             : `Nothing was changed. `) +
