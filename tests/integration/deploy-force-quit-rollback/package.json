@@ -1,0 +1,19 @@
+{
+  "name": "cdkd-integ-deploy-force-quit-rollback",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integ fixture for a force-quit / closed-terminal deploy's rollback journal (#6894): an SSM parameter, an SQS queue and a Lambda function, then a Lambda-backed custom resource that sleeps 90 s on Update, then a parameter and a queue behind it. A deploy force-quit (two SIGINTs) or hung up (SIGHUP) while the custom resource's update is in flight must leave a rollback journal that cdkd rollback reverts.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

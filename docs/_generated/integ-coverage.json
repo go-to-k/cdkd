@@ -7855,6 +7855,7 @@
         "custom-resource-service-token-change",
         "data-pipeline",
         "deep-getatt-chains",
+        "deploy-force-quit-rollback",
         "destroy-interrupt",
         "docker-image-asset",
         "drift-rotation-schedule-revert",
@@ -8071,6 +8072,9 @@
         ],
         "deep-getatt-chains": [
           "l1"
+        ],
+        "deploy-force-quit-rollback": [
+          "l2"
         ],
         "destroy-interrupt": [
           "l2"
@@ -10262,6 +10266,7 @@
         "cross-stack-secret-import",
         "data-pipeline",
         "depends-on-flip",
+        "deploy-force-quit-rollback",
         "drift-revert-arrays",
         "drift-sns-sibling-subscription",
         "drift-verbatim-readback",
@@ -10418,6 +10423,9 @@
         "depends-on-flip": [
           "l1",
           "literal"
+        ],
+        "deploy-force-quit-rollback": [
+          "l2"
         ],
         "drift-revert-arrays": [
           "l2"
@@ -10756,6 +10764,7 @@
         "deep-getatt-chains",
         "deletion-policy-retain",
         "depends-on-flip",
+        "deploy-force-quit-rollback",
         "deployment-events",
         "destroy-failed-delete-keeps-dependencies",
         "destroy-interrupt",
@@ -10948,6 +10957,9 @@
         "depends-on-flip": [
           "l2",
           "literal"
+        ],
+        "deploy-force-quit-rollback": [
+          "l2"
         ],
         "deployment-events": [
           "l2"

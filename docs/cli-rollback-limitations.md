@@ -1,6 +1,6 @@
 ---
 title: "cdkd rollback: limitations"
-description: "What cdkd rollback cannot fully undo: a replaced resource's data, NoEcho values, nested stacks, resource names, and stacks touched by cdkd import or export."
+description: "What cdkd rollback cannot fully undo: a replaced resource's data, NoEcho values, nested stacks, a killed deploy, resource names, and stacks touched by cdkd import or export."
 ---
 
 # cdkd rollback: limitations
@@ -274,6 +274,31 @@ command when that resource is a
   stack reads a value from another region, and always in a direct rollback of
   the nested stack. The operation fails and the journal is kept. Set the
   property yourself, or write the reference as a full ARN.
+
+## A deploy that was killed
+
+A deploy records its rollback journal when it stops. A deploy you interrupt
+with {kbd:ctrl+c} finishes the operations in progress and then records it. A
+second {kbd:ctrl+c} (or the `SIGTERM` a CI runner sends after its `SIGINT` when
+a job is cancelled) and a closed terminal (`SIGHUP`) exit at once, but record
+it first: the operations already completed, and those still in progress as
+failed operations, because their outcome is unknown. Pass `--revert-failed` to
+revert those too. A force-quit prints the `cdkd rollback` command to run and
+exits `130`; a closed terminal exits `129`. Release the stack lock either one
+leaves with `cdkd force-unlock` first.
+
+The journal write is bounded by the same five seconds the force-quit allows for
+aborting asset uploads. When it does not finish in time, the deploy says so,
+and `cdkd rollback` may find nothing to revert.
+
+A deploy that is killed outright runs none of this: `kill -9`, an
+out-of-memory kill, a CI runner's final `SIGKILL`, or a power loss leave the
+resources already changed in AWS and in the state record, with no journal.
+`cdkd rollback` then reports nothing to roll back. Deploy the previous version
+of the app to put the stack back.
+
+A nested stack whose deploy was in progress is recorded like one whose own
+deploy failed: see [Nested stacks](#nested-stacks).
 
 ## Names of re-created resources
 

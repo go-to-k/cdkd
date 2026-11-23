@@ -91,8 +91,7 @@ Index of every area: [code-layout.md](code-layout.md).
   setting `credentials` / `endpoint` past `awsClientDefaults` needs a reviewed
   entry in `aws-emulator-client-factories.test.ts`.
 - **src/cli/pipe-close-handler.ts** - `installPipeCloseHandler()` exits 0 on
-  EPIPE when a downstream consumer closes the pipe early; non-EPIPE stream
-  errors re-throw.
+  EPIPE, ignores EIO (a hung-up terminal, #6894); other errors re-throw.
 - **src/cli/run-cli.ts** - `runCli(main)`, the ONE top-level runner: a `main()`
   rejection prints `Fatal error:` and exits 1, and a `beforeExit` with `main()`
   still PENDING (the event loop drained under an await) exits 70, replacing

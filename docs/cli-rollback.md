@@ -7,8 +7,9 @@ description: "Revert a stack to its pre-deploy state after a failed or interrupt
 
 `cdkd rollback [STACK]` puts a stack back the way it was before a deploy that
 failed and was not rolled back. That is a deploy that failed under
-`--no-rollback`, one you interrupted with {kbd:ctrl+c}, or one whose automatic
-rollback stopped partway. It is the cdkd equivalent of `cdk rollback` and
+`--no-rollback`, one you interrupted with {kbd:ctrl+c} (once, or twice to
+force-quit, as a cancelled CI job does), one whose terminal was closed, or one
+whose automatic rollback stopped partway. It is the cdkd equivalent of `cdk rollback` and
 CloudFormation's `RollbackStack`.
 
 ```bash
@@ -58,7 +59,8 @@ back.
 
 ```text diagram=rollback-replay
 A deploy fails and is not rolled back
-  (--no-rollback, Ctrl-C, or an automatic rollback that died partway)
+  (--no-rollback, Ctrl-C, a force-quit or closed terminal,
+   or an automatic rollback that died partway)
         |
         v
 Rollback journal: every operation the deploy completed
@@ -269,6 +271,9 @@ confirm.
   [`NoEcho` values are not reverted](cli-rollback-limitations.md#noecho-values-are-not-reverted).
 - **A nested stack** is reverted through its own journal. See
   [Nested stacks](cli-rollback-limitations.md#nested-stacks).
+- **A deploy killed outright** (`kill -9`, an out-of-memory kill, a power
+  loss) leaves no journal. See
+  [A deploy that was killed](cli-rollback-limitations.md#a-deploy-that-was-killed).
 - **A second snapshot.** For Redshift and ElastiCache, running the rollback
   again after a snapshot succeeded and its delete failed takes a second
   snapshot, which AWS bills for. EBS volumes reuse the first one.

@@ -1,6 +1,6 @@
 ---
 title: Exit codes
-description: "What cdkd's exit codes 0, 1, 2, 3, 70, 130 and 143 mean, which commands use each, and how a script should react."
+description: "What cdkd's exit codes 0, 1, 2, 3, 70, 129, 130 and 143 mean, which commands use each, and how a script should react."
 ---
 
 # Exit codes
@@ -28,7 +28,8 @@ esac
 | `2` | Partial failure. See [Exit `2`](#exit-2-partial-failure). |
 | `3` | `cdkd diff` only: the deploy it previews would refuse to start. |
 | `70` | cdkd stopped on an internal error, most likely a bug. |
-| `130` | `cdkd local` only: interrupted with {kbd:ctrl+c}. |
+| `129` | `cdkd deploy` only: its terminal was closed (`SIGHUP`). See [Force-quitting a deploy](#force-quitting-a-deploy). |
+| `130` | A `cdkd local` command interrupted with {kbd:ctrl+c}, or a `cdkd deploy` or `cdkd destroy` force-quit with a second one. |
 | `143` | `cdkd local` only: stopped by `SIGTERM`. |
 
 [Local Execution](local-emulation.md) links to the pages of the `cdkd local`
@@ -131,6 +132,17 @@ A stack lock may still be held after this exit. The lock expires on its own
 after its time limit. To release it sooner, run
 [`cdkd force-unlock`](cli-force-unlock.md) once nothing else is working on the
 stack.
+
+## Force-quitting a deploy
+
+A second {kbd:ctrl+c} (or the `SIGTERM` a CI runner sends after its `SIGINT`
+when a job is cancelled) makes `cdkd deploy` exit `130` without waiting for the
+operations in progress, and a closed terminal makes it exit `129`. Either way
+the deploy first records what it changed so far in the stack's rollback
+journal, so [`cdkd rollback`](cli-rollback.md) can revert it, and leaves the
+stack lock for [`cdkd force-unlock`](cli-force-unlock.md). A deploy killed
+outright records nothing: see
+[A deploy that was killed](cli-rollback-limitations.md#a-deploy-that-was-killed).
 
 ## Exit `130` and the other `cdkd local` codes
 

@@ -89,6 +89,10 @@
       "description": "DeletionPolicy: Snapshot pre-delete machinery for the CC-routed name-keyed snapshot APIs (issue #1353): Redshift Cluster CreateClusterSnapshot + ElastiCache ReplicationGroup CreateSnapshot, both waited to available before the delete."
     },
     {
+      "tag": "deploy-force-quit-rollback",
+      "description": "Force-quit (two SIGINTs) and closed terminal (SIGHUP) mid-deploy (#6894) — while a custom resource's 90 s update is in flight, the deploy exits 130 / 129 after writing an `interrupted` rollback-journal segment (the completed updates, plus the in-flight custom resource as a failed operation); `cdkd force-unlock` + `cdkd rollback --force` put the SSM parameter, the SQS queue's visibility timeout and the Lambda environment back to v1."
+    },
+    {
       "tag": "deployment-events",
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets)."
     },
@@ -1049,6 +1053,11 @@
     },
     {
       "name": "depends-on-flip",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "deploy-force-quit-rollback",
       "annotated": false,
       "scenarios": []
     },
@@ -3602,6 +3611,11 @@
       ]
     },
     {
+      "scenario": "deploy-force-quit-rollback",
+      "description": "Force-quit (two SIGINTs) and closed terminal (SIGHUP) mid-deploy (#6894) — while a custom resource's 90 s update is in flight, the deploy exits 130 / 129 after writing an `interrupted` rollback-journal segment (the completed updates, plus the in-flight custom resource as a failed operation); `cdkd force-unlock` + `cdkd rollback --force` put the SSM parameter, the SQS queue's visibility timeout and the Lambda environment back to v1.",
+      "fixtures": []
+    },
+    {
       "scenario": "deployment-events",
       "description": "Structured deployment events to S3 + `cdkd events` command (issue #808): per-run `deployments/{runId}.jsonl` + `index.json` (separate key family from state.json, no schema bump), events survive `cdkd destroy`, and carry error + metadata ONLY (no resource properties / secrets).",
       "fixtures": [
@@ -4203,7 +4217,9 @@
       ]
     }
   ],
-  "orphanScenarios": [],
+  "orphanScenarios": [
+    "deploy-force-quit-rollback"
+  ],
   "unannotatedFixtures": [
     "access-key-cloudmap-fix-forward-orphan",
     "acm-certificate",
@@ -4276,6 +4292,7 @@
     "custom-resource-service-token-change",
     "datasync-location-role",
     "depends-on-flip",
+    "deploy-force-quit-rollback",
     "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",

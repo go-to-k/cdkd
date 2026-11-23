@@ -193,12 +193,15 @@ vi.mock('../../../src/cli/commands/deployment-events-run.js', () => ({
 const engineRegions = vi.hoisted(() => new Map<string, string>());
 /** The exports-index file each stack's engine reads and writes. */
 const engineIndexRegions = vi.hoisted(() => new Map<string, string>());
+/** go-to-k/cdkd#6894: the SIGHUP listener count while a stack deploys. */
+const sighupDuringDeploy = vi.hoisted(() => ({ count: -1 }));
 vi.mock('../../../src/deployment/deploy-engine.js', () => ({
   DeployEngine: vi.fn().mockImplementation((...args: unknown[]) => {
     const engineRegion = args[6] as string;
     const indexRegion = (args[7] as { indexRegion?: string } | undefined)?.indexRegion;
     return {
       deploy: vi.fn(async (stackName: string) => {
+        sighupDuringDeploy.count = process.listenerCount('SIGHUP');
         engineRegions.set(stackName, engineRegion);
         if (indexRegion !== undefined) engineIndexRegions.set(stackName, indexRegion);
         return {
@@ -290,6 +293,15 @@ describe('a bare cdkd deploy under a non-us-east-1 profile (go-to-k/cdkd#2100)',
     const { resetAwsClients } = await import('../../../src/utils/aws-clients.js');
     resetAwsClients();
     vi.clearAllMocks();
+  });
+
+  it('handles SIGHUP while it deploys and removes the listener afterwards (go-to-k/cdkd#6894)', async () => {
+    synthStacks.value = [makeStack('HupStack')];
+    const before = process.listenerCount('SIGHUP');
+    await runDeploy(['HupStack', '--yes']);
+    // A closed terminal no longer kills the deploy with nothing recorded.
+    expect(sighupDuringDeploy.count).toBe(before + 1);
+    expect(process.listenerCount('SIGHUP')).toBe(before);
   });
 
   it('a FIRST deploy goes to the profile region: state key, assets, bucket name and index agree', async () => {
