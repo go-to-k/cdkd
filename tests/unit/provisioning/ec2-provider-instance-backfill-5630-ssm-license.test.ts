@@ -12,6 +12,7 @@ import {
   CreateAssociationCommand,
   DeleteAssociationCommand,
   DescribeAssociationCommand,
+  DescribeDocumentCommand,
   ListAssociationsCommand,
 } from '@aws-sdk/client-ssm';
 
@@ -137,6 +138,10 @@ let pageSize: number | undefined;
 let failDescribeAfterAssociation: Error | undefined;
 /** When set, TerminateInstances fails with it. */
 let failTerminate: Error | undefined;
+/** go-to-k/cdkd#6866: own-account documents DescribeDocument resolves by name (`AWS-*` always resolves). */
+let ownDocuments: Set<string>;
+/** When set, DescribeDocument fails with it. */
+let failDescribeDocument: Error | undefined;
 
 function ec2Sent<T>(ctor: new (...a: never[]) => T): Array<Record<string, unknown>> {
   return mockSend.mock.calls
@@ -186,6 +191,8 @@ beforeEach(() => {
   pageSize = undefined;
   failDescribeAfterAssociation = undefined;
   failTerminate = undefined;
+  ownDocuments = new Set();
+  failDescribeDocument = undefined;
   vi.spyOn(
     EC2Provider.prototype as unknown as { sleep: () => Promise<void> },
     'sleep'
@@ -263,6 +270,13 @@ beforeEach(() => {
         Associations: all.slice(start, end),
         ...(end < all.length && { NextToken: String(end) }),
       });
+    }
+    if (cmd instanceof DescribeDocumentCommand) {
+      if (failDescribeDocument) return Promise.reject(failDescribeDocument);
+      const name = input['Name'] as string;
+      return ownDocuments.has(name) || name.startsWith('AWS-')
+        ? Promise.resolve({ Document: { Name: name } })
+        : Promise.reject(awsError('InvalidDocument', `Document with name ${name} does not exist.`));
     }
     if (cmd instanceof DescribeAssociationCommand) {
       const a = held.find((x) => x.AssociationId === input['AssociationId']);
@@ -832,31 +846,152 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
     expect(ssmWrites()).toEqual(['Delete assoc-ghost', 'Create Custom-Doc']);
   });
 
-  it('matches an ARN-declared (shared) document to that ARN (T4)', async () => {
-    const ARN_DOC = { DocumentName: 'arn:aws:ssm:us-east-1:222222222222:document/Custom-Doc' };
-    held.push({ AssociationId: 'assoc-custom', InstanceId: 'i-new', Name: ARN_DOC.DocumentName });
+  // go-to-k/cdkd#6866: SSM refuses an association by the ARN of an own or an
+  // AWS document, so an ARN names another account's shared document, never
+  // this account's same-named one.
+  const SHARED = { DocumentName: 'arn:aws:ssm:us-east-1:222222222222:document/Custom-Doc' };
+  const OWN = { DocumentName: 'Custom-Doc' };
+
+  it('matches a shared document ARN only to that ARN (T4, #6866)', async () => {
+    held.push({ AssociationId: 'assoc-own', InstanceId: 'i-new', Name: OWN.DocumentName });
+    held.push({ AssociationId: 'assoc-shared', InstanceId: 'i-new', Name: SHARED.DocumentName });
     held.push({ AssociationId: 'assoc-shell', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
-    // The same ARN is no change.
+    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [SHARED] }, {
+      ...BASE,
+      SsmAssociations: [{ ...SHARED }],
+    });
+    expect(ssmSend).not.toHaveBeenCalled();
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [SHARED],
+    })) as Record<string, unknown>;
+    expect(read['SsmAssociations']).toEqual([SHARED]);
+    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
+      ...BASE,
+      SsmAssociations: [SHARED],
+    });
+    // The exact match wins: the own same-named association stays, and no
+    // DescribeDocument is asked.
+    expect(ssmWrites()).toEqual(['Delete assoc-shared']);
+    expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
+    expect(held.map((a) => a.AssociationId)).toEqual(['assoc-own', 'assoc-shell']);
+  });
+
+  it('re-associates on an edit between an own name and a shared ARN, both ways (#6866)', async () => {
+    held.push({ AssociationId: 'assoc-own', InstanceId: 'i-new', Name: OWN.DocumentName });
+    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [SHARED] }, {
+      ...BASE,
+      SsmAssociations: [OWN],
+    });
+    expect(ssmWrites()).toEqual(['Delete assoc-own', `Create ${SHARED.DocumentName}`]);
+    ssmSend.mockClear();
+    // The rollback replay runs the same diff backward (desired = the old record).
     await new EC2Provider().update(
       'Inst',
       'i-new',
       TYPE,
-      { ...BASE, SsmAssociations: [ARN_DOC] },
-      { ...BASE, SsmAssociations: [ARN_DOC] }
+      { ...BASE, SsmAssociations: [OWN] },
+      { ...BASE, SsmAssociations: [SHARED] },
+      { replayingState: true } as never
     );
-    expect(ssmSend).not.toHaveBeenCalled();
-    // The readback reports the ARN, so it compares equal.
+    expect(ssmWrites()).toEqual(['Delete assoc-1', `Create ${OWN.DocumentName}`]);
+    expect(held.map((a) => a.Name)).toEqual([OWN.DocumentName]);
+  });
+
+  it('pairs a listed ARN association with its declaration whatever DescribeAssociation spells (#6866)', async () => {
+    held.push({ AssociationId: 'assoc-shared', InstanceId: 'i-new', Name: SHARED.DocumentName });
+    const describe = ssmSend.getMockImplementation()!;
+    ssmSend.mockImplementation((cmd: unknown) =>
+      cmd instanceof DescribeAssociationCommand
+        ? Promise.resolve({ AssociationDescription: { Name: OWN.DocumentName, Parameters: {} } })
+        : describe(cmd)
+    );
     const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
       ...BASE,
-      SsmAssociations: [ARN_DOC],
+      SsmAssociations: [SHARED],
     })) as Record<string, unknown>;
-    expect(read['SsmAssociations']).toEqual([ARN_DOC]);
-    // A removal deletes only that document's association.
-    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
+    expect(read['SsmAssociations']).toEqual([SHARED]);
+  });
+
+  it('reads an own same-named association as no association of a declared shared ARN (#6866)', async () => {
+    held.push({ AssociationId: 'assoc-own', InstanceId: 'i-new', Name: OWN.DocumentName });
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
       ...BASE,
-      SsmAssociations: [ARN_DOC],
+      SsmAssociations: [SHARED],
+    })) as Record<string, unknown>;
+    expect(read['SsmAssociations']).toEqual([]);
+    // The drift readback never asks DescribeDocument.
+    expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
+    const own = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [OWN],
+    })) as Record<string, unknown>;
+    expect(own['SsmAssociations']).toEqual([OWN]);
+  });
+
+  describe('removing a shared-ARN association with no exact live match (#6866)', () => {
+    const remove = (): Promise<unknown> =>
+      new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
+        ...BASE,
+        SsmAssociations: [SHARED],
+      });
+
+    it('leaves an own same-named document\'s association alone', async () => {
+      ownDocuments.add(OWN.DocumentName);
+      held.push({ AssociationId: 'assoc-own', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await remove();
+      expect(ssmWrites()).toEqual([]);
+      expect(ssmSent(DescribeDocumentCommand)).toEqual([{ Name: OWN.DocumentName }]);
+      // ...and says so, naming the instance and the association, not the document.
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toMatch(/on i-new under that ARN; association\(s\) assoc-own .*also has a document by that name.*cdkd leaves it in place/);
+      expect(warned).not.toMatch(/Custom-Doc/);
     });
-    expect(ssmWrites()).toEqual(['Delete assoc-custom']);
+
+    it('deletes the bare-named association once no own document has the name', async () => {
+      held.push({ AssociationId: 'assoc-bare', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await remove();
+      expect(ssmWrites()).toEqual(['Delete assoc-bare']);
+    });
+
+    it('asks nothing when no association has the bare name', async () => {
+      held.push({ AssociationId: 'assoc-shell', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+      await remove();
+      expect(ssmWrites()).toEqual([]);
+      expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
+    });
+
+    it('keeps the association, with a warning, when DescribeDocument cannot answer', async () => {
+      failDescribeDocument = awsError('AccessDeniedException', 'not authorized to perform: ssm:DescribeDocument');
+      held.push({ AssociationId: 'assoc-bare', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await remove();
+      expect(ssmWrites()).toEqual([]);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(
+        /association\(s\) assoc-bare .*DescribeDocument failed \(AccessDeniedException\).*cdkd leaves it in place/
+      );
+      // No document name (it can be secret-derived) and no AWS text.
+      expect(warn.mock.calls.flat().join('\n')).not.toMatch(/Custom-Doc|not authorized/);
+    });
+
+    it('deletes none, and asks nothing, when two associations carry the bare name', async () => {
+      held.push({ AssociationId: 'assoc-a', InstanceId: 'i-new', Name: OWN.DocumentName });
+      held.push({ AssociationId: 'assoc-b', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await remove();
+      expect(ssmWrites()).toEqual([]);
+      expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(/assoc-a, assoc-b .*more than one association.*delete-association --association-id <id> --region us-east-1\./);
+    });
+
+    it('applies on the instance delete too', async () => {
+      held.push({ AssociationId: 'assoc-bare', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [SHARED] });
+      expect(ssmWrites()).toEqual(['Delete assoc-bare']);
+      ssmSend.mockClear();
+      ownDocuments.add(OWN.DocumentName);
+      held.push({ AssociationId: 'assoc-own', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [SHARED] });
+      expect(ssmWrites()).toEqual([]);
+    });
   });
 
   it('marks the no-association error so the retry classifiers read the withheld AWS text (S1)', async () => {

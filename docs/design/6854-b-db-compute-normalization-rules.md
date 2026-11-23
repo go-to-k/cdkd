@@ -99,7 +99,7 @@ probe):
 | SG rule identity fallback when the recorded `sgr-` id is gone | `sg-rule-by-id.ts`, `read-state.ts` | A rule re-authorized with the same protocol, ports and peer grants the same permission; EC2 refuses a duplicate permission. | Another peer, port or protocol differs; a description change is drift. | Keep |
 | SG rule `-1` port equals an absent port; numeric-string ports; absent description equals `''` | `sg-support.ts`, `read-state.ts` | EC2's all-ports reading; CloudFormation passes ports as strings; EC2 stores no description as absent. | Another port, another description. | Keep |
 | SG ingress with no record bag matched by `(group, protocol, ports)` | `read-state.ts` | No recorded peer to disambiguate with. | Only reached without a properties bag (not `cdkd drift`). | Keep (residual) |
-| Instance `SsmAssociations` `DocumentName`, name against ARN | `instance-ssm.ts` readback, `instance-support.ts` `ssmDocumentName` / `sameSsmAssociations` | None: SSM refuses an association by the ARN of an own or an AWS document (measured), so a `DocumentName` ARN always names another account's shared document, never this account's same-named one. | A declared `arn:...:222222222222:document/Baseline` matches this account's `Baseline` by the text after the last `/`. | Over-equates; NOT changed here, see Open decisions |
+| Instance `SsmAssociations` `DocumentName`, name against ARN | `instance-support.ts` `sameSsmDocument`, used by the `instance-ssm.ts` readback and lookup and by `sameSsmAssociations` | None: SSM refuses an association by the ARN of an own or an AWS document (measured), so a `DocumentName` ARN always names another account's shared document, never this account's same-named one. | Equal only when both are bare names and equal or both are ARNs and equal. A delete of an ARN-declared association with no exact live match takes the one association under its bare name only after `DescribeDocument` answers `InvalidDocument`; two or more under one name are never deleted. | Tightened in #6866 (PR #6867) |
 | Route by destination | `read-state.ts` | See "Rules tightened". A `blackhole` route (its target deleted) still reads its target id; the target's own resource reports the deletion. | | Tightened |
 | NAT regional address placed by zone name OR zone id | `nat-support.ts` | A zone name and its id name one zone. | Residual: a record pairing a name with another zone's id is not caught (unmeasured whether AWS accepts such a pair). | Keep |
 | Monitoring `pending` = on, `disabling` = off | `read-instance-state.ts` | Transitional states toward the target value. | `enabled` / `disabled` compared as is. | Keep |
@@ -129,15 +129,11 @@ probe):
 
 ## Open decisions
 
-- **Instance `SsmAssociations` `DocumentName`.** Both the drift readback and the
-  update path (`sameSsmAssociations`) match documents by the text after the
-  last `/`, so a shared `arn:...:document/Baseline` and this account's own
-  `Baseline` compare equal: drift reports nothing, and a template edit between
-  the two re-associates nothing. Tightening only the readback (tried in this
-  lane) made `drift` report a difference that `drift --revert` (which runs the
-  update path) could not fix, and it depends on what SSM answers as a shared
-  document association's `Name` (the ARN or the bare name), which needs a
-  second account to measure: if SSM answers the bare name, a text comparison
-  is phantom drift on every clean cross-account instance. Both sides need to
-  change together, and the update side changes what a deploy does, so this is
-  left for the maintainer.
+- **Instance `SsmAssociations` `DocumentName`**: resolved by #6866 (PR #6867).
+  The maintainer chose one rule for the drift readback, the update diff and the
+  association lookup (an ARN and a bare name are different documents), so an
+  edit between the two spellings now re-associates. What SSM reports as a
+  shared document association's `Name` is still unmeasured (one account); if
+  it is the bare name, drift reports the declared ARN association as absent
+  (loud, no resource change) and the delete path's `DescribeDocument`
+  fallback keeps the association from being left behind.

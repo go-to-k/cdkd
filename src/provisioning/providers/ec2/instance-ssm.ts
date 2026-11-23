@@ -2,6 +2,7 @@ import {
   CreateAssociationCommand,
   DeleteAssociationCommand,
   DescribeAssociationCommand,
+  DescribeDocumentCommand,
   ListAssociationsCommand,
 } from '@aws-sdk/client-ssm';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
@@ -18,6 +19,7 @@ import {
   type InstanceSsmAssociation,
   SSM_ASSOCIATION_ROLE_POLL_MS,
   SSM_ASSOCIATION_ROLE_WAIT_CAP_MS,
+  sameSsmDocument,
   ssmDocumentName,
   staleSsmAssociationRemedy,
 } from './instance-support.js';
@@ -37,6 +39,8 @@ const IAM_ROLE_NOT_YET_SEEN = 'must associate an IAM role';
 
 /** DeleteAssociation's answer for an association that is already gone. */
 const ASSOCIATION_GONE_NAMES: ReadonlySet<string> = new Set(['AssociationDoesNotExist']);
+/** `DescribeDocument`'s answer for a name this account cannot resolve (measured). */
+const INVALID_DOCUMENT_NAMES: ReadonlySet<string> = new Set(['InvalidDocument']);
 
 /** One instance-id association Systems Manager lists for an instance. */
 export interface ListedSsmAssociation {
@@ -98,14 +102,27 @@ export async function createInstanceSsmAssociation(
  * association that targets the instance some other way (an
  * `AWS::SSM::Association` with `Targets`) carries no `InstanceId` and is left
  * out: it is not this property's.
+ *
+ * go-to-k/cdkd#6866: a live association is one of `documentNames` only when
+ * {@link sameSsmDocument} says so (an ARN never matches a bare name).
+ * `forDelete` (the update's and the delete's lookups only, never the drift
+ * readback) adds one fallback: an ARN-declared document with no exact live
+ * match takes the live association whose bare name is the ARN's document
+ * name, once a `DescribeDocument` of that bare name proves this account has
+ * no document (own or AWS) by it, which is the only case the bare name can be
+ * the shared document reported by name. That return form is undocumented and
+ * cannot be measured with one account; the fallback keeps a delete from
+ * leaving the association behind if SSM uses it. Anything but
+ * `InvalidDocument` from the check keeps the association, with a warning
+ * naming the instance and the association ids.
  */
 export async function listInstanceSsmAssociations(
   this: EC2Provider,
   instanceId: string,
-  documentNames: readonly string[]
+  documentNames: readonly string[],
+  options?: { forDelete?: boolean }
 ): Promise<ListedSsmAssociation[]> {
-  const wanted = new Set(documentNames.map(ssmDocumentName));
-  const out: ListedSsmAssociation[] = [];
+  const all: ListedSsmAssociation[] = [];
   let nextToken: string | undefined;
   do {
     const resp = await this.awsClients.ssm.send(
@@ -116,13 +133,62 @@ export async function listInstanceSsmAssociations(
     );
     for (const a of resp.Associations ?? []) {
       if (a.InstanceId !== instanceId || typeof a.AssociationId !== 'string') continue;
-      const name = typeof a.Name === 'string' ? a.Name : '';
-      if (!wanted.has(ssmDocumentName(name))) continue;
-      out.push({ AssociationId: a.AssociationId, Name: name });
+      all.push({ AssociationId: a.AssociationId, Name: typeof a.Name === 'string' ? a.Name : '' });
     }
     nextToken = resp.NextToken || undefined;
   } while (nextToken !== undefined);
+  const out = all.filter((a) => documentNames.some((d) => sameSsmDocument(d, a.Name)));
+  if (options?.forDelete !== true) return out;
+  for (const declared of documentNames) {
+    if (!declared.startsWith('arn:') || out.some((a) => sameSsmDocument(declared, a.Name)))
+      continue;
+    const bare = ssmDocumentName(declared);
+    const byName = all.filter((a) => a.Name === bare && !out.includes(a));
+    if (byName.length === 0) continue;
+    // Two or more under one bare name cannot be told apart (two accounts'
+    // same-named shared documents): none is deleted, and no call is made.
+    const owner = byName.length > 1 ? 'ambiguous' : await this.ssmDocumentNameOwner(bare);
+    if (owner === 'none') {
+      out.push(...byName);
+      continue;
+    }
+    // Kept: name the instance and the association ids (not secret), never the
+    // document name (it can be secret-derived, and this lookup has no masker)
+    // nor AWS's text; the error's class is cdkd-safe.
+    const ids = byName.map((a) => a.AssociationId).join(', ');
+    const why =
+      owner === 'exists'
+        ? 'this account also has a document by that name, so it may be that document'
+        : owner === 'ambiguous'
+          ? 'more than one association carries that name, so cdkd cannot tell which'
+          : `DescribeDocument failed (${owner.failed}), so cdkd cannot tell`;
+    // Never the operator's default region (staleSsmAssociationRemedy's rule).
+    const region = (await this.ssmRemedyRegion(undefined)) ?? "<the stack's region>";
+    this.logger.warn(
+      safeMsg`An SSM association that the record declares by a shared document's ARN was not found on ${instanceId} under that ARN; association(s) ${ids} carry the document's bare name, but ${why}. cdkd leaves it in place. If it is the shared document's, delete it: aws ssm delete-association --association-id <id> --region ${region}.`
+    );
+  }
   return out;
+}
+
+/**
+ * go-to-k/cdkd#6866: whether this account has an SSM document (its own or an
+ * AWS one) named `name`. `DescribeDocument` answers `InvalidDocument` for a
+ * name it cannot resolve (measured us-east-1, 2026-11-23): `'none'`. Needs
+ * `ssm:DescribeDocument`; any other failure, a refusal included, is "cannot
+ * tell", carrying the error's class, so nothing is deleted on a guess.
+ */
+export async function ssmDocumentNameOwner(
+  this: EC2Provider,
+  name: string
+): Promise<'none' | 'exists' | { failed: string }> {
+  try {
+    await this.awsClients.ssm.send(new DescribeDocumentCommand({ Name: name }));
+    return 'exists';
+  } catch (error) {
+    if (isNamedError(error, INVALID_DOCUMENT_NAMES)) return 'none';
+    return { failed: error instanceof Error ? error.name : 'unknown error' };
+  }
 }
 
 /** DeleteAssociation by id; an association already gone is deleted. */
@@ -168,7 +234,9 @@ export async function applyInstanceSsmAssociationChange(
   }
   const deleted: string[] = [];
   if (plan.documentNames.length > 0) {
-    for (const a of await this.listInstanceSsmAssociations(physicalId, plan.documentNames)) {
+    for (const a of await this.listInstanceSsmAssociations(physicalId, plan.documentNames, {
+      forDelete: true,
+    })) {
       await this.deleteSsmAssociationById(a.AssociationId);
       deleted.push(a.Name);
     }
@@ -218,7 +286,9 @@ export async function deleteInstanceSsmAssociationsBestEffort(
   mask: MaskerFn
 ): Promise<void> {
   try {
-    for (const a of await this.listInstanceSsmAssociations(instanceId, documentNames)) {
+    for (const a of await this.listInstanceSsmAssociations(instanceId, documentNames, {
+      forDelete: true,
+    })) {
       await this.deleteSsmAssociationById(a.AssociationId);
     }
   } catch (error) {
@@ -262,7 +332,9 @@ export async function readInstanceSsmAssociations(
     }
     const description = resp.AssociationDescription;
     const name = description?.Name ?? a.Name;
-    const match = declared.find((d) => ssmDocumentName(d.DocumentName) === ssmDocumentName(name));
+    // The listing's name decided the match (go-to-k/cdkd#6866), so the entry
+    // is paired by it, whatever spelling DescribeAssociation answers.
+    const match = declared.find((d) => sameSsmDocument(d.DocumentName, a.Name));
     const params = description?.Parameters ?? {};
     const order = match?.parameterKeys ?? [];
     const keys = [
@@ -306,6 +378,7 @@ export const instanceSsmMethods = {
   ssmRemedyRegion,
   createInstanceSsmAssociation,
   listInstanceSsmAssociations,
+  ssmDocumentNameOwner,
   deleteSsmAssociationById,
   applyInstanceSsmAssociationChange,
   deleteInstanceSsmAssociationsBestEffort,
