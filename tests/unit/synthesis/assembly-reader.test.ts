@@ -460,6 +460,33 @@ describe('AssemblyReader', () => {
       expect(byName.get('Plain')?.terminationProtection).toBeUndefined();
     });
 
+    it('reads the manifest stack tags, string values only (go-to-k/cdkd#6871)', () => {
+      const manifest: AssemblyManifest = {
+        version: '38.0.0',
+        artifacts: {
+          Tagged: {
+            type: 'aws:cloudformation:stack',
+            properties: {
+              templateFile: 'Tagged.template.json',
+              stackName: 'Tagged',
+              tags: { team: 'platform', bad: 1 as unknown as string },
+            },
+          },
+          Plain: {
+            type: 'aws:cloudformation:stack',
+            properties: { templateFile: 'Plain.template.json', stackName: 'Plain', tags: {} },
+          },
+        },
+      };
+      vi.mocked(readFileSync).mockReturnValue(JSON.stringify(sampleTemplate));
+
+      const byName = new Map(
+        reader.getAllStacks('/tmp/cdk.out', manifest).map((s) => [s.stackName, s])
+      );
+      expect(byName.get('Tagged')?.tags).toEqual({ team: 'platform' });
+      expect(byName.get('Plain')).not.toHaveProperty('tags');
+    });
+
     it('rejects an absolute aws:asset:path on a nested-stack row (PR #595 review nit)', () => {
       // CDK emits relative paths for nested templates; an absolute path
       // bypasses the assemblyDir scoping (`join('/tmp/cdk.out', '/etc/passwd')`
