@@ -481,6 +481,10 @@ export interface InUseExportChange extends ActiveImportConsumer {
  *
  * `nested` drops the "Nothing was changed" sentence: a nested child refuses
  * inside its parent's update, after the parent has started provisioning.
+ * `afterProvisioning` replaces it (go-to-k/cdkd#6865): the export reads a
+ * custom resource whose new value was known only once it was updated, so the
+ * refusal comes after that update and the deploy's rollback undoes it, as
+ * CloudFormation's does.
  */
 export class ExportInUseError extends CdkdError {
   public readonly producerStack: string;
@@ -496,6 +500,7 @@ export class ExportInUseError extends CdkdError {
       unreadable?: ReadonlyArray<{ stackName: string; region: string }>;
       affectedExportNames?: readonly string[];
       nested?: boolean;
+      afterProvisioning?: boolean;
       /**
        * go-to-k/cdkd#6274: logical ids of SSM parameters this deploy re-spells
        * from `/<name>` to `<name>`, the likely reason an export changes with
@@ -540,7 +545,20 @@ export class ExportInUseError extends CdkdError {
         (lines.length > 0 ? `${lines.join('\n')}\n\n` : '\n') +
         unreadableBlock +
         respelledBlock +
-        (opts.nested === true ? '' : `Nothing was changed. `) +
+        (opts.afterProvisioning === true
+          ? `The new value was known only after the custom resources it reads were updated,\n` +
+            `so this deploy fails and is rolled back (with --no-rollback, run ${
+              pasteableCommand('cdkd rollback', [
+                // A nested child is rolled back through its top-level stack.
+                {
+                  value: opts.nested === true ? producerStack.split('~')[0]! : producerStack,
+                  hole: 'stack',
+                },
+              ]).command
+            }).\n`
+          : opts.nested === true
+            ? ''
+            : `Nothing was changed. `) +
         `This matches CloudFormation, which refuses to update or\n` +
         `remove an export while another stack imports it.\n\n` +
         `To proceed:\n` +

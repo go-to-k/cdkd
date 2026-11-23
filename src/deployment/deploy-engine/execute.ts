@@ -57,6 +57,8 @@ import { settleFailedDeployRecords } from './execute/failed-deploy-records.js';
 import { rollbackFailedDeploy } from './execute/rollback-after-failure.js';
 import type { DeployRun } from './execute/run.js';
 import { pruneStoppedSiblingMembersBestEffort } from './observed-capture.js';
+import { refuseDeferredExportChanges } from './deploy-flow/plan-checks.js';
+import type { AffectedExport } from '../export-change-guard.js';
 
 /**
  * Execute deployment by processing resources via event-driven DAG dispatch.
@@ -92,7 +94,9 @@ async function executeDeploymentBody(
   conditions?: Record<string, boolean>,
   currentEtag?: string,
   progress?: { current: number; total: number },
-  migrationPending = false
+  migrationPending = false,
+  /** go-to-k/cdkd#6865: exports judged once the custom resources they read are updated. */
+  deferredExports: readonly AffectedExport[] = []
 ): Promise<{
   state: StackState;
   actualCounts: ProvisionCounts;
@@ -360,6 +364,30 @@ async function executeDeploymentBody(
         throw new InterruptedError(engine.interruptCause ?? 'user');
       }
     }
+
+    // go-to-k/cdkd#6865: an export reading a custom resource this deploy
+    // updated is refused now if its value moved and a consumer outside the run
+    // imports it. Inside this `try`, before any DELETE, so the refusal takes
+    // the failure path below: the automatic rollback re-sends each custom
+    // resource's previous properties (CloudFormation's order: update, then the
+    // export check, then the rollback), and `--no-rollback` journals instead.
+    await refuseDeferredExportChanges(engine, {
+      stackName,
+      deferred: deferredExports,
+      currentState,
+      resolve: (value) => {
+        const context = engine.outputsDeps().buildResolverContext(
+          {
+            template,
+            resources: newResources,
+            ...(parameterValues && { parameters: parameterValues }),
+            ...(conditions && { conditions }),
+          },
+          stackName
+        );
+        return engine.resolver.resolve(value, context);
+      },
+    });
 
     // Step 2: Process DELETE operations in reverse dependency order.
     if (deleteChanges.size > 0) {

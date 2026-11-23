@@ -17,7 +17,12 @@ import {
   renderServiceTokenRefusal,
   SERVICE_TOKEN_CHANGE_REFUSED,
 } from '../../custom-resource-service-token.js';
-import { findAffectedExports, inRunStackKey } from '../../export-change-guard.js';
+import {
+  findAffectedExports,
+  findChangedDeferredExports,
+  inRunStackKey,
+  type AffectedExport,
+} from '../../export-change-guard.js';
 import { scanActiveConsumers } from '../../../state/active-import-consumers.js';
 import { ExportInUseError } from '../../../utils/error-handler.js';
 import type { InUseExportChange } from '../../../utils/error-handler.js';
@@ -53,7 +58,7 @@ export async function refuseUnsafePlan(
     changes: Map<string, ResourceChange>;
     diffResolverContext: ResolverContext;
   }
-): Promise<void> {
+): Promise<{ deferredExports: AffectedExport[] }> {
   // Issue #2668: refuse a Type change into or out of
   // `AWS::CloudFormation::Stack` before anything is provisioned. Every
   // other Type change is replaced normally — the old half routes on the
@@ -128,7 +133,7 @@ export async function refuseUnsafePlan(
   // provider call and the `--dry-run` return, like the refusals around it:
   // a replacement deletes the old resource at once, so no later point could
   // still restore the value the consumer holds.
-  await refuseInUseExportChanges(engine, {
+  const deferredExports = await refuseInUseExportChanges(engine, {
     stackName,
     ssmNameHeals,
     currentState,
@@ -206,12 +211,15 @@ export async function refuseUnsafePlan(
       forceStatefulRecreation: engine.options.forceStatefulRecreation === true,
     });
   }
+  return { deferredExports };
 }
 
 /**
  * go-to-k/cdkd#6088. The local half (`findAffectedExports`) costs no I/O and
  * returns nothing for a stack that exports nothing or whose exports this plan
  * leaves alone, so the everyday deploy never pays the O(stacks) consumer scan.
+ * Returns the exports judged only after provisioning (go-to-k/cdkd#6865),
+ * for which nothing is scanned here.
  */
 async function refuseInUseExportChanges(
   engine: DeployEngine,
@@ -232,33 +240,127 @@ async function refuseInUseExportChanges(
     changes: Map<string, ResourceChange>;
     diffResolverContext: ResolverContext;
   }
-): Promise<void> {
-  const affected = await findAffectedExports({
+): Promise<AffectedExport[]> {
+  // The plan's replacement rule (`change-plan.ts`): a replacing property
+  // change, a Type change, or a `--recreate-via-*` target.
+  const replaces = (logicalId: string): boolean => {
+    const change = changes.get(logicalId);
+    const record = currentState.resources[logicalId];
+    if (change === undefined || record === undefined) return false;
+    return (
+      (change.changeType === 'UPDATE' &&
+        // An in-place propagation's `requiresReplacement` is a ceiling the
+        // engine lowers when the read value did not move: not a verdict.
+        ((change.propertyChanges ?? []).some(
+          (pc) => pc.requiresReplacement && pc.inPlacePropagated !== true
+        ) ||
+          record.resourceType !== change.resourceType)) ||
+      recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(logicalId) === true
+    );
+  };
+  const found = await findAffectedExports({
     template: effectiveTemplate,
     conditions,
     changes,
     currentState,
     resolve: (value) => engine.resolver.resolve(value, diffResolverContext),
-    // The plan's replacement rule (`change-plan.ts`): a replacing property
-    // change, a Type change, or a `--recreate-via-*` target.
-    replaces: (logicalId) => {
-      const change = changes.get(logicalId);
-      const record = currentState.resources[logicalId];
-      if (change === undefined || record === undefined) return false;
-      return (
-        (change.changeType === 'UPDATE' &&
-          // An in-place propagation's `requiresReplacement` is a ceiling the
-          // engine lowers when the read value did not move: not a verdict.
-          ((change.propertyChanges ?? []).some(
-            (pc) => pc.requiresReplacement && pc.inPlacePropagated !== true
-          ) ||
-            record.resourceType !== change.resourceType)) ||
-        recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(logicalId) === true
-      );
-    },
+    replaces,
   });
+  // go-to-k/cdkd#6865: an export is judged after the custom resource update
+  // only when nothing the deploy does before that check is irreversible. A
+  // replacement deletes its old copy inside the create / update phase, and a
+  // nested stack's child runs its own DELETE phase there, so a refusal after
+  // either would leave a rollback re-creating what was deleted (a stateful
+  // copy EMPTY). Any of these, or a DELETE anywhere in the plan, keeps the
+  // plan-time verdict: refused before anything is touched.
+  const deferrable = deferralIsReversible(changes, replaces, {
+    replaceFlag: engine.options.replace === true || engine.options.forceStatefulRecreation === true,
+  });
+  const deferred = deferrable ? found.filter((a) => a.reason === 'deferred') : [];
+  await refuseInUseExports(
+    engine,
+    stackName,
+    found
+      .filter((a) => a.reason !== 'deferred' || !deferrable)
+      .map((a) => (a.reason === 'deferred' ? { exportName: a.exportName, reason: 'changed' } : a)),
+    { ssmNameHeals, effectiveTemplate }
+  );
+  return deferred;
+}
+
+/**
+ * Whether a refusal after the create / update phase can still be undone by the
+ * rollback: the plan replaces nothing, deletes nothing, and updates or creates
+ * no nested stack (whose child plan, computed inside the child, may delete or
+ * replace). A `NO_CHANGE` row counts only as a `--recreate-via-*` target.
+ *
+ * Stricter than the plan's replacement rule on purpose: an in-place
+ * propagation's `requiresReplacement` ceiling counts (the engine replaces when
+ * the read value moved), and so does `replaceFlag`: `--replace` (an update the
+ * service refuses is replaced delete-first inside the create / update phase)
+ * or `--force-stateful-recreation` (which lets Cloud Control's unprompted
+ * update-not-supported fallback delete a stateful resource first). Without
+ * either, that fallback can delete-first only a resource holding no data,
+ * which the rollback re-creates as it was.
+ */
+export function deferralIsReversible(
+  changes: ReadonlyMap<string, ResourceChange>,
+  replaces: (logicalId: string) => boolean,
+  { replaceFlag = false }: { replaceFlag?: boolean } = {}
+): boolean {
+  if (replaceFlag) return false;
+  for (const [logicalId, change] of changes) {
+    if (change.changeType === 'DELETE') return false;
+    if (replaces(logicalId)) return false;
+    if ((change.propertyChanges ?? []).some((pc) => pc.requiresReplacement)) return false;
+    if (change.changeType !== 'NO_CHANGE' && change.resourceType === 'AWS::CloudFormation::Stack') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * go-to-k/cdkd#6865: after the create / update phase, the deferred exports
+ * whose value moved are refused like a plan-time change, so the deploy fails
+ * and its automatic rollback re-sends each custom resource's previous
+ * properties, as CloudFormation's rollback does. `resolve` reads the deploy's
+ * records as they now stand. Nothing is resolved or scanned when no export was
+ * deferred, and the consumer scan runs only for a value that moved.
+ */
+export async function refuseDeferredExportChanges(
+  engine: DeployEngine,
+  {
+    stackName,
+    deferred,
+    currentState,
+    resolve,
+  }: {
+    stackName: string;
+    deferred: readonly AffectedExport[];
+    currentState: Pick<StackState, 'outputs'>;
+    resolve: (value: unknown) => Promise<unknown>;
+  }
+): Promise<void> {
+  if (deferred.length === 0) return;
+  const changed = await findChangedDeferredExports(deferred, currentState, resolve);
+  await refuseInUseExports(engine, stackName, changed, { afterProvisioning: true });
+}
+
+async function refuseInUseExports(
+  engine: DeployEngine,
+  stackName: string,
+  affected: readonly AffectedExport[],
+  opts: {
+    ssmNameHeals?: readonly SlashedSsmNameHeal[];
+    effectiveTemplate?: CloudFormationTemplate;
+    afterProvisioning?: boolean;
+  }
+): Promise<void> {
   if (affected.length === 0) return;
-  const reasons = new Map(affected.map((a) => [a.exportName, a.reason]));
+  const reasons = new Map(
+    affected.map((a) => [a.exportName, a.reason === 'removed' ? 'removed' : 'changed'] as const)
+  );
   const inRun = engine.options.inRunStacks;
   const unreadable: Array<{ stackName: string; region: string }> = [];
   const consumers = await scanActiveConsumers(
@@ -286,9 +388,12 @@ async function refuseInUseExportChanges(
       affectedExportNames: affected.map((a) => a.exportName),
       nested: engine.options.parentStackInfo !== undefined,
       // Only beside a consumer refusal, and only the heals an export reads.
+      ...(opts.afterProvisioning === true && { afterProvisioning: true }),
       respelledSsmParameters:
-        refused.length > 0
-          ? healsReadByExports(ssmNameHeals, effectiveTemplate).map((heal) => heal.logicalId)
+        refused.length > 0 && opts.effectiveTemplate !== undefined
+          ? healsReadByExports(opts.ssmNameHeals ?? [], opts.effectiveTemplate).map(
+              (heal) => heal.logicalId
+            )
           : [],
     });
   }

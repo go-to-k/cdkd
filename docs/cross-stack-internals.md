@@ -937,11 +937,33 @@ in the plan checks, after the diff and before any provider call, in two halves:
    with the template's outputs and the plan: a removed name, an output
    reading a created, deleted or replaced resource, an attribute an in-place
    update may move (the diff's promotion rule), or a resolved value that
-   differs. A stack that exports nothing returns at once.
+   differs. A stack that exports nothing returns at once. An output reading a
+   custom resource updated in place is `deferred`
+   ([#6865](https://github.com/go-to-k/cdkd/issues/6865)), unless its
+   published value is a `***` mask, it holds a dynamic reference, or it already
+   resolves differently. It is deferred only when `deferralIsReversible`
+   holds for the whole plan: no DELETE, no replacement (a `--recreate-via-*`
+   target included, and an in-place propagation's replacement ceiling), no
+   created or updated nested stack, and neither `--replace` nor
+   `--force-stateful-recreation` (each unlocks a delete-first replacement
+   inside the create / update phase). A replacement
+   deletes its old copy inside the create / update phase, and a nested child
+   runs its own DELETE phase there, so a refusal after either would leave the
+   rollback re-creating a deleted resource (a stateful one empty). Otherwise
+   the export stays `changed` and is refused before anything is touched.
 2. Only when that list is non-empty does it call `scanActiveConsumers`, the
    same O(N) scan destroy uses. A consumer in `DeployEngineOptions.inRunStacks`
    (every stack this `cdkd deploy` deploys) is exempt. Unlike destroy, a
    record the scan cannot read refuses the deploy: it may hold an importer.
+
+A deferred export is judged by `refuseDeferredExportChanges`
+(`deploy-flow/plan-checks.ts`), which `execute.ts` calls after the create /
+update phase and before any DELETE. It resolves the output against the
+updated records. Only a value that moved (or no longer resolves) triggers the
+consumer scan. The refusal is thrown inside the deploy's failure path, so the
+automatic rollback re-sends each custom resource's previous properties and
+`--no-rollback` journals the update. This is CloudFormation's order, measured:
+update the custom resource, compare the export, roll back on a change.
 
 Not seen: a replacement decided only while provisioning (an update AWS
 refuses, replaced instead), and a change inside a dynamic reference's text,

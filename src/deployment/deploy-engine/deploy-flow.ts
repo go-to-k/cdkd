@@ -604,7 +604,7 @@ export async function doDeployWithPrefetch(
       maskedFingerprintsBackfilled = true;
     }
 
-    await refuseUnsafePlan(engine, {
+    const { deferredExports } = await refuseUnsafePlan(engine, {
       stackName,
       ssmNameHeals,
       currentState,
@@ -787,7 +787,8 @@ export async function doDeployWithPrefetch(
               conditions,
               currentEtag,
               progress,
-              migrationPending
+              migrationPending,
+              deferredExports
             )
           )
         )

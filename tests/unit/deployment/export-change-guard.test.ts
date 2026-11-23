@@ -10,7 +10,11 @@
 
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { findAffectedExports, inRunStackKey } from '../../../src/deployment/export-change-guard.js';
-import { refuseUnsafePlan } from '../../../src/deployment/deploy-engine/deploy-flow/plan-checks.js';
+import {
+  deferralIsReversible,
+  refuseDeferredExportChanges,
+  refuseUnsafePlan,
+} from '../../../src/deployment/deploy-engine/deploy-flow/plan-checks.js';
 import { ExportInUseError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
@@ -278,14 +282,14 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     });
     await expect(
       refuseUnsafePlan(engine, plan(new Map([['Q', replacingChange]])))
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ deferredExports: [] });
   });
 
   it('ignores a consumer importing an export the plan leaves alone', async () => {
     const { engine } = engineDouble({ consumers: [{ name: 'Consumer', imports: ['Other:Export'] }] });
     await expect(
       refuseUnsafePlan(engine, plan(new Map([['Q', replacingChange]])))
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ deferredExports: [] });
   });
 
   it('never lists the state bucket when no export is touched', async () => {
@@ -392,7 +396,10 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const healed = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Q'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(healed?.message).toContain('re-spells the recorded name of SSM parameter Q');
     expect(healed?.message).toContain('deploy them\ntogether with this stack');
     const plain = await refusal(engine, new Map([['Q', replacingChange]]));
@@ -401,7 +408,10 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const unrelated = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Other'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(unrelated?.message).not.toContain('re-spells');
     // Nor beside an unreadable record alone, where no consumer was refused.
     const unreadableOnly = engineDouble({
@@ -410,14 +420,20 @@ describe('refuseUnsafePlan refuses an in-use export change (go-to-k/cdkd#6088)',
     const unread = await refuseUnsafePlan(unreadableOnly.engine, {
       ...plan(new Map([['Q', replacingChange]]), exportingRef),
       ssmNameHeals: healOf('Q'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(unread?.message).toContain('could not be read');
     expect(unread?.message).not.toContain('re-spells');
     // Nor when the export reads only the Arn, which the re-spelling keeps.
     const arnOnly = await refuseUnsafePlan(engine, {
       ...plan(new Map([['Q', replacingChange]])),
       ssmNameHeals: healOf('Q'),
-    }).catch((e: unknown) => e as Error);
+    }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
     expect(arnOnly).toBeInstanceOf(ExportInUseError);
     expect(arnOnly?.message).not.toContain('re-spells');
   });
@@ -499,8 +515,6 @@ describe('findAffectedExports: what moves an exported value', () => {
         { 'Fn::GetAtt': ['Q', 'Outputs.Url'] },
         change({ changeType: 'UPDATE', resourceType: 'AWS::CloudFormation::Stack' }),
       ],
-      // Arm 4: any read of a custom resource, its Ref included.
-      [{ Ref: 'Q' }, change({ changeType: 'UPDATE', resourceType: 'Custom::Thing' })],
     ];
     for (const [value, upstream] of cases) {
       expect(await run(exported(value), new Map([['Q', upstream]]))).toEqual([
@@ -516,5 +530,265 @@ describe('findAffectedExports: what moves an exported value', () => {
       propertyChanges: [{ path: 'Code', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
     });
     expect(await run(exported({ 'Fn::GetAtt': ['Q', 'Arn'] }), new Map([['Q', lambdaEdit]]))).toEqual([]);
+  });
+});
+
+/**
+ * go-to-k/cdkd#6865: an export reading a custom resource the plan updates in
+ * place is not refused up front. CloudFormation updates the custom resource and
+ * refuses only when the export's value then differs (measured), so the deploy
+ * re-checks it after the create / update phase.
+ */
+describe('findAffectedExports: a custom resource updated in place is deferred (#6865)', () => {
+  const crUpdate = (resourceType = 'Custom::Thing') =>
+    change({ changeType: 'UPDATE', resourceType });
+  const exported = (value: unknown) => ({
+    ExportsOutputFnGetAttQArn: { Value: value, Export: { Name: EXPORT } },
+  });
+  const run = (
+    outputs: CloudFormationTemplate['Outputs'],
+    changes: Map<string, ResourceChange>,
+    resolve: (value: unknown) => Promise<unknown> = () => Promise.resolve(OLD_ARN),
+    published: unknown = OLD_ARN
+  ) =>
+    findAffectedExports({
+      template: template(outputs),
+      conditions: {},
+      changes,
+      currentState: state({ outputs: { ExportsOutputFnGetAttQArn: published, [EXPORT]: published } }),
+      resolve,
+      replaces: noReplace,
+    });
+
+  it.each(['Custom::Thing', 'AWS::CloudFormation::CustomResource'])(
+    'defers a read of an in-place updated %s, carrying the output value',
+    async (type) => {
+      for (const value of [{ 'Fn::GetAtt': ['Q', 'Value'] }, { Ref: 'Q' }]) {
+        expect(await run(exported(value), new Map([['Q', crUpdate(type)]]))).toEqual([
+          { exportName: EXPORT, reason: 'deferred', value },
+        ]);
+      }
+    }
+  );
+
+  it('stays changed up front when the value cannot be compared later, or already differs', async () => {
+    const value = { 'Fn::GetAtt': ['Q', 'Value'] };
+    const changes = new Map([['Q', crUpdate()]]);
+    // A published NoEcho mask.
+    expect(await run(exported(value), changes, undefined, '***')).toEqual([
+      { exportName: EXPORT, reason: 'changed' },
+    ]);
+    // A published value holding a mask (a nested child's inherited secret).
+    expect(
+      await run(exported(value), changes, () => Promise.resolve('pre-***-post'), 'pre-***-post')
+    ).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+    // A dynamic reference in the value.
+    expect(
+      await run(exported({ 'Fn::Join': ['', [value, '{{resolve:ssm:/p}}']] }), changes)
+    ).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+    // A value that does not resolve.
+    expect(await run(exported(value), changes, () => Promise.reject(new Error('x')))).toEqual([
+      { exportName: EXPORT, reason: 'changed' },
+    ]);
+    // A template change of the value itself.
+    expect(await run(exported(value), changes, () => Promise.resolve('other'))).toEqual([
+      { exportName: EXPORT, reason: 'changed' },
+    ]);
+  });
+
+  it('stays changed when the custom resource is replaced, created or deleted', async () => {
+    const value = { 'Fn::GetAtt': ['Q', 'Value'] };
+    for (const changeType of ['CREATE', 'DELETE'] as const) {
+      expect(
+        await run(exported(value), new Map([['Q', change({ changeType, resourceType: 'Custom::Thing' })]]))
+      ).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+    }
+    expect(
+      await findAffectedExports({
+        template: template(exported(value)),
+        conditions: {},
+        changes: new Map([['Q', crUpdate()]]),
+        currentState: state(),
+        resolve: () => Promise.resolve(OLD_ARN),
+        replaces: () => true,
+      })
+    ).toEqual([{ exportName: EXPORT, reason: 'changed' }]);
+  });
+
+  it('keeps the plan-time check for any other type beside the custom resource', async () => {
+    const outputs = {
+      ExportsOutputFnGetAttQArn: {
+        Value: { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['Q', 'Value'] }, { 'Fn::GetAtt': ['P', 'Value'] }]] },
+        Export: { Name: EXPORT },
+      },
+    };
+    const ssm = change({
+      logicalId: 'P',
+      changeType: 'UPDATE',
+      resourceType: 'AWS::SSM::Parameter',
+      propertyChanges: [{ path: 'Value', oldValue: 'a', newValue: 'b', requiresReplacement: false }],
+    });
+    expect(await run(outputs, new Map([['Q', crUpdate()], ['P', ssm]]))).toEqual([
+      { exportName: EXPORT, reason: 'changed' },
+    ]);
+  });
+});
+
+describe('refuseDeferredExportChanges (#6865)', () => {
+  const VALUE = { 'Fn::GetAtt': ['Q', 'Value'] };
+  const deferred = [{ exportName: EXPORT, reason: 'deferred' as const, value: VALUE }];
+  function engineWith(consumers: string[], inRun: string[] = []) {
+    const listStacks = vi.fn().mockResolvedValue(
+      [{ stackName: 'Producer', region: 'us-east-1' }].concat(
+        consumers.map((name) => ({ stackName: name, region: 'us-east-1' }))
+      )
+    );
+    const getState = vi.fn().mockImplementation((name: string) =>
+      Promise.resolve(
+        consumers.includes(name)
+          ? {
+              state: {
+                imports: [{ sourceStack: 'Producer', sourceRegion: 'us-east-1', exportName: EXPORT }],
+              },
+            }
+          : null
+      )
+    );
+    const engine = {
+      options: { inRunStacks: new Set(inRun.map((n) => inRunStackKey(n, 'us-east-1'))) },
+      stateBackend: { listStacks, getState },
+      stackRegion: 'us-east-1',
+      logger: { debug: vi.fn(), warn: vi.fn() },
+    } as unknown as DeployEngine;
+    return { engine, listStacks };
+  }
+  const check = (engine: DeployEngine, resolved: unknown, list = deferred) =>
+    refuseDeferredExportChanges(engine, {
+      stackName: 'Producer',
+      deferred: list,
+      currentState: state(),
+      resolve: () =>
+        resolved instanceof Error ? Promise.reject(resolved) : Promise.resolve(resolved),
+    });
+
+  it('resolves and scans nothing when no export was deferred', async () => {
+    const { engine, listStacks } = engineWith(['Consumer']);
+    const resolve = vi.fn();
+    await refuseDeferredExportChanges(engine, {
+      stackName: 'Producer',
+      deferred: [],
+      currentState: state(),
+      resolve,
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(listStacks).not.toHaveBeenCalled();
+  });
+
+  it('passes, without scanning consumers, when the handler returned the published value', async () => {
+    const { engine, listStacks } = engineWith(['Consumer']);
+    await expect(check(engine, OLD_ARN)).resolves.toBeUndefined();
+    expect(listStacks).not.toHaveBeenCalled();
+  });
+
+  it('refuses a moved value a consumer outside the run imports, worded as after provisioning', async () => {
+    const { engine } = engineWith(['Consumer']);
+    const error = await check(engine, 'arn:new').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ExportInUseError);
+    const message = (error as Error).message;
+    expect(message).toContain('imports ');
+    expect(message).toContain('which this deploy would change');
+    expect(message).toContain('so this deploy fails and is rolled back (with --no-rollback, run cdkd rollback Producer)');
+    expect(message).not.toContain('Nothing was changed');
+  });
+
+  it('treats a value that no longer resolves as moved', async () => {
+    const { engine } = engineWith(['Consumer']);
+    await expect(check(engine, new Error('unresolvable'))).rejects.toBeInstanceOf(ExportInUseError);
+    await expect(check(engine, undefined)).rejects.toBeInstanceOf(ExportInUseError);
+  });
+
+  it('lets a moved value through when its only consumer deploys in the same run, or none imports it', async () => {
+    await expect(check(engineWith(['Consumer'], ['Producer', 'Consumer']).engine, 'arn:new')).resolves.toBeUndefined();
+    await expect(check(engineWith([]).engine, 'arn:new')).resolves.toBeUndefined();
+  });
+});
+
+describe('ExportInUseError after provisioning names a runnable rollback (#6865)', () => {
+  const change = [
+    { consumerStack: 'Consumer', consumerRegion: 'us-east-1', exportName: EXPORT, reason: 'changed' as const },
+  ];
+  it('names the stack itself at the top level', () => {
+    const message = new ExportInUseError('Producer', 'us-east-1', change, { afterProvisioning: true })
+      .message;
+    expect(message).toContain('run cdkd rollback Producer)');
+    expect(message).not.toContain('Nothing was changed');
+  });
+  it('names the top-level stack for a nested child, which cdkd rollback refuses directly', () => {
+    const message = new ExportInUseError('Root~Child', 'us-east-1', change, {
+      afterProvisioning: true,
+      nested: true,
+    }).message;
+    expect(message).toContain('run cdkd rollback Root)');
+    expect(message).not.toContain('cdkd rollback Root~Child');
+  });
+});
+
+describe('deferralIsReversible (#6865)', () => {
+  const plan = (...rows: Array<[string, Partial<ResourceChange> & Pick<ResourceChange, 'changeType'>]>) =>
+    new Map(rows.map(([id, c]) => [id, { logicalId: id, resourceType: 'Custom::Thing', ...c }]));
+  const none = (): boolean => false;
+  it('allows a plan of in-place updates, creates and unchanged rows', () => {
+    expect(
+      deferralIsReversible(
+        plan(['Cr', { changeType: 'UPDATE' }], ['New', { changeType: 'CREATE' }], ['Same', { changeType: 'NO_CHANGE' }]),
+        none
+      )
+    ).toBe(true);
+  });
+  it.each([
+    ['a DELETE', plan(['Cr', { changeType: 'UPDATE' }], ['Gone', { changeType: 'DELETE' }]), none],
+    ['a replacement', plan(['Cr', { changeType: 'UPDATE' }], ['Q', { changeType: 'UPDATE' }]), (id: string) => id === 'Q'],
+    ['a --recreate-via-* target left NO_CHANGE', plan(['Cr', { changeType: 'UPDATE' }], ['Q', { changeType: 'NO_CHANGE' }]), (id: string) => id === 'Q'],
+    [
+      'an updated nested stack',
+      plan(['Cr', { changeType: 'UPDATE' }], ['Child', { changeType: 'UPDATE', resourceType: 'AWS::CloudFormation::Stack' }]),
+      none,
+    ],
+    [
+      'a created nested stack',
+      plan(['Cr', { changeType: 'UPDATE' }], ['Child', { changeType: 'CREATE', resourceType: 'AWS::CloudFormation::Stack' }]),
+      none,
+    ],
+  ])('refuses deferral for a plan with %s', (_label, changes, replaces) => {
+    expect(deferralIsReversible(changes, replaces)).toBe(false);
+  });
+  it('refuses deferral under --replace, and for an in-place propagation\'s replacement ceiling', () => {
+    expect(deferralIsReversible(plan(['Cr', { changeType: 'UPDATE' }]), none, { replaceFlag: true })).toBe(false);
+    expect(
+      deferralIsReversible(
+        plan(
+          ['Cr', { changeType: 'UPDATE' }],
+          [
+            'Reader',
+            {
+              changeType: 'UPDATE',
+              resourceType: 'AWS::SQS::Queue',
+              propertyChanges: [
+                { path: 'QueueName', oldValue: 'a', newValue: 'b', requiresReplacement: true, inPlacePropagated: true },
+              ],
+            },
+          ]
+        ),
+        none
+      )
+    ).toBe(false);
+  });
+  it('ignores an unchanged nested stack', () => {
+    expect(
+      deferralIsReversible(
+        plan(['Cr', { changeType: 'UPDATE' }], ['Child', { changeType: 'NO_CHANGE', resourceType: 'AWS::CloudFormation::Stack' }]),
+        none
+      )
+    ).toBe(true);
   });
 });
