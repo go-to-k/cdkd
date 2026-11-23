@@ -8360,6 +8360,91 @@ describe('cdkd import', () => {
       expect(mockPrepareRetirement).not.toHaveBeenCalled();
     });
 
+    it("threads each level's tags down: a grandchild records the middle row's tags too", async () => {
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-3level-stack-tags-'));
+      try {
+        const grandPath = join(tmpdirPath, 'Grand.nested.template.json');
+        writeFileSync(grandPath, JSON.stringify(topicTemplate()));
+        const midPath = join(tmpdirPath, 'Mid.nested.template.json');
+        writeFileSync(
+          midPath,
+          JSON.stringify(
+            template({
+              Grand: {
+                Type: 'AWS::CloudFormation::Stack',
+                Properties: { TemplateURL: 'u' },
+                Metadata: { 'aws:asset:path': 'Grand.nested.template.json' },
+              },
+            })
+          )
+        );
+        mockSynthesize.mockResolvedValue({
+          stacks: [
+            {
+              ...stackInfo(
+                'P',
+                template({ Mid: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'u' } } })
+              ),
+              nestedTemplates: { Mid: midPath },
+            },
+          ],
+        });
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'topic-arn', attributes: {} })),
+        });
+        const midArn = 'arn:aws:cloudformation:us-east-1:123:stack/Mid/uuid';
+        const grandArn = 'arn:aws:cloudformation:us-east-1:123:stack/Grand/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Mid', midArn]]),
+          nested: new Map([
+            [
+              'Mid',
+              {
+                stackName: midArn,
+                physicalId: midArn,
+                resources: new Map([['Grand', grandArn]]),
+                nested: new Map([
+                  [
+                    'Grand',
+                    {
+                      stackName: grandArn,
+                      physicalId: grandArn,
+                      resources: new Map([['Topic', 'topic-arn']]),
+                      nested: new Map(),
+                    },
+                  ],
+                ]),
+              },
+            ],
+          ]),
+        });
+        mockReadDeployedStackTags.mockResolvedValue({ team: 'root' });
+        const stackRow = (tags: unknown) => ({
+          Type: 'AWS::CloudFormation::Stack',
+          Properties: { TemplateURL: 'u', Tags: tags },
+        });
+        mockReadDeployedTemplate.mockImplementation(async (...args: unknown[]) => {
+          if (args[1] === 'P') return { Resources: { Mid: stackRow([{ Key: 'tier', Value: 'mid' }]) } };
+          if (args[1] === midArn) return { Resources: { Grand: stackRow([{ Key: 'g', Value: '1' }]) } };
+          return { Resources: {} };
+        });
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+        expect(savedTags('P~Mid~Grand')).toEqual([
+          { Key: 'own', Value: 'mine' },
+          { Key: 'team', Value: 'root' },
+          { Key: 'tier', Value: 'mid' },
+          { Key: 'g', Value: '1' },
+        ]);
+      } finally {
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
+    });
+
     it("records a nested child's resources with its parent's tags plus its row's LITERAL ones, never a value CloudFormation resolved", async () => {
       const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-stack-tags-'));
       try {

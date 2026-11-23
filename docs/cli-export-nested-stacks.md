@@ -89,8 +89,8 @@ A nested stack gets its parent's, plus the nested stack resource's own `Tags`,
 which win on a shared key. cdkd sets a nested stack's tags with the stack
 update that readies it for adoption, and the root's after its last changeset,
 as in [a single-stack export](cli-export.md#stack-tags). A nested stack
-resource whose `Tags` are an intrinsic function gives its stack only the
-parent's tags, with a warning.
+resource whose `Tags` are an intrinsic function, or hold a dynamic reference
+(`{{resolve:...}}`), gives its stack only the parent's tags, with a warning.
 
 ## When one stack of the tree fails
 
