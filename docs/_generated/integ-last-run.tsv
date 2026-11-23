@@ -83,7 +83,7 @@ cloudwatch-anomaly-detector	2026-11-22T05:59:15Z	PASS	111	verify.sh	#6810 run at
 cloudwatch-metric-stream-default-name	2026-11-18T14:11:36Z	PASS	205	verify.sh	rc ok, orph clean; rerun with clean-diff line fix, both diff phases clean (#6555 PR #6556)
 codebuild-project	2026-11-19T12:17:26Z	PASS	170	verify.sh	#6620 f519ac2dd; rc ok, orph clean, member baseline OK x1
 codebuild-webhook	2026-11-02T13:36:25Z	PASS	111	verify.sh	rc ok, destroy 0 errors, 0 orphans, 0 hooks left (#5627 Triggers; pre-fix red at Phase 1)
-codecommit	2026-11-06T21:49:33Z	PASS	155	verify.sh	#5920 codecommit-repository split head; rc ok, orph clean
+codecommit	2026-11-23T11:06:38Z	PASS	236	verify.sh	rc ok, orph clean (PR 6860)
 codedeploy-lambda-deployment-group	2026-11-17T09:08:06Z	PASS	1182	verify.sh	rc ok, orph clean (#6437 PR #6483)
 cognito	2026-11-22T05:45:00Z	PASS	249	verify.sh	PR6814 2ae78b7f6, us-east-1, rc ok, orph clean
 cognito-custom-attribute-add	2026-11-06T16:03:49Z	PASS	70	verify.sh	post-hoc on main after #5861 split; rc ok, orph clean
@@ -454,7 +454,7 @@ s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, d
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-autodelete-objects-disable	2026-11-16T12:12:46Z	PASS	95	verify.sh	rc ok, orph clean (#6422)
 s3-bucket-policy-existing	2026-11-23T10:10:37Z	PASS	117	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
-s3-cloudfront	2026-11-23T10:10:37Z	PASS	252	verify.sh	PR6863 dac3948ef, us-east-1 own state bucket, rc 0, orph clean
+s3-cloudfront	2026-11-23T11:06:38Z	PASS	290	verify.sh	rc ok, orph clean (PR 6860)
 s3-directory-bucket	2026-11-06T20:40:04Z	PASS	261	verify.sh	#5914 s3-directory-bucket split head; rc ok, orph clean
 s3-event-notification	2026-11-20T11:22:10Z	PASS	310	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
@@ -503,7 +503,7 @@ shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-06T22:03:55Z	PASS	63	verify.sh	#5923 sns-topic split head; rc ok, orph clean
 sns-pending-subscription	2026-11-06T22:04:46Z	PASS	50	verify.sh	#5923 sns-topic split head; rc ok, orph clean
-sns-sqs-event	2026-11-19T18:50:43Z	PASS	339	verify.sh	#6640 regression 84223153c: rc ok, orph clean
+sns-sqs-event	2026-11-23T11:06:38Z	PASS	421	verify.sh	rc ok, orph clean (PR 6860)
 sns-subscription-filter	2026-11-20T11:22:10Z	PASS	305	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean; probe with pre-helper src (f410830a4~1) RED at identity assertion
 sns-subscription-update	2026-11-22T17:41:24Z	PASS	206	verify.sh	rc ok, orph clean; #6835 RedrivePolicy reset arm
 sns-topic-attr-removal	2026-11-20T11:22:10Z	PASS	105	verify.sh	PR6652 be63cc056, us-east-1, revert-identity kept, orph clean
