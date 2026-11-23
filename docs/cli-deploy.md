@@ -48,6 +48,38 @@ bucket creates it first, and creates the asset storage for each stack's
 region without a prompt. See
 [Bootstrap in AWS Emulator](cli-bootstrap.md#bootstrap-in-aws-emulator).
 
+## Stack tags
+
+A stack's tags (`tags` in the CDK `StackProps`, or tags added to the stack
+with `Tags.of(stack)`) are applied to every resource of the stack that takes
+tags, as CloudFormation applies the stack tags `cdk deploy` passes it:
+
+```ts
+new MyStack(app, 'MyStack', { tags: { team: 'platform', costCenter: 'cc-1234' } });
+```
+
+| Case | What cdkd does |
+| --- | --- |
+| A resource declares the same tag key | The resource's own value is kept. |
+| A list-shaped tag property (`[{ Key, Value }]`) or a map-shaped one (`{ key: value }`) | The tags are added in the shape the resource type uses, under the property its registry schema names (`UserPoolTags` for a Cognito user pool, for example). |
+| An Auto Scaling group | Each stack tag is sent with `PropagateAtLaunch: true`. |
+| A type whose registry schema says `taggable: false`, or `tagUpdatable: false` (such as `AWS::EC2::PlacementGroup`) | No stack tags, as in CloudFormation. |
+| Custom resources | No stack tags. |
+| A nested stack | Its resources get the parent's stack tags plus the nested stack resource's own `Tags`, which win on a shared key. |
+| Only the stack tags changed | The resources are updated in place: a changed or added tag is applied, and a tag removed from the stack is removed from each resource that did not declare it. A nested stack is updated for its resources too. |
+
+The tags are part of what cdkd records for each resource, so
+[`cdkd drift`](cli-drift.md) compares them, as CloudFormation drift detection
+does, and [`cdkd diff`](cli-diff.md) shows them.
+
+cdkd reads each resource type's tagging rules from its CloudFormation registry
+schema, which needs `cloudformation:DescribeType`. Without that permission it
+falls back to its bundled schema data where it has the type, and otherwise
+leaves that type's resources untagged with a warning. A resource whose tag
+property is an intrinsic function (an `Fn::If`, say), or holds a tag whose key
+is not a literal, is left as the template declares it, with a warning. A stack
+with no tags makes no extra calls.
+
 ## Options
 
 Run `cdkd deploy --help` for the same list in the terminal. The flags are
