@@ -265,7 +265,7 @@ describe('synth stack selection (issue #3550)', () => {
     await runSynth(['DataStack']);
     expect(passed(0)['lookups']).toBe(false);
     expect(passed(1)['lookups']).toBe(true);
-    // Unset must stay ABSENT, so the synthesizer falls back to cdk.json.
+    // Unset leaves the default to the synthesizer.
     expect(passed(2)).not.toHaveProperty('lookups');
   });
 
