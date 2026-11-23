@@ -15,6 +15,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { triggersToCfn } from './shared.js';
 import { isPermissionDenial } from '../../identity-read-denied.js';
+import { safeMsg } from '../../../utils/display-safe.js';
 
 /**
  * Read the currently-deployed properties for `cdkd drift`.
@@ -97,10 +98,9 @@ export async function readCurrentState(
           const name = (err as { name?: unknown } | null)?.name;
           const errorClass =
             typeof name === 'string' && /^[A-Za-z0-9]{1,64}$/.test(name) ? name : 'an error';
+          const hint = isPermissionDenial(err) ? '; allow codecommit:GetRepositoryTriggers' : '';
           this.logger.warn(
-            `CodeCommit repository ${repositoryName}: Triggers not read (${errorClass}${
-              isPermissionDenial(err) ? '; allow codecommit:GetRepositoryTriggers' : ''
-            }), so they are not compared.`
+            safeMsg`CodeCommit repository ${repositoryName}: Triggers not read (${errorClass}${hint}), so they are not compared.`
           );
           return undefined;
         }),
