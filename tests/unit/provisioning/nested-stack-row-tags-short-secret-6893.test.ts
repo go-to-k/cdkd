@@ -118,6 +118,22 @@ describe('childRowTags: a short embedded secret (go-to-k/cdkd#6893)', () => {
     expect(childRowTags(resolved, bag)).toEqual({ tags: { team: `${PIN}-team` }, withheld: [] });
   });
 
+  it('certifies nothing from a STATE-derived source (a replay), which can hold a NoEcho plaintext', () => {
+    // A record keeps a `NoEcho` value in plaintext (#1998): read as template
+    // text, it would be handed to the child verbatim.
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, 'noecho-value-long');
+    const resolved = [{ Key: 'k', Value: 'tag:noecho-value-long' }];
+    recordNestedStackParameterExpressions(
+      bag,
+      ROW,
+      { TemplateURL: 'u', Tags: resolved },
+      { TemplateURL: 'u', Tags: resolved },
+      'state-derived'
+    );
+    expect(childRowTags(resolved, bag)).toEqual({ tags: {}, withheld: ['k'] });
+  });
+
   it('withholds a 2-character NoEcho value embedded in a tag', () => {
     const bag = new Map<string, string>();
     recordLogOnlyValue(bag, 'ab');

@@ -339,8 +339,12 @@ export function recordNestedStackParameterExpressions(
   if (resourceType !== NESTED_STACK_RESOURCE_TYPE) return;
   // go-to-k/cdkd#6893: the row's `Tags` twin of the sub-floor carry below,
   // recorded at the same point (template spelling and resolved value both in
-  // hand) and before the `Parameters`-only early returns.
-  recordNestedStackRowTagSpellings(secrets, resourceType, resolvedProperties, sourceProperties);
+  // hand) and before the `Parameters`-only early returns. TEMPLATE sources
+  // only: a STATE record can hold a `NoEcho` value in plaintext (#1998), which
+  // the recorder would certify as template text.
+  if (provenance === 'template-derived') {
+    recordNestedStackRowTagSpellings(secrets, resourceType, resolvedProperties, sourceProperties);
+  }
   if (secrets.size === 0) return;
   if (!isPlainObject(resolvedProperties) || !isPlainObject(sourceProperties)) return;
   // `Object.hasOwn` for the reason the walks in this module use it: without it

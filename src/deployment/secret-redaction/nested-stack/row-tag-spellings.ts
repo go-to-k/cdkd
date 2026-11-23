@@ -50,6 +50,10 @@ const rowTagSpellings = new WeakMap<RecordedSecretValues, Map<string, RowTagSpel
  *   produced by that one replacement), which refuses a spelling holding a
  *   plaintext of the map.
  *
+ * The caller passes a TEMPLATE source only (`recordNestedStackParameterExpressions`
+ * skips its `state-derived` replay callers): a no-token source is certified
+ * as template text, which a state record holding a `NoEcho` plaintext is not.
+ *
  * Anything else (an `Fn::If` item, a non-literal `Key`, a value the
  * certificate refuses) records nothing for that key, and the reader falls
  * back to its substring carry plus a floorless refusal (it withholds the tag
