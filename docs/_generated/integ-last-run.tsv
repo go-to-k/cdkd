@@ -142,10 +142,8 @@ docdb-restore	2026-11-07T12:33:20Z	PASS	678	verify.sh	#6004 final-snapshot split
 docker-image-asset	2026-11-22T05:45:21Z	PASS	116	verify.sh	rc ok, orph clean; at 16461a57b (#6816, #6759 sub-read errors)
 drift-cc-read-only-props	2026-11-20T10:54:34Z	PASS	130	verify.sh	PR6652 be63cc056, rc ok, revert-identity kept+no replacement, orph clean (eu-west-1, own state bucket)
 drift-ecs-capacity-association	2026-11-22T02:46:37Z	PASS	175	verify.sh	rc ok, orph clean, sha 3116c9288 (#6813 sub-read errors)
-drift-revert	2026-11-22T03:31:56Z	PASS	622	verify.sh	d2646a6f6 #6759 part a, rc 0, 0 leftovers
-drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-revert	2026-11-23T08:26:12Z	PASS	675	verify.sh	PR6856 bc110f22d us-east-1 rc ok, orph clean
-drift-revert-arrays	2026-11-20T15:38:48Z	PASS	251	verify.sh	ce0906083 rc ok, identity kept + no replacement, orph clean
+drift-revert-arrays	2026-11-23T08:26:12Z	PASS	267	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-revert-nested-write-only	2026-11-20T11:50:48Z	PASS	259	verify.sh	PR6652 be63cc056, us-west-2; rc 0, kept identity x3, orph clean
 drift-revert-vpc	2026-11-23T08:26:12Z	PASS	499	verify.sh	PR6859 11e38d61f us-east-1 rc ok, orph clean
 drift-rotation-schedule-revert	2026-11-20T11:50:48Z	PASS	138	verify.sh	PR6652 be63cc056, us-west-2; rc 0, revert-identity kept identity x1, orph clean
