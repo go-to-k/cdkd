@@ -88,3 +88,28 @@ export function findTemplateCanonicalUser(
   const canonical = (principal as Record<string, unknown>)['CanonicalUser'];
   return typeof canonical === 'string' ? canonical : undefined;
 }
+
+/**
+ * Whether `policyDoc` holds a bare `AIDA…` principal that the read right after
+ * cdkd's own write would fold to a template statement's `CanonicalUser`
+ * (go-to-k/cdkd#6854). Any other read compares it as is, so it first re-reads
+ * the policy while this holds, for the seconds S3 shows a fresh OAI grant that
+ * way; a deleted IAM user's id stays and is then compared.
+ */
+export function hasTemplateMatchedUniqueId(
+  policyDoc: unknown,
+  templateProps: Record<string, unknown> | undefined
+): boolean {
+  const templateStmts = extractStatements(templateProps?.['PolicyDocument']);
+  if (templateStmts.length === 0) return false;
+  return extractStatements(policyDoc).some((stmt) => {
+    const principal = stmt['Principal'];
+    if (!principal || typeof principal !== 'object' || Array.isArray(principal)) return false;
+    const aws = (principal as Record<string, unknown>)['AWS'];
+    return (
+      typeof aws === 'string' &&
+      IAM_UNIQUE_ID_RE.test(aws) &&
+      findTemplateCanonicalUser(stmt, templateStmts) !== undefined
+    );
+  });
+}

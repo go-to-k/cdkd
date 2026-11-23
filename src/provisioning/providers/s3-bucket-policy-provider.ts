@@ -39,6 +39,7 @@ import {
   buildSiblingOaiCanonicalMap,
   extractStatements,
   findTemplateCanonicalUser,
+  hasTemplateMatchedUniqueId,
 } from './s3-bucket-policy-oai.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -103,6 +104,13 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('S3BucketPolicyProvider');
   /** Re-read schedule of the post-write baseline capture; tests set it to zeros. */
   protected ownWriteRereadDelaysMs: readonly number[] = OWN_WRITE_REREAD_DELAYS_MS;
+  /**
+   * Re-read schedule of a read that is NOT right after cdkd's own write while
+   * it shows a bare unique id a template statement would claim (go-to-k/cdkd#6854):
+   * S3 showed a fresh OAI grant that way for about 6 s after `PutBucketPolicy`
+   * (measured us-east-1, 2026-11-23). Tests set it to zeros.
+   */
+  protected transientUniqueIdRereadDelaysMs: readonly number[] = [2000, 3000, 4000];
   /** The wait between policy re-reads; replaced by tests. */
   sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -579,7 +587,9 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   ): Promise<boolean> {
     if (
       ownAttemptMayHaveLanded &&
-      (await this.livePolicyKey(livePolicy, policyDoc)) === policyContentKey(policyDoc)
+      // Right after this create's own write attempt: the OAI's transient
+      // bare-id form is expected.
+      (await this.livePolicyKey(livePolicy, policyDoc, true)) === policyContentKey(policyDoc)
     ) {
       this.logger.debug(
         safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
@@ -599,7 +609,11 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     for (const bag of attempts) {
       const attempted = sentPolicyDocument(bag['PolicyDocument']);
       if (bag['Bucket'] !== bucketName || attempted == null) continue;
-      if ((await this.livePolicyKey(livePolicy, attempted)) === policyContentKey(attempted)) {
+      // An earlier deploy's attempt: its transient form is long over, so a
+      // bare id here is a deleted IAM user's and compares as is (#6854).
+      if (
+        (await this.livePolicyKey(livePolicy, attempted, false)) === policyContentKey(attempted)
+      ) {
         this.logger.info(
           safeMsg`S3 bucket policy ${logicalId}: the policy on bucket ${bucketShown} is the one this stack's rollback journal shows an earlier deploy of it attempted; replacing it`
         );
@@ -617,7 +631,11 @@ export class S3BucketPolicyProvider implements ResourceProvider {
    * form first, the way {@link readCurrentState} does, with the same-stack
    * OAI records as siblings.
    */
-  private async livePolicyKey(livePolicy: string, reference: unknown): Promise<string> {
+  private async livePolicyKey(
+    livePolicy: string,
+    reference: unknown,
+    afterOwnWrite: boolean
+  ): Promise<string> {
     let live: unknown;
     let ref: unknown = reference;
     try {
@@ -635,8 +653,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         ...(record.attributes !== undefined && { attributes: record.attributes }),
       };
     }
-    // Right after cdkd's own write attempt, so the transient form is expected.
-    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings }, true);
+    await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings }, afterOwnWrite);
     return policyContentKey(live);
   }
 
@@ -709,7 +726,36 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     const read = () => this.readPolicyOnce(physicalId, properties, context);
     const delaysMs = this.ownWriteRereadDelaysMs;
     const options = { logicalId, properties, context, delaysMs, logger: this.logger };
-    return settleBucketPolicyRead(await read(), read, options);
+    let first = await read();
+    if (context?.afterOwnWrite !== true)
+      first = await this.outwaitTransientUniqueId(first, read, properties);
+    return settleBucketPolicyRead(first, read, options);
+  }
+
+  /**
+   * On a read that does not follow cdkd's own write, re-read while the policy
+   * shows a bare unique id a template statement would claim: within seconds of
+   * any `PutBucketPolicy` that is the OAI's transient form, which then reads as
+   * its user ARN. An id still there after the schedule (a deleted IAM user's)
+   * is returned as read and compared. Other reads cost nothing extra.
+   */
+  private async outwaitTransientUniqueId(
+    first: Record<string, unknown> | ResourceNotFound | undefined,
+    read: () => Promise<Record<string, unknown> | ResourceNotFound | undefined>,
+    properties: Record<string, unknown> | undefined
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    let answer = first;
+    for (const delayMs of this.transientUniqueIdRereadDelaysMs) {
+      if (
+        typeof answer !== 'object' ||
+        !hasTemplateMatchedUniqueId(answer['PolicyDocument'], properties)
+      ) {
+        return answer;
+      }
+      await this.sleep(delayMs);
+      answer = await read();
+    }
+    return answer;
   }
 
   /** One read of {@link readCurrentState}, the answer taken as AWS gives it. */

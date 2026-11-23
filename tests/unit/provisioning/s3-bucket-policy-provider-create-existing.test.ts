@@ -675,20 +675,50 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
       expect(sentPuts()).toBe(1);
     });
 
-    it.each([
-      ['the OAI user ARN', AS_ARN],
-      ['a transient IAM unique id', AS_UNIQUE_ID],
-    ])('a journal bag matches its own grant read back as %s', async (_l, live) => {
+    it('a journal bag matches its own grant read back as the OAI user ARN', async () => {
       const lookup = priorAttemptLookup(LOGICAL_ID, () =>
         Promise.resolve([{ Bucket: BUCKET, PolicyDocument: DESIRED_OAI }])
       );
-      respond(() => Promise.resolve({ Policy: live }));
+      respond(() => Promise.resolve({ Policy: AS_ARN }));
 
       await withStackRecords(oaiRecords(CANONICAL), () =>
         withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
       );
 
       expect(sentPuts()).toBe(1);
+    });
+
+    // go-to-k/cdkd#6854: a journal bag is an EARLIER deploy's attempt, so a
+    // bare id is not that write's transient form; S3 keeps a deleted IAM
+    // user's grant in that form. It is compared as read, and a transient one
+    // settles to the ARN within the re-reads.
+    it('a journal bag matches a bare unique id only once a re-read shows the OAI user ARN', async () => {
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: DESIRED_OAI }])
+      );
+      const answers = [AS_UNIQUE_ID, AS_ARN];
+      respond(() => Promise.resolve({ Policy: answers.shift() ?? AS_ARN }));
+
+      await withStackRecords(oaiRecords(CANONICAL), () =>
+        withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+      );
+
+      expect(sentGets()).toBe(2);
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('refuses a journal-matched policy whose principal stays a bare unique id (a deleted IAM user)', async () => {
+      const lookup = priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: DESIRED_OAI }])
+      );
+      respond(() => Promise.resolve({ Policy: AS_UNIQUE_ID }));
+
+      await expect(
+        withStackRecords(oaiRecords(CANONICAL), () =>
+          withPriorAttempts(lookup, () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+        )
+      ).rejects.toThrow(/The bucket policy already exists/);
+      expect(sentPuts()).toBe(0);
     });
 
     it('folds the transient id when the template lists ONE action and S3 reads back the scalar', async () => {
