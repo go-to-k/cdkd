@@ -138,5 +138,6 @@ export async function settleInFlightCreates(
     pending.push({ sink, failedOp: op, ...(replaced && { replaced }), refused: false });
   }
   if (pending.length === 0) return;
-  await settleReportedCreates(run.engine, run.template, inFlight, pending);
+  // No identity read: it can outlast the force-quit's exit budget.
+  await settleReportedCreates(run.engine, run.template, inFlight, pending, false);
 }

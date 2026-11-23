@@ -73,10 +73,27 @@ QUEUE_NAME="${STACK}-queue"
 AFTER_QUEUE_NAME="${STACK}-after-queue"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
-LOG_DIR="$(mktemp -d)"
+# Created AFTER the pre-run cleanup, which would otherwise delete it.
+LOG_DIR=""
 DEPLOY_PID=""
 # The node deploy itself (under `script` in the SIGHUP arm, a grandchild).
 DEPLOY_NODE_PID=""
+
+# Epoch ms, for the log-event filter and the handler wait (BSD date has no %N).
+now_ms() { echo $(($(date +%s) * 1000)); }
+
+# The last time a Gate update started. Its handler sleeps 90 s and logs again
+# when it ends, which re-creates its log group after a sweep, so every sweep
+# waits that invocation out first.
+LAST_GATE_UPDATE_MS=0
+wait_out_gate_handler() {
+  local wait_s
+  wait_s=$(((LAST_GATE_UPDATE_MS + 100000 - $(now_ms)) / 1000))
+  if [ "${LAST_GATE_UPDATE_MS}" -gt 0 ] && [ "${wait_s}" -gt 0 ]; then
+    echo "==> Waiting ${wait_s} s for the custom resource handler's last invocation to end"
+    sleep "${wait_s}"
+  fi
+}
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover deploy, lock, stack and state"
@@ -99,8 +116,9 @@ cleanup() {
       --region "${REGION}" --yes >/dev/null 2>&1
     aws s3 rm "s3://${STATE_BUCKET}/${PREFIX}/" --recursive >/dev/null 2>&1
   fi
+  wait_out_gate_handler
   sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
-  rm -rf "${LOG_DIR}"
+  [ -n "${LOG_DIR}" ] && rm -rf "${LOG_DIR}"
   set -eu
 }
 
@@ -188,6 +206,7 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+LOG_DIR="$(mktemp -d)"
 
 # --- Phase 1: deploy v1 ---------------------------------------------------
 echo "==> Phase 1: deploy v1"
@@ -206,16 +225,13 @@ assert_v1 "after the v1 deploy"
 
 # --- one interrupted v2 deploy, then the rollback --------------------------
 
-# Epoch ms, for the log-event filter below (BSD date has no %N).
-now_ms() { echo $(($(date +%s) * 1000)); }
-
 # True once the custom resource handler logged the start of an Update since
 # $1 (epoch ms): the deploy is then inside the handler's 90 s sleep.
 gate_update_started() { # usage: gate_update_started <since-ms>
   local n
   n="$(aws logs filter-log-events --log-group-name "/aws/lambda/${GATE_FN_NAME}" \
     --region "${REGION}" --start-time "$1" --filter-pattern '"GATE_UPDATE_START"' \
-    --query 'length(events)' --output text 2>&1)" || return 1
+    --query 'length(events)' --output text)" || return 1
   [ "${n}" != "0" ] && [ "${n}" != "None" ]
 }
 
@@ -235,11 +251,6 @@ node_under() { # usage: node_under <pid>
   done
   return 1
 }
-
-# The last time a Gate update started, so the run can wait its 90 s sleep out
-# before the final log-group sweep (a handler still running re-creates its
-# log group after the sweep).
-LAST_GATE_UPDATE_MS=0
 
 # usage: interrupt_arm <arm> <int2|hup> <expected exit code, or - when unknowable>
 #
@@ -415,13 +426,7 @@ ${ROLE_NAMES}
 EOF
 echo "    OK: every resource is gone"
 
-# The Gate handler's last interrupted update runs on for its 90 s sleep and
-# logs again when it ends, which would re-create its log group after a sweep.
-GATE_WAIT_S=$(((LAST_GATE_UPDATE_MS + 100000 - $(now_ms)) / 1000))
-if [ "${GATE_WAIT_S}" -gt 0 ]; then
-  echo "==> Waiting ${GATE_WAIT_S} s for the custom resource handler's last invocation to end"
-  sleep "${GATE_WAIT_S}"
-fi
+wait_out_gate_handler
 sweep_stack_lambda_log_groups "${STACK}" "${REGION}"
 LEFT_GROUPS="$(aws logs describe-log-groups --region "${REGION}" \
   --log-group-name-prefix "/aws/lambda/${STACK}-" --query 'length(logGroups)' --output text)"

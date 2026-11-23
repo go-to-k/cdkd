@@ -98,7 +98,8 @@ export async function writeRollbackJournalSegment(
     };
     // go-to-k/cdkd#6894: a force-quit landing now waits for this write.
     await trackJournalWrite(
-      deps.stateBackend.appendRollbackJournalSegment(stackName, deps.stackRegion, segment)
+      deps.stateBackend.appendRollbackJournalSegment(stackName, deps.stackRegion, segment),
+      deps.options.parentStackInfo === undefined ? stackName : undefined
     );
     deps.logger.debug(safeMsg`Rollback journal segment written (${reason})`);
     return true;

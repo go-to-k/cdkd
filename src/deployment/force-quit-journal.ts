@@ -56,18 +56,23 @@ interface Entry {
 
 const registered = new Set<Entry>();
 
-/** Journal writes in flight, whoever started them (`trackJournalWrite`). */
-const journalWrites = new Set<Promise<unknown>>();
+/**
+ * Journal writes in flight, whoever started them (`trackJournalWrite`), each
+ * with the stack name a force-quit names once it lands.
+ */
+const journalWrites = new Map<Promise<unknown>, string | undefined>();
 
 /**
  * Track one rollback-journal write until it settles, so a force-quit that
  * starts meanwhile waits for it (inside its exit budget) instead of exiting
- * mid-write. Answers `write` itself.
+ * mid-write, and names `stackName` in its `cdkd rollback` line when the write
+ * lands (`undefined` for a nested child, reverted through its top-level
+ * stack). Answers `write` itself.
  */
-export function trackJournalWrite<T>(write: Promise<T>): Promise<T> {
+export function trackJournalWrite<T>(write: Promise<T>, stackName?: string): Promise<T> {
   // `Promise.resolve`: a test double may answer a bare value.
   const tracked = Promise.resolve(write);
-  journalWrites.add(tracked);
+  journalWrites.set(tracked, stackName);
   const untrack = (): void => {
     journalWrites.delete(tracked);
   };
@@ -127,12 +132,16 @@ export function startForceQuitFlushes(): StartedForceQuitFlush {
     entry.started = Promise.resolve().then(() => entry.flush());
   }
   const inFlight = [...journalWrites];
-  const done = Promise.allSettled(inFlight).then(() =>
-    Promise.allSettled(entries.map((entry) => entry.started!)).then((results) =>
-      results.flatMap((result) =>
-        result.status === 'fulfilled' && result.value !== undefined ? [result.value] : []
-      )
-    )
+  const named = (results: PromiseSettledResult<string | undefined>[]): string[] =>
+    results.flatMap((result) =>
+      result.status === 'fulfilled' && result.value !== undefined ? [result.value] : []
+    );
+  const done = Promise.allSettled(
+    inFlight.map(([write, stackName]) => write.then(() => stackName))
+  ).then((written) =>
+    Promise.allSettled(entries.map((entry) => entry.started!)).then((flushed) => [
+      ...new Set([...named(written), ...named(flushed)]),
+    ])
   );
   return { pending: entries.length + inFlight.length, done };
 }

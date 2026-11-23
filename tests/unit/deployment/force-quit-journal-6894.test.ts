@@ -92,6 +92,15 @@ describe('force-quit journal registry', () => {
     expect(startForceQuitFlushes().pending).toBe(0);
   });
 
+  it("a tracked write names its stack once it lands, so the rollback line prints", async () => {
+    let finish!: () => void;
+    void trackJournalWrite(new Promise<void>((r) => (finish = r)), 'Root');
+    void trackJournalWrite(Promise.resolve(), undefined); // a nested child: no name
+    const started = startForceQuitFlushes();
+    finish();
+    await expect(started.done).resolves.toEqual(['Root']);
+  });
+
   it('a rejected tracked write neither leaks nor blocks a force-quit', async () => {
     await expect(trackJournalWrite(Promise.reject(new Error('put failed')))).rejects.toThrow();
     expect(startForceQuitFlushes().pending).toBe(0);

@@ -43,6 +43,26 @@ vi.mock('../../../src/deployment/intrinsic-function-resolver.js', () => ({
   })),
 }));
 
+const captured = vi.hoisted(() => ({
+  run: undefined as undefined | { inFlightCreatedSinks: Map<string, unknown> },
+}));
+vi.mock(
+  '../../../src/deployment/deploy-engine/execute/force-quit-flush.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../src/deployment/deploy-engine/execute/force-quit-flush.js')
+      >();
+    return {
+      ...actual,
+      forceQuitFlusher: (...args: Parameters<typeof actual.forceQuitFlusher>) => {
+        captured.run = args[0] as never;
+        return actual.forceQuitFlusher(...args);
+      },
+    };
+  }
+);
+
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   CloudControlProvider: { isSupportedResourceType: vi.fn(() => true) },
 }));
@@ -417,8 +437,19 @@ describe('executeDeployment force-quit flusher (go-to-k/cdkd#6894)', () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(settled()).toBe(false);
     finishWrite!();
-    await started.done;
+    // The engine's own segment landed, so the force-quit names the stack.
+    await expect(started.done).resolves.toEqual([STACK]);
     await expect(deploying).rejects.toThrow();
+  });
+
+  it('a settled node leaves no created-resource sink behind', async () => {
+    const deploying = buildEngine({ slowReports: 'phys-made-by-slow' }).deploy(STACK, template);
+    await untilSlowInFlight();
+    // In flight: its sink is there for a force-quit to read.
+    expect(captured.run?.inFlightCreatedSinks.has(SLOW)).toBe(true);
+    releaseSlow!();
+    await deploying;
+    expect(captured.run?.inFlightCreatedSinks.size).toBe(0);
   });
 
   it('the engine journals its own failure and unregisters; a later force-quit finds nothing', async () => {

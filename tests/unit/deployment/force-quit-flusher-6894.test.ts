@@ -9,9 +9,19 @@ vi.mock('../../../src/deployment/deploy-engine/rollback/journal-write.js', () =>
   writeRollbackJournalSegment: (...args: unknown[]) => writes.fn(...args),
 }));
 
+const identity = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('../../../src/deployment/rollback-executor/orphan-identity.js', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  orphanNeedsIdentity: () => true,
+  readResourceIdentity: (...args: unknown[]) => identity.read(...args),
+}));
+
 import { forceQuitFlusher } from '../../../src/deployment/deploy-engine/execute/force-quit-flush.js';
 import { FORCE_QUIT_STATE_WAIT_MS } from '../../../src/deployment/force-quit-journal.js';
 import type { DeployRun } from '../../../src/deployment/deploy-engine/execute/run.js';
+import { DagExecutor } from '../../../src/deployment/dag-executor.js';
+import { CreatedResourceSink } from '../../../src/provisioning/created-resource-sink.js';
+import type { ResourceChange } from '../../../src/types/state.js';
 
 function fakeRun(parentStackInfo?: unknown): DeployRun {
   return {
@@ -34,6 +44,8 @@ function fakeRun(parentStackInfo?: unknown): DeployRun {
 }
 
 beforeEach(() => {
+  identity.read.mockReset();
+  identity.read.mockResolvedValue('identity-token');
   writes.fn.mockReset();
   writes.fn.mockResolvedValue(true);
 });
@@ -96,5 +108,30 @@ describe('forceQuitFlusher', () => {
       false
     );
     await expect(flush()).resolves.toBeUndefined();
+  });
+
+  it('never reads a reported resource identity, even after a sibling failure (the read outlasts the exit budget)', async () => {
+    const run = fakeRun();
+    (run.engine as unknown as { interruptCause: string }).interruptCause = 'sibling-failure';
+    const sink = new CreatedResourceSink('Made', 'AWS::SQS::Queue');
+    sink.record({ physicalId: 'phys-made' });
+    run.inFlightCreatedSinks.set('Made', sink);
+    const executor = new DagExecutor<ResourceChange>();
+    executor.add({
+      id: 'Made',
+      dependencies: new Set(),
+      state: 'running',
+      data: { logicalId: 'Made', changeType: 'CREATE', resourceType: 'AWS::SQS::Queue' } as never,
+    });
+    const flush = forceQuitFlusher(
+      run,
+      { executors: () => [executor], saveChain: () => Promise.resolve() },
+      false
+    );
+    await flush();
+    expect(identity.read).not.toHaveBeenCalled();
+    const failed = writes.fn.mock.calls[0]![3] as Array<{ logicalId: string; physicalId?: string }>;
+    // The resource is still journaled by its id.
+    expect(failed).toEqual([expect.objectContaining({ logicalId: 'Made', physicalId: 'phys-made' })]);
   });
 });
