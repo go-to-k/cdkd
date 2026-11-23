@@ -3720,7 +3720,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TokenDomains',
         'VisibilityConfig',
       ]),
-      sdkUnwired: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>([['AnalyticsConfig', 'not yet implemented by cdkd']]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Capacity', 'Id', 'LabelNamespace']),
       primaryIdentifier: new Set<string>(['Id', 'Name', 'Scope']),
