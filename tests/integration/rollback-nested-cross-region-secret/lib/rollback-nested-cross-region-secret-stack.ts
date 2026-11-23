@@ -122,8 +122,8 @@ export class RbNestedXregionConsumerStack extends cdk.Stack {
     super(scope, id, props);
 
     // No stack-wide `cdk.Tags` aspect: it would tag the nested-stack row too,
-    // which cdkd refused before go-to-k/cdkd#6893 and which this fixture does
-    // not exercise.
+    // whose `AWS::CloudFormation::Stack` `Tags` cdkd refused before
+    // go-to-k/cdkd#6893 and which this fixture does not exercise.
     const child = new ChildNestedStack(this, 'Child', {
       parameters: { SharedValue: LOCAL_LITERAL_VALUE },
     });
