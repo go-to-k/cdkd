@@ -177,4 +177,65 @@ describe('cdkd diff previews stack tags as the deploy applies them (go-to-k/cdkd
     expect(result.changes.get('Q')?.changeType).toBe('NO_CHANGE');
     expect(result.changes.get('Child')?.changeType).toBe('NO_CHANGE');
   });
+
+  it("previews the child's own engine work under a row updated only for its tags (the SSM name heal)", async () => {
+    // The parent is marked checked, so only the tag run reaches the child: its
+    // engine re-spells the legacy `/S-Child-Param` id, which its Reader reads.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-6871-heal-'));
+    try {
+      writeFileSync(
+        join(dir, 'child.json'),
+        JSON.stringify({
+          Resources: {
+            Param: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'v' } },
+            Reader: {
+              Type: 'AWS::SSM::Parameter',
+              Properties: { Type: 'String', Value: { Ref: 'Param' } },
+            },
+          },
+        })
+      );
+      const tags = { team: 'platform' };
+      const states: Record<string, StackState> = {
+        S: state('S', { Child: rowRecord }, { nestedSsmNamesChecked: true }),
+        'S~Child': state('S~Child', {
+          Param: {
+            physicalId: '/S-Child-Param',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Type: 'String', Value: 'v', Tags: tags },
+          },
+          Reader: {
+            physicalId: 'S-Child-Reader',
+            resourceType: 'AWS::SSM::Parameter',
+            properties: { Type: 'String', Value: '/S-Child-Param', Tags: tags },
+            dependencies: ['Param'],
+          },
+        }),
+      };
+      const result = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Resources: {
+            Child: { Type: ROW, Metadata: { 'aws:asset:path': 'child.json' }, Properties: {} },
+          },
+        },
+        nestedTemplates: { Child: join(dir, 'child.json') },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        stackTags: tags,
+      });
+      expect(result.changes.get('Child')?.nestedStackTagsChanged).toBe(true);
+      const child = result.children.find((c) => c.stackName === 'S~Child');
+      expect(child?.changes.get('Param')?.changeType).toBe('NO_CHANGE');
+      expect(child?.changes.get('Reader')?.changeType).toBe('UPDATE');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
