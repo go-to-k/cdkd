@@ -119,7 +119,7 @@ export async function update(
         // scope's default (GetWebACL then reports no member), exactly as the
         // rest of this full-replace request does. So removing it from the
         // template returns the web ACL to AWS's default for its scope, as it
-        // does for every other member this request carries; never a silent
+        // does for the other full-replace members; never a silent
         // keep of a cross-Region transfer the template no longer declares.
         // A template that must keep request logs in-Region on a CLOUDFRONT
         // web ACL (default enabled) declares `Mode: DISABLED` explicitly.

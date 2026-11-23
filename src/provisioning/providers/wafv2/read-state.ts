@@ -102,9 +102,10 @@ export async function readCurrentState(
   }
   // `AnalyticsConfig` reads back verbatim, and only when AWS reports one:
   // GetWebACL returns no member for a web ACL whose template never set it
-  // (either scope, measured live), so a template omitting it compares equal,
-  // while an out-of-band `Mode` shows as drift that `--revert` clears by
-  // omitting it again (UpdateWebACL resets an omitted member to the default).
+  // (either scope, measured live), so a template omitting it compares equal.
+  // An undeclared key is not compared at all (CloudFormation's drift parity);
+  // a declared `Mode` changed out of band shows as drift, and `--revert`
+  // re-sends the declared value.
   if (webACL.AnalyticsConfig) {
     result['AnalyticsConfig'] = webACL.AnalyticsConfig as unknown as Record<string, unknown>;
   }

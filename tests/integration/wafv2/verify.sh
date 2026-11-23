@@ -253,10 +253,10 @@ assert_acl "AnalyticsConfig mode" '.AnalyticsConfig.Mode' '"CROSS_REGION"'
 echo "==> Phase 1: drift of the #2762 members against their TEMPLATE values must be clean"
 # With the deploy-time observedProperties as the baseline, both sides come from
 # the same readCurrentState and the check could not fail. So the two members'
-# baseline is overwritten with their TEMPLATED values: a reordered list, or an
+# baseline (and AnalyticsConfig's, PR #6884) is overwritten with their TEMPLATED values: a reordered list, or an
 # echoed Exclude* default the read-back failed to drop (the second
 # data-protection entry leaves both booleans out), then shows up as drift.
-# Only these two are swapped, so the rest of the web ACL keeps its observed
+# Only these three are swapped, so the rest of the web ACL keeps its observed
 # baseline and cannot fail this phase for a reason that predates #2762.
 STATE_TMP_IN="${TMPDIR:-/tmp}/cdkd-2762-waf-state-in.$$.json"
 STATE_TMP_OUT="${TMPDIR:-/tmp}/cdkd-2762-waf-state-out.$$.json"
@@ -296,7 +296,7 @@ assert_acl "AnalyticsConfig mode after update" '.AnalyticsConfig.Mode' '"DISABLE
 drift_clean "drift clean after the update" CDKD_TEST_WAF_UPDATE=true
 
 # --- Phase 3: removal --------------------------------------------------------
-echo "==> Phase 3: redeploy with CDKD_TEST_WAF_REMOVAL=true (both dropped)"
+echo "==> Phase 3: redeploy with CDKD_TEST_WAF_REMOVAL=true (all three dropped)"
 CDKD_TEST_WAF_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
