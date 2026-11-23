@@ -1,6 +1,6 @@
 {
   "name": "@cdkd/cli",
-  "version": "0.367.0",
+  "version": "0.367.1",
   "description": "Drop-in CDK CLI for existing CDK apps - up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -103,7 +103,7 @@
     "@aws-sdk/client-sqs": "^3.1169.0",
     "@aws-sdk/client-ssm": "^3.1169.0",
     "@aws-sdk/client-sts": "^3.1169.0",
-    "@aws-sdk/client-wafv2": "^3.1175.0",
+    "@aws-sdk/client-wafv2": "^3.1169.0",
     "@aws-sdk/credential-provider-node": "^3.972.97",
     "@aws-sdk/lib-storage": "^3.1169.0",
     "@aws-sdk/s3-request-presigner": "^3.1169.0",
