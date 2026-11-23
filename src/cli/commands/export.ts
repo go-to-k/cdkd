@@ -6,6 +6,7 @@ import {
   regionOption,
   stateOptions,
   parseStackRegion,
+  collectRepeated,
 } from '../options.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { exportCommand } from './export/command.js';
@@ -125,12 +126,13 @@ export function createExportCommand(): Command {
         'For per-nested-child overrides, use --cfn-child-stack-name.'
     )
     .option(
-      '--cfn-child-stack-name <pair...>',
+      '--cfn-child-stack-name <pair>',
       "Per-nested-child CFn stack-name override. Repeatable. Format: '<cdkdName>=<cfnName>' " +
         "(e.g. --cfn-child-stack-name 'MyApp~Database=my-app-db'). The cdkd stack name for a " +
         "nested child is '<parent>~<childLogicalId>' (v6 state-key form). Without an override " +
         "the CFn name is derived by replacing '~' with '-'. Only consulted when the exported " +
-        'stack tree contains nested children; ignored for flat stacks.'
+        'stack tree contains nested children; ignored for flat stacks.',
+      collectRepeated
     )
     .option(
       '--template <path>',
@@ -158,10 +160,11 @@ export function createExportCommand(): Command {
       false
     )
     .option(
-      '--parameter <key=value...>',
+      '--parameter <key=value>',
       'CFn template Parameter override, repeatable. Required when the synthesized ' +
         'template has Parameters without Default values; otherwise overrides the ' +
-        "template's default value. Format: --parameter Key=Value."
+        "template's default value. Format: --parameter Key=Value.",
+      collectRepeated
     )
     .option(
       '--strict-cross-stack',
