@@ -124,3 +124,9 @@ directory:
   the SNS / SQS policy providers.
 - `6854-d-drift-cc-normalization-rules.md`: the drift command's comparison
   steps and the Cloud Control read-back tables.
+
+## Related decision
+
+A second, Cloud Control-shaped baseline was considered as a way to compare like
+with like without these rules, and rejected:
+[Cloud Control-shaped drift baseline decision](6868-cloud-control-baseline-decision.md).
