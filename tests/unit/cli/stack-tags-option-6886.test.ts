@@ -73,7 +73,9 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
 }));
 
 /** The stack tags the diff merges, observed where it merges them. */
-const applyStackTagsSpy = vi.hoisted(() => vi.fn(async (template: unknown) => template));
+const applyStackTagsSpy = vi.hoisted(() =>
+  vi.fn(async (template: unknown, _stackTags?: unknown) => template)
+);
 vi.mock('../../../src/provisioning/stack-tag-targets.js', () => ({
   applyStackTagsToTemplate: applyStackTagsSpy,
 }));

@@ -33,6 +33,8 @@ Implemented in `src/cli/config-loader.ts`; option parsing in
   fixture's `--region`. The state-bucket S3 client still auto-detects the
   bucket's region via `GetBucketLocation`, independent of the flag.
 - **`--context` / `-c`** — repeatable `key=value`, merged over cdk.json context.
+- **`--tags` / `-t`** (deploy, diff) — REPLACES each stack's tags, else cdk.json
+  `tags` (#6886).
 - **`--lookups` / `--no-lookups`** ride in `contextOptions`; unset means on. Do
   not read cdk.json `"lookups"`: the `cdk` CLI ignores it too (#6883).
 - **`-y` / `--yes`** is global; `cdkd destroy` also takes `-f` / `--force` with
@@ -59,9 +61,8 @@ RECORD SET versus a formatted human VIEW: `state resources` / `state show` /
 `state info` keep their `--json` gate, while `state list --long` / `--tree` are
 views swept along by a reservation taken before the mode is known. `cdkd deploy`
 and the long-running `local start-*` servers deliberately keep human stdout. On
-the two `local invoke*` commands the reservation covers cdkd's logger and the
-container's log pipe; cdk-local's separate logger still reaches stdout, so their
-payload is the LAST stdout line, not the whole stream. Contract in
+`local invoke*`, cdk-local's own logger still reaches stdout, so the payload is
+the LAST stdout line. Contract in
 `docs/cli-reference-output.md`.
 
 ## Concurrency and per-resource deadlines
