@@ -23,6 +23,8 @@ import {
   sameTags,
 } from '../provisioning/stack-tags.js';
 import { hasOwnKey } from '../utils/own-keys.js';
+import { holdsRecordedSecret } from '../provisioning/providers/nested-stack/row-tags.js';
+import type { RecordedSecretValues } from './secret-redaction/pairs.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceChange } from '../types/state/changes.js';
 import type { ResourceState, StackState } from '../types/state.js';
@@ -153,6 +155,12 @@ export async function settleStackTagChildRuns(args: {
   stackTags: Readonly<Record<string, string>> | undefined;
   state: Pick<StackState, 'nestedStackTags'> & { resources?: Record<string, ResourceState> };
   resolve: ((value: unknown) => Promise<unknown>) | undefined;
+  /**
+   * The resolver's bag: a resolved value holding one of its secrets (a
+   * `NoEcho` parameter's value, which the diff resolver serves as plaintext)
+   * leaves the row unknowable, so no plaintext is ever recorded.
+   */
+  secrets: RecordedSecretValues | undefined;
 }): Promise<Map<string, Record<string, string> | undefined>> {
   const expected = expectedNestedStackTags(args.template, args.stackTags);
   const resources = isRecord(args.template.Resources) ? args.template.Resources : {};
@@ -163,7 +171,16 @@ export async function settleStackTagChildRuns(args: {
     try {
       const resolved = await args.resolve(isRecord(properties) ? properties['Tags'] : undefined);
       const rowTags = literalRowTags(resolved);
-      if (rowTags !== undefined) expected.set(logicalId, childStackTags(args.stackTags, rowTags));
+      const secrets = args.secrets;
+      const holdsSecret =
+        rowTags !== undefined &&
+        secrets !== undefined &&
+        Object.entries(rowTags).some(
+          ([key, value]) => holdsRecordedSecret(key, secrets) || holdsRecordedSecret(value, secrets)
+        );
+      if (rowTags !== undefined && !holdsSecret) {
+        expected.set(logicalId, childStackTags(args.stackTags, rowTags));
+      }
     } catch {
       // Unresolvable at diff time: the row stays unknowable and runs.
     }

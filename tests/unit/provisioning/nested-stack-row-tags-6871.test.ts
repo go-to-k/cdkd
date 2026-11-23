@@ -66,4 +66,11 @@ describe('childRowTags (go-to-k/cdkd#6871)', () => {
   it('answers undefined tags for a non-literal list', () => {
     expect(childRowTags({ Ref: 'X' }, new Map()).tags).toBeUndefined();
   });
+
+  it('withholds a tag whose KEY holds a secret, without naming it', () => {
+    const bag = new Map([[SECRET, EXPR]]);
+    const result = childRowTags([{ Key: SECRET, Value: 'v' }], bag);
+    expect(result.tags).toEqual({});
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
 });

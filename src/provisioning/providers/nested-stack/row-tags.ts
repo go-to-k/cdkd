@@ -34,6 +34,16 @@ function holds(value: string, needle: string): boolean {
   return value === needle || (needle.length >= MIN_NEEDLE_LENGTH && value.includes(needle));
 }
 
+/**
+ * Does `text` hold any secret of `secrets` -- a recorded plaintext or a
+ * log-only (`NoEcho`) needle -- as the persist-side masker would match it?
+ */
+export function holdsRecordedSecret(text: string, secrets: RecordedSecretValues): boolean {
+  for (const plaintext of secrets.keys()) if (holds(text, plaintext)) return true;
+  for (const needle of logOnlyValuesOf.get(secrets) ?? []) if (holds(text, needle)) return true;
+  return false;
+}
+
 export function childRowTags(
   rowTags: unknown,
   secrets: RecordedSecretValues | undefined
@@ -46,6 +56,11 @@ export function childRowTags(
   const out: Record<string, string> = {};
   const withheld: string[] = [];
   for (const [key, value] of Object.entries(tags)) {
+    // A KEY spelling a secret cannot be put back as an expression: withheld.
+    if (holdsRecordedSecret(key, secrets)) {
+      withheld.push('(a key cdkd does not print)');
+      continue;
+    }
     // Literal runs and the expressions already put in: a later, shorter
     // secret is never searched for INSIDE an inserted expression's text.
     let segments: Array<{ text: string; expression: boolean }> = [

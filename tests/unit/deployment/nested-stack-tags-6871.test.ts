@@ -145,6 +145,7 @@ describe('settleStackTagChildRuns (go-to-k/cdkd#6871, code review M2)', () => {
       stackTags: undefined,
       state: recorded({ Child: { env: 'prod' } }),
       resolve: async () => [{ Key: 'env', Value: 'prod' }],
+      secrets: undefined,
     });
     expect(expected.get('Child')).toEqual({ env: 'prod' });
     expect(changes.get('Child')?.changeType).toBe('NO_CHANGE');
@@ -159,6 +160,7 @@ describe('settleStackTagChildRuns (go-to-k/cdkd#6871, code review M2)', () => {
       stackTags: undefined,
       state: recorded({ Child: { env: 'prod' } }),
       resolve: async () => [{ Key: 'env', Value: 'dev' }],
+      secrets: undefined,
     });
     expect(changes.get('Child')).toMatchObject({ changeType: 'UPDATE', nestedStackTagsChanged: true });
   });
@@ -174,8 +176,32 @@ describe('settleStackTagChildRuns (go-to-k/cdkd#6871, code review M2)', () => {
       resolve: async () => {
         throw new Error('unresolvable');
       },
+      secrets: undefined,
     });
     expect(expected.get('Child')).toBeUndefined();
+    expect(changes.get('Child')?.changeType).toBe('UPDATE');
+  });
+});
+
+describe('settleStackTagChildRuns never records a secret (go-to-k/cdkd#6871, security review)', () => {
+  it('leaves a row unknowable when its resolved tags hold a NoEcho needle of the bag', async () => {
+    const { settleStackTagChildRuns } = await import('../../../src/deployment/nested-stack-tags.js');
+    const { recordLogOnlyValue } = await import('../../../src/deployment/secret-redaction.js');
+    const bag = new Map<string, string>();
+    recordLogOnlyValue(bag, 'noecho-6871-value');
+    const changes = new Map<string, ResourceChange>([
+      ['Child', { logicalId: 'Child', changeType: 'NO_CHANGE', resourceType: ROW }],
+    ]);
+    const expected = await settleStackTagChildRuns({
+      changes,
+      template: template([{ Key: 'k', Value: { Ref: 'Secret' } }]),
+      stackTags: undefined,
+      state: recorded({}),
+      resolve: async () => [{ Key: 'k', Value: 'noecho-6871-value' }],
+      secrets: bag,
+    });
+    expect(expected.get('Child')).toBeUndefined();
+    expect(JSON.stringify(nestedStackTagsField(expected) ?? {})).not.toContain('noecho-6871-value');
     expect(changes.get('Child')?.changeType).toBe('UPDATE');
   });
 });

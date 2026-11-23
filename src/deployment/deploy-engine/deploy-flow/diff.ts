@@ -208,6 +208,7 @@ export async function calculateDeployDiff(
     stackTags,
     state: currentState,
     resolve: diffResolveFn,
+    secrets: diffResolverContext.recordedSecretValues,
   });
   return { diffResolverContext, maskedInputs, changes, expectedChildTags };
 }

@@ -238,4 +238,50 @@ describe('cdkd diff previews stack tags as the deploy applies them (go-to-k/cdkd
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('never records or hands down a NoEcho parameter a row tag reads (security review)', async () => {
+    const plaintext = 'noecho-plaintext-6871';
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-6871-noecho-'));
+    try {
+      writeFileSync(
+        join(dir, 'child.json'),
+        JSON.stringify({ Resources: { Q: { Type: 'AWS::SQS::Queue', Properties: {} } } })
+      );
+      const states: Record<string, StackState> = {
+        S: state('S', { Child: rowRecord }, { nestedStackTags: { Child: { team: 'platform' } } }),
+        'S~Child': state('S~Child', { Q: queueRecord([{ Key: 'team', Value: 'platform' }]) }),
+      };
+      const result = await buildDiffTree({
+        stackName: 'S',
+        displayName: 'S',
+        region: 'us-east-1',
+        template: {
+          Parameters: { Secret: { Type: 'String', NoEcho: true, Default: plaintext } },
+          Resources: {
+            Child: {
+              Type: ROW,
+              Metadata: { 'aws:asset:path': 'child.json' },
+              Properties: { Tags: [{ Key: 'k', Value: { Ref: 'Secret' } }] },
+            },
+          },
+        } as unknown as CloudFormationTemplate,
+        nestedTemplates: { Child: join(dir, 'child.json') },
+        recursive: true,
+        stateBackend: {
+          getState: async (name: string) => (states[name] ? { state: states[name], etag: 'e' } : null),
+        } as unknown as S3StateBackend,
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        stackTags: { team: 'platform' },
+      });
+      // Unknowable: the row runs, nothing is recorded, the child gets the
+      // parent's tags alone.
+      expect(result.changes.get('Child')?.nestedStackTagsChanged).toBe(true);
+      const child = result.children.find((c) => c.stackName === 'S~Child');
+      expect(child?.changes.get('Q')?.changeType).toBe('NO_CHANGE');
+      expect(JSON.stringify(diffTreeToJson(result))).not.toContain(plaintext);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
