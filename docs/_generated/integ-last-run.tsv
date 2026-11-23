@@ -419,7 +419,7 @@ refactor-command	2026-11-05T10:33:02Z	PASS	100	verify.sh	rc 0, destroy 0 errors,
 refactor-lambda-version	2026-11-21T20:39:33Z	PASS	150	verify.sh	rc 0, destroy 0 errors, 0 orphans; phase 2a: no moved-to on a subscription + queue policy moved to another queue (#6797)
 refactor-move	2026-11-05T10:31:22Z	PASS	151	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 remote-nested-stack-refusal	2026-11-16T07:40:23Z	PASS	20	verify.sh	rc ok, orph clean
-remove-protection	2026-11-21T01:28:31Z	PASS	779	verify.sh	PR6710 run at bf25fb0b3, same PR delta except the log-group message; rc ok, orph clean
+remove-protection	2026-11-23T07:03:43Z	PASS	823	verify.sh	PR6864 run at 1a5b7cfe4; step 3a hint on all 7 protected types; rc ok, orph clean
 remove-protection-compensation	2026-11-17T03:39:15Z	PASS	315	verify.sh	rc ok, orph clean (#6437 PR #6469)
 remove-protection-journaled-orphan	2026-11-04T23:27:27Z	PASS	683	verify.sh	rc ok; destroy/rollback --remove-protection cleared protected journaled orphan and completed CREATE; own temp state bucket; orph clean
 rename-refactor	2026-11-07T00:09:50Z	PASS	131	verify.sh	#5938 ssm-parameter split head; rc ok, orph clean

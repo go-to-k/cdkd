@@ -24,7 +24,14 @@ a failed delete.
 
 cdkd sends the delete unchanged and reports the error AWS returns. For RDS and
 Cognito that error is `InvalidParameterCombination` or
-`InvalidParameterException`.
+`InvalidParameterException`. When AWS says the refusal is for deletion
+protection, cdkd adds a line under the failure saying so and naming
+`--remove-protection`:
+
+```text
+✗ Failed to delete UserPool: "ProvisioningError: Failed to delete Cognito User Pool UserPool: InvalidParameterException. ..."
+    AWS refused the delete because deletion protection is on for this resource. Re-run the destroy with --remove-protection to turn it off and delete it.
+```
 
 It makes no difference where the protection was turned on. Protection set in
 the console or with the AWS CLI blocks the delete the same way as protection

@@ -56,6 +56,7 @@ import { createUnionSecretMasker } from '../../../deployment/secret-redaction.js
 import type { DestroyPrintingBags } from './under-lock-steps.js';
 import type { DestroyRunnerContext, DestroyRunnerResult, DestroyLogger } from './types.js';
 import { NESTED_STACK_TYPE, maskedSnapshotLogger, recordDestroyEvent } from './helpers.js';
+import { protectionRefusalHint } from './protection-refusal-hint.js';
 import type { HeldStackLock } from '../stack-lock-guard.js';
 
 /** What {@link deleteStackResource} reads from `destroyStackUnderLock`. */
@@ -780,6 +781,14 @@ export async function deleteStackResource(
       });
     } else {
       logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, safeStringify(error));
+      // Issue #6855: name the cause and the flag, which the line above withholds.
+      const protectionHint = protectionRefusalHint(
+        error,
+        resource.resourceType,
+        ctx.removeProtection,
+        resource.physicalId
+      );
+      if (protectionHint) logger.error(safeMsg`    ${protectionHint}`);
       result.errorCount++;
       failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
       blockDependenciesOf(logicalId);

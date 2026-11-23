@@ -207,6 +207,15 @@ export const EXEMPTIONS: readonly Exemption[] = [
       'arguments, which this one does not',
   },
   {
+    file: 'src/cli/commands/destroy-runner/delete-resource.ts',
+    fn: 'deleteStackResource',
+    count: 1,
+    reason:
+      'the raw id is an ARGUMENT of protectionRefusalHint, which only removes it from AWS text ' +
+      'before matching and returns fixed cdkd text; a call is read as rendering its arguments, ' +
+      'which this one does not (#6855)',
+  },
+  {
     file: 'src/cli/commands/export/sg-ingress-rule-id.ts',
     fn: 'backfillSecurityGroupIngressRuleId',
     count: 1,
