@@ -762,6 +762,27 @@ describe('deferralIsReversible (#6865)', () => {
   ])('refuses deferral for a plan with %s', (_label, changes, replaces) => {
     expect(deferralIsReversible(changes, replaces)).toBe(false);
   });
+  it('refuses deferral under --replace, and for an in-place propagation\'s replacement ceiling', () => {
+    expect(deferralIsReversible(plan(['Cr', { changeType: 'UPDATE' }]), none, { replaceFlag: true })).toBe(false);
+    expect(
+      deferralIsReversible(
+        plan(
+          ['Cr', { changeType: 'UPDATE' }],
+          [
+            'Reader',
+            {
+              changeType: 'UPDATE',
+              resourceType: 'AWS::SQS::Queue',
+              propertyChanges: [
+                { path: 'QueueName', oldValue: 'a', newValue: 'b', requiresReplacement: true, inPlacePropagated: true },
+              ],
+            },
+          ]
+        ),
+        none
+      )
+    ).toBe(false);
+  });
   it('ignores an unchanged nested stack', () => {
     expect(
       deferralIsReversible(

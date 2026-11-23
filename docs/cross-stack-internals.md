@@ -943,7 +943,10 @@ in the plan checks, after the diff and before any provider call, in two halves:
    published value is a `***` mask, it holds a dynamic reference, or it already
    resolves differently. It is deferred only when `deferralIsReversible`
    holds for the whole plan: no DELETE, no replacement (a `--recreate-via-*`
-   target included), and no created or updated nested stack. A replacement
+   target included, and an in-place propagation's replacement ceiling), no
+   created or updated nested stack, and neither `--replace` nor
+   `--force-stateful-recreation` (each unlocks a delete-first replacement
+   inside the create / update phase). A replacement
    deletes its old copy inside the create / update phase, and a nested child
    runs its own DELETE phase there, so a refusal after either would leave the
    rollback re-creating a deleted resource (a stateful one empty). Otherwise

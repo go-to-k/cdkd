@@ -273,7 +273,9 @@ async function refuseInUseExportChanges(
   // either would leave a rollback re-creating what was deleted (a stateful
   // copy EMPTY). Any of these, or a DELETE anywhere in the plan, keeps the
   // plan-time verdict: refused before anything is touched.
-  const deferrable = deferralIsReversible(changes, replaces);
+  const deferrable = deferralIsReversible(changes, replaces, {
+    replaceFlag: engine.options.replace === true || engine.options.forceStatefulRecreation === true,
+  });
   const deferred = deferrable ? found.filter((a) => a.reason === 'deferred') : [];
   await refuseInUseExports(
     engine,
@@ -291,14 +293,26 @@ async function refuseInUseExportChanges(
  * rollback: the plan replaces nothing, deletes nothing, and updates or creates
  * no nested stack (whose child plan, computed inside the child, may delete or
  * replace). A `NO_CHANGE` row counts only as a `--recreate-via-*` target.
+ *
+ * Stricter than the plan's replacement rule on purpose: an in-place
+ * propagation's `requiresReplacement` ceiling counts (the engine replaces when
+ * the read value moved), and so does `replaceFlag`: `--replace` (an update the
+ * service refuses is replaced delete-first inside the create / update phase)
+ * or `--force-stateful-recreation` (which lets Cloud Control's unprompted
+ * update-not-supported fallback delete a stateful resource first). Without
+ * either, that fallback can delete-first only a resource holding no data,
+ * which the rollback re-creates as it was.
  */
 export function deferralIsReversible(
   changes: ReadonlyMap<string, ResourceChange>,
-  replaces: (logicalId: string) => boolean
+  replaces: (logicalId: string) => boolean,
+  { replaceFlag = false }: { replaceFlag?: boolean } = {}
 ): boolean {
+  if (replaceFlag) return false;
   for (const [logicalId, change] of changes) {
     if (change.changeType === 'DELETE') return false;
     if (replaces(logicalId)) return false;
+    if ((change.propertyChanges ?? []).some((pc) => pc.requiresReplacement)) return false;
     if (change.changeType !== 'NO_CHANGE' && change.resourceType === 'AWS::CloudFormation::Stack') {
       return false;
     }

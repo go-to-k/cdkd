@@ -68,6 +68,8 @@ async function deploy(opts: {
   withDelete?: boolean;
   /** A queue whose name changes: the plan REPLACES it. */
   withReplacement?: boolean;
+  replace?: boolean;
+  forceStatefulRecreation?: boolean;
 }): Promise<{
   provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
   updates: UpdateCall[];
@@ -182,7 +184,12 @@ async function deploy(opts: {
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
     } as never,
-    { dryRun: false, ...(opts.noRollback === true && { noRollback: true }) },
+    {
+      dryRun: false,
+      ...(opts.noRollback === true && { noRollback: true }),
+      ...(opts.replace === true && { replace: true }),
+      ...(opts.forceStatefulRecreation === true && { forceStatefulRecreation: true }),
+    },
     'us-east-1'
   );
   let thrown: unknown;
@@ -225,6 +232,8 @@ describe('a custom resource feeding an imported export (#6865)', () => {
   it.each([
     ['a DELETE', { withDelete: true }],
     ['a replacement', { withReplacement: true }],
+    ['--replace', { replace: true }],
+    ['--force-stateful-recreation', { forceStatefulRecreation: true }],
   ])('refuses at plan time, touching nothing, when the plan also has %s', async (_label, extra) => {
     const run = await deploy({ returns: 'v1', ...extra });
     expect(run.thrown).toBeInstanceOf(ExportInUseError);
