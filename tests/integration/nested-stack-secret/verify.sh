@@ -73,6 +73,12 @@
 #           registered (#3114, then masked `port:***`). Since #3156 the parent's
 #           carry records a whole-value entry for this frame, so the lines are
 #           masked WHOLE (`***`) -- a live signal that the carry certified it.
+#   #6893 - a sub-floor secret in the nested ROW's own `Tags`. The `Child`
+#           row carries `tag:` + a token resolving to 2 characters (`tag:w4`),
+#           which since #6871 reaches every child resource as a stack tag.
+#           The provider's substring carry could not hand it down below
+#           MIN_NEEDLE_LENGTH, so the child persisted `tag:w4`; the parent's
+#           recorder now certifies the frame and the child persists it.
 #
 # THREE deploys, and the third is not decoration. Phases 1-2b only ever reach
 # `NestedStackProvider.create` and a no-op, so the deploy engine's UPDATE call
@@ -352,6 +358,25 @@ if [ "${PIN_SSM_VALUE}" = "${PIN_VALUE}" ] || [ "${PIN_SSM_VALUE}" = "${PIN_JOIN
   echo "FAIL: PIN_SSM_VALUE must differ from PIN_VALUE and PIN_JOIN_VALUE, or another arm's whole-value entry masks it and this arm is vacuous" >&2
   exit 1
 fi
+# The #6893 row-tag frame: an EIGHTH JSON key (`pintag`) the parent's `Child`
+# row embeds in its own `Tags` as a LITERAL frame, `tag:` + token. The row's
+# tags become the child's stack tags (#6871), and below MIN_NEEDLE_LENGTH the
+# provider's substring carry could not hand the frame down, so every child
+# resource persisted `tag:w4`. Kept in sync with the stack's row-tag override
+# and the secret JSON below; its OWN value for the reason PIN_JOIN_VALUE gives.
+PIN_TAG_KEY="cdkd-pintag"
+PIN_TAG_VALUE="w4"
+PIN_TAG_EXPR="{{resolve:secretsmanager:${SECRET_NAME}:SecretString:pintag::}}"
+PIN_TAG_FRAMED_VALUE="tag:${PIN_TAG_VALUE}"
+PIN_TAG_FRAMED_EXPR="tag:${PIN_TAG_EXPR}"
+if [ -z "${PIN_TAG_VALUE}" ] || [ "${#PIN_TAG_VALUE}" -ge 4 ]; then
+  echo "FAIL: PIN_TAG_VALUE must be 1-3 characters, or this arm tests the substring carry (or nothing) instead" >&2
+  exit 1
+fi
+if [ "${PIN_TAG_VALUE}" = "${PIN_VALUE}" ] || [ "${PIN_TAG_VALUE}" = "${PIN_JOIN_VALUE}" ] || [ "${PIN_TAG_VALUE}" = "${PIN_SSM_VALUE}" ]; then
+  echo "FAIL: PIN_TAG_VALUE must differ from the other sub-floor values, or another arm's entry masks it and this arm is vacuous" >&2
+  exit 1
+fi
 # The #2291 ROUND-2 arm's EMBEDDING leaf, over the LOSING parameter. Its
 # persisted form must splice HANDOFF_EXPR_A -- not the survivor -- into the
 # connection string, or the desired side (which answers per parameter) never
@@ -411,7 +436,7 @@ esac
 # The pre-existing three are inner-only -- `UNRELATED_LITERAL` legitimately
 # CONTAINS `SECRET_STAGE_VALUE`, which the #2087 assertion above requires, so
 # they must never be compared against each other.
-CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE MIXED_PW_VALUE SPANS_PW_VALUE FALL_PW_VALUE FALL_USER_VALUE FALL2_PW_VALUE FALL2_USER_VALUE EMBED_PW_VALUE MULTI_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE"
+CDKD_2270_LITERALS="CHILD_PLAIN_OUTPUT_VALUE SHARED_PW_VALUE HANDOFF_PW_VALUE MIXED_PW_VALUE SPANS_PW_VALUE FALL_PW_VALUE FALL_USER_VALUE FALL2_PW_VALUE FALL2_USER_VALUE EMBED_PW_VALUE MULTI_PW_VALUE LIST_PW_VALUE LIST_PUBLIC_VALUE PIN_FRAMED_VALUE PIN_JOIN_FRAMED_VALUE PIN_SSM_FRAMED_VALUE PIN_TAG_FRAMED_VALUE"
 CDKD_ALL_LITERALS="SECRET_STAGE_VALUE SECURE_PW_VALUE UNRELATED_LITERAL ${CDKD_2270_LITERALS}"
 for mine_name in ${CDKD_2270_LITERALS}; do
   mine="${!mine_name}"
@@ -457,7 +482,7 @@ diag_output() {
   # The BARE 2-character pin is in this regex on purpose, unlike in the FAIL
   # scans: here a false match only withholds diagnostics (the safe direction),
   # while there it would fail a green run on ordinary text.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_JOIN_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_SSM_VALUE}|${PIN_TAG_FRAMED_VALUE}|${PIN_TAG_VALUE}" <<<"${text}"; then
     echo "      output: <WITHHELD - it carries a resolved secret, which is itself the bug>" >&2
     return 0
   fi
@@ -555,6 +580,11 @@ assert_child_state_carries_no_plaintext() { # $1 = label, $2 = child state json
     echo "FAIL: ${label}: the child's state.json carries the ssm-framed sub-floor plaintext" >&2
     exit 1
   fi
+  # The #6893 row tag reaches EVERY child resource as a stack tag.
+  if grep -qF "${PIN_TAG_FRAMED_VALUE}" <<<"${scan}"; then
+    echo "FAIL: ${label}: the child's state.json carries the row-tag-framed sub-floor plaintext (issue #6893)" >&2
+    exit 1
+  fi
   echo "    OK: ${label}: no resolved plaintext anywhere else in the child's state.json"
 }
 
@@ -590,7 +620,7 @@ scan_verbose_output() { # scan_verbose_output <label> <text>
   # resolver now masks a sub-floor secret on that line by position (issue
   # #3100), so the exception is gone (issue #3113) and the line itself is
   # asserted masked below.
-  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${text}"; then
+  if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_TAG_FRAMED_VALUE}" <<<"${text}"; then
     echo "FAIL: ${label}: --verbose printed a resolved secret plaintext" >&2
     exit 1
   fi
@@ -715,7 +745,7 @@ cleanup
 # --- Out-of-band secret + SecureString parameter ---------------------------
 echo "==> Creating the secretsmanager secret and the SecureString SSM parameter out of band"
 aws secretsmanager create-secret --name "${SECRET_NAME}" \
-  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"mixed\":\"${MIXED_PW_VALUE}\",\"spans\":\"${SPANS_PW_VALUE}\",\"fall\":\"${FALL_PW_VALUE}\",\"falluser\":\"${FALL_USER_VALUE}\",\"fall2\":\"${FALL2_PW_VALUE}\",\"fall2user\":\"${FALL2_USER_VALUE}\",\"embed\":\"${EMBED_PW_VALUE}\",\"multi\":\"${MULTI_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\",\"pinjoin\":\"${PIN_JOIN_VALUE}\"}" \
+  --secret-string "{\"stage\":\"${SECRET_STAGE_VALUE}\",\"shared\":\"${SHARED_PW_VALUE}\",\"handoff\":\"${HANDOFF_PW_VALUE}\",\"mixed\":\"${MIXED_PW_VALUE}\",\"spans\":\"${SPANS_PW_VALUE}\",\"fall\":\"${FALL_PW_VALUE}\",\"falluser\":\"${FALL_USER_VALUE}\",\"fall2\":\"${FALL2_PW_VALUE}\",\"fall2user\":\"${FALL2_USER_VALUE}\",\"embed\":\"${EMBED_PW_VALUE}\",\"multi\":\"${MULTI_PW_VALUE}\",\"list\":\"${LIST_PW_VALUE}\",\"pin\":\"${PIN_VALUE}\",\"pintwin\":\"${PIN_VALUE}\",\"pinjoin\":\"${PIN_JOIN_VALUE}\",\"pintag\":\"${PIN_TAG_VALUE}\"}" \
   --region "${REGION}" >/dev/null
 aws ssm put-parameter --name "${SECURE_PARAM_NAME}" --type SecureString \
   --value "${SECURE_PW_VALUE}" --overwrite --region "${REGION}" >/dev/null
@@ -1324,11 +1354,35 @@ assert_eq "the parent's nested-stack row keeps SubFloorPinSsm as its FRAMED expr
   "$(jq_state "${PARENT_STATE}" '.resources.Child.properties.Parameters.SubFloorPinSsm')" \
   "port:{{resolve:ssm:${PIN_SSM_PARAM_NAME}}}"
 
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${LIST_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_TAG_FRAMED_VALUE}" <<<"${PARENT_STATE}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext" >&2
   exit 1
 fi
 echo "    OK: no resolved plaintext in the parent's state.json"
+
+# --- #6893: a sub-floor secret in the nested row's own Tags -----------------
+# The `Child` row's one tag is `tag:` + a token resolving to 2 characters. Since
+# #6871 the provider hands the row's RESOLVED tags to the child as stack tags,
+# and below MIN_NEEDLE_LENGTH its substring carry left `tag:w4` as it was, so
+# every child resource persisted it. The parent's recorder now certifies the
+# literal spelling by position and the provider hands that down instead.
+echo "==> #6893: the row-tag frame reaches the child as its expression"
+assert_eq "premise: the synthesized Child row carries exactly the one literal-framed tag" \
+  "$(jq -c '.Resources.Child.Properties.Tags' "${SYNTH_TEMPLATE}")" \
+  "$(jq -cn --arg k "${PIN_TAG_KEY}" --arg v "${PIN_TAG_FRAMED_EXPR}" '[{Key: $k, Value: $v}]')"
+assert_eq "the parent's nestedStackTags record holds the row tag as its FRAMED expression" \
+  "$(jq_state "${PARENT_STATE}" '.nestedStackTags.Child["cdkd-pintag"] // "<absent>"')" \
+  "${PIN_TAG_FRAMED_EXPR}"
+PIN_TAG_STATE="$(jq_state "${CHILD_STATE}" '(.resources.PinParam.properties.Tags | if type == "array" then (map(select(.Key == "cdkd-pintag"))[0].Value) else .["cdkd-pintag"] end) // "<absent>"')"
+if [ "${PIN_TAG_STATE}" = "${PIN_TAG_FRAMED_VALUE}" ]; then
+  echo "FAIL: PinParam persisted the row tag's framed PLAINTEXT -- the row-tag carry did not reach the child (issue #6893)" >&2
+  exit 1
+fi
+assert_eq "child PinParam persists the row tag as the FRAMED expression" "${PIN_TAG_STATE}" "${PIN_TAG_FRAMED_EXPR}"
+# The child resolves the frame itself, so AWS holds the resolved tag.
+LIVE_PIN_TAG=$(aws ssm list-tags-for-resource --resource-type Parameter --resource-id "${CHILD_PIN_PARAM}" \
+  --region "${REGION}" --query "TagList[?Key=='${PIN_TAG_KEY}'].Value | [0]" --output text)
+assert_eq "the LIVE PinParam carries the row tag's resolved value" "${LIVE_PIN_TAG}" "${PIN_TAG_FRAMED_VALUE}"
 
 # --- #2320: an EMBEDDED and a WHOLE-VALUE leaf in ONE resource agree ---------
 # `HandoffMixed` holds `Description: Fn::Sub 'x-${MixedSecretA}'` and
@@ -1870,7 +1924,7 @@ if [ "${DIFF_RC}" -ne 0 ]; then
   exit 1
 fi
 echo "    OK: cdkd diff --recursive --fail exited 0"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_TAG_FRAMED_VALUE}" <<<"${DIFF_OUT}"; then
   echo "FAIL: the diff output printed a resolved secret plaintext" >&2
   exit 1
 fi
@@ -2079,7 +2133,7 @@ if [ "${PIN_JOIN_STATE3}" = "${PIN_JOIN_FRAMED_VALUE}" ]; then
   exit 1
 fi
 assert_eq "PinJoinParam is STILL the framed expression after the UPDATE" "${PIN_JOIN_STATE3}" "${PIN_JOIN_FRAMED_EXPR}"
-if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
+if grep -qE "${SECRET_STAGE_VALUE}|${SECURE_PW_VALUE}|${SHARED_PW_VALUE}|${HANDOFF_PW_VALUE}|${MIXED_PW_VALUE}|${SPANS_PW_VALUE}|${FALL_PW_VALUE}|${FALL_USER_VALUE}|${FALL2_PW_VALUE}|${FALL2_USER_VALUE}|${EMBED_PW_VALUE}|${MULTI_PW_VALUE}|${PIN_FRAMED_VALUE}|${PIN_JOIN_FRAMED_VALUE}|${PIN_SSM_FRAMED_VALUE}|${PIN_TAG_FRAMED_VALUE}" <<<"${PARENT_STATE3}"; then
   echo "FAIL: the parent's state.json carries a resolved secret plaintext after the update" >&2
   exit 1
 fi
