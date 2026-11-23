@@ -47,6 +47,7 @@ import { heldText, isStackOwnHolder, stackOwnHolders } from '../../stack-own-hol
 import { clearOwnWriteRemovals, recordOwnWriteRemoval } from '../../own-write-removals.js';
 import { verifyOwnIdentityBeforeUpdate } from '../iam-policy/principal-identity.js';
 import { planInlinePolicyNames, sameInlinePolicyName } from '../iam-role/update.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 
 /**
  * go-to-k/cdkd#6609: each removal an update makes is noted once its call
@@ -893,7 +894,7 @@ export async function updateGroupInlinePolicies(
           );
         } catch {
           log.warn(
-            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or 'cdkd drift --revert'`
+            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
           );
         }
       }

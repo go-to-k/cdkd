@@ -501,9 +501,21 @@ assert_no_role_drift "after rename" true
 # had just written. It now deletes the old spelling first, as CloudFormation
 # does, so the new spelling is held with the new document; the deploy back
 # (the rollback direction) does the same the other way.
-inline_action() { # usage: inline_action <exact-name> -> the first statement's action, or empty
-  aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name "$1" --region "${REGION}" \
-    --query 'PolicyDocument.Statement[0].Action' --output text 2>/dev/null || true
+inline_action() { # usage: inline_action <exact-name> -> the first statement's action, or empty when absent
+  # Only NoSuchEntity reads as absent; any other probe failure is FAIL (as
+  # policy_action below). Inside a $( ) the exit ends only the substitution,
+  # and the empty action never satisfies a wanted one, so the phase fails.
+  local out
+  if out="$(aws iam get-role-policy --role-name "${ROLE_NAME}" --policy-name "$1" \
+    --region "${REGION}" --query 'PolicyDocument.Statement[0].Action' --output text 2>&1)"; then
+    printf '%s' "${out}"
+    return 0
+  fi
+  if grep -q 'NoSuchEntity' <<<"${out}"; then
+    return 0
+  fi
+  echo "FAIL [6874]: get-role-policy $1 undetermined: ${out}" >&2
+  exit 1
 }
 case_rename_check() { # usage: case_rename_check <want-name> <gone-name> <want-action> <label>
   local ok=0

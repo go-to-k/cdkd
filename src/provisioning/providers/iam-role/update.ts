@@ -40,6 +40,7 @@ import type {
   InlinePolicyClaimed,
   ResourceUpdateResult,
 } from '../../../types/resource.js';
+import { cdkdRemedy, proseQuoted } from '../../../utils/pasteable-command.js';
 
 /**
  * Update an IAM role
@@ -616,7 +617,7 @@ export async function updateInlinePolicies(
           );
         } catch {
           log.warn(
-            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or 'cdkd drift --revert'`
+            `Could not put inline policy ${v(old)} back after its re-put as ${v(policyName)} failed; it is absent until the next deploy or ${proseQuoted(cdkdRemedy('cdkd drift', '--revert'))}`
           );
         }
       }
