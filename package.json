@@ -103,7 +103,7 @@
     "@aws-sdk/client-sqs": "^3.1169.0",
     "@aws-sdk/client-ssm": "^3.1169.0",
     "@aws-sdk/client-sts": "^3.1169.0",
-    "@aws-sdk/client-wafv2": "^3.1169.0",
+    "@aws-sdk/client-wafv2": "^3.1175.0",
     "@aws-sdk/credential-provider-node": "^3.972.97",
     "@aws-sdk/lib-storage": "^3.1169.0",
     "@aws-sdk/s3-request-presigner": "^3.1169.0",
