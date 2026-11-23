@@ -768,11 +768,14 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
           entityId = user?.UserId;
         }
         // Same principal, not merely the same NAME — see the note above.
-        // Compared case-INSENSITIVELY on the name-bearing tail: `GetRole` is
-        // case-insensitive on the name, so `…:role/MyRole` legitimately comes
-        // back as the ARN AWS stored, and treating that as "a different
-        // entity" would refuse a principal that is provably the same one.
-        if (entityArn !== undefined && entityArn.toLowerCase() === arn.toLowerCase()) {
+        // Compared EXACTLY, case included (go-to-k/cdkd#6854): `GetRole` /
+        // `GetUser` find the entity case-insensitively by name, but IAM resolves
+        // a policy principal ARN case-sensitively. IAM (a role trust policy) and
+        // S3 (a bucket policy) both refuse a principal ARN whose role name or
+        // path differs from the live role's only in case as "Invalid principal
+        // in policy" (measured 2026-11-23), so such an ARN never names the role
+        // and its unique id is not the same principal.
+        if (entityArn !== undefined && entityArn === arn) {
           uniqueId = entityId;
         } else {
           // go-to-k/cdkd#6680: otherwise the drift this leaves (a unique id
@@ -782,7 +785,8 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
           if (!warnedOnOtherEntity) {
             warnedOnOtherEntity = true;
             getLogger().warn(
-              `A resource policy principal ARN names another account or IAM path, so its unique ` +
+              `A resource policy principal ARN names another account or IAM path, or spells the ` +
+                `name or path in another case, so its unique ` +
                 `id (AROA…/AIDA…) cannot be matched to it; a ` +
                 `difference between the two spellings may be reported as drift. If the principal is the ` +
                 `intended one, drift with --accept records the ARN form and clears ` +
@@ -804,7 +808,7 @@ function createIamPrincipalUniqueIdResolver(awsClients: AwsClients): PrincipalUn
                 ? 'no entity'
                 : displayIdent(entityArn, { maxCodePoints: ROLE_ARN_MAX_CODE_POINTS })
             } — ` +
-              `same name in this account or under another IAM path; ` +
+              `same name in this account, under another IAM path or in another case; ` +
               `leaving the policy principal comparison untouched.`
           );
         }
