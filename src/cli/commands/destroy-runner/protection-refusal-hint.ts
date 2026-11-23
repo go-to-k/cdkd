@@ -1,5 +1,6 @@
 import { isAwsAuthoredFailure } from '../../../utils/aws-failure-text.js';
 import { removeProtectionTypes } from '../../../provisioning/remove-protection-types.js';
+import { escapeRegExp } from '../../../utils/regexp.js';
 
 /**
  * The phrases AWS uses when it refuses a delete because the resource's own
@@ -41,7 +42,11 @@ export function isProtectionRefusal(error: unknown, physicalId?: string): boolea
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && link instanceof Error; depth++) {
     if (isAwsWrittenLink(link)) {
       let text = link.message.replace(ARN_TEXT, ' ');
-      if (physicalId) text = text.split(physicalId).join(' ');
+      // Only where it stands alone: a short id inside a word would cut the phrase.
+      if (physicalId) {
+        const own = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(physicalId)}(?![A-Za-z0-9])`, 'g');
+        text = text.replace(own, ' ');
+      }
       if (PROTECTION_REFUSAL_TEXT.test(text)) return true;
     }
     link = link.cause;

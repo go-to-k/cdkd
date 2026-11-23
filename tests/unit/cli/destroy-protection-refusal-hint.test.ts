@@ -132,6 +132,10 @@ describe('isProtectionRefusal (issue #6855)', () => {
     expect(isProtectionRefusal(alb)).toBe(false);
     // The ARN is removed, the refusal phrase around it is still read.
     expect(isProtectionRefusal(ALB)).toBe(true);
+    // A physical id that is part of a word is not cut out of the phrase.
+    expect(isProtectionRefusal(LOG_GROUP, 'delet')).toBe(true);
+    expect(isProtectionRefusal(LOG_GROUP, 'prot')).toBe(true);
+    expect(isProtectionRefusal(LOG_GROUP, 'e')).toBe(true);
   });
 
   it('is false for a non-Error value', () => {
