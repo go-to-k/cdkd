@@ -43,6 +43,10 @@ an oracle that knows only the equivalences below.
 | A `Date` equals its ISO string | `drift-calculator.ts` `jsonForm` | The persisted baseline holds the ISO string `JSON.stringify` writes for the `Date` the SDK returned. | Only via `toJSON`: two different instants differ. |
 | A non-plain object compares by its own keys | `drift-calculator.ts` `jsonForm`, `deepEqual` | A typed array the SDK returns persists as its index-keyed object (`{"0":1}`), and a `Buffer` as its `toJSON` form, so the two spellings converge. | Values and key counts are compared. Residual: a `Map`, `Set` or keyless class instance has no own keys and equals `{}` and any other keyless one; no SDK v3 readback returns one. |
 | A statement object equals a ONE-element list | `drift-calculator.ts` `asStatementList`, `drift-verbatim-paths.ts` `isVerbatimStatementPath` | The IAM policy grammar allows `Statement` as one object or a list; S3, SQS, SNS, KMS, Secrets Manager and IAM trust policies return the object form as a one-element list (#6624, measured). | Only at `<verbatim key>.Statement`. A list of two, an empty list, or one differing statement differs. A Condition value's scalar against a list is NOT folded (#6842). |
+| A one-element list equals its scalar, in a statement | `drift-verbatim-paths.ts` `canonicalPolicyFoldForm` | S3, SQS, SNS and IAM's role trust policy return a one-element `Action` / `Resource` / `Principal.<key>` list as the scalar (measured 2026-11-23; IAM's managed policy keeps the list). | `Action`, `NotAction`, `Resource`, `NotResource` and each `Principal` / `NotPrincipal` key, inside `<verbatim key>.Statement` only. Two or more members, an empty list, and a Condition value (#6842) compare as written. |
+| A bare account id equals its root ARN, under `Principal.AWS` | `drift-verbatim-paths.ts` `canonicalPolicyFoldForm` | IAM's role trust policy returns `"AWS": "<id>"` as `arn:aws:iam::<id>:root`, and SQS stores it the same way (measured 2026-11-23). | Only under `Principal.AWS` / `NotPrincipal.AWS`; the same 12-digit value under `Service`, `Federated` or `CanonicalUser`, another account's root, a user named `root`, or an id outside a principal differ. The partition is not compared (the comparator has no partition input; a policy cannot name another partition's principal). |
+| `Effect` is case-insensitive | `drift-verbatim-paths.ts` `canonicalPolicyFoldForm` | S3 accepts `"allow"` and returns `"Allow"`; IAM refuses it (measured 2026-11-23). | `Effect` only: a `Sid`, an action or any other value differing in case differs; `Deny` against `allow` differs. |
+| A Condition number or boolean equals its `String()` | `drift-verbatim-paths.ts` `canonicalPolicyFoldForm` | S3 returns `1.2` as `"1.2"` and `false` as `"false"` (measured 2026-11-23; CDK's `minimumTLSVersion` writes `NumericLessThan {"s3:TlsVersion": 1.2}`). | Exactly the string form: `1.2` against `"1.20"`, `false` against `"False"` or `"0"` differ; list members fold one by one, in order; a scalar against a one-element list still differs (#6842). |
 | An omitted `Version` equals `2008-10-17` | `drift-verbatim-paths.ts` `isOmittedVersionDefault` | IAM: a policy without `Version` is evaluated as `2008-10-17`, and those services write it in (#6624, measured). | Only on the template baseline, only at `<verbatim key>.Version`, only when the template omits it. `2012-10-17` there, a changed declared `Version`, or the default on the observed baseline differs. |
 | Keys only AWS holds are not compared (template baseline) | `drift-calculator.ts` `diffAt` | CloudFormation drift compares only declared properties; a readback carries AWS defaults the template never set. | The key union is walked under the verbatim-echo properties (#6622) and under every nested object on the observed baseline. Top-level keys only AWS holds are never compared on either baseline (CloudFormation parity). |
 | Undeclared captured-empty keys are skipped | `drift-calculator.ts` `undeclaredEmptyObservedKeys` | A sibling resource fills these after the capture (#1498); CloudFormation compares only declared properties. | Only an undeclared key captured as absent, `null`, `[]` or `{}`; `''`, `0`, `false` and any value are compared, and so are the per-type `undeclaredEmptyComparedDriftKeys` (#6651). |
@@ -75,6 +79,36 @@ an oracle that knows only the equivalences below.
   it equates nothing.
 - `src/provisioning/canonicalize-properties.ts` only dispatches to each
   provider's `canonicalizeDesiredProperties` (#6854).
+
+## Cross-check: awspolicyequivalence and cdk-real-drift
+
+The policy rules above were checked against
+[hashicorp/awspolicyequivalence](https://github.com/hashicorp/awspolicyequivalence)
+(`aws_policy_equivalence.go`, the Terraform AWS provider's policy comparator)
+and cdk-real-drift's `src/normalize/policy-canonical.ts`, and each difference
+was probed on real AWS (us-east-1, 2026-11-23, the services' plain APIs:
+`PutBucketPolicy` / `GetBucketPolicy`, `SetQueueAttributes` /
+`GetQueueAttributes`, `SetTopicAttributes` / `GetTopicAttributes`,
+`CreateRole` / `GetRole`, `CreatePolicyVersion` / `GetPolicyVersion`, and S3
+through Cloud Control).
+
+| Rule | awspolicyequivalence | cdk-real-drift | cdkd | AWS evidence | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| Statement object = one-element list | equal | equal | equal (#6624) | S3, SQS, SNS, KMS, Secrets Manager, IAM trust return the list | Kept. |
+| One-element `Action` / `Resource` / principal list = scalar | equal (string sets) | equal (`toSortedArray`) | equal (#6852) | S3, SQS, SNS, IAM trust return the scalar; IAM managed policy keeps the list | Added: phantom drift on the template baseline before. |
+| Bare account id = root ARN | equal under every principal key, and for a string principal | equal under every principal key (`normalizeAccountPrincipal`) | equal under `AWS` only (#6852) | IAM trust policy returns `"<id>"` as `arn:aws:iam::<id>:root` | Added, under `AWS` only: a 12-digit value elsewhere names no account. |
+| `Effect` case | case-insensitive (`strings.EqualFold`) | case-sensitive | case-insensitive (#6852) | S3 returns `"allow"` as `"Allow"`; IAM refuses `"allow"` | Added. |
+| Condition number / boolean = its string | equal (`FormatFloat` / `FormatBool`) | strict | equal to exactly `String()` (#6852) | S3 returns `1.2` as `"1.2"`, `false` as `"false"` | Added. `1.2` against `"1.20"` stays different. |
+| Condition scalar = one-element list | equal | equal (sorted sets) | strict (#6842) | Not reshaped by the services probed | Kept strict, the #6842 decision. |
+| Order of `Action` / `Resource` / Condition values | ignored (sets) | ignored (sorted) | compared | S3, IAM and SQS (`Action`) return the order sent | Kept strict: a reorder in the readback is a rewrite out of band. |
+| Statement order | ignored (matched as a set) | ignored (sorted) | compared | Returned as sent | Kept strict. |
+| `"Sid": ""` vs no Sid | equal (Go zero value) | strict | strict | SQS, S3 and IAM return `"Sid": ""` as sent | Kept strict. |
+| Numeric Sid dropped (C1) | strict | dropped on both sides (`/^\d+$/`) | strict | No Sid is added to a Sid-less statement (S3, SQS, SNS plain API; S3 through Cloud Control) | cdk-real-drift finding: its premise (an auto-assigned numeric Sid) is contradicted by the probe, and the rule hides a change to a numeric Sid. |
+| AWSLogDelivery statement subtracted (C2) | no such rule | subtracted on both sides when Sid, service principal and actions match the vended shape | no such rule: an added statement is drift | Not probed (needs a log delivery to write it) | cdk-real-drift finding: looser than cdkd and awspolicyequivalence; cdkd reports the statement AWS appended. |
+| Omitted `Version` (C3) | strict (`""` differs from any version) | not compared when the template omits it | equals `2008-10-17` only, template baseline (#6624) | S3, SQS, SNS, KMS, Secrets Manager, IAM trust write `2008-10-17` | cdk-real-drift finding: dropping it hides a live `2012-10-17`, which turns policy variables on. |
+| `"*"` = `{"AWS": "*"}` | strict | strict | strict (the failed-create `policyContentKey` equates them; the drift comparator does not) | Not probed | Kept strict until measured. |
+| Document `Id` | strict | strict | strict | - | Kept. |
+| SQS / SNS: two `Resource` values in one statement | - | - | - | Both services refuse it | No rule needed. |
 
 ## Rules outside src/analyzer (#6854)
 
