@@ -4,7 +4,10 @@
  * `{ CanonicalUser }` form (issue #872). A sibling of
  * `s3-bucket-policy-provider.ts`, which sits at the source file size cap.
  */
+import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import type { ReadCurrentStateContext } from '../../types/resource.js';
+import { getAwsClients } from '../../utils/aws-clients.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * Matches a CloudFront Origin Access Identity (OAI) principal ARN, e.g.
@@ -112,4 +115,49 @@ export function hasTemplateMatchedUniqueId(
       findTemplateCanonicalUser(stmt, templateStmts) !== undefined
     );
   });
+}
+
+/**
+ * Process-lifetime cache of OAI id -> S3 canonical user id (or `null` when the
+ * lookup failed / the OAI is gone), so a `cdkd drift` run with many OAI-granting
+ * bucket policies issues at most one `GetCloudFrontOriginAccessIdentity` per OAI.
+ */
+const oaiCanonicalUserIdCache = new Map<string, string | null>();
+
+/** Test-only: reset the OAI canonical-user-id cache between unit tests. */
+export function clearOaiCanonicalUserIdCacheForTest(): void {
+  oaiCanonicalUserIdCache.clear();
+}
+
+/**
+ * Resolve a CloudFront OAI id to its S3 canonical user id via
+ * `GetCloudFrontOriginAccessIdentity`, cached for the process lifetime. Used
+ * only as a FALLBACK when the OAI is not a same-stack sibling (its
+ * `S3CanonicalUserId` is otherwise read straight from sibling state — see
+ * {@link buildSiblingOaiCanonicalMap}). Best-effort: returns `null` (and
+ * caches it) on any failure so a missing OAI / missing permission leaves the
+ * principal unchanged rather than failing the drift read.
+ */
+export async function resolveOaiCanonicalUserId(
+  oaiId: string,
+  debug: (message: string) => void
+): Promise<string | null> {
+  const cached = oaiCanonicalUserIdCache.get(oaiId);
+  if (cached !== undefined) return cached;
+  let canonical: string | null = null;
+  try {
+    const resp = await getAwsClients().cloudFront.send(
+      new GetCloudFrontOriginAccessIdentityCommand({ Id: oaiId })
+    );
+    canonical = resp.CloudFrontOriginAccessIdentity?.S3CanonicalUserId ?? null;
+  } catch (err) {
+    debug(
+      `Could not resolve CloudFront OAI ${oaiId} canonical user id for bucket-policy drift normalization: ${
+        describeAwsFailure(err).detail
+      } — leaving the principal unchanged.`
+    );
+    canonical = null;
+  }
+  oaiCanonicalUserIdCache.set(oaiId, canonical);
+  return canonical;
 }

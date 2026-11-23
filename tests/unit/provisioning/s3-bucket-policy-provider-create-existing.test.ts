@@ -625,6 +625,52 @@ describe('S3BucketPolicyProvider.create onto a bucket that already holds a polic
     });
   });
 
+  // go-to-k/cdkd#6854: S3 stores a bare account id principal as the root ARN
+  // of the bucket's partition and refuses another partition's root ARN
+  // (`MalformedPolicy`, measured us-east-1, 2026-11-23).
+  describe('a bare account id principal, which S3 returns as its root ARN', () => {
+    const ACCOUNT = '123456789012';
+    const accountDoc = (principal: string) => ({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { AWS: principal },
+          Action: 's3:ListBucket',
+          Resource: `arn:aws:s3:::${BUCKET}`,
+        },
+      ],
+    });
+    const props = { Bucket: BUCKET, PolicyDocument: accountDoc(ACCOUNT) };
+    const journal = () =>
+      priorAttemptLookup(LOGICAL_ID, () =>
+        Promise.resolve([{ Bucket: BUCKET, PolicyDocument: accountDoc(ACCOUNT) }])
+      );
+
+    it("matches a journal bag over the root ARN of the bucket's partition", async () => {
+      respond(() =>
+        Promise.resolve({ Policy: JSON.stringify(accountDoc(`arn:aws:iam::${ACCOUNT}:root`)) })
+      );
+
+      await withPriorAttempts(journal(), () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props));
+
+      expect(sentPuts()).toBe(1);
+    });
+
+    it('never matches a root ARN of another partition', async () => {
+      respond(() =>
+        Promise.resolve({
+          Policy: JSON.stringify(accountDoc(`arn:aws-cn:iam::${ACCOUNT}:root`)),
+        })
+      );
+
+      await expect(
+        withPriorAttempts(journal(), () => provider.create(LOGICAL_ID, RESOURCE_TYPE, props))
+      ).rejects.toThrow(/The bucket policy already exists/);
+      expect(sentPuts()).toBe(0);
+    });
+  });
+
   describe('a CloudFront OAI grant, which S3 returns in another principal form', () => {
     const OAI_ID = 'E1EXAMPLEOAI';
     const CANONICAL = 'a'.repeat(64);

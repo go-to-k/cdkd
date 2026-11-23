@@ -5,7 +5,6 @@ import {
   GetBucketPolicyCommand,
   NoSuchBucket,
 } from '@aws-sdk/client-s3';
-import { GetCloudFrontOriginAccessIdentityCommand } from '@aws-sdk/client-cloudfront';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { getCurrentStackName } from '../resource-name/stack-scope.js';
@@ -30,6 +29,7 @@ import {
   markRefusedBeforeApplying,
 } from '../../deployment/prior-attempt-scope.js';
 import { policyContentKey } from '../policy-document-content.js';
+import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { isS3BucketName, ownPolicyHolder } from '../s3-bucket-policy-helpers.js';
 import { OWN_WRITE_REREAD_DELAYS_MS } from '../settle-after-own-write.js';
 import { settleBucketPolicyRead } from './s3-bucket-policy-own-write.js';
@@ -40,7 +40,9 @@ import {
   extractStatements,
   findTemplateCanonicalUser,
   hasTemplateMatchedUniqueId,
+  resolveOaiCanonicalUserId,
 } from './s3-bucket-policy-oai.js';
+export { clearOaiCanonicalUserIdCacheForTest } from './s3-bucket-policy-oai.js';
 import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { logicalIdShown } from '../composite-id.js';
@@ -55,13 +57,6 @@ import {
 import { cdkdRemedy, commandHole, proseQuoted } from '../../utils/pasteable-command.js';
 
 /**
- * Process-lifetime cache of OAI id -> S3 canonical user id (or `null` when the
- * lookup failed / the OAI is gone), so a `cdkd drift` run with many OAI-granting
- * bucket policies issues at most one `GetCloudFrontOriginAccessIdentity` per OAI.
- */
-const oaiCanonicalUserIdCache = new Map<string, string | null>();
-
-/**
  * How often, and how far apart, a create re-reads a bucket policy before
  * refusing it as another owner's (go-to-k/cdkd#6109): S3 may still return a
  * policy a delete removed seconds ago.
@@ -74,11 +69,6 @@ type ExistingBucketPolicy =
   | { kind: 'absent' }
   | { kind: 'present'; policy: string }
   | { kind: 'unreadable'; error: unknown };
-
-/** Test-only: reset the OAI canonical-user-id cache between unit tests. */
-export function clearOaiCanonicalUserIdCacheForTest(): void {
-  oaiCanonicalUserIdCache.clear();
-}
 
 import type {
   ResourceProvider,
@@ -585,11 +575,15 @@ export class S3BucketPolicyProvider implements ResourceProvider {
     bucketShown: string,
     mask: (text: string) => string
   ): Promise<boolean> {
+    // A bare account id equals its root ARN in the bucket's partition only:
+    // S3 stores it as that ARN and refuses another partition's (go-to-k/cdkd#6854).
+    const partition = await this.bucketPartition();
     if (
       ownAttemptMayHaveLanded &&
       // Right after this create's own write attempt: the OAI's transient
       // bare-id form is expected.
-      (await this.livePolicyKey(livePolicy, policyDoc, true)) === policyContentKey(policyDoc)
+      (await this.livePolicyKey(livePolicy, policyDoc, true, partition)) ===
+        policyContentKey(policyDoc, partition)
     ) {
       this.logger.debug(
         safeMsg`S3 bucket policy ${logicalId}: an earlier attempt of this create attached the policy; re-sending it`
@@ -612,7 +606,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       // An earlier deploy's attempt: its transient form is long over, so a
       // bare id here is a deleted IAM user's and compares as is (#6854).
       if (
-        (await this.livePolicyKey(livePolicy, attempted, false)) === policyContentKey(attempted)
+        (await this.livePolicyKey(livePolicy, attempted, false, partition)) ===
+        policyContentKey(attempted, partition)
       ) {
         this.logger.info(
           safeMsg`S3 bucket policy ${logicalId}: the policy on bucket ${bucketShown} is the one this stack's rollback journal shows an earlier deploy of it attempted; replacing it`
@@ -634,7 +629,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   private async livePolicyKey(
     livePolicy: string,
     reference: unknown,
-    afterOwnWrite: boolean
+    afterOwnWrite: boolean,
+    partition: string
   ): Promise<string> {
     let live: unknown;
     let ref: unknown = reference;
@@ -642,7 +638,7 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       live = JSON.parse(livePolicy) as unknown;
       if (typeof ref === 'string') ref = JSON.parse(ref) as unknown;
     } catch {
-      return policyContentKey(livePolicy);
+      return policyContentKey(livePolicy, partition);
     }
     const siblings: NonNullable<ReadCurrentStateContext['siblings']> = {};
     for (const [id, record] of getStackRecords()?.live() ?? []) {
@@ -654,7 +650,15 @@ export class S3BucketPolicyProvider implements ResourceProvider {
       };
     }
     await this.normalizeOaiPrincipals(live, { PolicyDocument: ref }, { siblings }, afterOwnWrite);
-    return policyContentKey(live);
+    return policyContentKey(live, partition);
+  }
+
+  /**
+   * The partition of the bucket's region, which is the S3 client's: a bucket
+   * of another partition is not reachable with the same credentials.
+   */
+  private async bucketPartition(): Promise<string> {
+    return derivePartitionAndUrlSuffix(await this.s3Client.config.region()).partition;
   }
 
   /**
@@ -725,7 +729,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const read = () => this.readPolicyOnce(physicalId, properties, context);
     const delaysMs = this.ownWriteRereadDelaysMs;
-    const options = { logicalId, properties, context, delaysMs, logger: this.logger };
+    const partition = await this.bucketPartition();
+    const options = { logicalId, properties, context, delaysMs, partition, logger: this.logger };
     let first = await read();
     if (context?.afterOwnWrite !== true) {
       first = await this.outwaitTransientUniqueId(first, read, properties);
@@ -866,7 +871,8 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         // Prefer the sibling OAI's already-read state attribute; only call AWS
         // when the OAI is not a same-stack sibling.
         const canonical =
-          siblingCanonicalById.get(oaiId) ?? (await this.resolveOaiCanonicalUserId(oaiId));
+          siblingCanonicalById.get(oaiId) ??
+          (await resolveOaiCanonicalUserId(oaiId, (message) => this.logger.debug(message)));
         if (canonical) stmt['Principal'] = { CanonicalUser: canonical };
         continue;
       }
@@ -876,36 +882,6 @@ export class S3BucketPolicyProvider implements ResourceProvider {
         if (tmplCanonical) stmt['Principal'] = { CanonicalUser: tmplCanonical };
       }
     }
-  }
-
-  /**
-   * Resolve a CloudFront OAI id to its S3 canonical user id via
-   * `GetCloudFrontOriginAccessIdentity`, cached for the process lifetime. Used
-   * only as a FALLBACK when the OAI is not a same-stack sibling (its
-   * `S3CanonicalUserId` is otherwise read straight from sibling state — see
-   * {@link buildSiblingOaiCanonicalMap}). Best-effort: returns `null` (and
-   * caches it) on any failure so a missing OAI / missing permission leaves the
-   * principal unchanged rather than failing the drift read.
-   */
-  private async resolveOaiCanonicalUserId(oaiId: string): Promise<string | null> {
-    const cached = oaiCanonicalUserIdCache.get(oaiId);
-    if (cached !== undefined) return cached;
-    let canonical: string | null = null;
-    try {
-      const resp = await getAwsClients().cloudFront.send(
-        new GetCloudFrontOriginAccessIdentityCommand({ Id: oaiId })
-      );
-      canonical = resp.CloudFrontOriginAccessIdentity?.S3CanonicalUserId ?? null;
-    } catch (err) {
-      this.logger.debug(
-        `Could not resolve CloudFront OAI ${oaiId} canonical user id for bucket-policy drift normalization: ${
-          describeAwsFailure(err).detail
-        } — leaving the principal unchanged.`
-      );
-      canonical = null;
-    }
-    oaiCanonicalUserIdCache.set(oaiId, canonical);
-    return canonical;
   }
 
   /**
