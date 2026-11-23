@@ -1,7 +1,7 @@
 /**
  * The CloudFront OAI principal forms S3 returns in a bucket policy, and the
- * helpers `S3BucketPolicyProvider` folds them back to the template's
- * `{ CanonicalUser }` form with (issue #872). A sibling of
+ * helpers `S3BucketPolicyProvider` uses to fold them back to the template's
+ * `{ CanonicalUser }` form (issue #872). A sibling of
  * `s3-bucket-policy-provider.ts`, which sits at the source file size cap.
  */
 import type { ReadCurrentStateContext } from '../../types/resource.js';
