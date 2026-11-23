@@ -151,3 +151,28 @@ describe('stripCcApiAwsManagedFields keeps an own __proto__ key and a non-plain 
     expect(Object.getOwnPropertyNames(outer)).toEqual(['When']);
   });
 });
+
+describe('stripCcApiAwsManagedFields leaves a user-keyed free-form map alone (go-to-k/cdkd#6854)', () => {
+  it.each([
+    ['nested stack Parameters', { Parameters: { OwnerId: '123', CreatedBy: 'me' } }],
+    ['a Tags map', { Tags: { CreatedBy: 'team-a', LastModified: 'x' } }],
+    ['Lambda environment Variables', { Environment: { Variables: { LastModified: '1' } } }],
+    ['container DockerLabels in a list', { ContainerDefinitions: [{ DockerLabels: { CreatedAt: 'y' } }] }],
+  ])('keeps a managed-looking key inside %s', (_label, props) => {
+    expect(stripCcApiAwsManagedFields('AWS::Any::Type', props)).toEqual(props);
+  });
+
+  it('keeps everything below the free-form map, nested objects included', () => {
+    const props = { Parameters: { Deep: { RevisionId: 'r' } } };
+    expect(stripCcApiAwsManagedFields('AWS::Any::Type', props)).toEqual(props);
+  });
+
+  it('still strips a managed name beside the free-form map and in structured objects', () => {
+    const out = stripCcApiAwsManagedFields('AWS::Any::Type', {
+      CreatedBy: 'aws',
+      Tags: { CreatedBy: 'user' },
+      LoggingConfiguration: { LastModifiedTime: 't', Level: 'ALL' },
+    });
+    expect(out).toEqual({ Tags: { CreatedBy: 'user' }, LoggingConfiguration: { Level: 'ALL' } });
+  });
+});

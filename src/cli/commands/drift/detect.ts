@@ -46,6 +46,7 @@ import {
 } from '../../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 import { getReadOnlyPropertyPaths } from '../../../provisioning/read-only-properties.js';
+import { writeOnlyDriftPaths } from './baseline-keys.js';
 import type { StackDriftReport, DriftOutcome } from './outcome.js';
 import { type NestedChildRecord, nestedChildStackName } from './command.js';
 import { DriftSecretResolvers, driftProducerRegionEvidence } from './secret-resolution.js';
@@ -582,6 +583,12 @@ export async function runDriftForStack(
           !CC_API_FALLBACK_DENY_LIST[resource.resourceType])
           ? getReadOnlyPropertyPaths(resource.resourceType)
           : undefined;
+      // go-to-k/cdkd#6854: the write-only paths, only for a record compared
+      // against its template (no observed baseline). Same gate and overlap.
+      const writeOnlyPathsLookup =
+        readOnlyPathsLookup !== undefined && resource.observedProperties === undefined
+          ? writeOnlyDriftPaths(resource.resourceType)
+          : undefined;
       await withPrintingSecrets(printing, async () => {
         try {
           let aws: Record<string, unknown> | ResourceNotFound | undefined;
@@ -671,6 +678,7 @@ export async function runDriftForStack(
             aws,
             readContext,
             ...(readOnlyPathsLookup && { readOnlyPathsLookup }),
+            ...(writeOnlyPathsLookup && { writeOnlyPathsLookup }),
             ...(notComparedPolicyArns && { notComparedPolicyArns }),
           });
         } catch (err) {

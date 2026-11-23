@@ -30,6 +30,10 @@ import {
   stringListIsDeclared,
 } from '../../../provisioning/settle-own-write-members.js';
 import { sgRulesAreDeclared } from '../../../provisioning/sg-own-write-rules.js';
+import {
+  getSettledWriteOnlyPropertyPaths,
+  tryGetTopLevelWriteOnlyProperties,
+} from '../../../provisioning/write-only-properties.js';
 import { readHadAgreeingCopies } from '../../../provisioning/providers/iam-policy/agreeing-copies.js';
 import {
   declaredTagsReadback,
@@ -607,6 +611,37 @@ export function readOnlyUncomparedDriftPaths(
     return true;
   };
   return readOnlyPaths.filter((path) => !declared(path));
+}
+
+/**
+ * The schema write-only paths of `resourceType` as dotted drift paths
+ * (`MasterUserPassword`, `Config.Secret`), or `undefined` when the schema
+ * could not be read (go-to-k/cdkd#6854). A Cloud Control read never returns
+ * a write-only property, so on a record with no observed baseline (the
+ * template's `properties` are the baseline) every declared one read as
+ * removed. CloudFormation drift does not compare write-only properties
+ * either. A path through a list (`*`), or naming a key a dotted path cannot
+ * spell, is left out: it stays compared. Never throws.
+ */
+export async function writeOnlyDriftPaths(resourceType: string): Promise<string[] | undefined> {
+  try {
+    const topLevel = await tryGetTopLevelWriteOnlyProperties(resourceType);
+    if (topLevel === undefined) return undefined;
+    const paths = new Set<string>([...topLevel].filter((key) => !key.includes('.')));
+    for (const segments of getSettledWriteOnlyPropertyPaths(resourceType)) {
+      if (
+        segments.every(
+          (segment) =>
+            segment !== '' && segment !== '*' && !segment.includes('.') && !segment.endsWith('[]')
+        )
+      ) {
+        paths.add(segments.join('.'));
+      }
+    }
+    return [...paths];
+  } catch {
+    return undefined;
+  }
 }
 
 /**
