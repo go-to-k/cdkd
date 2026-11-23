@@ -66,7 +66,7 @@ new MyStack(app, 'MyStack', { tags: { team: 'platform', costCenter: 'cc-1234' } 
 | A DynamoDB global table (`AWS::DynamoDB::GlobalTable`) | The tags are added to every replica's `Tags`, including a replica that declares none; a replica's own value is kept on a shared key. |
 | A type whose registry schema says `taggable: false`, or `tagUpdatable: false` (such as `AWS::EC2::PlacementGroup`) | No stack tags, as in CloudFormation. |
 | Custom resources | No stack tags. |
-| A nested stack | Its resources get the parent's stack tags plus the nested stack resource's own `Tags`, which win on a shared key. |
+| A nested stack | Its resources get the parent's stack tags plus the nested stack resource's own `Tags`, which win on a shared key. A tag value built from a secret reaches the nested stack as its `{{resolve:...}}` reference. A tag whose value holds a secret cdkd cannot pass down that way, such as a `NoEcho` parameter's value, is not applied, and cdkd warns: it does not write a secret to state. |
 | Only the stack tags changed | The resources are updated in place: a changed or added tag is applied, and a tag removed from the stack is removed from each resource that did not declare it. A nested stack is updated for its resources too. |
 
 The tags are part of what cdkd records for each resource, so
