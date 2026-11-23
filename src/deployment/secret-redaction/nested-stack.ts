@@ -1,4 +1,5 @@
 export { recordNestedStackParameterExpressions } from './nested-stack/record-parameter-expressions.js';
+export { nestedStackRowTagSpellingOf } from './nested-stack/row-tag-spellings.js';
 export {
   inheritNestedStackParameterAssociations,
   inheritedParameterExpression,

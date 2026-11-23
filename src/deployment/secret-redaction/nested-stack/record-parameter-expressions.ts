@@ -19,6 +19,7 @@ import {
   nestedStackParameterExpressions,
   renderedParameterSpellings,
 } from './parameter-tables.js';
+import { recordNestedStackRowTagSpellings } from './row-tag-spellings.js';
 
 /**
  * Record, for the pass that owns `secrets`, which `{{resolve:...}}` expression
@@ -336,6 +337,10 @@ export function recordNestedStackParameterExpressions(
   provenance: 'template-derived' | 'state-derived' = 'template-derived'
 ): void {
   if (resourceType !== NESTED_STACK_RESOURCE_TYPE) return;
+  // go-to-k/cdkd#6893: the row's `Tags` twin of the sub-floor carry below,
+  // recorded at the same point (template spelling and resolved value both in
+  // hand) and before the `Parameters`-only early returns.
+  recordNestedStackRowTagSpellings(secrets, resourceType, resolvedProperties, sourceProperties);
   if (secrets.size === 0) return;
   if (!isPlainObject(resolvedProperties) || !isPlainObject(sourceProperties)) return;
   // `Object.hasOwn` for the reason the walks in this module use it: without it

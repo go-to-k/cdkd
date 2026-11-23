@@ -42,7 +42,7 @@ export async function runChildDeploy(
   }
   for (const key of rowOwn.withheld) {
     this.logger.warn(
-      safeMsg`Nested stack ${displayIdent(logicalId)}: its tag ${key} is not applied to the nested stack's resources: its value holds a NoEcho value cdkd does not write to state.`
+      safeMsg`Nested stack ${displayIdent(logicalId)}: its tag ${key} is not applied to the nested stack's resources: its value holds a secret (a NoEcho value, or a secret cdkd cannot pass down as its {{resolve:...}} reference), which cdkd does not write to state.`
     );
   }
   const stackTags = childStackTags(parentCtx.options?.stackTags, rowOwn.tags);

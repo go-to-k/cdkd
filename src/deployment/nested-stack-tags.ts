@@ -158,7 +158,9 @@ export async function settleStackTagChildRuns(args: {
   /**
    * The resolver's bag: a resolved value holding one of its secrets (a
    * `NoEcho` parameter's value, which the diff resolver serves as plaintext)
-   * leaves the row unknowable, so no plaintext is ever recorded. Absent,
+   * leaves the row unknowable, so no plaintext is ever recorded -- at any
+   * length, a 1-3 character one embedded in a longer value included
+   * (go-to-k/cdkd#6893: `holdsRecordedSecret` is floorless). Absent,
    * no resolved row is recorded at all (fail closed).
    */
   secrets: RecordedSecretValues | undefined;
