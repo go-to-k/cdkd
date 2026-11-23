@@ -1,10 +1,9 @@
 /**
- * go-to-k/cdkd#6852: the diff ignores ONE property, a custom resource's
- * top-level `Timestamp`, as non-deterministic. CloudFormation sends an Update
- * on that change, so this is a known divergence, kept as it is until the v1
- * release session (#6443) removes it; that change flips the first case. Until
- * then these cases pin the boundary so the rule cannot widen: the exact name,
- * top-level only, custom resource types only.
+ * go-to-k/cdkd#6853 (found by the #6852 audit): the diff ignored a custom
+ * resource's top-level `Timestamp` as non-deterministic, so a template writing
+ * a fresh one to re-run the handler (`Timestamp: Date.now().toString()`) got
+ * NO_CHANGE from `cdkd diff` and no Update from `cdkd deploy`. CloudFormation
+ * sends an Update for that change, so the property is compared like any other.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
@@ -17,40 +16,63 @@ vi.mock('../../../src/provisioning/create-only-properties.js', async () => {
 });
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { StackState } from '../../../src/types/state.js';
 
-const changedPaths = async (
+const changes = async (
   type: string,
   current: Record<string, unknown>,
   desired: Record<string, unknown>
-) =>
-  (await new DiffCalculator().compareProperties(type, current, desired)).map((c) => c.path);
+) => await new DiffCalculator().compareProperties(type, current, desired);
 
-describe('custom resource `Timestamp` ignore: its boundary (#6852)', () => {
+describe('a custom resource `Timestamp` is compared (#6853)', () => {
   it.each(['Custom::Thing', 'AWS::CloudFormation::CustomResource'])(
-    'today: a changed top-level Timestamp alone is no change on %s',
+    'a changed Timestamp alone is a change on %s, in place',
     async (type) => {
-      expect(await changedPaths(type, { Timestamp: '1' }, { Timestamp: '2' })).toEqual([]);
+      const out = await changes(
+        type,
+        { ServiceToken: 'arn:t', Timestamp: '1' },
+        { ServiceToken: 'arn:t', Timestamp: '2' }
+      );
+      expect(out.map((c) => [c.path, c.requiresReplacement])).toEqual([['Timestamp', false]]);
     }
   );
 
-  it.each([
-    ['a non-custom type', 'AWS::SSM::Parameter', { Timestamp: '1' }, { Timestamp: '2' }, 'Timestamp'],
-    ['another casing', 'Custom::Thing', { timestamp: '1' }, { timestamp: '2' }, 'timestamp'],
-    ['a longer name', 'Custom::Thing', { TimestampX: '1' }, { TimestampX: '2' }, 'TimestampX'],
-    [
-      'a nested Timestamp',
-      'Custom::Thing',
-      { Config: { Timestamp: '1' } },
-      { Config: { Timestamp: '2' } },
-      'Config',
-    ],
-  ])('still a change: %s', async (_label, type, current, desired, path) => {
-    expect(await changedPaths(type, current, desired)).toEqual([path]);
+  it('an unchanged Timestamp is no change', async () => {
+    expect(await changes('Custom::Thing', { Timestamp: '1' }, { Timestamp: '1' })).toEqual([]);
   });
 
-  it('a sibling change beside the Timestamp is still a change', async () => {
-    expect(
-      await changedPaths('Custom::Thing', { Timestamp: '1', A: 1 }, { Timestamp: '2', A: 2 })
-    ).toEqual(['A']);
+  it('a Timestamp added or removed is a change', async () => {
+    expect((await changes('Custom::Thing', {}, { Timestamp: '1' })).map((c) => c.path)).toEqual([
+      'Timestamp',
+    ]);
+    expect((await changes('Custom::Thing', { Timestamp: '1' }, {})).map((c) => c.path)).toEqual([
+      'Timestamp',
+    ]);
+  });
+
+  it('classifies the resource UPDATE through calculateDiff', async () => {
+    const state: StackState = {
+      version: 1,
+      stackName: 'S',
+      resources: {
+        Cr: {
+          physicalId: 'cr-1',
+          resourceType: 'Custom::Thing',
+          properties: { ServiceToken: 'arn:t', Timestamp: '1' },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 0,
+    } as StackState;
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Cr: { Type: 'Custom::Thing', Properties: { ServiceToken: 'arn:t', Timestamp: '2' } },
+      },
+    };
+    const diff = await new DiffCalculator().calculateDiff(state, template);
+    expect(diff.get('Cr')?.changeType).toBe('UPDATE');
   });
 });
