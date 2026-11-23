@@ -113,7 +113,8 @@ export async function createInstanceSsmAssociation(
  * the shared document reported by name. That return form is undocumented and
  * cannot be measured with one account; the fallback keeps a delete from
  * leaving the association behind if SSM uses it. Anything but
- * `InvalidDocument` from the check keeps the association (with a warning).
+ * `InvalidDocument` from the check keeps the association, with a warning
+ * naming the instance and the association ids.
  */
 export async function listInstanceSsmAssociations(
   this: EC2Provider,
@@ -143,31 +144,48 @@ export async function listInstanceSsmAssociations(
       continue;
     const bare = ssmDocumentName(declared);
     const byName = all.filter((a) => a.Name === bare && !out.includes(a));
-    if (byName.length === 0 || !(await this.noOwnSsmDocumentNamed(bare))) continue;
-    out.push(...byName);
+    if (byName.length === 0) continue;
+    // Two or more under one bare name cannot be told apart (two accounts'
+    // same-named shared documents): none is deleted, and no call is made.
+    const owner = byName.length > 1 ? 'ambiguous' : await this.ssmDocumentNameOwner(bare);
+    if (owner === 'none') {
+      out.push(...byName);
+      continue;
+    }
+    // Kept: name the instance and the association ids (not secret), never the
+    // document name (it can be secret-derived, and this lookup has no masker)
+    // nor AWS's text; the error's class is cdkd-safe.
+    const ids = byName.map((a) => a.AssociationId).join(', ');
+    const why =
+      owner === 'exists'
+        ? 'this account also has a document by that name, so it may be that document'
+        : owner === 'ambiguous'
+          ? 'more than one association carries that name, so cdkd cannot tell which'
+          : `DescribeDocument failed (${owner.failed}), so cdkd cannot tell`;
+    this.logger.warn(
+      safeMsg`An SSM association that the record declares by a shared document's ARN was not found on ${instanceId} under that ARN; association(s) ${ids} carry the document's bare name, but ${why}. cdkd leaves it in place. If it is the shared document's, delete it: aws ssm delete-association --association-id <id>.`
+    );
   }
   return out;
 }
 
 /**
- * go-to-k/cdkd#6866: whether this account has no SSM document (its own or an
- * AWS one) named `name`: `DescribeDocument` answers `InvalidDocument` for a
- * name it cannot resolve (measured us-east-1, 2026-11-23). Needs
- * `ssm:DescribeDocument`. Any other answer, a refusal included, is "cannot
- * tell": `false`, with a warning, so nothing is deleted on a guess.
+ * go-to-k/cdkd#6866: whether this account has an SSM document (its own or an
+ * AWS one) named `name`. `DescribeDocument` answers `InvalidDocument` for a
+ * name it cannot resolve (measured us-east-1, 2026-11-23): `'none'`. Needs
+ * `ssm:DescribeDocument`; any other failure, a refusal included, is "cannot
+ * tell", carrying the error's class, so nothing is deleted on a guess.
  */
-export async function noOwnSsmDocumentNamed(this: EC2Provider, name: string): Promise<boolean> {
+export async function ssmDocumentNameOwner(
+  this: EC2Provider,
+  name: string
+): Promise<'none' | 'exists' | { failed: string }> {
   try {
     await this.awsClients.ssm.send(new DescribeDocumentCommand({ Name: name }));
-    return false;
+    return 'exists';
   } catch (error) {
-    if (isNamedError(error, INVALID_DOCUMENT_NAMES)) return true;
-    this.logger.warn(
-      // Neither the name nor AWS's text: a document name can be secret-derived,
-      // and this lookup has no masker. The error's class is cdkd-safe.
-      safeMsg`Could not tell whether an SSM association declared by a shared document's ARN is the one listed under its bare name (DescribeDocument failed: ${error instanceof Error ? error.name : 'unknown error'}); cdkd leaves it in place.`
-    );
-    return false;
+    if (isNamedError(error, INVALID_DOCUMENT_NAMES)) return 'none';
+    return { failed: error instanceof Error ? error.name : 'unknown error' };
   }
 }
 
@@ -312,7 +330,9 @@ export async function readInstanceSsmAssociations(
     }
     const description = resp.AssociationDescription;
     const name = description?.Name ?? a.Name;
-    const match = declared.find((d) => sameSsmDocument(d.DocumentName, name));
+    // The listing's name decided the match (go-to-k/cdkd#6866), so the entry
+    // is paired by it, whatever spelling DescribeAssociation answers.
+    const match = declared.find((d) => sameSsmDocument(d.DocumentName, a.Name));
     const params = description?.Parameters ?? {};
     const order = match?.parameterKeys ?? [];
     const keys = [
@@ -356,7 +376,7 @@ export const instanceSsmMethods = {
   ssmRemedyRegion,
   createInstanceSsmAssociation,
   listInstanceSsmAssociations,
-  noOwnSsmDocumentNamed,
+  ssmDocumentNameOwner,
   deleteSsmAssociationById,
   applyInstanceSsmAssociationChange,
   deleteInstanceSsmAssociationsBestEffort,

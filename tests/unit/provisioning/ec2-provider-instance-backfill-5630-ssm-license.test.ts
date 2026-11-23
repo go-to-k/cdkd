@@ -853,6 +853,7 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
   const OWN = { DocumentName: 'Custom-Doc' };
 
   it('matches a shared document ARN only to that ARN (T4, #6866)', async () => {
+    held.push({ AssociationId: 'assoc-own', InstanceId: 'i-new', Name: OWN.DocumentName });
     held.push({ AssociationId: 'assoc-shared', InstanceId: 'i-new', Name: SHARED.DocumentName });
     held.push({ AssociationId: 'assoc-shell', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
     await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [SHARED] }, {
@@ -869,8 +870,11 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
       ...BASE,
       SsmAssociations: [SHARED],
     });
+    // The exact match wins: the own same-named association stays, and no
+    // DescribeDocument is asked.
     expect(ssmWrites()).toEqual(['Delete assoc-shared']);
     expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
+    expect(held.map((a) => a.AssociationId)).toEqual(['assoc-own', 'assoc-shell']);
   });
 
   it('re-associates on an edit between an own name and a shared ARN, both ways (#6866)', async () => {
@@ -892,6 +896,21 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
     );
     expect(ssmWrites()).toEqual(['Delete assoc-1', `Create ${OWN.DocumentName}`]);
     expect(held.map((a) => a.Name)).toEqual([OWN.DocumentName]);
+  });
+
+  it('pairs a listed ARN association with its declaration whatever DescribeAssociation spells (#6866)', async () => {
+    held.push({ AssociationId: 'assoc-shared', InstanceId: 'i-new', Name: SHARED.DocumentName });
+    const describe = ssmSend.getMockImplementation()!;
+    ssmSend.mockImplementation((cmd: unknown) =>
+      cmd instanceof DescribeAssociationCommand
+        ? Promise.resolve({ AssociationDescription: { Name: OWN.DocumentName, Parameters: {} } })
+        : describe(cmd)
+    );
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [SHARED],
+    })) as Record<string, unknown>;
+    expect(read['SsmAssociations']).toEqual([SHARED]);
   });
 
   it('reads an own same-named association as no association of a declared shared ARN (#6866)', async () => {
@@ -923,6 +942,10 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
       await remove();
       expect(ssmWrites()).toEqual([]);
       expect(ssmSent(DescribeDocumentCommand)).toEqual([{ Name: OWN.DocumentName }]);
+      // ...and says so, naming the instance and the association, not the document.
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toMatch(/on i-new under that ARN; association\(s\) assoc-own .*also has a document by that name.*cdkd leaves it in place/);
+      expect(warned).not.toMatch(/Custom-Doc/);
     });
 
     it('deletes the bare-named association once no own document has the name', async () => {
@@ -943,9 +966,20 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
       held.push({ AssociationId: 'assoc-bare', InstanceId: 'i-new', Name: OWN.DocumentName });
       await remove();
       expect(ssmWrites()).toEqual([]);
-      expect(warn.mock.calls.flat().join('\n')).toMatch(/cdkd leaves it in place/);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(
+        /association\(s\) assoc-bare .*DescribeDocument failed \(AccessDeniedException\).*cdkd leaves it in place/
+      );
       // No document name (it can be secret-derived) and no AWS text.
       expect(warn.mock.calls.flat().join('\n')).not.toMatch(/Custom-Doc|not authorized/);
+    });
+
+    it('deletes none, and asks nothing, when two associations carry the bare name', async () => {
+      held.push({ AssociationId: 'assoc-a', InstanceId: 'i-new', Name: OWN.DocumentName });
+      held.push({ AssociationId: 'assoc-b', InstanceId: 'i-new', Name: OWN.DocumentName });
+      await remove();
+      expect(ssmWrites()).toEqual([]);
+      expect(ssmSent(DescribeDocumentCommand)).toHaveLength(0);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(/assoc-a, assoc-b .*more than one association/);
     });
 
     it('applies on the instance delete too', async () => {
