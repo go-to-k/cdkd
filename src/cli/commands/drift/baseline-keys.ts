@@ -631,22 +631,47 @@ export function readOnlyUncomparedDriftPaths(
  * either. A path through a list (`*`), or naming a key a dotted path cannot
  * spell, is left out: it stays compared. Never throws.
  */
-export async function writeOnlyDriftPaths(resourceType: string): Promise<string[] | undefined> {
+export function writeOnlyDriftPaths(resourceType: string): Promise<string[] | undefined> {
+  let entry = writeOnlyDriftPathsCache.get(resourceType);
+  if (entry === undefined) {
+    entry = lookUpWriteOnlyDriftPaths(resourceType);
+    writeOnlyDriftPathsCache.set(resourceType, entry);
+  }
+  return entry;
+}
+
+/**
+ * One lookup per type for the run, an unreadable schema included: a denied
+ * `cloudformation:DescribeType` is not retried for every record of the type.
+ */
+const writeOnlyDriftPathsCache = new Map<string, Promise<string[] | undefined>>();
+
+/** Clear {@link writeOnlyDriftPaths}'s per-type cache. Test-only helper. */
+export function clearWriteOnlyDriftPathsCache(): void {
+  writeOnlyDriftPathsCache.clear();
+}
+
+async function lookUpWriteOnlyDriftPaths(resourceType: string): Promise<string[] | undefined> {
   try {
-    const topLevel = await tryGetTopLevelWriteOnlyProperties(resourceType);
-    if (topLevel === undefined) return undefined;
-    const paths = new Set<string>([...topLevel].filter((key) => !key.includes('.')));
+    // Only says whether the schema was read. Its names are the CONTAINING
+    // top-level property of every write-only pointer (`Config` for
+    // `/properties/Config/Secret`), and skipping one would hide the
+    // writable members beside the write-only one; the paths come from the
+    // pointers themselves.
+    if ((await tryGetTopLevelWriteOnlyProperties(resourceType)) === undefined) return undefined;
+    const paths: string[] = [];
     for (const segments of getSettledWriteOnlyPropertyPaths(resourceType)) {
       if (
+        segments.length > 0 &&
         segments.every(
           (segment) =>
             segment !== '' && segment !== '*' && !segment.includes('.') && !segment.endsWith('[]')
         )
       ) {
-        paths.add(segments.join('.'));
+        paths.push(segments.join('.'));
       }
     }
-    return [...paths];
+    return paths;
   } catch {
     return undefined;
   }

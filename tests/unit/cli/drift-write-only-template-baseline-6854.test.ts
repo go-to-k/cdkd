@@ -69,9 +69,10 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
   registerAllProviders: vi.fn(),
 }));
 
+const fallback = vi.hoisted(() => ({ read: vi.fn<() => Promise<unknown>>(async () => undefined) }));
 vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
   CloudControlProvider: vi.fn().mockImplementation(() => ({
-    readCurrentState: vi.fn(async () => undefined),
+    readCurrentState: fallback.read,
   })),
 }));
 
@@ -90,6 +91,7 @@ vi.mock('../../../src/provisioning/write-only-properties.js', async (importOrigi
 }));
 
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
+import { clearWriteOnlyDriftPathsCache } from '../../../src/cli/commands/drift/baseline-keys.js';
 
 /**
  * go-to-k/cdkd#6854: a Cloud Control read never returns a write-only property,
@@ -168,7 +170,12 @@ function setUp(observed?: Record<string, unknown>): void {
   mockGetState.mockImplementation(async () => stack(observed));
   writeOnly.top.mockReset();
   writeOnly.paths.mockReset();
-  writeOnly.top.mockResolvedValue(new Set(['Password']));
+  clearWriteOnlyDriftPathsCache();
+  fallback.read.mockReset();
+  fallback.read.mockResolvedValue(undefined);
+  // What the real lookup answers for these pointers: the CONTAINING
+  // top-level name of each, `Config` and `Items` included.
+  writeOnly.top.mockResolvedValue(new Set(['Password', 'Config', 'Items']));
   writeOnly.paths.mockReturnValue([['Password'], ['Config', 'Secret'], ['Items', '*', 'Token']]);
 }
 
@@ -213,6 +220,21 @@ describe('cdkd drift: declared write-only properties on a template-only Cloud Co
     const { code } = await runDrift();
     expect(code).toBe(0);
     expect(writeOnly.top).not.toHaveBeenCalled();
+  });
+
+  it('a Cloud Control fallback read (an SDK provider with no read) leaves them out too', async () => {
+    routing.provisionedBy = 'sdk';
+    mockRegistryGetProvider.mockImplementation(() => ({}));
+    fallback.read.mockImplementation(async () => structuredClone(live));
+    live = { Name: 'thing', Config: { Mode: 'b' }, Items: [{ Id: '1' }] };
+    const { paths } = await runDrift();
+    expect(paths).toEqual(['Config.Mode', 'Items']);
+  });
+
+  it('looks the type up once per process (one drift run)', async () => {
+    await runDrift();
+    await runDrift();
+    expect(writeOnly.top).toHaveBeenCalledTimes(1);
   });
 
   it('an SDK provider read is compared as before, without the lookup', async () => {
